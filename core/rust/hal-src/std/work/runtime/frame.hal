@@ -1,6 +1,7 @@
 (ns std.work.runtime.frame
   (:require [std.work.protocol :as protocol]
             [std.work.runtime.base :as base]
+            [std.work.runtime.receipt :as receipt]
             [std.work.runtime.store :as store]))
 
 (defn node-id
@@ -73,9 +74,24 @@
 
 (defn transact!
   [runtime frame changes]
-  (let [result
+  (let [store-provider (base/runtime-store runtime)
+        run (store/load-run! store-provider (:run/id frame))
+        derived (receipt/transition-receipts run changes)
+        changes
+        (if (empty? derived)
+          changes
+          (assoc
+           changes
+           :transition/run-updates
+           (assoc (or (:transition/run-updates changes) {})
+                  :run/receipt-status :pending)
+           :transition/outbox
+           (receipt/append-values
+            (vec (or (:transition/outbox changes) []))
+            derived)))
+        result
         (store/transact-current!
-         (base/runtime-store runtime)
+         store-provider
          (:run/id frame)
          changes)]
     ;; Observers see only records that the store returned as committed.
@@ -136,9 +152,9 @@
     (throw
      (ex-info "Work item identity cannot be nil"
               {:item item
-               :index index}))
-    {:item/id id
-     :item/value value}))
+               :index index})))
+  {:item/id id
+   :item/value value})
 
 (defn normalise-item
   [runtime options item index]

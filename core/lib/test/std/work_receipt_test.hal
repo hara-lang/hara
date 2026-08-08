@@ -1,0 +1,390 @@
+(ns std.work-receipt-test
+  (:require [std.lib.test :as test]
+            [std.work :as work]
+            [std.work.provider.ignatius :as ignatius]
+            [std.work.provider.memory :as memory]))
+
+(def receipt-work
+  (work/chain
+   {:id :receipt-flow}
+   [(work/step
+     :increment
+     (fn [input context]
+       (inc input)))
+    (work/step
+     :double
+     (fn [input context]
+       (* input 2)))]))
+
+(defn receipt-by-kind
+  [entries kind]
+  (reduce
+   (fn [found entry]
+     (if (and (nil? found)
+              (= kind (:outbox/kind entry)))
+       entry
+       found))
+   nil
+   entries))
+
+(defn contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= value candidate)))
+   false
+   (or values [])))
+
+(defn fake-provider
+  [provider-id state fail-first-create?]
+  {:provider/role :work/receipt
+   :provider/id provider-id
+   :provider/capabilities #{:idempotent :retryable}
+   :provider/retry {:maximum-attempts 2}
+   :provider/operations
+   {:publish
+    (fn [envelope]
+      (let [id (:receipt/id envelope)
+            current (deref state)
+            existing (get-in current [:payloads id])
+            attempt (inc (or (get-in current [:attempts id]) 0))]
+        (if (and existing (not= existing envelope))
+          (throw
+           (ex-info "fake publisher idempotency conflict"
+                    {:receipt/id id})))
+        (swap!
+         state
+         (fn [data]
+           (assoc-in
+            (assoc-in data [:payloads id] envelope)
+            [:attempts id]
+            attempt)))
+        (if (and fail-first-create?
+                 (= :ignatius/work-create (:receipt/kind envelope))
+                 (= 1 attempt))
+          (throw (ex-info "transient fake publisher outage"
+                          {:receipt/id id}))
+          (do
+            (swap!
+             state
+             (fn [data]
+               (if (contains-value? (:published data) id)
+                 data
+                 (assoc data
+                        :published
+                        (conj (vec (or (:published data) [])) id)))))
+            {:receipt/status :published
+             :provider/receipt-root [:fake/receipt id]}))))}}
+
+(def disabled-runtime (work/durable-runtime))
+(def disabled-reference
+  (work/start disabled-runtime
+              receipt-work
+              3
+              {:id "disabled-receipts"}))
+(def disabled-receipts
+  (work/receipts disabled-runtime disabled-reference))
+
+(def retry-state (atom {:attempts {} :payloads {} :published []}))
+(def retry-runtime
+  (work/durable-runtime
+   {:receipt (fake-provider :fake-retry retry-state true)}))
+(def retry-reference
+  (work/start retry-runtime
+              receipt-work
+              3
+              {:id "retry-receipts"}))
+(def retry-before (work/receipts retry-runtime retry-reference))
+(def retry-first-publication
+  (work/publish-receipts! retry-runtime retry-reference))
+(def retry-after (work/receipts retry-runtime retry-reference))
+(def retry-second-publication
+  (work/publish-receipts! retry-runtime retry-reference))
+(def retry-create
+  (receipt-by-kind retry-after :ignatius/work-create))
+
+(def restart-store (memory/memory-store))
+(def restart-ready (atom false))
+
+(defn restart-provider
+  []
+  {:provider/role :work/receipt
+   :provider/id :fake-restart
+   :provider/capabilities #{:retryable}
+   :provider/retry {:maximum-attempts 1}
+   :provider/operations
+   {:publish
+    (fn [envelope]
+      (if (deref restart-ready)
+        {:receipt/status :published
+         :provider/receipt-root
+         [:restart/receipt (:receipt/id envelope)]}
+        (throw
+         (ex-info "publisher process unavailable"
+                  {:receipt/id (:receipt/id envelope)}))))}})
+
+(def restart-runtime-one
+  (work/durable-runtime
+   {:store restart-store
+    :receipt (restart-provider)}))
+(def restart-reference
+  (work/start restart-runtime-one
+              receipt-work
+              4
+              {:id "restart-receipts"}))
+(def restart-first-publication
+  (work/publish-receipts! restart-runtime-one restart-reference))
+(def restart-status-before
+  (work/receipt-status restart-runtime-one restart-reference))
+
+(reset! restart-ready true)
+
+(def restart-runtime-two
+  (work/durable-runtime
+   {:store restart-store
+    :receipt (restart-provider)}))
+(def restart-second-publication
+  (work/publish-receipts! restart-runtime-two restart-reference))
+(def restart-status-after
+  (work/receipt-status restart-runtime-two restart-reference))
+
+(def rejected-runtime
+  (work/durable-runtime
+   {:receipt
+    {:provider/role :work/receipt
+     :provider/id :fake-rejected
+     :provider/capabilities #{:idempotent}
+     :provider/operations
+     {:publish
+      (fn [envelope]
+        {:receipt/status :rejected
+         :receipt/reason "stale canonical action"})}}}))
+(def rejected-reference
+  (work/start rejected-runtime
+              receipt-work
+              5
+              {:id "rejected-receipts"}))
+(def rejected-publication
+  (work/publish-receipts! rejected-runtime rejected-reference))
+(def rejected-receipts
+  (work/receipts rejected-runtime rejected-reference))
+
+(def ignatius-attributes
+  {:workspace/id "workspace-1"
+   :work/kind :code/change
+   :work/title "Build receipt fixture"
+   :work/definition-root "definition/root"
+   :work/dependency-ids ["work/base"]
+   :work/input-references ["input/ref"]
+   :work/output-references ["output/ref"]
+   :work/result-root "result/root"
+   :work/receipt-root "receipt/root"
+   :work/resource-actions
+   [{:resource/id "git/example/refs/heads/main"
+     :resource/kind :git/commit
+     :resource/provider :git
+     :resource/version "commit-1"}]})
+
+(def ignatius-runtime (work/durable-runtime))
+(def ignatius-reference
+  (work/start ignatius-runtime
+              receipt-work
+              6
+              {:id "ignatius-fixture"
+               :attributes ignatius-attributes}))
+(def ignatius-receipts
+  (work/receipts ignatius-runtime ignatius-reference))
+(def ignatius-options
+  {:workspace/id "workspace-1"
+   :signer "agent-1"
+   :root-of (fn [value] [:fixture/root value])})
+
+(def create-receipt
+  (:outbox/payload
+   (receipt-by-kind ignatius-receipts :ignatius/work-create)))
+(def start-receipt
+  (:outbox/payload
+   (receipt-by-kind ignatius-receipts :ignatius/work-start)))
+(def checkpoint-receipt
+  (:outbox/payload
+   (receipt-by-kind ignatius-receipts :ignatius/work-checkpoint)))
+(def complete-receipt
+  (:outbox/payload
+   (receipt-by-kind ignatius-receipts :ignatius/work-complete)))
+
+(def create-actions
+  (ignatius/actions-for ignatius-options create-receipt))
+(def start-actions
+  (ignatius/actions-for ignatius-options start-receipt))
+(def checkpoint-actions
+  (ignatius/actions-for ignatius-options checkpoint-receipt))
+(def complete-actions
+  (ignatius/actions-for ignatius-options complete-receipt))
+
+(def expected-create-actions
+  [{:action :work/create
+    :workspace/id "workspace-1"
+    :work/id "ignatius-fixture"
+    :signer "agent-1"
+    :work/kind :code/change
+    :work/title "Build receipt fixture"
+    :work/definition-root "definition/root"
+    :work/dependency-ids ["work/base"]
+    :work/input-references ["input/ref"]
+    :work/metadata
+    {:std.work/receipt-id (:receipt/id create-receipt)
+     :std.work/run-revision (:receipt/run-revision create-receipt)
+     :std.work/work-root :receipt-flow
+     :std.work/work-version 1}}])
+
+(def expected-start-actions
+  [{:action :work/claim
+    :workspace/id "workspace-1"
+    :work/id "ignatius-fixture"
+    :signer "agent-1"}
+   {:action :work/start
+    :workspace/id "workspace-1"
+    :work/id "ignatius-fixture"
+    :signer "agent-1"}])
+
+(def checkpoint-evidence (:receipt/evidence checkpoint-receipt))
+(def expected-checkpoint-actions
+  [{:action :work/checkpoint
+    :workspace/id "workspace-1"
+    :work/id "ignatius-fixture"
+    :signer "agent-1"
+    :checkpoint/id (:checkpoint/key checkpoint-evidence)
+    :checkpoint/state-root
+    [:fixture/root (:checkpoint/result checkpoint-evidence)]
+    :checkpoint/resource-references []
+    :checkpoint/receipt-root
+    [:fixture/root checkpoint-receipt]
+    :checkpoint/metadata
+    {:node/path (:checkpoint/node-path checkpoint-evidence)
+     :item/id (:checkpoint/item-id checkpoint-evidence)
+     :std.work/receipt-id (:receipt/id checkpoint-receipt)}}])
+
+(def expected-complete-actions
+  [{:action :resource/register
+    :workspace/id "workspace-1"
+    :process/id "ignatius-fixture"
+    :signer "agent-1"
+    :resource/id "git/example/refs/heads/main"
+    :resource/kind :git/commit
+    :resource/provider :git
+    :resource/version "commit-1"}
+   {:action :work/complete
+    :workspace/id "workspace-1"
+    :work/id "ignatius-fixture"
+    :signer "agent-1"
+    :work/output-references ["output/ref"]
+    :work/result-root "result/root"
+    :work/receipt-root "receipt/root"}])
+
+(def ignatius-submit-state (atom []))
+(def ignatius-provider
+  (work/ignatius-receipt-provider
+   {:workspace/id "workspace-1"
+    :signer "agent-1"
+    :root-of (fn [value] [:submit/root value])
+    :submit
+    (fn [submission]
+      (swap! ignatius-submit-state conj submission)
+      {:receipt/status :published
+       :provider/receipt-root
+       [:ignatius/receipt (:idempotency-key submission)]})}))
+(def ignatius-provider-runtime
+  (work/durable-runtime {:receipt ignatius-provider}))
+(def ignatius-provider-reference
+  (work/start ignatius-provider-runtime
+              receipt-work
+              7
+              {:id "ignatius-provider"
+               :attributes ignatius-attributes}))
+(def ignatius-provider-result
+  (work/result ignatius-provider-runtime ignatius-provider-reference))
+(def ignatius-provider-publication
+  (work/publish-receipts! ignatius-provider-runtime
+                          ignatius-provider-reference))
+
+(defn all-rejected?
+  [entries]
+  (reduce
+   (fn [valid entry]
+     (and valid
+          (= :rejected (:receipt/status entry))
+          (= "stale canonical action"
+             (get-in entry [:outbox/ack :receipt/reason]))))
+   true
+   entries))
+
+(def results
+  [(test/check
+    "durable execution commits provider-neutral receipt intents while publication is disabled"
+    [(work/result disabled-runtime disabled-reference)
+     (vec (map (fn [entry] (:outbox/kind entry)) disabled-receipts))
+     (work/receipt-status disabled-runtime disabled-reference)]
+    [8
+     [:ignatius/work-create
+      :ignatius/work-start
+      :ignatius/work-checkpoint
+      :ignatius/work-checkpoint
+      :ignatius/work-complete]
+     :pending])
+
+   (test/check
+    "the fake publisher retries once, publishes idempotently, and does not redeliver acknowledgements"
+    [(work/result retry-runtime retry-reference)
+     (count retry-before)
+     (count retry-first-publication)
+     (count retry-second-publication)
+     (count (:published (deref retry-state)))
+     (count (keys (:payloads (deref retry-state))))
+     (get-in (deref retry-state)
+             [:attempts (:receipt/id (:outbox/payload retry-create))])
+     (work/receipt-status retry-runtime retry-reference)
+     (:run/receipt-status
+      (work/run-record retry-runtime retry-reference))]
+    [8 5 5 0 5 5 2 :published :published])
+
+   (test/check
+    "claimed pending receipts survive a publisher process restart"
+    [(count restart-first-publication)
+     restart-status-before
+     (count restart-second-publication)
+     restart-status-after
+     (work/result restart-runtime-two restart-reference)]
+    [5 :pending 5 :published 10])
+
+   (test/check
+    "canonical rejection keeps the operational receipt and exact reason"
+    [(count rejected-publication)
+     (work/receipt-status rejected-runtime rejected-reference)
+     (all-rejected? rejected-receipts)
+     (:run/receipt-status
+      (work/run-record rejected-runtime rejected-reference))]
+    [5 :rejected true :rejected])
+
+   (test/check
+    "Ignatius fixtures map exact create, claim/start, checkpoint, resources, and completion actions"
+    [create-actions
+     start-actions
+     checkpoint-actions
+     complete-actions]
+    [expected-create-actions
+     expected-start-actions
+     expected-checkpoint-actions
+     expected-complete-actions])
+
+   (test/check
+    "the same work definition executes with disabled, fake, and Ignatius receipt providers"
+    [(work/result disabled-runtime disabled-reference)
+     (work/result retry-runtime retry-reference)
+     ignatius-provider-result
+     (count ignatius-provider-publication)
+     (count (deref ignatius-submit-state))
+     (work/receipt-status ignatius-provider-runtime
+                          ignatius-provider-reference)]
+    [8 8 16 5 5 :published])])
+
+(test/print-results results)
