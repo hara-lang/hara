@@ -31,28 +31,53 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Make raw ABI teardown explicitly disposal-owned
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('core/rust/observation-raw/src/lib.rs')
+          source = path.read_text()
+          marker = '''impl Drop for ObservationRuntime {
+              fn drop(&mut self) {
+                  // The raw ABI is module-lifetime and exposes explicit dispose APIs.
+                  // TLS destruction order is not stable relative to Hara registry TLS,
+                  // so an undisposed session must not re-enter a destroyed registry.
+                  let sessions = std::mem::take(&mut self.sessions);
+                  std::mem::forget(sessions);
+              }
+          }
+          '''
+          if marker not in source:
+              needle = '}\n\nthread_local! {'
+              if source.count(needle) != 1:
+                  raise SystemExit('unable to locate the observation runtime boundary')
+              source = source.replace(needle, f'}}\n\n{marker}\nthread_local! {{', 1)
+              path.write_text(source)
+          PY
+
       - name: Refresh the Core Rust lock
         run: cargo generate-lockfile --manifest-path core/rust/Cargo.toml
 
       - name: Validate the release surfaces and observation runtime
         run: |
           git diff --check
-          test "$(git diff --name-only)" = "core/rust/Cargo.lock"
+          test "$(git diff --name-only)" = $'core/rust/Cargo.lock\ncore/rust/observation-raw/src/lib.rs'
           node packaging/scripts/check-release-version.mjs 0.1.5
           cargo build --locked --release --manifest-path core/rust/Cargo.toml --bin hara
           cargo test --manifest-path core/rust/observation-raw/Cargo.toml
           node --test core/rust/web/bytecode-observation.test.mjs
 
-      - name: Commit the validated Core lock
+      - name: Commit the validated release repair
         run: |
-          if git diff --quiet -- core/rust/Cargo.lock; then
-            echo 'The Core Rust lock already matches Hara 0.1.5.'
+          if git diff --quiet -- core/rust/Cargo.lock core/rust/observation-raw/src/lib.rs; then
+            echo 'The Hara 0.1.5 release tree is already reconciled.'
             exit 0
           fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add core/rust/Cargo.lock
-          git commit -m 'Refresh the Core Rust lock for 0.1.5'
+          git add core/rust/Cargo.lock core/rust/observation-raw/src/lib.rs
+          git commit -m 'Reconcile the Hara 0.1.5 observation release'
           git fetch origin ${{ github.event.pull_request.head.ref }}
           git rebase origin/${{ github.event.pull_request.head.ref }}
           git push origin HEAD:${{ github.event.pull_request.head.ref }}
