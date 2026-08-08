@@ -1,4 +1,8 @@
-(ns std.work.runtime.receipt)
+(ns std.work.runtime.receipt
+  (:require [std.work.runtime.base :as base]
+            [std.work.runtime.store :as store]))
+
+(def protocol-version "hara.work.receipt/1")
 
 (defn disabled-provider
   []
@@ -10,6 +14,10 @@
 (defn provider-operations
   [provider]
   (or (:provider/operations provider) {}))
+
+(defn provider-id
+  [provider]
+  (or (:provider/id provider) :receipt))
 
 (defn assert-role!
   [provider]
@@ -38,6 +46,7 @@
     {:provider/role :work/receipt
      :provider/id (or (:provider/id provider) :legacy-receipt)
      :provider/capabilities (or (:provider/capabilities provider) #{})
+     :provider/retry (or (:provider/retry provider) {})
      :provider/operations provider
      :provider/legacy provider}
 
@@ -45,6 +54,448 @@
     (throw
      (ex-info "Work receipt provider must be a descriptor or operation map"
               {:provider provider}))))
+
+(defn append-values
+  [output values]
+  (reduce
+   (fn [items value]
+     (conj items value))
+   output
+   (or values [])))
+
+(defn canonical-run-updates
+  [changes]
+  (let [updates (or (:transition/run-updates changes) {})]
+    (if (has? updates :run/status)
+      (assoc updates :run/execution-status (:run/status updates))
+      updates)))
+
+(defn transition-run
+  [run changes]
+  (assoc
+   (merge run (canonical-run-updates changes))
+   :run/revision (inc (or (:run/revision run) 0))
+   :run/receipt-status :pending))
+
+(defn selected-run
+  [run]
+  {:run/id (:run/id run)
+   :run/revision (:run/revision run)
+   :run/status (:run/status run)
+   :run/execution-status (:run/execution-status run)
+   :run/receipt-status (:run/receipt-status run)
+   :run/acceptance-status (:run/acceptance-status run)
+   :run/work-root (:run/work-root run)
+   :run/work-version (:run/work-version run)
+   :run/runtime-version (:run/runtime-version run)
+   :run/schema-version (:run/schema-version run)
+   :run/input (:run/input run)
+   :run/result (:run/result run)
+   :run/error (:run/error run)
+   :run/attributes (or (:run/attributes run) {})})
+
+(defn find-event
+  [events event]
+  (reduce
+   (fn [found record]
+     (if (and (nil? found)
+              (= event (:event record)))
+       record
+       found))
+   nil
+   (or events [])))
+
+(defn receipt-id
+  [run revision kind identity]
+  [protocol-version
+   (:run/id run)
+   revision
+   kind
+   identity])
+
+(defn evidence-node-path
+  [evidence]
+  (or (:checkpoint/node-path evidence)
+      (:node/path evidence)))
+
+(defn evidence-item-id
+  [evidence]
+  (or (:checkpoint/item-id evidence)
+      (:item/id evidence)))
+
+(defn payload-root
+  [kind run evidence id]
+  (let [attributes (or (:run/attributes run) {})]
+    (or (:receipt/payload-root evidence)
+        (:checkpoint/state-root evidence)
+        (:checkpoint/result-root evidence)
+        (cond
+          (= kind :ignatius/work-create)
+          (or (:work/input-root attributes)
+              (:input/root attributes))
+
+          (= kind :ignatius/work-checkpoint)
+          (or (:work/checkpoint-root attributes)
+              (:checkpoint/root attributes))
+
+          (= kind :ignatius/work-complete)
+          (or (:work/receipt-root attributes)
+              (:work/result-root attributes)
+              (:result/root attributes))
+
+          (= kind :ignatius/work-cancel)
+          (:work/cancellation-root attributes)
+
+          :else
+          (:work/execution-root attributes))
+        id)))
+
+(defn provenance
+  [run evidence]
+  (let [attributes (or (:run/attributes run) {})]
+    {:executor/identity
+     (or (:executor/identity attributes)
+         (:agent/identity attributes))
+     :capability/evidence
+     (or (:capability/evidence evidence)
+         (:capability/evidence attributes))
+     :effect/evidence
+     (or (:effect/evidence evidence)
+         (:effect/evidence attributes))
+     :node/path (evidence-node-path evidence)
+     :item/id (evidence-item-id evidence)}))
+
+(defn envelope
+  [run revision kind identity evidence]
+  (let [id (receipt-id run revision kind identity)]
+    {:receipt/protocol protocol-version
+     :receipt/id id
+     :receipt/kind kind
+     :receipt/run-id (:run/id run)
+     :receipt/run-revision revision
+     :receipt/work-root (:run/work-root run)
+     :receipt/work-version (:run/work-version run)
+     :receipt/runtime-version (:run/runtime-version run)
+     :receipt/schema-version (:run/schema-version run)
+     :receipt/payload-root (payload-root kind run evidence id)
+     :receipt/run (selected-run run)
+     :receipt/evidence evidence
+     :receipt/provenance (provenance run evidence)}))
+
+(defn outbox-entry
+  [receipt]
+  {:outbox/id (:receipt/id receipt)
+   :outbox/key (:receipt/id receipt)
+   :outbox/topic :work/receipt
+   :outbox/kind (:receipt/kind receipt)
+   :outbox/run-id (:receipt/run-id receipt)
+   :outbox/run-revision (:receipt/run-revision receipt)
+   :outbox/payload-root (:receipt/payload-root receipt)
+   :outbox/payload receipt
+   :outbox/status :pending
+   :outbox/attempts 0})
+
+(defn transition-receipts
+  [run changes]
+  (let [target (transition-run run changes)
+        revision (:run/revision target)
+        events (or (:transition/events changes) [])
+        started (find-event events :work/run-started)
+        cancelled (find-event events :work/run-cancel-requested)
+        completed (find-event events :work/run-completed)
+        output []
+        output
+        (if started
+          (let [output
+                (if (= :created (:run/status run))
+                  (conj
+                   output
+                   (outbox-entry
+                    (envelope target
+                              revision
+                              :ignatius/work-create
+                              :run-created
+                              started)))
+                  output)]
+            (conj
+             output
+             (outbox-entry
+              (envelope target
+                        revision
+                        :ignatius/work-start
+                        :run-started
+                        started))))
+          output)
+        output
+        (reduce
+         (fn [items checkpoint]
+           (conj
+            items
+            (outbox-entry
+             (envelope target
+                       revision
+                       :ignatius/work-checkpoint
+                       (:checkpoint/key checkpoint)
+                       checkpoint))))
+         output
+         (or (:transition/checkpoints changes) []))
+        output
+        (if cancelled
+          (conj
+           output
+           (outbox-entry
+            (envelope target
+                      revision
+                      :ignatius/work-cancel
+                      :run-cancelled
+                      cancelled)))
+          output)]
+    (if completed
+      (conj
+       output
+       (outbox-entry
+        (envelope target
+                  revision
+                  :ignatius/work-complete
+                  :run-completed
+                  completed)))
+      output)))
+
+(defn transition-outbox
+  [run changes]
+  (append-values
+   (vec (or (:transition/outbox changes) []))
+   (transition-receipts run changes)))
+
+(defn receipt-entry?
+  [entry]
+  (= :work/receipt (:outbox/topic entry)))
+
+(defn entry-status
+  [entry]
+  (if (= :acked (:outbox/status entry))
+    (or (get-in entry [:outbox/ack :receipt/status])
+        :published)
+    :pending))
+
+(defn entry-view
+  [entry]
+  (assoc entry :receipt/status (entry-status entry)))
+
+(defn entries
+  [runtime reference]
+  (let [run-id (if (nil? reference)
+                 nil
+                 (base/reference-id reference))
+        query (if run-id {:run/id run-id} {})
+        values
+        (store/call (base/runtime-store runtime)
+                    :list-outbox
+                    query)]
+    (vec
+     (map entry-view
+          (filter receipt-entry? values)))))
+
+(defn any-status?
+  [values status]
+  (reduce
+   (fn [found value]
+     (or found (= status (:receipt/status value))))
+   false
+   values))
+
+(defn all-status?
+  [values status]
+  (reduce
+   (fn [valid value]
+     (and valid (= status (:receipt/status value))))
+   true
+   values))
+
+(defn aggregate-status
+  [values]
+  (let [values (vec values)]
+    (cond
+      (empty? values)
+      :pending
+
+      (any-status? values :rejected)
+      :rejected
+
+      (all-status? values :published)
+      :published
+
+      :else
+      :pending)))
+
+(defn status
+  [runtime reference]
+  (aggregate-status (entries runtime reference)))
+
+(defn positive-attempts
+  [value]
+  (if (and value (> value 0))
+    value
+    1))
+
+(defn maximum-attempts
+  [provider options]
+  (positive-attempts
+   (or (:maximum-attempts options)
+       (get-in provider [:provider/retry :maximum-attempts])
+       (get-in provider [:provider/retry :maximum])
+       1)))
+
+(defn normalize-outcome
+  [result]
+  (let [status
+        (if (map? result)
+          (or (:receipt/status result)
+              (:status result))
+          nil)]
+    (cond
+      (= status :rejected)
+      (merge {:receipt/status :rejected} result)
+
+      (or (= status :retry)
+          (= status :pending)
+          (= status :failed))
+      (merge {:receipt/status :retry} result)
+
+      :else
+      {:receipt/status :published
+       :provider/result result
+       :provider/receipt-root
+       (if (map? result)
+         (or (:provider/receipt-root result)
+             (:receipt/root result)
+             (:root result))
+         nil)})))
+
+(defn attempt-once
+  [function receipt attempt]
+  (try
+    (assoc (normalize-outcome (function receipt))
+           :receipt/attempt attempt)
+    (catch Throwable error
+      {:receipt/status :retry
+       :receipt/attempt attempt
+       :receipt/reason (str error)})))
+
+(defn deliver
+  [provider receipt options]
+  (let [function (get (provider-operations provider) :publish)
+        maximum (maximum-attempts provider options)]
+    (if (nil? function)
+      {:receipt/status :pending
+       :receipt/attempts 0
+       :receipt/reason "Receipt publication is disabled"}
+      (loop [attempt 1]
+        (let [outcome (attempt-once function receipt attempt)]
+          (if (= :retry (:receipt/status outcome))
+            (if (< attempt maximum)
+              (recur (inc attempt))
+              (assoc outcome
+                     :receipt/status :pending
+                     :receipt/attempts attempt))
+            (assoc outcome :receipt/attempts attempt)))))))
+
+(defn ack-data
+  [provider outcome]
+  {:receipt/status (:receipt/status outcome)
+   :receipt/attempts (:receipt/attempts outcome)
+   :receipt/reason (or (:receipt/reason outcome)
+                       (:reason outcome))
+   :provider/id (provider-id provider)
+   :provider/result (:provider/result outcome)
+   :provider/receipt-root
+   (or (:provider/receipt-root outcome)
+       (:receipt/root outcome)
+       (:root outcome))})
+
+(defn acknowledge!
+  [runtime provider claim-id entry outcome]
+  (store/call
+   (base/runtime-store runtime)
+   :ack-outbox
+   (:outbox/id entry)
+   {:claim/id claim-id
+    :ack/data (ack-data provider outcome)}))
+
+(defn publish-entry!
+  [runtime provider claim-id entry options]
+  (let [outcome (deliver provider (:outbox/payload entry) options)
+        status (:receipt/status outcome)
+        report
+        (merge
+         {:outbox/id (:outbox/id entry)
+          :outbox/key (:outbox/key entry)
+          :outbox/kind (:outbox/kind entry)
+          :outbox/run-id (:outbox/run-id entry)}
+         outcome)]
+    (if (or (= status :published)
+            (= status :rejected))
+      (do
+        (acknowledge! runtime provider claim-id entry outcome)
+        report)
+      report)))
+
+(defn sync-run-status!
+  [runtime run-id]
+  (let [receipt-status (status runtime run-id)
+        run (store/call (base/runtime-store runtime) :load-run run-id)]
+    (if (and run
+             (not= :pending receipt-status)
+             (not= receipt-status (:run/receipt-status run)))
+      (store/transact-current!
+       (base/runtime-store runtime)
+       run-id
+       {:transition/run-updates
+        {:run/receipt-status receipt-status}}))
+    receipt-status))
+
+(defn publish-pending!
+  ([runtime]
+   (publish-pending! runtime nil {}))
+  ([runtime reference]
+   (publish-pending! runtime reference {}))
+  ([runtime reference options]
+   (let [provider (base/runtime-receipt runtime)
+         function (get (provider-operations provider) :publish)]
+     (if (nil? function)
+       []
+       (let [run-id (if (nil? reference)
+                      nil
+                      (base/reference-id reference))
+             claim-id
+             [protocol-version
+              (provider-id provider)
+              (or run-id :all)]
+             claimed
+             (store/call
+              (base/runtime-store runtime)
+              :claim-outbox
+              {:run/id run-id
+               :claim/id claim-id
+               :claim/data
+               {:provider/id (provider-id provider)
+                :outbox/topic :work/receipt}
+               :limit (or (:limit options) 100)})
+             receipt-entries
+             (vec (filter receipt-entry? claimed))
+             reports
+             (vec
+              (map
+               (fn [entry]
+                 (publish-entry! runtime
+                                 provider
+                                 claim-id
+                                 entry
+                                 options))
+               receipt-entries))]
+         (if run-id
+           (sync-run-status! runtime run-id))
+         reports)))))
 
 (defn record
   [frame event data]
@@ -56,9 +507,6 @@
    :receipt/data (or data {})})
 
 (defn publish
-  "Invokes a receipt provider after an operational store has made publication
-   intent durable. The coordinator does not call this directly in the
-   structural split; the outbox transition in the next slice owns that order."
   [provider receipt]
   (let [function (get (provider-operations provider) :publish)]
     (if function

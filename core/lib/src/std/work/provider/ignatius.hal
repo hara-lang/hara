@@ -1,0 +1,288 @@
+(ns std.work.provider.ignatius
+  (:require [std.work.runtime.receipt :as receipt]))
+
+(defn configured-value
+  [options envelope key fallback]
+  (or (get-in envelope [:receipt/run :run/attributes key])
+      (get options key)
+      fallback))
+
+(defn root-of
+  [options value]
+  (let [function (:root-of options)]
+    (if function
+      (function value)
+      nil)))
+
+(defn required
+  [value message data]
+  (if (nil? value)
+    (throw (ex-info message data)))
+  value)
+
+(defn common-action
+  [options envelope action]
+  {:action action
+   :workspace/id
+   (required
+    (or (:workspace/id options)
+        (get-in envelope [:receipt/run :run/attributes :workspace/id]))
+    "Ignatius receipt provider requires :workspace/id"
+    {:receipt/id (:receipt/id envelope)})
+   :work/id (:receipt/run-id envelope)
+   :signer
+   (required
+    (or (:signer options)
+        (get-in envelope
+                [:receipt/provenance :executor/identity]))
+    "Ignatius receipt provider requires :signer or executor identity"
+    {:receipt/id (:receipt/id envelope)})})
+
+(defn receipt-metadata
+  [envelope]
+  {:std.work/receipt-id (:receipt/id envelope)
+   :std.work/run-revision (:receipt/run-revision envelope)
+   :std.work/work-root (:receipt/work-root envelope)
+   :std.work/work-version (:receipt/work-version envelope)})
+
+(defn create-action
+  [options envelope]
+  (merge
+   (common-action options envelope :work/create)
+   {:work/kind
+    (configured-value options envelope :work/kind :process/work)
+    :work/title
+    (configured-value
+     options
+     envelope
+     :work/title
+     (str "Work " (:receipt/run-id envelope)))
+    :work/definition-root
+    (configured-value
+     options
+     envelope
+     :work/definition-root
+     [(:receipt/work-root envelope)
+      (:receipt/work-version envelope)])
+    :work/dependency-ids
+    (vec
+     (configured-value
+      options
+      envelope
+      :work/dependency-ids
+      []))
+    :work/input-references
+    (vec
+     (configured-value
+      options
+      envelope
+      :work/input-references
+      []))
+    :work/metadata
+    (merge
+     (configured-value
+      options
+      envelope
+      :work/metadata
+      {})
+     (receipt-metadata envelope))}))
+
+(defn start-actions
+  [options envelope]
+  (let [claim? (not= false (:claim-on-start? options))
+        start (common-action options envelope :work/start)]
+    (if claim?
+      [(common-action options envelope :work/claim)
+       start]
+      [start])))
+
+(defn checkpoint-action
+  [options envelope]
+  (let [checkpoint (:receipt/evidence envelope)
+        state-root
+        (or (:checkpoint/state-root checkpoint)
+            (:checkpoint/result-root checkpoint)
+            (configured-value
+             options
+             envelope
+             :checkpoint/state-root
+             nil)
+            (root-of options (:checkpoint/result checkpoint))
+            (root-of options checkpoint))]
+    (merge
+     (common-action options envelope :work/checkpoint)
+     {:checkpoint/id
+      (or (:checkpoint/id checkpoint)
+          (:checkpoint/key checkpoint))
+      :checkpoint/state-root
+      (required
+       state-root
+       "Ignatius checkpoint receipts require an exact state root"
+       {:receipt/id (:receipt/id envelope)
+        :checkpoint/key (:checkpoint/key checkpoint)})
+      :checkpoint/resource-references
+      (vec
+       (or (:checkpoint/resource-references checkpoint)
+           (configured-value
+            options
+            envelope
+            :checkpoint/resource-references
+            [])))
+      :checkpoint/receipt-root
+      (or (:checkpoint/receipt-root checkpoint)
+          (configured-value
+           options
+           envelope
+           :checkpoint/receipt-root
+           nil)
+          (root-of options envelope))
+      :checkpoint/metadata
+      (merge
+       (or (:checkpoint/metadata checkpoint) {})
+       {:node/path
+        (or (:checkpoint/node-path checkpoint)
+            (get-in envelope
+                    [:receipt/provenance :node/path]))
+        :item/id
+        (or (:checkpoint/item-id checkpoint)
+            (get-in envelope
+                    [:receipt/provenance :item/id]))
+        :std.work/receipt-id (:receipt/id envelope)})})))
+
+(defn normalise-resource-action
+  [options envelope action]
+  (merge
+   action
+   {:action :resource/register
+    :workspace/id
+    (:workspace/id (common-action options envelope :work/complete))
+    :process/id (:receipt/run-id envelope)
+    :signer
+    (:signer (common-action options envelope :work/complete))}))
+
+(defn complete-actions
+  [options envelope]
+  (let [run (:receipt/run envelope)
+        result (:run/result run)
+        resource-actions
+        (vec
+         (configured-value
+          options
+          envelope
+          :work/resource-actions
+          []))
+        result-root
+        (or (configured-value
+             options
+             envelope
+             :work/result-root
+             nil)
+            (root-of options result))
+        receipt-root
+        (or (configured-value
+             options
+             envelope
+             :work/receipt-root
+             nil)
+            (root-of options envelope))
+        complete
+        (merge
+         (common-action options envelope :work/complete)
+         {:work/output-references
+          (vec
+           (configured-value
+            options
+            envelope
+            :work/output-references
+            []))
+          :work/result-root
+          (required
+           result-root
+           "Ignatius completion receipts require an exact result root"
+           {:receipt/id (:receipt/id envelope)})
+          :work/receipt-root
+          (required
+           receipt-root
+           "Ignatius completion receipts require an execution receipt root"
+           {:receipt/id (:receipt/id envelope)})})]
+    (conj
+     (reduce
+      (fn [actions action]
+        (conj
+         actions
+         (normalise-resource-action options envelope action)))
+      []
+      resource-actions)
+     complete)))
+
+(defn actions-for
+  [options envelope]
+  (let [kind (:receipt/kind envelope)]
+    (cond
+      (= kind :ignatius/work-create)
+      [(create-action options envelope)]
+
+      (= kind :ignatius/work-start)
+      (start-actions options envelope)
+
+      (= kind :ignatius/work-checkpoint)
+      [(checkpoint-action options envelope)]
+
+      (= kind :ignatius/work-complete)
+      (complete-actions options envelope)
+
+      (= kind :ignatius/work-cancel)
+      (throw
+       (ex-info
+        "Ignatius canonical workflow cancellation is not available yet"
+        {:receipt/id (:receipt/id envelope)
+         :receipt/kind kind}))
+
+      :else
+      (throw
+       (ex-info "Receipt kind is not supported by the Ignatius adapter"
+                {:receipt/id (:receipt/id envelope)
+                 :receipt/kind kind})))))
+
+(defn mapping-result
+  [options envelope]
+  (try
+    {:mapping/status :mapped
+     :mapping/actions (actions-for options envelope)}
+    (catch Throwable error
+      {:mapping/status :rejected
+       :mapping/reason (str error)})))
+
+(defn publish-envelope
+  [options envelope]
+  (let [mapping (mapping-result options envelope)]
+    (if (= :rejected (:mapping/status mapping))
+      {:receipt/status :rejected
+       :receipt/reason (:mapping/reason mapping)}
+      (let [submit
+            (required
+             (:submit options)
+             "Ignatius receipt provider requires :submit"
+             {:receipt/id (:receipt/id envelope)})]
+        (submit
+         {:idempotency-key (:receipt/id envelope)
+          :receipt envelope
+          :actions (:mapping/actions mapping)})))))
+
+(defn ignatius-provider
+  [options]
+  (let [options (or options {})]
+    (receipt/normalise-provider
+     {:provider/role :work/receipt
+      :provider/id (or (:provider/id options) :ignatius)
+      :provider/capabilities
+      #{:canonical-evidence :idempotent :retryable}
+      :provider/retry
+      (or (:retry options)
+          (:provider/retry options)
+          {:maximum-attempts 3})
+      :provider/config options
+      :provider/operations
+      {:publish
+       (fn [envelope]
+         (publish-envelope options envelope))}})))
