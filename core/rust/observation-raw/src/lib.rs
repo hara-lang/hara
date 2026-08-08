@@ -1,40 +1,50 @@
-mod core {
-    pub use hara_wasm::core::*;
-
-    pub fn map_entries(value: &Value) -> Option<Vec<(Value, Value)>> {
-        match value {
-            Value::Map(values) => Some(
-                values
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            ),
-            Value::OrderedMap(values) => Some(
-                values
-                    .iter()
-                    .map(|(key, value)| (key.clone(), value.clone()))
-                    .collect(),
-            ),
-            _ => None,
-        }
-    }
-}
-
-mod lang {
-    pub use hara_wasm::lang::*;
-}
-
+#[path = "../../src/core.rs"]
+mod core;
+#[path = "../../src/hta.rs"]
+mod hta;
 #[path = "../../src/json.rs"]
 mod json;
+#[path = "../../src/kernel.rs"]
+mod kernel;
+#[path = "../../src/lang.rs"]
+mod lang;
+#[path = "../../src/snapshot.rs"]
+mod snapshot;
+#[path = "../../src/task.rs"]
+mod task;
+mod vm;
 
 use core::Value;
-use hara_wasm::task::{PromiseRejection, PromiseState};
-use hara_wasm::vm::machine::observation::ObservationLimits;
-use hara_wasm::vm::session::{
-    BytecodeObservationSession, BytecodeSessionError, SessionRetentionLimits,
-};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use task::{PromiseRejection, PromiseState};
+use vm::machine::observation::ObservationLimits;
+use vm::session::{BytecodeObservationSession, BytecodeSessionError, SessionRetentionLimits};
+
+pub fn embedding_namespace_registry() -> kernel::NamespaceRegistry<Value> {
+    let namespaces = kernel::NamespaceRegistry::new("user");
+    let foundation = namespaces.find_or_create("std.foundation");
+    for (name, value) in core::exception_function_values() {
+        foundation.intern(name, value);
+    }
+    for (name, protocol) in core::foundation_protocol_values() {
+        foundation.intern(&name, protocol.clone());
+        namespaces
+            .find_or_create(core::builtin_protocol_namespace(&name))
+            .intern(name, protocol);
+    }
+    for (namespace, name, method) in core::builtin_protocol_method_values() {
+        namespaces.find_or_create(namespace).intern(name, method);
+    }
+    for (name, descriptor) in core::native_type_values() {
+        let canonical_name = format!("std.native.{name}");
+        let var = foundation.intern(&canonical_name, descriptor);
+        foundation.map_var(lang::data::Symbol::parse(&name), var);
+        namespaces.find_or_create(canonical_name);
+    }
+    core::refer_startup_defaults(&namespaces, "user");
+    namespaces
+}
 
 const ABI_VERSION: i32 = 1;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -87,12 +97,9 @@ impl ObservationRuntime {
                 let session_id = required_string(request, "sessionId")?;
                 let source_id = required_string(request, "sourceId")?;
                 let source = required_string(request, "source")?;
-                let session = BytecodeObservationSession::compile_named(
-                    session_id,
-                    source_id,
-                    source,
-                )
-                .map_err(session_error)?;
+                let session =
+                    BytecodeObservationSession::compile_named(session_id, source_id, source)
+                        .map_err(session_error)?;
                 self.insert(session)
             }
             "from-artifact" => {
@@ -100,9 +107,7 @@ impl ObservationRuntime {
                 let source_id = required_string(request, "sourceId")?;
                 let artifact = required_bytes(request, "artifact")?;
                 let session = BytecodeObservationSession::from_artifact_named(
-                    session_id,
-                    source_id,
-                    &artifact,
+                    session_id, source_id, &artifact,
                 )
                 .map_err(session_error)?;
                 self.insert(session)
@@ -189,11 +194,7 @@ impl ObservationRuntime {
                     locals: bounded_usize(request, "locals", MAX_SNAPSHOT_ITEMS)?,
                     calls: bounded_usize(request, "calls", MAX_SNAPSHOT_ITEMS)?,
                     handlers: bounded_usize(request, "handlers", MAX_SNAPSHOT_ITEMS)?,
-                    display_chars: bounded_usize(
-                        request,
-                        "displayChars",
-                        MAX_DISPLAY_CHARS,
-                    )?,
+                    display_chars: bounded_usize(request, "displayChars", MAX_DISPLAY_CHARS)?,
                 };
                 let session = self.session_mut(handle)?;
                 session.set_observation_limits(limits);
@@ -270,7 +271,7 @@ pub extern "C" fn observation_invoke(pointer: *const u8, size: usize) -> u64 {
         match std::str::from_utf8(bytes) {
             Ok(source) => invoke_json(source),
             Err(_) => encode_response(Err(
-                "bytecode observation request must be valid UTF-8".into(),
+                "bytecode observation request must be valid UTF-8".into()
             )),
         }
     };
@@ -327,7 +328,10 @@ fn session_info(handle: u64, session: &BytecodeObservationSession) -> Value {
         ("sessionId", Value::String(session.session_id().to_owned())),
         ("sourceId", Value::String(session.source_id().to_owned())),
         ("traceId", Value::String(session.trace_id().to_owned())),
-        ("status", Value::String(session.status().as_keyword().into())),
+        (
+            "status",
+            Value::String(session.status().as_keyword().into()),
+        ),
         ("sequence", Value::Number(safe_i64(session.sequence()))),
     ])
 }
@@ -398,11 +402,13 @@ fn bounded_usize(request: &Value, name: &str, maximum: usize) -> Result<usize, S
 }
 
 fn field(value: &Value, name: &str) -> Option<Value> {
-    core::map_entries(value)?.iter().find_map(|(key, value)| match key {
-        Value::String(key) if key == name => Some(value.clone()),
-        Value::Keyword(key) if key.as_str() == name => Some(value.clone()),
-        _ => None,
-    })
+    core::map_entries(value)?
+        .iter()
+        .find_map(|(key, value)| match key {
+            Value::String(key) if key == name => Some(value.clone()),
+            Value::Keyword(key) if key.as_str() == name => Some(value.clone()),
+            _ => None,
+        })
 }
 
 fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
@@ -479,17 +485,13 @@ mod tests {
             )),
             Value::String("7".into())
         );
-        let metrics = invoke(&format!(
-            "{{\"op\":\"metrics\",\"handle\":{handle}}}"
-        ));
+        let metrics = invoke(&format!("{{\"op\":\"metrics\",\"handle\":{handle}}}"));
         assert_eq!(
             field(&metrics, "schema"),
             Some(Value::String("hal.bytecode-metrics/v1".into()))
         );
         assert!(matches!(field(&metrics, "instructions"), Some(Value::Number(value)) if value > 0));
-        let events = invoke(&format!(
-            "{{\"op\":\"events\",\"handle\":{handle}}}"
-        ));
+        let events = invoke(&format!("{{\"op\":\"events\",\"handle\":{handle}}}"));
         assert_eq!(
             field(&events, "schema"),
             Some(Value::String("hal.bytecode-events/v1".into()))
@@ -503,14 +505,10 @@ mod tests {
         );
         let handle = handle(&info);
         assert_eq!(
-            invoke(&format!(
-                "{{\"op\":\"dispose\",\"handle\":{handle}}}"
-            )),
+            invoke(&format!("{{\"op\":\"dispose\",\"handle\":{handle}}}")),
             Value::Bool(true)
         );
-        let bytes = invoke_json(&format!(
-            "{{\"op\":\"metrics\",\"handle\":{handle}}}"
-        ));
+        let bytes = invoke_json(&format!("{{\"op\":\"metrics\",\"handle\":{handle}}}"));
         let response = json::read(std::str::from_utf8(&bytes).unwrap()).unwrap();
         assert_eq!(field(&response, "ok"), Some(Value::Bool(false)));
         let error = field(&response, "error").unwrap();
