@@ -229,6 +229,16 @@ impl ObservationRuntime {
     }
 }
 
+impl Drop for ObservationRuntime {
+    fn drop(&mut self) {
+        // The raw ABI is module-lifetime and exposes explicit dispose APIs.
+        // TLS destruction order is not stable relative to Hara registry TLS,
+        // so an undisposed session must not re-enter a destroyed registry.
+        let sessions = std::mem::take(&mut self.sessions);
+        std::mem::forget(sessions);
+    }
+}
+
 thread_local! {
     static RUNTIME: RefCell<ObservationRuntime> = RefCell::new(ObservationRuntime::new());
 }

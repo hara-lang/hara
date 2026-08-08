@@ -15,6 +15,7 @@ const files = Object.fromEntries(await Promise.all([
   "core/rust/raw/Cargo.toml",
   "core/rust/compiler/Cargo.toml",
   "core/rust/vm-runtime/Cargo.toml",
+  "core/rust/observation-raw/Cargo.toml",
   "core/rust/Cargo.lock",
   ".github/studio-runtime-release.json",
   ".github/workflows/studio-runtime-ci.yml",
@@ -26,6 +27,8 @@ const files = Object.fromEntries(await Promise.all([
 
 assertEqual(packageVersion(files["core/rust/Cargo.toml"]), expected, "core/rust/Cargo.toml package");
 assertEqual(packageVersion(files["core/rust/raw/Cargo.toml"]), expected, "core/rust/raw/Cargo.toml package");
+assertEqual(packageVersion(files["core/rust/observation-raw/Cargo.toml"]), expected,
+  "core/rust/observation-raw/Cargo.toml package");
 assertEqual(dependencyVersion(files["core/rust/compiler/Cargo.toml"], "hara-wasm"), expected,
   "hara-compiler hara-wasm dependency");
 assertEqual(dependencyVersion(files["core/rust/vm-runtime/Cargo.toml"], "hara-wasm"), expected,
