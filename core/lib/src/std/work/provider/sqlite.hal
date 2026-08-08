@@ -1,0 +1,48 @@
+(ns std.work.provider.sqlite
+  (:require [std.db.sqlite :as sqlite]
+            [std.work.runtime.store :as store]))
+
+;; SQLite operational store provider.
+;;
+;; This is the durable local implementation of the std.work operational
+;; contract. The provider deliberately shares the same operation boundary as
+;; memory and future PostgreSQL providers. SQL schema details remain private to
+;; this provider.
+
+(def provider-id :sqlite)
+
+(defn connection
+  [value]
+  value)
+
+(defn capabilities
+  []
+  #{:runs
+    :transactions
+    :events
+    :checkpoints
+    :outbox})
+
+(defn describe
+  []
+  {:provider/role :work/store
+   :provider/id provider-id
+   :provider/capabilities (capabilities)})
+
+(defn open
+  ([]
+   (open {}))
+  ([options]
+   (sqlite/open options)))
+
+(defn normalise-provider
+  [operations]
+  (store/normalise-provider
+   {:provider/role :work/store
+    :provider/id provider-id
+    :provider/capabilities (capabilities)
+    :provider/operations operations}))
+
+;; The first implementation slice intentionally exposes the durable provider
+;; boundary. SQL-backed transition, checkpoint, event and outbox operations are
+;; added behind this descriptor and must satisfy the shared conformance corpus.
