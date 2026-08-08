@@ -1,0 +1,236 @@
+name: Apply observation raw archive repair
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'agent/fix-observation-raw-archive'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout pinned hara-www payload
+        uses: actions/checkout@v5
+        with:
+          repository: hara-lang/hara-www
+          ref: 3acd4ecfd024ef48320239751e89c80b81fd25d0
+          path: website/hara-www
+          fetch-depth: 1
+          submodules: recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+
+      - name: Split observation runtime from wasm-bindgen facade
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              target = Path(path)
+              source = target.read_text()
+              if new in source:
+                  return
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one patch target, found {count}")
+              target.write_text(source.replace(old, new, 1))
+
+          replace_once(
+              "core/rust/Cargo.toml",
+              'bytecode-observation = ["bytecode-vm"]\ntracing-jit = ["bytecode-vm"]',
+              'bytecode-observation = ["bytecode-vm"]\n# Shared VM source can be compiled into a plain-C Wasm facade without the\n# browser-only wasm-bindgen session wrapper. Normal hara-wasm builds keep it.\nraw-wasm = []\ntracing-jit = ["bytecode-vm"]',
+          )
+
+          session = Path("core/rust/src/vm/session.rs")
+          source = session.read_text()
+          source = source.replace(
+              '#[cfg(target_arch = "wasm32")]\n#[path = "session/browser.rs"]\nmod browser;',
+              '#[cfg(all(target_arch = "wasm32", not(feature = "raw-wasm")))]\n#[path = "session/browser.rs"]\nmod browser;',
+          )
+          source = source.replace(
+              '#[cfg(target_arch = "wasm32")]\npub use browser::BrowserBytecodeObservationSession;',
+              '#[cfg(all(target_arch = "wasm32", not(feature = "raw-wasm")))]\npub use browser::BrowserBytecodeObservationSession;',
+          )
+          if source.count('not(feature = "raw-wasm")') != 2:
+              raise SystemExit("core/rust/src/vm/session.rs: raw Wasm browser gate was not applied")
+          session.write_text(source)
+
+          manifest = Path("core/rust/observation-raw/Cargo.toml")
+          source = manifest.read_text()
+          old = '[dependencies]\nhara-wasm = { path = "..", default-features = false, features = ["bytecode-observation"] }\n'
+          new = '''[features]
+default = ["bytecode-observation", "raw-wasm"]
+evaluation-journal = []
+dev-trace = ["evaluation-journal"]
+halc-encoder = []
+hir-encoder = ["halc-encoder"]
+bytecode-vm = []
+bytecode-instrumentation = ["bytecode-vm"]
+bytecode-observation = ["bytecode-vm"]
+tracing-jit = ["bytecode-vm"]
+raw-wasm = []
+
+[dependencies]
+sha2 = "0.10"
+'''
+          if new not in source:
+              if old not in source:
+                  raise SystemExit("core/rust/observation-raw/Cargo.toml: dependency target is missing")
+              manifest.write_text(source.replace(old, new, 1))
+
+          lib = Path("core/rust/observation-raw/src/lib.rs")
+          source = lib.read_text()
+          marker = "const ABI_VERSION: i32 = 1;"
+          if marker not in source:
+              raise SystemExit("core/rust/observation-raw/src/lib.rs: ABI marker is missing")
+          prefix = '''#[path = "../../src/core.rs"]
+mod core;
+#[path = "../../src/hta.rs"]
+mod hta;
+#[path = "../../src/json.rs"]
+mod json;
+#[path = "../../src/kernel.rs"]
+mod kernel;
+#[path = "../../src/lang.rs"]
+mod lang;
+#[path = "../../src/snapshot.rs"]
+mod snapshot;
+#[path = "../../src/task.rs"]
+mod task;
+mod vm;
+
+use core::Value;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use task::{PromiseRejection, PromiseState};
+use vm::machine::observation::ObservationLimits;
+use vm::session::{
+    BytecodeObservationSession, BytecodeSessionError, SessionRetentionLimits,
+};
+
+'''
+          lib.write_text(prefix + source[source.index(marker):])
+
+          Path("core/rust/observation-raw/src/vm.rs").write_text('''//! Import-free bytecode VM facade for the standalone observation payload.
+//!
+//! This compiles the shared VM source directly, matching `hara-wasm-raw`, so
+//! the plain-C observation ABI does not inherit the browser wasm-bindgen API.
+
+#[path = "../../src/vm/artifact.rs"]
+pub mod artifact;
+#[path = "../../src/vm/compiler.rs"]
+pub mod compiler;
+#[path = "../../src/vm/error.rs"]
+pub mod error;
+#[path = "../../src/vm/fiber.rs"]
+pub mod fiber;
+#[path = "../../src/vm/frame.rs"]
+pub mod frame;
+#[path = "../../src/vm/machine.rs"]
+pub mod machine;
+#[path = "../../src/vm/opcode.rs"]
+pub mod opcode;
+#[path = "../../src/vm/program.rs"]
+pub mod program;
+#[path = "../../src/vm/session.rs"]
+pub mod session;
+#[path = "../../src/vm/slot.rs"]
+mod slot;
+#[path = "../../src/vm/source_map.rs"]
+pub mod source_map;
+#[path = "../../src/vm/validate.rs"]
+pub mod validate;
+
+pub use artifact::decode_program;
+pub use compiler::compile_source_with;
+pub use error::VmError;
+pub use machine::Machine;
+pub use program::Program;
+pub use validate::validate;
+''')
+
+          verifier = Path("packaging/scripts/verify-bytecode-observation-runtime.mjs")
+          source = verifier.read_text()
+          old = '''  const bytes = await readFile(join(root, wasmPath));
+  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const exports = instance.exports;
+'''
+          new = '''  const bytes = await readFile(join(root, wasmPath));
+  const module = await WebAssembly.compile(bytes);
+  const imports = WebAssembly.Module.imports(module);
+  if (imports.length !== 0) {
+    const rendered = imports
+      .map(({ module, name, kind }) => `${module}.${name}:${kind}`)
+      .join(", ");
+    throw new Error(`${wasmPath} unexpectedly imports host bindings: ${rendered}`);
+  }
+  const instance = await WebAssembly.instantiate(module, {});
+  const exports = instance.exports;
+'''
+          if new not in source:
+              if old not in source:
+                  raise SystemExit("verify-bytecode-observation-runtime.mjs: instantiate target is missing")
+              verifier.write_text(source.replace(old, new, 1))
+
+          workflow = Path(".github/workflows/studio-runtime-ci.yml")
+          source = workflow.read_text()
+          source = source.replace("actions/checkout@v4", "actions/checkout@v5")
+          source = source.replace("actions/setup-node@v4", "actions/setup-node@v5")
+          workflow.write_text(source)
+          PY
+
+          rustfmt \
+            core/rust/observation-raw/src/lib.rs \
+            core/rust/observation-raw/src/vm.rs \
+            core/rust/src/vm/session.rs
+          node --check packaging/scripts/verify-bytecode-observation-runtime.mjs
+          git diff --check
+
+      - name: Validate native and browser observation runtimes
+        run: |
+          cargo test --manifest-path core/rust/observation-raw/Cargo.toml
+          cargo build \
+            --manifest-path core/rust/observation-raw/Cargo.toml \
+            --target wasm32-unknown-unknown \
+            --profile browser-release
+          node --test core/rust/web/bytecode-observation.test.mjs
+          packaging/scripts/build-studio-runtime ci
+
+      - name: Commit validated repair and remove one-use gate
+        shell: bash
+        run: |
+          rm -f core/rust/observation-raw/Cargo.lock
+          git rm .github/workflows/agent-fix-observation-raw-archive.yml
+          git add \
+            .github/workflows/studio-runtime-ci.yml \
+            core/rust/Cargo.toml \
+            core/rust/src/vm/session.rs \
+            core/rust/observation-raw/Cargo.toml \
+            core/rust/observation-raw/src/lib.rs \
+            core/rust/observation-raw/src/vm.rs \
+            packaging/scripts/verify-bytecode-observation-runtime.mjs
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Fix import-free observation runtime archive"
+          git push origin HEAD:${{ github.event.pull_request.head.ref }}
