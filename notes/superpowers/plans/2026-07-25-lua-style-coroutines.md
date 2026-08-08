@@ -4,7 +4,7 @@
 
 **Goal:** Add full Lua-style coroutines to hara as a `std.lib.coroutine` library on the Truffle runtime.
 
-**Architecture:** Each coroutine body runs on a parked Java 21 virtual thread (platform-thread fallback under native image). `resume`/`yield` exchange values through two `SynchronousQueue`s; status is a keyword field (`:suspended`/`:running`/`:dead`). Registered as a lazy library provider exactly like `std.lib.task`. No analyzer, AST, or L0 changes.
+**Architecture:** Each coroutine body runs on a parked Java 21 virtual thread (platform-thread fallback under native image). `resume`/`yield` exchange values through two `SynchronousQueue`s; status is a keyword field (`:suspended`/`:running`/`:dead`). Registered through the lazy library-provider pattern. No analyzer, AST, or L0 changes.
 
 **Tech Stack:** Java 21, Truffle/GraalVM, Maven (`mvn -q -Ptruffle ...`), JUnit 4, hara guest code in eval strings.
 
@@ -14,11 +14,11 @@
 
 - JDK 21; virtual threads MUST be guarded by `org.graalvm.nativeimage.ImageInfo.inImageRuntimeCode()` with a platform-thread fallback (pattern: `HaraWasmExtension.java:115-123`).
 - Off-thread guest code MUST run inside `context.invokeInContext(() -> context.invokeCallable(fn, args))` (pattern: `HaraContext.promiseRun`, `HaraContext.java:2112-2124`).
-- Library exports are `public static Object name(HaraContext context, Object[] values)` annotated `@HaraExport(name=..., doc=..., arglists=...)` (pattern: `StdLibTask.java:19-34`).
+- Library exports are `public static Object name(HaraContext context, Object[] values)` annotated `@HaraExport(name=..., doc=..., arglists=...)` (pattern: `StdFoundationSequence.java`).
 - The git working tree contains UNRELATED uncommitted work. Every commit step lists exact files with `git add <files>` — NEVER `git add -A` or `git add .`.
 - Tests: JUnit 4 (`org.junit.Test`), polyglot `Context.newBuilder(HaraLanguage.ID).build()`, `context.eval(HaraLanguage.ID, "...")`, `assertThrows(PolyglotException.class, () -> ...)` (pattern: `StdLibraryProviderTest.java:30-41`).
 - No changes to `HaraAnalyzer.java`, `HaraNodes.java`, `specs/hara/l0-language.md`, or `specs/hara/l0-conformance.edn`.
-- `specs/hara/hara-core-symbols.json` and `specs/hara/wasm-truffle-parity.edn` are NOT modified (see Task 6 — this corrects the design spec, which listed them; `std.lib.task` precedent shows lazy providers are not in the core-symbols inventory, and the parity `.edn` is an executable corpus that must not gain uncovered cases).
+- `specs/hara/hara-core-symbols.json` and `specs/hara/wasm-truffle-parity.edn` are NOT modified (see Task 6 — lazy providers are not in the core-symbols inventory, and the parity `.edn` is an executable corpus that must not gain uncovered cases).
 
 ---
 
@@ -31,7 +31,7 @@
 - Test: `src/test/java/hara/truffle/StdLibCoroutineTest.java`
 
 **Interfaces:**
-- Consumes: `@HaraExport` convention from `StdLibTask.java`; `HaraStaticLibrary.install`; `Keyword.create(String)`.
+- Consumes: the `@HaraExport` convention from static foundation libraries; `HaraStaticLibrary.install`; `Keyword.create(String)`.
 - Produces: `StdLibCoroutine.HaraCoroutine` (package-private static nested class) with `Keyword status()`; exports `std.lib.coroutine/create`, `std.lib.coroutine/coroutine?`, `std.lib.coroutine/status`. Later tasks add `resume`, `yield`, `close`, `await`.
 
 - [ ] **Step 1: Write the failing test**
@@ -1018,7 +1018,7 @@ Expected: no output (identical) or minor drift. If identical, make the same edit
 
 - [ ] **Step 2: Add the std.lib.coroutine entry to runtime-libraries.md (both copies)**
 
-Add a row to the provider-backed namespaces table (after the `std.lib.task` row):
+Add a row to the provider-backed namespaces table with the other foundation providers:
 
 ```markdown
 | `std.lib.coroutine` | Lua-style coroutines: create, resume, yield, status, close, await |
@@ -1057,7 +1057,7 @@ In `docs/superpowers/specs/2026-07-25-lua-style-coroutines-design.md`:
 - No `wasm-truffle-parity.edn` or `hara-core-symbols.json` changes: the parity file is an
   executable corpus that must not gain uncovered cases (the Truffle-only status is recorded
   in `runtime-libraries.md` instead), and the core-symbols inventory covers L0 plus eagerly
-  referred `std.lib.foundation` only — lazy providers like `std.lib.task` are not listed.
+  referred `std.lib.foundation` only — lazy provider namespaces are not listed.
 ```
 
 2. In the `await` table row, remove "interrupt-sensitive (a `close` during await unwinds

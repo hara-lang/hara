@@ -21,7 +21,7 @@ values through a two-queue rendezvous (in/out `SynchronousQueue`s): resume parks
 caller and unparks the coroutine; yield does the reverse. Because the JVM preserves the
 coroutine's entire call stack while parked, `yield` suspends from any depth — nested
 functions, loops, `map` callbacks — with **zero changes to the analyzer, AST, or
-evaluator**. The feature is a pure library, installed exactly like `std.lib.task`.
+evaluator**. The feature is a pure library installed through the portable provider pattern.
 
 Rejected alternatives:
 
@@ -103,7 +103,7 @@ New files:
 
 - `src/main/java/hara/truffle/StdLibCoroutine.java` — `@HaraExport` static methods plus
   a package-private `HaraCoroutine` holder (state enum, in/out `SynchronousQueue`s,
-  virtual thread handle, result/throwable slots). Modeled on `StdLibTask.java`.
+  virtual thread handle, result/throwable slots). Modeled on the static foundation libraries.
 - `src/main/java/hara/truffle/StdLibCoroutineLibraryProvider.java` — library provider.
 - `src/test/java/hara/truffle/StdLibCoroutineTest.java` — focused tests (below).
 
@@ -118,7 +118,7 @@ Modified files:
 - No `wasm-truffle-parity.edn` or `hara-core-symbols.json` changes: the parity file is an
   executable corpus that must not gain uncovered cases (the Truffle-only status is recorded
   in `runtime-libraries.md` instead), and the core-symbols inventory covers L0 plus eagerly
-  referred `std.lib.foundation` only — lazy providers like `std.lib.task` are not listed.
+  referred `std.lib.foundation` only — lazy provider namespaces are not listed.
 - `docs/reference/` — coroutines documentation page (location confirmed against docs
   layout during implementation).
 

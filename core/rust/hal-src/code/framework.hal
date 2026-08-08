@@ -1,0 +1,102 @@
+;; Foundation-compatible, pure source analysis primitives.  Host adapters
+;; supply file text; this namespace never grants filesystem authority.
+(ns code.framework
+  (:require [std.block.base :as block]
+            [std.block.parse :as parse]
+            [std.foundation.string :as string]))
+
+(defn line-number
+  [source offset]
+  (loop [index 0 line 1]
+    (if (or (= index offset) (= index (string/length source)))
+      line
+      (recur (inc index)
+             (if (= "\n" (string/char-at source index)) (inc line) line)))))
+
+(defn namespace-name
+  [source]
+  (let [lines (string/split-lines source)
+        match (first (filter (fn [line]
+                               (or (string/includes? line "(ns ")
+                                   (string/includes? line "(ns+ ")))
+                             lines))]
+    (if match
+      (let [parts (string/split (string/trim match) " ")]
+        (string/replace (nth parts 1) ")" ""))
+      nil)))
+
+(defn definition-kind
+  [line]
+  (let [trimmed (string/trim line)]
+    (cond (string/starts-with? trimmed "(defn- ") :private-function
+          (string/starts-with? trimmed "(defn ") :function
+          (string/starts-with? trimmed "(defmacro ") :macro
+          (string/starts-with? trimmed "(defonce ") :once
+          (string/starts-with? trimmed "(def ") :value
+          :else nil)))
+
+(defn definition-name
+  [line]
+  (let [trimmed (string/trim line)
+        headless (string/replace-first trimmed "(" "")
+        parts (filter (fn [part] (not (string/blank? part)))
+                      (string/split headless " "))]
+    (nth parts 1)))
+
+(defn inline-docstring
+  [line]
+  (let [start (string/index-of line "\"")]
+    (if (< start 0)
+      nil
+      (let [remainder (string/slice line (inc start))
+            end (string/index-of remainder "\"")]
+        (if (< end 0)
+          nil
+          (string/slice remainder 0 end))))))
+
+(defn definition-lines
+  [source]
+  (loop [index 0
+         lines (string/split-lines source)
+         output []]
+    (if (= index (count lines))
+      output
+      (let [line (nth lines index)
+            trimmed (string/trim line)]
+        (if (definition-kind trimmed)
+          (recur (inc index) lines
+                 (conj output {:line (inc index)
+                               :column 1
+                               :kind (definition-kind trimmed)
+                               :name (definition-name trimmed)
+                               :docstring (inline-docstring trimmed)
+                               :source line}))
+          (recur (inc index) lines output))))))
+
+(defn docstrings
+  [definitions]
+  (vec (filter (fn [entry] (:docstring entry)) definitions)))
+
+(defn analyse-source
+  [source]
+  ;; Parse first so callers receive a structured failure for invalid HAL.
+  (let [root (parse/parse-string source)
+        definitions (definition-lines source)]
+    {:namespace (namespace-name source)
+     :forms (count (block/block-children root))
+     :definitions definitions
+     :docstrings (docstrings definitions)
+     :source source}))
+
+(defn grep-source
+  [source needle]
+  (loop [index 0
+         lines (string/split-lines source)
+         output []]
+    (if (= index (count lines))
+      output
+      (let [line (nth lines index)]
+        (recur (inc index) lines
+               (if (string/includes? line needle)
+                 (conj output {:line (inc index) :text line})
+                 output))))))

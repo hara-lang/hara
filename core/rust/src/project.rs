@@ -39,6 +39,9 @@ pub struct Project {
     pub default_profile: Option<String>,
     pub profiles: BTreeMap<String, ProjectProfile>,
     pub dependencies: BTreeMap<String, String>,
+    /// Project-local command aliases.  Values are argv prefixes, never shell
+    /// expressions; callers append their own arguments after expansion.
+    pub aliases: BTreeMap<String, Vec<String>>,
     pub recipe: Option<PathBuf>,
 }
 
@@ -201,6 +204,10 @@ pub fn read(input: &Path) -> Result<Project, String> {
         .map(dependencies)
         .transpose()?
         .unwrap_or_default();
+    let aliases = lookup(entries, "project/aliases")
+        .map(project_aliases)
+        .transpose()?
+        .unwrap_or_default();
     let recipe = lookup(entries, "project/recipe")
         .map(|value| relative_path(&string(value, "project/recipe")?, "project/recipe"))
         .transpose()?;
@@ -227,6 +234,7 @@ pub fn read(input: &Path) -> Result<Project, String> {
         default_profile,
         profiles,
         dependencies,
+        aliases,
         recipe,
     })
 }
@@ -520,6 +528,47 @@ fn project_profiles(form: &Form) -> Result<BTreeMap<String, ProjectProfile>, Str
     }
     Ok(output)
 }
+
+fn project_aliases(form: &Form) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let mut output = BTreeMap::new();
+    for (key, value) in map(form, "project.edn :project/aliases must be an EDN map")? {
+        let name = identifier(key, "project alias name")?;
+        if name.is_empty() || name.contains('/') || name.starts_with('-') {
+            return Err(format!("invalid project alias {name:?}"));
+        }
+        let Form::Vector(values) = value else {
+            return Err(format!("project alias {name:?} must be a vector of strings"));
+        };
+        let argv = values
+            .iter()
+            .map(|value| string(value, &format!("project alias {name:?}")))
+            .collect::<Result<Vec<_>, _>>()?;
+        if argv.is_empty() || argv.iter().any(|value| value.is_empty()) {
+            return Err(format!("project alias {name:?} must contain command tokens"));
+        }
+        if output.insert(name.clone(), argv).is_some() {
+            return Err(format!("duplicate project alias {name:?}"));
+        }
+    }
+    Ok(output)
+}
+
+/// Expands aliases without shell interpretation. Cycles are rejected rather
+/// than silently consuming user arguments.
+pub fn expand_aliases(project: &Project, argv: &[String]) -> Result<Vec<String>, String> {
+    let mut output = argv.to_vec();
+    let mut seen = BTreeMap::new();
+    loop {
+        let Some(name) = output.first().cloned() else { return Ok(output) };
+        let Some(prefix) = project.aliases.get(&name) else { return Ok(output) };
+        if seen.insert(name.clone(), true).is_some() {
+            return Err(format!("project alias cycle detected at {name:?}"));
+        }
+        let mut expanded = prefix.clone();
+        expanded.extend(output.into_iter().skip(1));
+        output = expanded;
+    }
+}
 fn string(form: &Form, label: &str) -> Result<String, String> {
     match form {
         Form::String(value) => Ok(value.clone()),
@@ -723,6 +772,31 @@ mod tests {
         )
         .unwrap();
         assert!(read(&root).unwrap_err().contains("is not declared"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expands_project_aliases_and_rejects_cycles() {
+        let root = temp("aliases");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("project.edn"),
+            "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [] :project/test-paths [] :project/extension-paths [] :project/capabilities #{} :project/aliases {:check-code [\"manage\" \"analyse\"] :all [\"check-code\" \":all\"]}}",
+        )
+        .unwrap();
+        let project = read(&root).unwrap();
+        assert_eq!(
+            expand_aliases(&project, &["all".into(), "xt.lang".into()]).unwrap(),
+            vec!["manage", "analyse", ":all", "xt.lang"]
+        );
+        fs::write(
+            root.join("project.edn"),
+            "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [] :project/test-paths [] :project/extension-paths [] :project/capabilities #{} :project/aliases {:a [\"b\"] :b [\"a\"]}}",
+        )
+        .unwrap();
+        assert!(expand_aliases(&read(&root).unwrap(), &["a".into()])
+            .unwrap_err()
+            .contains("cycle"));
         fs::remove_dir_all(root).unwrap();
     }
 }

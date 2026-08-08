@@ -245,6 +245,68 @@ fn test_results(value: &str) -> Result<(usize, usize), String> {
     Ok((passed, failed))
 }
 
+fn hal_string(value: &str) -> String {
+    format!("{value:?}")
+}
+
+fn workflow_units(
+    project: &project::Project,
+    paths: &[PathBuf],
+    language: Option<&str>,
+) -> Result<String, String> {
+    let mut units = Vec::new();
+    let test_root = project.root.join(paths.first().cloned().unwrap_or_default());
+    for path in project::files_in(&project.root, paths)? {
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let path_text = path.to_string_lossy();
+        let mut unit = format!("{{:path {} :source {}}}", hal_string(path_text.as_ref()), hal_string(&contents));
+        if let Some(language) = language {
+            let root_text = test_root.to_string_lossy();
+            unit = format!(
+                "{{:path {} :source {} :language :{} :test-root {}}}",
+                hal_string(path_text.as_ref()), hal_string(&contents), language,
+                hal_string(root_text.as_ref())
+            );
+        }
+        units.push(unit);
+    }
+    Ok(format!("[{}]", units.join(" ")))
+}
+
+fn run_workflow(options: &Options, namespace: &str, operation: &str, units: String) -> Result<(), String> {
+    let mut runtime = eval_runtime(options)?;
+    let source = format!(
+        "(require (quote {namespace})) ({namespace}/run :{operation} {{:units {units}}})"
+    );
+    println!("{}", runtime.eval_native(&source)?);
+    Ok(())
+}
+
+pub(crate) fn manage_project(options: &Options, args: &[String]) -> Result<(), String> {
+    let operation = args.first().map(String::as_str).unwrap_or("analyse");
+    if !matches!(operation,
+        "analyse" | "extract" | "vars" | "docstrings" | "incomplete" | "todos"
+            | "commented" | "unclean" | "unclean-findings")
+    {
+        return Err("manage supports analyse, extract, vars, docstrings, incomplete, todos, commented, unclean, or unclean-findings".into());
+    }
+    let project = project_for(options, &[])?;
+    let units = workflow_units(&project, &project.source_paths, None)?;
+    run_workflow(options, "code.manage", operation, units)
+}
+
+pub(crate) fn seedgen_project(options: &Options, args: &[String]) -> Result<(), String> {
+    let operation = args.first().map(String::as_str).unwrap_or("list");
+    if !matches!(operation, "root" | "list" | "incomplete" | "benchadd") {
+        return Err("seedgen supports root, list, incomplete, or benchadd".into());
+    }
+    let language = (operation == "benchadd").then(|| args.get(1).map(String::as_str).unwrap_or("js"));
+    let project = project_for(options, &[])?;
+    let units = workflow_units(&project, &project.test_paths, language)?;
+    run_workflow(options, "lang.seedgen", operation, units)
+}
+
 pub(crate) fn direct_eval(options: &Options, source: &str) -> Result<(), String> {
     if source.is_empty() {
         return Err("eval requires a Hara expression".into());

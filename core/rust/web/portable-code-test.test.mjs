@@ -62,25 +62,28 @@ test("canonical component and context libraries run through browser wasm", () =>
   );
 });
 
-test("portable tasks emit structured reports through browser wasm", () => {
+test("portable command templates emit structured reports through browser wasm", () => {
   const runtime = new Runtime();
   const result = runtime.eval(
-    "(ns std-task-browser-probe" +
-      " (:require [std.lib.task :as task] [std.lib.task.bulk :as bulk]))" +
-      " (task/deftask double-task" +
-      "   {:template :default :main {:fn (fn [value] (* 2 value))}})" +
-      " (let [reporter (bulk/event-reporter)" +
-      "       output (task/invoke double-task [1 2 3]" +
-      "                           {:reporter reporter :return :all" +
-      "                            :package :records})]" +
-      " [(get output :summary)" +
-      "  (vec (map (fn [item] (get item :data)) (get output :results)))" +
-      "  (count (bulk/reporter-events reporter))])",
+    "(ns std-work-command-browser-probe" +
+      " (:require [std.work :as work] [std.work.command :as command]))" +
+      " (def double-command" +
+      "  (command/single {:id :probe/double :version 1}" +
+      "   {:process (work/pure :probe/process" +
+      "              (fn [value context] (* 2 value)))}))" +
+      " (let [observer (work/recording-observer)" +
+      "       host (work/local-runtime {:observer observer})" +
+      "       output (work/run host double-command 4)]" +
+      " [output" +
+      "  (:op (work/work-spec double-command))" +
+      "  (count (filter (fn [event]" +
+      "                   (= :command/completed (:event event)))" +
+      "                 (work/observer-events observer)))])",
   );
 
   assert.equal(
     result,
-    "[{:items 3 :results 3 :warnings 0 :errors 0 :cumulative 0 :elapsed 0} [2 4 6] 8]",
+    "[8 :chain 1]",
   );
 });
 

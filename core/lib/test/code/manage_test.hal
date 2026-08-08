@@ -1,0 +1,28 @@
+(ns code.manage-test
+  (:use code.test)
+  (:require [code.manage :as manage]))
+
+(def sample-unit
+  {:path "sample.hal"
+   :source "(ns sample.core)\n\n(defn answer [] 42)\n;; TODO document\n"})
+
+(fact "code.manage executes inspection through std.work"
+  (let [result (manage/run :analyse {:units [sample-unit]})]
+    [(:count (:summary result))
+     (:namespace (:item/value (first (:results result))))])
+  => [1 "sample.core"])
+
+(fact "source edits are plans and remain dry-run by default"
+  (let [plan (manage/grep-replace sample-unit "42" "43")]
+    [(:changed plan) (:write plan) (:after plan)])
+  => [true false "(ns sample.core)\n\n(defn answer [] 43)\n;; TODO document\n"])
+
+(fact "maintenance reports preserve source location and do not write"
+  (let [unit {:path "unclean.hal" :source "(ns unclean)  \n;; note"}
+        result (manage/run :unclean-findings {:units [unit]})]
+    [(map (fn [entry] (:path entry)) (:item/value (first (:results result))))
+     (map (fn [entry] (:kind entry)) (:item/value (first (:results result))))])
+  => [["unclean.hal" "unclean.hal"]
+      [:trailing-whitespace :missing-final-newline]])
+
+(pr-str (run {:namespace "code.manage-test"}))

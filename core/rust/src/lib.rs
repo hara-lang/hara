@@ -4779,69 +4779,47 @@ mod tests {
     }
 
     #[test]
-    fn portable_task_bulk_execution_is_data_first() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(ns std-task-rust-probe \
-                       (:require [std.lib.task :as task] \
-                                 [std.lib.task.bulk :as bulk])) \
-                     (task/deftask double-task \
-                       {:template :default \
-                        :main {:fn (fn [value] (* 2 value))}}) \
-                     (task/deftask selected-task \
-                       {:template :default \
-                        :main {:fn (fn [value suffix] (str value suffix))} \
-                        :item {:list (fn [lookup env] \
-                                      ['code.alpha 'code.beta 'std.gamma])}}) \
-                     (task/deftask aggregate-task \
-                       {:template :default \
-                        :main {:fn (fn [value] {:score value})} \
-                        :result {:ignore (fn [data] \
-                                           (= 0 (get data :score))) \
-                                 :output (fn [data] (get data :score))} \
-                        :summary {:aggregate \
-                                  {:score-total \
-                                   [(fn [data] (get data :score)) \
-                                    (fn [total score] (+ total score)) 0]}}}) \
-                     (task/deftask constructed-task \
-                       {:template :default \
-                        :main {:argcount 4 \
-                               :fn (fn [input params lookup env] \
-                                     [input (get params :flag) \
-                                      (get lookup :input) \
-                                      (get env :environment)])} \
-                        :construct \
-                        {:input (fn [task] 7) \
-                         :env (fn [options] {:environment :ready}) \
-                         :lookup (fn [task options] \
-                                   {:input (get options :environment)})} \
-                        :params {:flag true}}) \
-                     (let [reporter (bulk/event-reporter) \
-                           output (task/invoke double-task [1 2 3] \
-                                               {:reporter reporter :return :all \
-                                                :package :records}) \
-                           aggregate-output \
-                           (task/invoke aggregate-task [0 2 3] \
-                                        {:return :all})] \
-                       [(get output :summary) \
-                        (vec (map (fn [result] (get result :data)) \
-                                  (get output :results))) \
-                        (count (bulk/reporter-events reporter)) \
-                        (task/invoke double-task 4) \
-                        (vec (map (fn [result] (get result :data)) \
-                                  (task/invoke selected-task 'code \
-                                               {:package :records} \
-                                               :args \"!\"))) \
-                        (get aggregate-output :results) \
-                        (get (get aggregate-output :summary) \
-                             :score-total) \
-                        (task/invoke constructed-task)])"
-                )
-                .unwrap(),
-            "[{:items 3 :results 3 :warnings 0 :errors 0 :cumulative 0 :elapsed 0} [2 4 6] 8 8 [\"code.alpha!\" \"code.beta!\"] {2 2 3 3} 5 [7 true :ready :ready]]"
-        );
+    fn portable_command_templates_are_data_first() {
+        std::thread::Builder::new()
+            .name("portable-command-probe".into())
+            // Loading the portable library in the debug evaluator is deeply
+            // recursive; give this portability probe the same headroom as the
+            // Java and browser hosts rather than depending on the test default.
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut runtime = Runtime::new();
+                assert_eq!(
+                    runtime
+                        .eval_native(
+                    "(ns std-work-command-rust-probe \
+                       (:require [std.work :as work] \
+                                 [std.work.command :as command])) \
+                     (def double-command \
+                       (command/single \
+                        {:id :probe/double :version 1} \
+                        {:process (work/pure :probe/process \
+                                   (fn [value context] (* 2 value)))})) \
+                     (let [observer (work/recording-observer) \
+                           host (work/local-runtime {:observer observer}) \
+                           output (work/run host double-command 4) \
+                           completed \
+                           (filter (fn [event] \
+                                     (= :command/completed (:event event))) \
+                                   (work/observer-events observer))] \
+                       [output \
+                        (:op (work/work-spec double-command)) \
+                        (count completed) \
+                        (command/parse-args \
+                         [\":only\" \"std\" \"code\" \
+                          \":parallel\" \"true\"])])"
+                        )
+                        .unwrap(),
+                    "[8 :chain 1 {:selector [std code] :parallel true}]"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

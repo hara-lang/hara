@@ -1,5 +1,5 @@
 ;; Test selection is a code.test concern. It is intentionally independent of
-;; std.work and the deprecated std.lib.task compatibility facade.
+;; std.work and the command-template reporting layer.
 (ns code.test.selector
   (:require [std.foundation.string :as string]))
 
@@ -40,3 +40,63 @@
      (ex-info "Test selector is not valid"
               {:selector selector
                :identifier identifier}))))
+
+(defn collection-match?
+  [selector values]
+  (reduce (fn [matched value]
+            (or matched (matches? selector value)))
+          false
+          (or values [])))
+
+(defn filter-match?
+  "Matches Foundation-style include/exclude filter data against fact metadata.
+   :unit accepts any intersecting unit/tag, :refers accepts a referenced symbol,
+   and :namespaces accepts the owning namespace."
+  [metadata filter default]
+  (let [units (or (:unit metadata) (:tags metadata) #{})
+        refer (:refer metadata)
+        namespace (:namespace metadata)
+        unit-filter (:unit filter)
+        refers-filter (:refers filter)
+        namespace-filter (:namespaces filter)]
+    [(if unit-filter
+       (collection-match? unit-filter units)
+       default)
+     (if refers-filter
+       (matches? refers-filter refer)
+       default)
+     (if namespace-filter
+       (matches? namespace-filter namespace)
+       default)]))
+
+(defn include-match?
+  [metadata filter]
+  (reduce (fn [matched value] (and matched value))
+          true
+          (filter-match? metadata filter true)))
+
+(defn exclude-match?
+  [metadata filter]
+  (reduce (fn [matched value] (or matched value))
+          false
+          (filter-match? metadata filter false)))
+
+(defn matches-options?
+  "Applies :include/:exclude filter vectors from Foundation code.test settings.
+   A fact carrying :unit is deliberately not selected when no include filters
+   are supplied, preserving Foundation's opt-in unit-test behaviour."
+  [metadata options]
+  (let [include (or (:include options) [])
+        exclude (or (:exclude options) [])
+        tagged (:unit metadata)]
+    (and (not (and tagged (= 0 (count include))))
+         (if (= 0 (count include))
+           true
+           (reduce (fn [matched filter]
+                     (or matched (include-match? metadata filter)))
+                   false
+                   include))
+         (reduce (fn [matched filter]
+                   (and matched (not (exclude-match? metadata filter))))
+                 true
+                 exclude))))

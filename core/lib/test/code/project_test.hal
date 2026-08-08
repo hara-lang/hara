@@ -1,0 +1,35 @@
+(ns code.project-test
+  (:use code.test)
+  (:require [code.project :as project]))
+
+(def descriptor
+  {:root "core/lib"
+   :source-paths ["src" "generated"]
+   :test-paths ["test"]})
+
+(fact "project coordinates preserve source/test namespace conventions"
+  [(project/source-namespace descriptor 'code.project-test)
+   (project/test-namespace descriptor 'code.project)
+   (project/source-candidates descriptor 'code.project)
+   (project/test-path descriptor 'code.project)]
+  => ['code.project
+      'code.project-test
+      ["core/lib/src/code/project.hal" "core/lib/generated/code/project.hal"]
+      "core/lib/test/code/project_test.hal"])
+
+(fact "project indexes resolve discovered paths before canonical fallbacks"
+  (let [index (project/project-index descriptor
+                                     [{:path "core/lib/generated/code/project.hal"
+                                       :namespace 'code.project
+                                       :source "(ns code.project)"}
+                                      {:path "core/lib/test/code/project_test.hal"
+                                       :namespace 'code.project-test
+                                       :source "(ns code.project-test)"}])]
+    [(project/code-path index 'code.project :source)
+     (project/code-path index 'code.project :test)
+     (:source (project/lookup-namespace index 'code.project))])
+  => ["core/lib/generated/code/project.hal"
+      "core/lib/test/code/project_test.hal"
+      "(ns code.project)"])
+
+(pr-str (run {:namespace "code.project-test"}))
