@@ -37,7 +37,15 @@ for (const [wasmPath, hostPath] of payloads) {
   }
 
   const bytes = await readFile(join(root, wasmPath));
-  const { instance } = await WebAssembly.instantiate(bytes, {});
+  const module = await WebAssembly.compile(bytes);
+  const imports = WebAssembly.Module.imports(module);
+  if (imports.length !== 0) {
+    const rendered = imports
+      .map(({ module, name, kind }) => `${module}.${name}:${kind}`)
+      .join(", ");
+    throw new Error(`${wasmPath} unexpectedly imports host bindings: ${rendered}`);
+  }
+  const instance = await WebAssembly.instantiate(module, {});
   const exports = instance.exports;
   for (const name of [
     "memory",
@@ -50,6 +58,34 @@ for (const [wasmPath, hostPath] of payloads) {
   }
   if (exports.observation_abi_version() !== 1) {
     throw new Error(`${wasmPath} has an unsupported observation ABI`);
+  }
+
+  const hostModuleUrl = `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
+  const { loadBytecodeObservationRuntime } = await import(hostModuleUrl);
+  const runtime = await loadBytecodeObservationRuntime({
+    wasmBytes: bytes,
+    wasmUrl: new URL("file:///bytecode-observation.wasm"),
+  });
+  const session = runtime.compileNamed(
+    "archive/verification",
+    "archive-verification.hal",
+    "(+ 1 (* 2 3))",
+  );
+  const trace = session.run(1_000);
+  if (trace?.schema !== "hal.bytecode-trace/v1") {
+    throw new Error(`${wasmPath} did not emit a versioned live trace`);
+  }
+  if (session.resultDisplay() !== "7") {
+    throw new Error(`${wasmPath} did not execute the packaged bytecode machine`);
+  }
+  if (session.metrics()?.schema !== "hal.bytecode-metrics/v1") {
+    throw new Error(`${wasmPath} did not emit versioned metrics`);
+  }
+  if (session.events()?.schema !== "hal.bytecode-events/v1") {
+    throw new Error(`${wasmPath} did not emit versioned events`);
+  }
+  if (session.dispose() !== true || runtime.dispose() !== true) {
+    throw new Error(`${wasmPath} did not dispose its opaque observation state`);
   }
 }
 
