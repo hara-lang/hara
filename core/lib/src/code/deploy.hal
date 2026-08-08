@@ -6,7 +6,8 @@
 (ns code.deploy
   (:require [code.deploy.runtime :as runtime]
             [std.foundation.string :as string]
-            [std.work :as work]))
+            [std.work :as work]
+            [std.work.command :as command]))
 
 (def +operations+
   {:check "check"
@@ -321,33 +322,24 @@
 
 (defn operation-work
   [operation]
-  (work/chain
+  (command/batch
    {:id (symbol (str "code.deploy/" (name operation)))
     :version 1
     :deploy/operation operation}
-   [(work/pure
-     :deploy/prepare
-     (fn [input context]
-       (prepare-input input)))
-    (work/batch
-     {:id :deploy/packages}
-     {:list
-      (work/pure :deploy/list-packages
-        package-manifest)
-      :filter
-      (work/pure :deploy/select-package
-        selected-package?)
-      :process
-      (work/step :deploy/run-package
-        (fn [item context]
-          (run-operation operation item context)))
-      :summarise
-      (work/pure :deploy/summarise
-        summarise-results)})
-    (work/pure
-     :deploy/result
-     (fn [batch context]
-       (:summary batch)))]))
+   {:prepare
+    (work/pure :deploy/prepare
+               (fn [input context] (prepare-input input)))
+    :batch-options {:id :deploy/packages}
+    :list (work/pure :deploy/list-packages package-manifest)
+    :filter (work/pure :deploy/select-package selected-package?)
+    :process
+    (work/step :deploy/run-package
+               (fn [item context]
+                 (run-operation operation item context)))
+    :summarise (work/pure :deploy/summarise summarise-results)
+    :finish
+    (work/pure :deploy/result
+               (fn [batch context] (:summary batch)))}))
 
 (def check (operation-work :check))
 (def package (operation-work :package))

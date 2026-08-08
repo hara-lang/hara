@@ -1,7 +1,7 @@
 (ns std.work-test
   (:require [std.lib.test :as test]
-            [std.lib.task :as task]
             [std.work :as work]
+            [std.work.command :as command]
             [std.work.protocol :as protocol]))
 
 (defn event-count
@@ -14,9 +14,11 @@
    0
    events))
 
-(task/deftask double-task
-  {:template :default
-   :main {:fn (fn [value] (* 2 value))}})
+(def double-command
+  (command/single
+   {:id 'double-command :version 1}
+   {:process (work/step :double-command/process
+                        (fn [value context] (* 2 value)))}))
 
 (def local-observer (work/recording-observer))
 (def local-runtime
@@ -107,6 +109,9 @@
 
 (def recovery-record
   (work/run-record recovery-runtime-after recovery-reference))
+
+(def recovery-counts
+  [(deref prepare-count) (deref replay-count) (deref finish-count)])
 
 (def fork-reference
   (work/fork recovery-runtime-after
@@ -226,22 +231,20 @@
     {:echo 7 :node :custom})
 
    (test/check
-    "legacy std.lib.task values compile to native work graphs"
-    (let [spec (work/work-spec double-task)]
+    "command templates compile to native work graphs"
+    (let [spec (work/work-spec double-command)]
       [(get spec :op)
        (get spec :id)
-       (get (work/work-spec (nth (:children spec) 1)) :op)
-       (work/run (work/local-runtime) double-task 4)])
-    [:chain 'double-task :choose 8])
+       (get (work/work-spec (nth (:children spec) 2)) :op)
+       (work/run (work/local-runtime) double-command 4)])
+    [:chain 'double-command :step 8])
 
    (test/check
     "durable recovery replays checkpoints and reruns pure work"
     [recovery-status-before
      (work/status recovery-runtime-after recovery-reference-after)
      (work/result recovery-runtime-after recovery-reference-after)
-     [(deref prepare-count)
-      (deref replay-count)
-      (deref finish-count)]
+     recovery-counts
      (count recovery-checkpoints)
      (event-count recovery-history :work/step-replayed)
      [(:run/work-root recovery-record)

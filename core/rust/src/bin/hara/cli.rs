@@ -4,6 +4,7 @@ use hara_wasm::cli_app;
 use hara_wasm::extension_tool;
 use hara_wasm::identity_tool;
 use hara_wasm::package;
+use hara_wasm::project as project_model;
 use std::env;
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -24,8 +25,8 @@ mod spec;
 #[cfg(feature = "halc-encoder")]
 use self::project::compile_halc;
 use self::project::{
-    check_project, direct_eval, edit_dependency, new_project, run_file, run_headless, run_project,
-    run_remote, sync_project, test_project,
+    check_project, direct_eval, edit_dependency, manage_project, new_project, run_file,
+    run_headless, run_project, run_remote, seedgen_project, sync_project, test_project,
 };
 use self::spec::spec_command;
 
@@ -133,7 +134,15 @@ fn option_value<'a>(argument: &'a str, option: &str) -> Result<&'a str, String> 
 }
 
 pub(crate) fn run(options: Options) -> Result<(), String> {
-    let command = routed_command(&options.command);
+    // Project aliases are argv-only macros, expanded before the normative
+    // route table.  A directory without project.edn simply has no aliases.
+    let expanded = match project_model::discover(
+        options.project.as_deref().unwrap_or_else(|| std::path::Path::new(".")),
+    ) {
+        Ok(project) => project_model::expand_aliases(&project, &options.command)?,
+        Err(_) => options.command.clone(),
+    };
+    let command = routed_command(&expanded);
     if command.first().is_some_and(|value| value == "help")
         || command
             .iter()
@@ -157,6 +166,8 @@ pub(crate) fn run(options: Options) -> Result<(), String> {
         Some("sync") => sync_project(&options, &command),
         Some("update") => Err("project update requires the reviewed registry client".into()),
         Some("test") => test_project(&options, &command[1..]),
+        Some("manage") => manage_project(&options, &command[1..]),
+        Some("seedgen") => seedgen_project(&options, &command[1..]),
         Some("spec") => spec_command(&command[1..]),
         Some("snapshot") => hara_wasm::snapshot_tool::run(&command[1..]),
         Some("extension") => extension_tool::run(&command[1..], options.allow_process),
@@ -265,6 +276,8 @@ pub(crate) fn usage() {
     println!("  {program} eval EXPRESSION | run FILE | stdin");
     println!("  {program} server | remote HOST:PORT");
     println!("  {program} project <new|check|run|test|add|remove|sync|update> ...");
+    println!("  {program} manage <analyse|extract|vars|docstrings|incomplete|unclean>");
+    println!("  {program} seedgen <root|list|incomplete|benchadd> [LANGUAGE]");
     println!("  {program} package <COMMAND> ...");
     println!("  {program} id <login|enroll|status|key|namespace> ...");
     println!(
