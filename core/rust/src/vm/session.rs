@@ -16,21 +16,21 @@ use crate::kernel::NamespaceRegistry;
 use super::machine::observation::ObservationLimits;
 use super::{compile_source_with, decode_program, validate, Machine, Program, VmError};
 
-#[path = "session/evidence.rs"]
-mod evidence;
-#[path = "session/control.rs"]
-mod control;
-#[cfg(target_arch = "wasm32")]
+#[cfg(all(target_arch = "wasm32", not(feature = "raw-wasm")))]
 #[path = "session/browser.rs"]
 mod browser;
-#[cfg(target_arch = "wasm32")]
+#[path = "session/control.rs"]
+mod control;
+#[path = "session/evidence.rs"]
+mod evidence;
+#[cfg(all(target_arch = "wasm32", not(feature = "raw-wasm")))]
 pub use browser::BrowserBytecodeObservationSession;
 #[cfg(test)]
 #[path = "session/tests.rs"]
 mod tests;
 
-pub use evidence::{BYTECODE_EVENTS_SCHEMA, BYTECODE_METRICS_SCHEMA, BYTECODE_TRACE_SCHEMA};
 use evidence::{CompactEventRecord, SessionMetrics, TraceStepRecord};
+pub use evidence::{BYTECODE_EVENTS_SCHEMA, BYTECODE_METRICS_SCHEMA, BYTECODE_TRACE_SCHEMA};
 
 thread_local! {
     static NEXT_SESSION_ID: Cell<u64> = const { Cell::new(1) };
@@ -145,13 +145,7 @@ impl BytecodeObservationSession {
         let registry = fresh_registry();
         let program = compile_source_with(&source, &registry)
             .map_err(|error| BytecodeSessionError::new(error.to_string()))?;
-        Self::from_validated_program(
-            session_id,
-            source_id,
-            Some(source),
-            program,
-            registry,
-        )
+        Self::from_validated_program(session_id, source_id, Some(source), program, registry)
     }
 
     pub fn from_artifact(bytes: &[u8]) -> Result<Self, BytecodeSessionError> {
@@ -166,13 +160,7 @@ impl BytecodeObservationSession {
         bytes: &[u8],
     ) -> Result<Self, BytecodeSessionError> {
         let program = decode_program(bytes).map_err(BytecodeSessionError::new)?;
-        Self::from_validated_program(
-            session_id,
-            source_id,
-            None,
-            program,
-            fresh_registry(),
-        )
+        Self::from_validated_program(session_id, source_id, None, program, fresh_registry())
     }
 
     pub fn from_program(
@@ -181,13 +169,7 @@ impl BytecodeObservationSession {
         program: Program,
     ) -> Result<Self, BytecodeSessionError> {
         validate(&program).map_err(|error| BytecodeSessionError::new(error.to_string()))?;
-        Self::from_validated_program(
-            session_id,
-            source_id,
-            None,
-            program,
-            fresh_registry(),
-        )
+        Self::from_validated_program(session_id, source_id, None, program, fresh_registry())
     }
 
     fn from_validated_program(
@@ -275,7 +257,6 @@ impl BytecodeObservationSession {
             self.omitted_trace_steps = self.omitted_trace_steps.saturating_add(1);
         }
     }
-
 }
 
 fn next_session_id() -> String {
