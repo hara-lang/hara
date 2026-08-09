@@ -1,0 +1,36 @@
+(ns hara.cli.extension-test
+  (:require [hara.cli.extension :as extension]
+            [std.lib.test :as test]))
+
+(def +wasm-manifest+
+  {:namespace "demo.fixture"
+   :version "0.1.0"
+   :provider :wasm
+   :module "fixture.wasm"
+   :abi :core.v1
+   :exports {"value" {:args [] :returns :i32}}
+   :capabilities []})
+
+(test/print-results
+ [(test/check "extension manifests are validated by Hara"
+              (select-keys (extension/validate-manifest +wasm-manifest+ "fixture")
+                           [:namespace :declared/files])
+              {:namespace "demo.fixture"
+               :declared/files ["fixture.wasm" "hara.extension.edn"]})
+  (test/check "HTA manifests declare target modules"
+              (:declared/files
+               (extension/validate-manifest
+                {:namespace "demo.hta"
+                 :version "1.0.0"
+                 :provider :hta
+                 :abi :hta.v1
+                 :targets {:node {:module "node/addon.node" :runtime :node}}
+                 :exports {}
+                 :capabilities []}
+                "fixture"))
+              ["hara.extension.edn" "node/addon.node"])
+  (test/check "extension routes select Hara operations"
+              (extension/operation-request
+               {:request/route :hara.cli.route/extension-install
+                :request/arguments ["package"]})
+              {:operation :install :arguments ["package"]})])
