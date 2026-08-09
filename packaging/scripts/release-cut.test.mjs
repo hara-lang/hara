@@ -92,10 +92,10 @@ test("release Truffle builds use the proven native-image smoke toolchain", async
     readFile(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8"),
     readFile(new URL("../../.github/workflows/main.yml", import.meta.url), "utf8"),
   ]);
-  const provenToolchain = /distribution: graalvm\n\s+java-version: '25\.0\.3'/;
+  const provenToolchain = /version: '25\.0\.3'\n\s+distribution: 'graalvm'/;
   assert.match(mainWorkflow, provenToolchain);
   assert.match(releaseWorkflow, provenToolchain);
   assert.doesNotMatch(releaseWorkflow, /distribution: graalvm-community/);
-  assert.doesNotMatch(releaseWorkflow, /java-version: '25'/);
+  assert.doesNotMatch(releaseWorkflow, /java-version:/);
   assert.match(releaseWorkflow, /HARA_NATIVE_USE_FALLBACK_RUNTIME: 'true'/);
 });
