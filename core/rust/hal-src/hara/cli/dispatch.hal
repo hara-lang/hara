@@ -1,0 +1,35 @@
+(ns hara.cli.dispatch
+  (:require [hara.cli.model :as model]
+            [hara.cli.route :as route]))
+
+(defn request-for
+  [manifest arguments options context]
+  (let [resolved (route/resolve-route (:cli/routes manifest) arguments)]
+    (if resolved
+      (assoc (model/request
+              (:route/id (:route resolved))
+              (:arguments resolved)
+              options
+              context)
+             :request/handler (:route/handler (:route resolved))
+             :request/alias (:alias resolved))
+      (model/failure
+       :hara.cli.outcome/usage-error
+       :hara.cli/unknown-route
+       (str "unknown command: " (first arguments))
+       {:error/argv arguments}))))
+
+(defn invoke
+  "Invokes one handler from the closed Hara registry."
+  [handlers request]
+  (if (:result/outcome request)
+    request
+    (let [handler-id (:request/handler request)
+          handler (get handlers handler-id)]
+      (if handler
+        (handler request)
+        (model/failure
+         :hara.cli.outcome/internal-error
+         :hara.cli/missing-handler
+         (str "unavailable handler: " handler-id)
+         {:error/handler handler-id})))))

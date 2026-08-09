@@ -1,0 +1,63 @@
+(ns hara.project
+  (:require [std.foundation.edn :as edn]
+            [std.foundation.file :as file]
+            [std.foundation.string :as string]))
+
+(def +required-keys+
+  [:hara/type :hara/version :project/id :project/version
+   :project/source-paths :project/test-paths :project/extension-paths
+   :project/capabilities])
+
+(defn missing-keys [document]
+  (vec (filter (fn [key] (not (has? document key))) +required-keys+)))
+
+(defn validate [document]
+  (let [missing (missing-keys document)]
+    (cond
+      (not (map? document))
+      (throw (ex-info "project.edn must be an EDN map" {}))
+      (not (empty? missing))
+      (throw (ex-info (str "project.edn missing required keys: " missing)
+                      {:missing missing}))
+      (not= :project (:hara/type document))
+      (throw (ex-info "project.edn :hara/type must be :project" {}))
+      :else document)))
+
+(defn read-text [path]
+  (string/decode-utf8 (deref (file/read path))))
+
+(defn read-project [manifest-path]
+  (let [document (validate (edn/read (read-text manifest-path)))]
+    (assoc document
+           :project/root (file/parent manifest-path)
+           :project/manifest-path manifest-path)))
+
+(defn start-directory [path]
+  (let [metadata (deref (file/stat path))]
+    (if (= :directory (:type metadata)) path (file/parent path))))
+
+(defn discover [start]
+  (loop [current (start-directory start)]
+    (if (nil? current)
+      (throw (ex-info (str "no project.edn found above " start) {:start start}))
+      (let [manifest (file/join current "project.edn")]
+        (if (deref (file/exists? manifest))
+          (read-project manifest)
+          (recur (file/parent current)))))))
+
+(defn walk-files [path]
+  (let [metadata (deref (file/stat path))]
+    (cond
+      (= :file (:type metadata)) [path]
+      (= :directory (:type metadata))
+      (vec (mapcat walk-files (deref (file/list path))))
+      :else [])))
+
+(defn files-in
+  ([project roots] (files-in project roots nil))
+  ([project roots suffix]
+   (let [root (:project/root project)
+         files (vec (mapcat (fn [path] (walk-files (file/join root path))) roots))]
+     (if suffix
+       (vec (filter (fn [path] (string/ends-with? path suffix)) files))
+       files))))

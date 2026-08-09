@@ -1351,6 +1351,17 @@ impl Runtime {
             .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
     }
 
+    pub fn file_stat(&self, path: &str) -> Result<PromiseHandle, JsValue> {
+        let provider = self
+            .providers
+            .file()
+            .ok_or_else(|| JsValue::from_str("file/unsupported"))?;
+        provider
+            .stat(path)
+            .map(PromiseHandle::from_promise)
+            .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
+    }
+
     pub fn file_list(&self, path: &str) -> Result<PromiseHandle, JsValue> {
         let provider = self
             .providers
@@ -2624,6 +2635,11 @@ mod tests {
     #[test]
     fn hara_file_operations_use_capability_providers() {
         let mut runtime = Runtime::new();
+        assert_eq!(runtime.eval_text("(file/parent \"/a/b\")").unwrap(), "\"/a\"");
+        assert_eq!(
+            runtime.eval_text("(file/join \"/a\" \"b\")").unwrap(),
+            "\"/a/b\""
+        );
         assert!(runtime
             .eval_text("(file/read \"/sandbox/data.bin\")")
             .unwrap_err()
@@ -2657,6 +2673,12 @@ mod tests {
                 .eval_text("(deref (file/exists? \"/sandbox/data.bin\"))")
                 .unwrap(),
             "true"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(deref (file/stat \"/sandbox/data.bin\"))")
+                .unwrap(),
+            "{:size 3 :type :file}"
         );
         assert_eq!(
             runtime

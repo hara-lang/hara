@@ -3368,6 +3368,38 @@ fn file_operation(
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
     match operation {
+        "file/parent" => {
+            if forms.len() != 1 {
+                return Err("file/parent expects a path".into());
+            }
+            let path = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/parent expects a path".into()),
+            };
+            Ok(std::path::Path::new(&path)
+                .parent()
+                .map(|parent| Value::String(parent.to_string_lossy().into_owned()))
+                .unwrap_or(Value::Nil))
+        }
+        "file/join" => {
+            if forms.len() != 2 {
+                return Err("file/join expects a base and path".into());
+            }
+            let base = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/join expects a base and path".into()),
+            };
+            let path = match eval(&forms[1], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/join expects a base and path".into()),
+            };
+            Ok(Value::String(
+                std::path::Path::new(&base)
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+        }
         "file/resolve" => {
             if forms.len() != 2 {
                 return Err("file/resolve expects a root and path".into());
@@ -3426,6 +3458,19 @@ fn file_operation(
             };
             file_provider(operation)?
                 .exists(&path)
+                .map(Value::Promise)
+                .map_err(|error| file_error(operation, error))
+        }
+        "file/stat" => {
+            if forms.len() != 1 {
+                return Err("file/stat expects a path".into());
+            }
+            let path = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/stat expects a path".into()),
+            };
+            file_provider(operation)?
+                .stat(&path)
                 .map(Value::Promise)
                 .map_err(|error| file_error(operation, error))
         }
@@ -3848,6 +3893,7 @@ pub trait FileProvider {
     fn read(&self, path: &str) -> Result<Promise, FileError>;
     fn write(&self, path: &str, bytes: Vec<u8>) -> Result<Promise, FileError>;
     fn exists(&self, path: &str) -> Result<Promise, FileError>;
+    fn stat(&self, path: &str) -> Result<Promise, FileError>;
     fn list(&self, path: &str) -> Result<Promise, FileError>;
     fn mkdir(&self, path: &str) -> Result<Promise, FileError>;
     fn delete(&self, path: &str) -> Result<Promise, FileError>;
@@ -4069,6 +4115,33 @@ impl FileProvider for NativeFileProvider {
         let path = self.scoped(path)?;
         let promise = Promise::new();
         promise.resolve(Value::Bool(path.exists()));
+        Ok(promise)
+    }
+
+    fn stat(&self, path: &str) -> Result<Promise, FileError> {
+        let path = self.scoped(path)?;
+        let promise = Promise::new();
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                let kind = if metadata.file_type().is_symlink() {
+                    "symlink"
+                } else if metadata.is_dir() {
+                    "directory"
+                } else {
+                    "file"
+                };
+                promise.resolve(Value::Map(PMap::from_iter([
+                    (Value::Keyword("type".into()), Value::Keyword(kind.into())),
+                    (
+                        Value::Keyword("size".into()),
+                        Value::Number(i64::try_from(metadata.len()).unwrap_or(i64::MAX)),
+                    ),
+                ])));
+            }
+            Err(error) => {
+                promise.reject(error.to_string());
+            }
+        }
         Ok(promise)
     }
 
@@ -4748,6 +4821,37 @@ impl FileProvider for MemoryFileProvider {
         Ok(promise)
     }
 
+    fn stat(&self, path: &str) -> Result<Promise, FileError> {
+        if !self.within_root(path) {
+            return Err(FileError::Denied);
+        }
+        let promise = Promise::new();
+        let files = self.files.borrow();
+        if let Some(bytes) = files.get(path) {
+            promise.resolve(Value::Map(PMap::from_iter([
+                (Value::Keyword("type".into()), Value::Keyword("file".into())),
+                (
+                    Value::Keyword("size".into()),
+                    Value::Number(i64::try_from(bytes.len()).unwrap_or(i64::MAX)),
+                ),
+            ])));
+        } else {
+            let prefix = format!("{}/", path.trim_end_matches('/'));
+            if path == self.root || files.keys().any(|candidate| candidate.starts_with(&prefix)) {
+                promise.resolve(Value::Map(PMap::from_iter([
+                    (
+                        Value::Keyword("type".into()),
+                        Value::Keyword("directory".into()),
+                    ),
+                    (Value::Keyword("size".into()), Value::Number(0)),
+                ])));
+            } else {
+                promise.reject("file not found");
+            }
+        }
+        Ok(promise)
+    }
+
     fn list(&self, path: &str) -> Result<Promise, FileError> {
         if !self.within_root(path) {
             return Err(FileError::Denied);
@@ -4809,6 +4913,9 @@ impl FileProvider for UnsupportedFileProvider {
         Err(FileError::Unsupported)
     }
     fn exists(&self, _path: &str) -> Result<Promise, FileError> {
+        Err(FileError::Unsupported)
+    }
+    fn stat(&self, _path: &str) -> Result<Promise, FileError> {
         Err(FileError::Unsupported)
     }
     fn list(&self, _path: &str) -> Result<Promise, FileError> {
@@ -11634,9 +11741,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n)
                     if [
                         "file/resolve",
+                        "file/parent",
+                        "file/join",
                         "file/read",
                         "file/write",
                         "file/exists?",
+                        "file/stat",
                         "file/list",
                         "file/mkdir",
                         "file/delete",
