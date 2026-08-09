@@ -3,7 +3,7 @@ use crate::repl;
 #[cfg(feature = "halc-encoder")]
 use hara_wasm::kernel::{halc::encode_halc_module, parse_forms};
 use hara_wasm::kernel::{parse, Form};
-use hara_wasm::native_cli::RuntimeBroker;
+use hara_wasm::native_cli::{install_foundation_kernel, RuntimeBroker};
 use hara_wasm::project;
 use hara_wasm::resp::{RespConnection, RespServer, RespValue};
 use hara_wasm::Runtime;
@@ -79,6 +79,12 @@ fn eval_runtime(options: &Options) -> Result<Runtime, String> {
     if options.allow_process {
         runtime.install_native_process_provider();
     }
+    let broker = RuntimeBroker::start_with(
+        options.root.clone().or_else(|| options.project.clone()),
+        options.native_sockets,
+        options.allow_process,
+    )?;
+    install_foundation_kernel(&mut runtime, broker);
     Ok(runtime)
 }
 

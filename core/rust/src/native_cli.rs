@@ -1,9 +1,12 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
+use crate::core::{Promise, Value};
+use crate::lang::data::{Keyword, Symbol};
 use crate::Runtime;
 
 enum Request {
@@ -35,6 +38,18 @@ enum Request {
     Info {
         session: String,
         reply: mpsc::Sender<Result<String, String>>,
+    },
+    RegisterResource {
+        name: String,
+        source: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    RemoveResource {
+        name: String,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    ListResources {
+        reply: mpsc::Sender<Result<Vec<String>, String>>,
     },
     InstallModule {
         session: String,
@@ -135,6 +150,25 @@ impl RuntimeBroker {
         })
     }
 
+    pub fn register_resource(&self, name: &str, source: &str) -> Result<(), String> {
+        self.call(|reply| Request::RegisterResource {
+            name: name.into(),
+            source: source.into(),
+            reply,
+        })
+    }
+
+    pub fn remove_resource(&self, name: &str) -> Result<(), String> {
+        self.call(|reply| Request::RemoveResource {
+            name: name.into(),
+            reply,
+        })
+    }
+
+    pub fn resources(&self) -> Result<Vec<String>, String> {
+        self.call(|reply| Request::ListResources { reply })
+    }
+
     pub fn install_module(
         &self,
         session: &str,
@@ -200,6 +234,7 @@ fn run(
     native_sockets: bool,
     allow_process: bool,
 ) {
+    let mut resources = HashMap::<String, String>::new();
     let mut sessions = HashMap::from([(
         "ROOT".to_owned(),
         runtime(root.as_ref(), native_sockets, allow_process),
@@ -248,10 +283,11 @@ fn run(
                 let result = if session.is_empty() || sessions.contains_key(&session) {
                     Err(format!("Session already exists or is invalid: {session}"))
                 } else {
-                    sessions.insert(
-                        session.clone(),
-                        runtime(root.as_ref(), native_sockets, allow_process),
-                    );
+                    let mut created = runtime(root.as_ref(), native_sockets, allow_process);
+                    for (name, source) in &resources {
+                        created.register_resource(name, source);
+                    }
+                    sessions.insert(session.clone(), created);
                     Ok(session)
                 };
                 let _ = reply.send(result);
@@ -277,6 +313,26 @@ fn run(
                     .map(|runtime| format!("{session} {}", runtime.current_namespace()))
                     .ok_or_else(|| format!("No session: {session}"));
                 let _ = reply.send(result);
+            }
+            Request::RegisterResource {
+                name,
+                source,
+                reply,
+            } => {
+                for runtime in sessions.values_mut() {
+                    runtime.register_resource(&name, &source);
+                }
+                resources.insert(name, source);
+                let _ = reply.send(Ok(()));
+            }
+            Request::RemoveResource { name, reply } => {
+                resources.remove(&name);
+                let _ = reply.send(Ok(()));
+            }
+            Request::ListResources { reply } => {
+                let mut names = resources.keys().cloned().collect::<Vec<_>>();
+                names.sort();
+                let _ = reply.send(Ok(names));
             }
             Request::InstallModule {
                 session,
@@ -332,6 +388,115 @@ fn run(
             Request::Shutdown => break,
         }
     }
+}
+
+/// Installs the generic Foundation kernel service behind `Host/call`.
+/// Command policy remains in Hara; this adapter only multiplexes isolated
+/// evaluator sessions and transfers portable values across the boundary.
+pub fn install_foundation_kernel(runtime: &mut Runtime, broker: RuntimeBroker) {
+    runtime.install_native_host_handler(Rc::new(move |service, operation, arguments| {
+        if service != "foundation.kernel" {
+            return Err(format!("host service is unavailable: {service}"));
+        }
+        let result = kernel_call(&broker, &operation, &arguments);
+        let promise = Promise::new();
+        match result {
+            Ok(value) => promise.resolve(value),
+            Err(error) => promise.reject(error),
+        };
+        Ok(Value::Promise(promise))
+    }));
+}
+
+fn kernel_call(
+    broker: &RuntimeBroker,
+    operation: &str,
+    arguments: &[Value],
+) -> Result<Value, String> {
+    match operation {
+        "session-create" => {
+            broker.create(string_argument(arguments, 0, operation)?)?;
+            Ok(Value::Nil)
+        }
+        "session-close" => {
+            broker.close(string_argument(arguments, 0, operation)?)?;
+            Ok(Value::Nil)
+        }
+        "session-list" => Ok(strings_value(broker.list()?)),
+        "session-info" => {
+            let name = string_argument(arguments, 0, operation)?;
+            let info = broker.info(name)?;
+            let namespace = info
+                .split_once(' ')
+                .map(|(_, namespace)| namespace)
+                .unwrap_or("user");
+            Ok(Value::Map(
+                [
+                    (keyword("name"), Value::String(name.into())),
+                    (keyword("namespace"), Value::Symbol(Symbol::parse(namespace))),
+                    (keyword("state"), keyword("idle")),
+                    (keyword("filesystem"), Value::Nil),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        "session-eval" => {
+            let output = broker.eval(
+                string_argument(arguments, 0, operation)?,
+                string_argument(arguments, 1, operation)?,
+            )?;
+            let form = crate::kernel::parse(&output)?;
+            crate::core::form_to_value(&form)
+        }
+        "session-namespace" => Ok(Value::Symbol(Symbol::parse(&broker.namespace(
+            string_argument(arguments, 0, operation)?,
+        )?))),
+        "session-complete" => Ok(strings_value(broker.complete(
+            string_argument(arguments, 0, operation)?,
+            string_argument(arguments, 1, operation)?,
+        )?)),
+        "resource-register" => {
+            broker.register_resource(
+                string_argument(arguments, 0, operation)?,
+                string_argument(arguments, 1, operation)?,
+            )?;
+            Ok(Value::Nil)
+        }
+        "resource-remove" => {
+            broker.remove_resource(string_argument(arguments, 0, operation)?)?;
+            Ok(Value::Nil)
+        }
+        "resource-list" => Ok(strings_value(broker.resources()?)),
+        "capabilities" => Ok(Value::Map(
+            [
+                (keyword("sessions"), Value::Bool(true)),
+                (keyword("resources"), Value::Bool(true)),
+                (keyword("filesystems"), Value::Bool(false)),
+            ]
+            .into_iter()
+            .collect(),
+        )),
+        operation if operation.starts_with("filesystem-") => {
+            Err(format!("{operation} is unavailable in the runtime broker"))
+        }
+        _ => Err(format!("unknown foundation.kernel operation: {operation}")),
+    }
+}
+
+fn string_argument<'a>(arguments: &'a [Value], index: usize, operation: &str) -> Result<&'a str, String> {
+    match arguments.get(index) {
+        Some(Value::String(value)) => Ok(value),
+        _ => Err(format!("foundation.kernel/{operation} expects string arguments")),
+    }
+}
+
+fn keyword(name: &str) -> Value {
+    Value::Keyword(Keyword::from(name))
+}
+
+fn strings_value(values: Vec<String>) -> Value {
+    Value::Vector(values.into_iter().map(Value::String).collect())
 }
 
 #[cfg(test)]
