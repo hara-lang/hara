@@ -1,5 +1,41 @@
 (ns std.work.provider.conformance
-  (:require [std.work.runtime.store :as store]))
+  (:require [std.foundation.promise :as promise]
+            [std.work.runtime.store :as store]))
+
+(def operational-store-operations
+  (vec
+   (concat store/run-operations
+           store/transaction-operations
+           store/event-operations
+           store/checkpoint-operations
+           store/outbox-operations)))
+
+(defn asynchronous-operation
+  [function]
+  (fn [& arguments]
+    (promise/run
+     (fn []
+       (apply function arguments)))))
+
+(defn asynchronous-provider
+  "Wraps a store so every operation settles through a portable Promise."
+  [provider]
+  (let [operations (store/operations provider)
+        wrapped
+        (reduce
+         (fn [output operation]
+           (let [function (get operations operation)]
+             (if function
+               (assoc output
+                      operation
+                      (asynchronous-operation function))
+               output)))
+         {}
+         operational-store-operations)]
+    (assoc provider
+           :provider/id [:async (:provider/id provider)]
+           :provider/operations wrapped
+           :provider/async-source provider)))
 
 (defn throws?
   [function]

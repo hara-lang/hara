@@ -1,8 +1,8 @@
 (ns std.work
   (:require [std.foundation :refer :all :exclude [filter]]
             [std.work.protocol :as protocol]
-            [std.work.runtime :as runtime]))
-
+            [std.work.runtime :as runtime]
+            [std.work.runtime.result :as async-result]))
 
 (defn work-spec
   [work]
@@ -181,19 +181,30 @@
    (protocol/-query runtime nil {:query :runs
                                  :where query})))
 
+(defn- run-reference
+  [runtime reference]
+  (async-result/then
+   (status runtime reference)
+   (fn [run-status]
+     (if (= :completed run-status)
+       (result runtime reference)
+       (async-result/then
+        (error runtime reference)
+        (fn [run-error]
+          (throw
+           (ex-info "Work run did not complete"
+                    {:run/id (runtime/reference-id reference)
+                     :status run-status
+                     :error run-error}))))))))
+
 (defn run
   ([runtime work input]
    (run runtime work input {}))
   ([runtime work input options]
-   (let [reference (start runtime work input options)
-         status (status runtime reference)]
-     (if (= :completed status)
-       (result runtime reference)
-       (throw
-        (ex-info "Work run did not complete"
-                 {:run/id (runtime/reference-id reference)
-                  :status status
-                  :error (error runtime reference)}))))))
+   (async-result/then
+    (start runtime work input options)
+    (fn [reference]
+      (run-reference runtime reference)))))
 
 (defn cancel
   ([runtime reference]

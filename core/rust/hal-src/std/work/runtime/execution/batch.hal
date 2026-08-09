@@ -1,0 +1,146 @@
+(ns std.work.runtime.execution.batch
+  (:require [std.work.runtime.base :as base]
+            [std.work.runtime.frame :as frame]
+            [std.work.runtime.result :as result]))
+
+(defn run-batch-filter-loop
+  [execute runtime base-frame filter-work manifest index output]
+  (loop [index index
+         output output]
+    (if (= index (count manifest))
+      output
+      (let [item (nth manifest index)
+            selected
+            (execute runtime
+                     (frame/item-frame base-frame (:item/id item))
+                     filter-work
+                     (:item/value item))]
+        (if (result/asynchronous? selected)
+          (result/then
+           selected
+           (fn [resolved]
+             (run-batch-filter-loop execute
+                                    runtime
+                                    base-frame
+                                    filter-work
+                                    manifest
+                                    (inc index)
+                                    (if resolved
+                                      (conj output item)
+                                      output))))
+          (recur (inc index)
+                 (if selected
+                   (conj output item)
+                   output)))))))
+
+(defn run-batch-filter
+  [execute runtime frame filter-work manifest]
+  (if (nil? filter-work)
+    manifest
+    (let [filter-spec (base/work-spec-map filter-work)
+          base-frame (frame/child-frame frame :batch :filter filter-spec)]
+      (run-batch-filter-loop execute
+                             runtime
+                             base-frame
+                             filter-work
+                             manifest
+                             0
+                             []))))
+
+(defn run-batch-process-loop
+  [execute runtime base-frame process-work manifest index output]
+  (loop [index index
+         output output]
+    (if (= index (count manifest))
+      output
+      (let [item (nth manifest index)
+            value
+            (execute runtime
+                     (frame/item-frame base-frame (:item/id item))
+                     process-work
+                     (:item/value item))]
+        (if (result/asynchronous? value)
+          (result/then
+           value
+           (fn [resolved]
+             (run-batch-process-loop execute
+                                     runtime
+                                     base-frame
+                                     process-work
+                                     manifest
+                                     (inc index)
+                                     (conj output
+                                           {:item/id (:item/id item)
+                                            :item/value resolved}))))
+          (recur (inc index)
+                 (conj output
+                       {:item/id (:item/id item)
+                        :item/value value})))))))
+
+(defn run-batch-process
+  [execute runtime frame process-work manifest]
+  (let [process-spec (base/work-spec-map process-work)
+        base-frame (frame/child-frame frame :batch :process process-spec)]
+    (run-batch-process-loop execute
+                            runtime
+                            base-frame
+                            process-work
+                            manifest
+                            0
+                            [])))
+
+(defn required-stage
+  [spec stage]
+  (let [work (get spec stage)]
+    (if (nil? work)
+      (throw
+       (ex-info "Batch work requires a stage"
+                {:stage stage
+                 :work/id (:id spec)}))
+      work)))
+
+(defn finish-batch
+  [execute runtime frame spec selected processed]
+  (let [summary-input
+        {:items selected
+         :results processed}
+        summarise-work (:summarise spec)
+        summary
+        (if summarise-work
+          (let [summary-spec (base/work-spec-map summarise-work)
+                summary-frame
+                (frame/child-frame frame :batch :summarise summary-spec)]
+            (execute runtime
+                     summary-frame
+                     summarise-work
+                     summary-input))
+          summary-input)]
+    (result/then
+     summary
+     (fn [resolved-summary]
+       {:items selected
+        :results processed
+        :summary resolved-summary}))))
+
+(defn run-batch
+  [execute runtime frame spec input]
+  (let [list-work (required-stage spec :list)
+        list-spec (base/work-spec-map list-work)
+        list-frame (frame/child-frame frame :batch :list list-spec)
+        process-work (required-stage spec :process)]
+    (result/then
+     (execute runtime list-frame list-work input)
+     (fn [listed]
+       (let [manifest (frame/normalise-manifest runtime spec listed)]
+         (result/then
+          (run-batch-filter execute runtime frame (:filter spec) manifest)
+          (fn [selected]
+            (result/then
+             (run-batch-process execute runtime frame process-work selected)
+             (fn [processed]
+               (finish-batch execute
+                             runtime
+                             frame
+                             spec
+                             selected
+                             processed))))))))))
