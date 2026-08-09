@@ -15,6 +15,8 @@ mod build;
 mod build_check;
 #[path = "cli/form.rs"]
 mod form;
+#[path = "cli/hara.rs"]
+mod hara;
 #[path = "cli/metaspec.rs"]
 mod metaspec;
 #[path = "cli/project.rs"]
@@ -151,6 +153,9 @@ pub(crate) fn run(options: Options) -> Result<(), String> {
     {
         usage();
         return Ok(());
+    }
+    if let Some(result) = hara::run_if_ported(&options, &expanded) {
+        return result;
     }
     match command.first().map(String::as_str) {
         Some("id") => identity_tool::run(&command[1..]),

@@ -96,7 +96,7 @@
                    (string-value (required entry :entry/media-type)
                                  ":entry/media-type")}))
               declared))
-            paths (map :entry/path entries)]
+            paths (map (fn [entry] (:entry/path entry)) entries)]
         (if (empty? entries)
           (throw (ex-info "asset.edn :asset/entries must not be empty" {}))
           nil)
@@ -110,14 +110,16 @@
          :asset/entries entries}))))
 
 (defn verify-files [collection]
-  (doseq [entry (:asset/entries collection)]
-    (let [path (file/join (:asset/root collection) (:entry/path entry))]
-      (if (and (deref (file/exists? path))
-               (= :file (:type (deref (file/stat path)))))
-        nil
-        (throw (ex-info (str "asset entry does not exist: " path)
-                        {:path path})))))
-  collection)
+  (reduce
+   (fn [verified entry]
+     (let [path (file/join (:asset/root collection) (:entry/path entry))]
+       (if (and (deref (file/exists? path))
+                (= :file (:type (deref (file/stat path)))))
+         verified
+         (throw (ex-info (str "asset entry does not exist: " path)
+                         {:path path})))))
+   collection
+   (:asset/entries collection)))
 
 (defn manifest-entry [root entry]
   (let [contents (deref (file/read (file/join root (:entry/path entry))))]
@@ -132,7 +134,8 @@
    :asset/version (:asset/version collection)
    :asset/entries
    (vec (map (fn [entry] (manifest-entry (:asset/root collection) entry))
-             (sort-by :entry/path (:asset/entries collection))))})
+             (sort-by (fn [entry] (:entry/path entry))
+                      (:asset/entries collection))))})
 
 (defn positional [arguments]
   (let [value (first arguments)]

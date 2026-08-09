@@ -1,6 +1,7 @@
 (ns hara.cli.dispatch
   (:require [hara.cli.model :as model]
-            [hara.cli.route :as route]))
+            [hara.cli.route :as route]
+            [std.foundation.string :as string]))
 
 (defn request-for
   [manifest arguments options context]
@@ -27,7 +28,24 @@
     (let [handler-id (:request/handler request)
           handler (get handlers handler-id)]
       (if handler
-        (handler request)
+        (try
+          (handler request)
+          (catch Throwable error
+            (let [data (ex-data error)
+                  message (or (:error data) (ex-message error) (str error))
+                  usage? (or (string/starts-with? message "unknown ")
+                             (string/starts-with? message "usage:")
+                             (string/starts-with? message "unavailable:")
+                             (string/includes? message " requires ")
+                             (string/includes? message "cannot read")
+                             (string/includes? message "not found"))]
+              (model/failure
+               (if usage?
+                 :hara.cli.outcome/usage-error
+                 :hara.cli.outcome/failed)
+               :hara.cli/command-error
+               message
+               {:error/cause data}))))
         (model/failure
          :hara.cli.outcome/internal-error
          :hara.cli/missing-handler

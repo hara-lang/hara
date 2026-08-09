@@ -146,18 +146,20 @@
                       {:path descriptor})))
     (let [manifest (validate-manifest (edn/read (project/read-text descriptor)) descriptor)
           package (assoc manifest :package/root root :package/descriptor descriptor)]
-      (doseq [relative (:declared/files package)]
-        (if (= relative "hara.extension.edn")
-          nil
-          (let [path (file/join root relative)]
-            (if (and (deref (file/exists? path))
-                     (= :file (:type (deref (file/stat path)))))
-              nil
-              (throw (ex-info
-                      (str "extension/asset-unavailable: " (:namespace package)
-                           "/" relative)
-                      {:path path}))))))
-      package)))
+      (reduce
+       (fn [verified relative]
+         (if (= relative "hara.extension.edn")
+           verified
+           (let [path (file/join root relative)]
+             (if (and (deref (file/exists? path))
+                      (= :file (:type (deref (file/stat path)))))
+               verified
+               (throw (ex-info
+                       (str "extension/asset-unavailable: " (:namespace package)
+                            "/" relative)
+                       {:path path}))))))
+       package
+       (:declared/files package)))))
 
 (defn package-argument [arguments operation]
   (if (= 1 (count arguments))
@@ -224,11 +226,15 @@
     (if (deref (file/exists? destination))
       (throw (ex-info (str "Extension is already installed: " destination) {}))
       nil)
-    (doseq [relative (:declared/files package)]
-      (copy-file! (if (= relative "hara.extension.edn")
-                    (:package/descriptor package)
-                    (file/join source relative))
-                  (file/join destination relative)))
+    (reduce
+     (fn [installed relative]
+       (copy-file! (if (= relative "hara.extension.edn")
+                     (:package/descriptor package)
+                     (file/join source relative))
+                   (file/join destination relative))
+       (inc installed))
+     0
+     (:declared/files package))
     (model/success package
                    [(model/message
                      (str "Installed " (:namespace package) " at " destination "\n"))])))
