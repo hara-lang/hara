@@ -526,7 +526,7 @@ impl Session {
         for (index, value) in bindings.into_iter().enumerate() {
             environment.insert(format!("__hta_arg_{index}"), value);
         }
-        let fiber = core::with_capability_providers(file_provider, None, false, || {
+        let fiber = core::with_capability_providers(file_provider, None, false, None, || {
             core::with_namespace_registry(&namespaces, || {
                 core::with_namespace_source(provider, || {
                     core::with_protocols(&protocols, || {
@@ -559,7 +559,7 @@ impl Session {
         let protocols = self.protocols.clone();
         let resources = self.resources.clone();
         let provider = Rc::new(move |name: &str| resources.borrow().get(name).cloned());
-        let fiber = core::with_capability_providers(file_provider, None, false, || {
+        let fiber = core::with_capability_providers(file_provider, None, false, None, || {
             core::with_namespace_registry(&namespaces, || {
                 core::with_namespace_source(provider, || {
                     core::with_protocols(&protocols, || {
@@ -686,7 +686,7 @@ impl Session {
         let protocols = self.protocols.clone();
         let resources = self.resources.clone();
         let provider = Rc::new(move |name: &str| resources.borrow().get(name).cloned());
-        core::with_capability_providers(file_provider, None, false, || {
+        core::with_capability_providers(file_provider, None, false, None, || {
             core::with_namespace_registry(&namespaces, || {
                 core::with_namespace_source(provider, || {
                     core::with_protocols(&protocols, || {
@@ -810,8 +810,16 @@ impl core::FileProvider for HostFileProvider {
         self.promise("exists", vec![Value::String(path.into())])
     }
 
+    fn stat(&self, path: &str) -> Result<Promise, core::FileError> {
+        self.promise("stat", vec![Value::String(path.into())])
+    }
+
     fn list(&self, path: &str) -> Result<Promise, core::FileError> {
         self.promise("list", vec![Value::String(path.into())])
+    }
+
+    fn walk(&self, path: &str) -> Result<Promise, core::FileError> {
+        self.promise("walk", vec![Value::String(path.into())])
     }
 
     fn mkdir(&self, path: &str) -> Result<Promise, core::FileError> {
