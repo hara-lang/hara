@@ -5,6 +5,8 @@
 //! package tooling, embedding hosts, and durable state boundaries that need
 //! canonical Hara bytes without linking the VM, Wasmtime, or host services.
 
+pub mod view;
+
 use hara_abi::Value;
 use std::collections::BTreeMap;
 
@@ -68,6 +70,34 @@ pub fn decode(bytes: &[u8]) -> Result<Value, String> {
     let value = reader.value(0)?;
     if reader.cursor != reader.bytes.len() {
         return Err("hta/frame-invalid: trailing bytes".into());
+    }
+    Ok(value)
+}
+
+/// Decode one portable HTA1 value only when the supplied bytes are bounded and
+/// already use the exact canonical encoding produced by [`encode`].
+///
+/// This is the generic provider boundary for small values. It deliberately does
+/// not read an object, compute a digest, select a provider, or interpret an
+/// application schema. Callers must verify immutable-object identity separately.
+pub fn decode_canonical(bytes: &[u8], max_bytes: usize) -> Result<Value, String> {
+    if max_bytes == 0 || max_bytes > MAX_FRAME_BYTES {
+        return Err(format!(
+            "hta/maximum-invalid: requested maximum must be between 1 and {MAX_FRAME_BYTES} bytes"
+        ));
+    }
+    if bytes.len() > max_bytes {
+        return Err(format!(
+            "hta/frame-too-large: {} exceeds requested maximum {} bytes",
+            bytes.len(),
+            max_bytes
+        ));
+    }
+
+    let value = decode(bytes)?;
+    let canonical = encode(&value)?;
+    if canonical != bytes {
+        return Err("hta/frame-noncanonical: decoded value has different canonical bytes".into());
     }
     Ok(value)
 }
@@ -241,9 +271,7 @@ impl Reader<'_> {
     }
 
     fn len(&mut self) -> Result<usize, String> {
-        Ok(u32::from_be_bytes(
-            self.take(4)?.try_into().expect("four bytes"),
-        ) as usize)
+        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("four bytes")) as usize)
     }
 
     fn byte(&mut self) -> Result<u8, String> {
@@ -284,10 +312,7 @@ mod tests {
     #[test]
     fn canonical_portable_round_trip() {
         let value = record([
-            (
-                "a",
-                Value::Vector(vec![Value::Boolean(true), Value::Nil]),
-            ),
+            ("a", Value::Vector(vec![Value::Boolean(true), Value::Nil])),
             ("b", Value::Integer(2)),
             ("bytes", Value::Bytes(vec![0, 1, 255])),
             ("decimal", Value::Decimal("1.2500".into())),
@@ -297,6 +322,7 @@ mod tests {
         let encoded = encode(&value).unwrap();
         assert_eq!(decode(&encoded).unwrap(), value);
         assert_eq!(encode(&decode(&encoded).unwrap()).unwrap(), encoded);
+        assert_eq!(decode_canonical(&encoded, encoded.len()).unwrap(), value);
     }
 
     #[test]
@@ -304,6 +330,34 @@ mod tests {
         let first = record([("z", Value::Integer(1)), ("a", Value::Integer(2))]);
         let second = record([("a", Value::Integer(2)), ("z", Value::Integer(1))]);
         assert_eq!(encode(&first).unwrap(), encode(&second).unwrap());
+    }
+
+    #[test]
+    fn canonical_decode_rejects_noncanonical_map_order() {
+        let mut bytes = MAGIC.to_vec();
+        bytes.extend_from_slice(&[MAP, 0, 0, 0, 2]);
+        bytes.extend_from_slice(&[KEYWORD, 0, 0, 0, 2, b'a', b'a', NIL]);
+        bytes.extend_from_slice(&[KEYWORD, 0, 0, 0, 1, b'z', TRUE]);
+
+        assert!(decode(&bytes).is_ok());
+        assert!(decode_canonical(&bytes, bytes.len())
+            .unwrap_err()
+            .contains("frame-noncanonical"));
+    }
+
+    #[test]
+    fn canonical_decode_enforces_the_requested_maximum() {
+        let bytes = encode(&Value::Nil).unwrap();
+        assert_eq!(decode_canonical(&bytes, bytes.len()).unwrap(), Value::Nil);
+        assert!(decode_canonical(&bytes, bytes.len() - 1)
+            .unwrap_err()
+            .contains("requested maximum"));
+        assert!(decode_canonical(&bytes, 0)
+            .unwrap_err()
+            .contains("maximum-invalid"));
+        assert!(decode_canonical(&bytes, MAX_FRAME_BYTES + 1)
+            .unwrap_err()
+            .contains("maximum-invalid"));
     }
 
     #[test]
@@ -353,7 +407,8 @@ mod tests {
             REGEX,
         ] {
             let bytes = [MAGIC.as_slice(), &[tag]].concat();
-            assert!(decode(&bytes)
+            assert!(decode(&bytes).unwrap_err().contains("runtime wire tag"));
+            assert!(decode_canonical(&bytes, bytes.len())
                 .unwrap_err()
                 .contains("runtime wire tag"));
         }
@@ -361,7 +416,9 @@ mod tests {
 
     #[test]
     fn frame_shape_and_lengths_are_bounded() {
-        assert!(decode(b"not-hta").unwrap_err().contains("expected HTA1 magic"));
+        assert!(decode(b"not-hta")
+            .unwrap_err()
+            .contains("expected HTA1 magic"));
 
         let trailing = [MAGIC.as_slice(), &[NIL, NIL]].concat();
         assert!(decode(&trailing).unwrap_err().contains("trailing bytes"));
