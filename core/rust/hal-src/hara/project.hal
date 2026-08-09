@@ -46,18 +46,21 @@
           (recur (file/parent current)))))))
 
 (defn walk-files [path]
-  (let [metadata (deref (file/stat path))]
-    (cond
-      (= :file (:type metadata)) [path]
-      (= :directory (:type metadata))
-      (vec (mapcat walk-files (deref (file/list path))))
-      :else [])))
+  (vec (deref (file/walk path))))
 
 (defn files-in
   ([project roots] (files-in project roots nil))
   ([project roots suffix]
    (let [root (:project/root project)
-         files (vec (mapcat (fn [path] (walk-files (file/join root path))) roots))]
+         files (reduce (fn [output path]
+                         (into output (walk-files (file/join root path))))
+                       []
+                       roots)]
      (if suffix
-       (vec (filter (fn [path] (string/ends-with? path suffix)) files))
+       (reduce (fn [output path]
+                 (if (string/ends-with? path suffix)
+                   (conj output path)
+                   output))
+               []
+               files)
        files))))

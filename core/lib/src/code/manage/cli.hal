@@ -1,0 +1,154 @@
+(ns code.manage.cli
+  (:require [code.manage :as manage]
+            [hara.cli.model :as model]
+            [hara.project :as project]
+            [std.foundation.file :as file]
+            [std.foundation.os :as os]
+            [std.foundation.string :as string]
+            [std.work :as work]))
+
+(def +value-options+
+  {"--match" :match "--replacement" :replacement
+   "--from" :from "--to" :to "--needle" :needle
+   "--form" :form "--var" :var})
+
+(def +test-only+
+  #{:refactor-test :isolate :factcheck-remove :factcheck-generate :unchecked})
+
+(def +source-and-test+
+  #{:ns-rename :find-usages :grep :grep-replace})
+
+(defn tail [values] (vec (rest values)))
+
+(defn required [remaining option]
+  (if (empty? remaining)
+    (throw (ex-info (str option " requires a value") {:option option}))
+    (first remaining)))
+
+(defn parse-arguments [arguments]
+  (let [operation (keyword (or (first arguments) "analyse"))]
+    (if (nil? (get manage/parity-inventory operation))
+      (throw (ex-info (str "unsupported manage operation " operation)
+                      {:operation operation}))
+      (loop [remaining (tail arguments)
+             write false
+             namespaces []
+             patterns []
+             options {}]
+        (if (empty? remaining)
+          {:operation operation
+           :write write
+           :namespaces namespaces
+           :options (if (empty? patterns)
+                      options
+                      (assoc options :patterns patterns))}
+          (let [argument (first remaining)
+                more (tail remaining)
+                option-key (get +value-options+ argument)]
+            (cond
+              (= argument "--write")
+              (recur more true namespaces patterns options)
+              (= argument "--pattern")
+              (recur (tail more) write namespaces
+                     (conj patterns (required more argument)) options)
+              option-key
+              (recur (tail more) write namespaces patterns
+                     (assoc options option-key (required more argument)))
+              (string/starts-with? argument "-")
+              (throw (ex-info (str "unknown manage option " argument)
+                              {:option argument}))
+              :else
+              (recur more write (conj namespaces argument) patterns options))))))))
+
+(defn selected? [path namespaces]
+  (or (empty? namespaces)
+      (not
+       (empty?
+        (filter
+         (fn [namespace]
+           (string/includes?
+            path
+            (string/replace
+             (string/replace namespace "." "/") "-" "_")))
+         namespaces)))))
+
+(defn roots-for [project operation]
+  (cond
+    (get +test-only+ operation) (:project/test-paths project)
+    (get +source-and-test+ operation)
+    (vec (concat (:project/source-paths project) (:project/test-paths project)))
+    :else (:project/source-paths project)))
+
+(defn unit [path type]
+  {:path path
+   :type type
+   :source (project/read-text path)})
+
+(defn units-for [project parsed]
+  (let [test-roots (:project/test-paths project)
+        paths (project/files-in project
+                                (roots-for project (:operation parsed))
+                                ".hal")]
+    (reduce
+     (fn [output path]
+       (if (selected? path (:namespaces parsed))
+         (conj output
+               (unit path
+                     (if (not
+                          (empty?
+                           (filter (fn [root]
+                                     (string/includes?
+                                      path
+                                      (file/join (:project/root project) root)))
+                                   test-roots)))
+                       :test
+                       :source)))
+         output))
+     []
+     paths)))
+
+(defn current-source [path]
+  (if (deref (file/exists? path)) (project/read-text path) ""))
+
+(defn preflight! [edits]
+  (loop [remaining edits]
+    (if (empty? remaining)
+      edits
+      (let [edit (first remaining)]
+        (if (= (:before edit) (current-source (:path edit)))
+          (recur (tail remaining))
+          (throw (ex-info (str "code.manage stale edit: " (:path edit))
+                          {:path (:path edit)})))))))
+
+(defn apply-edits! [edits]
+  (preflight! edits)
+  (loop [remaining edits]
+    (if (empty? remaining)
+      edits
+      (let [edit (first remaining)
+            path (:path edit)
+            parent (file/parent path)]
+        (if parent (deref (file/mkdir parent)) nil)
+        (deref (file/write path (string/encode-utf8 (:after edit))))
+        (recur (tail remaining))))))
+
+(defn execute [request]
+  (let [parsed (parse-arguments (:request/arguments request))
+        start (or (:project (:request/options request))
+                  (:root (:request/options request))
+                  (:request/cwd request)
+                  (os/cwd))
+        current-project (project/discover start)
+        plan (manage/plan (:operation parsed)
+                          {:units (units-for current-project parsed)
+                           :options (:options parsed)})]
+    (if (:write parsed) (apply-edits! (:edits plan)) nil)
+    (model/success plan [(model/message (str (pr-str plan) "\n"))])))
+
+(def +command-work+
+  (work/step
+   {:id 'code.manage/cli :version 1}
+   (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run (work/local-runtime) +command-work+ request))

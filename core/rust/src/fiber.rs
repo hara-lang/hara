@@ -148,6 +148,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "file/exists?",
     "file/stat",
     "file/list",
+    "file/walk",
     "file/mkdir",
     "file/delete",
     "filter",

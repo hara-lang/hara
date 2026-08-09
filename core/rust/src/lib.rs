@@ -1384,6 +1384,17 @@ impl Runtime {
             .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
     }
 
+    pub fn file_walk(&self, path: &str) -> Result<PromiseHandle, JsValue> {
+        let provider = self
+            .providers
+            .file()
+            .ok_or_else(|| JsValue::from_str("file/unsupported"))?;
+        provider
+            .walk(path)
+            .map(PromiseHandle::from_promise)
+            .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
+    }
+
     pub fn file_delete(&self, path: &str) -> Result<PromiseHandle, JsValue> {
         let provider = self
             .providers

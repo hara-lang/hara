@@ -3487,6 +3487,19 @@ fn file_operation(
                 .map(Value::Promise)
                 .map_err(|error| file_error(operation, error))
         }
+        "file/walk" => {
+            if forms.len() != 1 {
+                return Err("file/walk expects a path".into());
+            }
+            let path = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/walk expects a path".into()),
+            };
+            file_provider(operation)?
+                .walk(&path)
+                .map(Value::Promise)
+                .map_err(|error| file_error(operation, error))
+        }
         "file/mkdir" => {
             if forms.len() != 1 {
                 return Err("file/mkdir expects a path".into());
@@ -3895,6 +3908,7 @@ pub trait FileProvider {
     fn exists(&self, path: &str) -> Result<Promise, FileError>;
     fn stat(&self, path: &str) -> Result<Promise, FileError>;
     fn list(&self, path: &str) -> Result<Promise, FileError>;
+    fn walk(&self, path: &str) -> Result<Promise, FileError>;
     fn mkdir(&self, path: &str) -> Result<Promise, FileError>;
     fn delete(&self, path: &str) -> Result<Promise, FileError>;
 }
@@ -4161,6 +4175,44 @@ impl FileProvider for NativeFileProvider {
             Err(error) => {
                 promise.reject(error.to_string());
             }
+        }
+        Ok(promise)
+    }
+
+    fn walk(&self, path: &str) -> Result<Promise, FileError> {
+        let root = self.scoped(path)?;
+        let promise = Promise::new();
+        let mut pending = vec![root];
+        let mut files = Vec::new();
+        let mut failure = None;
+        while let Some(current) = pending.pop() {
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.is_file() => {
+                    files.push(current.to_string_lossy().into_owned());
+                }
+                Ok(metadata) if metadata.is_dir() => match std::fs::read_dir(&current) {
+                    Ok(entries) => pending.extend(
+                        entries.filter_map(|entry| entry.ok().map(|value| value.path())),
+                    ),
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
+                },
+                Ok(_) => {}
+                Err(error) => {
+                    failure = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        if let Some(error) = failure {
+            promise.reject(error);
+        } else {
+            files.sort();
+            promise.resolve(Value::Array(Rc::new(RefCell::new(
+                files.into_iter().map(Value::String).collect(),
+            ))));
         }
         Ok(promise)
     }
@@ -4876,6 +4928,26 @@ impl FileProvider for MemoryFileProvider {
         Ok(promise)
     }
 
+    fn walk(&self, path: &str) -> Result<Promise, FileError> {
+        if !self.within_root(path) {
+            return Err(FileError::Denied);
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let mut names = self
+            .files
+            .borrow()
+            .keys()
+            .filter(|candidate| *candidate == path || candidate.starts_with(&prefix))
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        let promise = Promise::new();
+        promise.resolve(Value::Array(Rc::new(RefCell::new(
+            names.into_iter().map(Value::String).collect(),
+        ))));
+        Ok(promise)
+    }
+
     fn mkdir(&self, path: &str) -> Result<Promise, FileError> {
         if !self.within_root(path) {
             return Err(FileError::Denied);
@@ -4919,6 +4991,9 @@ impl FileProvider for UnsupportedFileProvider {
         Err(FileError::Unsupported)
     }
     fn list(&self, _path: &str) -> Result<Promise, FileError> {
+        Err(FileError::Unsupported)
+    }
+    fn walk(&self, _path: &str) -> Result<Promise, FileError> {
         Err(FileError::Unsupported)
     }
     fn mkdir(&self, _path: &str) -> Result<Promise, FileError> {
@@ -11748,6 +11823,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "file/exists?",
                         "file/stat",
                         "file/list",
+                        "file/walk",
                         "file/mkdir",
                         "file/delete",
                     ]
