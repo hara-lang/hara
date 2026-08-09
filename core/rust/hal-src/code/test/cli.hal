@@ -1,8 +1,7 @@
 ;; Host-facing argument normalisation for code.test. Execution belongs to
 ;; std.work; command-line token handling remains in the test domain.
 (ns code.test.cli
-  (:require [code.framework :as framework]
-            [hara.cli.model :as model]
+  (:require [hara.cli.model :as model]
             [hara.project :as project]
             [std.foundation.edn :as edn]
             [std.foundation.file :as file]
@@ -129,20 +128,6 @@
           :else
           (throw (ex-info (str "test path does not exist: " path) {:path path})))))))
 
-(defn register-project-sources! [current-project]
-  (reduce
-   (fn [registered path]
-     (let [source (project/read-text path)
-           namespace (framework/namespace-name source)]
-       (if (nil? namespace)
-         (throw (ex-info (str path " does not declare an ns or ns+ namespace")
-                         {:path path}))
-         (do
-           (kernel/resource-register namespace source)
-           (conj registered namespace)))))
-   []
-   (project/files-in current-project (:project/source-paths current-project) ".hal")))
-
 (defn run-test-file! [path index]
   (let [session (str "hara.cli.test." index)]
     (kernel/session-create session)
@@ -195,7 +180,7 @@
                            (project-start request)
                            (absolute-path cwd (first arguments))))
         paths (test-files current-project arguments cwd)
-        registered (register-project-sources! current-project)
+        registered (project/register-resources! current-project)
         results (run-test-files! paths)
         counts (summary results)
         data {:test/project (:project/id current-project)
