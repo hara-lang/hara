@@ -8,8 +8,7 @@
   (:require [lib.docker :as docker]
             [lib.postgres.connection :as connection]
             [std.db.postgres :as postgres]
-            [std.lib.component :as component]
-            [lang.core.eval :as evaluation]))
+            [std.lib.component :as component]))
 
 (def open connection/conn-create)
 (def start open)
@@ -77,11 +76,11 @@
         admin (admin-options options)
         database (:dbname options)
         timeout (:timeout runtime)]
-    (evaluation/await (postgres/wait-ready admin) timeout)
+    (deref (postgres/wait-ready admin) timeout nil)
     (if (get-in runtime [:options :config :temp])
-      (evaluation/await (postgres/database-create admin database) timeout))
+      (deref (postgres/database-create admin database) timeout nil))
     (reset! (:connection runtime)
-            (evaluation/await (postgres/open options) timeout))
+            (deref (postgres/open options) timeout nil))
     runtime))
 
 (defn stop-pg-raw
@@ -92,12 +91,11 @@
         temp (get-in runtime [:options :config :temp])
         timeout (:timeout runtime)]
     (if connection
-      (evaluation/await (postgres/close connection) timeout))
+      (deref (postgres/close connection) timeout nil))
     (reset! (:connection runtime) nil)
     (if (and temp (not= temp :create))
-      (evaluation/await
-       (postgres/database-drop (admin-options options) database)
-       timeout))
+      (deref (postgres/database-drop (admin-options options) database)
+             timeout nil))
     runtime))
 
 (def start-pg

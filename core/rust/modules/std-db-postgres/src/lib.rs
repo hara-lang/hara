@@ -451,7 +451,15 @@ impl WorkerState {
     ) -> Result<Value, Error> {
         let options = expect_record(arguments.first(), "options")?;
         let database = expect_string(arguments.get(1), "database")?;
-        let client = connect(connection_config(options)?, 0, self.subscriptions.clone()).await?;
+        let mut admin_options = options.clone();
+        admin_options.remove("database");
+        admin_options.insert("dbname".into(), Value::String("postgres".into()));
+        let client = connect(
+            connection_config(&admin_options)?,
+            0,
+            self.subscriptions.clone(),
+        )
+        .await?;
         let command = if create {
             "create database"
         } else {
