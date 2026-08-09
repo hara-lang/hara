@@ -4,12 +4,12 @@
 //! executable Hara values. Callers can inspect a closed envelope while retaining
 //! exact nested value spans for hashing, storage, or later composition.
 
-use hara_abi::Value as PortableValue;
 use super::{
-    encode_value, ARRAY, ATOM, BIG_INTEGER, BYTES, CHARACTER, DECIMAL, F64, FALSE, HANDLE,
-    I64, KEYWORD, LIST, MAGIC, MAP, MAX_FRAME_BYTES, MAX_NESTING_DEPTH, NAMESPACE, NIL,
-    OBJECT, REGEX, SET, STRING, SYMBOL, TRUE, VAR, VECTOR,
+    encode_value, ARRAY, ATOM, BIG_INTEGER, BYTES, CHARACTER, DECIMAL, F64, FALSE, HANDLE, I64,
+    KEYWORD, LIST, MAGIC, MAP, MAX_FRAME_BYTES, MAX_NESTING_DEPTH, NAMESPACE, NIL, OBJECT, REGEX,
+    SET, STRING, SYMBOL, TRUE, VAR, VECTOR,
 };
+use hara_abi::Value as PortableValue;
 use std::str;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +49,8 @@ impl<'a> FrameView<'a> {
         if bytes.len() > MAX_FRAME_BYTES {
             return Err(format!(
                 "hta/frame-too-large: {} exceeds {} bytes",
-                bytes.len(), MAX_FRAME_BYTES
+                bytes.len(),
+                MAX_FRAME_BYTES
             ));
         }
         if !bytes.starts_with(MAGIC) {
@@ -161,9 +162,8 @@ impl<'a> ValueView<'a> {
     pub fn text(&self) -> Result<&'a str, String> {
         match self.bare[0] {
             STRING | KEYWORD | SYMBOL | NAMESPACE | BIG_INTEGER | DECIMAL | REGEX => {
-                str::from_utf8(sized_payload(self.bare)?).map_err(|_| {
-                    "hta/value-malformed: text payload is not valid UTF-8".into()
-                })
+                str::from_utf8(sized_payload(self.bare)?)
+                    .map_err(|_| "hta/value-malformed: text payload is not valid UTF-8".into())
             }
             _ => Err(kind_error("text scalar", self.kind())),
         }
@@ -323,11 +323,8 @@ fn scan_value(bytes: &[u8], start: usize, depth: usize) -> Result<usize, String>
         I64 | F64 => take_end(bytes, cursor, 8),
         CHARACTER => {
             let end = take_end(bytes, cursor, 4)?;
-            let scalar = u32::from_be_bytes(
-                bytes[cursor..end]
-                    .try_into()
-                    .expect("four character bytes"),
-            );
+            let scalar =
+                u32::from_be_bytes(bytes[cursor..end].try_into().expect("four character bytes"));
             if char::from_u32(scalar).is_none() {
                 return Err("hta/value-malformed: invalid character scalar".into());
             }

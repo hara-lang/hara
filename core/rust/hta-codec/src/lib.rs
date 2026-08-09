@@ -89,7 +89,8 @@ pub fn decode_canonical(bytes: &[u8], max_bytes: usize) -> Result<Value, String>
     if bytes.len() > max_bytes {
         return Err(format!(
             "hta/frame-too-large: {} exceeds requested maximum {} bytes",
-            bytes.len(), max_bytes
+            bytes.len(),
+            max_bytes
         ));
     }
 
@@ -270,9 +271,7 @@ impl Reader<'_> {
     }
 
     fn len(&mut self) -> Result<usize, String> {
-        Ok(u32::from_be_bytes(
-            self.take(4)?.try_into().expect("four bytes"),
-        ) as usize)
+        Ok(u32::from_be_bytes(self.take(4)?.try_into().expect("four bytes")) as usize)
     }
 
     fn byte(&mut self) -> Result<u8, String> {
@@ -313,10 +312,7 @@ mod tests {
     #[test]
     fn canonical_portable_round_trip() {
         let value = record([
-            (
-                "a",
-                Value::Vector(vec![Value::Boolean(true), Value::Nil]),
-            ),
+            ("a", Value::Vector(vec![Value::Boolean(true), Value::Nil])),
             ("b", Value::Integer(2)),
             ("bytes", Value::Bytes(vec![0, 1, 255])),
             ("decimal", Value::Decimal("1.2500".into())),
@@ -411,9 +407,7 @@ mod tests {
             REGEX,
         ] {
             let bytes = [MAGIC.as_slice(), &[tag]].concat();
-            assert!(decode(&bytes)
-                .unwrap_err()
-                .contains("runtime wire tag"));
+            assert!(decode(&bytes).unwrap_err().contains("runtime wire tag"));
             assert!(decode_canonical(&bytes, bytes.len())
                 .unwrap_err()
                 .contains("runtime wire tag"));
@@ -422,7 +416,9 @@ mod tests {
 
     #[test]
     fn frame_shape_and_lengths_are_bounded() {
-        assert!(decode(b"not-hta").unwrap_err().contains("expected HTA1 magic"));
+        assert!(decode(b"not-hta")
+            .unwrap_err()
+            .contains("expected HTA1 magic"));
 
         let trailing = [MAGIC.as_slice(), &[NIL, NIL]].concat();
         assert!(decode(&trailing).unwrap_err().contains("trailing bytes"));

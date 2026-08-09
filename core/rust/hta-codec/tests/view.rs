@@ -69,16 +69,10 @@ fn views_closed_argument_envelopes_without_decoding_nested_maps() {
             sized(STRING, b"digest-key"),
             vector(&[integer(1), integer(2)]),
         ),
-        (
-            sized(STRING, b"other-key"),
-            sized(BYTES, &[0, 1, 255]),
-        ),
+        (sized(STRING, b"other-key"), sized(BYTES, &[0, 1, 255])),
     ]);
     let request = map(vec![
-        (
-            sized(KEYWORD, b"operation"),
-            sized(STRING, b"initialize"),
-        ),
+        (sized(KEYWORD, b"operation"), sized(STRING, b"initialize")),
         (
             sized(KEYWORD, b"protocol"),
             sized(STRING, b"hara.store-request/1"),
@@ -140,11 +134,7 @@ fn scans_every_runtime_wire_shape() {
         output.extend_from_slice(&integer(5));
         output
     };
-    let character = [
-        vec![CHARACTER],
-        u32::from('λ').to_be_bytes().to_vec(),
-    ]
-    .concat();
+    let character = [vec![CHARACTER], u32::from('λ').to_be_bytes().to_vec()].concat();
     let values = vec![
         vec![NIL],
         vec![FALSE],
@@ -215,10 +205,7 @@ fn compose_record_splices_borrowed_values_without_reencoding() {
             "protocol".to_string(),
             Fragment::Portable(PortableValue::String("hara.store-result/1".into())),
         ),
-        (
-            "value".to_string(),
-            Fragment::Borrowed(parsed_raw.root()),
-        ),
+        ("value".to_string(), Fragment::Borrowed(parsed_raw.root())),
     ])
     .unwrap();
 
@@ -239,10 +226,7 @@ fn compose_vector_and_record_are_canonical_and_reject_duplicate_keys() {
     assert_eq!(parsed.root().vector_items().unwrap().len(), 2);
 
     let duplicate = compose_record([
-        (
-            "a".to_string(),
-            Fragment::Portable(PortableValue::Nil),
-        ),
+        ("a".to_string(), Fragment::Portable(PortableValue::Nil)),
         (
             "a".to_string(),
             Fragment::Portable(PortableValue::Boolean(true)),
@@ -285,13 +269,7 @@ fn malformed_runtime_shapes_fail_before_views_escape() {
         .unwrap_err()
         .contains("invalid object key"));
 
-    let invalid_character = frame(
-        [
-            vec![CHARACTER],
-            0x11_0000_u32.to_be_bytes().to_vec(),
-        ]
-        .concat(),
-    );
+    let invalid_character = frame([vec![CHARACTER], 0x11_0000_u32.to_be_bytes().to_vec()].concat());
     assert!(FrameView::parse(&invalid_character)
         .unwrap_err()
         .contains("invalid character scalar"));
@@ -307,10 +285,7 @@ fn malformed_runtime_shapes_fail_before_views_escape() {
 fn portable_fragment_composition_matches_existing_record_encoding() {
     let mut record = BTreeMap::new();
     record.insert("a".to_string(), PortableValue::Integer(1));
-    record.insert(
-        "z".to_string(),
-        PortableValue::String("last".into()),
-    );
+    record.insert("z".to_string(), PortableValue::String("last".into()));
     let existing = encode(&PortableValue::Record(record)).unwrap();
     let composed = compose_record([
         (
