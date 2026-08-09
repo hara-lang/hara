@@ -3108,6 +3108,9 @@ pub(crate) fn refer_startup_defaults(registry: &NamespaceRegistry<Value>, namesp
     if let Some(edn) = registry.find("std.foundation.edn") {
         target.alias("edn", edn);
     }
+    if let Some(json) = registry.find("std.foundation.json") {
+        target.alias("json", json);
+    }
 }
 
 /// Runs an evaluation with a registry available to protocol dispatch.
