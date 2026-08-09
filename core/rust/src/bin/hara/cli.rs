@@ -1,12 +1,6 @@
-use crate::repl;
-use hara_wasm::asset;
 use hara_wasm::cli_app;
-use hara_wasm::extension_tool;
-use hara_wasm::identity_tool;
-use hara_wasm::package;
 use hara_wasm::project as project_model;
 use std::env;
-use std::io::{self, Read};
 use std::path::PathBuf;
 
 #[path = "cli/build.rs"]
@@ -15,20 +9,14 @@ mod build;
 mod build_check;
 #[path = "cli/form.rs"]
 mod form;
+#[path = "cli/hara.rs"]
+mod hara;
 #[path = "cli/metaspec.rs"]
 mod metaspec;
 #[path = "cli/project.rs"]
 mod project;
 #[path = "cli/spec.rs"]
 mod spec;
-
-#[cfg(feature = "halc-encoder")]
-use self::project::compile_halc;
-use self::project::{
-    check_project, direct_eval, edit_dependency, manage_project, new_project, run_file,
-    run_headless, run_project, run_remote, seedgen_project, sync_project, test_project,
-};
-use self::spec::spec_command;
 
 #[derive(Default)]
 pub(crate) struct Options {
@@ -37,6 +25,7 @@ pub(crate) struct Options {
     pub(crate) native_sockets: bool,
     pub(crate) allow_file: bool,
     pub(crate) allow_process: bool,
+    pub(crate) allow_postgres: bool,
     pub(crate) log_requests: bool,
     pub(crate) offline: bool,
     pub(crate) host: String,
@@ -62,18 +51,21 @@ pub(crate) fn parse_options() -> Result<Options, String> {
         }
         match argument.as_str() {
             "--help" | "-h" => {
-                usage();
-                std::process::exit(0);
+                options.command.push(argument);
+                options.command.extend(args);
+                break;
             }
             "--version" | "-V" => {
-                println!("hara native {}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
+                options.command.push(argument);
+                options.command.extend(args);
+                break;
             }
             "--root" => options.root = Some(PathBuf::from(required(&mut args, "--root")?)),
             "--project" => options.project = Some(PathBuf::from(required(&mut args, "--project")?)),
             "--native-sockets" | "--allow-net" => options.native_sockets = true,
             "--allow-file" => options.allow_file = true,
             "--allow-process" => options.allow_process = true,
+            "--allow-postgres" => options.allow_postgres = true,
             "--log-requests" => options.log_requests = true,
             "--offline" => options.offline = true,
             "--no-history" => options.no_history = true,
@@ -134,121 +126,26 @@ fn option_value<'a>(argument: &'a str, option: &str) -> Result<&'a str, String> 
 }
 
 pub(crate) fn run(options: Options) -> Result<(), String> {
+    if options.allow_postgres {
+        if let Some(path) = options.project.as_deref() {
+            let project = project_model::discover(path)?;
+            if !project.capabilities.iter().any(|value| value == "db/postgres") {
+                return Err("project must declare :db/postgres before --allow-postgres".into());
+            }
+        }
+    }
     // Project aliases are argv-only macros, expanded before the normative
     // route table.  A directory without project.edn simply has no aliases.
     let expanded = match project_model::discover(
-        options.project.as_deref().unwrap_or_else(|| std::path::Path::new(".")),
+        options
+            .project
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(".")),
     ) {
         Ok(project) => project_model::expand_aliases(&project, &options.command)?,
         Err(_) => options.command.clone(),
     };
-    let command = routed_command(&expanded);
-    if command.first().is_some_and(|value| value == "help")
-        || command
-            .iter()
-            .skip(1)
-            .any(|value| value == "--help" || value == "-h")
-    {
-        usage();
-        return Ok(());
-    }
-    match command.first().map(String::as_str) {
-        Some("id") => identity_tool::run(&command[1..]),
-        Some("asset") => asset::run(&command[1..]),
-        Some("tap") => package::tap_command(&command[1..]),
-        Some("package") => package::run(&command[1..]),
-        #[cfg(feature = "halc-encoder")]
-        Some("compile-halc") => compile_halc(&command[1..]),
-        Some("new") => new_project(&command[1..]),
-        Some("check") => check_project(&options, &command[1..]),
-        Some("add") => edit_dependency(&options, &command[1..], true),
-        Some("remove") => edit_dependency(&options, &command[1..], false),
-        Some("sync") => sync_project(&options, &command),
-        Some("update") => Err("project update requires the reviewed registry client".into()),
-        Some("test") => test_project(&options, &command[1..]),
-        Some("manage") => manage_project(&options, &command[1..]),
-        Some("seedgen") => seedgen_project(&options, &command[1..]),
-        Some("spec") => spec_command(&command[1..]),
-        Some("snapshot") => hara_wasm::snapshot_tool::run(&command[1..]),
-        Some("extension") => extension_tool::run(&command[1..], options.allow_process),
-        Some("eval") => direct_eval(&options, &command[1..].join(" ")),
-        Some("run") if command.len() == 1 => run_project(&options),
-        Some("run") | Some("--file") => run_file(
-            &options,
-            command
-                .get(1)
-                .ok_or_else(|| "run requires a file path".to_owned())?,
-        ),
-        Some("stdin") => {
-            let mut source = String::new();
-            io::stdin()
-                .read_to_string(&mut source)
-                .map_err(|error| format!("stdin: {error}"))?;
-            direct_eval(&options, &source)
-        }
-        Some("headless" | "server") => run_headless(&options),
-        Some("remote") => run_remote(
-            command
-                .get(1)
-                .ok_or_else(|| "remote requires HOST:PORT".to_owned())?,
-        ),
-        Some("standalone") => repl::run_repl(&options, true),
-        Some("repl") | None => repl::run_repl(&options, options.offline),
-        Some(command) => Err(format!("unknown command: {command}")),
-    }
-}
-
-fn routed_command(command: &[String]) -> Vec<String> {
-    if command
-        .first()
-        .is_some_and(|value| matches!(value.as_str(), "help" | "compile-halc"))
-        || command == ["standalone"]
-    {
-        return command.to_vec();
-    }
-    let Some(resolved) = cli_app::router().resolve(command) else {
-        return command.to_vec();
-    };
-    let legacy = match resolved.route.handler.as_str() {
-        "hara.cli.handler/eval" => "eval",
-        "hara.cli.handler/run-file" => "run",
-        "hara.cli.handler/stdin" => "stdin",
-        "hara.cli.handler/repl" => "repl",
-        "hara.cli.handler/server" => "server",
-        "hara.cli.handler/remote" => "remote",
-        "hara.cli.handler/project-new" => "new",
-        "hara.cli.handler/project-check" => "check",
-        "hara.cli.handler/project-run" => "run",
-        "hara.cli.handler/project-test" => "test",
-        "hara.cli.handler/project-add" => "add",
-        "hara.cli.handler/project-remove" => "remove",
-        "hara.cli.handler/project-sync" => "sync",
-        "hara.cli.handler/project-update" => "update",
-        "hara.cli.handler/package" => "package",
-        "hara.cli.handler/spec" => "spec",
-        "hara.cli.handler/extension" => "extension",
-        "hara.cli.handler/identity" => "id",
-        "hara.cli.handler/asset" => "asset",
-        "hara.cli.handler/tap" => "tap",
-        _ => return command.to_vec(),
-    };
-    let mut routed = vec![legacy.to_owned()];
-    if resolved.route.id == "hara.cli.route/package-extension" {
-        // `package extension` is a grouped spelling of the legacy top-level
-        // extension command, not an `extension extension` subcommand.
-    } else if matches!(
-        resolved.route.handler.as_str(),
-        "hara.cli.handler/package"
-            | "hara.cli.handler/spec"
-            | "hara.cli.handler/extension"
-            | "hara.cli.handler/identity"
-            | "hara.cli.handler/asset"
-            | "hara.cli.handler/tap"
-    ) {
-        routed.extend(resolved.route.path.iter().skip(1).cloned());
-    }
-    routed.extend(resolved.arguments);
-    routed
+    hara::run(&options, &expanded)
 }
 
 pub(crate) fn error_exit_code(error: &str) -> i32 {
@@ -293,7 +190,7 @@ pub(crate) fn usage() {
     println!();
     println!("Global options:");
     println!("  --project PATH, --root PATH, --offline");
-    println!("  --allow-file, --allow-net, --allow-process");
+    println!("  --allow-file, --allow-net, --allow-process, --allow-postgres");
     println!("  --host HOST, --port PORT, --history PATH");
     println!("  --no-history, --no-splash, --no-color, --log-requests");
 }
@@ -317,36 +214,11 @@ mod spec_tests {
         validate_against_metaspec, verify_metaspec, METASPEC_REQUIRED_KEYS,
     };
     use super::spec::check_contribution;
-    use super::{error_exit_code, routed_command};
+    use super::error_exit_code;
     use hara_wasm::cli_app;
     use hara_wasm::kernel::{parse, Form};
     use std::fs;
     use std::path::Path;
-
-    #[test]
-    fn nested_route_operation_is_preserved_for_the_legacy_adapter() {
-        assert_eq!(
-            routed_command(&[
-                "spec".into(),
-                "check-contribution".into(),
-                "candidate".into()
-            ]),
-            ["spec", "check-contribution", "candidate"]
-        );
-    }
-
-    #[test]
-    fn grouped_package_extension_does_not_duplicate_the_command() {
-        assert_eq!(
-            routed_command(&[
-                "package".into(),
-                "extension".into(),
-                "check".into(),
-                "demo".into()
-            ]),
-            ["extension", "check", "demo"]
-        );
-    }
 
     #[test]
     fn offline_daemon_rejection_is_a_usage_error() {
@@ -518,10 +390,7 @@ mod spec_tests {
             .parent()
             .unwrap();
         let specs_root = repository.parent().unwrap().join("hara-specs-registry");
-        if !specs_root
-            .join("00-unsorted/artifact/metaspec")
-            .is_dir()
-        {
+        if !specs_root.join("00-unsorted/artifact/metaspec").is_dir() {
             eprintln!("skipping: hara-specs-registry sibling repo not present");
             return;
         }

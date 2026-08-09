@@ -13,7 +13,6 @@ const assets = resolve(output, "assets");
 
 await rm(output, { recursive: true, force: true });
 await mkdir(assets, { recursive: true });
-await cp(resolve(source, "hara.extension.edn"), resolve(output, "hara.extension.edn"));
 await cp(resolve(source, "package.json"), resolve(output, "package.json"));
 await mkdir(resolve(output, "node"), { recursive: true });
 await cp(resolve(web, "dist-node/worker.mjs"), resolve(output, "node/worker.mjs"));

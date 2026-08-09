@@ -75,7 +75,7 @@ fn views_closed_argument_envelopes_without_decoding_nested_maps() {
         (sized(KEYWORD, b"operation"), sized(STRING, b"initialize")),
         (
             sized(KEYWORD, b"protocol"),
-            sized(STRING, b"hara.store-request/1"),
+            sized(STRING, b"example.store-request/1"),
         ),
         (sized(KEYWORD, b"revision"), integer(7)),
         (sized(KEYWORD, b"value"), nested.clone()),
@@ -203,7 +203,7 @@ fn compose_record_splices_borrowed_values_without_reencoding() {
         ),
         (
             "protocol".to_string(),
-            Fragment::Portable(PortableValue::String("hara.store-result/1".into())),
+            Fragment::Portable(PortableValue::String("example.store-result/1".into())),
         ),
         ("value".to_string(), Fragment::Borrowed(parsed_raw.root())),
     ])

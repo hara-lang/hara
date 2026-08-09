@@ -24,7 +24,12 @@ public class HaraPackageToolTest {
               + ":project/id demo/app :project/version \"1.2.3\" "
               + ":project/source-paths [\"src\"] :project/test-paths [] "
               + ":project/extension-paths [\"extensions\"] "
+              + ":project/artifact-paths [\"artifacts\"] "
+              + ":project/extensions {demo.native {:provider :wasm :abi :core.v1 "
+              + ":module \"artifacts/demo.wasm\" :exports {} :capabilities []}} "
               + ":project/capabilities #{}}\n");
+      Files.createDirectories(root.resolve("artifacts"));
+      Files.write(root.resolve("artifacts/demo.wasm"), new byte[] {0, 97, 115, 109});
       Files.writeString(root.resolve("src/demo/main.hal"), "(ns demo.main)\n(def answer 42)\n");
       Path first = root.resolve("first.harp");
       Path second = root.resolve("second.harp");
@@ -53,6 +58,7 @@ public class HaraPackageToolTest {
       String manifest = output.toString(StandardCharsets.UTF_8);
       assertTrue(manifest.contains(":identity \"demo/app\""));
       assertTrue(manifest.contains("\"demo.main\" \"src/demo/main.hal\""));
+      assertTrue(manifest.contains(":extensions {demo.native"));
       assertEquals("", error.toString(StandardCharsets.UTF_8));
     } finally {
       Files.walk(root)

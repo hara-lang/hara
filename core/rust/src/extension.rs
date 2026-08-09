@@ -7,6 +7,7 @@ pub use crate::core::{Promise, PromiseState, Value};
 use crate::kernel::{parse, Form};
 
 const MANIFEST_FIELDS: &[&str] = &[
+    "root",
     "namespace",
     "identity",
     "version",
@@ -46,6 +47,7 @@ pub struct ExtensionTarget {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionManifest {
     pub namespace: String,
+    pub root: Option<String>,
     pub identity: Option<String>,
     pub version: String,
     pub provider: String,
@@ -71,6 +73,12 @@ impl ExtensionManifest {
                 origin,
                 "namespace must be a qualified lower-case symbol",
             ));
+        }
+        let root = optional(entries, "root")
+            .map(|form| string(form, origin, "root").map(str::to_owned))
+            .transpose()?;
+        if let Some(root) = root.as_deref() {
+            safe_relative(root, None, origin, "root")?;
         }
         let identity = optional(entries, "identity")
             .map(|form| string(form, origin, "identity").map(str::to_owned))
@@ -137,6 +145,7 @@ impl ExtensionManifest {
             .map_or_else(|| Ok(HashMap::new()), |form| parse_handles(form, origin))?;
         Ok(Self {
             namespace,
+            root,
             identity,
             version,
             provider,

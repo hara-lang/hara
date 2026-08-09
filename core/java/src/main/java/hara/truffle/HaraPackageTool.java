@@ -18,8 +18,6 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -214,7 +212,6 @@ final class HaraPackageTool {
     MessageDigest tree = digest();
     StringBuilder files = new StringBuilder();
     TreeMap<String, String> resources = new TreeMap<>();
-    ArrayList<String> extensions = new ArrayList<>();
     for (Map.Entry<String, byte[]> entry : contents.entrySet()) {
       String path = entry.getKey();
       byte[] bytes = entry.getValue();
@@ -237,7 +234,6 @@ final class HaraPackageTool {
             throw new HaraException("duplicate package namespace: " + matcher.group(1));
         }
       }
-      if (path.endsWith("hara.extension.edn")) extensions.add(path);
     }
     StringBuilder resourceEdn = new StringBuilder();
     resources.forEach(
@@ -248,7 +244,6 @@ final class HaraPackageTool {
                 .append(" ")
                 .append(edn(path))
                 .append("\n"));
-    extensions.sort(Comparator.naturalOrder());
     return "{:harp/format 1\n :package {:identity "
         + edn(project.name().display())
         + " :version "
@@ -257,9 +252,9 @@ final class HaraPackageTool {
         + files
         + "} :resources {\n"
         + resourceEdn
-        + "} :extensions ["
-        + String.join(" ", extensions.stream().map(HaraPackageTool::edn).toList())
-        + "]\n :integrity {:tree-sha256 \"sha256:"
+        + "} :extensions "
+        + project.extensionsEdn()
+        + "\n :integrity {:tree-sha256 \"sha256:"
         + HexFormat.of().formatHex(tree.digest())
         + "\"}}\n";
   }

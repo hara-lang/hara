@@ -17,7 +17,7 @@ public class HaraSqliteProcessExtensionTest {
   @Test
   public void projectConfiguredStorePersistsAcknowledgementWithoutRedelivery() throws Exception {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/project.edn")));
     Path database = Files.createTempFile("hara-work-store", ".db");
     Files.delete(database);
     String path = database.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -74,7 +74,7 @@ public class HaraSqliteProcessExtensionTest {
   @Test
   public void sqliteWasmRunsGeneratedAndParameterizedSqlThroughTheGenericDbApi() {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context =
@@ -115,7 +115,7 @@ public class HaraSqliteProcessExtensionTest {
   @Test
   public void sqliteWasmExecutesARecursiveSchemaGraphQuery() {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context =
@@ -177,7 +177,7 @@ public class HaraSqliteProcessExtensionTest {
   @Test
   public void sqliteWasmRunsThroughTheDatabaseKernelRuntime() {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context =
@@ -233,7 +233,7 @@ public class HaraSqliteProcessExtensionTest {
   @Test
   public void sqliteProcessProviderRequiresProcessCapability() {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {

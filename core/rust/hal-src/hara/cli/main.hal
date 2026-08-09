@@ -1,0 +1,37 @@
+(ns hara.cli.main
+  (:require [hara.cli.dispatch :as dispatch]
+            [hara.cli.model :as model]
+            [hara.cli.options :as options]
+            [hara.cli.route :as route]
+            [hara.cli.verify :as verify]))
+
+(defn run
+  "Pure authoritative CLI entry point. Host launchers supply the embedded
+   manifest, raw argv, runtime context, and closed handler registry."
+  [manifest argv context handlers]
+  (let [findings (verify/verify manifest)]
+    (if (not (empty? findings))
+      (model/failure
+       :hara.cli.outcome/internal-error
+       :hara.cli/invalid-manifest
+       "embedded CLI manifest is invalid"
+       {:error/findings findings})
+      (let [parsed (options/parse argv)
+            action (:action parsed)]
+        (cond
+          (= action :help)
+          (model/success (route/help-model manifest)
+                         [(model/message (route/help-text manifest))])
+
+          (= action :version)
+          (model/success {:cli/version (:document/version manifest)}
+                         [(model/message
+                           (str "hara " (:document/version manifest) "\n"))])
+
+          :else
+          (dispatch/invoke
+           handlers
+           (dispatch/request-for manifest
+                                 (:arguments parsed)
+                                 (:options parsed)
+                                 context)))))))

@@ -147,13 +147,6 @@ public final class Main {
       return HaraRuntimeBenchmark.run(
           java.util.Arrays.copyOfRange(args, 1, args.length), output, error);
     }
-    if ("extension".equals(args[0])) {
-      return HaraExtensionTool.run(
-          java.util.Arrays.copyOfRange(args, 1, args.length),
-          capabilities.process,
-          output,
-          error);
-    }
     if ("spec".equals(args[0])) {
       return HaraSpecTool.run(
           java.util.Arrays.copyOfRange(args, 1, args.length), output, error);

@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import hara.kernel.base.Parser;
+import hara.lang.base.G;
 import hara.lang.data.Keyword;
 import hara.lang.data.List;
 import hara.lang.data.Symbol;
@@ -13,6 +14,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
+import java.util.Iterator;
+import java.util.Map;
 import java.util.Set;
 
 /** Discovers project.edn (or legacy project.hal) and resolves namespace paths. */
@@ -184,6 +187,64 @@ final class HaraProject {
 
   Symbol name() {
     return name;
+  }
+
+  Object extensionDeclaration(String namespace) {
+    Object extensions = projectField("project/extensions");
+    if (!(extensions instanceof IMapType<?, ?> map)) return null;
+    Iterator<?> iterator = map.iterator();
+    while (iterator.hasNext()) {
+      Map.Entry<?, ?> entry = (Map.Entry<?, ?>) iterator.next();
+      if (entry.getKey() instanceof Symbol symbol
+          && namespace.equals(symbol.display())) return entry.getValue();
+    }
+    return null;
+  }
+
+  String extensionsEdn() {
+    Object extensions = projectField("project/extensions");
+    return extensions instanceof IMapType<?, ?> ? G.display(extensions) : "{}";
+  }
+
+  Path extensionRoot(String namespace) {
+    Object declaration = extensionDeclaration(namespace);
+    if (!(declaration instanceof IMapType<?, ?> map)) return root;
+    Object configured = lookup(map, "root");
+    if (configured == null) return root;
+    if (!(configured instanceof String relative))
+      throw new HaraException("project.edn extension :root must be a string");
+    Path resolved = root.resolve(relative).normalize();
+    if (Path.of(relative).isAbsolute() || !resolved.startsWith(root))
+      throw new HaraException("project.edn extension :root escapes the project");
+    return resolved;
+  }
+
+  String extensionManifestSource(String namespace) {
+    Object declaration = extensionDeclaration(namespace);
+    if (!(declaration instanceof IMapType<?, ?> map)) return null;
+    StringBuilder source = new StringBuilder("{:namespace ")
+        .append(G.display(namespace))
+        .append(" :identity ").append(G.display(name.display()))
+        .append(" :version ").append(G.display(version));
+    Iterator<?> iterator = map.iterator();
+    while (iterator.hasNext()) {
+      Map.Entry<?, ?> entry = (Map.Entry<?, ?>) iterator.next();
+      if (entry.getKey() instanceof Keyword keyword && "root".equals(keyword.getName())) continue;
+      source.append(' ').append(G.display(entry.getKey()))
+          .append(' ').append(G.display(entry.getValue()));
+    }
+    return source.append('}').toString();
+  }
+
+  private Object projectField(String key) {
+    if (!PROJECT_FILE.equals(descriptor.getFileName().toString())) return null;
+    try {
+      Object form = Parser.LispReader.readString(
+          Files.readString(descriptor, StandardCharsets.UTF_8), null);
+      return form instanceof IMapType<?, ?> map ? lookup(map, key) : null;
+    } catch (IOException error) {
+      throw new HaraException("Unable to read project descriptor " + descriptor + ": " + error.getMessage());
+    }
   }
 
   Path descriptor() {

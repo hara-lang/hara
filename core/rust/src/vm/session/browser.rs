@@ -1,4 +1,4 @@
-use js_sys::{JSON, Reflect};
+use js_sys::{Reflect, JSON};
 use wasm_bindgen::prelude::*;
 
 use crate::core::{PromiseState, Value};
@@ -85,10 +85,7 @@ impl BrowserBytecodeObservationSession {
     }
 
     pub fn step(&mut self) -> Result<JsValue, JsValue> {
-        self.inner
-            .step()
-            .map_err(js_session_error)
-            .and_then(to_js)
+        self.inner.step().map_err(js_session_error).and_then(to_js)
     }
 
     pub fn run(&mut self, step_limit: u32) -> Result<JsValue, JsValue> {
@@ -145,10 +142,7 @@ impl BrowserBytecodeObservationSession {
     }
 
     pub fn reset(&mut self) -> Result<JsValue, JsValue> {
-        self.inner
-            .reset()
-            .map_err(js_session_error)
-            .and_then(to_js)
+        self.inner.reset().map_err(js_session_error).and_then(to_js)
     }
 
     pub fn metrics(&self) -> Result<JsValue, JsValue> {
@@ -245,4 +239,3 @@ fn js_session_error(error: BytecodeSessionError) -> JsValue {
 fn js_error(message: &str) -> JsValue {
     JsValue::from_str(message)
 }
-

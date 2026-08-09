@@ -22,8 +22,8 @@ public class HaraWasmExtensionTest {
     Path root = Files.createTempDirectory("hara-wasm-extension-");
     Path extension = root.resolve("demo/000-answer-42");
     Files.createDirectories(extension);
-    Files.writeString(
-        extension.resolve("hara.extension.edn"),
+    HaraExtensionTestProject.write(
+        extension,
         "{:namespace \"demo.000-answer-42\" :version \"1.0.0\" :provider :wasm "
             + ":module \"answer-42.wasm\" :abi :core.v1 "
             + ":exports {\"add\" {:args [:i32 :i32] :returns :i32 :async true}} "
@@ -49,7 +49,7 @@ public class HaraWasmExtensionTest {
       if (previous == null) System.clearProperty("hara.extensions.path");
       else System.setProperty("hara.extensions.path", previous);
       Files.deleteIfExists(extension.resolve("answer-42.wasm"));
-      Files.deleteIfExists(extension.resolve("hara.extension.edn"));
+      Files.deleteIfExists(extension.resolve("project.edn"));
       Files.deleteIfExists(extension);
       Files.deleteIfExists(extension.getParent());
       Files.deleteIfExists(extension.getParent().getParent());

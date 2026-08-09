@@ -1,0 +1,116 @@
+(ns hara.project
+  (:require [code.framework :as framework]
+            [std.foundation.edn :as edn]
+            [std.foundation.file :as file]
+            [std.foundation.kernel :as kernel]
+            [std.foundation.string :as string]))
+
+(def +required-keys+
+  [:hara/type :hara/version :project/id :project/version
+   :project/source-paths :project/test-paths :project/extension-paths
+   :project/capabilities])
+
+(defn missing-keys [document]
+  (vec (filter (fn [key] (not (has? document key))) +required-keys+)))
+
+(defn validate [document]
+  (let [missing (missing-keys document)]
+    (cond
+      (not (map? document))
+      (throw (ex-info "project.edn must be an EDN map" {}))
+      (not (empty? missing))
+      (throw (ex-info (str "project.edn missing required keys: " missing)
+                      {:missing missing}))
+      (not= :project (:hara/type document))
+      (throw (ex-info "project.edn :hara/type must be :project" {}))
+      :else document)))
+
+(defn read-text [path]
+  (string/decode-utf8 (deref (file/read path))))
+
+(defn read-project [manifest-path]
+  (let [document (validate (edn/read (read-text manifest-path)))]
+    (assoc document
+           :project/root (file/parent manifest-path)
+           :project/manifest-path manifest-path)))
+
+(defn start-directory [path]
+  (let [metadata (deref (file/stat path))]
+    (if (= :directory (:type metadata)) path (file/parent path))))
+
+(defn discover [start]
+  (loop [current (start-directory start)]
+    (if (nil? current)
+      (throw (ex-info (str "no project.edn found above " start) {:start start}))
+      (let [manifest (file/join current "project.edn")]
+        (if (deref (file/exists? manifest))
+          (read-project manifest)
+          (recur (file/parent current)))))))
+
+(defn walk-files [path]
+  (vec (deref (file/walk path))))
+
+(defn files-in
+  ([project roots] (files-in project roots nil))
+  ([project roots suffix]
+   (let [root (:project/root project)
+         files (reduce (fn [output path]
+                         (into output (walk-files (file/join root path))))
+                       []
+                       roots)]
+     (if suffix
+       (reduce (fn [output path]
+                 (if (string/ends-with? path suffix)
+                   (conj output path)
+                   output))
+               []
+               files)
+       files))))
+
+(defn declared-resources [project]
+  (reduce
+   (fn [resources path]
+     (let [source (read-text path)
+           namespace (framework/namespace-name source)]
+       (if (nil? namespace)
+         (throw (ex-info (str path " does not declare an ns or ns+ namespace")
+                         {:path path}))
+         (conj resources {:resource/name namespace
+                          :resource/path path
+                          :resource/source source}))))
+   []
+   (files-in project (:project/source-paths project) ".hal")))
+
+(defn register-resources! [project]
+  (reduce
+   (fn [registered resource]
+     (kernel/resource-register (:resource/name resource)
+                               (:resource/source resource))
+     (conj registered (:resource/name resource)))
+   []
+   (declared-resources project)))
+
+(defn namespace-path [namespace]
+  (str (string/replace
+        (string/replace (str namespace) "." "/") "-" "_")
+       ".hal"))
+
+(defn main-file [project]
+  (let [main (:project/main project)]
+    (if (nil? main)
+      (throw (ex-info "project.edn is missing :project/main" {}))
+      (let [relative (namespace-path main)
+            found (first
+                   (filter
+                    (fn [path] (deref (file/exists? path)))
+                    (map (fn [root]
+                           (file/join
+                            (file/join (:project/root project) root)
+                            relative))
+                         (:project/source-paths project))))]
+        (if found
+          found
+          (throw (ex-info
+                  (str "cannot find :project/main " main
+                       " in :project/source-paths")
+                  {:project/main main})))))))

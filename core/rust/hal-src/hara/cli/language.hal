@@ -1,0 +1,82 @@
+(ns hara.cli.language
+  (:require [hara.cli.model :as model]
+            [hara.project :as project]
+            [std.foundation.kernel :as kernel]
+            [std.foundation.os :as os]
+            [std.work :as work]))
+
+(defn one-argument [arguments label]
+  (if (= 1 (count arguments))
+    (first arguments)
+    (throw (ex-info (str label " requires exactly one argument")
+                    {:arguments arguments}))))
+
+(defn project-start [request]
+  (or (:project (:request/options request))
+      (:root (:request/options request))
+      (:request/cwd request)
+      (os/cwd)))
+
+(defn register-request-project! [request required]
+  (let [configured (or (:project (:request/options request)) required)]
+    (if configured
+      (let [current-project (project/discover (project-start request))]
+        {:project current-project
+         :registered (project/register-resources! current-project)})
+      {:project nil :registered []})))
+
+(defn evaluation-result [value metadata]
+  (model/success
+   (merge {:evaluation/value value} metadata)
+   [(model/message (str (pr-str value) "\n"))]))
+
+(defn evaluate-source [request source project-required]
+  (let [registration (register-request-project! request project-required)
+        value (kernel/session-eval "ROOT" source)]
+    (evaluation-result
+     value
+     {:evaluation/project
+      (if (:project registration)
+        (:project/id (:project registration))
+        nil)
+      :evaluation/registered (:registered registration)})))
+
+(defn eval-command [request]
+  (evaluate-source request
+                   (one-argument (:request/arguments request) "eval")
+                   false))
+
+(defn run-file-command [request]
+  (let [path (one-argument (:request/arguments request) "run")]
+    (evaluate-source request (project/read-text path) false)))
+
+(defn project-run-command [request]
+  (let [current-project (project/discover (project-start request))
+        registered (project/register-resources! current-project)
+        path (project/main-file current-project)
+        value (kernel/session-eval "ROOT" (project/read-text path))]
+    (evaluation-result value
+                       {:evaluation/project (:project/id current-project)
+                        :evaluation/file path
+                        :evaluation/registered registered})))
+
+(def +eval-work+
+  (work/step {:id 'hara.cli/eval :version 1}
+             (fn [request context] (eval-command request))))
+
+(def +run-file-work+
+  (work/step {:id 'hara.cli/run-file :version 1}
+             (fn [request context] (run-file-command request))))
+
+(def +project-run-work+
+  (work/step {:id 'hara.cli/project-run :version 1}
+             (fn [request context] (project-run-command request))))
+
+(defn eval-handler [request]
+  (work/run (work/local-runtime) +eval-work+ request))
+
+(defn run-file-handler [request]
+  (work/run (work/local-runtime) +run-file-work+ request))
+
+(defn project-run-handler [request]
+  (work/run (work/local-runtime) +project-run-work+ request))

@@ -86,8 +86,8 @@ public class HaraHtaExtensionTest {
     Path root = Files.createTempDirectory("hara-hta-extension-");
     Path extension = root.resolve("hara/runtime/wasm");
     Files.createDirectories(extension);
-    Files.writeString(
-        extension.resolve("hara.extension.edn"),
+    HaraExtensionTestProject.write(
+        extension,
         "{:namespace \"hara.runtime.wasm\" :version \"0.1.0\" :provider :wasm "
             + ":module \"hara.wasm\" :abi :hta.v1 "
             + ":exports {\"eval\" {:args [:value] :returns :value :async true}} "
@@ -103,7 +103,7 @@ public class HaraHtaExtensionTest {
       if (previous == null) System.clearProperty("hara.extensions.path");
       else System.setProperty("hara.extensions.path", previous);
       Files.deleteIfExists(extension.resolve("hara.wasm"));
-      Files.deleteIfExists(extension.resolve("hara.extension.edn"));
+      Files.deleteIfExists(extension.resolve("project.edn"));
       Files.deleteIfExists(extension);
       Files.deleteIfExists(extension.getParent());
       Files.deleteIfExists(extension.getParent().getParent());

@@ -244,13 +244,7 @@ pub(super) fn trace_document<'a>(
     dropped: u64,
 ) -> Value {
     document::trace_document(
-        session_id,
-        trace_id,
-        source_id,
-        sequence,
-        status,
-        steps,
-        dropped,
+        session_id, trace_id, source_id, sequence, status, steps, dropped,
     )
 }
 

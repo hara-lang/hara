@@ -12,10 +12,11 @@ import org.junit.Test;
 public class HaraExtensionManifestTest {
   @Test
   public void packagedAnswer42ManifestMatchesTheProviderContract() throws Exception {
-    Path descriptor = Path.of("lib/examples/extensions/demo/000-answer-42/hara.extension.edn");
+    Path descriptor = Path.of("lib/examples/extensions/demo/000-answer-42/project.edn");
+    HaraProject project = HaraProject.read(descriptor);
     HaraExtensionManifest manifest =
         HaraExtensionManifest.parse(
-            Files.readString(descriptor, StandardCharsets.UTF_8), descriptor.toString());
+            project.extensionManifestSource("demo.000-answer-42"), descriptor.toString());
     assertEquals("demo.000-answer-42", manifest.namespace());
     assertEquals("0.1.0", manifest.version());
     assertEquals("wasm", manifest.provider());

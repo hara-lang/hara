@@ -8,7 +8,6 @@ pub mod cli_app;
 pub mod core;
 pub mod extension;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod extension_tool;
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod identity_tool;
@@ -105,6 +104,7 @@ const EAGER_HAL_RESOURCES: &[&str] = &[
     "std.foundation.string",
     "std.foundation.promise",
     "std.foundation.bytes",
+    "std.foundation.crypto",
     "std.foundation.coroutine",
     "std.foundation.file",
     "std.foundation.host",
@@ -1065,6 +1065,7 @@ impl Runtime {
                 self.providers.file(),
                 self.providers.socket(),
                 self.providers.process(),
+                self.providers.kernel(),
                 || {
                     core::with_promise_provider(self.providers.promise(), || {
                         core::with_macros(self.macros.clone(), || {
@@ -1099,6 +1100,7 @@ impl Runtime {
             self.providers.file(),
             self.providers.socket(),
             self.providers.process(),
+            self.providers.kernel(),
             || {
                 core::with_promise_provider(self.providers.promise(), || {
                     core::with_macros(self.macros.clone(), || {
@@ -1351,6 +1353,17 @@ impl Runtime {
             .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
     }
 
+    pub fn file_stat(&self, path: &str) -> Result<PromiseHandle, JsValue> {
+        let provider = self
+            .providers
+            .file()
+            .ok_or_else(|| JsValue::from_str("file/unsupported"))?;
+        provider
+            .stat(path)
+            .map(PromiseHandle::from_promise)
+            .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
+    }
+
     pub fn file_list(&self, path: &str) -> Result<PromiseHandle, JsValue> {
         let provider = self
             .providers
@@ -1369,6 +1382,17 @@ impl Runtime {
             .ok_or_else(|| JsValue::from_str("file/unsupported"))?;
         provider
             .mkdir(path)
+            .map(PromiseHandle::from_promise)
+            .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
+    }
+
+    pub fn file_walk(&self, path: &str) -> Result<PromiseHandle, JsValue> {
+        let provider = self
+            .providers
+            .file()
+            .ok_or_else(|| JsValue::from_str("file/unsupported"))?;
+        provider
+            .walk(path)
             .map(PromiseHandle::from_promise)
             .map_err(|error| JsValue::from_str(&format!("file/{}", error.code())))
     }
@@ -1593,6 +1617,12 @@ pub fn eval_bytecode_native(source: &str) -> Result<String, String> {
 }
 
 impl Runtime {
+    /// Installs the typed native driver behind `std.native.Kernel/*`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_native_kernel_provider(&mut self, provider: Rc<core::KernelProvider>) {
+        self.providers.install_kernel(provider);
+    }
+
     /// Installs the native host service handler used by `std.native.Host/call`.
     /// Embedders can expose process-local services without converting values
     /// through JavaScript or textual serialization.
@@ -2532,7 +2562,12 @@ mod tests {
             .unwrap();
         runtime.env.insert("request".into(), value);
         assert_eq!(runtime.eval_text("(:value request)").unwrap(), "42");
-        assert_eq!(runtime.eval_text("(get request :missing :fallback)").unwrap(), ":fallback");
+        assert_eq!(
+            runtime
+                .eval_text("(get request :missing :fallback)")
+                .unwrap(),
+            ":fallback"
+        );
         assert_eq!(runtime.eval_text("(count request)").unwrap(), "1");
         assert_eq!(runtime.eval_text("(map? request)").unwrap(), "true");
     }
@@ -2624,6 +2659,14 @@ mod tests {
     #[test]
     fn hara_file_operations_use_capability_providers() {
         let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.eval_text("(file/parent \"/a/b\")").unwrap(),
+            "\"/a\""
+        );
+        assert_eq!(
+            runtime.eval_text("(file/join \"/a\" \"b\")").unwrap(),
+            "\"/a/b\""
+        );
         assert!(runtime
             .eval_text("(file/read \"/sandbox/data.bin\")")
             .unwrap_err()
@@ -2657,6 +2700,12 @@ mod tests {
                 .eval_text("(deref (file/exists? \"/sandbox/data.bin\"))")
                 .unwrap(),
             "true"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(deref (file/stat \"/sandbox/data.bin\"))")
+                .unwrap(),
+            "{:size 3 :type :file}"
         );
         assert_eq!(
             runtime
@@ -3438,6 +3487,71 @@ mod tests {
     }
 
     #[test]
+    fn every_embedded_std_protocol_interface_is_requireable() {
+        let mut runtime = Runtime::new();
+        let resources = EMBEDDED_HAL_RESOURCES
+            .iter()
+            .filter(|(_, path, _)| path.starts_with("lib/src/std/protocol/"))
+            .collect::<Vec<_>>();
+        assert!(!resources.is_empty(), "std.protocol resources are missing");
+        for (_, path, source) in resources {
+            let forms = kernel::parse_forms(source)
+                .unwrap_or_else(|error| panic!("cannot parse {path}: {error}"));
+            let namespace = forms
+                .iter()
+                .find_map(|form| match form {
+                    Form::List(items)
+                        if matches!(items.first(), Some(Form::Symbol(head)) if head == "ns") =>
+                    {
+                        match items.get(1) {
+                            Some(Form::Symbol(name)) => Some(name.clone()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{path} has no ns declaration"));
+            runtime
+                .eval_text(&format!("(require [{namespace}])"))
+                .unwrap_or_else(|error| panic!("cannot require {namespace}: {error}"));
+            let loaded = runtime
+                .namespace_registry
+                .find(&namespace)
+                .unwrap_or_else(|| panic!("missing loaded namespace {namespace}"));
+            for form in forms {
+                let Form::List(items) = form else { continue };
+                if !matches!(items.first(), Some(Form::Symbol(head)) if head == "defprotocol") {
+                    continue;
+                }
+                let Some(Form::Symbol(protocol)) = items.get(1) else {
+                    panic!("invalid defprotocol in {path}")
+                };
+                assert!(
+                    matches!(
+                        loaded
+                            .resolve(&lang::data::Symbol::parse(protocol))
+                            .map(|var| var.deref_value()),
+                        Some(core::Value::Protocol(_))
+                    ),
+                    "missing {namespace}/{protocol}"
+                );
+                for method in items.iter().skip(2) {
+                    let Form::List(signature) = method else {
+                        continue;
+                    };
+                    let Some(Form::Symbol(name)) = signature.first() else {
+                        continue;
+                    };
+                    assert!(
+                        loaded.resolve(&lang::data::Symbol::parse(name)).is_some(),
+                        "missing {namespace}/{name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime() {
         let mut runtime = Runtime::new();
         let result = runtime
@@ -3452,9 +3566,9 @@ mod tests {
     #[test]
     fn shared_foundation_protocol_functionality_fixture_runs_in_the_native_runtime() {
         let source = include_str!("../hal-test-fixtures/std/foundation/protocol_functionality.hal");
-        let Some(catalog) = repo_text(
-            "00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn",
-        ) else {
+        let Some(catalog) =
+            repo_text("00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn")
+        else {
             return;
         };
         assert_eq!(catalog.matches("{:protocol ").count(), 88);
@@ -4145,6 +4259,9 @@ mod tests {
             "Bits",
             "String",
             "Bytes",
+            "Crypto",
+            "OS",
+            "Process",
             "File",
             "Socket",
             "Promise",
@@ -4457,6 +4574,12 @@ mod tests {
         assert_eq!(
             runtime.eval_text("({} :a :b :c)").unwrap_err(),
             "map invocation expects one or two arguments"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(map :symbol [{:symbol 'alpha} {:symbol 'beta}])")
+                .unwrap(),
+            "[alpha beta]"
         );
     }
 
@@ -4825,7 +4948,7 @@ mod tests {
                 assert_eq!(
                     runtime
                         .eval_native(
-                    "(ns std-work-command-rust-probe \
+                            "(ns std-work-command-rust-probe \
                        (:require [std.work :as work] \
                                  [std.work.command :as command])) \
                      (def double-command \
@@ -6017,8 +6140,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing :{key}"))
         }
 
-        let Some(corpus) =
-            repo_text("00-unsorted/platform-language/draft/conformance/l0.edn")
+        let Some(corpus) = repo_text("00-unsorted/platform-language/draft/conformance/l0.edn")
         else {
             return;
         };
@@ -6117,8 +6239,7 @@ mod tests {
                 })
         }
 
-        let Some(corpus) =
-            repo_text("00-unsorted/platform-language/draft/conformance/modules.edn")
+        let Some(corpus) = repo_text("00-unsorted/platform-language/draft/conformance/modules.edn")
         else {
             return;
         };
@@ -6286,8 +6407,7 @@ mod tests {
 
     #[test]
     fn issue_134_lazy_namespace_state_is_non_forcing_and_failure_is_sticky() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6475,8 +6595,7 @@ mod tests {
 
     #[test]
     fn issue_134_dependency_order_cycles_and_canonical_cache_are_transactional() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6602,8 +6721,7 @@ mod tests {
 
     #[test]
     fn issue_134_with_ns_uses_target_globals_and_restores_the_caller() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6648,8 +6766,7 @@ mod tests {
 
     #[test]
     fn issue_134_facade_vars_copy_roots_and_metadata_without_sharing_identity() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6697,8 +6814,7 @@ mod tests {
 
     #[test]
     fn issue_134_aliases_and_refers_share_live_var_identity() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6748,8 +6864,7 @@ mod tests {
 
     #[test]
     fn issue_134_macro_reload_only_changes_new_compilations() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6787,8 +6902,7 @@ mod tests {
 
     #[test]
     fn issue_134_session_namespace_module_and_macro_state_is_isolated() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6837,8 +6951,7 @@ mod tests {
 
     #[test]
     fn issue_134_source_and_hir_have_value_metadata_and_error_parity() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6895,8 +7008,7 @@ mod tests {
 
     #[test]
     fn issue_134_runtime_profile_declares_deterministic_resource_precedence() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6932,8 +7044,7 @@ mod tests {
 
     #[test]
     fn issue_134_sessions_unwind_bindings_and_transfer_only_immutable_data() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -7012,8 +7123,7 @@ mod tests {
 
     #[test]
     fn issue_134_retained_repl_state_survives_errors_and_multiline_forms() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none()
-        {
+        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(

@@ -21,6 +21,7 @@ use crate::lang::protocol::{IDisplay, IMetadata, INamespaced, IToMutable, IToPer
 pub use crate::task::{
     LocalPromiseProvider, Promise, PromiseProvider, PromiseRejection, PromiseState,
 };
+use sha2::{Digest, Sha256};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -145,10 +146,27 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "s8",
         ],
     ),
+    ("Crypto", &["sha256"]),
+    ("OS", &["platform", "arch", "cwd", "env", "getenv"]),
+    (
+        "Process",
+        &[
+            "spawn",
+            "instance?",
+            "alive?",
+            "write",
+            "close-input",
+            "stdout",
+            "stderr",
+            "wait",
+            "kill",
+        ],
+    ),
     (
         "File",
         &[
-            "resolve", "read", "write", "exists?", "list", "mkdir", "delete",
+            "parent", "join", "resolve", "read", "write", "exists?", "stat", "list", "walk",
+            "mkdir", "delete",
         ],
     ),
     (
@@ -2347,8 +2365,7 @@ pub type ProtocolFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
 #[derive(Default, Clone)]
 pub struct ProtocolRegistry {
     methods: Rc<RefCell<HashMap<(String, String), Vec<ProtocolFn>>>>,
-    extension_methods:
-        Rc<RefCell<HashMap<(String, String, String, String), ProtocolFn>>>,
+    extension_methods: Rc<RefCell<HashMap<(String, String, String, String), ProtocolFn>>>,
     extension_categories: Rc<RefCell<HashSet<(String, String, String)>>>,
     guest_methods: Rc<RefCell<HashMap<(String, String, String), Rc<Function>>>>,
     guest_declarations: Rc<RefCell<HashSet<(String, String)>>>,
@@ -2442,11 +2459,7 @@ impl ProtocolRegistry {
             })?(arguments)
     }
 
-    pub fn extension_has_category(
-        &self,
-        receiver: &ExtensionValue,
-        category: &str,
-    ) -> bool {
+    pub fn extension_has_category(&self, receiver: &ExtensionValue, category: &str) -> bool {
         self.extension_categories.borrow().contains(&(
             receiver.provider.clone(),
             receiver.type_name.clone(),
@@ -2722,6 +2735,7 @@ thread_local! {
     static ACTIVE_PROMISE_PROVIDER: RefCell<Option<Rc<dyn PromiseProvider>>> = const { RefCell::new(None) };
     static ACTIVE_FILE_PROVIDER: RefCell<Option<Rc<dyn FileProvider>>> = const { RefCell::new(None) };
     static ACTIVE_SOCKET_PROVIDER: RefCell<Option<Rc<dyn SocketProvider>>> = const { RefCell::new(None) };
+    static ACTIVE_KERNEL_PROVIDER: RefCell<Option<Rc<KernelProvider>>> = const { RefCell::new(None) };
     static ACTIVE_PROCESS_ALLOWED: Cell<bool> = const { Cell::new(false) };
     static HOST_CALL_HANDLER: RefCell<Option<Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>>> = const { RefCell::new(None) };
     static NAMESPACE_SOURCE_PROVIDER: RefCell<Option<Rc<dyn Fn(&str) -> Option<String>>>> = const { RefCell::new(None) };
@@ -3149,21 +3163,37 @@ pub fn with_capability_providers<R>(
     file: Option<Rc<dyn FileProvider>>,
     socket: Option<Rc<dyn SocketProvider>>,
     process: bool,
+    kernel: Option<Rc<KernelProvider>>,
     operation: impl FnOnce() -> R,
 ) -> R {
     ACTIVE_FILE_PROVIDER.with(|active_file| {
         ACTIVE_SOCKET_PROVIDER.with(|active_socket| {
-            ACTIVE_PROCESS_ALLOWED.with(|active_process| {
-                let previous_file = active_file.replace(file);
-                let previous_socket = active_socket.replace(socket);
-                let previous_process = active_process.replace(process);
-                let result = operation();
-                active_file.replace(previous_file);
-                active_socket.replace(previous_socket);
-                active_process.set(previous_process);
-                result
+            ACTIVE_KERNEL_PROVIDER.with(|active_kernel| {
+                ACTIVE_PROCESS_ALLOWED.with(|active_process| {
+                    let previous_file = active_file.replace(file);
+                    let previous_socket = active_socket.replace(socket);
+                    let previous_kernel = active_kernel.replace(kernel);
+                    let previous_process = active_process.replace(process);
+                    let result = operation();
+                    active_file.replace(previous_file);
+                    active_socket.replace(previous_socket);
+                    active_kernel.replace(previous_kernel);
+                    active_process.set(previous_process);
+                    result
+                })
             })
         })
+    })
+}
+
+pub type KernelProvider = dyn Fn(String, Vec<Value>) -> Result<Value, String>;
+
+fn kernel_provider(operation: &str) -> Result<Rc<KernelProvider>, String> {
+    ACTIVE_KERNEL_PROVIDER.with(|active| {
+        active
+            .borrow()
+            .clone()
+            .ok_or_else(|| format!("std.native.Kernel/{operation} requires a kernel provider"))
     })
 }
 
@@ -3203,6 +3233,21 @@ fn os_operation(
         .strip_prefix("std.foundation.os/")
         .or_else(|| operation.strip_prefix("os/"))
         .unwrap_or(operation);
+    let operation = operation
+        .strip_prefix("std.native.OS/")
+        .unwrap_or(operation);
+    let process_operation = operation.strip_prefix("std.native.Process/");
+    let operation = match process_operation.unwrap_or(operation) {
+        "instance?" if process_operation.is_some() => "process?",
+        "alive?" if process_operation.is_some() => "process-alive?",
+        "write" if process_operation.is_some() => "process-write",
+        "close-input" if process_operation.is_some() => "process-close-input",
+        "stdout" if process_operation.is_some() => "process-stdout",
+        "stderr" if process_operation.is_some() => "process-stderr",
+        "wait" if process_operation.is_some() => "process-wait",
+        "kill" if process_operation.is_some() => "process-kill",
+        value => value,
+    };
     match operation {
         "platform" => {
             if !forms.is_empty() {
@@ -3368,6 +3413,38 @@ fn file_operation(
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
     match operation {
+        "file/parent" => {
+            if forms.len() != 1 {
+                return Err("file/parent expects a path".into());
+            }
+            let path = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/parent expects a path".into()),
+            };
+            Ok(std::path::Path::new(&path)
+                .parent()
+                .map(|parent| Value::String(parent.to_string_lossy().into_owned()))
+                .unwrap_or(Value::Nil))
+        }
+        "file/join" => {
+            if forms.len() != 2 {
+                return Err("file/join expects a base and path".into());
+            }
+            let base = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/join expects a base and path".into()),
+            };
+            let path = match eval(&forms[1], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/join expects a base and path".into()),
+            };
+            Ok(Value::String(
+                std::path::Path::new(&base)
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+        }
         "file/resolve" => {
             if forms.len() != 2 {
                 return Err("file/resolve expects a root and path".into());
@@ -3429,6 +3506,19 @@ fn file_operation(
                 .map(Value::Promise)
                 .map_err(|error| file_error(operation, error))
         }
+        "file/stat" => {
+            if forms.len() != 1 {
+                return Err("file/stat expects a path".into());
+            }
+            let path = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/stat expects a path".into()),
+            };
+            file_provider(operation)?
+                .stat(&path)
+                .map(Value::Promise)
+                .map_err(|error| file_error(operation, error))
+        }
         "file/list" => {
             if forms.len() != 1 {
                 return Err("file/list expects a path".into());
@@ -3439,6 +3529,19 @@ fn file_operation(
             };
             file_provider(operation)?
                 .list(&path)
+                .map(Value::Promise)
+                .map_err(|error| file_error(operation, error))
+        }
+        "file/walk" => {
+            if forms.len() != 1 {
+                return Err("file/walk expects a path".into());
+            }
+            let path = match eval(&forms[0], env)? {
+                Value::String(value) => value,
+                _ => return Err("file/walk expects a path".into()),
+            };
+            file_provider(operation)?
+                .walk(&path)
                 .map(Value::Promise)
                 .map_err(|error| file_error(operation, error))
         }
@@ -3848,7 +3951,9 @@ pub trait FileProvider {
     fn read(&self, path: &str) -> Result<Promise, FileError>;
     fn write(&self, path: &str, bytes: Vec<u8>) -> Result<Promise, FileError>;
     fn exists(&self, path: &str) -> Result<Promise, FileError>;
+    fn stat(&self, path: &str) -> Result<Promise, FileError>;
     fn list(&self, path: &str) -> Result<Promise, FileError>;
+    fn walk(&self, path: &str) -> Result<Promise, FileError>;
     fn mkdir(&self, path: &str) -> Result<Promise, FileError>;
     fn delete(&self, path: &str) -> Result<Promise, FileError>;
 }
@@ -4072,6 +4177,33 @@ impl FileProvider for NativeFileProvider {
         Ok(promise)
     }
 
+    fn stat(&self, path: &str) -> Result<Promise, FileError> {
+        let path = self.scoped(path)?;
+        let promise = Promise::new();
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) => {
+                let kind = if metadata.file_type().is_symlink() {
+                    "symlink"
+                } else if metadata.is_dir() {
+                    "directory"
+                } else {
+                    "file"
+                };
+                promise.resolve(Value::Map(PMap::from_iter([
+                    (Value::Keyword("type".into()), Value::Keyword(kind.into())),
+                    (
+                        Value::Keyword("size".into()),
+                        Value::Number(i64::try_from(metadata.len()).unwrap_or(i64::MAX)),
+                    ),
+                ])));
+            }
+            Err(error) => {
+                promise.reject(error.to_string());
+            }
+        }
+        Ok(promise)
+    }
+
     fn list(&self, path: &str) -> Result<Promise, FileError> {
         let path = self.scoped(path)?;
         let promise = Promise::new();
@@ -4088,6 +4220,43 @@ impl FileProvider for NativeFileProvider {
             Err(error) => {
                 promise.reject(error.to_string());
             }
+        }
+        Ok(promise)
+    }
+
+    fn walk(&self, path: &str) -> Result<Promise, FileError> {
+        let root = self.scoped(path)?;
+        let promise = Promise::new();
+        let mut pending = vec![root];
+        let mut files = Vec::new();
+        let mut failure = None;
+        while let Some(current) = pending.pop() {
+            match std::fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.is_file() => {
+                    files.push(current.to_string_lossy().into_owned());
+                }
+                Ok(metadata) if metadata.is_dir() => match std::fs::read_dir(&current) {
+                    Ok(entries) => pending
+                        .extend(entries.filter_map(|entry| entry.ok().map(|value| value.path()))),
+                    Err(error) => {
+                        failure = Some(error.to_string());
+                        break;
+                    }
+                },
+                Ok(_) => {}
+                Err(error) => {
+                    failure = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        if let Some(error) = failure {
+            promise.reject(error);
+        } else {
+            files.sort();
+            promise.resolve(Value::Array(Rc::new(RefCell::new(
+                files.into_iter().map(Value::String).collect(),
+            ))));
         }
         Ok(promise)
     }
@@ -4604,6 +4773,7 @@ pub struct ProviderCapabilities {
 pub struct ProviderRegistry {
     file: Option<Rc<dyn FileProvider>>,
     socket: Option<Rc<dyn SocketProvider>>,
+    kernel: Option<Rc<KernelProvider>>,
     promise: Rc<dyn PromiseProvider>,
     process: bool,
 }
@@ -4613,6 +4783,7 @@ impl Default for ProviderRegistry {
         Self {
             file: None,
             socket: None,
+            kernel: None,
             promise: Rc::new(LocalPromiseProvider),
             process: false,
         }
@@ -4633,6 +4804,9 @@ impl ProviderRegistry {
     pub fn install_socket<P: SocketProvider + 'static>(&mut self, provider: P) {
         self.socket = Some(Rc::new(provider));
     }
+    pub fn install_kernel(&mut self, provider: Rc<KernelProvider>) {
+        self.kernel = Some(provider);
+    }
     pub fn install_process(&mut self) {
         self.process = true;
     }
@@ -4647,6 +4821,9 @@ impl ProviderRegistry {
     }
     pub fn socket(&self) -> Option<Rc<dyn SocketProvider>> {
         self.socket.clone()
+    }
+    pub fn kernel(&self) -> Option<Rc<KernelProvider>> {
+        self.kernel.clone()
     }
     pub fn process(&self) -> bool {
         self.process
@@ -4748,6 +4925,37 @@ impl FileProvider for MemoryFileProvider {
         Ok(promise)
     }
 
+    fn stat(&self, path: &str) -> Result<Promise, FileError> {
+        if !self.within_root(path) {
+            return Err(FileError::Denied);
+        }
+        let promise = Promise::new();
+        let files = self.files.borrow();
+        if let Some(bytes) = files.get(path) {
+            promise.resolve(Value::Map(PMap::from_iter([
+                (Value::Keyword("type".into()), Value::Keyword("file".into())),
+                (
+                    Value::Keyword("size".into()),
+                    Value::Number(i64::try_from(bytes.len()).unwrap_or(i64::MAX)),
+                ),
+            ])));
+        } else {
+            let prefix = format!("{}/", path.trim_end_matches('/'));
+            if path == self.root || files.keys().any(|candidate| candidate.starts_with(&prefix)) {
+                promise.resolve(Value::Map(PMap::from_iter([
+                    (
+                        Value::Keyword("type".into()),
+                        Value::Keyword("directory".into()),
+                    ),
+                    (Value::Keyword("size".into()), Value::Number(0)),
+                ])));
+            } else {
+                promise.reject("file not found");
+            }
+        }
+        Ok(promise)
+    }
+
     fn list(&self, path: &str) -> Result<Promise, FileError> {
         if !self.within_root(path) {
             return Err(FileError::Denied);
@@ -4764,6 +4972,26 @@ impl FileProvider for MemoryFileProvider {
             .filter(|key| key.starts_with(&prefix) && !key[prefix.len()..].contains('/'))
             .cloned()
             .collect();
+        names.sort();
+        let promise = Promise::new();
+        promise.resolve(Value::Array(Rc::new(RefCell::new(
+            names.into_iter().map(Value::String).collect(),
+        ))));
+        Ok(promise)
+    }
+
+    fn walk(&self, path: &str) -> Result<Promise, FileError> {
+        if !self.within_root(path) {
+            return Err(FileError::Denied);
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        let mut names = self
+            .files
+            .borrow()
+            .keys()
+            .filter(|candidate| *candidate == path || candidate.starts_with(&prefix))
+            .cloned()
+            .collect::<Vec<_>>();
         names.sort();
         let promise = Promise::new();
         promise.resolve(Value::Array(Rc::new(RefCell::new(
@@ -4811,7 +5039,13 @@ impl FileProvider for UnsupportedFileProvider {
     fn exists(&self, _path: &str) -> Result<Promise, FileError> {
         Err(FileError::Unsupported)
     }
+    fn stat(&self, _path: &str) -> Result<Promise, FileError> {
+        Err(FileError::Unsupported)
+    }
     fn list(&self, _path: &str) -> Result<Promise, FileError> {
+        Err(FileError::Unsupported)
+    }
+    fn walk(&self, _path: &str) -> Result<Promise, FileError> {
         Err(FileError::Unsupported)
     }
     fn mkdir(&self, _path: &str) -> Result<Promise, FileError> {
@@ -6081,12 +6315,9 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
     let collection = &arguments[0];
     let key = &arguments[1];
     match collection {
-        Value::Extension(receiver) => extension_protocol_call(
-            receiver,
-            "std.protocol.ifind/IFind",
-            "find",
-            arguments,
-        ),
+        Value::Extension(receiver) => {
+            extension_protocol_call(receiver, "std.protocol.ifind/IFind", "find", arguments)
+        }
         value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(map_entries(value)
                 .unwrap()
@@ -6130,12 +6361,9 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_iter(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
-        [Value::Extension(receiver)] => extension_protocol_call(
-            receiver,
-            "std.protocol.iiter/IIter",
-            "iter",
-            arguments,
-        ),
+        [Value::Extension(receiver)] => {
+            extension_protocol_call(receiver, "std.protocol.iiter/IIter", "iter", arguments)
+        }
         [value]
             if matches!(
                 value,
@@ -11350,8 +11578,32 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n) if n.starts_with("std.native.Host/") => {
                     native_host_operation(n, &fs[1..], env)
                 }
+                Form::Symbol(n) if n == "std.native.Crypto/sha256" => {
+                    if fs.len() != 2 {
+                        return Err("std.native.Crypto/sha256 expects bytes".into());
+                    }
+                    let bytes = match eval(&fs[1], env)? {
+                        Value::Bytes(value) => value,
+                        Value::ByteBuffer(value) => value.borrow().clone(),
+                        _ => return Err("std.native.Crypto/sha256 expects bytes".into()),
+                    };
+                    let digest = Sha256::digest(bytes);
+                    Ok(Value::String(
+                        digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+                    ))
+                }
                 Form::Symbol(n) if n.starts_with("std.native.Kernel/") => {
-                    Err(format!("{n} requires a kernel embedding"))
+                    let operation = n.strip_prefix("std.native.Kernel/").unwrap_or(n);
+                    let arguments = fs[1..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    kernel_provider(operation)?(operation.to_owned(), arguments)
+                }
+                Form::Symbol(n)
+                    if n.starts_with("std.native.OS/") || n.starts_with("std.native.Process/") =>
+                {
+                    os_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Arr/") || n.starts_with("std.native.Obj/") =>
@@ -11634,10 +11886,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n)
                     if [
                         "file/resolve",
+                        "file/parent",
+                        "file/join",
                         "file/read",
                         "file/write",
                         "file/exists?",
+                        "file/stat",
                         "file/list",
+                        "file/walk",
                         "file/mkdir",
                         "file/delete",
                     ]
@@ -11902,20 +12158,17 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 {
                     let is_map = n == "iter-map" || n == "map";
                     if n == "map" && fs.len() == 2 {
-                        let function = match eval(&fs[1], env)? {
-                            Value::Function(function) => function,
-                            _ => return Err("map expects a function".into()),
-                        };
+                        let callable = eval(&fs[1], env)?;
                         let body = Form::List(vec![
                             Form::Symbol("__map-transform".into()),
-                            Form::Symbol("__function".into()),
+                            Form::Symbol("__callable".into()),
                             Form::Symbol("value".into()),
                         ]);
                         return Ok(generated_function(
                             vec!["value".into()],
                             vec![body],
                             env.clone(),
-                            vec![("__function", Value::Function(function))],
+                            vec![("__callable", callable)],
                         ));
                     }
                     if n == "filter" && fs.len() == 2 {
@@ -11936,14 +12189,16 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             .map(|form| eval(form, env).and_then(make_iterator))
                             .collect::<Result<Vec<_>, _>>()?;
                         let zipped = iterator_zip(sources)?;
-                        let result = match function {
-                            Value::Function(function) => iterator_map_spread(function, zipped)?,
-                            _ => return Err(format!("{n} expects a function")),
-                        };
+                        let values = iterator_to_vec(zipped)?;
+                        let mut output = Vec::with_capacity(values.len());
+                        for value in values {
+                            let arguments = iterator_values(value)?;
+                            output.push(call_value(function.clone(), arguments)?);
+                        }
                         return if n == "map" {
-                            Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                            Ok(Value::Vector(output.into()))
                         } else {
-                            Ok(result)
+                            Ok(iterator_from_values(output))
                         };
                     }
                     let raw_collection = if fs.len() == 3 {
@@ -11952,23 +12207,16 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         None
                     };
                     if fs.len() == 3 {
-                        if let Value::Function(function_ref) = &function {
-                            if is_map {
-                                if let Some(value) = raw_collection.clone() {
-                                    let result = iterator_map(function_ref.clone(), value)?;
-                                    return if n == "map" {
-                                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
-                                    } else {
-                                        Ok(result)
-                                    };
-                                }
-                            } else if let Some(value) = raw_collection.clone() {
+                        if !is_map {
+                            if let Value::Function(function_ref) = &function {
+                              if let Some(value) = raw_collection.clone() {
                                 let result = iterator_filter(function_ref.clone(), value)?;
                                 return if n == "filter" {
                                     Ok(Value::Vector(iterator_to_vec(result)?.into()))
                                 } else {
                                     Ok(result)
                                 };
+                              }
                             }
                         }
                     }
@@ -11988,10 +12236,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 .iter()
                                 .map(|values| values[index].clone())
                                 .collect();
-                            let mapped = match &function {
-                                Value::Function(f) => call_function(f, args)?,
-                                _ => return Err(format!("{n} expects a function")),
-                            };
+                            let mapped = call_value(function.clone(), args)?;
                             output.push(mapped);
                         }
                     } else {
@@ -12856,9 +13101,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             | Value::OrderedMap(_)
                             | Value::SortedMap(_)
                             | Value::Trie(_) => true,
-                            Value::Extension(receiver) => {
-                                extension_has_category(receiver, "map")
-                            }
+                            Value::Extension(receiver) => extension_has_category(receiver, "map"),
                             _ => false,
                         },
                         // Rust materializes map iteration entries as ordinary

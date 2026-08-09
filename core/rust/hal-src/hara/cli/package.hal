@@ -1,0 +1,95 @@
+(ns hara.cli.package
+  (:require [hara.cli.model :as model]
+            [hara.cli.native :as native]
+            [std.work :as work]))
+
+(def +route-operations+
+  {:hara.cli.route/package-check :check
+   :hara.cli.route/package-build :build
+   :hara.cli.route/package-inspect :inspect
+   :hara.cli.route/package-install :install
+   :hara.cli.route/package-publish :publish
+   :hara.cli.route/package-registry :registry
+   :hara.cli.route/package-status :status
+   :hara.cli.route/package-search :search
+   :hara.cli.route/package-info :info
+   :hara.cli.route/package-yank :yank
+   :hara.cli.route/package-harp :harp})
+
+(defn operation-request [request]
+  (if (= :hara.cli.route/package (:request/route request))
+    (let [arguments (:request/arguments request)]
+      (if (empty? arguments)
+        (throw (ex-info
+                "package requires check, build, inspect, install, publish, registry, status, search, info, yank, or harp"
+                {}))
+        {:operation (keyword (first arguments))
+         :arguments (vec (rest arguments))}))
+    {:operation (get +route-operations+ (:request/route request))
+     :arguments (:request/arguments request)}))
+
+(defn selected-path [request arguments operation]
+  (if (> (count arguments) 1)
+    (throw (ex-info (str "package " (name operation) " accepts at most one path")
+                    {:arguments arguments}))
+    (or (first arguments)
+        (:project (:request/options request))
+        (:request/project request)
+        (:request/cwd request)
+        ".")))
+
+(defn check-command [request arguments]
+  (let [path (selected-path request arguments :check)
+        result (native/package-check path)]
+    (model/success
+     result
+     [(model/message
+       (str "package check: " (:identity result) " " (:version result) "\n"))])))
+
+(defn build-command [request arguments]
+  (let [path (selected-path request arguments :build)
+        output (native/package-build path nil)]
+    (model/success {:package/archive output}
+                   [(model/message (str "package build: " output "\n"))])))
+
+(defn one-path [arguments operation]
+  (if (= 1 (count arguments))
+    (first arguments)
+    (throw (ex-info (str "package " (name operation) " requires one path")
+                    {:arguments arguments}))))
+
+(defn inspect-command [arguments]
+  (let [path (one-path arguments :inspect)
+        manifest (native/package-inspect path)]
+    (model/success {:package/manifest manifest}
+                   [(model/message (str manifest "\n"))])))
+
+(defn install-command [request arguments]
+  (let [path (selected-path request arguments :install)
+        installed (native/package-install path)]
+    (model/success {:package/root installed}
+                   [(model/message (str "package install: " installed "\n"))])))
+
+(defn unavailable [operation]
+  (throw (ex-info
+          (str "unavailable: hara package " (name operation)
+               " requires the reviewed registry and identity client")
+          {:operation operation})))
+
+(defn execute [request]
+  (let [resolved (operation-request request)
+        operation (:operation resolved)
+        arguments (:arguments resolved)]
+    (cond
+      (= operation :check) (check-command request arguments)
+      (= operation :build) (build-command request arguments)
+      (= operation :inspect) (inspect-command arguments)
+      (= operation :install) (install-command request arguments)
+      :else (unavailable operation))))
+
+(def +command-work+
+  (work/step {:id 'hara.cli/package :version 1}
+             (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run (work/local-runtime) +command-work+ request))

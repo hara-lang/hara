@@ -16,7 +16,7 @@ public class HaraNoirProcessExtensionTest {
 
   @Test
   public void realNoirCompilerProverAndVerifierRunThroughManagedNode() {
-    Assume.assumeTrue(Files.isRegularFile(ROOT.resolve("ledger/noir/hara.extension.edn")));
+    Assume.assumeTrue(Files.isRegularFile(ROOT.resolve("ledger/noir/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context =
@@ -46,7 +46,7 @@ public class HaraNoirProcessExtensionTest {
 
   @Test
   public void processCapabilityIsDeniedBeforeWorkerStartup() {
-    Assume.assumeTrue(Files.isRegularFile(ROOT.resolve("ledger/noir/hara.extension.edn")));
+    Assume.assumeTrue(Files.isRegularFile(ROOT.resolve("ledger/noir/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {

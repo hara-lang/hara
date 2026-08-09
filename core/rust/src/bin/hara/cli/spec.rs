@@ -128,12 +128,7 @@ fn check_contribution_command(args: &[String]) -> Result<(), String> {
         .parent()
         .map(|parent| parent.join("hara-specs-registry"))
         .filter(|path| path.is_dir())
-        .unwrap_or_else(|| {
-            exit_error(
-                "cannot locate hara-specs-registry sibling repository",
-                2,
-            )
-        });
+        .unwrap_or_else(|| exit_error("cannot locate hara-specs-registry sibling repository", 2));
     let findings = check_contribution(&envelope, contribution_root, &specs_root);
     let report = contribution_report(&envelope, &findings);
     match format {
@@ -152,7 +147,7 @@ fn find_repository_root(path: &Path) -> Option<PathBuf> {
     absolute.ancestors().find_map(|candidate| {
         (candidate.join("contrib").is_dir()
             && (candidate.join("core").is_dir() || candidate.join("packaging").is_dir()))
-            .then(|| candidate.to_path_buf())
+        .then(|| candidate.to_path_buf())
     })
 }
 
@@ -236,13 +231,7 @@ pub(crate) fn check_contribution(
         ));
     }
     for (index, spec) in specs.iter().enumerate() {
-        check_contribution_spec(
-            spec,
-            index,
-            contribution_root,
-            specs_root,
-            &mut findings,
-        );
+        check_contribution_spec(spec, index, contribution_root, specs_root, &mut findings);
     }
     findings
 }
@@ -423,8 +412,11 @@ fn check_contribution_spec(
         ));
         return;
     }
-    let metaspec_path =
-        specs_root.join(metaspec_path.strip_prefix("specs/").unwrap_or(&metaspec_path));
+    let metaspec_path = specs_root.join(
+        metaspec_path
+            .strip_prefix("specs/")
+            .unwrap_or(&metaspec_path),
+    );
     let metaspec_source = match fs::read_to_string(&metaspec_path) {
         Ok(source) => source,
         Err(error) => {
