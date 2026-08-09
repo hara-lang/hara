@@ -440,7 +440,11 @@ mod spec_tests {
 
     #[test]
     fn build_surface_normalizes_to_exact_canonical_edn() {
-        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
         let source_path = repository.join("contrib/greenways/build/examples/minimal-build.hal");
         let edn_path = repository.join("contrib/greenways/build/examples/minimal-build.edn");
         let source = fs::read_to_string(&source_path).unwrap();
@@ -474,7 +478,11 @@ mod spec_tests {
 
     #[test]
     fn build_cycle_and_blocked_checker_reports_are_structured() {
-        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
         let cycle_path = repository.join("contrib/greenways/build/examples/invalid-cycle.hal");
         let (cycle, parse_findings) = read_build_source(
             &fs::read_to_string(&cycle_path).unwrap(),
