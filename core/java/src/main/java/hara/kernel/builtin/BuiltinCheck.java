@@ -29,12 +29,12 @@ public interface BuiltinCheck {
 
   @Module.Fn(name = "long?", complete = true)
   public static <TYPE> boolean isLong(TYPE x) {
-    return x instanceof Long;
+    return x instanceof Byte || x instanceof Short || x instanceof Integer || x instanceof Long;
   }
 
   @Module.Fn(name = "double?", complete = true)
   public static <TYPE> boolean isDouble(TYPE x) {
-    return x instanceof Double;
+    return x instanceof Float || x instanceof Double;
   }
 
   @Module.Fn(name = "truthy?", complete = true)

@@ -54,6 +54,8 @@ mod differential_tests;
 #[cfg(test)]
 #[path = "vm/execution_tests.rs"]
 mod execution_tests;
+#[cfg(all(test, feature = "bytecode-vm"))]
+mod numeric_predicate_tests;
 #[cfg(test)]
 #[path = "vm/tests.rs"]
 mod tests;

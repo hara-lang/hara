@@ -40,8 +40,10 @@ public class BuiltinTest {
 
   @Test
   public void testCheckNumericTypes() {
+    assertTrue(BuiltinCheck.isLong(10));
     assertTrue(BuiltinCheck.isLong(10L));
     assertFalse(BuiltinCheck.isLong(10.0));
+    assertTrue(BuiltinCheck.isDouble(10.0f));
     assertTrue(BuiltinCheck.isDouble(10.0));
     assertFalse(BuiltinCheck.isDouble(10L));
   }

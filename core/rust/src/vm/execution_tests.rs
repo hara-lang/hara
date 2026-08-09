@@ -76,22 +76,6 @@ fn dynamic_collections_and_short_circuit_forms() {
 }
 
 #[test]
-fn bytecode_uses_the_explicit_long_and_double_predicates() {
-    let mut runtime = Runtime::core();
-    runtime.prepare_foundation_bytecode();
-    assert_eq!(
-        runtime.eval_bytecode_native(
-            "[(long? 42) (long? 1.5) (double? 1.5) (double? 42) \
-              (number? 42) (number? 1.5)]"
-        ),
-        Ok("[true false true false true true]".into())
-    );
-    for unsupported in ["(integer? 42)", "(decimal? 1.5)"] {
-        assert_eq!(compile_error(unsupported).0, CompileErrorKind::UnboundSymbol);
-    }
-}
-
-#[test]
 fn compiled_execution_can_return_an_immutable_value_directly() {
     let mut runtime = Runtime::core();
     let program = runtime
