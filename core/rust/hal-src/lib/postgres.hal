@@ -1,21 +1,21 @@
 ;; ============================================================================
 ;; lib.postgres — Foundation PostgreSQL lifecycle compatibility facade.
 ;;
-;; Connection lifecycle and SQL operations delegate to lib.postgres.connection;
-;; explicit server/database management delegates to std.db.postgres. This file
-;; intentionally does not recreate JDBC, Docker, or JVM component internals.
+;; Direct connection operations remain compatible with lib.postgres.connection.
+;; Managed language runtimes additionally compose Docker and database lifecycle.
 ;; ============================================================================
 (ns lib.postgres
-  (:require [lib.postgres.connection :as connection]
-            [std.db.postgres :as postgres]))
+  (:require [lib.docker :as docker]
+            [lib.postgres.connection :as connection]
+            [std.db.postgres :as postgres]
+            [std.lib.component :as component]
+            [lang.core.eval :as evaluation]))
 
 (def open connection/conn-create)
 (def start open)
-(def start-pg open)
 
 (def close connection/conn-close)
 (def stop close)
-(def stop-pg close)
 
 (def execute connection/conn-execute)
 (def query connection/conn-query)
@@ -41,3 +41,31 @@
 
 (def numeric postgres/numeric)
 (def sql-array postgres/sql-array)
+
+(defn run-lifecycle [runtime command]
+  (if command (if (fn? command) (command runtime) (throw (ex-info "PostgreSQL lifecycle hooks must be functions in HAL" {:command command}))) runtime))
+
+(defn connection-options [runtime]
+  (let [options (:config (:options runtime)) container (:container runtime) environment (get-in options [:container :environment])
+        options (dissoc options :container :temp :startup :shutdown)
+        options (if container (merge options {:host (:host container) :port (:port container)}) options)
+        options (if (or (:user options) (nil? environment)) options (assoc options :user (get environment "POSTGRES_USER")))]
+    (if (or (:password options) (nil? environment)) options (assoc options :password (get environment "POSTGRES_PASSWORD")))))
+
+(defn admin-options [options] (assoc (dissoc options :database) :dbname "postgres"))
+
+(defn start-pg-raw [runtime]
+  (let [options (connection-options runtime) admin (admin-options options) database (:dbname options) timeout (:timeout runtime)]
+    (evaluation/await (postgres/wait-ready admin) timeout)
+    (if (get-in runtime [:options :config :temp]) (evaluation/await (postgres/database-create admin database) timeout))
+    (reset! (:connection runtime) (evaluation/await (postgres/open options) timeout)) runtime))
+
+(defn stop-pg-raw [runtime]
+  (let [connection (deref (:connection runtime)) options (connection-options runtime) database (:dbname options)
+        temp (get-in runtime [:options :config :temp]) timeout (:timeout runtime)]
+    (if connection (evaluation/await (postgres/close connection) timeout))
+    (reset! (:connection runtime) nil)
+    (if (and temp (not= temp :create)) (evaluation/await (postgres/database-drop (admin-options options) database) timeout)) runtime))
+
+(def start-pg (component/wrap-start start-pg-raw [{:key :startup :setup run-lifecycle} {:key :container :setup docker/start-runtime}]))
+(def stop-pg (component/wrap-stop stop-pg-raw [{:key :container :teardown docker/stop-runtime} {:key :shutdown :teardown run-lifecycle}]))
