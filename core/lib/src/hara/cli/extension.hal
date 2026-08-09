@@ -3,9 +3,7 @@
             [hara.cli.asset :as asset]
             [hara.cli.model :as model]
             [hara.cli.project-command :as project-command]
-            [hara.metaspec.schema :as schema]
             [hara.project :as project]
-            [std.foundation.edn :as edn]
             [std.foundation.file :as file]
             [std.foundation.os :as os]
             [std.foundation.string :as string]
@@ -18,7 +16,7 @@
    :hara.cli.route/extension-test :test})
 
 (def +manifest-fields+
-  #{:namespace :identity :version :provider :module :abi :exports
+  #{:root :provider :module :abi :exports
     :capabilities :host-calls :handles :targets :assets})
 
 (defn operation-request [request]
@@ -73,7 +71,11 @@
                     "extension target :module")))))
             targets)))))
 
-(defn validate-manifest [document origin]
+(defn declared-path [root path]
+  (let [safe (asset/safe-path path)]
+    (if root (asset/safe-path (file/join root safe)) safe)))
+
+(defn validate-manifest [namespace document origin]
   (if (not (map? document))
     (throw (ex-info (str "extension/malformed " origin ": manifest must be a map") {}))
     nil)
@@ -84,23 +86,20 @@
       (throw (ex-info (str "extension/malformed " origin
                            ": unknown manifest fields " unknown)
                       {:fields unknown}))))
-  (let [namespace (non-empty-string (required document :namespace origin) ":namespace")
-        version (non-empty-string (required document :version origin) ":version")
+  (let [namespace (str namespace)
         provider (required document :provider origin)
         abi (required document :abi origin)
-        exports (required document :exports origin)
-        capabilities (required document :capabilities origin)
+        exports (or (:exports document) {})
+        capabilities (or (:capabilities document) [])
         module (:module document)
         targets (:targets document)
         target-paths (target-files targets)
-        assets (or (:assets document) [])]
+        assets (or (:assets document) [])
+        root (if-let [value (:root document)] (asset/safe-path value) nil)]
     (if (valid-namespace? namespace)
       nil
       (throw (ex-info "namespace must be a qualified lower-case symbol"
                       {:namespace namespace})))
-    (if (schema/version-string? version)
-      nil
-      (throw (ex-info "extension version must be semantic" {:version version})))
     (if (and (map? exports)
              (every? (fn [entry] (do (validate-export (key entry) (val entry)) true))
                      exports))
@@ -129,37 +128,48 @@
       (throw (ex-info (str "unsupported extension provider " provider) {})))
     (assoc document
            :namespace namespace
-           :version version
            :declared/files
            (vec (distinct
                  (sort
-                  (concat ["hara.extension.edn"]
-                          (if module [(asset/safe-path module)] [])
-                          target-paths
-                          (map asset/safe-path assets))))))))
+                  (concat (if module [(declared-path root module)] [])
+                          (map (fn [path] (declared-path root path)) target-paths)
+                          (map (fn [path] (declared-path root path)) assets))))))))
 
 (defn read-package [root]
-  (let [descriptor (file/join root "hara.extension.edn")]
+  (let [descriptor (file/join root "project.edn")]
     (if (deref (file/exists? descriptor))
       nil
-      (throw (ex-info (str "extension/malformed: missing " descriptor)
+      (throw (ex-info (str "extension/malformed: missing project.edn at " descriptor)
                       {:path descriptor})))
-    (let [manifest (validate-manifest (edn/read (project/read-text descriptor)) descriptor)
-          package (assoc manifest :package/root root :package/descriptor descriptor)]
+    (let [project-document (project/read-project descriptor)
+          declarations (:project/extensions project-document)]
+      (if (and (map? declarations) (not (empty? declarations)))
+        nil
+        (throw (ex-info "project.edn :project/extensions must be a non-empty map" {})))
+      (let [extensions
+            (vec (map (fn [entry]
+                        (validate-manifest (key entry) (val entry) descriptor))
+                      declarations))
+            package (assoc project-document
+                           :package/root root
+                           :package/descriptor descriptor
+                           :extensions extensions
+                           :declared/files
+                           (vec (distinct
+                                 (sort (mapcat (fn [extension]
+                                                (:declared/files extension))
+                                              extensions)))))]
       (reduce
        (fn [verified relative]
-         (if (= relative "hara.extension.edn")
-           verified
-           (let [path (file/join root relative)]
-             (if (and (deref (file/exists? path))
-                      (= :file (:type (deref (file/stat path)))))
-               verified
-               (throw (ex-info
-                       (str "extension/asset-unavailable: " (:namespace package)
-                            "/" relative)
-                       {:path path}))))))
+         (let [path (file/join root relative)]
+           (if (and (deref (file/exists? path))
+                    (= :file (:type (deref (file/stat path)))))
+             verified
+             (throw (ex-info
+                     (str "extension/asset-unavailable: " relative)
+                     {:path path})))))
        package
-       (:declared/files package)))))
+       (:declared/files package))))))
 
 (defn package-argument [arguments operation]
   (if (= 1 (count arguments))
@@ -169,39 +179,40 @@
                     {:arguments arguments}))))
 
 (defn checked-result [package operation]
-  (let [namespace (:namespace package)]
+  (let [identity (:project/id package)
+        extensions (:extensions package)]
     (if (= operation :test)
       (model/success package
                      [(model/message
-                       (str "Extension " namespace " passed package validation\n"))])
+                       (str "Extension project " identity
+                            " passed package validation\n"))])
       (model/success
        package
        [(model/message
-         (str "Extension " namespace
-              (if-let [identity (:identity package)] (str " [" identity "]") "")
-              " " (:version package) " is valid ("
+         (str "Extension project " identity " " (:project/version package)
+              " is valid (" (count extensions) " extensions, "
               (count (:declared/files package)) " files)\n"))]))))
 
 (defn read-build [root]
-  (let [path (file/join root "hara.build.edn")
-        document (edn/read (project/read-text path))]
-    (if (map? document)
-      document
-      (throw (ex-info "hara.build.edn must be a map" {:path path})))))
+  (let [document (project/read-project (file/join root "project.edn"))
+        build (:project/build document)]
+    (if (map? build)
+      build
+      (throw (ex-info "project.edn requires a :project/build map" {})))))
 
 (defn build-command [request root]
   (let [document (read-build root)
-        adapter (required document :adapter "hara.build.edn")
-        output (non-empty-string (required document :output "hara.build.edn") :output)]
+        adapter (required document :adapter ":project/build")
+        output (non-empty-string (required document :output ":project/build") :output)]
     (if (= adapter :command)
-      (let [argv (required document :command "hara.build.edn")]
+      (let [argv (required document :command ":project/build")]
         (if (not (:allow-process (:request/options request)))
           (throw (ex-info
                   "extension/capability-denied: build requires --allow-process" {}))
           nil)
         (if (and (vector? argv) (not (empty? argv)) (every? string? argv))
           (process/run argv {:cwd (file/join root (or (:working-directory document) "."))})
-          (throw (ex-info "hara.build.edn :command cannot be empty" {}))))
+          (throw (ex-info ":project/build :command cannot be empty" {}))))
       (if (= adapter :prebuilt)
         nil
         (throw (ex-info (str "unsupported extension build adapter: " adapter) {}))))
@@ -209,7 +220,7 @@
           package (read-package result)]
       (model/success package
                      [(model/message
-                       (str "Built " (:namespace package) " at " result "\n"))]))))
+                       (str "Built " (:project/id package) " at " result "\n"))]))))
 
 (defn copy-file! [source target]
   (if-let [parent (file/parent target)] (deref (file/mkdir parent)) nil)
@@ -222,22 +233,21 @@
         extension-root (or (first (:project/extension-paths project)) "extensions")
         destination (file/join
                      (file/join (:project/root project) extension-root)
-                     (string/replace (:namespace package) "." "/"))]
+                     (string/replace (str (:project/id package)) "/" "_"))]
     (if (deref (file/exists? destination))
       (throw (ex-info (str "Extension is already installed: " destination) {}))
       nil)
     (reduce
      (fn [installed relative]
-       (copy-file! (if (= relative "hara.extension.edn")
-                     (:package/descriptor package)
-                     (file/join source relative))
+       (copy-file! (file/join source relative)
                    (file/join destination relative))
        (inc installed))
      0
      (:declared/files package))
+    (copy-file! (:package/descriptor package) (file/join destination "project.edn"))
     (model/success package
                    [(model/message
-                     (str "Installed " (:namespace package) " at " destination "\n"))])))
+                     (str "Installed " (:project/id package) " at " destination "\n"))])))
 
 (defn execute [request]
   (let [resolved (operation-request request)
