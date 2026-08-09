@@ -30,6 +30,43 @@
    (merge {:evaluation/value value} metadata)
    [(model/message (str (pr-str value) "\n"))]))
 
+(defn application-protocol? [value]
+  (and (map? value)
+       (or (not (nil? (:hara.app/stdout value)))
+           (not (nil? (:hara.app/stderr value)))
+           (not (nil? (:hara.app/exit value))))))
+
+(defn application-result [value metadata]
+  (let [stdout (or (:hara.app/stdout value) "")
+        stderr (or (:hara.app/stderr value) "")
+        exit (or (:hara.app/exit value) 0)]
+    (if (not (string? stdout))
+      (throw (ex-info ":hara.app/stdout must be a string or nil" {}))
+      nil)
+    (if (not (string? stderr))
+      (throw (ex-info ":hara.app/stderr must be a string or nil" {}))
+      nil)
+    (if (or (< exit 0) (> exit 255))
+      (throw (ex-info ":hara.app/exit must be between 0 and 255" {}))
+      nil)
+    (assoc (model/success
+            (merge {:application/result value} metadata)
+            [(model/message :stdout stdout)
+             (model/message :stderr stderr)])
+           :result/exit exit)))
+
+(defn application-request-source [request current-project]
+  (let [application-request
+        {:hara.cli/route :hara.cli.route/project-run
+         :hara.cli/arguments (:request/arguments request)
+         :hara.cli/runtime (:request/runtime request)
+         :hara.cli/cwd (:project/root current-project)
+         :hara.cli/project (str (:project/id current-project))
+         :hara.cli/capabilities (:request/capabilities request)}]
+    (str "(ns hara.cli.application)\n"
+         "(def request " (pr-str application-request) ")\n"
+         "(def arguments (get request :hara.cli/arguments))\n")))
+
 (defn evaluate-source [request source project-required]
   (let [registration (register-request-project! request project-required)
         value (kernel/session-eval "ROOT" source)]
@@ -54,11 +91,18 @@
   (let [current-project (project/discover (project-start request))
         registered (project/register-resources! current-project)
         path (project/main-file current-project)
+        request-source (application-request-source request current-project)
+        request-resource (kernel/resource-register
+                          "hara.cli.application"
+                          request-source)
         value (kernel/session-eval "ROOT" (project/read-text path))]
-    (evaluation-result value
-                       {:evaluation/project (:project/id current-project)
-                        :evaluation/file path
-                        :evaluation/registered registered})))
+    (let [metadata {:evaluation/project (:project/id current-project)
+                    :evaluation/file path
+                    :evaluation/registered registered
+                    :application/resource request-resource}]
+      (if (application-protocol? value)
+        (application-result value metadata)
+        (evaluation-result value metadata)))))
 
 (def +eval-work+
   (work/step {:id 'hara.cli/eval :version 1}
