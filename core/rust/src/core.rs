@@ -147,6 +147,14 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         ],
     ),
     ("Crypto", &["sha256"]),
+    ("OS", &["platform", "arch", "cwd", "env", "getenv"]),
+    (
+        "Process",
+        &[
+            "spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr",
+            "wait", "kill",
+        ],
+    ),
     (
         "File",
         &[
@@ -3223,6 +3231,21 @@ fn os_operation(
         .strip_prefix("std.foundation.os/")
         .or_else(|| operation.strip_prefix("os/"))
         .unwrap_or(operation);
+    let operation = operation
+        .strip_prefix("std.native.OS/")
+        .unwrap_or(operation);
+    let process_operation = operation.strip_prefix("std.native.Process/");
+    let operation = match process_operation.unwrap_or(operation) {
+        "instance?" if process_operation.is_some() => "process?",
+        "alive?" if process_operation.is_some() => "process-alive?",
+        "write" if process_operation.is_some() => "process-write",
+        "close-input" if process_operation.is_some() => "process-close-input",
+        "stdout" if process_operation.is_some() => "process-stdout",
+        "stderr" if process_operation.is_some() => "process-stderr",
+        "wait" if process_operation.is_some() => "process-wait",
+        "kill" if process_operation.is_some() => "process-kill",
+        value => value,
+    };
     match operation {
         "platform" => {
             if !forms.is_empty() {
@@ -11581,6 +11604,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .map(|form| eval(form, env))
                         .collect::<Result<Vec<_>, _>>()?;
                     kernel_provider(operation)?(operation.to_owned(), arguments)
+                }
+                Form::Symbol(n)
+                    if n.starts_with("std.native.OS/")
+                        || n.starts_with("std.native.Process/") =>
+                {
+                    os_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Arr/") || n.starts_with("std.native.Obj/") =>

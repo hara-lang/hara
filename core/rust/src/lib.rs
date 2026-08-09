@@ -4253,6 +4253,8 @@ mod tests {
             "String",
             "Bytes",
             "Crypto",
+            "OS",
+            "Process",
             "File",
             "Socket",
             "Promise",
