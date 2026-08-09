@@ -18,6 +18,40 @@ mod install;
 use install::install_archive_at;
 use install::{install_archive, json_string, validate_recipe};
 
+/// Capability adapter used by the Hara-owned CLI policy. These functions
+/// expose package mechanics without parsing command-line arguments or writing
+/// user-facing output.
+pub fn check_path(input: &Path) -> Result<(String, String), String> {
+    let project = read_project(input)?;
+    Ok((project.id, project.version.to_string()))
+}
+
+pub fn build_path(input: &Path, output: Option<&Path>) -> Result<PathBuf, String> {
+    let project = read_project(input)?;
+    let destination = output.map(Path::to_path_buf).unwrap_or_else(|| {
+        project.root.join("target").join(format!(
+            "{}-{}.harp",
+            archive_name(&project.id),
+            project.version
+        ))
+    });
+    build_archive(&project, &destination)?;
+    Ok(destination)
+}
+
+pub fn inspect_path(archive: &Path) -> Result<String, String> {
+    inspect_archive(archive)
+}
+
+pub fn install_path(input: &Path) -> Result<PathBuf, String> {
+    let archive = if input.is_dir() {
+        build_path(input, None)?
+    } else {
+        input.to_path_buf()
+    };
+    install_archive(&archive)
+}
+
 /// Handles the public `hara package` command group.
 pub fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {

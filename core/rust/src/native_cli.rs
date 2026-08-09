@@ -405,6 +405,39 @@ fn kernel_call(
     arguments: &[Value],
 ) -> Result<Value, String> {
     match operation {
+        "package-check" => {
+            let (identity, version) = crate::package::check_path(std::path::Path::new(
+                string_argument(arguments, 0, operation)?,
+            ))?;
+            Ok(Value::Map(
+                [
+                    (keyword("identity"), Value::String(identity)),
+                    (keyword("version"), Value::String(version)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        "package-build" => {
+            let input = std::path::Path::new(string_argument(arguments, 0, operation)?);
+            let output =
+                optional_string_argument(arguments, 1, operation)?.map(std::path::Path::new);
+            Ok(Value::String(
+                crate::package::build_path(input, output)?
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+        }
+        "package-inspect" => Ok(Value::String(crate::package::inspect_path(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+        )?)),
+        "package-install" => Ok(Value::String(
+            crate::package::install_path(std::path::Path::new(string_argument(
+                arguments, 0, operation,
+            )?))?
+            .to_string_lossy()
+            .into_owned(),
+        )),
         "session-create" => {
             broker.create(string_argument(arguments, 0, operation)?)?;
             Ok(Value::Nil)
@@ -478,7 +511,23 @@ fn kernel_call(
 fn string_argument<'a>(arguments: &'a [Value], index: usize, operation: &str) -> Result<&'a str, String> {
     match arguments.get(index) {
         Some(Value::String(value)) => Ok(value),
-        _ => Err(format!("foundation.kernel/{operation} expects string arguments")),
+        _ => Err(format!(
+            "foundation.kernel/{operation} expects string arguments"
+        )),
+    }
+}
+
+fn optional_string_argument<'a>(
+    arguments: &'a [Value],
+    index: usize,
+    operation: &str,
+) -> Result<Option<&'a str>, String> {
+    match arguments.get(index) {
+        None | Some(Value::Nil) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value)),
+        _ => Err(format!(
+            "foundation.kernel/{operation} expects an optional string argument"
+        )),
     }
 }
 
