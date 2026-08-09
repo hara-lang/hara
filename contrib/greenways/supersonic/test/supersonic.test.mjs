@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile, stat } from "node:fs/promises";
 import test from "node:test";
 import { SupersonicProvider, normalizeGraph } from "../src/js/supersonic.js";
 
@@ -85,4 +86,44 @@ test("integer number controls reject fractional MIDI values", async () => {
     () => provider.update("amp", "gain", "root", 57.5),
     /control-integer-invalid/
   );
+});
+
+test("publishes complete capability-bounded source-local Showcases", async () => {
+  const root = new URL("../", import.meta.url);
+  const showcase = await readFile(new URL("showcase.edn", root), "utf8");
+  assert.match(showcase, /:showcase\/package :greenways\/supersonic/);
+  assert.match(showcase, /:demo\/id :inspect-audio-graph/);
+  assert.match(showcase, /:demo\/id :glass-signal/);
+  assert.match(showcase, /:demo\/surface :preview/);
+  assert.match(showcase, /:demo\/surface :audio/);
+
+  const required = [
+    "showcase/graph-contract/README.md",
+    "showcase/graph-contract/project.edn",
+    "showcase/graph-contract/project.lock.edn",
+    "showcase/graph-contract/workspace.edn",
+    "showcase/graph-contract/src/main.hal",
+    "showcase/glass-signal/README.md",
+    "showcase/glass-signal/project.edn",
+    "showcase/glass-signal/project.lock.edn",
+    "showcase/glass-signal/workspace.edn",
+    "showcase/glass-signal/src/main.hal",
+    "showcase/states/graph-contract.edn",
+    "showcase/states/glass-signal.edn",
+  ];
+  for (const path of required) {
+    assert.equal((await stat(new URL(path, root))).isFile(), true, `${path} is missing`);
+  }
+
+  const inspectionProject = await readFile(new URL("showcase/graph-contract/project.edn", root), "utf8");
+  const liveProject = await readFile(new URL("showcase/glass-signal/project.edn", root), "utf8");
+  const liveWorkspace = await readFile(new URL("showcase/glass-signal/workspace.edn", root), "utf8");
+  const liveSource = await readFile(new URL("showcase/glass-signal/src/main.hal", root), "utf8");
+
+  assert.doesNotMatch(inspectionProject, /:audio\/playback/);
+  assert.match(liveProject, /:audio\/playback/);
+  assert.match(liveWorkspace, /:presentation\/surface "audio"/);
+  assert.match(liveWorkspace, /:responsive\/default-surface "audio"/);
+  assert.match(liveSource, /\(sonic\/start live-graph\)/);
+  assert.match(liveSource, /"playing" false/);
 });
