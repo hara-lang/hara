@@ -82,6 +82,18 @@ pub fn embedding_namespace_registry() -> kernel::NamespaceRegistry<core::Value> 
         foundation.map_var(lang::data::Symbol::parse(&name), var);
         namespaces.find_or_create(canonical_name);
     }
+    let native_json = namespaces.find_or_create("std.native.Json");
+    let foundation_json = namespaces.find_or_create("std.foundation.json");
+    for (name, arity) in [("read", 1), ("write", 1), ("pretty", 2)] {
+        let qualified = format!("std.native.Json/{name}");
+        let var = native_json.intern(
+            name,
+            core::native_function(&qualified, arity, |_| {
+                Err("compile-only JSON binding was invoked".into())
+            }),
+        );
+        foundation_json.map_var(lang::data::Symbol::parse(name), var);
+    }
     core::refer_startup_defaults(&namespaces, "user");
     namespaces
 }
@@ -2110,6 +2122,13 @@ pub fn version() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "bytecode-vm")]
+    #[test]
+    fn embedding_registry_exposes_the_foundation_json_shortcut() {
+        let namespaces = embedding_namespace_registry();
+        assert!(vm::compile_source_with("(json/write {\"a\" 1})", &namespaces).is_ok());
+    }
 
     fn repo_text(relative: &str) -> Option<String> {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
