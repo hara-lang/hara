@@ -2,6 +2,7 @@
   (:require [std.work.protocol :as protocol]
             [std.work.runtime.base :as base]
             [std.work.runtime.receipt :as receipt]
+            [std.work.runtime.result :as result]
             [std.work.runtime.store :as store]))
 
 (defn node-id
@@ -74,38 +75,42 @@
 
 (defn transact!
   [runtime frame changes]
-  (let [store-provider (base/runtime-store runtime)
-        run (store/load-run! store-provider (:run/id frame))
-        derived (receipt/transition-receipts run changes)
-        changes
-        (if (empty? derived)
-          changes
-          (assoc
-           changes
-           :transition/run-updates
-           (assoc (or (:transition/run-updates changes) {})
-                  :run/receipt-status :pending)
-           :transition/outbox
-           (receipt/append-values
-            (vec (or (:transition/outbox changes) []))
-            derived)))
-        result
-        (store/transact-current!
-         store-provider
-         (:run/id frame)
-         changes)]
-    ;; Observers see only records that the store returned as committed.
-    (notify-events! runtime (:transition/events result))
-    result))
+  (let [store-provider (base/runtime-store runtime)]
+    (result/then
+     (store/load-run! store-provider (:run/id frame))
+     (fn [run]
+       (let [derived (receipt/transition-receipts run changes)
+             changes
+             (if (empty? derived)
+               changes
+               (assoc
+                changes
+                :transition/run-updates
+                (assoc (or (:transition/run-updates changes) {})
+                       :run/receipt-status :pending)
+                :transition/outbox
+                (receipt/append-values
+                 (vec (or (:transition/outbox changes) []))
+                 derived)))]
+         (result/then
+          (store/transact-current!
+           store-provider
+           (:run/id frame)
+           changes)
+          (fn [committed]
+            ;; Observers see only records that the store returned as committed.
+            (notify-events! runtime (:transition/events committed))
+            committed)))))))
 
 (defn emit!
   [runtime frame event data]
-  (let [result
-        (transact! runtime
-                   frame
-                   {:transition/events
-                    [(event-record frame event data)]})]
-    (first (:transition/events result))))
+  (result/then
+   (transact! runtime
+              frame
+              {:transition/events
+               [(event-record frame event data)]})
+   (fn [committed]
+     (first (:transition/events committed)))))
 
 (defn leaf-context
   ([frame]
@@ -127,18 +132,22 @@
 
 (defn cancelled?
   [runtime frame]
-  (= :cancelled
-     (:run/status
-      (store/call (base/runtime-store runtime)
-                  :load-run
-                  (:run/id frame)))))
+  (result/then
+   (store/call (base/runtime-store runtime)
+               :load-run
+               (:run/id frame))
+   (fn [run]
+     (= :cancelled (:run/status run)))))
 
 (defn assert-running!
   [runtime frame]
-  (if (and (not (:work/cleanup? frame))
-           (cancelled? runtime frame))
-    (throw
-     (ex-info "Work run has been cancelled" {:run/id (:run/id frame)}))))
+  (result/then
+   (cancelled? runtime frame)
+   (fn [cancelled]
+     (if (and (not (:work/cleanup? frame)) cancelled)
+       (throw
+        (ex-info "Work run has been cancelled" {:run/id (:run/id frame)})))
+     nil)))
 
 (defn explicit-item?
   [item]

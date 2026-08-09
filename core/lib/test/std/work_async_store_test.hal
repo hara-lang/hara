@@ -1,0 +1,117 @@
+(ns std.work-async-store-test
+  (:require [std.foundation.promise :as promise]
+            [std.lib.test :as test]
+            [std.work :as work]
+            [std.work.provider.conformance :as conformance]
+            [std.work.provider.memory :as memory]))
+
+(def async-receipt-work
+  (work/chain
+   {:id :async-receipt-flow}
+   [(work/step :increment
+      (fn [input context]
+        (inc input)))
+    (work/step :double
+      (fn [input context]
+        (* input 2)))]))
+
+(defn contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= value candidate)))
+   false
+   (or values [])))
+
+(def async-publisher-state
+  (atom {:payloads {}
+         :published []}))
+
+(def async-receipt-provider
+  {:provider/role :work/receipt
+   :provider/id :async-fake-receipt
+   :provider/capabilities #{:idempotent}
+   :provider/operations
+   {:publish
+    (fn [envelope]
+      (promise/run
+       (fn []
+         (let [id (:receipt/id envelope)
+               existing (get-in (deref async-publisher-state)
+                                [:payloads id])]
+           (if (and existing (not= existing envelope))
+             (throw
+              (ex-info "async fake publisher idempotency conflict"
+                       {:receipt/id id})))
+           (swap!
+            async-publisher-state
+            (fn [data]
+              (let [data (assoc-in data [:payloads id] envelope)]
+                (if (contains-value? (:published data) id)
+                  data
+                  (assoc data
+                         :published
+                         (conj (vec (:published data)) id))))))
+           {:receipt/status :published
+            :provider/receipt-root [:async/receipt id]}))))}})
+
+(def async-store
+  (conformance/asynchronous-provider (memory/memory-store)))
+(def async-runtime
+  (work/durable-runtime
+   {:store async-store
+    :receipt async-receipt-provider}))
+
+(def async-reference
+  (deref
+   (work/start async-runtime
+               async-receipt-work
+               3
+               {:id "async-receipts"})))
+(def async-result
+  (deref (work/result async-runtime async-reference)))
+(def async-receipts-before
+  (deref (work/receipts async-runtime async-reference)))
+(def async-publication
+  (deref (work/publish-receipts! async-runtime async-reference)))
+(def async-receipts-after
+  (deref (work/receipts async-runtime async-reference)))
+(def async-receipt-status
+  (deref (work/receipt-status async-runtime async-reference)))
+(def async-run-record
+  (deref (work/run-record async-runtime async-reference)))
+(def async-second-publication
+  (deref (work/publish-receipts! async-runtime async-reference)))
+
+(def async-run-value
+  (deref
+   (work/run
+    (work/durable-runtime
+     {:store
+      (conformance/asynchronous-provider (memory/memory-store))})
+    (work/pure :async-run-helper
+               (fn [input context]
+                 (+ input 5)))
+    7
+    {:id "async-run-helper"})))
+
+(def results
+  [(test/check
+    "async store and receipt providers complete and acknowledge the receipt outbox"
+    [async-result
+     (count async-receipts-before)
+     (count async-publication)
+     (count async-receipts-after)
+     async-receipt-status
+     (:run/receipt-status async-run-record)
+     (count async-second-publication)
+     (count (:published (deref async-publisher-state)))
+     (count (keys (:payloads (deref async-publisher-state))))]
+    [8 5 5 5 :published :published 0 5 5])
+
+   (test/check
+    "std.work/run composes an asynchronous operational store"
+    async-run-value
+    12)])
+
+(test/print-results results)

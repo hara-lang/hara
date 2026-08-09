@@ -1,5 +1,6 @@
 (ns std.work-store-test
-  (:require [std.lib.test :as test]
+  (:require [std.foundation.promise :as promise]
+            [std.lib.test :as test]
             [std.work :as work]
             [std.work.provider.conformance :as conformance]
             [std.work.provider.memory :as memory]
@@ -11,6 +12,12 @@
 (def runtime-corpus
   (runtime-conformance/run-runtime-corpus memory/memory-store))
 
+(def async-runtime-corpus
+  (deref
+   (runtime-conformance/run-runtime-corpus
+    (fn []
+      (conformance/asynchronous-provider (memory/memory-store))))))
+
 (defn event-count
   [events event]
   (reduce
@@ -20,6 +27,16 @@
        total))
    0
    events))
+
+(def immediate-runtime (work/local-runtime))
+(def immediate-reference
+  (work/start immediate-runtime
+              (work/pure :immediate-memory
+                         (fn [input context] (inc input)))
+              4
+              {:id "immediate-memory"}))
+(def immediate-status (work/status immediate-runtime immediate-reference))
+(def immediate-result (work/result immediate-runtime immediate-reference))
 
 (def failing-backend (work/memory-backend))
 
@@ -67,6 +84,34 @@
 
 (def failure-events (work/observer-events failure-observer))
 
+(def async-failure-observer (work/recording-observer))
+(def async-failure-runtime
+  (work/local-runtime
+   {:store (conformance/asynchronous-provider failing-store)
+    :observer async-failure-observer}))
+
+(def async-failure-work
+  (work/pure
+   :async-failure-observer-work
+   (fn [input context]
+     (promise/then
+      (work/emit! context :work/uncommitted {:value input})
+      (fn [_]
+        input)))))
+
+(def async-failure-reference
+  (deref
+   (work/start async-failure-runtime
+               async-failure-work
+               9
+               {:id "async-observer-failure"})))
+(def async-failure-status
+  (deref (work/status async-failure-runtime async-failure-reference)))
+(def async-failure-history
+  (deref (work/history async-failure-runtime async-failure-reference)))
+(def async-failure-events
+  (work/observer-events async-failure-observer))
+
 (def results
   [(test/check
     "memory store passes the reusable atomic transition corpus"
@@ -88,11 +133,33 @@
      :fork-checkpoint-copy true})
 
    (test/check
+    "the async fake store passes reusable recovery and fork scenarios"
+    async-runtime-corpus
+    {:resume-after-replacement true
+     :fork-checkpoint-copy true})
+
+   (test/check
+    "MemoryStore start, query, and result remain immediate"
+    [(promise? immediate-reference)
+     (promise? immediate-status)
+     (promise? immediate-result)
+     immediate-status
+     immediate-result]
+    [false false false :completed 5])
+
+   (test/check
     "observers never receive events rejected by the store"
     [(work/status failure-runtime failure-reference)
      (event-count failure-events :work/uncommitted)
      (event-count (work/history failure-runtime failure-reference)
                   :work/uncommitted)]
+    [:failed 0 0])
+
+   (test/check
+    "async transaction rejection does not notify observers"
+    [async-failure-status
+     (event-count async-failure-events :work/uncommitted)
+     (event-count async-failure-history :work/uncommitted)]
     [:failed 0 0])])
 
 (test/print-results results)

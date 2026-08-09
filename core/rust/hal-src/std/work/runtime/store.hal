@@ -1,4 +1,5 @@
-(ns std.work.runtime.store)
+(ns std.work.runtime.store
+  (:require [std.work.runtime.result :as result]))
 
 (def run-operations
   [:next-run-id
@@ -184,10 +185,12 @@
 
 (defn load-run!
   [provider run-id]
-  (let [run (call provider :load-run run-id)]
-    (if (nil? run)
-      (throw (ex-info "Work run does not exist" {:run/id run-id})))
-    run))
+  (result/then
+   (call provider :load-run run-id)
+   (fn [run]
+     (if (nil? run)
+       (throw (ex-info "Work run does not exist" {:run/id run-id})))
+     run)))
 
 (defn transition-request
   [run-id expected-revision changes]
@@ -204,9 +207,11 @@
 
 (defn transact-current!
   [provider run-id changes]
-  (let [run (load-run! provider run-id)]
-    (call provider
-          :transact
-          (transition-request run-id
-                              (or (:run/revision run) 0)
-                              changes))))
+  (result/then
+   (load-run! provider run-id)
+   (fn [run]
+     (call provider
+           :transact
+           (transition-request run-id
+                               (or (:run/revision run) 0)
+                               changes)))))

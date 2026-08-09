@@ -1,0 +1,150 @@
+(ns std.work.runtime.execution.step
+  (:require [std.work.runtime.base :as base]
+            [std.work.runtime.frame :as frame]
+            [std.work.runtime.result :as result]
+            [std.work.runtime.store :as store]))
+
+(defn run-pure
+  [execute runtime frame spec input]
+  (let [frame (frame/leaf-frame frame spec)]
+    ((:fn spec) input (frame/leaf-context runtime frame))))
+
+(defn retry-allowed?
+  [retry error]
+  (let [predicate (:retry? retry)]
+    (if predicate
+      (if (predicate error) true false)
+      true)))
+
+(declare step-attempt)
+
+(defn step-attempt-failed
+  [runtime frame spec input attempt maximum error]
+  (if (and (< attempt maximum)
+           (retry-allowed? (or (:retry spec) {}) error))
+    (result/then
+     (frame/emit! runtime frame :work/step-retry
+                  {:step/id (:id spec)
+                   :attempt attempt
+                   :next-attempt (inc attempt)})
+     (fn [_]
+       (step-attempt runtime frame spec input (inc attempt) maximum)))
+    (result/then
+     (frame/emit! runtime frame :work/step-failed
+                  {:step/id (:id spec)
+                   :attempt attempt
+                   :error (str error)})
+     (fn [_]
+       (throw error)))))
+
+(defn step-attempt
+  [runtime frame spec input attempt maximum]
+  (result/attempt
+   (fn []
+     (let [context (assoc (frame/leaf-context runtime frame) :attempt attempt)]
+       (result/then
+        ((:fn spec) input context)
+        (fn [value]
+          [value attempt]))))
+   (fn [error]
+     (step-attempt-failed runtime
+                          frame
+                          spec
+                          input
+                          attempt
+                          maximum
+                          error))))
+
+(defn assert-step-identity!
+  [runtime spec]
+  (if (and (base/durable? runtime)
+           (nil? (:id spec)))
+    (throw
+     (ex-info "Durable step work requires a stable :id"
+              {:operation (:op spec)})))
+  spec)
+
+(defn checkpoint-record
+  [frame spec input value attempts key]
+  {:checkpoint/run (:run/id frame)
+   :checkpoint/key key
+   :checkpoint/work-root (:work/root frame)
+   :checkpoint/work-version (:work/version frame)
+   :checkpoint/node-path (:node/path frame)
+   :checkpoint/item-id (:item/id frame)
+   :checkpoint/item-path (or (:item/path frame) [])
+   :checkpoint/status :completed
+   :checkpoint/input input
+   :checkpoint/result value
+   :checkpoint/attempts attempts
+   :checkpoint/definition-digest
+   (or (:definition-digest spec) (:digest spec))
+   :checkpoint/input-digest
+   (or (:input-digest spec)
+       (:input-digest (:options frame)))})
+
+(defn commit-step-result
+  [runtime frame spec input key value attempts]
+  (let [completed
+        (frame/event-record
+         frame
+         :work/step-completed
+         {:step/id (:id spec)
+          :checkpoint/key key
+          :attempts attempts})
+        committed
+        (if (base/durable? runtime)
+          (frame/transact!
+           runtime
+           frame
+           {:transition/checkpoints
+            [(checkpoint-record frame spec input value attempts key)]
+            :transition/events [completed]})
+          (frame/emit! runtime frame :work/step-completed
+                       {:step/id (:id spec)
+                        :checkpoint/key key
+                        :attempts attempts}))]
+    (result/then committed (fn [_] value))))
+
+(defn execute-step-attempt
+  [runtime frame spec input key]
+  (let [retry (or (:retry spec) {})
+        maximum (or (:maximum retry) 1)]
+    (result/then
+     (frame/emit! runtime frame :work/step-started
+                  {:step/id (:id spec)
+                   :checkpoint/key key})
+     (fn [_]
+       (result/then
+        (step-attempt runtime frame spec input 1 maximum)
+        (fn [attempt-result]
+          (let [value (nth attempt-result 0)
+                attempts (nth attempt-result 1)]
+            (commit-step-result runtime
+                                frame
+                                spec
+                                input
+                                key
+                                value
+                                attempts))))))))
+
+(defn run-step
+  [execute runtime frame spec input]
+  (let [_ (assert-step-identity! runtime spec)
+        frame (frame/leaf-frame frame spec)
+        key (frame/checkpoint-key frame)
+        checkpoint
+        (if (base/durable? runtime)
+          (store/call (base/runtime-store runtime) :load-checkpoint key)
+          nil)]
+    (result/then
+     checkpoint
+     (fn [record]
+       (if (= :completed (:checkpoint/status record))
+         (result/then
+          (frame/emit! runtime frame :work/step-replayed
+                       {:step/id (:id spec)
+                        :checkpoint/key key})
+          (fn [_]
+            (:checkpoint/result record)))
+         (execute-step-attempt runtime frame spec input key))))))
