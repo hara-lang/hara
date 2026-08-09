@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { formatGitHubOutput, normalizeReleaseCut } from "./release-cut.mjs";
 
 const valid = Object.freeze({
@@ -59,4 +60,29 @@ test("GitHub output contains only validated scalar fields", () => {
     "workflow=release.yml",
     ""
   ].join("\n"));
+});
+
+test("Truffle release tooling resolves paths from the repository root", async () => {
+  const script = await readFile(new URL("./build-truffle-native", import.meta.url), "utf8");
+  assert.match(
+    script,
+    /HARA_REPOSITORY_ROOT:-\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)\/\.\.\/\.\."/,
+  );
+  assert.match(script, /core\/java\/pom\.xml/);
+  assert.doesNotMatch(
+    script,
+    /ROOT="\$\(cd "\$\(dirname "\$\{BASH_SOURCE\[0\]\}"\)\/\.\." && pwd\)"/,
+  );
+});
+
+test("the immutable v0.1.5 rerun repairs only release tooling and isolates tap credentials", async () => {
+  const workflow = await readFile(
+    new URL("../../.github/workflows/release.yml", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /Repair immutable v0\.1\.5 release tooling/);
+  assert.match(workflow, /needs\.guard\.outputs\.tag == 'v0\.1\.5'/);
+  assert.match(workflow, /publish-homebrew:\n[\s\S]*?continue-on-error: true/);
+  assert.match(workflow, /publish-source-formula:\n[\s\S]*?continue-on-error: true/);
+  assert.match(workflow, /ref: \$\{\{ needs\.guard\.outputs\.tag \}\}/);
 });
