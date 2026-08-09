@@ -23,6 +23,7 @@ pub use crate::task::{
 };
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
+use sha2::{Digest, Sha256};
 
 #[path = "fiber.rs"]
 mod fiber;
@@ -145,6 +146,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "s8",
         ],
     ),
+    ("Crypto", &["sha256"]),
     (
         "File",
         &[
@@ -11557,6 +11559,20 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Host/") => {
                     native_host_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n == "std.native.Crypto/sha256" => {
+                    if fs.len() != 2 {
+                        return Err("std.native.Crypto/sha256 expects bytes".into());
+                    }
+                    let bytes = match eval(&fs[1], env)? {
+                        Value::Bytes(value) => value,
+                        Value::ByteBuffer(value) => value.borrow().clone(),
+                        _ => return Err("std.native.Crypto/sha256 expects bytes".into()),
+                    };
+                    let digest = Sha256::digest(bytes);
+                    Ok(Value::String(
+                        digest.iter().map(|byte| format!("{byte:02x}")).collect(),
+                    ))
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Kernel/") => {
                     let operation = n.strip_prefix("std.native.Kernel/").unwrap_or(n);
