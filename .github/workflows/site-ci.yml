@@ -95,10 +95,32 @@ jobs:
         run: npm test --prefix website/hara-www
       - name: Build reviewed main Hara site
         run: npm run build --prefix website/hara-www
-      - name: Validate root popup identity metadata
-        run: grep -F '<meta name="hara-identity-mode" content="popup"' website/target/www-astro/index.html
-      - name: Validate Starlight identity metadata
-        run: grep -F '<meta name="hara-identity-auto" content="starlight"' website/target/www-astro/docs/start/orientation/index.html
+      - name: Validate website and Starlight identity metadata
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          function escapePattern(value) {
+            return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          }
+
+          function requireMeta(path, name, content) {
+            const html = readFileSync(path, "utf8");
+            const tags = html.match(/<meta\b[^>]*>/gi) || [];
+            const namePattern = new RegExp(`\\bname=["']${escapePattern(name)}["']`, "i");
+            const contentPattern = new RegExp(`\\bcontent=["']${escapePattern(content)}["']`, "i");
+            if (!tags.some((tag) => namePattern.test(tag) && contentPattern.test(tag))) {
+              throw new Error(`${path} is missing <meta name="${name}" content="${content}">`);
+            }
+          }
+
+          requireMeta("website/target/www-astro/index.html", "hara-identity-mode", "popup");
+          requireMeta(
+            "website/target/www-astro/docs/start/orientation/index.html",
+            "hara-identity-auto",
+            "starlight",
+          );
+          NODE
       - name: Validate the unified website and documentation live surface
         run: |
           test -s website/target/www-astro/assets/live-surface.css
