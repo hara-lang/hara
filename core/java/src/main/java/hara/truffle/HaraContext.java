@@ -1719,16 +1719,15 @@ public final class HaraContext {
         "string?",
         new UnaryBuiltin("string?", value -> HaraBox.unwrap(value) instanceof String));
     target.define(
-        "number?",
-        new UnaryBuiltin("number?", value -> HaraBox.unwrap(value) instanceof Number));
-    target.define("integer?", new UnaryBuiltin("integer?", value -> {
+        "number?", new UnaryBuiltin("number?", value -> HaraBox.unwrap(value) instanceof Number));
+    target.define("long?", new UnaryBuiltin("long?", value -> {
       Object raw = HaraBox.unwrap(value);
       return raw instanceof Byte || raw instanceof Short || raw instanceof Integer
-          || raw instanceof Long || raw instanceof java.math.BigInteger;
+          || raw instanceof Long;
     }));
-    target.define("decimal?", new UnaryBuiltin("decimal?", value -> {
+    target.define("double?", new UnaryBuiltin("double?", value -> {
       Object raw = HaraBox.unwrap(value);
-      return raw instanceof Float || raw instanceof Double || raw instanceof java.math.BigDecimal;
+      return raw instanceof Float || raw instanceof Double;
     }));
     target.define("sequential?", new UnaryBuiltin("sequential?", value ->
         HaraBox.unwrap(value) instanceof hara.lang.data.types.ISequentialType<?>));

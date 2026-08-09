@@ -2,8 +2,6 @@ package hara.kernel.builtin;
 
 import hara.kernel.base.Module;
 
-import java.math.BigInteger;
-
 @SuppressWarnings({"unchecked", "rawtypes"})
 @Module.Ns(name = "global", tag = "check")
 public interface BuiltinCheck {
@@ -29,9 +27,14 @@ public interface BuiltinCheck {
     return !isTruthy(value);
   }
 
-  @Module.Fn(name = "integer?", complete = true)
-  public static <TYPE> boolean isInteger(TYPE x) {
-    return (x instanceof Integer) || (x instanceof Long) || (x instanceof BigInteger);
+  @Module.Fn(name = "long?", complete = true)
+  public static <TYPE> boolean isLong(TYPE x) {
+    return x instanceof Byte || x instanceof Short || x instanceof Integer || x instanceof Long;
+  }
+
+  @Module.Fn(name = "double?", complete = true)
+  public static <TYPE> boolean isDouble(TYPE x) {
+    return x instanceof Float || x instanceof Double;
   }
 
   @Module.Fn(name = "truthy?", complete = true)
