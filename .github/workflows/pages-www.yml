@@ -101,8 +101,30 @@ jobs:
           test -s core/target/www/benchmarks/data/catalog.json
           test -s core/target/www/benchmarks/data/runs.json
           test -s core/target/www/assets/live-surface.css
-          grep -F '<meta name="hara-identity-mode" content="popup"' core/target/www/index.html
-          grep -F '<meta name="hara-identity-auto" content="starlight"' core/target/www/docs/start/orientation/index.html
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          function escapePattern(value) {
+            return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          }
+
+          function requireMeta(path, name, content) {
+            const html = readFileSync(path, "utf8");
+            const tags = html.match(/<meta\b[^>]*>/gi) || [];
+            const namePattern = new RegExp(`\\bname=["']${escapePattern(name)}["']`, "i");
+            const contentPattern = new RegExp(`\\bcontent=["']${escapePattern(content)}["']`, "i");
+            if (!tags.some((tag) => namePattern.test(tag) && contentPattern.test(tag))) {
+              throw new Error(`${path} is missing <meta name="${name}" content="${content}">`);
+            }
+          }
+
+          requireMeta("core/target/www/index.html", "hara-identity-mode", "popup");
+          requireMeta(
+            "core/target/www/docs/start/orientation/index.html",
+            "hara-identity-auto",
+            "starlight",
+          );
+          NODE
           grep -F '/assets/live-surface.css' core/target/www/index.html
           grep -F '/assets/live-surface.css' core/target/www/docs/start/orientation/index.html
           grep -F 'mountLiveCard' core/target/www/assets/docs-repl.js
