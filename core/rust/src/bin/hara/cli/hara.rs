@@ -23,6 +23,7 @@ const PORTED_HANDLERS: &[&str] = &[
     "hara.cli.handler/extension",
     "hara.cli.handler/identity",
     "hara.cli.handler/package",
+    "hara.cli.handler/tap",
 ];
 
 pub(super) fn run_if_ported(options: &Options, argv: &[String]) -> Option<Result<(), String>> {

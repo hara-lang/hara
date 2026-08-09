@@ -189,6 +189,24 @@ pub fn trusted_or_builtin(root: &Path, name: &str) -> Result<Tap, String> {
     trusted(root, name)
 }
 
+/// Verifies the currently trusted identity policy for a tap without exposing
+/// command-line parsing or temporary-directory policy to the Hara CLI layer.
+pub fn verify_trusted(root: &Path, name: &str) -> Result<IdentityPolicy, String> {
+    let tap = trusted(root, name)?;
+    let scratch = env::temp_dir().join(format!(
+        "hara-tap-verify-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_nanos()
+    ));
+    fs::create_dir_all(&scratch).map_err(io)?;
+    let result = fetch_verified_policy(&tap, &scratch);
+    let _ = fs::remove_dir_all(&scratch);
+    result
+}
+
 /// Creates the two local repositories that make up a new tap.
 ///
 /// The caller supplies only public key material.  `HARA_SIGNER` signs the

@@ -438,6 +438,85 @@ fn kernel_call(
             .to_string_lossy()
             .into_owned(),
         )),
+        "tap-config-root" => Ok(Value::String(
+            crate::tap::config_root().to_string_lossy().into_owned(),
+        )),
+        "tap-add" => {
+            let root = std::path::Path::new(string_argument(arguments, 0, operation)?);
+            let name = string_argument(arguments, 1, operation)?;
+            let tap = crate::tap::Tap {
+                name: name.into(),
+                registry: strings_argument(arguments, 2, operation)?,
+                identity: strings_argument(arguments, 3, operation)?,
+                identity_key: string_argument(arguments, 4, operation)?.into(),
+                trust: crate::tap::TrustMode::SignedRoot,
+            };
+            crate::tap::add(root, tap.clone())?;
+            Ok(tap_value(&tap))
+        }
+        "tap-bootstrap" => Ok(tap_value(&crate::tap::bootstrap(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+            string_argument(arguments, 1, operation)?,
+        )?)),
+        "tap-remove" => {
+            crate::tap::remove(
+                std::path::Path::new(string_argument(arguments, 0, operation)?),
+                string_argument(arguments, 1, operation)?,
+            )?;
+            Ok(Value::Nil)
+        }
+        "tap-list" => Ok(Value::Vector(
+            crate::tap::load(std::path::Path::new(string_argument(
+                arguments, 0, operation,
+            )?))?
+            .values()
+            .map(tap_value)
+            .collect(),
+        )),
+        "tap-mirror-add" => Ok(tap_value(&crate::tap::add_mirror(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+            string_argument(arguments, 1, operation)?,
+            optional_string_argument(arguments, 2, operation)?.map(str::to_owned),
+            optional_string_argument(arguments, 3, operation)?.map(str::to_owned),
+        )?)),
+        "tap-initialize" => {
+            let initialized = crate::tap::initialize(
+                string_argument(arguments, 1, operation)?,
+                std::path::Path::new(string_argument(arguments, 2, operation)?),
+                std::path::Path::new(string_argument(arguments, 3, operation)?),
+                string_argument(arguments, 4, operation)?,
+            )?;
+            crate::tap::add(
+                std::path::Path::new(string_argument(arguments, 0, operation)?),
+                initialized.tap.clone(),
+            )?;
+            Ok(Value::Map(
+                [
+                    (keyword("tap"), tap_value(&initialized.tap)),
+                    (
+                        keyword("fingerprint"),
+                        Value::String(initialized.fingerprint),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
+        "tap-verify" => {
+            let name = string_argument(arguments, 1, operation)?;
+            let policy = crate::tap::verify_trusted(
+                std::path::Path::new(string_argument(arguments, 0, operation)?),
+                name,
+            )?;
+            Ok(Value::Map(
+                [
+                    (keyword("name"), Value::String(name.into())),
+                    (keyword("revision"), Value::String(policy.revision)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+        }
         "session-create" => {
             broker.create(string_argument(arguments, 0, operation)?)?;
             Ok(Value::Nil)
@@ -529,6 +608,50 @@ fn optional_string_argument<'a>(
             "foundation.kernel/{operation} expects an optional string argument"
         )),
     }
+}
+
+fn strings_argument(
+    arguments: &[Value],
+    index: usize,
+    operation: &str,
+) -> Result<Vec<String>, String> {
+    match arguments.get(index) {
+        Some(Value::Vector(values)) => values
+            .iter()
+            .map(|value| match value {
+                Value::String(value) => Ok(value.clone()),
+                _ => Err(format!(
+                    "foundation.kernel/{operation} expects vectors of strings"
+                )),
+            })
+            .collect(),
+        _ => Err(format!(
+            "foundation.kernel/{operation} expects a vector argument"
+        )),
+    }
+}
+
+fn tap_value(tap: &crate::tap::Tap) -> Value {
+    Value::Map(
+        [
+            (keyword("name"), Value::String(tap.name.clone())),
+            (keyword("registry"), strings_value(tap.registry.clone())),
+            (keyword("identity"), strings_value(tap.identity.clone())),
+            (
+                keyword("identity-key"),
+                Value::String(tap.identity_key.clone()),
+            ),
+            (
+                keyword("trust"),
+                keyword(match tap.trust {
+                    crate::tap::TrustMode::SignedRoot => "signed-root",
+                    crate::tap::TrustMode::GithubGoverned => "github-governed",
+                }),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    )
 }
 
 fn keyword(name: &str) -> Value {
