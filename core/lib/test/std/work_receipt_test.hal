@@ -1,7 +1,6 @@
 (ns std.work-receipt-test
   (:require [std.lib.test :as test]
             [std.work :as work]
-            [std.work.provider.ignatius :as ignatius]
             [std.work.provider.memory :as memory]))
 
 (def receipt-work
@@ -60,7 +59,7 @@
             [:attempts id]
             attempt)))
         (if (and fail-first-create?
-                 (= :ignatius/work-create (:receipt/kind envelope))
+                 (= :work/run-created (:receipt/kind envelope))
                  (= 1 attempt))
           (throw (ex-info "transient fake publisher outage"
                           {:receipt/id id}))
@@ -74,7 +73,7 @@
                         :published
                         (conj (vec (or (:published data) [])) id)))))
             {:receipt/status :published
-             :provider/receipt-root [:fake/receipt id]}))))}}
+             :provider/receipt-root [:fake/receipt id]}))))}})
 
 (def disabled-runtime (work/durable-runtime))
 (def disabled-reference
@@ -101,7 +100,7 @@
 (def retry-second-publication
   (work/publish-receipts! retry-runtime retry-reference))
 (def retry-create
-  (receipt-by-kind retry-after :ignatius/work-create))
+  (receipt-by-kind retry-after :work/run-created))
 
 (def restart-store (memory/memory-store))
 (def restart-ready (atom false))
@@ -169,144 +168,6 @@
 (def rejected-receipts
   (work/receipts rejected-runtime rejected-reference))
 
-(def ignatius-attributes
-  {:workspace/id "workspace-1"
-   :work/kind :code/change
-   :work/title "Build receipt fixture"
-   :work/definition-root "definition/root"
-   :work/dependency-ids ["work/base"]
-   :work/input-references ["input/ref"]
-   :work/output-references ["output/ref"]
-   :work/result-root "result/root"
-   :work/receipt-root "receipt/root"
-   :work/resource-actions
-   [{:resource/id "git/example/refs/heads/main"
-     :resource/kind :git/commit
-     :resource/provider :git
-     :resource/version "commit-1"}]})
-
-(def ignatius-runtime (work/durable-runtime))
-(def ignatius-reference
-  (work/start ignatius-runtime
-              receipt-work
-              6
-              {:id "ignatius-fixture"
-               :attributes ignatius-attributes}))
-(def ignatius-receipts
-  (work/receipts ignatius-runtime ignatius-reference))
-(def ignatius-options
-  {:workspace/id "workspace-1"
-   :signer "agent-1"
-   :root-of (fn [value] [:fixture/root value])})
-
-(def create-receipt
-  (:outbox/payload
-   (receipt-by-kind ignatius-receipts :ignatius/work-create)))
-(def start-receipt
-  (:outbox/payload
-   (receipt-by-kind ignatius-receipts :ignatius/work-start)))
-(def checkpoint-receipt
-  (:outbox/payload
-   (receipt-by-kind ignatius-receipts :ignatius/work-checkpoint)))
-(def complete-receipt
-  (:outbox/payload
-   (receipt-by-kind ignatius-receipts :ignatius/work-complete)))
-
-(def create-actions
-  (ignatius/actions-for ignatius-options create-receipt))
-(def start-actions
-  (ignatius/actions-for ignatius-options start-receipt))
-(def checkpoint-actions
-  (ignatius/actions-for ignatius-options checkpoint-receipt))
-(def complete-actions
-  (ignatius/actions-for ignatius-options complete-receipt))
-
-(def expected-create-actions
-  [{:action :work/create
-    :workspace/id "workspace-1"
-    :work/id "ignatius-fixture"
-    :signer "agent-1"
-    :work/kind :code/change
-    :work/title "Build receipt fixture"
-    :work/definition-root "definition/root"
-    :work/dependency-ids ["work/base"]
-    :work/input-references ["input/ref"]
-    :work/metadata
-    {:std.work/receipt-id (:receipt/id create-receipt)
-     :std.work/run-revision (:receipt/run-revision create-receipt)
-     :std.work/work-root :receipt-flow
-     :std.work/work-version 1}}])
-
-(def expected-start-actions
-  [{:action :work/claim
-    :workspace/id "workspace-1"
-    :work/id "ignatius-fixture"
-    :signer "agent-1"}
-   {:action :work/start
-    :workspace/id "workspace-1"
-    :work/id "ignatius-fixture"
-    :signer "agent-1"}])
-
-(def checkpoint-evidence (:receipt/evidence checkpoint-receipt))
-(def expected-checkpoint-actions
-  [{:action :work/checkpoint
-    :workspace/id "workspace-1"
-    :work/id "ignatius-fixture"
-    :signer "agent-1"
-    :checkpoint/id (:checkpoint/key checkpoint-evidence)
-    :checkpoint/state-root
-    [:fixture/root (:checkpoint/result checkpoint-evidence)]
-    :checkpoint/resource-references []
-    :checkpoint/receipt-root
-    [:fixture/root checkpoint-receipt]
-    :checkpoint/metadata
-    {:node/path (:checkpoint/node-path checkpoint-evidence)
-     :item/id (:checkpoint/item-id checkpoint-evidence)
-     :std.work/receipt-id (:receipt/id checkpoint-receipt)}}])
-
-(def expected-complete-actions
-  [{:action :resource/register
-    :workspace/id "workspace-1"
-    :process/id "ignatius-fixture"
-    :signer "agent-1"
-    :resource/id "git/example/refs/heads/main"
-    :resource/kind :git/commit
-    :resource/provider :git
-    :resource/version "commit-1"}
-   {:action :work/complete
-    :workspace/id "workspace-1"
-    :work/id "ignatius-fixture"
-    :signer "agent-1"
-    :work/output-references ["output/ref"]
-    :work/result-root "result/root"
-    :work/receipt-root "receipt/root"}])
-
-(def ignatius-submit-state (atom []))
-(def ignatius-provider
-  (work/ignatius-receipt-provider
-   {:workspace/id "workspace-1"
-    :signer "agent-1"
-    :root-of (fn [value] [:submit/root value])
-    :submit
-    (fn [submission]
-      (swap! ignatius-submit-state conj submission)
-      {:receipt/status :published
-       :provider/receipt-root
-       [:ignatius/receipt (:idempotency-key submission)]})}))
-(def ignatius-provider-runtime
-  (work/durable-runtime {:receipt ignatius-provider}))
-(def ignatius-provider-reference
-  (work/start ignatius-provider-runtime
-              receipt-work
-              7
-              {:id "ignatius-provider"
-               :attributes ignatius-attributes}))
-(def ignatius-provider-result
-  (work/result ignatius-provider-runtime ignatius-provider-reference))
-(def ignatius-provider-publication
-  (work/publish-receipts! ignatius-provider-runtime
-                          ignatius-provider-reference))
-
 (defn all-rejected?
   [entries]
   (reduce
@@ -325,11 +186,11 @@
      (vec (map (fn [entry] (:outbox/kind entry)) disabled-receipts))
      (work/receipt-status disabled-runtime disabled-reference)]
     [8
-     [:ignatius/work-create
-      :ignatius/work-start
-      :ignatius/work-checkpoint
-      :ignatius/work-checkpoint
-      :ignatius/work-complete]
+     [:work/run-created
+      :work/run-started
+      :work/checkpoint
+      :work/checkpoint
+      :work/run-completed]
      :pending])
 
    (test/check
@@ -363,28 +224,6 @@
      (all-rejected? rejected-receipts)
      (:run/receipt-status
       (work/run-record rejected-runtime rejected-reference))]
-    [5 :rejected true :rejected])
-
-   (test/check
-    "Ignatius fixtures map exact create, claim/start, checkpoint, resources, and completion actions"
-    [create-actions
-     start-actions
-     checkpoint-actions
-     complete-actions]
-    [expected-create-actions
-     expected-start-actions
-     expected-checkpoint-actions
-     expected-complete-actions])
-
-   (test/check
-    "the same work definition executes with disabled, fake, and Ignatius receipt providers"
-    [(work/result disabled-runtime disabled-reference)
-     (work/result retry-runtime retry-reference)
-     ignatius-provider-result
-     (count ignatius-provider-publication)
-     (count (deref ignatius-submit-state))
-     (work/receipt-status ignatius-provider-runtime
-                          ignatius-provider-reference)]
-    [8 8 16 5 5 :published])])
+    [5 :rejected true :rejected])])
 
 (test/print-results results)
