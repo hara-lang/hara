@@ -9,7 +9,7 @@ use crate::snapshot::{
 use sha2::{Digest as ShaDigest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn run(args: &[String]) -> Result<(), String> {
     match args.first().map(String::as_str) {
@@ -27,20 +27,26 @@ fn build(args: &[String]) -> Result<(), String> {
         .first()
         .ok_or("usage: hara snapshot build SNAPSHOT.edn --output FILE.hss")?;
     let output = option(args, "--output").ok_or("snapshot build requires --output FILE.hss")?;
-    let source_path = PathBuf::from(source);
+    println!("{}", build_paths(Path::new(source), Path::new(output))?);
+    Ok(())
+}
+
+pub fn build_paths(source: &Path, output: &Path) -> Result<String, String> {
+    let source_path = source.to_path_buf();
     let source_text = fs::read_to_string(&source_path)
         .map_err(|error| format!("cannot read {}: {error}", source_path.display()))?;
     let form = kernel::parse(&source_text)
         .map_err(|error| format!("cannot parse {}: {error}", source_path.display()))?;
     let artifact = artifact_from_form(&form, source_path.parent().unwrap_or(Path::new(".")))?;
     let bytes = snapshot::encode(&artifact)?;
-    fs::write(output, &bytes).map_err(|error| format!("cannot write {output}: {error}"))?;
+    fs::write(output, &bytes)
+        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
     let resolved = resolve_with_declared_base(
         &artifact,
         &form,
         source_path.parent().unwrap_or(Path::new(".")),
     )?;
-    println!(
+    Ok(format!(
         "snapshot build: {} {} bytes{}",
         snapshot::hex(&resolved.digest),
         bytes.len(),
@@ -49,61 +55,71 @@ fn build(args: &[String]) -> Result<(), String> {
         } else {
             ""
         }
-    );
-    Ok(())
+    ))
 }
 
 fn verify(args: &[String]) -> Result<(), String> {
     let path = args
         .first()
         .ok_or("usage: hara snapshot verify FILE.hss [--base BASE.hss]")?;
-    let artifact = read_artifact(Path::new(path))?;
-    let base = option(args, "--base")
-        .map(PathBuf::from)
-        .map(|path| read_full_resolved(&path))
-        .transpose()?;
-    let resolved = artifact.resolve(base.as_ref())?;
     println!(
+        "{}",
+        verify_paths(Path::new(path), option(args, "--base").map(Path::new))?
+    );
+    Ok(())
+}
+
+pub fn verify_paths(path: &Path, base: Option<&Path>) -> Result<String, String> {
+    let artifact = read_artifact(path)?;
+    let base = base.map(read_full_resolved).transpose()?;
+    let resolved = artifact.resolve(base.as_ref())?;
+    Ok(format!(
         "snapshot verify: {} namespaces={} libraries={} secrets={}",
         snapshot::hex(&resolved.digest),
         resolved.manifest.namespaces.len(),
         resolved.manifest.libraries.len(),
         resolved.manifest.secrets.len()
-    );
-    Ok(())
+    ))
 }
 
 fn inspect(args: &[String]) -> Result<(), String> {
     let path = args
         .first()
         .ok_or("usage: hara snapshot inspect FILE.hss")?;
-    let artifact = read_artifact(Path::new(path))?;
-    println!("format: HSS1");
-    println!(
-        "artifact: {}",
-        snapshot::hex(&snapshot::artifact_digest(&fs::read(path).map_err(io)?))
-    );
-    println!(
+    print!("{}", inspect_path(Path::new(path))?);
+    Ok(())
+}
+
+pub fn inspect_path(path: &Path) -> Result<String, String> {
+    use std::fmt::Write as _;
+    let artifact = read_artifact(path)?;
+    let mut output = String::new();
+    writeln!(output, "format: HSS1").unwrap();
+    writeln!(output, "artifact: {}", snapshot::hex(&snapshot::artifact_digest(&fs::read(path).map_err(io)?))).unwrap();
+    writeln!(
+        output,
         "base: {}",
         artifact
             .base
             .as_ref()
             .map(snapshot::hex)
             .unwrap_or_else(|| "none".into())
-    );
-    println!("language: {}", artifact.manifest.language_version);
-    println!("libraries: {}", artifact.manifest.libraries.len());
+    ).unwrap();
+    writeln!(output, "language: {}", artifact.manifest.language_version).unwrap();
+    writeln!(output, "libraries: {}", artifact.manifest.libraries.len()).unwrap();
     for library in &artifact.manifest.libraries {
-        println!(
+        writeln!(
+            output,
             "  {} {} {}",
             library.id,
             library.version,
             snapshot::hex(&library.digest)
-        );
+        ).unwrap();
     }
-    println!("namespaces: {}", artifact.manifest.namespaces.len());
+    writeln!(output, "namespaces: {}", artifact.manifest.namespaces.len()).unwrap();
     for namespace in &artifact.manifest.namespaces {
-        println!(
+        writeln!(
+            output,
             "  {} {} {}",
             namespace.name,
             snapshot::hex(&namespace.digest),
@@ -112,39 +128,47 @@ fn inspect(args: &[String]) -> Result<(), String> {
             } else {
                 "inherited"
             }
-        );
+        ).unwrap();
     }
-    println!("entrypoints:");
+    writeln!(output, "entrypoints:").unwrap();
     for (name, target) in &artifact.manifest.entrypoints {
-        println!("  {name} -> {target}");
+        writeln!(output, "  {name} -> {target}").unwrap();
     }
-    println!("secret requirements: {}", artifact.manifest.secrets.len());
+    writeln!(output, "secret requirements: {}", artifact.manifest.secrets.len()).unwrap();
     for secret in &artifact.manifest.secrets {
-        println!(
+        writeln!(
+            output,
             "  {} required={} version={} purpose={}",
             secret.id,
             secret.required,
             secret.version.as_deref().unwrap_or("unspecified"),
             secret.purpose
-        );
+        ).unwrap();
     }
-    Ok(())
+    Ok(output)
 }
 
 fn diff(args: &[String]) -> Result<(), String> {
     let [left, right] = args else {
         return Err("usage: hara snapshot diff LEFT.hss RIGHT.hss".into());
     };
-    let left = read_full_resolved(Path::new(left))?;
-    let right_artifact = read_artifact(Path::new(right))?;
+    print!("{}", diff_paths(Path::new(left), Path::new(right))?);
+    Ok(())
+}
+
+pub fn diff_paths(left: &Path, right: &Path) -> Result<String, String> {
+    use std::fmt::Write as _;
+    let left = read_full_resolved(left)?;
+    let right_artifact = read_artifact(right)?;
     let right = if right_artifact.base == Some(left.digest) {
         right_artifact.resolve(Some(&left))?
     } else {
         right_artifact.resolve(None)?
     };
-    println!("left:  {}", snapshot::hex(&left.digest));
-    println!("right: {}", snapshot::hex(&right.digest));
-    report_set_diff(
+    let mut output = String::new();
+    writeln!(output, "left:  {}", snapshot::hex(&left.digest)).unwrap();
+    writeln!(output, "right: {}", snapshot::hex(&right.digest)).unwrap();
+    output.push_str(&report_set_diff(
         "namespaces",
         left.manifest
             .namespaces
@@ -155,23 +179,23 @@ fn diff(args: &[String]) -> Result<(), String> {
             .namespaces
             .iter()
             .map(|value| value.name.as_str()),
-    );
-    report_set_diff(
+    ));
+    output.push_str(&report_set_diff(
         "entrypoints",
         left.manifest.entrypoints.keys().map(String::as_str),
         right.manifest.entrypoints.keys().map(String::as_str),
-    );
-    report_set_diff(
+    ));
+    output.push_str(&report_set_diff(
         "state",
         left.manifest.initial_state.keys().map(String::as_str),
         right.manifest.initial_state.keys().map(String::as_str),
-    );
-    report_set_diff(
+    ));
+    output.push_str(&report_set_diff(
         "secrets",
         left.manifest.secrets.iter().map(|value| value.id.as_str()),
         right.manifest.secrets.iter().map(|value| value.id.as_str()),
-    );
-    Ok(())
+    ));
+    Ok(output)
 }
 
 fn artifact_from_form(form: &Form, root: &Path) -> Result<SnapshotArtifact, String> {
@@ -351,15 +375,18 @@ fn report_set_diff<'a>(
     kind: &str,
     left: impl Iterator<Item = &'a str>,
     right: impl Iterator<Item = &'a str>,
-) {
+) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::new();
     let left = left.collect::<BTreeSet<_>>();
     let right = right.collect::<BTreeSet<_>>();
     for value in right.difference(&left) {
-        println!("+ {kind} {value}");
+        writeln!(output, "+ {kind} {value}").unwrap();
     }
     for value in left.difference(&right) {
-        println!("- {kind} {value}");
+        writeln!(output, "- {kind} {value}").unwrap();
     }
+    output
 }
 
 fn option<'a>(args: &'a [String], name: &str) -> Option<&'a str> {

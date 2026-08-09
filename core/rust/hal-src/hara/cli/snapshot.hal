@@ -1,0 +1,75 @@
+(ns hara.cli.snapshot
+  (:require [hara.cli.model :as model]
+            [hara.cli.native :as native]
+            [std.foundation.string :as string]
+            [std.work :as work]))
+
+(defn parse-arguments [arguments]
+  (loop [remaining (vec arguments) positionals [] options {}]
+    (if (empty? remaining)
+      {:positionals positionals :options options}
+      (let [argument (first remaining)]
+        (if (string/starts-with? argument "--")
+          (if (< (count remaining) 2)
+            (throw (ex-info (str argument " requires a value") {}))
+            (recur (vec (drop 2 remaining))
+                   positionals
+                   (assoc options
+                          (keyword (string/slice argument 2))
+                          (second remaining))))
+          (recur (vec (rest remaining)) (conj positionals argument) options))))))
+
+(defn required-option [parsed key]
+  (or (get (:options parsed) key)
+      (throw (ex-info (str "snapshot requires --" (name key)) {:option key}))))
+
+(defn report [operation text data]
+  (model/success data
+                 [(model/message
+                   (if (string/ends-with? text "\n") text (str text "\n")))]))
+
+(defn execute [request]
+  (let [arguments (:request/arguments request)]
+    (if (empty? arguments)
+      (throw (ex-info "snapshot requires build, verify, inspect, or diff" {}))
+      (let [operation (keyword (first arguments))
+            parsed (parse-arguments (rest arguments))
+            values (:positionals parsed)]
+        (cond
+          (= operation :build)
+          (if (= 1 (count values))
+            (let [output (required-option parsed :output)
+                  text (native/snapshot-build (first values) output)]
+              (report operation text {:snapshot/output output}))
+            (throw (ex-info "snapshot build requires SNAPSHOT.edn --output FILE.hss" {})))
+
+          (= operation :verify)
+          (if (= 1 (count values))
+            (let [text (native/snapshot-verify
+                        (first values) (get (:options parsed) :base))]
+              (report operation text {:snapshot/path (first values)}))
+            (throw (ex-info "snapshot verify requires FILE.hss [--base BASE.hss]" {})))
+
+          (= operation :inspect)
+          (if (= 1 (count values))
+            (let [text (native/snapshot-inspect (first values))]
+              (report operation text {:snapshot/path (first values)}))
+            (throw (ex-info "snapshot inspect requires FILE.hss" {})))
+
+          (= operation :diff)
+          (if (= 2 (count values))
+            (let [text (native/snapshot-diff (first values) (second values))]
+              (report operation text {:snapshot/left (first values)
+                                      :snapshot/right (second values)}))
+            (throw (ex-info "snapshot diff requires LEFT.hss RIGHT.hss" {})))
+
+          :else
+          (throw (ex-info (str "unknown snapshot command: " (name operation))
+                          {:operation operation})))))))
+
+(def +command-work+
+  (work/step {:id 'hara.cli/snapshot :version 1}
+             (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run (work/local-runtime) +command-work+ request))

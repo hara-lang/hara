@@ -517,6 +517,21 @@ fn kernel_call(
                 .collect(),
             ))
         }
+        "snapshot-build" => Ok(Value::String(crate::snapshot_tool::build_paths(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+            std::path::Path::new(string_argument(arguments, 1, operation)?),
+        )?)),
+        "snapshot-verify" => Ok(Value::String(crate::snapshot_tool::verify_paths(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+            optional_string_argument(arguments, 1, operation)?.map(std::path::Path::new),
+        )?)),
+        "snapshot-inspect" => Ok(Value::String(crate::snapshot_tool::inspect_path(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+        )?)),
+        "snapshot-diff" => Ok(Value::String(crate::snapshot_tool::diff_paths(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+            std::path::Path::new(string_argument(arguments, 1, operation)?),
+        )?)),
         "session-create" => {
             broker.create(string_argument(arguments, 0, operation)?)?;
             Ok(Value::Nil)
