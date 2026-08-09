@@ -5,6 +5,8 @@
 //! package tooling, embedding hosts, and durable state boundaries that need
 //! canonical Hara bytes without linking the VM, Wasmtime, or host services.
 
+pub mod view;
+
 use hara_abi::Value;
 use std::collections::BTreeMap;
 
