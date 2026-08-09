@@ -7,6 +7,12 @@ supported runtime is Truffle: it provides a compact L0 core, persistent data,
 explicit mutable `array`/`object` markers, protocols, promises, bytes,
 capability-gated I/O, and a JLine REPL.
 
+HAL deliberately exposes two numeric runtime types: signed 64-bit longs and
+IEEE-754 doubles. Use `long?` and `double?` for exact checks, or `number?` for
+either. Internal interchange representations for big integers and decimal
+values are not a public numeric tower and do not imply literal or arithmetic
+support. HAL therefore does not expose `integer?` or `decimal?`.
+
 ```text
 Hara source
     |

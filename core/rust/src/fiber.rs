@@ -131,6 +131,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "do",
     "drop",
     "drop-while",
+    "double?",
     "empty",
     "empty?",
     "eval",
@@ -202,6 +203,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "list",
     "list?",
     "load-string",
+    "long?",
     "loop",
     "map",
     "map?",
@@ -1348,16 +1350,20 @@ mod tests {
     #[test]
     fn numeric_and_boolean_predicates_match_foundation_types() {
         let cases = [
-            ("(integer? 42)", Value::Bool(true)),
-            ("(integer? 42.5)", Value::Bool(false)),
-            ("(decimal? 42.5)", Value::Bool(true)),
-            ("(decimal? 42)", Value::Bool(false)),
+            ("(long? 42)", Value::Bool(true)),
+            ("(long? 42.5)", Value::Bool(false)),
+            ("(double? 42.5)", Value::Bool(true)),
+            ("(double? 42)", Value::Bool(false)),
             ("(boolean? false)", Value::Bool(true)),
             ("(boolean? nil)", Value::Bool(false)),
         ];
         for (source, expected) in cases {
             let fiber = EvalFiber::start(source, HashMap::new()).unwrap();
             assert_eq!(fiber.state(), EvalFiberState::Completed(expected));
+        }
+        for unsupported in ["(integer? 42)", "(decimal? 42.5)"] {
+            let fiber = EvalFiber::start(unsupported, HashMap::new()).unwrap();
+            assert!(matches!(fiber.state(), EvalFiberState::Failed(_)));
         }
     }
 
