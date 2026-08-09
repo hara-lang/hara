@@ -129,7 +129,11 @@ pub(crate) fn run(options: Options) -> Result<(), String> {
     if options.allow_postgres {
         if let Some(path) = options.project.as_deref() {
             let project = project_model::discover(path)?;
-            if !project.capabilities.iter().any(|value| value == "db/postgres") {
+            if !project
+                .capabilities
+                .iter()
+                .any(|value| value == "db/postgres")
+            {
                 return Err("project must declare :db/postgres before --allow-postgres".into());
             }
         }
@@ -208,13 +212,13 @@ mod spec_tests {
     use super::build_check::{
         build_obligation_report, build_report_status, check_build, check_build_graph,
     };
+    use super::error_exit_code;
     use super::form::{keyword, map_form, map_get};
     use super::metaspec::{
         lint_metaspec, metaspec_report, metaspec_template, read_spec_document,
         validate_against_metaspec, verify_metaspec, METASPEC_REQUIRED_KEYS,
     };
     use super::spec::check_contribution;
-    use super::error_exit_code;
     use hara_wasm::cli_app;
     use hara_wasm::kernel::{parse, Form};
     use std::fs;

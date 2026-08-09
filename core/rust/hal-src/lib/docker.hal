@@ -1,0 +1,68 @@
+(ns lib.docker
+  (:require [std.foundation.os :as os]
+            [std.foundation.promise :as promise]
+            [std.foundation.string :as string]))
+
+(defn command-result [argv]
+  (let [process (os/spawn argv)
+        values (deref (promise/all [(os/process-stdout process) (os/process-stderr process) (os/process-wait process)]))]
+    {:command argv :stdout (string/trim (string/decode-utf8 (nth values 0))) :stderr (string/trim (string/decode-utf8 (nth values 1))) :exit (nth values 2)}))
+
+(defn command! [argv]
+  (let [result (command-result argv)]
+    (if (= 0 (:exit result)) result (throw (ex-info "Docker command failed" result)))))
+
+(defn container-name [container]
+  (str (or (:group container) "testing") "_" (or (:id container) (throw (ex-info "Docker container id is required" {:container container})))))
+
+(defn append-map [arguments flag values]
+  (reduce (fn [out key] (conj (conj out flag) (str (name key) "=" (get values key)))) arguments (keys (or values {}))))
+
+(defn append-volumes [arguments volumes]
+  (reduce (fn [out source] (conj (conj out "-v") (str source ":" (get volumes source)))) arguments (keys (or volumes {}))))
+
+(defn expose-value [value]
+  (if (vector? value) (string/join ":" (map str value)) (str value)))
+
+(defn append-expose [arguments expose]
+  (reduce (fn [out value] (conj (conj out "-p") (expose-value value))) arguments (or expose [])))
+
+(defn container-running? [container]
+  (= 0 (:exit (command-result ["docker" "inspect" (container-name container)]))))
+
+(defn container-ip [name]
+  (:stdout (command! ["docker" "inspect" "-f" "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}" name])))
+
+(defn published-port [name port]
+  (let [output (:stdout (command! ["docker" "port" name (str port)])) parts (string/split output ":")]
+    (parse-long (last parts))))
+
+(defn start-container [container]
+  (let [name (container-name container) reused? (container-running? container)
+        arguments (append-volumes ["docker" "run"] (:volumes container))
+        arguments (append-map arguments "-l" (:labels container))
+        arguments (append-map arguments "-e" (:environment container))
+        arguments (append-expose arguments (:expose container))
+        arguments (if (false? (:detached container)) arguments (conj arguments "-d"))
+        arguments (if (false? (:remove container)) arguments (conj arguments "--rm"))
+        arguments (if (:no-host container) arguments (conj arguments "--add-host=host.docker.internal:host-gateway"))
+        arguments (into arguments (or (:flags container) []))
+        arguments (conj arguments "--name" name (:image container))
+        arguments (into arguments (or (:cmd container) []))
+        started (if reused? nil (command! arguments)) internal-port (or (first (:ports container)) 5432)
+        exposed? (not (empty? (:expose container))) host (if exposed? "127.0.0.1" (container-ip name))
+        port (if exposed? (published-port name internal-port) internal-port)]
+    (merge container {:container-name name :container-id (if started (:stdout started) name) :container-ip host :host host :port port :owned? (not reused?) :secondary reused?})))
+
+(defn stop-container [container]
+  (if (and container (:owned? container) (not (:secondary container)) (not (:permanent container)))
+    (command! ["docker" "kill" (:container-name container)])) nil)
+
+(defn start-runtime [runtime container]
+  (let [id (or (:id container) (str (name (or (:runtime runtime) :runtime)) "-" (name (or (:id runtime) :default))))
+        labels (merge {"rt/lang" (name (:lang runtime)) "rt/module" (str (or (:module runtime) ""))} (:labels container))
+        started (start-container (assoc container :id id :labels labels))]
+    (assoc runtime :host (:host started) :port (:port started) :container started)))
+
+(defn stop-runtime [runtime container]
+  (stop-container container) (assoc runtime :container nil))

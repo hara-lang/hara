@@ -1140,9 +1140,21 @@ impl Compiler {
         let mut end_jumps = Vec::new();
         for pair in clauses.chunks(2) {
             self.compile_form(pair[0].form, pair[0].span, pair[0].children, false)?;
+            if !self.ctx().fallthrough {
+                let end = self.ctx().code.len();
+                for jump in end_jumps {
+                    self.patch_jump(jump, end);
+                }
+                return Ok(());
+            }
             let next_jump = self.emit(Instruction::JumpIfFalse(0), Some(pair[0].span.start));
             self.compile_form(pair[1].form, pair[1].span, pair[1].children, tail)?;
-            end_jumps.push(self.emit(Instruction::Jump(0), Some(pair[1].span.start)));
+            if self.ctx().fallthrough {
+                end_jumps.push(self.emit(Instruction::Jump(0), Some(pair[1].span.start)));
+            }
+            // A false test reaches the next clause even when the preceding
+            // expression terminated with recur, throw, or return.
+            self.ctx_mut().fallthrough = true;
             let next = self.ctx().code.len();
             self.patch_jump(next_jump, next);
         }
@@ -1348,4 +1360,15 @@ fn unquote_argument(form: &Form, operator: &str) -> Option<Result<Form, String>>
 
 fn internal(message: String) -> CompileError {
     CompileError::new(CompileErrorKind::Internal, message, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compile_source;
+
+    #[test]
+    fn cond_compiles_a_terminating_loop_branch() {
+        compile_source("(loop [i 0] (cond (< i 2) (recur (+ i 1)) :else i))")
+            .expect("cond with a terminating branch compiles");
+    }
 }

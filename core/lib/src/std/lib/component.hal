@@ -72,6 +72,52 @@
           component
           keys))
 
+(defn wrap-start
+  "Composes ordered setup/start steps around a component start function."
+  [start-function steps]
+  (fn [component]
+    (let [prepared
+          (reduce (fn [current step]
+                    (let [value (get current (:key step))
+                          setup (:setup step)]
+                      (if (and value setup)
+                        (setup current value)
+                        current)))
+                  component
+                  steps)
+          started (start-function prepared)]
+      (reduce (fn [current step]
+                (let [value (get current (:key step))
+                      start (:start step)]
+                  (if (and value start)
+                    (start current value)
+                    current)))
+              started
+              steps))))
+
+(defn wrap-stop
+  "Composes ordered stop/teardown steps around a component stop function."
+  [stop-function steps]
+  (fn [component]
+    (let [stopped
+          (reduce (fn [current step]
+                    (let [value (get current (:key step))
+                          stop (:stop step)]
+                      (if (and value stop)
+                        (stop current value)
+                        current)))
+                  component
+                  steps)
+          stopped (stop-function stopped)]
+      (reduce (fn [current step]
+                (let [value (get current (:key step))
+                      teardown (:teardown step)]
+                  (if (and value teardown)
+                    (teardown current value)
+                    current)))
+              stopped
+              steps))))
+
 (defn- ^{:schema [:fn [:any :map] :map]}
   merged-options
   "Merges per-component lifecycle defaults with one invocation's options."

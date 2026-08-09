@@ -95,7 +95,12 @@ pub fn inspect_path(path: &Path) -> Result<String, String> {
     let artifact = read_artifact(path)?;
     let mut output = String::new();
     writeln!(output, "format: HSS1").unwrap();
-    writeln!(output, "artifact: {}", snapshot::hex(&snapshot::artifact_digest(&fs::read(path).map_err(io)?))).unwrap();
+    writeln!(
+        output,
+        "artifact: {}",
+        snapshot::hex(&snapshot::artifact_digest(&fs::read(path).map_err(io)?))
+    )
+    .unwrap();
     writeln!(
         output,
         "base: {}",
@@ -104,7 +109,8 @@ pub fn inspect_path(path: &Path) -> Result<String, String> {
             .as_ref()
             .map(snapshot::hex)
             .unwrap_or_else(|| "none".into())
-    ).unwrap();
+    )
+    .unwrap();
     writeln!(output, "language: {}", artifact.manifest.language_version).unwrap();
     writeln!(output, "libraries: {}", artifact.manifest.libraries.len()).unwrap();
     for library in &artifact.manifest.libraries {
@@ -114,7 +120,8 @@ pub fn inspect_path(path: &Path) -> Result<String, String> {
             library.id,
             library.version,
             snapshot::hex(&library.digest)
-        ).unwrap();
+        )
+        .unwrap();
     }
     writeln!(output, "namespaces: {}", artifact.manifest.namespaces.len()).unwrap();
     for namespace in &artifact.manifest.namespaces {
@@ -128,13 +135,19 @@ pub fn inspect_path(path: &Path) -> Result<String, String> {
             } else {
                 "inherited"
             }
-        ).unwrap();
+        )
+        .unwrap();
     }
     writeln!(output, "entrypoints:").unwrap();
     for (name, target) in &artifact.manifest.entrypoints {
         writeln!(output, "  {name} -> {target}").unwrap();
     }
-    writeln!(output, "secret requirements: {}", artifact.manifest.secrets.len()).unwrap();
+    writeln!(
+        output,
+        "secret requirements: {}",
+        artifact.manifest.secrets.len()
+    )
+    .unwrap();
     for secret in &artifact.manifest.secrets {
         writeln!(
             output,
@@ -143,7 +156,8 @@ pub fn inspect_path(path: &Path) -> Result<String, String> {
             secret.required,
             secret.version.as_deref().unwrap_or("unspecified"),
             secret.purpose
-        ).unwrap();
+        )
+        .unwrap();
     }
     Ok(output)
 }

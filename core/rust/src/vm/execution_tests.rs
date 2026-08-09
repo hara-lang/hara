@@ -20,6 +20,20 @@ fn eval(source: &str) -> String {
         .expect("evaluation must succeed")
 }
 
+#[test]
+fn embedded_foundation_reduce_executes_in_bytecode() {
+    let registry = crate::embedding_namespace_registry();
+    let program = compile_source_with(
+        "(reduce (fn [sum values] (std.foundation/+ sum (reduce std.foundation/+ 0 values))) 0 [[1 2] [3 4]])",
+        &registry,
+    )
+    .expect("reduce compiles against the embedded Foundation registry");
+    assert_eq!(
+        execute_program_with_globals(Rc::new(program), &registry).unwrap(),
+        Value::Number(10)
+    );
+}
+
 fn eval_error(source: &str) -> String {
     eval_source(source).expect_err("evaluation must fail")
 }

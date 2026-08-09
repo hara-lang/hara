@@ -56,45 +56,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-/// Builds the core namespace registry used by native embedding hosts.
+/// Builds the fully bootstrapped namespace registry used by native embedding hosts.
 ///
-/// Hosts receive the same primitive values and protocol wiring as Hara's core
-/// runtime without depending on crate-private bootstrap helpers.
+/// Hosts receive the same Foundation Vars, primitive values and protocol wiring
+/// as a normal Hara runtime without depending on crate-private bootstrap helpers.
 pub fn embedding_namespace_registry() -> kernel::NamespaceRegistry<core::Value> {
-    let namespaces = kernel::NamespaceRegistry::new("user");
-    let foundation = namespaces.find_or_create("std.foundation");
-    for (name, value) in core::exception_function_values() {
-        foundation.intern(name, value);
-    }
-    for (name, protocol) in core::foundation_protocol_values() {
-        foundation.intern(&name, protocol.clone());
-        namespaces
-            .find_or_create(core::builtin_protocol_namespace(&name))
-            .intern(name, protocol);
-    }
-    for (namespace, name, method) in core::builtin_protocol_method_values() {
-        namespaces.find_or_create(namespace).intern(name, method);
-    }
-    for (name, descriptor) in core::native_type_values() {
-        let canonical_name = format!("std.native.{name}");
-        let var = foundation.intern(&canonical_name, descriptor);
-        foundation.map_var(lang::data::Symbol::parse(&name), var);
-        namespaces.find_or_create(canonical_name);
-    }
-    let native_json = namespaces.find_or_create("std.native.Json");
-    let foundation_json = namespaces.find_or_create("std.foundation.json");
-    for (name, arity) in [("read", 1), ("write", 1), ("pretty", 2)] {
-        let qualified = format!("std.native.Json/{name}");
-        let var = native_json.intern(
-            name,
-            core::native_function(&qualified, arity, |_| {
-                Err("compile-only JSON binding was invoked".into())
-            }),
-        );
-        foundation_json.map_var(lang::data::Symbol::parse(name), var);
-    }
-    core::refer_startup_defaults(&namespaces, "user");
-    namespaces
+    Runtime::new().namespace_registry.clone()
 }
 use wasm_bindgen::prelude::*;
 

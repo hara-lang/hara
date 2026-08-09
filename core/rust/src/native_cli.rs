@@ -96,7 +96,15 @@ impl RuntimeBroker {
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("hara-runtime-broker".into())
-            .spawn(move || run(receiver, root, native_sockets, allow_process, allow_postgres))
+            .spawn(move || {
+                run(
+                    receiver,
+                    root,
+                    native_sockets,
+                    allow_process,
+                    allow_postgres,
+                )
+            })
             .map_err(|error| format!("runtime broker failed: {error}"))?;
         Ok(Self {
             handle: Arc::new(BrokerHandle { sender }),
@@ -295,12 +303,8 @@ fn run(
                 let result = if session.is_empty() || sessions.contains_key(&session) {
                     Err(format!("Session already exists or is invalid: {session}"))
                 } else {
-                    let mut created = runtime(
-                        root.as_ref(),
-                        native_sockets,
-                        allow_process,
-                        allow_postgres,
-                    );
+                    let mut created =
+                        runtime(root.as_ref(), native_sockets, allow_process, allow_postgres);
                     for (name, source) in &resources {
                         created.register_resource(name, source);
                     }

@@ -171,6 +171,7 @@ struct AsyncScheduler {
     next_id: u64,
     children: HashMap<u64, AsyncChild>,
     ready: VecDeque<(u64, PromiseState)>,
+    polling: bool,
 }
 
 impl Machine {
@@ -416,6 +417,22 @@ impl Machine {
     }
 
     fn poll_scheduler(scheduler: &Rc<RefCell<AsyncScheduler>>) -> usize {
+        {
+            let mut state = scheduler.borrow_mut();
+            if state.polling {
+                return 0;
+            }
+            state.polling = true;
+        }
+        let pending = scheduler
+            .borrow()
+            .children
+            .values()
+            .map(|child| child.pending.clone())
+            .collect::<Vec<_>>();
+        for promise in pending {
+            promise.state();
+        }
         let mut count = 0;
         loop {
             let ready = scheduler.borrow_mut().ready.pop_front();
@@ -430,6 +447,7 @@ impl Machine {
             let outcome = child.machine.resume(state);
             Self::finish_async(scheduler, child.machine, result, outcome);
         }
+        scheduler.borrow_mut().polling = false;
         count
     }
 

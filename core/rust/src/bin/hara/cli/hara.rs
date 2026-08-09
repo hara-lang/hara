@@ -25,13 +25,12 @@ fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
     if options.native_sockets {
         runtime.install_native_socket_provider();
     }
-    let broker =
-        RuntimeBroker::start_with(
-            Some(root.clone()),
-            options.native_sockets,
-            process_allowed,
-            options.allow_postgres,
-        )?;
+    let broker = RuntimeBroker::start_with(
+        Some(root.clone()),
+        options.native_sockets,
+        process_allowed,
+        options.allow_postgres,
+    )?;
     install_native_kernel(&mut runtime, broker);
     let full_argv = launcher_argv(options, argv);
     let capabilities = capability_edn(options, process_allowed);
@@ -164,7 +163,11 @@ fn render_result(source: &str, options: &Options) -> Result<(), String> {
     Ok(())
 }
 
-fn execute_host_action(action: &str, arguments: &[String], options: &Options) -> Result<(), String> {
+fn execute_host_action(
+    action: &str,
+    arguments: &[String],
+    options: &Options,
+) -> Result<(), String> {
     match action {
         "stdin" => {
             let mut source = String::new();

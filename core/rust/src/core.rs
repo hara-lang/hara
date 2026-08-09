@@ -888,22 +888,23 @@ pub(crate) fn basic_function_values() -> Vec<(&'static str, Value)> {
 }
 
 thread_local! {
-    static STRUCTURAL_NATIVE_DISPATCH: Cell<bool> = const { Cell::new(false) };
+    static STRUCTURAL_NATIVE_DISPATCH: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
-fn structural_native_dispatch_active() -> bool {
-    STRUCTURAL_NATIVE_DISPATCH.with(Cell::get)
+fn structural_native_dispatch_active(name: &str) -> bool {
+    STRUCTURAL_NATIVE_DISPATCH.with(|dispatch| {
+        dispatch
+            .borrow()
+            .last()
+            .is_some_and(|active| active == name)
+    })
 }
 
 pub(crate) fn structural_function_value(name: impl Into<String>) -> Value {
     let name = name.into();
     let display_name = name.clone();
     let call_name = crate::kernel::generated::canonical_native_call(&name);
-    let active = Rc::new(Cell::new(false));
     native_variadic_function(&display_name, move |arguments| {
-        if active.replace(true) {
-            return Err(format!("native method not implemented: {name}"));
-        }
         let mut env = HashMap::new();
         let mut call = Vec::with_capacity(arguments.len() + 1);
         call.push(Form::Symbol(call_name.clone()));
@@ -913,12 +914,17 @@ pub(crate) fn structural_function_value(name: impl Into<String>) -> Value {
             call.push(Form::Symbol(symbol));
         }
         let result = STRUCTURAL_NATIVE_DISPATCH.with(|dispatch| {
-            let previous = dispatch.replace(true);
+            if dispatch.borrow().len() >= 64 {
+                return Err(format!(
+                    "structural native dispatch exceeded its recursion limit: {call_name}; stack={:?}",
+                    dispatch.borrow()
+                ));
+            }
+            dispatch.borrow_mut().push(call_name.clone());
             let result = eval(&Form::List(call), &mut env);
-            dispatch.set(previous);
+            dispatch.borrow_mut().pop();
             result
         });
-        active.set(false);
         result
     })
 }
@@ -11528,7 +11534,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 }
                 Form::Symbol(n)
                     if resolve_macro(n).is_none()
-                        && !structural_native_dispatch_active()
+                        && !structural_native_dispatch_active(n)
                         && (matches!(env.get(n), Some(Value::Function(_)))
                             || matches!(env.get(n), Some(Value::Var(var)) if ((binding_is_local(var) && (!cfg!(feature = "bytecode-vm") || var.origin() != VarOrigin::RuntimePrimitive)) || var.origin() == VarOrigin::RustLibrary) && matches!(var.deref_value(), Value::Function(_)))) =>
                 {
@@ -12209,14 +12215,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() == 3 {
                         if !is_map {
                             if let Value::Function(function_ref) = &function {
-                              if let Some(value) = raw_collection.clone() {
-                                let result = iterator_filter(function_ref.clone(), value)?;
-                                return if n == "filter" {
-                                    Ok(Value::Vector(iterator_to_vec(result)?.into()))
-                                } else {
-                                    Ok(result)
-                                };
-                              }
+                                if let Some(value) = raw_collection.clone() {
+                                    let result = iterator_filter(function_ref.clone(), value)?;
+                                    return if n == "filter" {
+                                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                                    } else {
+                                        Ok(result)
+                                    };
+                                }
                             }
                         }
                     }
