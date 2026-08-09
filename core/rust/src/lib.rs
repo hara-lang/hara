@@ -4680,44 +4680,55 @@ mod tests {
 
     #[test]
     fn namespace_use_refers_portable_test_vars_and_macros() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(concat!(
-                    "(ns code.test-rust-probe (:use code.test))",
-                    " (def lifecycle (atom []))",
-                    " (fact \"promise assertion\"",
-                    "   {:before (fn []",
-                    "              (swap! lifecycle",
-                    "                     (fn [events] (conj events :before))))",
-                    "    :after (fn []",
-                    "             (swap! lifecycle",
-                    "                    (fn [events] (conj events :after))))}",
-                    "   (promise/from 42) => 42",
-                    "   (+ 1 1) => 2)",
-                    " (let [summary (run {:namespace \"code.test-rust-probe\"})",
-                    "       timer (function-timer",
-                    "              (fn [promise milliseconds]",
-                    "                {:promise (promise/from {:test/status :timeout})",
-                    "                 :timeout milliseconds})",
-                    "              (fn [timeout] timeout))",
-                    "       timed (check (fn [] (promise/from 42)) 42",
-                    "                    {:timer timer :timeout 25})",
-                    "       positional (run '[code])",
-                    "       cancelled",
-                    "       (run {:namespace \"code.test-rust-probe\"",
-                    "             :control (function-control (fn [fact] true))})]",
-                    " [(:status summary)",
-                    "  (:passed (:counts summary))",
-                    "  (count (:checks (first (:results summary))))",
-                    "  (:status timed)",
-                    "  (:timeout timed)",
-                    "  (:facts positional)",
-                    "  (:cancelled (:counts cancelled))])"
-                ))
-                .unwrap(),
-            "[:passed 1 2 :timeout 25 1 1]"
-        );
+        // The debug evaluator recursively loads the portable code.test graph.
+        // Keep that implementation detail local to this test rather than
+        // raising the stack for every native runtime test.
+        std::thread::Builder::new()
+            .name("namespace-use-portable-test-probe".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut runtime = Runtime::new();
+                assert_eq!(
+                    runtime
+                        .eval_text(concat!(
+                            "(ns code.test-rust-probe (:use code.test))",
+                            " (def lifecycle (atom []))",
+                            " (fact \"promise assertion\"",
+                            "   {:before (fn []",
+                            "              (swap! lifecycle",
+                            "                     (fn [events] (conj events :before))))",
+                            "    :after (fn []",
+                            "             (swap! lifecycle",
+                            "                    (fn [events] (conj events :after))))}",
+                            "   (promise/from 42) => 42",
+                            "   (+ 1 1) => 2)",
+                            " (let [summary (run {:namespace \"code.test-rust-probe\"})",
+                            "       timer (function-timer",
+                            "              (fn [promise milliseconds]",
+                            "                {:promise (promise/from {:test/status :timeout})",
+                            "                 :timeout milliseconds})",
+                            "              (fn [timeout] timeout))",
+                            "       timed (check (fn [] (promise/from 42)) 42",
+                            "                    {:timer timer :timeout 25})",
+                            "       positional (run '[code])",
+                            "       cancelled",
+                            "       (run {:namespace \"code.test-rust-probe\"",
+                            "             :control (function-control (fn [fact] true))})]",
+                            " [(:status summary)",
+                            "  (:passed (:counts summary))",
+                            "  (count (:checks (first (:results summary))))",
+                            "  (:status timed)",
+                            "  (:timeout timed)",
+                            "  (:facts positional)",
+                            "  (:cancelled (:counts cancelled))])"
+                        ))
+                        .unwrap(),
+                    "[:passed 1 2 :timeout 25 1 1]"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
