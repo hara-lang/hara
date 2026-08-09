@@ -1,6 +1,7 @@
 use super::Options;
 use hara_wasm::cli_app;
 use hara_wasm::kernel::{parse, Form};
+use hara_wasm::native_cli::{install_native_kernel, RuntimeBroker};
 use hara_wasm::Runtime;
 use std::path::{Path, PathBuf};
 
@@ -36,12 +37,19 @@ fn run(options: &Options, argv: &[String], handler: &str) -> Result<(), String> 
     let root = capability_root(options, &cwd);
     let mut runtime = Runtime::new();
     runtime.install_native_file_provider(root.to_string_lossy().as_ref());
-    if options.allow_process || handler == "hara.cli.handler/identity" {
+    let process_allowed = options.allow_process || handler == "hara.cli.handler/identity";
+    if process_allowed {
         runtime.install_native_process_provider();
     }
     if options.native_sockets {
         runtime.install_native_socket_provider();
     }
+    let broker = RuntimeBroker::start_with(
+        Some(root.clone()),
+        options.native_sockets,
+        process_allowed,
+    )?;
+    install_native_kernel(&mut runtime, broker);
     let full_argv = launcher_argv(options, argv);
     let capabilities = capability_edn(options, handler);
     let project = options
