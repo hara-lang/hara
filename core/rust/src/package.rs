@@ -151,7 +151,7 @@ fn registry_command(args: &[String]) -> Result<(), String> {
         Some("verify-request") => {
             let request = PathBuf::from(required_option(args, "--request")?);
             let identity = PathBuf::from(required_option(args, "--identity")?);
-            verify_registry_request(&request, &identity)?;
+            verify_registry_request_paths(&request, &identity)?;
             println!("registry request verified: {}", request.display());
             Ok(())
         }
@@ -161,8 +161,9 @@ fn registry_command(args: &[String]) -> Result<(), String> {
     }
 }
 
-fn verify_registry_request(request: &Path, identity: &Path) -> Result<(), String> {
-    let policy = fs::read_to_string(identity).map_err(io_error)?;
+pub fn verify_registry_request_paths(request: &Path, identity: &Path) -> Result<(), String> {
+    let policy = fs::read_to_string(identity)
+        .map_err(|error| format!("cannot read {}: {error}", identity.display()))?;
     let Form::Map(policy) = parse(&policy)? else {
         return Err("identity policy must be an EDN map".into());
     };
@@ -174,7 +175,7 @@ fn verify_registry_request(request: &Path, identity: &Path) -> Result<(), String
         return Err("registry bootstrap verifier requires :identity/trust :github-governed".into());
     }
     let intent_path = fs::read_dir(request)
-        .map_err(io_error)?
+        .map_err(|error| format!("cannot read {}: {error}", request.display()))?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
         .find(|path| {
@@ -326,7 +327,17 @@ fn publish(args: &[String]) -> Result<(), String> {
         .find(|arg| !arg.starts_with('-') && *arg != &tap_name)
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let project = read_project(&path)?;
+    println!("{}", publish_path(&path, &tap_name, dry_run)?);
+    Ok(())
+}
+
+pub fn publish_path(path: &Path, tap_name: &str, dry_run: bool) -> Result<String, String> {
+    let tap_name = if tap_name == "official" {
+        "hara"
+    } else {
+        tap_name
+    };
+    let project = read_project(path)?;
     let coordinate = project::normalize_coordinate(&project.id)?;
     let (coordinate_tap, _) = split_coordinate(&coordinate)?;
     if coordinate_tap != tap_name {
@@ -347,7 +358,7 @@ fn publish_inner(
     trusted_tap: &Tap,
     dry_run: bool,
     scratch_root: &Path,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let policy = tap::fetch_verified_policy(trusted_tap, scratch_root)?;
     let tag = format!("v{}", project.version);
     tap::git(&project.root, ["tag", "-v", &tag])
@@ -370,11 +381,10 @@ fn publish_inner(
     let (key_id, signature) = tap::sign(intent.as_bytes())?;
     tap::authorize(&policy, &key_id, &coordinate, intent.as_bytes(), &signature)?;
     if dry_run {
-        println!(
+        return Ok(format!(
             "publish recipe verified: {} {} tap={} recipe=sha256:{}",
             coordinate, project.version, trusted_tap.name, recipe_sha256
-        );
-        return Ok(());
+        ));
     }
     let endpoint = trusted_tap
         .registry
@@ -405,11 +415,10 @@ fn publish_inner(
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    println!(
+    Ok(format!(
         "publish requested: {}",
         String::from_utf8_lossy(&output.stdout).trim()
-    );
-    Ok(())
+    ))
 }
 
 fn option_value(args: &[String], flag: &str) -> Result<String, String> {

@@ -455,6 +455,20 @@ fn kernel_call(
             .to_string_lossy()
             .into_owned(),
         )),
+        "package-publish" => Ok(Value::String(crate::package::publish_path(
+            std::path::Path::new(string_argument(arguments, 0, operation)?),
+            string_argument(arguments, 1, operation)?,
+            boolean_argument(arguments, 2, operation)?,
+        )?)),
+        "package-registry-verify" => {
+            let request = std::path::Path::new(string_argument(arguments, 0, operation)?);
+            let identity = std::path::Path::new(string_argument(arguments, 1, operation)?);
+            crate::package::verify_registry_request_paths(request, identity)?;
+            Ok(Value::String(format!(
+                "registry request verified: {}",
+                request.display()
+            )))
+        }
         "tap-config-root" => Ok(Value::String(
             crate::tap::config_root().to_string_lossy().into_owned(),
         )),
@@ -645,6 +659,15 @@ fn optional_string_argument<'a>(
         Some(Value::String(value)) => Ok(Some(value)),
         _ => Err(format!(
             "foundation.kernel/{operation} expects an optional string argument"
+        )),
+    }
+}
+
+fn boolean_argument(arguments: &[Value], index: usize, operation: &str) -> Result<bool, String> {
+    match arguments.get(index) {
+        Some(Value::Bool(value)) => Ok(*value),
+        _ => Err(format!(
+            "foundation.kernel/{operation} expects a boolean argument"
         )),
     }
 }

@@ -1,6 +1,7 @@
 (ns hara.cli.package
   (:require [hara.cli.model :as model]
             [hara.cli.native :as native]
+            [hara.cli.tap :as tap]
             [std.work :as work]))
 
 (def +route-operations+
@@ -70,6 +71,52 @@
     (model/success {:package/root installed}
                    [(model/message (str "package install: " installed "\n"))])))
 
+(defn parsed-arguments [arguments allow-dry-run]
+  (let [dry-run (reduce (fn [found value]
+                          (or found (= value "--dry-run")))
+                        false
+                        arguments)
+        filtered (if allow-dry-run
+                   (vec (filter (fn [value] (not= value "--dry-run")) arguments))
+                   (vec arguments))]
+    (if (and dry-run (not allow-dry-run))
+      (throw (ex-info "--dry-run is only valid for package publish" {}))
+      nil)
+    {:dry-run dry-run :parsed (tap/parse-arguments filtered)}))
+
+(defn publish-command [request arguments]
+  (let [values (parsed-arguments arguments true)
+        parsed (:parsed values)
+        positionals (:positionals parsed)]
+    (if (> (count positionals) 1)
+      (throw (ex-info "package publish accepts at most one path" {}))
+      nil)
+    (let [path (or (first positionals)
+                   (:project (:request/options request))
+                   (:request/project request)
+                   (:request/cwd request)
+                   ".")
+          tap-name (get (:options parsed) :tap "hara")
+          output (native/package-publish (str path) (str tap-name) (:dry-run values))]
+      (model/success {:package/publication output}
+                     [(model/message (str output "\n"))]))))
+
+(defn registry-command [arguments]
+  (let [values (parsed-arguments arguments false)
+        parsed (:parsed values)
+        positionals (:positionals parsed)]
+    (if (not= positionals ["verify-request"])
+      (throw (ex-info
+              "package registry requires verify-request --request PATH --identity PATH"
+              {}))
+      nil)
+    (let [request-path (tap/require-option parsed :request)
+          identity-path (first (tap/require-option parsed :identity))
+          output (native/package-registry-verify
+                  (str request-path) (str identity-path))]
+      (model/success {:package/registry-verification output}
+                     [(model/message (str output "\n"))]))))
+
 (defn unavailable [operation]
   (throw (ex-info
           (str "unavailable: hara package " (name operation)
@@ -85,6 +132,8 @@
       (= operation :build) (build-command request arguments)
       (= operation :inspect) (inspect-command arguments)
       (= operation :install) (install-command request arguments)
+      (= operation :publish) (publish-command request arguments)
+      (= operation :registry) (registry-command arguments)
       :else (unavailable operation))))
 
 (def +command-work+
