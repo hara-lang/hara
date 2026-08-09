@@ -1,0 +1,32 @@
+(ns xt.ui.core-test
+  (:use code.test)
+  (:require [lang.core :as l]
+            [xt.ui.core :as ui]))
+
+^{:seedgen/root {:all true, :langs [:js]}}
+(l/script- :js {:runtime :basic :require [[xt.lang.spec-base :as xt] [xt.ui.core :as ui]]})
+(fact:global {:setup [(l/rt:restart)] :teardown [(l/rt:stop)]})
+
+(fact "constructs nodes and resolves slots"
+  (!.js (var n (ui/slot "main" [(ui/text "fallback" nil)] nil))
+        (return [(ui/resolve-slot (ui/runtime-create nil nil nil nil {}) n)
+                 (ui/resolve-slot (ui/runtime-create nil nil nil nil {"main" "supplied"}) n)]))
+  => [[{"component" "ui/text" "props" {"value" "fallback"} "children" []}] "supplied"]
+  )
+
+(fact "composes registries and validates trees"
+  (!.js (var b (ui/base-registry)) (var p (ui/registry-create "platform"))
+        (ui/registry-register-renderer p "ui/text" "native-text")
+        (var r (ui/registry-compose [b p]))
+        (return [(ui/registry-renderer r "ui/text")
+                 (ui/validate-node r (ui/node "ui/text" {"value" "ok"} []))]))
+  => ["native-text" true]
+  )
+
+(fact "registers exactly the Foundation UI functions"
+  (let [module (get (deref lang.core.script/+modules+) 'xt.ui.core)]
+    (set (keys (:code module))))
+  => '#{node text slot extension component-contract registry-create
+        registry-register-contract registry-register-renderer registry-compose
+        registry-contract registry-renderer validate-props validate-node
+        runtime-create capability? service effect! resolve-slot base-registry})

@@ -283,6 +283,11 @@ fn runtime_differential(source: &str) {
 }
 
 #[test]
+fn clojure_set_conversion_matches_in_both_runtimes() {
+    runtime_differential("(= (set [1 2 1]) #{1 2})");
+}
+
+#[test]
 fn callable_var_namespace_cases_match_shared_spec() {
     fn entry<'a>(
         entries: &'a [(crate::kernel::Form, crate::kernel::Form)],

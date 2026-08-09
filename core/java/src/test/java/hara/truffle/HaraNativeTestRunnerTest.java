@@ -94,6 +94,70 @@ public final class HaraNativeTestRunnerTest {
   }
 
   @Test
+  public void runsPortableXtalkDbSystemCommon() throws Exception {
+    HaraNativeTestRunner.Result result =
+        HaraNativeTestRunner.runFile(
+            ROOT, ROOT.resolve("lib/test-lang/xt/db/system/impl_common_test.hal"));
+
+    assertTrue(result.failureMessage(), result.passed());
+    assertEquals(4, result.facts());
+    assertEquals(12, result.checks());
+    assertEquals(12, result.passedChecks());
+    assertEquals(0, result.failedChecks());
+    assertEquals(0, result.errors());
+    assertEquals(0, result.timeouts());
+  }
+
+  @Test
+  public void runsPortableXtalkDbNodeFoundation() throws Exception {
+    String[][] suites = {
+      {"lib/test-lang/xt/db/node/proxy_util_test.hal", "2", "4"},
+      {"lib/test-lang/xt/db/node/client_base_test.hal", "1", "1"},
+      {"lib/test-lang/xt/db/node/client_supabase_test.hal", "1", "2"}
+    };
+    for (String[] suite : suites) {
+      HaraNativeTestRunner.Result result =
+          HaraNativeTestRunner.runFile(ROOT, ROOT.resolve(suite[0]));
+      int facts = Integer.parseInt(suite[1]);
+      int checks = Integer.parseInt(suite[2]);
+
+      assertTrue(result.failureMessage(), result.passed());
+      assertEquals(facts, result.facts());
+      assertEquals(checks, result.checks());
+      assertEquals(checks, result.passedChecks());
+      assertEquals(0, result.failedChecks());
+      assertEquals(0, result.errors());
+      assertEquals(0, result.timeouts());
+    }
+  }
+
+  @Test
+  public void runsPortableXtalkUiFoundation() throws Exception {
+    HaraNativeTestRunner.Result result =
+        HaraNativeTestRunner.runFile(
+            ROOT, ROOT.resolve("lib/test-lang/xt/ui/core_test.hal"));
+
+    assertTrue(result.failureMessage(), result.passed());
+    assertEquals(3, result.facts());
+    assertEquals(3, result.checks());
+    assertEquals(3, result.passedChecks());
+    assertEquals(0, result.failedChecks());
+    assertEquals(0, result.errors());
+    assertEquals(0, result.timeouts());
+
+    HaraNativeTestRunner.Result widgetResult =
+        HaraNativeTestRunner.runFile(
+            ROOT, ROOT.resolve("lib/test-lang/xt/ui/widgets/core_test.hal"));
+    assertTrue(widgetResult.failureMessage(), widgetResult.passed());
+    assertEquals(2, widgetResult.facts());
+    assertEquals(2, widgetResult.checks());
+    assertEquals(2, widgetResult.passedChecks());
+    assertEquals(0, widgetResult.failedChecks());
+    assertEquals(0, widgetResult.errors());
+    assertEquals(0, widgetResult.timeouts());
+  }
+
+  @Test
   public void runsPortablePostgresCoreCompilerSlice() throws Exception {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
@@ -136,7 +200,11 @@ public final class HaraNativeTestRunnerTest {
       {"lib/test-lang/postgres/core/graph_insert_test.hal", "6", "10"},
       {"lib/test-lang/postgres/core/graph_view_test.hal", "7", "11"},
       {"lib/test-lang/postgres/core/graph_test.hal", "6", "13"},
-      {"lib/test-lang/postgres/core_public_test.hal", "5", "9"},
+      {"lib/test-lang/postgres/gen/bind_macro_test.hal", "9", "15"},
+      {"lib/test-lang/postgres/gen/gen_bind_test.hal", "3", "3"},
+      {"lib/test-lang/postgres/gen/rpc_test.hal", "9", "9"},
+      {"lib/test-lang/lang/runtime/postgres/base/application_test.hal", "5", "9"},
+      {"lib/test-lang/postgres/core_public_test.hal", "6", "10"},
       {"lib/test-lang/postgres/core/system_test.hal", "2", "3"},
       {"lib/test-lang/postgres/core/supabase_test.hal", "15", "42"}
     };
@@ -158,7 +226,7 @@ public final class HaraNativeTestRunnerTest {
   @Test
   public void runsPortablePostgresTypedFoundation() throws Exception {
     String[][] suites = {
-      {"lib/test-lang/postgres/typed_test.hal", "8", "9"},
+      {"lib/test-lang/postgres/typed_test.hal", "9", "10"},
       {"lib/test-lang/postgres/typed/typed_common_test.hal", "11", "37"},
       {"lib/test-lang/postgres/typed/typed_shape_test.hal", "7", "11"},
       {"lib/test-lang/postgres/typed/typed_resolve_test.hal", "6", "16"},
@@ -193,7 +261,7 @@ public final class HaraNativeTestRunnerTest {
   public void runsPortablePostgresEntityUtilities() throws Exception {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
-            ROOT, ROOT.resolve("lib/test/lang/model/spec_postgres/entity_util_test.hal"));
+            ROOT, ROOT.resolve("lib/test-lang/lang/model/spec_postgres/entity_util_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
     assertEquals(8, result.facts());

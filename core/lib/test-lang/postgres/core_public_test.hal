@@ -1,6 +1,7 @@
 (ns postgres.core-public-test
   (:require [postgres.core :as pg]
-            [postgres.core.graph-view :as graph-view])
+            [postgres.core.graph-view :as graph-view]
+            [lang.runtime.postgres.base.application :as app])
   (:use code.test))
 
 (def schema
@@ -50,3 +51,19 @@
        [:select (--- [#{"id"} #{"name"}]) :from demo/Task
         \\ :where {"name" [:eq "n"]} \\ :limit 2]
        \\ :select (jsonb-agg j-ret) :from j-ret])
+
+(fact "forwards the portable application registry through postgres.core"
+  (app/register-app! "public-test"
+                     {:schema {:tree {:Task schema}}
+                      :typed {:tables {} :enums {} :functions {}}})
+  [(vec (pg/app-list))
+   (get-in (pg/app "public-test") [:schema :tree :Task :name 0 :type])
+   (get-in (pg/app-schema "public-test") [:tree :Task :id 0 :type])
+   (:functions (pg/app-typed "public-test"))
+   (fn? pg/app-create)
+   (fn? pg/app-rebuild)
+   (map? (pg/bind-schema (pg/app-schema "public-test")))
+   (pg/bind-app {:pointers {}})
+   (pg/app-clear "public-test")
+   (pg/app "public-test")]
+  => [["public-test"] :text :uuid {} true true true {} nil nil])

@@ -59,8 +59,10 @@
   (let [payload (typed/registry->typed (fixture-registry))]
     (app/register-app! "demo" {:typed payload})
     (let [ctx (typed/load-app "demo")]
-      [(:app-name ctx) (count (typed/entries ctx))]))
-  => ["demo" 2])
+      [(:app-name ctx)
+       (count (typed/entries ctx))
+       (:registry (typed/load-app "missing"))]))
+  => ["demo" 2 {}])
 
 (fact "resolves function declarations and signatures"
   (let [ctx (typed/load-registry (fixture-registry))]
@@ -69,6 +71,46 @@
      (get (typed/function-input ctx 'demo/make-entry 'i-name) :name)
      (typed/function-output ctx 'demo/make-entry)])
   => ["make-entry" 2 'i-name [:jsonb]])
+
+^{:refer postgres.typed/function-def :id :track-argument-role-parity}
+(fact "infers tracking arguments through local aliases and helper calls"
+  (let [write-fn
+        (types/make-fn-def
+         "demo.core" "write-entry"
+         [(types/->FnArg 'm :jsonb nil :payload)
+          (types/->FnArg 'o-op :jsonb nil nil)]
+         [:jsonb]
+         {:raw-body '[(let [tracked o-op]
+                        (pg/t:update Entry {:set m :track tracked}))]}
+         "demo")
+        wrapper-fn
+        (types/make-fn-def
+         "demo.rpc" "save-entry"
+         [(types/->FnArg 'm :jsonb nil nil)
+          (types/->FnArg 'o-op :jsonb nil nil)]
+         [:jsonb]
+         {:raw-body '[(demo.core/write-entry m o-op)]}
+         "demo")
+        recursive-fn
+        (types/make-fn-def
+         "demo.core" "recursive"
+         [(types/->FnArg 'o-op :jsonb nil nil)]
+         [:jsonb]
+         {:raw-body '[(demo.core/recursive o-op)]}
+         "demo")
+        ctx (typed/load-registry
+             {'demo.core/write-entry write-fn
+              'demo.rpc/save-entry wrapper-fn
+              'demo.core/recursive recursive-fn})]
+    [(vec (map (fn [arg] (:role arg))
+               (:inputs (typed/function-def ctx write-fn))))
+     (vec (map (fn [arg] (:role arg))
+               (:inputs (typed/function-def ctx wrapper-fn))))
+     (vec (map (fn [arg] (:role arg))
+               (:inputs (typed/function-def ctx recursive-fn))))])
+  => [[:payload :track]
+      [:payload :track]
+      [:payload]])
 
 (fact "infers and formats function output shapes"
   (let [_ (seed-inference!)

@@ -964,7 +964,7 @@ public final class HaraNodes {
     @Override
     public Object execute(VirtualFrame frame) {
       Object value = condition.execute(frame);
-      return value == null || Boolean.FALSE.equals(value)
+      return HaraBox.isNil(value) || Boolean.FALSE.equals(value)
           ? alternative.execute(frame)
           : consequent.execute(frame);
     }
@@ -984,7 +984,7 @@ public final class HaraNodes {
       Object result = all ? Boolean.TRUE : null;
       for (HaraExpressionNode expression : expressions) {
         result = expression.execute(frame);
-        boolean truthy = result != null && !Boolean.FALSE.equals(result);
+        boolean truthy = !HaraBox.isNil(result) && !Boolean.FALSE.equals(result);
         if (all ? !truthy : truthy) return result;
       }
       return result;

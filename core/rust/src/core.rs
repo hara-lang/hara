@@ -11547,15 +11547,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 {
                     eval_collection_constructor(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n == "set" => Ok(Value::Set(
-                    unique_values(
-                        fs[1..]
-                            .iter()
-                            .map(|form| eval(form, env))
-                            .collect::<Result<_, _>>()?,
-                    )
-                    .into(),
-                )),
+                Form::Symbol(n) if n == "set" => {
+                    if fs.len() != 2 {
+                        return Err("set expects one argument".into());
+                    }
+                    Ok(Value::Set(
+                        unique_values(iterator_values(eval(&fs[1], env)?)?).into(),
+                    ))
+                }
                 Form::Symbol(n) if n == "array" => {
                     let values = fs[1..]
                         .iter()

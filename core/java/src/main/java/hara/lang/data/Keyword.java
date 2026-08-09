@@ -116,7 +116,8 @@ public final class Keyword
       } else if (obj == null) {
         return null;
       } else {
-        throw new Ex.Unsupported();
+        throw new Ex.Unsupported(
+            "Keyword " + display() + " cannot look up " + obj.getClass().getName());
       }
     };
   }
@@ -139,7 +140,8 @@ public final class Keyword
       } else if (obj == null) {
         return arg;
       } else {
-        throw new Ex.Unsupported();
+        throw new Ex.Unsupported(
+            "Keyword " + display() + " cannot look up " + obj.getClass().getName());
       }
     };
   }

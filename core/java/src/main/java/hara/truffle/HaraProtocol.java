@@ -156,7 +156,8 @@ public final class HaraProtocol implements TruffleObject {
               + "/"
               + methodName
               + " does not support "
-              + HaraDispatchKey.describeReceiver(receiver));
+              + HaraDispatchKey.describeReceiver(receiver)
+              + (error.getMessage() == null ? "" : " (" + error.getMessage() + ")"));
     }
   }
 

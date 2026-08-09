@@ -3704,7 +3704,11 @@ mod tests {
             .contains("Duplicate item"));
         assert_eq!(runtime.eval_text("(has? #{1 2} 2)").unwrap(), "true");
         assert_eq!(runtime.eval_text("(conj #{1} 2)").unwrap(), "#{1 2}");
-        assert_eq!(runtime.eval_text("(= (set 1 2 1) #{1 2})").unwrap(), "true");
+        assert_eq!(
+            runtime.eval_text("(= (set [1 2 1]) #{1 2})").unwrap(),
+            "true"
+        );
+        assert!(runtime.eval_text("(set 1 2)").is_err());
         assert_eq!(runtime.eval_text("(= #{1 2} #{2 1})").unwrap(), "true");
         assert_eq!(runtime.eval_text("(get #{1 2} 2 :missing)").unwrap(), "2");
     }

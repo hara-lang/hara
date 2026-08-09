@@ -36,7 +36,7 @@ public interface ISequentialLookupType<E>
         }
       };
     }
-    throw new IndexOutOfBoundsException();
+    return null;
   }
 
   @Override

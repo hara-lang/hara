@@ -1,0 +1,374 @@
+(ns postgres.gen.bind-macro
+  (:require [std.foundation :refer :all :exclude [resolve]]
+            [std.foundation.string :as string]
+            [std.lib.walk :as walk]
+            [lang.common.emit-helper :as helper]
+            [lang.common.util :as util]
+            [lang.core.script :as script]))
+
+(defn to-lookup
+  "Creates a truth-valued lookup from a sequence."
+  [values]
+  (zipmap values (repeat true)))
+
+(defn plain-symbol?
+  "Returns true for an unqualified symbol."
+  [form]
+  (and (symbol? form)
+       (nil? (namespace form))))
+
+(defn bind-entry
+  "Returns a portable PostgreSQL entry map when one can be resolved."
+  [value]
+  (cond (map? value) value
+        (symbol? value)
+        (let [resolved (std.foundation/resolve value)]
+          (if resolved (deref resolved) nil))
+        :else value))
+
+(defn transform-to-str
+  "Converts scalar PostgreSQL identifiers to their wire spelling."
+  [value]
+  (cond (set? value) (vec value)
+        (vector? value) (vec value)
+        (or (list? value)
+            (map? value)
+            (number? value)
+            (boolean? value)
+            (nil? value)) value
+        (symbol? value)
+        (let [resolved (when (namespace value)
+                         (std.foundation/resolve value))
+              entry (when resolved (deref resolved))]
+          (if (map? entry)
+            {"::" (str "sql/" (name (or (:op-key entry) :ref)))
+             :schema (:static/schema entry)
+             :name (util/sym-default-str (:id entry))}
+            (util/sym-default-str value)))
+        (keyword? value) (util/sym-default-str value)
+        :else value))
+
+(defn transform-query-or
+  "Converts the Foundation set-vector OR representation into branch maps."
+  [form]
+  (if (and (set? form)
+           (vector? (first form))
+           (reduce (fn [found value]
+                     (or found (= value [:or])))
+                   false
+                   (first form)))
+    (let [state
+          (reduce
+           (fn [state value]
+             (cond (= value [:or])
+                   {:output (if (empty? (:current state))
+                              (:output state)
+                              (conj (:output state) (:current state)))
+                    :current {}
+                    :pending nil}
+
+                   (nil? (:pending state))
+                   (assoc state :pending value)
+
+                   :else
+                   (assoc state
+                          :current
+                          (assoc (:current state) (:pending state) value)
+                          :pending
+                          nil)))
+           {:output [] :current {} :pending nil}
+           (first form))]
+      (if (empty? (:current state))
+        (:output state)
+        (conj (:output state) (:current state))))
+    form))
+
+(defn- query-name
+  [value]
+  (let [resolved (when (symbol? value)
+                   (std.foundation/resolve value))
+        entry (when resolved (deref resolved))
+        schema (:static/schema entry)
+        identifier (util/sym-default-str value)]
+    (if schema
+      (str schema "." identifier)
+      identifier)))
+
+(defn transform-query-classify
+  "Classifies portable query forms for JSON transport."
+  [form]
+  (let [transform-value
+        (fn [value]
+          (cond (and (set? value) (string? (first value)))
+                {"::" "sql/column" :name (first value)}
+                (string? value)
+                {"::" "sql/arg" :name value}
+                :else value))]
+    (cond (walk/form? form)
+          (cond (= 'quote (first form))
+                [(vec (second form))]
+                (= '++ (first form))
+                {"::" "sql/cast"
+                 :args (vec (map transform-value (rest form)))}
+                :else
+                {"::" "sql/fn"
+                 :name (query-name (first form))
+                 :args (vec (map transform-value (rest form)))})
+
+          (and (vector? form) (= :select (first form)))
+          {"::" "sql/select"
+           :args (vec (map transform-value (rest form)))}
+
+          :else form)))
+
+(defn transform-query
+  "Transforms a PostgreSQL query into its portable transport representation."
+  ([query] (transform-query query plain-symbol?))
+  ([query symbol-predicate]
+   (walk/postwalk
+    transform-to-str
+    (walk/prewalk
+     transform-query-classify
+     (walk/postwalk
+      (fn [form]
+        (if (symbol-predicate form)
+          (str "{{" (util/sym-default-str form) "}}")
+          form))
+      (walk/prewalk transform-query-or query))))))
+
+(defn transform-schema
+  "Transforms an application schema into JSON-safe Hara data."
+  [schema]
+  (walk/postwalk
+   (fn [value]
+     (cond (keyword? value)
+           (string/replace (name value) "-" "_")
+
+           (set? value) (vec value)
+           (symbol? value) (str value)
+
+           (map? value)
+           (let [sql (get value "sql")
+                 default (get sql "default")
+                 cleaned (dissoc value "web" "sql")]
+             (if (and (not (nil? default))
+                      (not (walk/form? default)))
+               (assoc cleaned "sql" {"default" default})
+               cleaned))
+
+           :else value))
+   schema))
+
+(defn- unqualify-keys
+  [input]
+  (reduce-kv (fn [output key value]
+               (assoc output (keyword (name key)) value))
+             {}
+             input))
+
+(defn bind-function
+  "Builds the portable type signature for a PostgreSQL function entry."
+  [value]
+  (let [entry (bind-entry value)
+        events (select-keys entry [:api/mq.event :api/ui.event])
+        notify (get-in entry [:api/meta :notify])
+        output (unqualify-keys
+                (select-keys entry
+                             [:static/input
+                              :static/return
+                              :static/schema
+                              :id
+                              :api/flags]))
+        output (update output :flags to-lookup)
+        output (update output :flags merge (unqualify-keys events))
+        output (update output :id util/sym-default-str)
+        output (update output :return (fn [return]
+                                        (name (first return))))
+        output (update output :input (fn [input]
+                                       (vec (map helper/emit-type-record input))))]
+    (if notify
+      (assoc output :notify (walk/postwalk transform-to-str notify))
+      output)))
+
+(defn bind-view-guards
+  "Builds portable function and argument descriptions for view guards."
+  [guards]
+  (vec
+   (map (fn [guard]
+          (let [function-symbol (first guard)
+                resolved (std.foundation/resolve function-symbol)
+                function-entry (if resolved (deref resolved) function-symbol)]
+            {:function (bind-function function-entry)
+             :args (transform-query (vec (rest guard)))}))
+        guards)))
+
+(defn- snake-case
+  [value]
+  (let [value (str value)
+        lowered (string/lower value)]
+    (loop [index 0 output ""]
+      (if (= index (string/length value))
+        output
+        (let [ch (string/char-at value index)
+              lower-ch (string/char-at lowered index)
+              separator? (or (= ch "-") (= ch " "))
+              hump? (and (> index 0)
+                         (not separator?)
+                         (not= ch lower-ch))]
+          (recur (inc index)
+                 (str output
+                      (if (or separator? hump?) "_" "")
+                      (if separator? "" lower-ch))))))))
+
+(defn bind-view
+  "Builds the portable interface for a PostgreSQL view entry."
+  ([value] (bind-view value nil))
+  ([value options]
+   (let [entry (bind-entry value)
+         view (:static/view entry)
+         table (:table view)
+         type (:type view)
+         query (:query view)
+         query-base (:query-base view)
+         args (:args view)
+         output (bind-function entry)
+         table-name (name table)
+         tag-table (snake-case table-name)
+         id (:id output)]
+     (if (not (string/starts-with? id tag-table))
+       (throw (ex-info "View should start with table name"
+                       {:id id :table table-name :assert tag-table}))
+       (let [tag (string/slice id (inc (string/length tag-table)))
+             argument-lookup (to-lookup (filter symbol? args))]
+         (merge output
+                {:view
+                 (merge
+                  {:table table-name
+                   :type (name type)
+                   :tag tag
+                   :query (transform-query
+                           (or query-base query)
+                           (fn [form] (has? argument-lookup form)))}
+                  options)}))))))
+
+(defn bind-table
+  "Builds the portable table description for a PostgreSQL entry."
+  ([value] (bind-table value nil))
+  ([value update-key]
+   (let [entry (bind-entry value)
+         id (:id entry)
+         schema-seed (:static/schema-seed entry)
+         schema-update
+         (boolean
+          (and update-key
+               (get-in schema-seed
+                       [:tree (keyword (str id)) update-key])))]
+     (update
+      (assoc
+       (unqualify-keys
+        (select-keys entry
+                     [:static/schema
+                      :static/schema-primary
+                      :static/public]))
+       :schema-update
+       schema-update)
+      :schema-primary
+      transform-query))))
+
+(defn bind-app
+  "Builds the deterministic portable table map for an application."
+  ([application] (bind-app application nil))
+  ([application update-key]
+   (let [entries
+         (sort-by
+          (fn [entry]
+            [(str (:module entry))
+             (or (:line entry) 0)
+             (str (:id entry))])
+          (filter identity
+                  (map bind-entry (vals (:pointers application)))))]
+     (loop [remaining entries position 0 output {}]
+       (if (empty? remaining)
+         output
+         (let [entry (first remaining)]
+           (recur (rest remaining)
+                  (inc position)
+                  (assoc output
+                         (name (:id entry))
+                         (assoc (bind-table entry update-key)
+                                :position position)))))))))
+
+(defn bind-schema
+  "Builds a JSON-safe schema map, optionally excluding column keys."
+  ([schema] (bind-schema schema nil))
+  ([schema excluded]
+   (transform-schema
+    (reduce-kv
+     (fn [tables table columns]
+       (assoc
+        tables
+        table
+        (reduce-kv
+         (fn [output key attributes]
+           (if (and excluded (has? excluded key))
+             output
+             (assoc output
+                    key
+                    (if (vector? attributes)
+                      (first attributes)
+                      attributes))))
+         {}
+         columns)))
+     {}
+     (:tree schema)))))
+
+(defn- module-entries
+  [module predicate]
+  (vec
+   (filter predicate
+           (vals (get-in (deref script/+modules+)
+                         [module :code])))))
+
+(defn- entry-pair
+  [entry]
+  [(:id entry) (util/sym-full entry)])
+
+(defn list-view
+  "Lists the PostgreSQL views of type in a registered module."
+  [module type]
+  (vec
+   (map entry-pair
+        (module-entries
+         module
+         (fn [entry]
+           (= type (get-in entry [:static/view :type])))))))
+
+(defn list-api
+  "Lists API functions in a registered PostgreSQL module."
+  ([module] (list-api module nil))
+  ([module predicate]
+   (let [predicate (or predicate
+                       (fn [entry] (boolean (:api/flags entry))))]
+     (vec (map entry-pair (module-entries module predicate))))))
+
+(defn list-debug
+  "Lists unexposed PostgreSQL functions in a registered module."
+  ([module] (list-debug module nil))
+  ([module predicate]
+   (let [predicate
+         (or predicate
+             (fn [entry]
+               (and (= :defn (:op-key entry))
+                    (not (:api/flags entry))
+                    (not (:static/view entry))
+                    (not (:api/suppress entry)))))]
+     (vec (map entry-pair (module-entries module predicate))))))
+
+(defn list-all
+  "Lists all PostgreSQL function entries in a registered module."
+  [module]
+  (vec
+   (map entry-pair
+        (module-entries module
+                        (fn [entry]
+                          (= :defn (:op-key entry)))))))

@@ -1,0 +1,65 @@
+import unittest
+
+import foundation_parity as parity
+
+
+class FoundationParityParserTest(unittest.TestCase):
+    def test_extracts_namespace_and_public_definitions(self):
+        source = '''
+        (ns+ tahto.example)
+        (defn public-fn [x] x)
+        (defn- private-fn [] nil)
+        (def ^{:doc "value"} public-value 1)
+        (defn.pg typed-op [:uuid id] id)
+        (defmethod dispatch :kind [_] nil)
+        '''
+
+        namespace, public = parity.namespace_and_publics(source)
+
+        self.assertEqual("tahto.example", namespace)
+        self.assertEqual(["public-fn", "public-value", "typed-op"], public)
+
+    def test_top_level_scanner_ignores_comments_and_parentheses_in_strings(self):
+        source = '''
+        ;; (def fake 1)
+        (ns xt.example)
+        (def text "not a closing form )")
+        (defn actual [] "(")
+        '''
+
+        namespace, public = parity.namespace_and_publics(source)
+
+        self.assertEqual("xt.example", namespace)
+        self.assertEqual(["actual", "text"], public)
+
+    def test_namespace_mapping_changes_only_the_family_prefix(self):
+        family = {"source_namespace": "tahto", "target_namespace": "lang"}
+        self.assertEqual("lang.model.spec-js", parity.mapped_namespace("tahto.model.spec-js", family))
+
+    def test_extracts_explicit_and_aggregate_intern_surfaces(self):
+        source = '''
+        (ns postgres.core)
+        (f/intern-all postgres.core.builtin postgres.core.impl)
+        (f/intern-in impl/t:select [query impl/q] app/app-create)
+        '''
+
+        namespace, public, intern_all = parity.namespace_surface(source)
+
+        self.assertEqual("postgres.core", namespace)
+        self.assertEqual(["app-create", "query", "t:select"], public)
+        self.assertEqual(["postgres.core.builtin", "postgres.core.impl"], intern_all)
+
+    def test_resolves_intern_all_transitively(self):
+        entries = [
+            {"namespace": "demo.base", "public": ["base"], "intern_all": []},
+            {"namespace": "demo.mid", "public": ["mid"], "intern_all": ["demo.base"]},
+            {"namespace": "demo.api", "public": [], "intern_all": ["demo.mid"]},
+        ]
+
+        parity.resolve_intern_all(entries)
+
+        self.assertEqual(["base", "mid"], entries[2]["public"])
+
+
+if __name__ == "__main__":
+    unittest.main()

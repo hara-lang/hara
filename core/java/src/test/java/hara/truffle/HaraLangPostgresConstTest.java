@@ -14,7 +14,7 @@ public final class HaraLangPostgresConstTest {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
             ROOT,
-            ROOT.resolve("lib/test/lang/model/v1/spec_postgres_const_test.hal"));
+            ROOT.resolve("lib/test-lang/lang/model/v1/spec_postgres_const_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
     assertEquals(14, result.facts());

@@ -14,7 +14,7 @@ public final class HaraLangScriptMetadataTest {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
             ROOT,
-            ROOT.resolve("lib/test/lang/core/script_metadata_test.hal"));
+            ROOT.resolve("lib/test-lang/lang/core/script_metadata_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
     assertEquals(5, result.facts());

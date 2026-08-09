@@ -14,7 +14,7 @@ public final class HaraLangPostgresEnumTest {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
             ROOT,
-            ROOT.resolve("lib/test/lang/model/v1/spec_postgres_enum_test.hal"));
+            ROOT.resolve("lib/test-lang/lang/model/v1/spec_postgres_enum_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
     assertEquals(10, result.facts());

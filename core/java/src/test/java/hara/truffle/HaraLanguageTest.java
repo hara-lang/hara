@@ -66,8 +66,26 @@ public class HaraLanguageTest {
       assertEquals(7, context.eval(HaraLanguage.ID, "(get nil :missing 7)").asLong());
       assertEquals(1, context.eval(HaraLanguage.ID, "(:a {:a 1})").asLong());
       assertEquals(7, context.eval(HaraLanguage.ID, "(:missing {} 7)").asLong());
+      assertEquals(
+          "[1 7 nil]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(let [key :a] (key {:a 1})) "
+                      + " (let [key :missing] (key {} 7)) "
+                      + " (let [key :missing] (key nil))]")
+              .toString());
       assertTrue(context.eval(HaraLanguage.ID, "(empty nil)").isNull());
+      assertEquals(
+          ":ok",
+          context.eval(HaraLanguage.ID, "(if ((fn [] nil)) :bad :ok)").toString());
+      assertEquals(
+          1,
+          context
+              .eval(HaraLanguage.ID, "(count (conj #{} ((fn [] nil))))")
+              .asLong());
       assertEquals(1, context.eval(HaraLanguage.ID, "(count (conj nil 1))").asLong());
+      assertEquals(2, context.eval(HaraLanguage.ID, "(count (set [1 1 2]))").asLong());
       assertEquals(1, context.eval(HaraLanguage.ID, "(count (cons 1 nil))").asLong());
     }
   }
@@ -1964,6 +1982,18 @@ public class HaraLanguageTest {
       assertTrue(context.eval(HaraLanguage.ID, "(get nil :k)").isNull());
       assertTrue(context.eval(HaraLanguage.ID, "(= :d (get nil :k :d))").asBoolean());
       assertTrue(context.eval(HaraLanguage.ID, "(= 1 (get {:a 1} :a :d))").asBoolean());
+    }
+  }
+
+  @Test
+  public void hasHandlesAssociativeCollectionKeys() {
+    try (Context context = context()) {
+      assertTrue(context.eval(HaraLanguage.ID, "(has? {:a 1} :a)").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(has? {:a nil} :a)").asBoolean());
+      assertTrue(!context.eval(HaraLanguage.ID, "(has? {:a 1} :b)").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(has? #{:a} :a)").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(has? [10 20] 1)").asBoolean());
+      assertTrue(!context.eval(HaraLanguage.ID, "(has? [10 20] 20)").asBoolean());
     }
   }
 

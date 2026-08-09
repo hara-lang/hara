@@ -225,7 +225,7 @@ public final class HaraJavaAdapters {
   /** Invokes an existing Java IFn using the same collection lookup semantics as protocol calls. */
   public static Object invokeFunction(Object receiver, Object[] arguments) {
     IFn<?, ?, ?> function = (IFn<?, ?, ?>) receiver;
-    Object[] values = Arrays.stream(arguments).map(HaraBox::unwrap).toArray(Object[]::new);
+    Object[] values = Arrays.stream(arguments).map(HaraJavaAdapters::unwrapArgument).toArray(Object[]::new);
     if (function instanceof ILookup) {
       return lookupValue((ILookup<?, ?>) function, values);
     }
@@ -236,6 +236,11 @@ public final class HaraJavaAdapters {
       return setValue((ISetType<?>) function, values);
     }
     return applyFunction(function, values);
+  }
+
+  private static Object unwrapArgument(Object value) {
+    Object unwrapped = HaraBox.unwrap(value);
+    return unwrapped == HaraNull.SINGLETON ? null : unwrapped;
   }
 
   public static void installLookup(HaraProtocol protocol) {
@@ -869,6 +874,9 @@ public final class HaraJavaAdapters {
 
   @SuppressWarnings("unchecked")
   private static Object conjValue(IConj<?> conj, Object value) {
+    if (conj instanceof ISetType<?> && value == null) {
+      value = HaraNull.SINGLETON;
+    }
     if (conj instanceof IMapType<?, ?> && value instanceof ILinearType<?> pair && pair.count() == 2) {
       value = new java.util.AbstractMap.SimpleImmutableEntry<>(pair.nth(0), pair.nth(1));
     }

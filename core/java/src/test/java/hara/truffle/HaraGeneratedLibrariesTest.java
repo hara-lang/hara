@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
+import org.graalvm.polyglot.io.IOAccess;
 import org.junit.Test;
 
 public class HaraGeneratedLibrariesTest {
@@ -92,6 +93,38 @@ public class HaraGeneratedLibrariesTest {
           "(ns protected-declare (:config {:blank true}) "
               + "(:require [std.foundation :refer [count]])) (declare count)",
           "Cannot replace referred Var without ns omission: count");
+    }
+  }
+
+  @Test
+  public void referClojureExclusionsAlsoOmitRuntimeIntrinsics() {
+    try (Context context = context()) {
+      assertEquals(
+          42,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns app.runtime (:refer-clojure :exclude [Runtime])) "
+                      + "(defstruct Runtime [value]) "
+                      + "(field (app.runtime/Runtime 42) :value)")
+              .asLong());
+    }
+  }
+
+  @Test
+  public void requireExclusionsSurviveLoadingLaterSourceNamespaces() {
+    try (Context context =
+        Context.newBuilder(HaraLanguage.ID).allowIO(IOAccess.ALL).build()) {
+      assertEquals(
+          42,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns app.require-order "
+                      + "(:require [std.foundation :refer :all :exclude [filter]] "
+                      + "          [std.work.protocol :as protocol])) "
+                      + "(defn filter [value] 42) (filter :value)")
+              .asLong());
     }
   }
 

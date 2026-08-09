@@ -47,6 +47,11 @@ public final class HaraBox implements TruffleObject, IEquality {
     return value;
   }
 
+  public static boolean isNil(Object value) {
+    Object unwrapped = unwrap(value);
+    return unwrapped == null || unwrapped == HaraNull.SINGLETON;
+  }
+
   public static Object export(Object value) {
     if (value == null) {
       return HaraNull.SINGLETON;

@@ -630,7 +630,7 @@ public final class HaraContext {
     applyNamespaceRequires(declaration.structuralClauses);
     applyNamespaceUses(declaration.structuralClauses);
     for (String name : declaration.excludedFoundation) {
-      currentNamespace.removeReferredVar(name, FOUNDATION_NAMESPACE);
+      currentNamespace.removeReferredVar(name);
       Map<String, HaraMacro> namespaceMacros = macros.get(currentNamespace.name());
       HaraMacro foundationMacro = macros.getOrDefault(FOUNDATION_NAMESPACE, Map.of()).get(name);
       if (namespaceMacros != null && namespaceMacros.get(name) == foundationMacro) {
@@ -1082,7 +1082,6 @@ public final class HaraContext {
     } finally {
       definitionOrigin = previousOrigin;
       currentNamespace = namespace(previousNamespace);
-      if (!blankNamespaces.contains(previousNamespace)) initializeUserNamespace(currentNamespace);
     }
   }
 
@@ -1688,6 +1687,7 @@ public final class HaraContext {
         new UnaryBuiltin(
             "empty?", value -> !Boolean.TRUE.equals(iterHasNext(iterValue(value)))));
     target.define("vec", new UnaryBuiltin("vec", this::toVector));
+    target.define("set", new UnaryBuiltin("set", this::toSet));
     target.define(
         "array?",
         new UnaryBuiltin("array?", value -> HaraBox.unwrap(value) instanceof HaraArray));
@@ -2004,6 +2004,16 @@ public final class HaraContext {
     intrinsicCollectionBuiltins.put("get", getBuiltin);
     target.define(
         "find", new VariadicBuiltin("find", values -> protocolCall("IFind", "find", values)));
+    target.define(
+        "has?",
+        new VariadicBuiltin(
+            "has?",
+            values -> {
+              if (values.length != 2) {
+                throw new HaraException("has? expects a collection and key");
+              }
+              return !HaraBox.isNil(protocolCall("IFind", "find", values));
+            }));
     VariadicBuiltin assocBuiltin = new VariadicBuiltin("assoc", this::associateValues);
     target.define("assoc", assocBuiltin);
     intrinsicCollectionBuiltins.put("assoc", assocBuiltin);
@@ -2091,6 +2101,10 @@ public final class HaraContext {
     Iterator<?> iterator = (Iterator<?>) iterValue(value);
     while (iterator.hasNext()) elements.add(iterator.next());
     return hara.lang.data.Vector.Standard.from(null, elements.toArray());
+  }
+
+  private Object toSet(Object value) {
+    return hara.lang.data.Set.Standard.into((Iterator<?>) iterValue(value));
   }
 
   private Object reverseValue(Object value) {
@@ -4395,14 +4409,12 @@ public final class HaraContext {
         relocateLoadedMacros(callerNamespace, callerMacrosBefore, loaded);
       }
       currentNamespace = namespace(callerNamespace);
-      if (!blankNamespaces.contains(callerNamespace)) initializeUserNamespace(currentNamespace);
       if (arguments.length == 2) {
         applyRequireOptions(arguments[1], modules.get(key));
       }
       return null;
     } finally {
       currentNamespace = namespace(callerNamespace);
-      if (!blankNamespaces.contains(callerNamespace)) initializeUserNamespace(currentNamespace);
     }
   }
 
@@ -6088,6 +6100,12 @@ public final class HaraContext {
 
     private void removeReferredVars() {
       vars.entrySet().removeIf(entry -> !name.equals(entry.getValue().namespaceName()));
+    }
+
+    private void removeReferredVar(String symbolName) {
+      vars.computeIfPresent(
+          symbolName,
+          (ignored, variable) -> name.equals(variable.namespaceName()) ? variable : null);
     }
 
     private void removeReferredVar(String symbolName, String sourceNamespace) {

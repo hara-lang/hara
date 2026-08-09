@@ -14,7 +14,7 @@ public final class HaraLangCompileModuleTest {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
             ROOT,
-            ROOT.resolve("lib/test/lang/core/compile_module_test.hal"));
+            ROOT.resolve("lib/test-lang/lang/core/compile_module_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
     assertEquals(6, result.facts());

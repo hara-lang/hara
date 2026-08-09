@@ -44,13 +44,92 @@
   (let [value (arg-type arg)]
     (when value (name value))))
 
+(defn- tracked-position
+  [args tracked]
+  (loop [index 0]
+    (if (= index (count args))
+      nil
+      (if (has? tracked (nth args index))
+        index
+        (recur (inc index))))))
+
+(defn- track-arg-role?
+  [fn-def arg-name]
+  (let [body (get-in fn-def [:body-meta :raw-body])
+        aliases (or (get-in fn-def [:body-meta :aliases]) {})
+        fn-key (symbol (or (:ns fn-def) "") (:name fn-def))]
+    (letfn [(scan-forms [forms tracked visited]
+              (reduce (fn [found form]
+                        (or found (scan-form form tracked visited)))
+                      false
+                      forms))
+            (scan-let [form tracked visited]
+              (let [pairs (vec (partition 2 (second form)))]
+                (loop [index 0 current tracked]
+                  (if (= index (count pairs))
+                    (scan-forms (drop 2 form) current visited)
+                    (let [pair (nth pairs index)
+                          binding (first pair)
+                          expr (second pair)]
+                      (if (scan-form expr current visited)
+                        true
+                        (recur (inc index)
+                               (if (and (symbol? binding)
+                                        (typed-infer/form-uses-tracked? expr current))
+                                 (conj current binding)
+                                 current))))))))
+            (scan-form [form tracked visited]
+              (cond
+                (list? form)
+                (let [op (first form)
+                      args (vec (rest form))
+                      params (if (> (count form) 2) (nth form 2) nil)]
+                  (cond
+                    (and (map? params)
+                         (typed-infer/form-uses-track-param? params tracked))
+                    true
+
+                    (and (= 'let op) (vector? (second form)))
+                    (scan-let form tracked visited)
+
+                    (symbol? op)
+                    (let [arg-position (tracked-position args tracked)
+                          resolved (analyze/resolve-called-fn op aliases)
+                          called-fn (second resolved)
+                          called-key (when called-fn
+                                       (symbol (or (:ns called-fn) "")
+                                               (:name called-fn)))
+                          target-arg (when (and called-fn (not (nil? arg-position)))
+                                       (if (< arg-position (count (:inputs called-fn)))
+                                         (nth (:inputs called-fn) arg-position)
+                                         nil))]
+                      (or (when (and target-arg
+                                     (= :jsonb (:type target-arg))
+                                     (not (has? visited called-key)))
+                            (scan-form (get-in called-fn [:body-meta :raw-body])
+                                       #{(:name target-arg)}
+                                       (conj visited called-key)))
+                          (scan-forms form tracked visited)))
+
+                    :else
+                    (scan-forms form tracked visited)))
+
+                (or (vector? form) (map? form) (set? form))
+                (scan-forms form tracked visited)
+
+                :else false))]
+      (boolean (and body (scan-form body #{arg-name} #{fn-key}))))))
+
 (defn- enrich-function-arg-roles
   [fn-def]
   (if (types/fn-def? fn-def)
     (update fn-def :inputs
             (fn [inputs]
               (vec (map (fn [arg]
-                          (assoc arg :role (or (:role arg) :payload)))
+                          (if (and (= :jsonb (arg-type arg))
+                                   (track-arg-role? fn-def (:name arg)))
+                            (assoc arg :role :track)
+                            (assoc arg :role (or (:role arg) :payload))))
                         inputs))))
     fn-def))
 
@@ -96,13 +175,10 @@
 
 (defn load-app [app-name]
   (let [typed (app/app-typed app-name)]
-    (if typed
-      {:domain :postgres
-       :app-name app-name
-       :typed typed
-       :registry (typed->registry typed)}
-      (throw (ex-info "Postgres application has no typed payload"
-                      {:app-name app-name})))))
+    {:domain :postgres
+     :app-name app-name
+     :typed typed
+     :registry (typed->registry typed)}))
 
 (defn load-registry
   ([] (load-registry @types/*type-registry*))
