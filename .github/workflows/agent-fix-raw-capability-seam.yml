@@ -1,0 +1,76 @@
+name: Agent fix raw capability seam
+
+on:
+  push:
+    branches:
+      - agent/fix-raw-capability-seam-20260810
+    paths:
+      - .github/workflows/agent-fix-raw-capability-seam.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/fix-raw-capability-seam-20260810
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Repair the raw browser capability adapter
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/rust/raw/src/lib.rs")
+          source = path.read_text()
+
+          old_call = "core::with_capability_providers(file_provider, None, false, || {"
+          new_call = "core::with_capability_providers(file_provider, None, false, None, || {"
+          count = source.count(old_call)
+          if count != 3:
+              raise SystemExit(f"expected 3 legacy capability calls, found {count}")
+          source = source.replace(old_call, new_call)
+
+          exists = '''    fn exists(&self, path: &str) -> Result<Promise, core::FileError> {
+        self.promise("exists", vec![Value::String(path.into())])
+    }
+'''
+          stat = exists + '''
+    fn stat(&self, path: &str) -> Result<Promise, core::FileError> {
+        self.promise("stat", vec![Value::String(path.into())])
+    }
+'''
+          if source.count(exists) != 1:
+              raise SystemExit("could not identify the raw file exists adapter")
+          source = source.replace(exists, stat, 1)
+
+          listing = '''    fn list(&self, path: &str) -> Result<Promise, core::FileError> {
+        self.promise("list", vec![Value::String(path.into())])
+    }
+'''
+          walk = listing + '''
+    fn walk(&self, path: &str) -> Result<Promise, core::FileError> {
+        self.promise("walk", vec![Value::String(path.into())])
+    }
+'''
+          if source.count(listing) != 1:
+              raise SystemExit("could not identify the raw file list adapter")
+          source = source.replace(listing, walk, 1)
+
+          path.write_text(source)
+          PY
+      - name: Check the raw WebAssembly runtime
+        run: cargo check --manifest-path core/rust/raw/Cargo.toml --target wasm32-unknown-unknown --release
+      - name: Commit the source repair
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core/rust/raw/src/lib.rs
+          git diff --cached --check
+          git commit -m "Repair raw browser capability providers"
+          git push origin HEAD:agent/fix-raw-capability-seam-20260810
