@@ -12835,8 +12835,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "string?",
                         "char?",
                         "number?",
-                        "integer?",
-                        "decimal?",
+                        "long?",
+                        "double?",
                         "boolean?",
                         "fn?",
                     ]
@@ -12872,19 +12872,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "symbol?" => matches!(value, Value::Symbol(_)),
                         "string?" => matches!(value, Value::String(_)),
                         "char?" => matches!(value, Value::Character(_)),
-                        "number?" => matches!(
-                            value,
-                            Value::Number(_)
-                                | Value::Float(_)
-                                | Value::BigInteger(_)
-                                | Value::Decimal(_)
-                        ),
-                        "integer?" => {
-                            matches!(value, Value::Number(_) | Value::BigInteger(_))
-                        }
-                        "decimal?" => {
-                            matches!(value, Value::Float(_) | Value::Decimal(_))
-                        }
+                        "number?" => matches!(value, Value::Number(_) | Value::Float(_)),
+                        "long?" => matches!(value, Value::Number(_)),
+                        "double?" => matches!(value, Value::Float(_)),
                         "boolean?" => matches!(value, Value::Bool(_)),
                         "fn?" => matches!(value, Value::Function(_)),
                         _ => unreachable!(),

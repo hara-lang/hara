@@ -39,10 +39,11 @@ public class BuiltinTest {
   }
 
   @Test
-  public void testCheckIsInteger() {
-    assertTrue(BuiltinCheck.isInteger(10));
-    assertTrue(BuiltinCheck.isInteger(10L));
-    assertFalse(BuiltinCheck.isInteger(10.0));
+  public void testCheckNumericTypes() {
+    assertTrue(BuiltinCheck.isLong(10L));
+    assertFalse(BuiltinCheck.isLong(10.0));
+    assertTrue(BuiltinCheck.isDouble(10.0));
+    assertFalse(BuiltinCheck.isDouble(10L));
   }
 
   @Test

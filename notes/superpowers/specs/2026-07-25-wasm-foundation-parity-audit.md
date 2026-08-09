@@ -122,7 +122,7 @@ Renaming breaks spec-conformant code and should be reconciled.
 |---|---|
 | `nil? true? false?` | ✅ |
 | `boolean?` | ❌ |
-| `number? integer? decimal?` | ❌ |
+| `number? long? double?` | ❌ |
 | `string? char? keyword? symbol?` | ❌ |
 | `collection? sequential?` | ❌ |
 | `list? vector?` | ✅ |
