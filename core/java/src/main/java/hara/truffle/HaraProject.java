@@ -27,6 +27,7 @@ final class HaraProject {
   private final Symbol main;
   private final java.util.List<Path> sourcePaths;
   private final java.util.List<Path> testPaths;
+  private final java.util.List<Path> extensionPaths;
   private final java.util.List<JvmDependency> jvmDependencies;
   private final java.util.List<Path> jvmSourcePaths;
   private final Path jvmTargetPath;
@@ -46,6 +47,7 @@ final class HaraProject {
       Symbol main,
       java.util.List<Path> sourcePaths,
       java.util.List<Path> testPaths,
+      java.util.List<Path> extensionPaths,
       java.util.List<JvmDependency> jvmDependencies,
       java.util.List<Path> jvmSourcePaths,
       Path jvmTargetPath,
@@ -57,6 +59,7 @@ final class HaraProject {
     this.main = main;
     this.sourcePaths = java.util.List.copyOf(sourcePaths);
     this.testPaths = java.util.List.copyOf(testPaths);
+    this.extensionPaths = java.util.List.copyOf(extensionPaths);
     this.jvmDependencies = java.util.List.copyOf(jvmDependencies);
     this.jvmSourcePaths = java.util.List.copyOf(jvmSourcePaths);
     this.jvmTargetPath = jvmTargetPath;
@@ -104,6 +107,12 @@ final class HaraProject {
                 "project/test-paths",
                 java.util.List.of("test"),
                 PROJECT_FILE),
+            paths(
+                root,
+                lookup(options, "project/extension-paths"),
+                "project/extension-paths",
+                java.util.List.of("extensions"),
+                PROJECT_FILE),
             jvmDependencies(lookup(options, "jvm/dependencies"), PROJECT_FILE),
             paths(
                 root,
@@ -147,6 +156,7 @@ final class HaraProject {
               "test-paths",
               java.util.List.of("test"),
               LEGACY_PROJECT_FILE),
+          java.util.List.of(root.resolve("extensions")),
           java.util.List.of(),
           java.util.List.of(),
           root.resolve("target/classes"),
@@ -263,8 +273,12 @@ final class HaraProject {
     return capabilities.contains(capability);
   }
 
+  java.util.List<Path> extensionRoots() {
+    return extensionPaths;
+  }
+
   Path extensionRoot() {
-    return root.resolve("extensions");
+    return extensionPaths.isEmpty() ? root.resolve("extensions") : extensionPaths.get(0);
   }
 
   @SuppressWarnings("rawtypes")

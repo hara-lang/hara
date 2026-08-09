@@ -18,7 +18,8 @@ public class HaraProjectTest {
     Files.writeString(
         root.resolve("project.edn"),
         "{:hara/type :project :project/id sample "
-            + ":project/source-paths [\"src\"] :project/test-paths [\"test\"]}");
+            + ":project/source-paths [\"src\"] :project/test-paths [\"test\"] "
+            + ":project/extension-paths [\"extensions\" \"target/package\"]}");
     Path source = root.resolve("src/sample/core_name.hal");
     Files.createDirectories(source.getParent());
     Files.writeString(source, "(ns sample.core-name)");
@@ -27,6 +28,9 @@ public class HaraProjectTest {
     assertEquals("sample", project.name().display());
     assertEquals(root, project.root());
     assertEquals(source, project.resolve("sample.core-name", false));
+    assertEquals(
+        java.util.List.of(root.resolve("extensions"), root.resolve("target/package")),
+        project.extensionRoots());
   }
 
   @Test

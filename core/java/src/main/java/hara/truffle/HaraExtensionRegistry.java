@@ -30,10 +30,15 @@ final class HaraExtensionRegistry {
   }
 
   HaraExtensionPackage discover(String namespace) {
-    return discover(namespace, null);
+    return discover(namespace, java.util.List.of());
   }
 
   HaraExtensionPackage discover(String namespace, Path projectRoot) {
+    return discover(
+        namespace, projectRoot == null ? java.util.List.of() : java.util.List.of(projectRoot));
+  }
+
+  HaraExtensionPackage discover(String namespace, List<Path> projectRoots) {
     HaraExtensionPackage cached = packages.get(namespace);
     if (cached != null) return cached;
     String resource = resourceName(namespace);
@@ -42,7 +47,9 @@ final class HaraExtensionRegistry {
       Enumeration<URL> urls = classLoader.getResources(resource);
       while (urls.hasMoreElements()) candidates.add(urls.nextElement());
       Path relative = Path.of(namespace.replace('.', '/'), "hara.extension.edn");
-      if (projectRoot != null) addCandidate(candidates, projectRoot, relative, namespace);
+      for (Path projectRoot : projectRoots) {
+        addCandidate(candidates, projectRoot, relative, namespace);
+      }
       for (Path root : roots) addCandidate(candidates, root, relative, namespace);
       if (candidates.isEmpty()) return null;
       if (candidates.size() > 1) {
@@ -96,7 +103,7 @@ final class HaraExtensionRegistry {
   private static List<Path> configuredRoots() {
     ArrayList<Path> roots = new ArrayList<>();
     HaraProject project = HaraProject.discover(Path.of("."));
-    if (project != null) roots.add(project.extensionRoot().toAbsolutePath().normalize());
+    if (project != null) roots.addAll(project.extensionRoots());
     String configured = System.getProperty("hara.extensions.path", "");
     if (configured.isBlank()) configured = System.getenv().getOrDefault("HARA_EXTENSION_PATH", "");
     if (configured.isBlank()) return roots;

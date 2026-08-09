@@ -31,6 +31,23 @@ public class HaraLanguageTest {
   }
 
   @Test
+  public void supportsVariadicDissocAndBoxedPromiseDeref() {
+    try (Context context = context()) {
+      assertEquals(
+          "{:c 3}",
+          context.eval(HaraLanguage.ID, "(dissoc {:a 1 :b 2 :c 3} :a :b)").toString());
+      assertEquals(
+          9L,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (defn promised-value [] (std.foundation.promise/from 9)) "
+                      + "(deref (promised-value)))")
+              .asLong());
+    }
+  }
+
+  @Test
   public void invokesTheFunctionValueHeldByAVar() {
     try (Context context = context()) {
       assertEquals(42, context.eval(HaraLanguage.ID, "((var +) 19 23)").asLong());

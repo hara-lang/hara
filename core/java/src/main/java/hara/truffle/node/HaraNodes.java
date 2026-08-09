@@ -899,7 +899,7 @@ public final class HaraNodes {
 
     @Override
     public Object execute(VirtualFrame frame) {
-      Object receiver = value.execute(frame);
+      Object receiver = HaraBox.unwrap(value.execute(frame));
       HaraVar protocolVar = HaraLanguage.currentContext(this).resolve(Symbol.create("IDeref"));
       HaraProtocol protocol = (HaraProtocol) protocolVar.get();
       return protocol.invoke("deref", receiver, new Object[0]);

@@ -228,7 +228,9 @@ public final class Main {
 
   private static HaraProject cliProject(String[] args, Capabilities capabilities) {
     Path start =
-        args.length > 1 ? Path.of(args[1]) : capabilities.project == null ? Path.of(".") : capabilities.project;
+        capabilities.project != null
+            ? capabilities.project
+            : args.length > 1 ? Path.of(args[1]) : Path.of(".");
     HaraProject project = HaraProject.discover(start);
     if (project == null) throw new HaraException("no project.edn found above " + start);
     project.validateCliProject();

@@ -4,7 +4,13 @@ export function toHta(value) {
   if (value === null || value === undefined || typeof value !== "object") {
     return value ?? null;
   }
+  if (value instanceof HtaKeyword || value instanceof Uint8Array) return value;
   if (Array.isArray(value)) return value.map(toHta);
+  if (value instanceof Map) {
+    const result = new Map();
+    for (const [key, item] of value) result.set(key, toHta(item));
+    return result;
+  }
   const result = new Map();
   for (const [key, item] of Object.entries(value)) {
     result.set(new HtaKeyword(key), toHta(item));

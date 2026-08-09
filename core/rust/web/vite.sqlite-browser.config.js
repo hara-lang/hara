@@ -11,7 +11,9 @@ const sqlite = resolve(
 export default defineConfig({
   resolve: {
     alias: {
-      "@sqlite.org/sqlite-wasm": sqlite
+      "@sqlite.org/sqlite-wasm": sqlite,
+      "@hara-lang/hta/provider/browser": resolve(web, "packages/hta/provider-browser.mjs"),
+      "@hara-lang/db-sqlite": resolve(web, "packages/db-sqlite/index.mjs")
     }
   },
   build: {

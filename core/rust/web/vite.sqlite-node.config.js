@@ -11,7 +11,9 @@ const sqlite = resolve(
 export default defineConfig({
   resolve: {
     alias: {
-      "@sqlite.org/sqlite-wasm": sqlite
+      "@sqlite.org/sqlite-wasm": sqlite,
+      "@hara-lang/hta/provider/node": resolve(web, "packages/hta/provider-node.mjs"),
+      "@hara-lang/db-sqlite": resolve(web, "packages/db-sqlite/index.mjs")
     }
   },
   build: {
@@ -25,6 +27,7 @@ export default defineConfig({
       fileName: () => "worker.mjs"
     },
     rollupOptions: {
+      external: ["module", "node:fs/promises", "node:path", "../vendor/sqlite/node.mjs"],
       output: {
         assetFileNames: "assets/[name][extname]"
       }

@@ -1,5 +1,6 @@
 (ns std.work.provider.sqlite
   (:require [std.db.sqlite :as sqlite]
+            [std.work.runtime.result :as result]
             [std.work.runtime.store :as store]))
 
 ;; SQLite operational store provider.
@@ -14,7 +15,7 @@
 
 (defn connection
   [value]
-  value)
+  (or (:provider/connection value) value))
 
 (defn capabilities
   []
@@ -22,7 +23,8 @@
     :transactions
     :events
     :checkpoints
-    :outbox})
+    :outbox
+    :persistent})
 
 (defn describe
   []
@@ -46,6 +48,40 @@
     :provider/capabilities (capabilities)
     :provider/operations operations}))
 
-;; SQL transition, checkpoint, event and outbox operations are implemented in
-;; the next slice. This boundary deliberately matches the memory provider
-;; conformance contract before adding storage-specific behaviour.
+(def operational-store-operations
+  (vec
+   (concat store/run-operations
+           store/transaction-operations
+           store/event-operations
+           store/checkpoint-operations
+           store/outbox-operations)))
+
+(defn operations
+  [connection]
+  (reduce
+   (fn [output operation]
+     (assoc output
+            operation
+            (fn [& arguments]
+              (sqlite/work-call connection operation (vec arguments)))))
+   {}
+   operational-store-operations))
+
+(defn sqlite-store
+  "Opens, migrates, and returns an asynchronous SQLite operational store."
+  ([]
+   (sqlite-store {}))
+  ([options]
+   (result/then
+    (open options)
+    (fn [connection]
+      (result/then
+       (sqlite/work-call connection :migrate [])
+       (fn [_]
+         (assoc (normalise-provider (operations connection))
+                :provider/connection connection)))))))
+
+(defn close
+  "Closes SQLite store or connection."
+  [value]
+  (sqlite/close (connection value)))

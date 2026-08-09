@@ -6,12 +6,70 @@ import static org.junit.Assert.assertTrue;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.io.IOAccess;
 import org.junit.Assume;
 import org.junit.Test;
 
 public class HaraSqliteProcessExtensionTest {
   private static final Path ROOT =
       Path.of("rust/extensions/std-db-sqlite/target/package").toAbsolutePath().normalize();
+
+  @Test
+  public void projectConfiguredStorePersistsAcknowledgementWithoutRedelivery() throws Exception {
+    Assume.assumeTrue(
+        Files.isRegularFile(ROOT.resolve("std/db/provider/sqlite/hara.extension.edn")));
+    Path database = Files.createTempFile("hara-work-store", ".db");
+    Files.delete(database);
+    String path = database.toString().replace("\\", "\\\\").replace("\"", "\\\"");
+    try {
+      try (Context first =
+          Context.newBuilder(HaraLanguage.ID)
+              .allowCreateProcess(true)
+              .allowIO(IOAccess.ALL)
+              .build()) {
+        first.eval(
+            HaraLanguage.ID,
+            "(ns sqlite-restart-first "
+                + "(:require [std.work.provider.conformance :as conformance] "
+                + "[std.work.provider.sqlite :as sqlite])) "
+                + "(def provider (deref (sqlite/sqlite-store "
+                + "{:storage :filesystem :path \"" + path + "\"}))) "
+                + "(def corpus (conformance/run-store-corpus (fn [] provider))) "
+                + "(def first-closed (deref (sqlite/close provider)))");
+        assertTrue(first.eval(HaraLanguage.ID, "(= 9 (count corpus))").asBoolean());
+        assertTrue(first.eval(HaraLanguage.ID, "first-closed").asBoolean());
+      }
+
+      try (Context second =
+          Context.newBuilder(HaraLanguage.ID)
+              .allowCreateProcess(true)
+              .allowIO(IOAccess.ALL)
+              .build()) {
+        second.eval(
+            HaraLanguage.ID,
+            "(ns sqlite-restart-second "
+                + "(:require [std.work.runtime.store :as store] "
+                + "[std.work.provider.sqlite :as sqlite])) "
+                + "(def provider (deref (sqlite/sqlite-store "
+                + "{:storage :filesystem :path \"" + path + "\"}))) "
+                + "(def run (deref (store/call provider :load-run \"store-conformance\"))) "
+                + "(def acknowledged (deref (store/call provider :list-outbox {:status :acked}))) "
+                + "(def redelivery (deref (store/call provider :claim-outbox "
+                + "{:claim/id \"replacement-publisher\" :limit 1})))");
+        assertEquals(
+            "cancelled",
+            second.eval(HaraLanguage.ID, "(name (:run/status run))").asString());
+        assertEquals(1, second.eval(HaraLanguage.ID, "(count acknowledged)").asInt());
+        assertEquals(0, second.eval(HaraLanguage.ID, "(count redelivery)").asInt());
+        assertTrue(
+            second
+                .eval(HaraLanguage.ID, "(deref (sqlite/close provider))")
+                .asBoolean());
+      }
+    } finally {
+      Files.deleteIfExists(database);
+    }
+  }
 
   @Test
   public void sqliteWasmRunsGeneratedAndParameterizedSqlThroughTheGenericDbApi() {

@@ -67,6 +67,18 @@ public class MainTest {
               stdout,
               stderr));
       assertEquals(0, Main.run(new String[] {"--project", root.toString(), "test"}, stdout, stderr));
+      Files.writeString(root.resolve("test/project.hal"), "(defproject legacy {})");
+      assertEquals(
+          0,
+          Main.run(
+              new String[] {
+                "--project",
+                root.toString(),
+                "test",
+                root.resolve("test/demo_app/main_test.hal").toString()
+              },
+              stdout,
+              stderr));
       assertEquals("", error.toString(StandardCharsets.UTF_8));
       assertTrue(output.toString(StandardCharsets.UTF_8).contains("project check: demo-app 0.1.0"));
       assertTrue(output.toString(StandardCharsets.UTF_8).contains("jvm dependencies: 1 direct"));

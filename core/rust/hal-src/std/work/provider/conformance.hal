@@ -40,10 +40,24 @@
 (defn throws?
   [function]
   (try
-    (function)
+    (let [value (function)]
+      (if (promise? value)
+        (deref value)
+        value))
     false
     (catch Throwable error
       true)))
+
+(defn settle
+  "Returns direct values unchanged and waits for portable Promises."
+  [value]
+  (if (promise? value)
+    (deref value)
+    value))
+
+(defn store-call
+  [provider operation & arguments]
+  (settle (apply store/call provider operation arguments)))
 
 (defn sample-run
   [id input]
@@ -83,28 +97,28 @@
 
 (defn transact-at
   [provider run-id revision changes]
-  (store/call provider
+  (store-call provider
               :transact
               (store/transition-request run-id revision changes)))
 
 (defn current-revision
   [provider run-id]
-  (:run/revision (store/call provider :load-run run-id)))
+  (:run/revision (store-call provider :load-run run-id)))
 
 (defn run-store-corpus
   "Runs the reusable operational-store conformance corpus against a provider
    factory and returns one boolean per required scenario."
   [factory]
-  (let [provider (factory)
+  (let [provider (settle (factory))
         run-id "store-conformance"
         proposed (sample-run run-id {:value 1})
-        created (store/call provider :create-run proposed)
-        repeated (store/call provider :create-run proposed)
+        created (store-call provider :create-run proposed)
+        repeated (store-call provider :create-run proposed)
         idempotent-create (= created repeated)
         conflicting-create
         (throws?
          (fn []
-           (store/call provider
+           (store-call provider
                        :create-run
                        (sample-run run-id {:value 2}))))
         first-transition
@@ -125,9 +139,9 @@
            [(:transition/revision first-transition)
             (:transition/revision second-transition)])
         before-failed-cas
-        {:run (store/call provider :load-run run-id)
-         :events (store/call provider :list-events run-id)
-         :checkpoints (store/call provider :list-checkpoints run-id)}
+        {:run (store-call provider :load-run run-id)
+         :events (store-call provider :list-events run-id)
+         :checkpoints (store-call provider :list-checkpoints run-id)}
         failed-cas
         (throws?
          (fn []
@@ -137,9 +151,9 @@
             0
             {:transition/events [{:event :work/uncommitted}]})))
         after-failed-cas
-        {:run (store/call provider :load-run run-id)
-         :events (store/call provider :list-events run-id)
-         :checkpoints (store/call provider :list-checkpoints run-id)}
+        {:run (store-call provider :load-run run-id)
+         :events (store-call provider :list-events run-id)
+         :checkpoints (store-call provider :list-checkpoints run-id)}
         cas-no-partial-writes
         (and failed-cas (= before-failed-cas after-failed-cas))
         checkpoint-key [run-id :conformance/work [:step :one] nil]
@@ -165,16 +179,16 @@
           [{:event :work/step-completed
             :checkpoint/key checkpoint-key}]})
         stored-checkpoint
-        (store/call provider :load-checkpoint checkpoint-key)
+        (store-call provider :load-checkpoint checkpoint-key)
         completion-event
-        (last-value (store/call provider :list-events run-id))
+        (last-value (store-call provider :list-events run-id))
         checkpoint-event-atomic
         (and (= :completed (:checkpoint/status stored-checkpoint))
              (= :work/step-completed (:event completion-event))
              (= 3 (:transition/revision checkpoint-transition)))
         before-immutable
         {:revision (current-revision provider run-id)
-         :events (store/call provider :list-events run-id)
+         :events (store-call provider :list-events run-id)
          :checkpoint stored-checkpoint}
         immutable-rejected
         (throws?
@@ -188,14 +202,14 @@
              :transition/events [{:event :work/should-not-commit}]})))
         after-immutable
         {:revision (current-revision provider run-id)
-         :events (store/call provider :list-events run-id)
-         :checkpoint (store/call provider :load-checkpoint checkpoint-key)}
+         :events (store-call provider :list-events run-id)
+         :checkpoint (store-call provider :load-checkpoint checkpoint-key)}
         completed-checkpoint-immutable
         (and immutable-rejected (= before-immutable after-immutable))
         event-sequences
         (vec
          (map (fn [event] (:event/sequence event))
-              (store/call provider :list-events run-id)))
+              (store-call provider :list-events run-id)))
         stable-event-ordering (strictly-increasing? event-sequences)
         cancellation
         (transact-at
@@ -206,10 +220,10 @@
           :transition/events [{:event :work/run-cancel-requested}]})
         cancellation-visible
         (and (= :cancelled
-                (:run/status (store/call provider :load-run run-id)))
+                (:run/status (store-call provider :load-run run-id)))
              (= :work/run-cancel-requested
                 (:event
-                 (last-value (store/call provider :list-events run-id))))
+                 (last-value (store-call provider :list-events run-id))))
              (= (:transition/revision cancellation)
                 (current-revision provider run-id)))
         outbox-intent
@@ -230,14 +244,14 @@
          {:transition/outbox [outbox-intent]})
         first-entry (first (:transition/outbox first-outbox))
         second-entry (first (:transition/outbox second-outbox))
-        pending-outbox (store/call provider :list-outbox {:status :pending})
-        claimed (store/call provider
+        pending-outbox (store-call provider :list-outbox {:status :pending})
+        claimed (store-call provider
                             :claim-outbox
                             {:claim/id "conformance-claim"
                              :limit 1})
         claimed-entry (first claimed)
         acked
-        (store/call provider
+        (store-call provider
                     :ack-outbox
                     (:outbox/id claimed-entry)
                     {:claim/id "conformance-claim"
@@ -247,7 +261,7 @@
              (= 1 (count pending-outbox))
              (= :claimed (:outbox/status claimed-entry))
              (= :acked (:outbox/status acked))
-             (= 1 (count (store/call provider
+             (= 1 (count (store-call provider
                                      :list-outbox
                                      {:status :acked}))))]
     {:idempotent-create idempotent-create

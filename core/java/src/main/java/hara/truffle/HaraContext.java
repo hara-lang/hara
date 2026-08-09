@@ -998,12 +998,13 @@ public final class HaraContext {
       if (loaded == null) loaded = namespaces.get(target);
       if (loaded == null) loaded = requireSourceNamespace(target);
       if (loaded == null) {
-        Path extensionRoot = null;
+        java.util.List<Path> extensionRoots = java.util.List.of();
         if (environment.isFileIOAllowed()) {
           HaraProject currentProject = project();
-          extensionRoot = currentProject == null ? null : currentProject.extensionRoot();
+          extensionRoots =
+              currentProject == null ? java.util.List.of() : currentProject.extensionRoots();
         }
-        HaraExtensionPackage extensionPackage = extensionRegistry.discover(target, extensionRoot);
+        HaraExtensionPackage extensionPackage = extensionRegistry.discover(target, extensionRoots);
         if (extensionPackage != null) loaded = installExtension(extensionPackage);
       }
       if (loaded == null) {

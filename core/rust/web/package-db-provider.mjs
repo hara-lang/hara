@@ -12,12 +12,17 @@ async function listFiles(root, directory = root) {
   return output;
 }
 
-export async function packageDbProvider({ source, output, nodeBuild, browserBuild }) {
+export async function packageDbProvider({ source, output, nodeBuild, browserBuild, additionalAssets = [] }) {
   await rm(output, { recursive: true, force: true });
   await mkdir(output, { recursive: true });
   await cp(resolve(source, "package.json"), resolve(output, "package.json"));
   await cp(nodeBuild, resolve(output, "node"), { recursive: true });
   await cp(browserBuild, resolve(output, "browser"), { recursive: true });
+  for (const asset of additionalAssets) {
+    const destination = resolve(output, asset.destination);
+    await mkdir(resolve(destination, ".."), { recursive: true });
+    await cp(asset.source, destination, { recursive: true });
+  }
 
   const assets = (await listFiles(output))
     .filter(path => path !== "node/worker.mjs" && path !== "browser/worker.mjs")

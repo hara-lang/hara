@@ -1,28 +1,16 @@
 (ns std.work.provider.memory
-  (:require [std.work.runtime.base :as base]
+  (:require [std.work.provider.model :as model]
             [std.work.runtime.store :as store]))
 
-(def status-transitions
-  {:created #{:created :queued :running :cancelled}
-   :queued #{:queued :running :cancelled}
-   :running #{:running :completed :failed :cancelled}
-   :failed #{:failed :running :cancelled}
-   :completed #{:completed}
-   :cancelled #{:cancelled}})
+(def status-transitions model/status-transitions)
 
 (defn contains-value?
   [values value]
-  (reduce
-   (fn [found candidate]
-     (or found (= value candidate)))
-   false
-   (or values [])))
+  (model/contains-value? values value))
 
 (defn memory-validate-run-id
   [id]
-  (if (nil? id)
-    (throw (ex-info "Work run identity cannot be nil" {})))
-  id)
+  (model/validate-run-id id))
 
 (defn memory-next-id
   [state]
@@ -38,17 +26,7 @@
 
 (defn normalise-run
   [run]
-  (let [status (or (:run/status run) :created)]
-    (merge
-     {:run/revision 0
-      :run/status status
-      :run/execution-status status
-      :run/receipt-status :pending
-      :run/acceptance-status :pending}
-     run
-     {:run/revision (or (:run/revision run) 0)
-      :run/status status
-      :run/execution-status status})))
+  (model/normalise-run run))
 
 (defn memory-create-run
   [state run]
@@ -62,7 +40,7 @@
                      (nil? existing)
                      (assoc-in data [:runs id] run)
 
-                     (base/compatible-run? existing run)
+                     (model/compatible-run? existing run)
                      data
 
                      :else
@@ -88,51 +66,23 @@
 
 (defn assert-transition-revision!
   [run transition]
-  (let [expected (:transition/expected-revision transition)
-        actual (or (:run/revision run) 0)]
-    (if (not= expected actual)
-      (throw
-       (ex-info "Work store revision conflict"
-                {:run/id (:run/id run)
-                 :expected/revision expected
-                 :actual/revision actual}))))
-  run)
+  (model/assert-transition-revision! run transition))
 
 (defn assert-status-transition!
   [run updates]
-  (let [current (:run/status run)
-        proposed (or (:run/status updates) current)
-        allowed (get status-transitions current)]
-    (if (not (contains-value? allowed proposed))
-      (throw
-       (ex-info "Work run status transition is not allowed"
-                {:run/id (:run/id run)
-                 :run/status current
-                 :run/proposed-status proposed}))))
-  run)
+  (model/assert-status-transition! run updates))
 
 (defn canonical-run-updates
   [updates]
-  (let [updates (or updates {})]
-    (if (has? updates :run/status)
-      (assoc updates :run/execution-status (:run/status updates))
-      updates)))
+  (model/canonical-run-updates updates))
 
 (defn same-checkpoint?
   [existing proposed]
-  (= (dissoc existing :checkpoint/sequence)
-     (dissoc proposed :checkpoint/sequence)))
+  (model/same-checkpoint? existing proposed))
 
 (defn assert-checkpoint-run!
   [run-id checkpoint]
-  (let [checkpoint-run (:checkpoint/run checkpoint)]
-    (if (and checkpoint-run (not= checkpoint-run run-id))
-      (throw
-       (ex-info "Checkpoint belongs to another work run"
-                {:run/id run-id
-                 :checkpoint/run checkpoint-run
-                 :checkpoint/key (:checkpoint/key checkpoint)}))))
-  checkpoint)
+  (model/assert-checkpoint-run! run-id checkpoint))
 
 (defn apply-checkpoints
   [data run-id checkpoints]
@@ -192,22 +142,11 @@
 
 (defn strip-outbox-state
   [entry]
-  (dissoc
-   (dissoc
-    (dissoc
-     (dissoc
-      (dissoc
-       (dissoc entry :outbox/id)
-       :outbox/sequence)
-      :outbox/status)
-     :outbox/claim-id)
-    :outbox/claim)
-   :outbox/ack))
+  (model/strip-outbox-state entry))
 
 (defn same-outbox-intent?
   [existing proposed]
-  (= (strip-outbox-state existing)
-     (strip-outbox-state proposed)))
+  (model/same-outbox-intent? existing proposed))
 
 (defn apply-outbox
   [data run-id entries]
@@ -362,11 +301,7 @@
 
 (defn outbox-selected?
   [entry query]
-  (and
-   (or (nil? (:run/id query))
-       (= (:run/id query) (:outbox/run entry)))
-   (or (nil? (:status query))
-       (= (:status query) (:outbox/status entry)))))
+  (model/outbox-selected? entry query))
 
 (defn memory-list-outbox
   [state query]
@@ -394,9 +329,7 @@
 
 (defn claimable?
   [entry options]
-  (and (= :pending (:outbox/status entry))
-       (or (nil? (:run/id options))
-           (= (:run/id options) (:outbox/run entry)))))
+  (model/claimable? entry options))
 
 (defn memory-claim-outbox
   [state options]
