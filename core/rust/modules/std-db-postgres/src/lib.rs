@@ -20,6 +20,7 @@ const OPERATIONS: &[&str] = &[
     "close",
     "version",
     "exec",
+    "batch-exec",
     "query",
     "wait-ready",
     "database-create",
@@ -276,6 +277,7 @@ impl WorkerState {
                     .await
             }
             "exec" => self.execute(arguments, false).await,
+            "batch-exec" => self.batch_execute(arguments).await,
             "query" => self.execute(arguments, true).await,
             "wait-ready" => {
                 self.wait_ready(expect_record(arguments.first(), "options")?)
@@ -406,6 +408,20 @@ impl WorkerState {
                 ("affected", Value::Integer(affected as i64)),
             ]))
         }
+    }
+
+    async fn batch_execute(&self, arguments: Vec<Value>) -> Result<Value, Error> {
+        let id = expect_i64(arguments.first(), "connection")?;
+        let sql = expect_string(arguments.get(1), "sql")?;
+        self.client(id)?
+            .batch_execute(sql)
+            .await
+            .map_err(query_error)?;
+        Ok(record([
+            ("columns", Value::Vector(Vec::new())),
+            ("rows", Value::Vector(Vec::new())),
+            ("affected", Value::Integer(0)),
+        ]))
     }
 
     async fn wait_ready(&mut self, options: &BTreeMap<String, Value>) -> Result<Value, Error> {

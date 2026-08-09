@@ -44,10 +44,7 @@ fn portable_codec_matches_the_runtime_codec_byte_for_byte() {
         ("b", PortableValue::Integer(2)),
         ("bytes", PortableValue::Bytes(vec![0, 1, 255])),
         ("float", PortableValue::Float(0.28)),
-        (
-            "keyword",
-            PortableValue::Keyword("profile.primary".into()),
-        ),
+        ("keyword", PortableValue::Keyword("profile.primary".into())),
         ("string", PortableValue::String("portable".into())),
     ]);
 

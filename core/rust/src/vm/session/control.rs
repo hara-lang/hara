@@ -1,10 +1,10 @@
 use crate::core::{Promise, PromiseState, Value};
 
-use crate::vm::machine::observation::MachineSnapshot;
 use super::{
     evidence, fresh_registry, trace_id, BytecodeObservationSession, BytecodeSessionError,
     BytecodeSessionStatus, Machine, SessionMetrics, VmError,
 };
+use crate::vm::machine::observation::MachineSnapshot;
 
 impl BytecodeObservationSession {
     pub fn snapshot(&self) -> Result<MachineSnapshot, BytecodeSessionError> {
@@ -119,11 +119,10 @@ impl BytecodeObservationSession {
     }
 
     pub fn reset(&mut self) -> Result<Value, BytecodeSessionError> {
-        let program = self
-            .program
-            .as_ref()
-            .cloned()
-            .ok_or_else(|| BytecodeSessionError::new("disposed bytecode session cannot reset"))?;
+        let program =
+            self.program.as_ref().cloned().ok_or_else(|| {
+                BytecodeSessionError::new("disposed bytecode session cannot reset")
+            })?;
         cancel_pending(self.suspension.take());
         self.machine = Some(Machine::entry(program));
         self.registry = fresh_registry();
@@ -193,7 +192,6 @@ impl BytecodeObservationSession {
         self.dispose_inner();
         true
     }
-
 }
 
 #[path = "control/runtime.rs"]

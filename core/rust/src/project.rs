@@ -30,6 +30,7 @@ pub struct Project {
     pub source_paths: Vec<PathBuf>,
     pub test_paths: Vec<PathBuf>,
     pub extension_paths: Vec<PathBuf>,
+    pub capabilities: Vec<String>,
     pub artifact_paths: Vec<PathBuf>,
     pub archive_root: Option<PathBuf>,
     /// Whether the intentionally portable workspace declaration is a package
@@ -168,6 +169,10 @@ pub fn read(input: &Path) -> Result<Project, String> {
         lookup(entries, "project/extension-paths").unwrap(),
         "project/extension-paths",
     )?;
+    let capabilities = capability_set(
+        lookup(entries, "project/capabilities").unwrap(),
+        "project.edn :project/capabilities",
+    )?;
     let artifact_paths = lookup(entries, "project/artifact-paths")
         .map(|value| paths(value, "project/artifact-paths"))
         .transpose()?
@@ -232,6 +237,7 @@ pub fn read(input: &Path) -> Result<Project, String> {
         source_paths,
         test_paths,
         extension_paths,
+        capabilities,
         artifact_paths,
         archive_root,
         package_workspace,
@@ -517,6 +523,19 @@ fn identifier(form: &Form, label: &str) -> Result<String, String> {
     }
 }
 
+fn capability_set(form: &Form, label: &str) -> Result<Vec<String>, String> {
+    let Form::Set(values) = form else {
+        return Err(format!("{label} must be an EDN set"));
+    };
+    let mut output = values
+        .iter()
+        .map(|value| identifier(value, label))
+        .collect::<Result<Vec<_>, _>>()?;
+    output.sort();
+    output.dedup();
+    Ok(output)
+}
+
 fn project_profiles(form: &Form) -> Result<BTreeMap<String, ProjectProfile>, String> {
     let mut output = BTreeMap::new();
     for (key, value) in map(form, "project.edn :project/profiles must be an EDN map")? {
@@ -561,14 +580,18 @@ fn project_aliases(form: &Form) -> Result<BTreeMap<String, Vec<String>>, String>
             return Err(format!("invalid project alias {name:?}"));
         }
         let Form::Vector(values) = value else {
-            return Err(format!("project alias {name:?} must be a vector of strings"));
+            return Err(format!(
+                "project alias {name:?} must be a vector of strings"
+            ));
         };
         let argv = values
             .iter()
             .map(|value| string(value, &format!("project alias {name:?}")))
             .collect::<Result<Vec<_>, _>>()?;
         if argv.is_empty() || argv.iter().any(|value| value.is_empty()) {
-            return Err(format!("project alias {name:?} must contain command tokens"));
+            return Err(format!(
+                "project alias {name:?} must contain command tokens"
+            ));
         }
         if output.insert(name.clone(), argv).is_some() {
             return Err(format!("duplicate project alias {name:?}"));
@@ -583,8 +606,12 @@ pub fn expand_aliases(project: &Project, argv: &[String]) -> Result<Vec<String>,
     let mut output = argv.to_vec();
     let mut seen = BTreeMap::new();
     loop {
-        let Some(name) = output.first().cloned() else { return Ok(output) };
-        let Some(prefix) = project.aliases.get(&name) else { return Ok(output) };
+        let Some(name) = output.first().cloned() else {
+            return Ok(output);
+        };
+        let Some(prefix) = project.aliases.get(&name) else {
+            return Ok(output);
+        };
         if seen.insert(name.clone(), true).is_some() {
             return Err(format!("project alias cycle detected at {name:?}"));
         }

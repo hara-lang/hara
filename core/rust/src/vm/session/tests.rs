@@ -105,12 +105,9 @@ fn suspension_retains_the_real_promise_and_resumes_one_boundary() {
         entry: 0,
     };
     validate(&program).expect("program validates");
-    let mut session = BytecodeObservationSession::from_program(
-        "execution/suspend",
-        "suspend.hal",
-        program,
-    )
-    .expect("session owns program");
+    let mut session =
+        BytecodeObservationSession::from_program("execution/suspend", "suspend.hal", program)
+            .expect("session owns program");
 
     session.run(8).expect("run to suspension");
     assert_eq!(session.status(), BytecodeSessionStatus::Suspended);
@@ -146,7 +143,10 @@ fn artifacts_retention_failures_and_disposal_remain_bounded() {
 
     session.run(64).expect("failure is execution evidence");
     assert_eq!(session.status(), BytecodeSessionStatus::Failed);
-    assert_eq!(session.error().map(|error| error.message.as_str()), Some("division by zero"));
+    assert_eq!(
+        session.error().map(|error| error.message.as_str()),
+        Some("division by zero")
+    );
     assert!(json(&session.events()).contains("\"dropped\":"));
     assert!(json(&session.trace()).contains("\"dropped\":"));
     assert!(session.events.len() <= 1);

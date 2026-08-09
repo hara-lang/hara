@@ -1,12 +1,12 @@
 use crate::core::{PromiseState, Value};
 use crate::kernel::NamespaceRegistry;
 
-use crate::vm::machine::observation::{ObservedStep, ObservedStepOutcome};
 use super::super::{
     evidence, BytecodeObservationSession, BytecodeSessionError, BytecodeSessionStatus,
     CompactEventRecord, SessionMetrics, TraceStepRecord,
 };
 use super::cancel_pending;
+use crate::vm::machine::observation::{ObservedStep, ObservedStepOutcome};
 
 impl BytecodeObservationSession {
     pub(super) fn ensure_runnable(&self) -> Result<(), BytecodeSessionError> {

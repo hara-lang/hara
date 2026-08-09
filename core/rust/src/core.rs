@@ -21,9 +21,9 @@ use crate::lang::protocol::{IDisplay, IMetadata, INamespaced, IToMutable, IToPer
 pub use crate::task::{
     LocalPromiseProvider, Promise, PromiseProvider, PromiseRejection, PromiseState,
 };
+use sha2::{Digest, Sha256};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
-use sha2::{Digest, Sha256};
 
 #[path = "fiber.rs"]
 mod fiber;
@@ -151,8 +151,15 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "Process",
         &[
-            "spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr",
-            "wait", "kill",
+            "spawn",
+            "instance?",
+            "alive?",
+            "write",
+            "close-input",
+            "stdout",
+            "stderr",
+            "wait",
+            "kill",
         ],
     ),
     (
@@ -2358,8 +2365,7 @@ pub type ProtocolFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
 #[derive(Default, Clone)]
 pub struct ProtocolRegistry {
     methods: Rc<RefCell<HashMap<(String, String), Vec<ProtocolFn>>>>,
-    extension_methods:
-        Rc<RefCell<HashMap<(String, String, String, String), ProtocolFn>>>,
+    extension_methods: Rc<RefCell<HashMap<(String, String, String, String), ProtocolFn>>>,
     extension_categories: Rc<RefCell<HashSet<(String, String, String)>>>,
     guest_methods: Rc<RefCell<HashMap<(String, String, String), Rc<Function>>>>,
     guest_declarations: Rc<RefCell<HashSet<(String, String)>>>,
@@ -2453,11 +2459,7 @@ impl ProtocolRegistry {
             })?(arguments)
     }
 
-    pub fn extension_has_category(
-        &self,
-        receiver: &ExtensionValue,
-        category: &str,
-    ) -> bool {
+    pub fn extension_has_category(&self, receiver: &ExtensionValue, category: &str) -> bool {
         self.extension_categories.borrow().contains(&(
             receiver.provider.clone(),
             receiver.type_name.clone(),
@@ -4234,9 +4236,8 @@ impl FileProvider for NativeFileProvider {
                     files.push(current.to_string_lossy().into_owned());
                 }
                 Ok(metadata) if metadata.is_dir() => match std::fs::read_dir(&current) {
-                    Ok(entries) => pending.extend(
-                        entries.filter_map(|entry| entry.ok().map(|value| value.path())),
-                    ),
+                    Ok(entries) => pending
+                        .extend(entries.filter_map(|entry| entry.ok().map(|value| value.path()))),
                     Err(error) => {
                         failure = Some(error.to_string());
                         break;
@@ -6314,12 +6315,9 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
     let collection = &arguments[0];
     let key = &arguments[1];
     match collection {
-        Value::Extension(receiver) => extension_protocol_call(
-            receiver,
-            "std.protocol.ifind/IFind",
-            "find",
-            arguments,
-        ),
+        Value::Extension(receiver) => {
+            extension_protocol_call(receiver, "std.protocol.ifind/IFind", "find", arguments)
+        }
         value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(map_entries(value)
                 .unwrap()
@@ -6363,12 +6361,9 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_iter(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
-        [Value::Extension(receiver)] => extension_protocol_call(
-            receiver,
-            "std.protocol.iiter/IIter",
-            "iter",
-            arguments,
-        ),
+        [Value::Extension(receiver)] => {
+            extension_protocol_call(receiver, "std.protocol.iiter/IIter", "iter", arguments)
+        }
         [value]
             if matches!(
                 value,
@@ -11606,8 +11601,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     kernel_provider(operation)?(operation.to_owned(), arguments)
                 }
                 Form::Symbol(n)
-                    if n.starts_with("std.native.OS/")
-                        || n.starts_with("std.native.Process/") =>
+                    if n.starts_with("std.native.OS/") || n.starts_with("std.native.Process/") =>
                 {
                     os_operation(n, &fs[1..], env)
                 }
@@ -12164,20 +12158,17 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 {
                     let is_map = n == "iter-map" || n == "map";
                     if n == "map" && fs.len() == 2 {
-                        let function = match eval(&fs[1], env)? {
-                            Value::Function(function) => function,
-                            _ => return Err("map expects a function".into()),
-                        };
+                        let callable = eval(&fs[1], env)?;
                         let body = Form::List(vec![
                             Form::Symbol("__map-transform".into()),
-                            Form::Symbol("__function".into()),
+                            Form::Symbol("__callable".into()),
                             Form::Symbol("value".into()),
                         ]);
                         return Ok(generated_function(
                             vec!["value".into()],
                             vec![body],
                             env.clone(),
-                            vec![("__function", Value::Function(function))],
+                            vec![("__callable", callable)],
                         ));
                     }
                     if n == "filter" && fs.len() == 2 {
@@ -12198,14 +12189,16 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             .map(|form| eval(form, env).and_then(make_iterator))
                             .collect::<Result<Vec<_>, _>>()?;
                         let zipped = iterator_zip(sources)?;
-                        let result = match function {
-                            Value::Function(function) => iterator_map_spread(function, zipped)?,
-                            _ => return Err(format!("{n} expects a function")),
-                        };
+                        let values = iterator_to_vec(zipped)?;
+                        let mut output = Vec::with_capacity(values.len());
+                        for value in values {
+                            let arguments = iterator_values(value)?;
+                            output.push(call_value(function.clone(), arguments)?);
+                        }
                         return if n == "map" {
-                            Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                            Ok(Value::Vector(output.into()))
                         } else {
-                            Ok(result)
+                            Ok(iterator_from_values(output))
                         };
                     }
                     let raw_collection = if fs.len() == 3 {
@@ -12214,23 +12207,16 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         None
                     };
                     if fs.len() == 3 {
-                        if let Value::Function(function_ref) = &function {
-                            if is_map {
-                                if let Some(value) = raw_collection.clone() {
-                                    let result = iterator_map(function_ref.clone(), value)?;
-                                    return if n == "map" {
-                                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
-                                    } else {
-                                        Ok(result)
-                                    };
-                                }
-                            } else if let Some(value) = raw_collection.clone() {
+                        if !is_map {
+                            if let Value::Function(function_ref) = &function {
+                              if let Some(value) = raw_collection.clone() {
                                 let result = iterator_filter(function_ref.clone(), value)?;
                                 return if n == "filter" {
                                     Ok(Value::Vector(iterator_to_vec(result)?.into()))
                                 } else {
                                     Ok(result)
                                 };
+                              }
                             }
                         }
                     }
@@ -12250,10 +12236,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 .iter()
                                 .map(|values| values[index].clone())
                                 .collect();
-                            let mapped = match &function {
-                                Value::Function(f) => call_function(f, args)?,
-                                _ => return Err(format!("{n} expects a function")),
-                            };
+                            let mapped = call_value(function.clone(), args)?;
                             output.push(mapped);
                         }
                     } else {
@@ -13118,9 +13101,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             | Value::OrderedMap(_)
                             | Value::SortedMap(_)
                             | Value::Trie(_) => true,
-                            Value::Extension(receiver) => {
-                                extension_has_category(receiver, "map")
-                            }
+                            Value::Extension(receiver) => extension_has_category(receiver, "map"),
                             _ => false,
                         },
                         // Rust materializes map iteration entries as ordinary

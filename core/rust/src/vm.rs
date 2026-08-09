@@ -135,8 +135,7 @@ pub use prepared::{prepare_call, PreparedCall};
 pub use program::{FunctionId, FunctionPrototype, Program};
 #[cfg(feature = "bytecode-observation")]
 pub use session::{
-    BytecodeObservationSession, BytecodeSessionError, BytecodeSessionStatus,
-    SessionRetentionLimits,
+    BytecodeObservationSession, BytecodeSessionError, BytecodeSessionStatus, SessionRetentionLimits,
 };
 pub use validate::validate;
 

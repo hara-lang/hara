@@ -3,58 +3,38 @@ use hara_wasm::cli_app;
 use hara_wasm::kernel::{parse, Form};
 use hara_wasm::native_cli::{install_native_kernel, RuntimeBroker};
 use hara_wasm::Runtime;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-const PORTED_HANDLERS: &[&str] = &[
-    "hara.cli.handler/eval",
-    "hara.cli.handler/run-file",
-    "hara.cli.handler/project-run",
-    "hara.cli.handler/manage",
-    "hara.cli.handler/project-test",
-    "hara.cli.handler/project-new",
-    "hara.cli.handler/project-check",
-    "hara.cli.handler/project-add",
-    "hara.cli.handler/project-remove",
-    "hara.cli.handler/project-sync",
-    "hara.cli.handler/project-update",
-    "hara.cli.handler/spec",
-    "hara.cli.handler/seedgen",
-    "hara.cli.handler/asset",
-    "hara.cli.handler/extension",
-    "hara.cli.handler/identity",
-    "hara.cli.handler/package",
-    "hara.cli.handler/tap",
-    "hara.cli.handler/snapshot",
-];
-
-pub(super) fn run_if_ported(options: &Options, argv: &[String]) -> Option<Result<(), String>> {
-    let resolved = cli_app::router().resolve(argv)?;
-    if !PORTED_HANDLERS.contains(&resolved.route.handler.as_str()) {
-        return None;
-    }
-    Some(run(options, argv, &resolved.route.handler))
+pub(super) fn run(options: &Options, argv: &[String]) -> Result<(), String> {
+    run_hara(options, argv)
 }
 
-fn run(options: &Options, argv: &[String], handler: &str) -> Result<(), String> {
+fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|error| format!("cannot read cwd: {error}"))?;
     let root = capability_root(options, &cwd);
     let mut runtime = Runtime::new();
     runtime.install_native_file_provider(root.to_string_lossy().as_ref());
-    let process_allowed = options.allow_process || handler == "hara.cli.handler/identity";
+    let process_allowed = options.allow_process
+        || argv
+            .first()
+            .is_some_and(|value| matches!(value.as_str(), "id" | "identity"));
     if process_allowed {
         runtime.install_native_process_provider();
     }
     if options.native_sockets {
         runtime.install_native_socket_provider();
     }
-    let broker = RuntimeBroker::start_with(
-        Some(root.clone()),
-        options.native_sockets,
-        process_allowed,
-    )?;
+    let broker =
+        RuntimeBroker::start_with(
+            Some(root.clone()),
+            options.native_sockets,
+            process_allowed,
+            options.allow_postgres,
+        )?;
     install_native_kernel(&mut runtime, broker);
     let full_argv = launcher_argv(options, argv);
-    let capabilities = capability_edn(options, handler);
+    let capabilities = capability_edn(options, process_allowed);
     let project = options
         .project
         .as_ref()
@@ -75,7 +55,7 @@ fn run(options: &Options, argv: &[String], handler: &str) -> Result<(), String> 
         capabilities,
     );
     match runtime.eval_native_traced(&source) {
-        Ok(rendered) => render_result(&rendered),
+        Ok(rendered) => render_result(&rendered, options),
         Err(error) => render_runtime_error(&error),
     }
 }
@@ -91,7 +71,9 @@ fn capability_root(options: &Options, cwd: &Path) -> PathBuf {
     } else {
         selected
     };
-    selected.canonicalize().unwrap_or_else(|_| selected.to_path_buf())
+    selected
+        .canonicalize()
+        .unwrap_or_else(|_| selected.to_path_buf())
 }
 
 fn launcher_argv(options: &Options, argv: &[String]) -> Vec<String> {
@@ -118,18 +100,21 @@ fn launcher_argv(options: &Options, argv: &[String]) -> Vec<String> {
     output
 }
 
-fn capability_edn(options: &Options, handler: &str) -> String {
+fn capability_edn(options: &Options, process_allowed: bool) -> String {
     let mut values = vec![":file"];
-    if options.allow_process || handler == "hara.cli.handler/identity" {
+    if process_allowed {
         values.push(":process");
     }
     if options.native_sockets {
         values.push(":net");
     }
+    if options.allow_postgres {
+        values.push(":db/postgres");
+    }
     format!("[{}]", values.join(" "))
 }
 
-fn render_result(source: &str) -> Result<(), String> {
+fn render_result(source: &str, options: &Options) -> Result<(), String> {
     let form = parse(source).map_err(|error| format!("invalid Hara CLI result: {error}"))?;
     let entries = match &form {
         Form::Map(entries) => entries,
@@ -141,7 +126,9 @@ fn render_result(source: &str) -> Result<(), String> {
     };
     if let Some(Form::Vector(messages)) = keyword_value(entries, "result/messages") {
         for message in messages {
-            let Form::Map(message) = message else { continue };
+            let Form::Map(message) = message else {
+                continue;
+            };
             let stream = match keyword_value(message, "message/stream") {
                 Some(Form::Keyword(value)) => value.as_str(),
                 _ => "stdout",
@@ -156,10 +143,55 @@ fn render_result(source: &str) -> Result<(), String> {
             }
         }
     }
-    if exit == 0 {
-        Ok(())
-    } else {
+    if exit != 0 {
         std::process::exit(exit)
+    }
+    if let Some(Form::Map(data)) = keyword_value(entries, "result/data") {
+        if let Some(Form::Keyword(action)) = keyword_value(data, "host/action") {
+            let arguments = match keyword_value(data, "host/arguments") {
+                Some(Form::Vector(values)) => values
+                    .iter()
+                    .map(|value| match value {
+                        Form::String(value) => Ok(value.clone()),
+                        _ => Err("host action arguments must be strings".to_owned()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+                _ => Vec::new(),
+            };
+            return execute_host_action(action, &arguments, options);
+        }
+    }
+    Ok(())
+}
+
+fn execute_host_action(action: &str, arguments: &[String], options: &Options) -> Result<(), String> {
+    match action {
+        "stdin" => {
+            let mut source = String::new();
+            io::stdin()
+                .read_to_string(&mut source)
+                .map_err(|error| format!("stdin: {error}"))?;
+            super::project::direct_eval(options, &source)
+        }
+        "repl" => crate::repl::run_repl(options, options.offline),
+        "server" => super::project::run_headless(options),
+        "remote" => super::project::run_remote(
+            arguments
+                .first()
+                .ok_or_else(|| "remote requires HOST:PORT".to_owned())?,
+        ),
+        "compile-halc" => {
+            #[cfg(feature = "halc-encoder")]
+            {
+                super::project::compile_halc(arguments)
+            }
+            #[cfg(not(feature = "halc-encoder"))]
+            {
+                let _ = arguments;
+                Err("compile-halc requires the halc-encoder feature".into())
+            }
+        }
+        value => Err(format!("unknown Hara host action: {value}")),
     }
 }
 

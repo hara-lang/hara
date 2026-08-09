@@ -995,7 +995,10 @@ fn await_infers_a_suspending_synchronous_function() {
         .iter()
         .find(|function| function.name.as_deref() == Some("delayed"))
         .expect("named prototype");
-    assert!(!prototype.async_function, "inferred await must not force a promise wrapper");
+    assert!(
+        !prototype.async_function,
+        "inferred await must not force a promise wrapper"
+    );
     assert!(prototype.code.contains(&super::Instruction::Await));
 
     compile_source("(defn outer [p] (fn [] (std.foundation.coroutine/await p)))")
@@ -1014,9 +1017,8 @@ fn inferred_await_returns_directly_until_it_really_suspends() {
         &registry,
     )
     .unwrap();
-    let mut fiber = crate::core::with_namespace_registry(&registry, || {
-        super::VmFiber::start(Rc::new(program))
-    });
+    let mut fiber =
+        crate::core::with_namespace_registry(&registry, || super::VmFiber::start(Rc::new(program)));
     assert!(matches!(fiber.state(), super::VmFiberState::Suspended));
     source.resolve(Value::Number(9));
     assert!(matches!(

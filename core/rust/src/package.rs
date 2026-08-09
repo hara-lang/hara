@@ -618,9 +618,7 @@ fn package_manifest(project: &Project, contents: &[(PathBuf, Vec<u8>)]) -> Resul
         project
             .extensions
             .iter()
-            .map(|(namespace, declaration)| {
-                (Form::Symbol(namespace.clone()), declaration.clone())
-            })
+            .map(|(namespace, declaration)| (Form::Symbol(namespace.clone()), declaration.clone()))
             .collect(),
     )
     .to_string();

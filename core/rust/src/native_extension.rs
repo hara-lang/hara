@@ -60,11 +60,10 @@ impl ExtensionPackage {
     }
 
     pub fn module_bytes(&self) -> Result<Vec<u8>, String> {
-        let module = self
-            .manifest
-            .module
-            .as_deref()
-            .ok_or_else(|| format!("extension/module-unavailable: {}", self.manifest.namespace))?;
+        let module =
+            self.manifest.module.as_deref().ok_or_else(|| {
+                format!("extension/module-unavailable: {}", self.manifest.namespace)
+            })?;
         let path = self.resolve(module)?;
         let metadata = path
             .metadata()
@@ -217,10 +216,12 @@ fn packages_from_manifest(descriptor: &Path) -> Result<Vec<ExtensionPackage>, St
 fn project_manifests(root: &Path) -> Result<Vec<PathBuf>, String> {
     let root = absolute(root)?;
     if root.is_file() {
-        return Ok((root.file_name().and_then(|name| name.to_str()) == Some("project.edn"))
-            .then_some(root)
-            .into_iter()
-            .collect());
+        return Ok(
+            (root.file_name().and_then(|name| name.to_str()) == Some("project.edn"))
+                .then_some(root)
+                .into_iter()
+                .collect(),
+        );
     }
     let mut pending = vec![root];
     let mut manifests = Vec::new();
@@ -234,9 +235,15 @@ fn project_manifests(root: &Path) -> Result<Vec<PathBuf>, String> {
             Ok(entries) => entries,
             Err(_) => continue,
         };
-        pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| {
-            path.is_dir() && path.file_name().and_then(|name| name.to_str()) != Some("target")
-        }));
+        pending.extend(
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.is_dir()
+                        && path.file_name().and_then(|name| name.to_str()) != Some("target")
+                }),
+        );
     }
     manifests.sort();
     Ok(manifests)
@@ -251,7 +258,9 @@ fn value<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
 fn scalar(form: &Form, label: &str) -> Result<String, String> {
     match form {
         Form::String(value) | Form::Symbol(value) => Ok(value.clone()),
-        _ => Err(format!("extension/malformed: {label} must be a string or symbol")),
+        _ => Err(format!(
+            "extension/malformed: {label} must be a string or symbol"
+        )),
     }
 }
 

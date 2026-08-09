@@ -856,8 +856,7 @@ fn compare(
 
 #[test]
 fn collections_conformance_corpus() {
-    let Some(path) =
-        corpus_path("01-lang/020-data-structures/draft/conformance/collections.edn")
+    let Some(path) = corpus_path("01-lang/020-data-structures/draft/conformance/collections.edn")
     else {
         eprintln!(
             "skipping collections corpus: specs checkout not found from {}",

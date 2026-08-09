@@ -1,8 +1,8 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 
 use crate::core::Value;
@@ -84,18 +84,19 @@ pub struct RuntimeBroker {
 
 impl RuntimeBroker {
     pub fn start() -> Result<Self, String> {
-        Self::start_with(None, false, false)
+        Self::start_with(None, false, false, false)
     }
 
     pub fn start_with(
         root: Option<PathBuf>,
         native_sockets: bool,
         allow_process: bool,
+        allow_postgres: bool,
     ) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("hara-runtime-broker".into())
-            .spawn(move || run(receiver, root, native_sockets, allow_process))
+            .spawn(move || run(receiver, root, native_sockets, allow_process, allow_postgres))
             .map_err(|error| format!("runtime broker failed: {error}"))?;
         Ok(Self {
             handle: Arc::new(BrokerHandle { sender }),
@@ -214,7 +215,12 @@ impl RuntimeBroker {
     }
 }
 
-fn runtime(root: Option<&PathBuf>, native_sockets: bool, allow_process: bool) -> Runtime {
+fn runtime(
+    root: Option<&PathBuf>,
+    native_sockets: bool,
+    allow_process: bool,
+    allow_postgres: bool,
+) -> Runtime {
     let mut runtime = Runtime::new();
     if let Some(root) = root {
         runtime.install_native_file_provider(root.to_string_lossy().as_ref());
@@ -225,6 +231,11 @@ fn runtime(root: Option<&PathBuf>, native_sockets: bool, allow_process: bool) ->
     if allow_process {
         runtime.install_native_process_provider();
     }
+    if allow_postgres {
+        runtime
+            .install_native_module(hara_db_postgres::module())
+            .expect("std.db.postgres native module must install once per runtime");
+    }
     runtime
 }
 
@@ -233,11 +244,12 @@ fn run(
     root: Option<PathBuf>,
     native_sockets: bool,
     allow_process: bool,
+    allow_postgres: bool,
 ) {
     let mut resources = HashMap::<String, String>::new();
     let mut sessions = HashMap::from([(
         "ROOT".to_owned(),
-        runtime(root.as_ref(), native_sockets, allow_process),
+        runtime(root.as_ref(), native_sockets, allow_process, allow_postgres),
     )]);
     while let Ok(request) = receiver.recv() {
         match request {
@@ -283,7 +295,12 @@ fn run(
                 let result = if session.is_empty() || sessions.contains_key(&session) {
                     Err(format!("Session already exists or is invalid: {session}"))
                 } else {
-                    let mut created = runtime(root.as_ref(), native_sockets, allow_process);
+                    let mut created = runtime(
+                        root.as_ref(),
+                        native_sockets,
+                        allow_process,
+                        allow_postgres,
+                    );
                     for (name, source) in &resources {
                         created.register_resource(name, source);
                     }
@@ -551,7 +568,10 @@ fn kernel_call(
             Ok(Value::Map(
                 [
                     (keyword("name"), Value::String(name.into())),
-                    (keyword("namespace"), Value::Symbol(Symbol::parse(namespace))),
+                    (
+                        keyword("namespace"),
+                        Value::Symbol(Symbol::parse(namespace)),
+                    ),
                     (keyword("state"), keyword("idle")),
                     (keyword("filesystem"), Value::Nil),
                 ]
@@ -567,9 +587,9 @@ fn kernel_call(
             let form = crate::kernel::parse(&output)?;
             crate::core::form_to_value(&form)
         }
-        "session-namespace" => Ok(Value::Symbol(Symbol::parse(&broker.namespace(
-            string_argument(arguments, 0, operation)?,
-        )?))),
+        "session-namespace" => Ok(Value::Symbol(Symbol::parse(
+            &broker.namespace(string_argument(arguments, 0, operation)?)?,
+        ))),
         "session-complete" => Ok(strings_value(broker.complete(
             string_argument(arguments, 0, operation)?,
             string_argument(arguments, 1, operation)?,
@@ -602,7 +622,11 @@ fn kernel_call(
     }
 }
 
-fn string_argument<'a>(arguments: &'a [Value], index: usize, operation: &str) -> Result<&'a str, String> {
+fn string_argument<'a>(
+    arguments: &'a [Value],
+    index: usize,
+    operation: &str,
+) -> Result<&'a str, String> {
     match arguments.get(index) {
         Some(Value::String(value)) => Ok(value),
         _ => Err(format!(

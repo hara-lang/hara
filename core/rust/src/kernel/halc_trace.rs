@@ -106,8 +106,7 @@ pub fn inspect_halc_artifact(bytes: &[u8]) -> Result<HalcArtifactInspection, Str
         return Err("truncated artifact".into());
     }
 
-    let mut schema_definitions: Vec<String> =
-        module.schemas.definitions.keys().cloned().collect();
+    let mut schema_definitions: Vec<String> = module.schemas.definitions.keys().cloned().collect();
     schema_definitions.sort();
     let mut schema_functions: Vec<String> = module.schemas.functions.keys().cloned().collect();
     schema_functions.sort();
@@ -170,7 +169,10 @@ fn successful_trace(id: String, inspection: HalcArtifactInspection) -> HalcArtif
     );
 
     let mut envelope = HalcTraceEvidence::new();
-    envelope.insert("artifact/origin".into(), string(origin_name(inspection.origin)));
+    envelope.insert(
+        "artifact/origin".into(),
+        string(origin_name(inspection.origin)),
+    );
     envelope.insert(
         "format/version".into(),
         HalcTraceValue::Integer(inspection.format_version as u64),
@@ -200,10 +202,34 @@ fn successful_trace(id: String, inspection: HalcArtifactInspection) -> HalcArtif
     decoded.insert("form/count".into(), integer(inspection.form_count));
 
     let events = vec![
-        event(1, "module/identity", HalcTraceStatus::Ok, module_identity.clone(), None),
-        event(2, "schema/index", HalcTraceStatus::Ok, schema_index.clone(), None),
-        event(3, "envelope/build", HalcTraceStatus::Ok, envelope.clone(), None),
-        event(4, "artifact/validate", HalcTraceStatus::Ok, validation, None),
+        event(
+            1,
+            "module/identity",
+            HalcTraceStatus::Ok,
+            module_identity.clone(),
+            None,
+        ),
+        event(
+            2,
+            "schema/index",
+            HalcTraceStatus::Ok,
+            schema_index.clone(),
+            None,
+        ),
+        event(
+            3,
+            "envelope/build",
+            HalcTraceStatus::Ok,
+            envelope.clone(),
+            None,
+        ),
+        event(
+            4,
+            "artifact/validate",
+            HalcTraceStatus::Ok,
+            validation,
+            None,
+        ),
         event(5, "artifact/decode", HalcTraceStatus::Ok, decoded, None),
     ];
 
@@ -296,7 +322,11 @@ mod tests {
         assert_eq!(trace.schema, HALC_TRACE_SCHEMA);
         assert_eq!(trace.status, HalcTraceStatus::Ok);
         assert_eq!(
-            trace.events.iter().map(|event| event.stage).collect::<Vec<_>>(),
+            trace
+                .events
+                .iter()
+                .map(|event| event.stage)
+                .collect::<Vec<_>>(),
             vec![
                 "module/identity",
                 "schema/index",

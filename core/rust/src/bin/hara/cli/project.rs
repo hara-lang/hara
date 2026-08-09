@@ -79,10 +79,14 @@ fn eval_runtime(options: &Options) -> Result<Runtime, String> {
     if options.allow_process {
         runtime.install_native_process_provider();
     }
+    if options.allow_postgres {
+        runtime.install_native_module(hara_db_postgres::module())?;
+    }
     let broker = RuntimeBroker::start_with(
         options.root.clone().or_else(|| options.project.clone()),
         options.native_sockets,
         options.allow_process,
+        options.allow_postgres,
     )?;
     install_native_kernel(&mut runtime, broker);
     Ok(runtime)
@@ -613,6 +617,7 @@ pub(crate) fn run_headless(options: &Options) -> Result<(), String> {
         options.root.clone(),
         options.native_sockets,
         options.allow_process,
+        options.allow_postgres,
     )?;
     let server = RespServer::start(&options.host, options.port, broker)?;
     println!("HARA RESP {} · session ROOT", server.endpoint());

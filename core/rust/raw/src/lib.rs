@@ -103,7 +103,10 @@ enum EvaluationRequest {
         source: String,
     },
     #[cfg(feature = "bytecode-vm")]
-    PreparedVm { task: u64, program: u64 },
+    PreparedVm {
+        task: u64,
+        program: u64,
+    },
 }
 
 impl EvaluationRequest {
@@ -1168,7 +1171,10 @@ fn dispatch(
                 #[cfg(feature = "bytecode-vm")]
                 {
                     let program = kernel.session_mut(session)?.prepare_vm(source)?;
-                    enqueue_event(&kernel.events, event(0, task, Value::Number(program as i64)));
+                    enqueue_event(
+                        &kernel.events,
+                        event(0, task, Value::Number(program as i64)),
+                    );
                     Ok(())
                 }
                 #[cfg(not(feature = "bytecode-vm"))]
@@ -2071,7 +2077,9 @@ mod tests {
             "session/prepare-vm",
             vec![
                 Value::String("prepared".into()),
-                Value::String("(loop [i 0 total 0] (if (< i 7) (recur (+ i 1) (+ total i)) total))".into()),
+                Value::String(
+                    "(loop [i 0 total 0] (if (< i 7) (recur (+ i 1) (+ total i)) total))".into(),
+                ),
             ],
         )
         .unwrap();
