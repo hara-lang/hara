@@ -1065,6 +1065,7 @@ impl Runtime {
                 self.providers.file(),
                 self.providers.socket(),
                 self.providers.process(),
+                self.providers.kernel(),
                 || {
                     core::with_promise_provider(self.providers.promise(), || {
                         core::with_macros(self.macros.clone(), || {
@@ -1099,6 +1100,7 @@ impl Runtime {
             self.providers.file(),
             self.providers.socket(),
             self.providers.process(),
+            self.providers.kernel(),
             || {
                 core::with_promise_provider(self.providers.promise(), || {
                     core::with_macros(self.macros.clone(), || {
@@ -1615,6 +1617,15 @@ pub fn eval_bytecode_native(source: &str) -> Result<String, String> {
 }
 
 impl Runtime {
+    /// Installs the typed native driver behind `std.native.Kernel/*`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_native_kernel_provider(
+        &mut self,
+        provider: Rc<core::KernelProvider>,
+    ) {
+        self.providers.install_kernel(provider);
+    }
+
     /// Installs the native host service handler used by `std.native.Host/call`.
     /// Embedders can expose process-local services without converting values
     /// through JavaScript or textual serialization.
@@ -3468,6 +3479,68 @@ mod tests {
             .eval_text("(defprotocol MutatingProtocol (mutate! [self]))")
             .unwrap_err()
             .contains("protocol method names must not end with !"));
+    }
+
+    #[test]
+    fn every_embedded_std_protocol_interface_is_requireable() {
+        let mut runtime = Runtime::new();
+        let resources = EMBEDDED_HAL_RESOURCES
+            .iter()
+            .filter(|(_, path, _)| path.starts_with("lib/src/std/protocol/"))
+            .collect::<Vec<_>>();
+        assert!(!resources.is_empty(), "std.protocol resources are missing");
+        for (_, path, source) in resources {
+            let forms = kernel::parse_forms(source).unwrap_or_else(|error| {
+                panic!("cannot parse {path}: {error}")
+            });
+            let namespace = forms
+                .iter()
+                .find_map(|form| match form {
+                    Form::List(items)
+                        if matches!(items.first(), Some(Form::Symbol(head)) if head == "ns") =>
+                    {
+                        match items.get(1) {
+                            Some(Form::Symbol(name)) => Some(name.clone()),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{path} has no ns declaration"));
+            runtime
+                .eval_text(&format!("(require [{namespace}])"))
+                .unwrap_or_else(|error| panic!("cannot require {namespace}: {error}"));
+            let loaded = runtime
+                .namespace_registry
+                .find(&namespace)
+                .unwrap_or_else(|| panic!("missing loaded namespace {namespace}"));
+            for form in forms {
+                let Form::List(items) = form else { continue };
+                if !matches!(items.first(), Some(Form::Symbol(head)) if head == "defprotocol") {
+                    continue;
+                }
+                let Some(Form::Symbol(protocol)) = items.get(1) else {
+                    panic!("invalid defprotocol in {path}")
+                };
+                assert!(
+                    matches!(
+                        loaded
+                            .resolve(&lang::data::Symbol::parse(protocol))
+                            .map(|var| var.deref_value()),
+                        Some(core::Value::Protocol(_))
+                    ),
+                    "missing {namespace}/{protocol}"
+                );
+                for method in items.iter().skip(2) {
+                    let Form::List(signature) = method else { continue };
+                    let Some(Form::Symbol(name)) = signature.first() else { continue };
+                    assert!(
+                        loaded.resolve(&lang::data::Symbol::parse(name)).is_some(),
+                        "missing {namespace}/{name}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

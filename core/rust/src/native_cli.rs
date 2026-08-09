@@ -5,7 +5,7 @@ use std::rc::Rc;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
-use crate::core::{Promise, Value};
+use crate::core::Value;
 use crate::lang::data::{Keyword, Symbol};
 use crate::Runtime;
 
@@ -390,21 +390,12 @@ fn run(
     }
 }
 
-/// Installs the generic Foundation kernel service behind `Host/call`.
+/// Installs the generic native driver behind `std.native.Kernel/*`.
 /// Command policy remains in Hara; this adapter only multiplexes isolated
 /// evaluator sessions and transfers portable values across the boundary.
-pub fn install_foundation_kernel(runtime: &mut Runtime, broker: RuntimeBroker) {
-    runtime.install_native_host_handler(Rc::new(move |service, operation, arguments| {
-        if service != "foundation.kernel" {
-            return Err(format!("host service is unavailable: {service}"));
-        }
-        let result = kernel_call(&broker, &operation, &arguments);
-        let promise = Promise::new();
-        match result {
-            Ok(value) => promise.resolve(value),
-            Err(error) => promise.reject(error),
-        };
-        Ok(Value::Promise(promise))
+pub fn install_native_kernel(runtime: &mut Runtime, broker: RuntimeBroker) {
+    runtime.install_native_kernel_provider(Rc::new(move |operation, arguments| {
+        kernel_call(&broker, &operation, &arguments)
     }));
 }
 

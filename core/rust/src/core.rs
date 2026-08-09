@@ -148,7 +148,8 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "File",
         &[
-            "resolve", "read", "write", "exists?", "list", "mkdir", "delete",
+            "parent", "join", "resolve", "read", "write", "exists?", "stat", "list", "walk",
+            "mkdir", "delete",
         ],
     ),
     (
@@ -2722,6 +2723,7 @@ thread_local! {
     static ACTIVE_PROMISE_PROVIDER: RefCell<Option<Rc<dyn PromiseProvider>>> = const { RefCell::new(None) };
     static ACTIVE_FILE_PROVIDER: RefCell<Option<Rc<dyn FileProvider>>> = const { RefCell::new(None) };
     static ACTIVE_SOCKET_PROVIDER: RefCell<Option<Rc<dyn SocketProvider>>> = const { RefCell::new(None) };
+    static ACTIVE_KERNEL_PROVIDER: RefCell<Option<Rc<KernelProvider>>> = const { RefCell::new(None) };
     static ACTIVE_PROCESS_ALLOWED: Cell<bool> = const { Cell::new(false) };
     static HOST_CALL_HANDLER: RefCell<Option<Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>>> = const { RefCell::new(None) };
     static NAMESPACE_SOURCE_PROVIDER: RefCell<Option<Rc<dyn Fn(&str) -> Option<String>>>> = const { RefCell::new(None) };
@@ -3149,21 +3151,37 @@ pub fn with_capability_providers<R>(
     file: Option<Rc<dyn FileProvider>>,
     socket: Option<Rc<dyn SocketProvider>>,
     process: bool,
+    kernel: Option<Rc<KernelProvider>>,
     operation: impl FnOnce() -> R,
 ) -> R {
     ACTIVE_FILE_PROVIDER.with(|active_file| {
         ACTIVE_SOCKET_PROVIDER.with(|active_socket| {
-            ACTIVE_PROCESS_ALLOWED.with(|active_process| {
-                let previous_file = active_file.replace(file);
-                let previous_socket = active_socket.replace(socket);
-                let previous_process = active_process.replace(process);
-                let result = operation();
-                active_file.replace(previous_file);
-                active_socket.replace(previous_socket);
-                active_process.set(previous_process);
-                result
+            ACTIVE_KERNEL_PROVIDER.with(|active_kernel| {
+                ACTIVE_PROCESS_ALLOWED.with(|active_process| {
+                    let previous_file = active_file.replace(file);
+                    let previous_socket = active_socket.replace(socket);
+                    let previous_kernel = active_kernel.replace(kernel);
+                    let previous_process = active_process.replace(process);
+                    let result = operation();
+                    active_file.replace(previous_file);
+                    active_socket.replace(previous_socket);
+                    active_kernel.replace(previous_kernel);
+                    active_process.set(previous_process);
+                    result
+                })
             })
         })
+    })
+}
+
+pub type KernelProvider = dyn Fn(String, Vec<Value>) -> Result<Value, String>;
+
+fn kernel_provider(operation: &str) -> Result<Rc<KernelProvider>, String> {
+    ACTIVE_KERNEL_PROVIDER.with(|active| {
+        active
+            .borrow()
+            .clone()
+            .ok_or_else(|| format!("std.native.Kernel/{operation} requires a kernel provider"))
     })
 }
 
@@ -4729,6 +4747,7 @@ pub struct ProviderCapabilities {
 pub struct ProviderRegistry {
     file: Option<Rc<dyn FileProvider>>,
     socket: Option<Rc<dyn SocketProvider>>,
+    kernel: Option<Rc<KernelProvider>>,
     promise: Rc<dyn PromiseProvider>,
     process: bool,
 }
@@ -4738,6 +4757,7 @@ impl Default for ProviderRegistry {
         Self {
             file: None,
             socket: None,
+            kernel: None,
             promise: Rc::new(LocalPromiseProvider),
             process: false,
         }
@@ -4758,6 +4778,9 @@ impl ProviderRegistry {
     pub fn install_socket<P: SocketProvider + 'static>(&mut self, provider: P) {
         self.socket = Some(Rc::new(provider));
     }
+    pub fn install_kernel(&mut self, provider: Rc<KernelProvider>) {
+        self.kernel = Some(provider);
+    }
     pub fn install_process(&mut self) {
         self.process = true;
     }
@@ -4772,6 +4795,9 @@ impl ProviderRegistry {
     }
     pub fn socket(&self) -> Option<Rc<dyn SocketProvider>> {
         self.socket.clone()
+    }
+    pub fn kernel(&self) -> Option<Rc<KernelProvider>> {
+        self.kernel.clone()
     }
     pub fn process(&self) -> bool {
         self.process
@@ -11533,7 +11559,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     native_host_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Kernel/") => {
-                    Err(format!("{n} requires a kernel embedding"))
+                    let operation = n.strip_prefix("std.native.Kernel/").unwrap_or(n);
+                    let arguments = fs[1..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    kernel_provider(operation)?(operation.to_owned(), arguments)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Arr/") || n.starts_with("std.native.Obj/") =>
