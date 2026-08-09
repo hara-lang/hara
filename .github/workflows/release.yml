@@ -110,6 +110,20 @@ jobs:
         distribution: graalvm-community
         java-version: '25'
         github-token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Repair immutable v0.1.5 release tooling
+      if: ${{ needs.guard.outputs.tag == 'v0.1.5' }}
+      run: |
+        python3 <<'PY'
+        from pathlib import Path
+        path = Path("packaging/scripts/build-truffle-native")
+        source = path.read_text()
+        old = 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"'
+        new = 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"'
+        if old in source:
+            path.write_text(source.replace(old, new, 1))
+        elif new not in source:
+            raise SystemExit("unexpected immutable Truffle release tooling")
+        PY
     - name: Build Truffle native image
       run: |
         ./packaging/scripts/build-truffle-native
@@ -231,6 +245,7 @@ jobs:
   publish-homebrew:
     needs: [guard, release, smoke-install, smoke-public-linux-install]
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
     - uses: actions/checkout@v4
       with:
@@ -265,6 +280,7 @@ jobs:
   publish-source-formula:
     needs: [guard]
     runs-on: ubuntu-latest
+    continue-on-error: true
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
     steps:
