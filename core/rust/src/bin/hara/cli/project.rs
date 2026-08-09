@@ -10,7 +10,7 @@ use hara_wasm::Runtime;
 use std::fs;
 use std::io::{self, BufRead};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "halc-encoder")]
 pub(crate) fn compile_halc(args: &[String]) -> Result<(), String> {
@@ -255,17 +255,25 @@ fn workflow_units(
     language: Option<&str>,
 ) -> Result<String, String> {
     let mut units = Vec::new();
-    let test_root = project.root.join(paths.first().cloned().unwrap_or_default());
+    let test_root = project
+        .root
+        .join(paths.first().cloned().unwrap_or_default());
     for path in project::files_in(&project.root, paths)? {
         let contents = fs::read_to_string(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         let path_text = path.to_string_lossy();
-        let mut unit = format!("{{:path {} :source {}}}", hal_string(path_text.as_ref()), hal_string(&contents));
+        let mut unit = format!(
+            "{{:path {} :source {}}}",
+            hal_string(path_text.as_ref()),
+            hal_string(&contents)
+        );
         if let Some(language) = language {
             let root_text = test_root.to_string_lossy();
             unit = format!(
                 "{{:path {} :source {} :language :{} :test-root {}}}",
-                hal_string(path_text.as_ref()), hal_string(&contents), language,
+                hal_string(path_text.as_ref()),
+                hal_string(&contents),
+                language,
                 hal_string(root_text.as_ref())
             );
         }
@@ -274,26 +282,279 @@ fn workflow_units(
     Ok(format!("[{}]", units.join(" ")))
 }
 
-fn run_workflow(options: &Options, namespace: &str, operation: &str, units: String) -> Result<(), String> {
+fn run_workflow(
+    options: &Options,
+    namespace: &str,
+    operation: &str,
+    units: String,
+) -> Result<(), String> {
     let mut runtime = eval_runtime(options)?;
-    let source = format!(
-        "(require (quote {namespace})) ({namespace}/run :{operation} {{:units {units}}})"
-    );
+    let source =
+        format!("(require (quote {namespace})) ({namespace}/run :{operation} {{:units {units}}})");
     println!("{}", runtime.eval_native(&source)?);
     Ok(())
 }
 
 pub(crate) fn manage_project(options: &Options, args: &[String]) -> Result<(), String> {
+    const OPERATIONS: &[&str] = &[
+        "analyse",
+        "extract",
+        "vars",
+        "docstrings",
+        "transform-code",
+        "import",
+        "purge",
+        "missing",
+        "todos",
+        "incomplete",
+        "incomplete-report",
+        "orphaned",
+        "scaffold",
+        "create-tests",
+        "in-order",
+        "arrange",
+        "factcheck-remove",
+        "factcheck-generate",
+        "snapto",
+        "isolate",
+        "locate-code",
+        "locate-test",
+        "grep",
+        "grep-replace",
+        "unclean",
+        "unclean-findings",
+        "unchecked",
+        "commented",
+        "pedantic",
+        "refactor-code",
+        "refactor-test",
+        "ns-format",
+        "ns-rename",
+        "find-usages",
+        "require-file",
+        "heal-code",
+    ];
     let operation = args.first().map(String::as_str).unwrap_or("analyse");
-    if !matches!(operation,
-        "analyse" | "extract" | "vars" | "docstrings" | "incomplete" | "todos"
-            | "commented" | "unclean" | "unclean-findings")
-    {
-        return Err("manage supports analyse, extract, vars, docstrings, incomplete, todos, commented, unclean, or unclean-findings".into());
+    if !OPERATIONS.contains(&operation) {
+        return Err(format!("unsupported manage operation {operation:?}"));
     }
     let project = project_for(options, &[])?;
-    let units = workflow_units(&project, &project.source_paths, None)?;
-    run_workflow(options, "code.manage", operation, units)
+    let parsed = manage_arguments(&args[1..])?;
+    let units = manage_units(&project, operation, &parsed.namespaces)?;
+    // code.manage receives complete source units from the host and must not
+    // eagerly parse every project namespace merely to construct a plan.
+    let mut runtime = Runtime::new();
+    let source = format!(
+        "(require (quote code.manage)) (code.manage/plan :{operation} {{:units {units} :options {}}})",
+        parsed.options
+    );
+    let evaluated = runtime.eval_native(&source)?;
+    let plan = parse(&evaluated).map_err(|error| format!("invalid code.manage plan: {error}"))?;
+    if parsed.write {
+        apply_manage_edits(&project.root, &plan)?;
+    }
+    println!("{evaluated}");
+    Ok(())
+}
+
+#[derive(Default)]
+struct ManageArguments {
+    write: bool,
+    namespaces: Vec<String>,
+    options: String,
+}
+
+fn manage_arguments(args: &[String]) -> Result<ManageArguments, String> {
+    let mut write = false;
+    let mut namespaces = Vec::new();
+    let mut options = Vec::new();
+    let mut patterns = Vec::new();
+    let mut index = 0usize;
+    while index < args.len() {
+        let argument = &args[index];
+        if argument == "--write" {
+            write = true;
+            index += 1;
+        } else if matches!(
+            argument.as_str(),
+            "--match" | "--replacement" | "--from" | "--to" | "--needle" | "--form" | "--var"
+        ) {
+            let value = args
+                .get(index + 1)
+                .ok_or_else(|| format!("{argument} requires a value"))?;
+            options.push(format!(
+                ":{} {}",
+                argument.trim_start_matches("--"),
+                hal_string(value)
+            ));
+            index += 2;
+        } else if argument == "--pattern" {
+            let value = args.get(index + 1).ok_or("--pattern requires a value")?;
+            patterns.push(hal_string(value));
+            index += 2;
+        } else if argument.starts_with('-') {
+            return Err(format!("unknown manage option {argument}"));
+        } else {
+            namespaces.push(argument.clone());
+            index += 1;
+        }
+    }
+    if !patterns.is_empty() {
+        options.push(format!(":patterns [{}]", patterns.join(" ")));
+    }
+    Ok(ManageArguments {
+        write,
+        namespaces,
+        options: format!("{{{}}}", options.join(" ")),
+    })
+}
+
+fn namespace_selected(path: &Path, namespaces: &[String]) -> bool {
+    namespaces.is_empty()
+        || namespaces.iter().any(|namespace| {
+            let suffix = namespace.replace('.', "/").replace('-', "_");
+            path.to_string_lossy().contains(&suffix)
+        })
+}
+
+fn source_test_path(project: &project::Project, path: &Path) -> Option<PathBuf> {
+    let test_root = project.test_paths.first()?;
+    for source_root in &project.source_paths {
+        let absolute_root = project.root.join(source_root);
+        if let Ok(relative) = path.strip_prefix(&absolute_root) {
+            let stem = relative.to_string_lossy().strip_suffix(".hal")?.to_owned();
+            return Some(
+                project
+                    .root
+                    .join(test_root)
+                    .join(format!("{stem}_test.hal")),
+            );
+        }
+    }
+    None
+}
+
+fn manage_units(
+    project: &project::Project,
+    operation: &str,
+    namespaces: &[String],
+) -> Result<String, String> {
+    let test_only = matches!(
+        operation,
+        "refactor-test" | "isolate" | "factcheck-remove" | "factcheck-generate" | "unchecked"
+    );
+    let both = matches!(
+        operation,
+        "ns-rename" | "find-usages" | "grep" | "grep-replace"
+    );
+    let mut typed_paths = Vec::new();
+    if !test_only {
+        typed_paths.extend(
+            project::files_in(&project.root, &project.source_paths)?
+                .into_iter()
+                .map(|path| (path, "source")),
+        );
+    }
+    if test_only || both {
+        typed_paths.extend(
+            project::files_in(&project.root, &project.test_paths)?
+                .into_iter()
+                .map(|path| (path, "test")),
+        );
+    }
+    let mut units = Vec::new();
+    for (path, kind) in typed_paths {
+        if !namespace_selected(&path, namespaces) {
+            continue;
+        }
+        let contents = fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let test_path = source_test_path(project, &path)
+            .map(|value| format!(" :test-path {}", hal_string(&value.to_string_lossy())))
+            .unwrap_or_default();
+        units.push(format!(
+            "{{:path {} :source {} :type :{kind}{test_path}}}",
+            hal_string(&path.to_string_lossy()),
+            hal_string(&contents)
+        ));
+    }
+    Ok(format!("[{}]", units.join(" ")))
+}
+
+fn manage_map_get<'a>(value: &'a Form, key: &str) -> Option<&'a Form> {
+    match value {
+        Form::Map(entries) => entries.iter().find_map(|(candidate, value)| {
+            matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
+        }),
+        _ => None,
+    }
+}
+
+fn manage_string(value: Option<&Form>, label: &str) -> Result<String, String> {
+    match value {
+        Some(Form::String(value)) => Ok(value.clone()),
+        _ => Err(format!("code.manage edit requires string {label}")),
+    }
+}
+
+fn apply_manage_edits(root: &Path, plan: &Form) -> Result<(), String> {
+    let edits = match manage_map_get(plan, "edits") {
+        Some(Form::Vector(values)) => values,
+        _ => return Err("code.manage plan is missing :edits".into()),
+    };
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|error| format!("cannot resolve project root {}: {error}", root.display()))?;
+    let mut validated = Vec::new();
+    for edit in edits {
+        let path_text = manage_string(manage_map_get(edit, "path"), ":path")?;
+        let before = manage_string(manage_map_get(edit, "before"), ":before")?;
+        let after = manage_string(manage_map_get(edit, "after"), ":after")?;
+        let path = PathBuf::from(path_text);
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            canonical_root.join(path)
+        };
+        let parent = absolute
+            .parent()
+            .ok_or_else(|| format!("code.manage edit has no parent: {}", absolute.display()))?;
+        let checked_parent = if parent.exists() {
+            fs::canonicalize(parent)
+                .map_err(|error| format!("cannot resolve {}: {error}", parent.display()))?
+        } else {
+            let mut ancestor = parent;
+            while !ancestor.exists() {
+                ancestor = ancestor.parent().ok_or("edit path escapes project root")?;
+            }
+            fs::canonicalize(ancestor)
+                .map_err(|error| format!("cannot resolve {}: {error}", ancestor.display()))?
+        };
+        if !checked_parent.starts_with(&canonical_root) {
+            return Err(format!(
+                "code.manage edit escapes project root: {}",
+                absolute.display()
+            ));
+        }
+        let current = if absolute.exists() {
+            fs::read_to_string(&absolute)
+                .map_err(|error| format!("cannot read {}: {error}", absolute.display()))?
+        } else {
+            String::new()
+        };
+        if current != before {
+            return Err(format!("code.manage stale edit: {}", absolute.display()));
+        }
+        validated.push((absolute, after));
+    }
+    for (path, after) in validated {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+        }
+        fs::write(&path, after)
+            .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn seedgen_project(options: &Options, args: &[String]) -> Result<(), String> {
@@ -301,7 +562,8 @@ pub(crate) fn seedgen_project(options: &Options, args: &[String]) -> Result<(), 
     if !matches!(operation, "root" | "list" | "incomplete" | "benchadd") {
         return Err("seedgen supports root, list, incomplete, or benchadd".into());
     }
-    let language = (operation == "benchadd").then(|| args.get(1).map(String::as_str).unwrap_or("js"));
+    let language =
+        (operation == "benchadd").then(|| args.get(1).map(String::as_str).unwrap_or("js"));
     let project = project_for(options, &[])?;
     let units = workflow_units(&project, &project.test_paths, language)?;
     run_workflow(options, "lang.seedgen", operation, units)
@@ -397,7 +659,8 @@ fn response_text(value: RespValue) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{eval_runtime, Options};
+    use super::{apply_manage_edits, eval_runtime, manage_arguments, Options};
+    use hara_wasm::kernel::parse;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -410,10 +673,8 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let root = std::env::temp_dir().join(format!(
-                "hara-project-eval-{}-{nonce}",
-                std::process::id()
-            ));
+            let root = std::env::temp_dir()
+                .join(format!("hara-project-eval-{}-{nonce}", std::process::id()));
             fs::create_dir_all(root.join("src/demo")).unwrap();
             fs::write(
                 root.join("project.edn"),
@@ -450,5 +711,79 @@ mod tests {
             )
             .unwrap();
         assert_eq!(value, "42");
+    }
+
+    #[test]
+    fn manage_arguments_keep_writes_explicit_and_values_in_data() {
+        let parsed = manage_arguments(&[
+            "demo.core".into(),
+            "--from".into(),
+            "demo.core".into(),
+            "--to".into(),
+            "demo.next".into(),
+            "--pattern".into(),
+            "TODO".into(),
+            "--pattern".into(),
+            "FIXME".into(),
+            "--write".into(),
+        ])
+        .unwrap();
+        assert!(parsed.write);
+        assert_eq!(parsed.namespaces, ["demo.core"]);
+        assert!(parsed.options.contains(":from \"demo.core\""));
+        assert!(parsed.options.contains(":to \"demo.next\""));
+        assert!(parsed.options.contains(":patterns [\"TODO\" \"FIXME\"]"));
+    }
+
+    #[test]
+    fn manage_edits_preflight_stale_content_before_writing() {
+        let project = TempProject::new();
+        let path = project.0.join("src/demo/rules.hal");
+        let plan = parse(&format!(
+            "{{:edits [{{:path {:?} :before {:?} :after {:?}}}]}}",
+            path.to_string_lossy(),
+            "stale",
+            "replacement"
+        ))
+        .unwrap();
+        let error = apply_manage_edits(&project.0, &plan).unwrap_err();
+        assert!(error.contains("stale edit"));
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            "(ns demo.rules)\n\n(defn answer [] 42)\n"
+        );
+    }
+
+    #[test]
+    fn manage_edits_apply_validated_content_inside_project() {
+        let project = TempProject::new();
+        let path = project.0.join("src/demo/rules.hal");
+        let before = fs::read_to_string(&path).unwrap();
+        let after = before.replace("42", "43");
+        let plan = parse(&format!(
+            "{{:edits [{{:path {:?} :before {:?} :after {:?}}}]}}",
+            path.to_string_lossy(),
+            before,
+            after
+        ))
+        .unwrap();
+        apply_manage_edits(&project.0, &plan).unwrap();
+        assert!(fs::read_to_string(path).unwrap().contains("43"));
+    }
+
+    #[test]
+    fn manage_edits_reject_paths_outside_project() {
+        let project = TempProject::new();
+        let outside = project.0.parent().unwrap().join("outside.hal");
+        let plan = parse(&format!(
+            "{{:edits [{{:path {:?} :before {:?} :after {:?}}}]}}",
+            outside.to_string_lossy(),
+            "",
+            "replacement"
+        ))
+        .unwrap();
+        let error = apply_manage_edits(&project.0, &plan).unwrap_err();
+        assert!(error.contains("escapes project root"));
+        assert!(!outside.exists());
     }
 }

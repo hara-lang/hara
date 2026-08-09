@@ -60,33 +60,304 @@
       trailing
       (conj trailing {:path (:path unit) :kind :missing-final-newline}))))
 
+(def legacy-operations
+  [:analyse :extract :vars :docstrings :transform-code :import :purge
+   :missing :todos :incomplete :incomplete-report :orphaned :scaffold
+   :create-tests :in-order :arrange :factcheck-remove :factcheck-generate
+   :snapto :isolate :locate-code :locate-test :grep :grep-replace :unclean
+   :unchecked :commented :pedantic :refactor-code :refactor-test :ns-format
+   :ns-rename :find-usages :require-file :heal-code])
+
+(def editing-operations
+  #{:transform-code :import :purge :scaffold :create-tests :arrange
+    :factcheck-remove :factcheck-generate :snapto :isolate :grep-replace
+    :refactor-code :refactor-test :ns-format :ns-rename :heal-code})
+
+(def parity-inventory
+  (reduce (fn [out operation]
+            (assoc out operation
+                   {:status :supported
+                    :boundary (if (get editing-operations operation)
+                                :pure-edit-plan
+                                :portable-inspection)}))
+          {}
+          legacy-operations))
+
+(defn definition-names [unit]
+  (vec (map (fn [entry] (:name entry)) (extract unit))))
+
+(defn in-order? [unit]
+  (let [names (definition-names unit)]
+    (= names (vec (sort names)))))
+
+(defn orphaned-meta [unit]
+  (let [lines (string/split-lines (:source unit))]
+    (loop [index 0 output []]
+      (if (= index (count lines))
+        output
+        (let [line (string/trim (nth lines index))
+              next-line (if (< (inc index) (count lines))
+                          (string/trim (nth lines (inc index)))
+                          "")]
+          (recur (inc index)
+                 (if (and (string/starts-with? line "^")
+                          (not (string/starts-with? next-line "(def")))
+                   (conj output {:path (:path unit)
+                                 :line (inc index)
+                                 :kind :orphaned-metadata})
+                   output)))))))
+
+(defn orphaned [unit] (orphaned-meta unit))
+(defn todos [unit] (incomplete unit))
+
+(defn unchecked [unit]
+  (let [facts (grep unit "(fact")
+        checks (grep unit "=>")]
+    (if (and (not (empty? facts)) (empty? checks))
+      (vec (map (fn [entry] (assoc entry :kind :unchecked-fact)) facts))
+      [])))
+
+(defn pedantic [unit]
+  (vec (concat (unclean-findings unit)
+               (map (fn [entry] (assoc entry :kind :todo)) (incomplete unit))
+               (orphaned-meta unit)
+               (unchecked unit))))
+
+(defn missing [unit options]
+  (let [available (or (:available-namespaces options) #{})]
+    (vec (filter (fn [namespace] (nil? (get available namespace)))
+                 (or (:requires unit) [])))))
+
+(defn includes-any? [line patterns]
+  (loop [remaining patterns]
+    (if (empty? remaining)
+      false
+      (if (string/includes? line (first remaining))
+        true
+        (recur (rest remaining))))))
+
+(defn remove-matching-lines [source patterns]
+  (str (string/join
+        "\n"
+        (filter (fn [line]
+                  (not (includes-any? line patterns)))
+                (string/split-lines source)))
+       "\n"))
+
+(defn import-unit [unit options]
+  (let [form (:form options)]
+    (if (or (nil? form) (string/blank? (str form)))
+      (transform-code unit identity)
+      (transform-code unit
+                      (fn [source]
+                        (str (string/trim-right source) "\n" form "\n"))))))
+
+(def import import-unit)
+
+(defn purge [unit options]
+  (transform-code unit
+                  (fn [source]
+                    (remove-matching-lines source (or (:patterns options) [])))))
+
+(defn replacements [options]
+  (or (:replacements options)
+      (if (and (:match options) (:replacement options))
+        [[(:match options) (:replacement options)]]
+        [])))
+
+(defn replace-all [source pairs]
+  (reduce (fn [output pair]
+            (string/replace output (str (first pair)) (str (second pair))))
+          source
+          pairs))
+
+(defn refactor-code [unit options]
+  (transform-code unit (fn [source] (replace-all source (replacements options)))))
+
+(defn refactor-test [unit options] (refactor-code unit options))
+
+(defn refactor-swap [unit pairs]
+  (refactor-code unit {:replacements pairs}))
+
+(defn ns-rename [unit options]
+  (let [old (:from options)
+        new (:to options)]
+    (if (or (nil? old) (nil? new))
+      (transform-code unit identity)
+      (grep-replace unit (str old) (str new)))))
+
+(defn ns-format [unit] (heal-code unit))
+
+(defn arrange [unit]
+  (if (in-order? unit)
+    (transform-code unit identity)
+    (assoc (transform-code unit identity)
+           :finding {:path (:path unit)
+                     :kind :definitions-out-of-order
+                     :definitions (definition-names unit)})))
+
+(defn test-path-for [unit options]
+  (or (:test-path options)
+      (:test-path unit)
+      (string/replace (:path unit) ".hal" "_test.hal")))
+
+(defn test-namespace-for [unit options]
+  (or (:test-namespace options)
+      (symbol (str (:namespace (analyse unit)) "-test"))))
+
+(defn scaffold [unit options]
+  (let [source-ns (:namespace (analyse unit))
+        test-ns (test-namespace-for unit options)
+        alias (or (:alias options) "subject")]
+    {:path (test-path-for unit options)
+     :changed true
+     :before (or (:test-source unit) "")
+     :after (str "(ns " test-ns "\n"
+                 "  (:use code.test)\n"
+                 "  (:require [" source-ns " :as " alias "]))\n\n"
+                 "(fact \"scaffolded test\" true => true)\n")
+     :write false
+     :create true}))
+
+(defn create-tests [unit options] (scaffold unit options))
+
+(defn isolate [unit options]
+  (let [needle (or (:needle options) "(fact")
+        selected (filter (fn [line]
+                           (or (string/starts-with? (string/trim line) "(ns ")
+                               (string/includes? line needle)))
+                         (string/split-lines (:source unit)))]
+    (transform-code unit
+                    (fn [source]
+                      (str (string/join "\n" selected) "\n")))))
+
+(defn factcheck-remove [unit options]
+  (purge unit {:patterns [(or (:marker options) "#fact")]}))
+
+(defn factcheck-generate [unit options]
+  (import-unit unit {:form (or (:form options) "#fact {:type :core}")}))
+
+(defn snapto [unit options] (refactor-code unit options))
+
+(defn locate-code [unit]
+  (if (= (:type unit) :test) nil (:path unit)))
+
+(defn locate-test [unit]
+  (if (= (:type unit) :test) (:path unit) (:test-path unit)))
+
+(defn find-usages [unit options]
+  (if (:var options) (grep unit (str (:var options))) []))
+
+(defn require-file [unit]
+  (vec (map (fn [entry] (symbol (:name entry)))
+            (filter (fn [entry]
+                      (not= (:kind entry) :private-function))
+                    (extract unit)))))
+
+(defn operation-value [operation unit options]
+  (cond
+    (= operation :analyse) (analyse unit)
+    (= operation :extract) (extract unit)
+    (= operation :vars) (vars unit)
+    (= operation :docstrings) (docstrings unit)
+    (= operation :transform-code)
+    (if (:transform options)
+      (transform-code unit (:transform options))
+      (transform-code unit identity))
+    (= operation :import) (import-unit unit options)
+    (= operation :purge) (purge unit options)
+    (= operation :missing) (missing unit options)
+    (= operation :todos) (todos unit)
+    (= operation :incomplete) (incomplete unit)
+    (= operation :orphaned) (orphaned unit)
+    (= operation :scaffold) (scaffold unit options)
+    (= operation :create-tests) (create-tests unit options)
+    (= operation :in-order) (in-order? unit)
+    (= operation :arrange) (arrange unit)
+    (= operation :factcheck-remove) (factcheck-remove unit options)
+    (= operation :factcheck-generate) (factcheck-generate unit options)
+    (= operation :snapto) (snapto unit options)
+    (= operation :isolate) (isolate unit options)
+    (= operation :locate-code) (locate-code unit)
+    (= operation :locate-test) (locate-test unit)
+    (= operation :grep) (if (:needle options) (grep unit (:needle options)) [])
+    (= operation :grep-replace)
+    (if (:match options)
+      (grep-replace unit (:match options) (or (:replacement options) ""))
+      (transform-code unit identity))
+    (= operation :unclean) (unclean unit)
+    (= operation :unclean-findings) (unclean-findings unit)
+    (= operation :unchecked) (unchecked unit)
+    (= operation :commented) (commented unit)
+    (= operation :pedantic) (pedantic unit)
+    (= operation :refactor-code) (refactor-code unit options)
+    (= operation :refactor-test) (refactor-test unit options)
+    (= operation :ns-format) (ns-format unit)
+    (= operation :ns-rename) (ns-rename unit options)
+    (= operation :find-usages) (find-usages unit options)
+    (= operation :require-file) (require-file unit)
+    (= operation :heal-code) (heal-code unit)
+    :else (throw (ex-info "Unsupported code.manage workflow"
+                          {:operation operation}))))
+
+(defn result-edit [value]
+  (if (and (map? value) (has? value :after)) value nil))
+
+(defn result-findings [value]
+  (cond
+    (and (map? value) (:finding value)) [(:finding value)]
+    (vector? value)
+    (vec (filter (fn [entry]
+                   (and (map? entry) (:kind entry)))
+                 value))
+    :else []))
+
+(defn plan [operation input]
+  (let [units (or (:units input) [])
+        options (or (:options input) {})
+        values (vec (map (fn [unit]
+                           (operation-value operation unit options))
+                         units))
+        edits (vec (filter identity (map result-edit values)))
+        findings (reduce (fn [out value]
+                           (into out (result-findings value)))
+                         []
+                         values)]
+    {:operation operation
+     :results (vec (map (fn [index]
+                          {:item/id (:path (nth units index))
+                           :item/value (nth values index)})
+                        (range (count units))))
+     :edits edits
+     :findings findings
+     :summary {:operation operation
+               :count (count values)
+               :changed (count (filter (fn [edit] (:changed edit)) edits))
+               :findings (count findings)}}))
+
 (defn incomplete-report [units]
   (into {}
         (map (fn [unit] [(:path unit) (incomplete unit)]) units)))
 
 (defn maintenance-work
-  [operation]
-  (command/batch
-   {:id (keyword (str "code.manage/" (name operation)))
-    :version 1}
-   {:list (work/pure :list-units (fn [input context] (:units input)))
-    :process (work/pure :process-unit
-                        (fn [unit context]
-                          (cond (= operation :analyse) (analyse unit)
-                                (= operation :extract) (extract unit)
-                                (= operation :vars) (vars unit)
-                                (= operation :docstrings) (docstrings unit)
-                                (= operation :incomplete) (incomplete unit)
-                                (= operation :todos) (incomplete unit)
-                                (= operation :commented) (commented unit)
-                                (= operation :unclean) (unclean unit)
-                                (= operation :unclean-findings) (unclean-findings unit)
-                                :else (throw (ex-info "Unsupported code.manage workflow" {:operation operation})))))
-    :summarise (work/pure :summarise
-                          (fn [batch context]
-                            {:operation operation
-                             :count (count (:results batch))}))}))
+  ([operation] (maintenance-work operation {}))
+  ([operation options]
+   (command/batch
+    {:id (keyword (str "code.manage/" (name operation)))
+     :version 1}
+    {:list (work/pure :list-units (fn [input context] (:units input)))
+     :process (work/pure :process-unit
+                         (fn [unit context]
+                           (operation-value operation unit options)))
+     :summarise (work/pure :summarise
+                           (fn [batch context]
+                             {:operation operation
+                              :count (count (:results batch))}))})))
 
 (defn run
   [operation input]
-  (work/run (work/local-runtime) (maintenance-work operation) input))
+  (if (= operation :incomplete-report)
+    (incomplete-report (:units input))
+    (work/run (work/local-runtime)
+              (maintenance-work operation (or (:options input) {}))
+              input)))

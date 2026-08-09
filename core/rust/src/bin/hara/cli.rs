@@ -276,7 +276,7 @@ pub(crate) fn usage() {
     println!("  {program} eval EXPRESSION | run FILE | stdin");
     println!("  {program} server | remote HOST:PORT");
     println!("  {program} project <new|check|run|test|add|remove|sync|update> ...");
-    println!("  {program} manage <analyse|extract|vars|docstrings|incomplete|unclean>");
+    println!("  {program} manage OPERATION [NAMESPACE ...] [OPTIONS] [--write]");
     println!("  {program} seedgen <root|list|incomplete|benchadd> [LANGUAGE]");
     println!("  {program} package <COMMAND> ...");
     println!("  {program} id <login|enroll|status|key|namespace> ...");

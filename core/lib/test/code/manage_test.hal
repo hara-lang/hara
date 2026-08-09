@@ -25,4 +25,38 @@
   => [["unclean.hal" "unclean.hal"]
       [:trailing-whitespace :missing-final-newline]])
 
+(fact "the Foundation task inventory has a portable implementation boundary"
+  [(count manage/legacy-operations)
+   (count manage/parity-inventory)
+   (get-in manage/parity-inventory [:ns-rename :boundary])
+   (get-in manage/parity-inventory [:find-usages :boundary])]
+  => [35 35 :pure-edit-plan :portable-inspection])
+
+(fact "project transformations compose into compare-before-write plans"
+  (let [unit {:path "src/demo/core.hal"
+              :source "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"}
+        plan (manage/plan :ns-rename
+                          {:units [unit]
+                           :options {:from 'demo.core :to 'demo.next}})]
+    [(get-in plan [:summary :changed])
+     (get-in plan [:edits 0 :before])
+     (get-in plan [:edits 0 :after])
+     (get-in plan [:edits 0 :write])])
+  => [1
+      "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
+      "(ns demo.next)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
+      false])
+
+(fact "scaffolding produces a new dry-run test artifact"
+  (let [edit (manage/scaffold
+              {:path "src/demo/core.hal"
+               :source "(ns demo.core)\n(defn answer [] 42)\n"}
+              {:test-path "test/demo/core_test.hal"})]
+    [(:path edit)
+     (:create edit)
+     (:before edit)
+     (:write edit)
+     (string? (:after edit))])
+  => ["test/demo/core_test.hal" true "" false true])
+
 (pr-str (run {:namespace "code.manage-test"}))
