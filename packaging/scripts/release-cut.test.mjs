@@ -86,3 +86,16 @@ test("the immutable v0.1.5 rerun repairs only release tooling and isolates tap c
   assert.match(workflow, /publish-source-formula:\n[\s\S]*?continue-on-error: true/);
   assert.match(workflow, /ref: \$\{\{ needs\.guard\.outputs\.tag \}\}/);
 });
+
+test("release Truffle builds use the proven native-image smoke toolchain", async () => {
+  const [releaseWorkflow, mainWorkflow] = await Promise.all([
+    readFile(new URL("../../.github/workflows/release.yml", import.meta.url), "utf8"),
+    readFile(new URL("../../.github/workflows/main.yml", import.meta.url), "utf8"),
+  ]);
+  const provenToolchain = /distribution: graalvm\n\s+java-version: '25\.0\.3'/;
+  assert.match(mainWorkflow, provenToolchain);
+  assert.match(releaseWorkflow, provenToolchain);
+  assert.doesNotMatch(releaseWorkflow, /distribution: graalvm-community/);
+  assert.doesNotMatch(releaseWorkflow, /java-version: '25'/);
+  assert.match(releaseWorkflow, /HARA_NATIVE_USE_FALLBACK_RUNTIME: 'true'/);
+});
