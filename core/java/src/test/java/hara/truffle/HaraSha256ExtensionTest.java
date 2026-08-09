@@ -23,8 +23,8 @@ public class HaraSha256ExtensionTest {
     Path extension = root.resolve("crypto/hash/sha256");
     Files.createDirectories(extension);
     Files.copy(
-        Path.of("lib/examples/extensions/crypto/hash/sha256/hara.extension.edn"),
-        extension.resolve("hara.extension.edn"));
+        Path.of("lib/examples/extensions/crypto/hash/sha256/project.edn"),
+        extension.resolve("project.edn"));
     Files.copy(ARTIFACT, extension.resolve("sha256.wasm"));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", root.toString());
@@ -42,7 +42,7 @@ public class HaraSha256ExtensionTest {
       if (previous == null) System.clearProperty("hara.extensions.path");
       else System.setProperty("hara.extensions.path", previous);
       Files.deleteIfExists(extension.resolve("sha256.wasm"));
-      Files.deleteIfExists(extension.resolve("hara.extension.edn"));
+      Files.deleteIfExists(extension.resolve("project.edn"));
       Files.deleteIfExists(extension);
       Files.deleteIfExists(extension.getParent());
       Files.deleteIfExists(extension.getParent().getParent());

@@ -16,7 +16,7 @@ public class HaraPgliteProcessExtensionTest {
   @Test
   public void pgliteRunsParameterizedPostgresqlThroughTheGenericDbApi() {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/pglite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/pglite/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context =
@@ -53,7 +53,7 @@ public class HaraPgliteProcessExtensionTest {
   @Test
   public void pgliteRunsThroughTheDatabaseKernelRuntime() {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/pglite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/pglite/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context =
@@ -109,7 +109,7 @@ public class HaraPgliteProcessExtensionTest {
   @Test
   public void pgliteProcessProviderRequiresProcessCapability() {
     Assume.assumeTrue(
-        Files.isRegularFile(ROOT.resolve("std/db/provider/pglite/hara.extension.edn")));
+        Files.isRegularFile(ROOT.resolve("std/db/provider/pglite/project.edn")));
     String previous = System.getProperty("hara.extensions.path");
     System.setProperty("hara.extensions.path", ROOT.toString());
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {

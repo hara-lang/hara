@@ -21,8 +21,8 @@ public class HaraRustWasmExtensionTest {
     Path root = Files.createTempDirectory("hara-rust-wasm-extension-");
     Path extension = root.resolve("test/rust/core");
     Files.createDirectories(extension);
-    Files.writeString(
-        extension.resolve("hara.extension.edn"),
+    HaraExtensionTestProject.write(
+        extension,
         "{:namespace \"test.rust.core\" :version \"0.1.0\" :provider :wasm "
             + ":module \"hara.wasm\" :abi :core.v1 "
             + ":exports {\"add\" {:args [:i32 :i32] :returns :i32} "
@@ -55,7 +55,7 @@ public class HaraRustWasmExtensionTest {
       if (previous == null) System.clearProperty("hara.extensions.path");
       else System.setProperty("hara.extensions.path", previous);
       Files.deleteIfExists(extension.resolve("hara.wasm"));
-      Files.deleteIfExists(extension.resolve("hara.extension.edn"));
+      Files.deleteIfExists(extension.resolve("project.edn"));
       Files.deleteIfExists(extension);
       Files.deleteIfExists(extension.getParent());
       Files.deleteIfExists(extension.getParent().getParent());
