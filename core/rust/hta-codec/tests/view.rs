@@ -237,7 +237,8 @@ fn compose_vector_and_record_are_canonical_and_reject_duplicate_keys() {
 
 #[test]
 fn scalar_accessors_fail_closed_on_wrong_kinds() {
-    let parsed = FrameView::parse(&frame(sized(STRING, b"text"))).unwrap();
+    let encoded = frame(sized(STRING, b"text"));
+    let parsed = FrameView::parse(&encoded).unwrap();
     assert_eq!(parsed.root().string().unwrap(), "text");
     assert!(parsed
         .root()
