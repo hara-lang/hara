@@ -2,7 +2,7 @@
  * Host-side verified package cache. The WASM evaluator is intentionally never
  * given fetch authority; callers register returned bytes before evaluation.
  */
-import { HtaKeyword, parseEdnData, parseHtaManifest } from "./hta.js";
+import { HtaKeyword, parseEdnData } from "./hta.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -47,9 +47,9 @@ export async function inspectHarp(input) {
   const declaredFiles = field(manifest, "files");
   const integrity = field(manifest, "integrity");
   const resourceIndex = field(manifest, "resources") ?? new Map();
-  const extensionPaths = field(manifest, "extensions") ?? [];
+  const extensionDeclarations = field(manifest, "extensions") ?? new Map();
   if (!(declaredFiles instanceof Map) || !(integrity instanceof Map)
-      || !(resourceIndex instanceof Map) || !Array.isArray(extensionPaths)) {
+      || !(resourceIndex instanceof Map) || !(extensionDeclarations instanceof Map)) {
     throw new Error("package/manifest-malformed: invalid files, resources, or extensions");
   }
   const actualPaths = [...entries.keys()].filter((path) => path !== "package.edn").sort();
@@ -85,21 +85,28 @@ export async function inspectHarp(input) {
       : { format: "hal", source: decoder.decode(entries.get(path)) }));
   }
   const extensions = [];
-  for (const path of extensionPaths) {
-    if (typeof path !== "string" || !entries.has(path)
-        || !path.endsWith("hara.extension.edn")) {
+  for (const [namespace, declaration] of extensionDeclarations) {
+    if (!(namespace instanceof HtaKeyword) && typeof namespace !== "string") {
       throw new Error("package/extension-invalid");
     }
-    const descriptor = parseHtaManifest(decoder.decode(entries.get(path)));
-    const base = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+    if (!(declaration instanceof Map)) throw new Error("package/extension-invalid");
+    const root = field(declaration, "root") ?? "";
+    if (typeof root !== "string") throw new Error("package/extension-invalid");
+    const base = root === "" ? "" : `${root.replace(/\/$/, "")}/`;
+    const targets = field(declaration, "targets");
+    const targetModules = targets instanceof Map
+      ? [...targets.values()].map(target => target instanceof Map ? field(target, "module") : undefined)
+      : [];
     for (const asset of [
-      ...(descriptor.module ? [descriptor.module] : []),
-      ...(descriptor.browserTarget ? [descriptor.browserTarget.module] : []),
-      ...descriptor.assets
+      ...([field(declaration, "module")].filter(Boolean)),
+      ...targetModules.filter(Boolean),
+      ...(field(declaration, "assets") ?? [])
     ]) {
-      if (!entries.has(`${base}${asset}`)) throw new Error(`package/extension-asset-missing:${path}:${asset}`);
+      if (typeof asset !== "string" || !entries.has(`${base}${asset}`)) {
+        throw new Error(`package/extension-asset-missing:${String(namespace)}:${asset}`);
+      }
     }
-    extensions.push(Object.freeze({ path, descriptor }));
+    extensions.push(Object.freeze({ namespace, declaration }));
   }
   return Object.freeze({
     manifest,

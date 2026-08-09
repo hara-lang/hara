@@ -39,6 +39,7 @@ pub struct Project {
     pub default_profile: Option<String>,
     pub profiles: BTreeMap<String, ProjectProfile>,
     pub dependencies: BTreeMap<String, String>,
+    pub extensions: BTreeMap<String, Form>,
     /// Project-local command aliases.  Values are argv prefixes, never shell
     /// expressions; callers append their own arguments after expansion.
     pub aliases: BTreeMap<String, Vec<String>>,
@@ -204,6 +205,10 @@ pub fn read(input: &Path) -> Result<Project, String> {
         .map(dependencies)
         .transpose()?
         .unwrap_or_default();
+    let extensions = lookup(entries, "project/extensions")
+        .map(extension_declarations)
+        .transpose()?
+        .unwrap_or_default();
     let aliases = lookup(entries, "project/aliases")
         .map(project_aliases)
         .transpose()?
@@ -234,9 +239,28 @@ pub fn read(input: &Path) -> Result<Project, String> {
         default_profile,
         profiles,
         dependencies,
+        extensions,
         aliases,
         recipe,
     })
+}
+
+fn extension_declarations(form: &Form) -> Result<BTreeMap<String, Form>, String> {
+    let Form::Map(entries) = form else {
+        return Err("project.edn :project/extensions must be a map".into());
+    };
+    entries
+        .iter()
+        .map(|(namespace, declaration)| {
+            let namespace = scalar(namespace, "project extension namespace")?;
+            if !matches!(declaration, Form::Map(_)) {
+                return Err(format!(
+                    "project extension {namespace} declaration must be a map"
+                ));
+            }
+            Ok((namespace, declaration.clone()))
+        })
+        .collect()
 }
 
 pub fn new_app(destination: &Path, name: &str) -> Result<Project, String> {

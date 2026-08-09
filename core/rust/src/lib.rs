@@ -8,7 +8,6 @@ pub mod cli_app;
 pub mod core;
 pub mod extension;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod extension_tool;
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod identity_tool;

@@ -5,11 +5,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::extension::ExtensionManifest;
+use crate::kernel::{parse, Form};
 
-const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+const MAX_PROJECT_BYTES: u64 = 1024 * 1024;
 const MAX_MODULE_BYTES: u64 = 64 * 1024 * 1024;
 
 pub struct ExtensionPackage {
+    pub root: PathBuf,
     pub descriptor: PathBuf,
     pub source: String,
     pub manifest: ExtensionManifest,
@@ -17,94 +19,52 @@ pub struct ExtensionPackage {
 
 impl ExtensionPackage {
     pub fn load(root: &Path) -> Result<Self, String> {
-        let root = absolute(root)?;
-        let descriptor = root.join("hara.extension.edn");
-        if !descriptor.is_file() {
-            return Err(format!(
-                "extension/malformed: missing {}",
-                descriptor.display()
-            ));
+        let mut packages = packages_in_project(root)?;
+        match packages.len() {
+            1 => Ok(packages.remove(0)),
+            0 => Err(format!(
+                "extension/malformed: {} does not declare :project/extensions",
+                root.display()
+            )),
+            count => Err(format!(
+                "extension/ambiguous: {} declares {count} extension namespaces",
+                root.display()
+            )),
         }
-        let metadata = descriptor
-            .metadata()
-            .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
-        if metadata.len() > MAX_MANIFEST_BYTES {
-            return Err(format!(
-                "extension/malformed {}: manifest is too large",
-                descriptor.display()
-            ));
-        }
-        let source = fs::read_to_string(&descriptor)
-            .map_err(|error| format!("extension/malformed {}: {error}", descriptor.display()))?;
-        let manifest = ExtensionManifest::parse(&source, &descriptor.display().to_string())?;
-        let package = Self {
-            descriptor,
-            source,
-            manifest,
-        };
-        package.validate_declared_files()?;
-        Ok(package)
     }
 
     pub fn discover(namespace: &str, roots: &[PathBuf]) -> Result<Option<Self>, String> {
-        let relative = PathBuf::from(namespace.replace('.', "/")).join("hara.extension.edn");
         let mut candidates = Vec::new();
         for root in roots {
-            let root = absolute(root)?;
-            let descriptor = root.join(&relative);
-            if descriptor.is_file() {
-                let descriptor = descriptor
-                    .canonicalize()
-                    .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
-                if !descriptor.starts_with(&root) {
-                    return Err(format!("extension/path-denied: {namespace}"));
+            for project in project_manifests(root)? {
+                for package in packages_from_manifest(&project)? {
+                    if package.manifest.namespace == namespace {
+                        candidates.push(package);
+                    }
                 }
-                candidates.push(descriptor);
             }
         }
-        candidates.sort();
-        candidates.dedup();
-        if candidates.is_empty() {
-            return Ok(None);
+        candidates.sort_by(|left, right| left.descriptor.cmp(&right.descriptor));
+        candidates.dedup_by(|left, right| left.descriptor == right.descriptor);
+        match candidates.len() {
+            0 => Ok(None),
+            1 => Ok(candidates.pop()),
+            _ => Err(format!(
+                "extension/ambiguous: multiple projects export {namespace}: {:?}",
+                candidates
+                    .iter()
+                    .map(|package| &package.descriptor)
+                    .collect::<Vec<_>>()
+            )),
         }
-        if candidates.len() != 1 {
-            return Err(format!(
-                "extension/ambiguous: multiple packages export {namespace}: {candidates:?}"
-            ));
-        }
-        let descriptor = candidates.remove(0);
-        let metadata = descriptor
-            .metadata()
-            .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
-        if metadata.len() > MAX_MANIFEST_BYTES {
-            return Err(format!(
-                "extension/malformed {}: manifest is too large",
-                descriptor.display()
-            ));
-        }
-        let source = fs::read_to_string(&descriptor)
-            .map_err(|error| format!("extension/malformed {}: {error}", descriptor.display()))?;
-        let manifest = ExtensionManifest::parse(&source, &descriptor.display().to_string())?;
-        if manifest.namespace != namespace {
-            return Err(format!(
-                "extension/malformed {}: expected namespace {namespace}",
-                descriptor.display()
-            ));
-        }
-        let package = Self {
-            descriptor,
-            source,
-            manifest,
-        };
-        package.validate_declared_files()?;
-        Ok(Some(package))
     }
 
     pub fn module_bytes(&self) -> Result<Vec<u8>, String> {
-        let module =
-            self.manifest.module.as_deref().ok_or_else(|| {
-                format!("extension/module-unavailable: {}", self.manifest.namespace)
-            })?;
+        let module = self
+            .manifest
+            .module
+            .as_deref()
+            .ok_or_else(|| format!("extension/module-unavailable: {}", self.manifest.namespace))?;
         let path = self.resolve(module)?;
         let metadata = path
             .metadata()
@@ -116,7 +76,7 @@ impl ExtensionPackage {
     }
 
     pub fn declared_files(&self) -> Vec<String> {
-        let mut paths = vec!["hara.extension.edn".to_owned()];
+        let mut paths = Vec::new();
         if let Some(module) = &self.manifest.module {
             paths.push(module.clone());
         }
@@ -133,9 +93,7 @@ impl ExtensionPackage {
     }
 
     fn validate_declared_files(&self) -> Result<(), String> {
-        let mut paths = self.declared_files();
-        paths.retain(|path| path != "hara.extension.edn");
-        for relative in paths {
+        for relative in self.declared_files() {
             self.resolve(&relative)?;
         }
         Ok(())
@@ -143,19 +101,20 @@ impl ExtensionPackage {
 
     pub fn resolve(&self, relative: &str) -> Result<PathBuf, String> {
         let root = self
-            .descriptor
-            .parent()
-            .ok_or_else(|| {
-                "extension/asset-unavailable: descriptor has no package directory".to_owned()
-            })?
+            .root
             .canonicalize()
             .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
-        let path = root.join(relative).canonicalize().map_err(|error| {
-            format!(
-                "extension/asset-unavailable: {}/{} ({error})",
-                self.manifest.namespace, relative
-            )
-        })?;
+        let declaration_root = self.manifest.root.as_deref().unwrap_or(".");
+        let path = root
+            .join(declaration_root)
+            .join(relative)
+            .canonicalize()
+            .map_err(|error| {
+                format!(
+                    "extension/asset-unavailable: {}/{} ({error})",
+                    self.manifest.namespace, relative
+                )
+            })?;
         if !path.starts_with(&root) || !path.is_file() {
             return Err(format!("extension/path-denied: {relative}"));
         }
@@ -167,7 +126,8 @@ pub fn configured_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(current) = env::current_dir() {
         for directory in current.ancestors() {
-            if directory.join("project.edn").is_file() || directory.join("project.hal").is_file() {
+            if directory.join("project.edn").is_file() {
+                roots.push(directory.to_path_buf());
                 roots.push(directory.join("extensions"));
                 break;
             }
@@ -180,8 +140,119 @@ pub fn configured_roots() -> Vec<PathBuf> {
 }
 
 pub fn package_exists(namespace: &str, roots: &[PathBuf]) -> bool {
-    let relative = PathBuf::from(namespace.replace('.', "/")).join("hara.extension.edn");
-    roots.iter().any(|root| root.join(&relative).is_file())
+    ExtensionPackage::discover(namespace, roots)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+fn packages_in_project(root: &Path) -> Result<Vec<ExtensionPackage>, String> {
+    let descriptor = if root.is_file() {
+        root.to_path_buf()
+    } else {
+        root.join("project.edn")
+    };
+    packages_from_manifest(&descriptor)
+}
+
+fn packages_from_manifest(descriptor: &Path) -> Result<Vec<ExtensionPackage>, String> {
+    let metadata = descriptor
+        .metadata()
+        .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
+    if metadata.len() > MAX_PROJECT_BYTES {
+        return Err(format!(
+            "extension/malformed {}: project manifest is too large",
+            descriptor.display()
+        ));
+    }
+    let project_source = fs::read_to_string(descriptor)
+        .map_err(|error| format!("extension/malformed {}: {error}", descriptor.display()))?;
+    let Form::Map(project) = parse(&project_source)
+        .map_err(|error| format!("extension/malformed {}: {error}", descriptor.display()))?
+    else {
+        return Err("extension/malformed: project.edn must be a map".into());
+    };
+    let version = value(&project, "project/version")
+        .ok_or("extension/malformed: project.edn is missing :project/version")?;
+    let version = scalar(version, "project/version")?;
+    let Some(Form::Map(extensions)) = value(&project, "project/extensions") else {
+        return Ok(Vec::new());
+    };
+    let root = descriptor
+        .parent()
+        .ok_or("extension/root-invalid: project.edn has no parent")?
+        .to_path_buf();
+    extensions
+        .iter()
+        .map(|(namespace, declaration)| {
+            let namespace = scalar(namespace, "extension namespace")?;
+            let Form::Map(declaration) = declaration else {
+                return Err(format!(
+                    "extension/malformed {}: declaration for {namespace} must be a map",
+                    descriptor.display()
+                ));
+            };
+            let mut normalized = declaration.clone();
+            normalized.push((
+                Form::Keyword("namespace".into()),
+                Form::String(namespace.clone()),
+            ));
+            normalized.push((
+                Form::Keyword("version".into()),
+                Form::String(version.clone()),
+            ));
+            let source = Form::Map(normalized).to_string();
+            let package = ExtensionPackage {
+                root: root.clone(),
+                descriptor: descriptor.to_path_buf(),
+                manifest: ExtensionManifest::parse(&source, &descriptor.display().to_string())?,
+                source,
+            };
+            package.validate_declared_files()?;
+            Ok(package)
+        })
+        .collect()
+}
+
+fn project_manifests(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let root = absolute(root)?;
+    if root.is_file() {
+        return Ok((root.file_name().and_then(|name| name.to_str()) == Some("project.edn"))
+            .then_some(root)
+            .into_iter()
+            .collect());
+    }
+    let mut pending = vec![root];
+    let mut manifests = Vec::new();
+    while let Some(directory) = pending.pop() {
+        let manifest = directory.join("project.edn");
+        if manifest.is_file() {
+            manifests.push(manifest);
+            continue;
+        }
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        pending.extend(entries.filter_map(Result::ok).map(|entry| entry.path()).filter(|path| {
+            path.is_dir() && path.file_name().and_then(|name| name.to_str()) != Some("target")
+        }));
+    }
+    manifests.sort();
+    Ok(manifests)
+}
+
+fn value<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
+    entries.iter().find_map(|(candidate, value)| {
+        matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
+    })
+}
+
+fn scalar(form: &Form, label: &str) -> Result<String, String> {
+    match form {
+        Form::String(value) | Form::Symbol(value) => Ok(value.clone()),
+        _ => Err(format!("extension/malformed: {label} must be a string or symbol")),
+    }
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, String> {

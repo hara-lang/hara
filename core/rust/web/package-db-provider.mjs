@@ -27,15 +27,15 @@ export async function packageDbProvider({ source, output, nodeBuild, browserBuil
   const assets = (await listFiles(output))
     .filter(path => path !== "node/worker.mjs" && path !== "browser/worker.mjs")
     .sort();
-  const template = await readFile(resolve(source, "hara.extension.edn"), "utf8");
+  const template = await readFile(resolve(source, "project.edn"), "utf8");
   if (!template.includes(":assets []")) {
-    throw new Error("database provider manifest must contain :assets [] placeholder");
+    throw new Error("database provider project must contain :assets [] placeholder");
   }
   const assetBlock = assets.length === 0
     ? ":assets []"
     : `:assets\n [${assets.map(path => JSON.stringify(path)).join("\n  ")}]`;
   await writeFile(
-    resolve(output, "hara.extension.edn"),
+    resolve(output, "project.edn"),
     template.replace(":assets []", assetBlock),
     "utf8"
   );

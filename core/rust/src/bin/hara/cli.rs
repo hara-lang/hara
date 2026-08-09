@@ -1,7 +1,6 @@
 use crate::repl;
 use hara_wasm::asset;
 use hara_wasm::cli_app;
-use hara_wasm::extension_tool;
 use hara_wasm::identity_tool;
 use hara_wasm::package;
 use hara_wasm::project as project_model;
@@ -175,7 +174,6 @@ pub(crate) fn run(options: Options) -> Result<(), String> {
         Some("seedgen") => seedgen_project(&options, &command[1..]),
         Some("spec") => spec_command(&command[1..]),
         Some("snapshot") => hara_wasm::snapshot_tool::run(&command[1..]),
-        Some("extension") => extension_tool::run(&command[1..], options.allow_process),
         Some("eval") => direct_eval(&options, &command[1..].join(" ")),
         Some("run") if command.len() == 1 => run_project(&options),
         Some("run") | Some("--file") => run_file(

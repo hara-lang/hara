@@ -545,7 +545,6 @@ fn package_manifest(project: &Project, contents: &[(PathBuf, Vec<u8>)]) -> Resul
     let mut hasher = Sha256::new();
     let mut files = String::new();
     let mut resources = Vec::new();
-    let mut extensions = Vec::new();
     for (path, bytes) in contents {
         let path = path_to_slash(path).expect("validated project-relative path");
         hasher.update(path.as_bytes());
@@ -570,9 +569,6 @@ fn package_manifest(project: &Project, contents: &[(PathBuf, Vec<u8>)]) -> Resul
                 .map_err(|error| format!("cannot decode package resource {path}: {error}"))?;
             resources.push((module.namespace, path.clone()));
         }
-        if path.ends_with("hara.extension.edn") {
-            extensions.push(path.clone());
-        }
     }
     resources.sort();
     for pair in resources.windows(2) {
@@ -580,18 +576,22 @@ fn package_manifest(project: &Project, contents: &[(PathBuf, Vec<u8>)]) -> Resul
             return Err(format!("duplicate package namespace: {}", pair[0].0));
         }
     }
-    extensions.sort();
     let resources = resources
         .iter()
         .map(|(namespace, path)| format!("  {} {}\n", edn_string(namespace), edn_string(path)))
         .collect::<String>();
-    let extensions = extensions
-        .iter()
-        .map(|path| edn_string(path))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let extensions = Form::Map(
+        project
+            .extensions
+            .iter()
+            .map(|(namespace, declaration)| {
+                (Form::Symbol(namespace.clone()), declaration.clone())
+            })
+            .collect(),
+    )
+    .to_string();
     Ok(format!(
-        "{{:harp/format 1\n :package {{:identity {} :version {}}}\n :files {{\n{}}} :resources {{\n{}}} :extensions [{}]\n :integrity {{:tree-sha256 \"sha256:{}\"}}}}\n",
+        "{{:harp/format 1\n :package {{:identity {} :version {}}}\n :files {{\n{}}} :resources {{\n{}}} :extensions {}\n :integrity {{:tree-sha256 \"sha256:{}\"}}}}\n",
         edn_string(&project.id),
         edn_string(&project.version.to_string()),
         files,
