@@ -10,8 +10,157 @@ pub(super) fn expand(form: &Form, next: &mut u64) -> Result<Option<Form>, String
         "loop" => expand_loop(items, next),
         "fn" => expand_fn(items, next),
         "defn" | "defn-" | "defmacro" => expand_definition(items, next),
+        "binding" => expand_binding(items, next),
+        "letfn" => expand_letfn(items, next),
         _ => Ok(None),
     }
+}
+
+fn expand_letfn(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
+    let Some(Form::Vector(definitions)) = items.get(1) else { return Ok(None) };
+    let mut cells = Vec::new();
+    let mut names = Vec::new();
+    let mut parsed = Vec::new();
+    for definition in definitions {
+        let Form::List(parts) = definition else {
+            return Err("letfn definitions must be lists".into());
+        };
+        let Some(Form::Symbol(name)) = parts.first() else {
+            return Err("letfn definition requires a name".into());
+        };
+        if parts.len() < 3 {
+            return Err("letfn definition requires parameters and a body".into());
+        }
+        let cell = temporary(next);
+        cells.push(Form::Symbol(cell.clone()));
+        cells.push(call("atom", vec![Form::Nil]));
+        names.push((name.clone(), cell));
+        parsed.push(parts.clone());
+    }
+    let mut initialization = Vec::new();
+    for parts in parsed {
+        let Form::Symbol(name) = &parts[0] else { unreachable!() };
+        let cell = names.iter().find(|(local, _)| local == name).unwrap().1.clone();
+        let function = Form::List(
+            std::iter::once(Form::Symbol("fn".into()))
+                .chain(parts[1..].iter().map(|form| replace_letfn_refs(form, &names)))
+                .collect(),
+        );
+        initialization.push(call(
+            "reset!",
+            vec![Form::Symbol(cell), function],
+        ));
+    }
+    let aliases = names
+        .iter()
+        .flat_map(|(name, cell)| {
+            [
+                Form::Symbol(name.clone()),
+                call("deref", vec![Form::Symbol(cell.clone())]),
+            ]
+        })
+        .collect::<Vec<_>>();
+    initialization.push(list(
+        "let",
+        std::iter::once(Form::Vector(aliases))
+            .chain(items[2..].iter().cloned())
+            .collect(),
+    ));
+    Ok(Some(list(
+        "let",
+        vec![Form::Vector(cells), list("do", initialization)],
+    )))
+}
+
+fn replace_letfn_refs(form: &Form, names: &[(String, String)]) -> Form {
+    match form {
+        Form::Symbol(symbol) => names
+            .iter()
+            .find(|(name, _)| name == symbol)
+            .map(|(_, cell)| call("deref", vec![Form::Symbol(cell.clone())]))
+            .unwrap_or_else(|| form.clone()),
+        Form::List(items)
+            if matches!(items.first(), Some(Form::Symbol(name)) if name == "quote" || name == "syntax-quote") =>
+        {
+            form.clone()
+        }
+        Form::List(items) => Form::List(
+            items
+                .iter()
+                .map(|item| replace_letfn_refs(item, names))
+                .collect(),
+        ),
+        Form::Vector(items) => Form::Vector(
+            items
+                .iter()
+                .map(|item| replace_letfn_refs(item, names))
+                .collect(),
+        ),
+        Form::Set(items) => Form::Set(
+            items
+                .iter()
+                .map(|item| replace_letfn_refs(item, names))
+                .collect(),
+        ),
+        Form::Map(entries) => Form::Map(
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        replace_letfn_refs(key, names),
+                        replace_letfn_refs(value, names),
+                    )
+                })
+                .collect(),
+        ),
+        Form::Metadata(metadata, value) => Form::Metadata(
+            Box::new(replace_letfn_refs(metadata, names)),
+            Box::new(replace_letfn_refs(value, names)),
+        ),
+        Form::Tagged(tag, value) => {
+            Form::Tagged(tag.clone(), Box::new(replace_letfn_refs(value, names)))
+        }
+        _ => form.clone(),
+    }
+}
+
+fn expand_binding(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
+    let Some(Form::Vector(bindings)) = items.get(1) else { return Ok(None) };
+    if bindings.len() % 2 != 0 {
+        return Err("binding bindings require name/value pairs".into());
+    }
+    let mut temporaries = Vec::new();
+    let mut binds = Vec::new();
+    let mut unbinds = Vec::new();
+    for pair in bindings.chunks(2) {
+        let Form::Symbol(name) = &pair[0] else {
+            return Err("binding name must be a symbol".into());
+        };
+        let temporary = temporary(next);
+        temporaries.push(Form::Symbol(temporary.clone()));
+        temporaries.push(pair[1].clone());
+        binds.push(call(
+            "__dynamic-bind",
+            vec![Form::Symbol(name.clone()), Form::Symbol(temporary)],
+        ));
+        unbinds.push(call(
+            "__dynamic-unbind",
+            vec![Form::Symbol(name.clone())],
+        ));
+    }
+    unbinds.reverse();
+    let body = list(
+        "do",
+        binds.into_iter().chain(items[2..].iter().cloned()).collect(),
+    );
+    let cleanup = list("do", unbinds);
+    Ok(Some(list(
+        "let",
+        vec![
+            Form::Vector(temporaries),
+            list("try", vec![body, list("finally", vec![cleanup])]),
+        ],
+    )))
 }
 
 fn expand_let(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {

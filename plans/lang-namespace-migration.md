@@ -1,6 +1,8 @@
 # `tahto.*` to `lang.*` namespace migration
 
-The portable language roots have already moved to `src-lang` and `test-lang`.
+The `lang.*` production libraries live under `src/lang`; portable XTalk and
+PostgreSQL target libraries remain under `src-lang`, and their tests live under
+`test-lang`.
 This migration performs the remaining compiler/framework namespace cut.
 
 ## Mapping
@@ -36,7 +38,7 @@ core/rust/hal-src/tahto -> core/rust/hal-src/lang
 
 ## Generated migration
 
-`packaging/scripts/migrate-tahto-to-lang` performed the change atomically:
+`scripts/runtime/migrate-tahto-to-lang` performed the change atomically:
 
 1. moved the production and test trees;
 2. rewrote namespace declarations, requires, qualified Vars, quoted registry

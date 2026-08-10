@@ -70,7 +70,7 @@ its README.
 
 ## Generated source cut
 
-`packaging/scripts/migrate-tahto-metadata-to-lang` performs the deterministic
+`scripts/runtime/migrate-tahto-metadata-to-lang` performs the deterministic
 source update:
 
 1. rewrites Hara-owned keyword literals in canonical language sources, tests,

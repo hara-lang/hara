@@ -19,7 +19,7 @@ const wasmUrl = new URL("../raw/target/wasm32-unknown-unknown/release/hara_wasm_
 const wasmBytes = await readFile(wasmUrl).catch(() => null);
 const hal = (name) => readFile(new URL(`./studio/hal/${name}.hal`, import.meta.url), "utf8");
 const supersonicHal = () => readFile(
-  new URL("../../contrib/greenways/supersonic/src/hal/gw/audio/supersonic.hal", import.meta.url),
+  new URL("../../../../hara-specs-registry/00-unsorted/contrib/greenways/supersonic/src/hal/gw/audio/supersonic.hal", import.meta.url),
   "utf8"
 );
 const resources = wasmBytes === null

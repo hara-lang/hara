@@ -115,7 +115,7 @@ jobs:
       run: |
         python3 <<'PY'
         from pathlib import Path
-        path = Path("packaging/scripts/build-truffle-native")
+        path = Path("scripts/runtime/build-truffle-native")
         source = path.read_text()
         old = 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"'
         new = 'ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"'
@@ -126,7 +126,7 @@ jobs:
         PY
     - name: Build Truffle native image
       run: |
-        ./packaging/scripts/build-truffle-native
+        ./scripts/runtime/build-truffle-native
         OUTPUT=$(core/target/hara-truffle eval '(+ 19 23)')
         [ "$OUTPUT" = "42" ] || { echo "unexpected Truffle output: $OUTPUT" >&2; exit 1; }
         TAG="${{ needs.guard.outputs.tag }}"
@@ -161,7 +161,7 @@ jobs:
       with:
         node-version: '22'
     - name: Build and verify browser Studio runtime
-      run: packaging/scripts/build-studio-runtime "${{ needs.guard.outputs.version }}"
+      run: HARA_WORKSPACE_ROOT="$PWD" website/hara-www/scripts/hara-assembly/build-studio-runtime "${{ needs.guard.outputs.version }}"
     - uses: actions/upload-artifact@v4
       with:
         name: release-studio-runtime
@@ -218,11 +218,11 @@ jobs:
     - uses: actions/checkout@v4
       with:
         ref: ${{ needs.guard.outputs.tag }}
-    - name: Install via packaging/scripts/install.sh
+    - name: Install via the canonical runtime installer
       run: |
         TAG="${{ needs.guard.outputs.tag }}"
         INSTALL_DIR="$RUNNER_TEMP/hara-bin"
-        HARA_VERSION="$TAG" HARA_INSTALL_DIR="$INSTALL_DIR" sh packaging/scripts/install.sh --rust --truffle
+        HARA_VERSION="$TAG" HARA_INSTALL_DIR="$INSTALL_DIR" sh scripts/runtime/install.sh --rust --truffle
         RUST_OUTPUT=$("$INSTALL_DIR/hara" eval '(+ 19 23)')
         [ "$RUST_OUTPUT" = "42" ] || { echo "unexpected Rust output: $RUST_OUTPUT" >&2; exit 1; }
         TRUFFLE_OUTPUT=$("$INSTALL_DIR/hara-truffle" eval '(+ 19 23)')
@@ -261,7 +261,7 @@ jobs:
       run: gh release download "${{ needs.guard.outputs.tag }}" --pattern SHA256SUMS --dir target/homebrew
     - name: Generate and publish formulas
       run: |
-        packaging/scripts/generate-homebrew-formulas \
+        homebrew-tap/scripts/generate-hara-formulas \
           "${{ needs.guard.outputs.tag }}" \
           target/homebrew/SHA256SUMS \
           homebrew-tap/Formula
@@ -287,9 +287,13 @@ jobs:
     - uses: actions/checkout@v4
       with:
         ref: ${{ needs.guard.outputs.tag }}
+    - uses: actions/checkout@v4
+      with:
+        repository: greenways-ai/homebrew-tap
+        path: greenways-homebrew
     - name: Render source formula
       run: |
-        python3 packaging/scripts/generate-greenways-homebrew-formula \
+        python3 greenways-homebrew/scripts/generate-hara-formula \
           "${{ needs.guard.outputs.tag }}" \
           "${{ needs.guard.outputs.revision }}" \
           target/source-homebrew/Formula/hara.rb

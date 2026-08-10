@@ -121,12 +121,12 @@ rust-layout: ## Check the Rust module layout
 	bash rust/scripts/check-layout.sh
 
 lib-test: ## Run portable .hal library tests
-	../packaging/scripts/run-lib-tests
+	../scripts/runtime/run-lib-tests
 
 native-image: $(TRUFFLE_NATIVE) ## Build the GraalVM native-image runtime
 
-$(TRUFFLE_NATIVE): java/pom.xml ../packaging/scripts/build-truffle-native
-	../packaging/scripts/build-truffle-native
+$(TRUFFLE_NATIVE): java/pom.xml ../scripts/runtime/build-truffle-native
+	../scripts/runtime/build-truffle-native
 
 native-image-run: native-image ## Run the GraalVM native-image runtime
 	$(TRUFFLE_NATIVE) $(ARGS)
@@ -137,21 +137,18 @@ native-image-offline: native-image ## Run native-image without RESP
 wasm: wasm-build ## Build the raw WASM runtime
 
 wasm-build: ## Build the raw WASM module
-	../packaging/scripts/build-hara-wasm-raw
+	../scripts/runtime/build-hara-wasm-raw
 
 wasm-web: wasm-web-build ## Build the browser WASM runtime
 
 wasm-web-build: ## Build the browser WASM package
-	../packaging/scripts/build-hara-wasm-web
+	../scripts/runtime/build-hara-wasm-web
 
 web-install: ## Install browser-loader and Studio dependencies
 	$(NPM) --prefix $(WEB_DIR) ci
 
 hta-test: ## Run HTA browser-loader Node tests
 	$(NPM) --prefix $(WEB_DIR) run test:hta
-
-studio-build: ## Build the shared Studio runtime artifacts
-	../packaging/scripts/build-studio-runtime
 
 studio-test: wasm-build ## Run Studio Node tests against current raw WASM
 	$(NPM) --prefix $(WEB_DIR) run test:studio
@@ -168,20 +165,14 @@ chrome-test: ## Test the Chrome extension
 docs-build: ## Build the hara-www documentation site
 	npm run build --prefix $(HARA_WWW_DIR)
 
-www-build: ## Build the complete website and runtime payload
-	../packaging/scripts/build-www
-
-runtime-benchmark: ## Run the cross-runtime benchmark suite
-	../packaging/scripts/run-runtime-benchmarks $(ARGS)
-
 vm-bb-benchmark: ## Compare bytecode/native trace VM tiers with babashka
-	../packaging/scripts/run-vm-bb-benchmark $(ARGS)
+	../scripts/runtime/run-vm-bb-benchmark $(ARGS)
 
 truffle-benchmark: ## Run the JVM Truffle benchmark
-	../packaging/scripts/run-truffle-benchmark $(ARGS)
+	../scripts/runtime/run-truffle-benchmark $(ARGS)
 
 parity-benchmark: ## Benchmark Rust WASM and Truffle parity
-	../packaging/scripts/run-wasm-truffle-parity-benchmark $(ARGS)
+	../scripts/runtime/run-wasm-truffle-parity-benchmark $(ARGS)
 
 build-all: java-build rust-build-release wasm-build ## Build all portable runtime artifacts
 

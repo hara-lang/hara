@@ -29,21 +29,22 @@ Truffle parser / AST
 ## Repository layout
 
 This repository (`hara-lang/hara`) is the language runtime. It keeps the
-actual code under `core/` and packaging scripts under `packaging/`. Sibling
+actual code under `core/` and runtime tooling under `scripts/runtime/`. Sibling
 repos in the workspace provide the website, editor/browser extensions, specs,
 and archive:
 
 - [`core/java/`](core/java/) — the Java/Truffle runtime (Maven project, CLI, native-image).
 - [`core/rust/`](core/rust/) — the Rust/embedding runtime: native CLI, wasm builds, web
-  loader, and in-tree wasm extensions ([`core/rust/extensions/`](core/rust/extensions/)).
+  loader, and the shared extension ABI. Concrete providers live in
+  [`../../extensions/hara-runtime/`](../../extensions/hara-runtime/).
 - [`core/lib/`](core/lib/) — hara-language source and workloads: the std foundation and
   Talo compiler port (`core/lib/src`, `core/lib/test`), demo projects
   ([`core/lib/examples/`](core/lib/examples/)), and benchmark suites
-  ([`core/lib/bench/`](core/lib/bench/)).
+  ([`../../website/hara-benchmarks/runtime/hara/`](../../website/hara-benchmarks/runtime/hara/)).
 - [`core/spec/`](core/spec/) — parity specifications and substrate tests for core
   language targets.
-- [`packaging/scripts/`](packaging/scripts/) — repo-level build/benchmark scripts.
-- `../website/hara-www/` — the landing page for `www.hara-lang.org`
+- [`scripts/runtime/`](scripts/runtime/) — repo-level build/benchmark scripts.
+- `../../website/hara-www/` — the landing page for `www.hara-lang.org`
   ([`hara-lang/hara-www`](https://github.com/hara-lang/hara-www)), checked out next to this repo for builds.
 - `../../extensions/` — editor and browser apps (`hara-emacs`, `hara-lsp`, `hara-vscode`)
   ([`hara-lang/hara-extensions`](https://github.com/hara-lang/hara-extensions)); the Chrome extension lives in
@@ -52,18 +53,17 @@ and archive:
   and spec-shaped data ([`hara-lang/hara-specs-registry`](https://github.com/hara-lang/hara-specs-registry)), checked out next to this repo.
 - `../hara-archive/` — legacy material kept for history
   ([`hara-lang/hara-archive`](https://github.com/hara-lang/hara-archive)).
-- [`contrib/`](contrib/) — independently owned artifact formats developed with
-  Hara's metaspec and verifier. Greenways formats live under
-  `contrib/greenways/`.
+- [`../hara-specs-registry/00-unsorted/contrib/`](../hara-specs-registry/00-unsorted/contrib/)
+  — independently owned contribution formats and their conformance material.
 - [`notes/`](notes/) — working documents (not published): design notes and
   `notes/superpowers/` plans/specs.
-- [`books/`](books/) — planned book series (*The Little Book of HAL*).
-- [`registry-api/`](registry-api/) — planned hara wasm extension registry API.
-- [`benchmarks/`](benchmarks/) — runtime benchmark suites and generated site data.
+- [`../../website/hara-docs/docs/books/`](../../website/hara-docs/docs/books/) — published books.
+- [`../hara-archive/retired/`](../hara-archive/retired/) — retired registry and platform services.
+- [`../../website/hara-benchmarks/astro/`](../../website/hara-benchmarks/astro/) — runtime benchmark suites and generated site data.
 
 ## Start here
 
-- [Hara website docs](../website/hara-www/docs/) — user guides, reference, and published documentation.
+- [Hara website docs](../../website/hara-www/docs/) — user guides, reference, and published documentation.
 - [HAL meta-spec](../hara-specs-registry/01-lang/000-metaspec/draft/README.md) — the self-describing contract for metaspec documents.
 - [HAL language draft](../hara-specs-registry/01-lang/001-language/draft/README.md) — the small EDN-oriented data and reader contract.
 - [Planning archive](../hara-specs-registry/99-archive/planning/README.md) — earlier runtime, extension, interop, and tooling designs.
@@ -101,7 +101,7 @@ mvn -f core/java/pom.xml -Ptruffle package
 The `hara` command starts the JLine REPL in the shared `ROOT` session and exposes that same
 session through RESP on `127.0.0.1:1311`. Use `--offline` to start without the listener,
 `headless` for a listener without terminal UI, and `remote HOST:PORT` for a client connection. The CLI also supports `run <file>`, `stdin`, and `help`. For a native-image build, see the
-[developer guide](../website/hara-www/docs/development/); native mode intentionally removes dynamic JVM services.
+[developer guide](../../website/hara-www/docs/development/); native mode intentionally removes dynamic JVM services.
 
 The Makefile also mirrors the main repository and CI workflows:
 
@@ -242,5 +242,5 @@ implementation work still in progress.
 
 Hara-owned source code is available under the [Apache License 2.0](LICENSE).
 Some directories contain separately licensed or provenance-sensitive material; see
-[the license inventory](LICENSES/README.md). Run `bash packaging/scripts/check-licenses` to
+[the license inventory](LICENSES/README.md). Run `bash scripts/runtime/check-licenses` to
 validate the repository's license metadata and documented exceptions.

@@ -286,7 +286,7 @@ impl Compiler {
             }
             if !matches!(
                 operator.as_str(),
-                "def" | "defn" | "defn-" | "defmacro" | "defstruct"
+                "def" | "defn" | "defn-" | "defmacro" | "defstruct" | "defprotocol" | "defmulti"
             ) {
                 continue;
             }
@@ -780,6 +780,12 @@ impl Compiler {
                         self.compile_instance_of(&children, span)
                     }
                     Form::Symbol(name) if name == "try" => self.compile_try(&children, span, tail),
+                    Form::Symbol(name) if name == "__dynamic-bind" => {
+                        self.compile_dynamic_binding(&children, span, true)
+                    }
+                    Form::Symbol(name) if name == "__dynamic-unbind" => {
+                        self.compile_dynamic_binding(&children, span, false)
+                    }
                     Form::Symbol(name) if name == "throw" => self.compile_throw(&children, span),
                     Form::Symbol(name) if UNSUPPORTED_OPERATORS.contains(&name.as_str()) => {
                         Err(self.unsupported(form, span))
@@ -1238,6 +1244,48 @@ impl Compiler {
         Ok(())
     }
 
+    fn compile_dynamic_binding(
+        &mut self,
+        children: &[Child<'_>],
+        span: &Span,
+        bind: bool,
+    ) -> Result<(), CompileError> {
+        let expected = if bind { 3 } else { 2 };
+        if children.len() != expected {
+            return Err(CompileError::new(
+                CompileErrorKind::Arity,
+                if bind {
+                    "dynamic bind expects a Var and value"
+                } else {
+                    "dynamic unbind expects a Var"
+                },
+                Some(span.start),
+            ));
+        }
+        let Form::Symbol(name) = children[1].form else {
+            return Err(CompileError::new(
+                CompileErrorKind::UnsupportedForm,
+                "dynamic binding target must be a symbol",
+                Some(children[1].span.start),
+            ));
+        };
+        let name = self.global_name_constant(name, children[1].span)?;
+        if bind {
+            self.compile_form(
+                children[2].form,
+                children[2].span,
+                children[2].children,
+                false,
+            )?;
+            if self.ctx().fallthrough {
+                self.emit(Instruction::DynamicBind(name), Some(span.start));
+            }
+        } else {
+            self.emit(Instruction::DynamicUnbind(name), Some(span.start));
+        }
+        Ok(())
+    }
+
     /// Compiles `let`-style ordered bindings into fresh slots, returns the
     /// bound slots, and leaves the scope open for the body.
     fn compile_bindings(
@@ -1491,6 +1539,132 @@ mod tests {
                 )
                 .unwrap(),
             "[1 2 3]"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(letfn [(even* [n] (if (= n 0) true (odd* (- n 1))))
+                              (odd* [n] (if (= n 0) false (even* (- n 1))))]
+                       [(even* 10) (odd* 9)])"
+                )
+                .unwrap(),
+            "[true true]"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(let [require-fields (fn [source fields]
+                              (reduce (fn [out field]
+                                        (if (nil? (get source field)) out out))
+                                      source
+                                      fields))
+                           profile (fn [value]
+                                     (require-fields value
+                                                     [:profile/id
+                                                      :profile/version
+                                                      :profile/operators]))]
+                       (profile {:profile/id :xtalk
+                                 :profile/version 1
+                                 :profile/operators {:a 1}}))"
+                )
+                .unwrap(),
+            "{:profile/id :xtalk :profile/version 1 :profile/operators {:a 1}}"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(defn __gate-require-fields [source fields]
+                       (reduce (fn [out field]
+                                 (if (nil? (get source field)) out out))
+                               source
+                               fields))
+                     (defn __gate-profile [value]
+                       (__gate-require-fields value
+                                              [:profile/id
+                                               :profile/version
+                                               :profile/operators]))
+                     (__gate-profile {:profile/id :xtalk
+                                      :profile/version 1
+                                      :profile/operators {:a 1}})"
+                )
+                .unwrap(),
+            "{:profile/id :xtalk :profile/version 1 :profile/operators {:a 1}}"
+        );
+
+        runtime.register_resource(
+            "__gate.grammar",
+            "(ns __gate.grammar)
+             (defn fail [message data]
+               (throw (ex-info message data)))
+             (defn require-fields [source fields]
+               (reduce (fn [out field]
+                         (if (nil? (get source field))
+                           (fail \"Missing grammar source field\"
+                                 {:field field :source source})
+                           out))
+                       source
+                       fields))
+             (defn source [kind id version value]
+               (if (or (nil? id) (not (number? version)) (<= version 0))
+                 (fail \"Invalid grammar source identity\"
+                       {:kind kind :id id :version version})
+                 (assoc value
+                        :source/kind kind
+                        :source/id id
+                        :source/version version)))
+             (defn profile [value]
+               (source :profile
+                       (:profile/id value)
+                       (:profile/version value)
+                       (require-fields value
+                                       [:profile/id
+                                        :profile/version
+                                        :profile/operators])))",
+        );
+        runtime
+            .eval_text("(ns __gate.consumer (:require [__gate.grammar :as grammar]))")
+            .unwrap();
+        runtime.eval_text("(ns __gate.grammar)").unwrap();
+        runtime
+            .eval_bytecode_native(
+                "(defn fail [message data]
+                   (throw (ex-info message data)))
+                 (defn require-fields [source fields]
+                   (reduce (fn [out field]
+                             (if (nil? (get source field))
+                               (fail \"Missing grammar source field\"
+                                     {:field field :source source})
+                               out))
+                           source
+                           fields))
+                 (defn source [kind id version value]
+                   (if (or (nil? id) (not (number? version)) (<= version 0))
+                     (fail \"Invalid grammar source identity\"
+                           {:kind kind :id id :version version})
+                     (assoc value
+                            :source/kind kind
+                            :source/id id
+                            :source/version version)))
+                 (defn profile [value]
+                   (source :profile
+                           (:profile/id value)
+                           (:profile/version value)
+                           (require-fields value
+                                           [:profile/id
+                                            :profile/version
+                                            :profile/operators])))",
+            )
+            .unwrap();
+        runtime.use_namespace("__gate.consumer");
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(grammar/profile {:profile/id :xtalk
+                                       :profile/version 1
+                                       :profile/operators {:a 1}})"
+                )
+                .unwrap(),
+            "{:profile/id :xtalk :profile/version 1 :profile/operators {:a 1} :source/kind :profile :source/id :xtalk :source/version 1}"
         );
     }
 }

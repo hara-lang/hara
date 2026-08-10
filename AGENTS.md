@@ -8,36 +8,37 @@ component map.
 - `core/` — language runtime source code:
   - `core/java/` — Java/Truffle runtime (Maven, JDK 21)
   - `core/rust/` — Rust/embedding runtime (native CLI, wasm builds, web loader,
-    `core/rust/extensions/` in-tree wasm extensions). The old `wasm/` tree was
+    and shared extension ABI). Concrete extensions live in
+    `../../extensions/hara-runtime/`. The old `wasm/` tree was
     removed — never reference it; everything is `core/rust/`. `core/rust/web/`
     holds the browser loaders plus the shared studio environment
     (`core/rust/web/studio/`, mounted by the hara-www studio page and the
     greenways-os DevTools panel).
   - `core/lib/` — Hara-language sources. Compiler, runtime, and host libraries
     live under `core/lib/src` with tests in `core/lib/test`; portable `xt.*`
-    and `postgres.*` libraries live under `core/lib/src-lang` with tests in
+    libraries live under `core/lib/src/lang`; portable `xt.*` and `postgres.*`
+    libraries remain under `core/lib/src-lang`, with tests in
     `core/lib/test-lang`. Examples are in `core/lib/examples/` and benchmarks
-    in `core/lib/bench/`. Notable namespaces include `std.foundation`, the
+    in `../../website/hara-benchmarks/runtime/hara/`. Notable namespaces include `std.foundation`, the
     `lang.*` compiler port, and the `std.ledger.*` consensus-free
     executable-chain experiments.
   - `core/spec/` — parity specifications and substrate tests for core language
     targets.
-- `packaging/scripts/` — repo-level build, release, benchmark, and site scripts.
-- `benchmarks/` — runtime benchmark suites and generated site data.
-- `registry-api/` — legacy registry/publication Netlify API (pending migration
-  into `hara-lang/hara-packages`).
+- `scripts/runtime/` — runtime build, release, and conformance scripts.
+- `../../website/hara-benchmarks/astro/` — runtime benchmark suites and generated site data.
+- `../hara-archive/retired/registry-api/` — archived registry/publication API.
 
 External sibling repos (checked out next to this repo in the workspace):
 
-- `../website/hara-www/` — landing page for `www.hara-lang.org` (`hara-lang/hara-www`),
-  also checked out at `website/hara-www/` inside this repo by CI workflows.
+- `../../website/hara-www/` — landing page for `www.hara-lang.org` (`hara-lang/hara-www`),
+  also checked out at `../../website/hara-www/` inside this repo by CI workflows.
 - `../../extensions/` — `hara-vscode`, `hara-emacs`, `hara-lsp`
   (`hara-lang/hara-extensions`); the Chrome extension is in
   `../../application/greenways-os/extension/hara-chrome`.
 - `../hara-specs-registry/` — normative specifications and conformance corpora
   (`hara-lang/hara-specs-registry`).
 - `../hara-archive/` — legacy source repository (`hara-lang/hara-archive`).
-- `platform/cloudflare/` — superseded reference implementation of the read-only
+- `../hara-archive/retired/platform-cloudflare/` — superseded reference implementation of the read-only
   edge for `id.hara-lang.org` / `packages.hara-lang.org`. Serving moved to
   Netlify sites driven by the `hara-lang/hara-identity` and
   `hara-lang/hara-packages` repos. The worker is no longer deployed; see its
@@ -45,10 +46,9 @@ External sibling repos (checked out next to this repo in the workspace):
 - `notes/` — working documents, NOT published: design notes and
   `notes/superpowers/` (plans/specs written by the superpowers plugin).
   Put nothing here that belongs on the website.
-- `contrib/` — separately owned specifications and reference implementations.
-  Greenways formats live under `contrib/greenways/`; Hara may publish verified
-  snapshots but does not own their domain vocabulary.
-- `books/` — planned book series (*The Little Book of HAL*).
+- `../hara-specs-registry/00-unsorted/contrib/` — separately owned specifications
+  and reference implementations.
+- `../../website/hara-docs/docs/books/` — published Hara books.
 - `LICENSES/` — license metadata for vendored or adapted components.
 
 ## Split-out components
@@ -57,8 +57,8 @@ These formerly in-tree components now live in their own repos (tracked under
 the workspace super-repo):
 
 - website — `hara-lang/hara-www` (Astro site for www.hara-lang.org, with the
-  `vendor/hara-ui` snapshot), checked out at `../website/hara-www/` (CI checks it
-  out at `website/hara-www/` inside this repo).
+  `vendor/hara-ui` snapshot), checked out at `../../website/hara-www/` (CI checks it
+  out at `../../website/hara-www/` inside this repo).
 - extensions — `hara-lang/hara-extensions` (`hara-vscode`, `hara-emacs`,
   `hara-lsp`), checked out at `../../extensions/`; the Chrome extension lives in
   `application/greenways-os/extension/hara-chrome`.
@@ -80,10 +80,10 @@ Java/Truffle runtime:
 mvn -f core/java/pom.xml -Ptruffle package        # build + full test suite
 mvn -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraL0ConformanceTest test
 ./core/hara eval '(+ 19 23)'                      # CLI smoke test (shaded jar)
-./packaging/scripts/run-lib-tests                 # library .hal test harness
-bash packaging/scripts/build-truffle-native       # native-image build (core/target/hara-truffle)
+./scripts/runtime/run-lib-tests                 # library .hal test harness
+bash scripts/runtime/build-truffle-native       # native-image build (core/target/hara-truffle)
 core/target/hara-truffle eval '(+ 19 23)'         # native-image smoke test
-./packaging/scripts/run-runtime-corpus-benchmark jvm interpreter-temurin core/target/runtime-corpus.csv
+./scripts/runtime/run-runtime-corpus-benchmark jvm interpreter-temurin core/target/runtime-corpus.csv
 #   ^ shared benchmark corpus as CSV evidence (jvm mode uses the `java` on PATH;
 #     bin mode appends a binary path, e.g. ... bin native-fallback out.csv 40 10 core/target/hara-truffle)
 ```
@@ -95,15 +95,15 @@ cargo test --manifest-path core/rust/Cargo.toml
 cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm vm  # experimental VM (issues #195, #202)
 cargo test --manifest-path core/rust/raw/Cargo.toml
 bash core/rust/scripts/check-layout.sh
-bash packaging/scripts/build-hara-wasm-raw             # raw wasm extension artifact
-bash packaging/scripts/build-hara-wasm-web             # browser runtime (outputs to website/hara-www/)
-bash packaging/scripts/build-demo-synth-wasm           # demo synth (outputs to website/hara-www/)
+bash scripts/runtime/build-hara-wasm-raw             # raw wasm extension artifact
+bash scripts/runtime/build-hara-wasm-web             # browser runtime (outputs to ../../website/hara-www/)
+bash ../../extensions/hara-runtime/scripts/build-demo-synth-wasm
 cd core/rust/web && npm ci && npm run test:hta       # browser loader tests
 cd core/rust/web && npm run test:studio              # studio node tests (broker, hal, UI)
 ```
 
 The `studio-hal` and `studio-broker` real-wasm integration tests need the
-raw wasm artifact from `bash packaging/scripts/build-hara-wasm-raw` and
+raw wasm artifact from `bash scripts/runtime/build-hara-wasm-raw` and
 self-skip without it.
 
 Apps:
@@ -115,9 +115,9 @@ cd ../../application/greenways-os/extension/hara-chrome && npm run test:browser 
 
 ## Releasing the hara CLI
 
-`packaging/scripts/install.sh` is the user-facing installer (`curl | sh`); it
-downloads prebuilt binaries from GitHub releases. Test it locally with
-`sh packaging/scripts/test-install.sh` (needs
+`scripts/runtime/install.sh` is the user-facing installer (`curl | sh`); it
+downloads prebuilt binaries from GitHub releases. Test it with
+`sh scripts/runtime/test-install.sh` (needs
 `cargo build --release --manifest-path core/rust/Cargo.toml --bin hara` first).
 
 To cut a release:
@@ -127,7 +127,7 @@ To cut a release:
    `core/rust/Cargo.toml`).
 3. `.github/workflows/release.yml` builds Linux x86_64 + macOS arm64/x86_64
    binaries, publishes the GitHub release (prerelease while 0.x), and
-   smoke-tests `packaging/scripts/install.sh` against it.
+   smoke-tests `scripts/runtime/install.sh` against it.
 
 ## Publishing the Rust crates
 
@@ -145,15 +145,14 @@ for each package to appear in the crates.io index and uploads the resulting
   corpora formerly under `specs/` now live in the `hara-lang/hara-specs-registry` repo;
   check it out at `../hara-specs-registry/` next to this repo.
 - Website content lives in `hara-lang/hara-www`; check it out at
-  `../website/hara-www/` next to this repo (CI workflows check it out at
-  `website/hara-www/` inside this repo).
+  `../../website/hara-www/` next to this repo (CI workflows check it out at
+  `../../website/hara-www/` inside this repo).
 - The JVM runtime embeds `core/lib/src/**/*.hal` and
   `core/lib/src-lang/**/*.hal` as classpath resources via `core/java/pom.xml`.
   The Rust runtime packages the same canonical roots through the generated
   `core/rust/hal-src` snapshot.
 - `core/target/` is CI scratch/build artifacts; Maven output is
   `core/java/target/`. Both are gitignored.
-- The pages deploy (`.github/workflows/pages-www.yml`) ships the `website/hara-www/`
-  sibling repo plus raw HTA studio artifacts built from `core/rust/`.
+- Website deployment is owned by `../../website/hara-www/.github/workflows/`.
 - IDE state (`.idea/`, `.settings/`, `.classpath`, `.project`) is user-local
   and untracked.

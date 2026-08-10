@@ -1023,6 +1023,40 @@ impl Machine {
                 self.stack
                     .push(crate::core::structural_function_value(name).into());
             }
+            Instruction::DynamicBind(index) => {
+                let Some(Value::String(name)) = program.constants.get(*index as usize) else {
+                    return Dispatch::Failed(
+                        self.error(function, format!("binding name constant {index} is invalid")),
+                    );
+                };
+                let Some(value) = self.stack.pop() else {
+                    return Dispatch::Failed(self.error(function, "stack underflow"));
+                };
+                match crate::core::bytecode_dynamic_bind(
+                    name,
+                    Self::into_value(program.clone(), value),
+                ) {
+                    Ok(()) => self.stack.push(VmSlot::Nil),
+                    Err(message) => match self.raise(function, message) {
+                        Ok(target) => return Dispatch::Unwound(target),
+                        Err(error) => return Dispatch::Failed(error),
+                    },
+                }
+            }
+            Instruction::DynamicUnbind(index) => {
+                let Some(Value::String(name)) = program.constants.get(*index as usize) else {
+                    return Dispatch::Failed(
+                        self.error(function, format!("binding name constant {index} is invalid")),
+                    );
+                };
+                match crate::core::bytecode_dynamic_unbind(name) {
+                    Ok(()) => self.stack.push(VmSlot::Nil),
+                    Err(message) => match self.raise(function, message) {
+                        Ok(target) => return Dispatch::Unwound(target),
+                        Err(error) => return Dispatch::Failed(error),
+                    },
+                }
+            }
             Instruction::Closure {
                 prototype,
                 captures,

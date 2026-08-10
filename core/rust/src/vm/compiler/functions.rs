@@ -533,6 +533,68 @@ impl Compiler {
                                 }
                             }
                         }
+                        "binding" => {
+                            if let Some(bindings) = children.get(1) {
+                                match bindings.form {
+                                    Form::Vector(pairs) | Form::List(pairs) => {
+                                        let pairs = self.list_children(
+                                            pairs,
+                                            bindings.span,
+                                            bindings.children,
+                                        );
+                                        for pair in pairs.chunks(2) {
+                                            if let [_, value] = pair {
+                                                self.collect_free(value, bound, free);
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            for body in &children[2..] {
+                                self.collect_free(body, bound, free);
+                            }
+                        }
+                        "letfn" => {
+                            let marked = bound.len();
+                            let definitions = children.get(1).and_then(|bindings| match bindings.form {
+                                Form::Vector(definitions) => Some((bindings, definitions)),
+                                _ => None,
+                            });
+                            if let Some((bindings, definitions)) = definitions {
+                                let definitions = self.list_children(
+                                    definitions,
+                                    bindings.span,
+                                    bindings.children,
+                                );
+                                for definition in &definitions {
+                                    if let Form::List(parts) = definition.form {
+                                        if let Some(Form::Symbol(name)) = parts.first() {
+                                            bound.push(name.clone());
+                                        }
+                                    }
+                                }
+                                for definition in &definitions {
+                                    let Form::List(parts) = definition.form else { continue };
+                                    if parts.len() < 3 { continue; }
+                                    let local_marked = bound.len();
+                                    if let Form::Vector(params) = &parts[1] {
+                                        for param in params {
+                                            collect_pattern_names(param, bound);
+                                        }
+                                    }
+                                    for form in &parts[2..] {
+                                        let child = Child { form, span: definition.span, children: None };
+                                        self.collect_free(&child, bound, free);
+                                    }
+                                    bound.truncate(local_marked);
+                                }
+                            }
+                            for body in &children[2..] {
+                                self.collect_free(body, bound, free);
+                            }
+                            bound.truncate(marked);
+                        }
                         "fn" => {
                             let marked = bound.len();
                             match children

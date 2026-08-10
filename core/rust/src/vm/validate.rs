@@ -283,6 +283,14 @@ pub(crate) fn stack_heights(
                     at,
                 ));
             }
+            Instruction::DynamicBind(constant) | Instruction::DynamicUnbind(constant)
+                if !matches!(program.constants.get(*constant as usize), Some(Value::String(_))) =>
+            {
+                return Err(ValidationError::new(
+                    format!("binding name constant {constant} is invalid"),
+                    at,
+                ));
+            }
             Instruction::Jump(target) | Instruction::JumpIfFalse(target)
                 if *target as usize >= code.len() =>
             {

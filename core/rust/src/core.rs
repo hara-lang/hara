@@ -983,39 +983,8 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
 }
 
 #[cfg(feature = "bytecode-vm")]
-pub(crate) fn bytecode_callable_names() -> impl Iterator<Item = &'static str> {
+pub(crate) fn foundation_bootstrap_callable_names() -> impl Iterator<Item = &'static str> {
     structural_callable_names()
-        .chain(
-            FOUNDATION_PROTOCOLS
-                .iter()
-                .flat_map(|(_, methods)| methods.iter().map(|(name, _)| *name))
-                // These protocol method names are intentionally redefined by
-                // standard-library namespaces. Keeping them out of the
-                // implicit Foundation refer preserves the generated ns
-                // omission/alias contract during bytecode bootstrap.
-                .filter(|name| {
-                    !matches!(
-                        *name,
-                        "call"
-                            | "cancel"
-                            | "close"
-                            | "empty"
-                            | "find"
-                            | "invoke"
-                            | "meta"
-                            | "resume"
-                            | "rt-start"
-                            | "rt-stop"
-                            | "start"
-                            | "started?"
-                            | "state"
-                            | "status"
-                            | "stop"
-                            | "then"
-                            | "value"
-                    )
-                }),
-        )
         .chain([
             "macroexpand-1",
             "gensym",
@@ -1028,14 +997,41 @@ pub(crate) fn bytecode_callable_names() -> impl Iterator<Item = &'static str> {
 
 #[cfg(feature = "bytecode-vm")]
 pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'static str> {
-    bytecode_callable_names()
+    foundation_bootstrap_callable_names()
         .chain(NATIVE_TYPES.iter().flat_map(|(_, methods)| methods.iter().copied()))
         .chain(
             FOUNDATION_PROTOCOLS
                 .iter()
                 .flat_map(|(_, methods)| methods.iter().map(|(name, _)| *name)),
         )
-        .chain(["disj"])
+        .chain([
+            "disj",
+            "requiring-resolve",
+            "list?",
+            "vector?",
+            "sequential?",
+            "map?",
+            "map-entry?",
+            "set?",
+            "keyword?",
+            "symbol?",
+            "string?",
+            "char?",
+            "number?",
+            "long?",
+            "double?",
+            "boolean?",
+            "fn?",
+            "bytes?",
+            "array?",
+            "object?",
+            "regexp?",
+            "uuid?",
+            "resolve",
+            "special-symbol?",
+            "the-ns",
+            "ns-name",
+        ])
 }
 
 #[cfg(feature = "bytecode-vm")]
@@ -1247,6 +1243,28 @@ pub(crate) fn eval_bytecode_form(value: &Value) -> Result<Value, String> {
         refresh_namespace_environment(&registry, &mut env);
     }
     eval(&form, &mut env)
+}
+
+pub(crate) fn bytecode_dynamic_bind(name: &str, value: Value) -> Result<(), String> {
+    let registry = namespace_registry()?;
+    let var = registry
+        .current()
+        .resolve(&crate::lang::data::Symbol::parse(name))
+        .ok_or_else(|| format!("binding expects a Var: {name}"))?;
+    if !var.is_dynamic() {
+        return Err(format!("binding expects a dynamic Var: {name}"));
+    }
+    var.bind(value);
+    Ok(())
+}
+
+pub(crate) fn bytecode_dynamic_unbind(name: &str) -> Result<(), String> {
+    let registry = namespace_registry()?;
+    let var = registry
+        .current()
+        .resolve(&crate::lang::data::Symbol::parse(name))
+        .ok_or_else(|| format!("binding expects a Var: {name}"))?;
+    var.unbind().map(|_| ())
 }
 
 fn macro_environment() -> Result<Value, String> {
@@ -10586,6 +10604,46 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .resolve(&symbol)
                         .map(Value::Var)
                         .unwrap_or(Value::Nil))
+                }
+                Form::Symbol(n) if n == "special-symbol?" && !env.contains_key(n) => {
+                    if fs.len() != 2 {
+                        return Err("special-symbol? expects one symbol".into());
+                    }
+                    match eval(&fs[1], env)? {
+                        Value::Symbol(value) => Ok(Value::Bool(
+                            fiber::CORE_SPECIAL_FORMS.contains(&value.as_str()),
+                        )),
+                        _ => Err("special-symbol? expects a symbol".into()),
+                    }
+                }
+                Form::Symbol(n) if n == "the-ns" && !env.contains_key(n) => {
+                    if fs.len() != 2 {
+                        return Err("the-ns expects one symbol".into());
+                    }
+                    match eval(&fs[1], env)? {
+                        Value::Symbol(value) if value.get_namespace().is_none() => Ok(
+                            namespace_registry()?
+                                .find(value.as_str())
+                                .map(|namespace| Value::Namespace(Rc::new(namespace)))
+                                .unwrap_or(Value::Nil),
+                        ),
+                        _ => Err("the-ns expects an unqualified symbol".into()),
+                    }
+                }
+                Form::Symbol(n) if n == "ns-name" && !env.contains_key(n) => {
+                    if fs.len() != 2 {
+                        return Err("ns-name expects one namespace".into());
+                    }
+                    match eval(&fs[1], env)? {
+                        Value::Namespace(value) => Ok(Value::Symbol(value.name().clone())),
+                        Value::Symbol(value)
+                            if value.get_namespace().is_none()
+                                && namespace_registry()?.find(value.as_str()).is_some() =>
+                        {
+                            Ok(Value::Symbol(value))
+                        }
+                        _ => Err("ns-name expects a namespace".into()),
+                    }
                 }
                 Form::Symbol(n) if n == "requiring-resolve" && !env.contains_key(n) => {
                     if fs.len() != 2 {

@@ -359,6 +359,14 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
             out.byte(38);
             out.u32(*index);
         }
+        DynamicBind(index) => {
+            out.byte(39);
+            out.u32(*index);
+        }
+        DynamicUnbind(index) => {
+            out.byte(40);
+            out.u32(*index);
+        }
         Return => out.byte(24),
     }
 }
@@ -431,6 +439,8 @@ fn read_instruction(reader: &mut Reader<'_>) -> Result<Instruction, String> {
         36 => Instruction::EvalForm(reader.u32()?),
         37 => Instruction::PrimitiveValue(primitive(reader.byte()?)?),
         38 => Instruction::BuiltinValue(reader.u32()?),
+        39 => Instruction::DynamicBind(reader.u32()?),
+        40 => Instruction::DynamicUnbind(reader.u32()?),
         _ => return Err("bytecode artifact contains an unknown opcode".into()),
     })
 }

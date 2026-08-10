@@ -152,6 +152,10 @@ pub enum Instruction {
     PrimitiveValue(Primitive),
     /// Pushes a first-class callable implemented by the structural runtime.
     BuiltinValue(u32),
+    /// Binds a dynamic Var to the value on top of the stack and leaves nil.
+    DynamicBind(u32),
+    /// Removes the most recent binding for a dynamic Var and leaves nil.
+    DynamicUnbind(u32),
     /// Replaces a settled promise with its value, raises a rejection, or
     /// suspends the current VM fiber while preserving the complete machine.
     Await,
@@ -204,6 +208,8 @@ impl Instruction {
             Instruction::EvalForm(_) => 1,
             Instruction::PrimitiveValue(_) => 1,
             Instruction::BuiltinValue(_) => 1,
+            Instruction::DynamicBind(_) => 0,
+            Instruction::DynamicUnbind(_) => 1,
             Instruction::DefGlobal { .. }
             | Instruction::SetGlobal(_)
             | Instruction::StructField(_) => 0,
@@ -292,6 +298,8 @@ impl std::fmt::Display for Instruction {
             Instruction::EvalForm(index) => write!(formatter, "EvalForm {index}"),
             Instruction::PrimitiveValue(op) => write!(formatter, "PrimitiveValue {}", op.operator()),
             Instruction::BuiltinValue(index) => write!(formatter, "BuiltinValue {index}"),
+            Instruction::DynamicBind(index) => write!(formatter, "DynamicBind {index}"),
+            Instruction::DynamicUnbind(index) => write!(formatter, "DynamicUnbind {index}"),
             Instruction::Await => formatter.write_str("Await"),
             Instruction::HostCall => formatter.write_str("HostCall"),
             Instruction::Return => formatter.write_str("Return"),

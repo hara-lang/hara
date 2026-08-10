@@ -1,0 +1,96 @@
+;; Metadata-driven XTalk test generation model, ported from the legacy seed generator.
+;; File enumeration and writes remain host responsibilities; the work graph
+;; produces deterministic plans which hosts may apply after explicit consent.
+(ns lang.seedgen
+  (:require [code.framework :as framework]
+            [std.foundation.string :as string]
+            [std.work :as work]
+            [std.work.command :as command]))
+
+(def runtime-languages
+  {:js {:script :js :suffix "js" :runtime :basic :check-mode :realtime}
+   :lua {:script :lua :suffix "lua" :runtime :basic :check-mode :realtime}
+   :python {:script :python :suffix "python" :runtime :basic :check-mode :realtime}
+   :scheme {:script :scheme :suffix "scheme" :runtime :basic :check-mode :realtime}
+   :elisp {:script :elisp :suffix "elisp" :runtime :basic :check-mode :realtime}
+   :r {:script :r :suffix "R" :runtime :basic :check-mode :realtime}
+   :rb {:script :ruby :suffix "rb" :runtime :basic :check-mode :realtime}
+   :dart {:script :dart :suffix "dt" :runtime :twostep :check-mode :batched}
+   :php {:script :php :suffix "php" :runtime :basic :check-mode :realtime}
+   :go {:script :go :suffix "go" :runtime :twostep :check-mode :batched}})
+
+(def runtime-language-aliases {:ruby :rb})
+
+(defn normalize-runtime-language
+  [language]
+  (let [key (cond (keyword? language) language
+                  (symbol? language) (keyword (name language))
+                  (string? language) (keyword language)
+                  :else language)]
+    (or (get runtime-language-aliases key) key)))
+
+(defn runtime-language-config
+  [language]
+  (get runtime-languages (normalize-runtime-language language)))
+
+(defn runtime-check-mode
+  [language]
+  (:check-mode (runtime-language-config language)))
+
+(defn seedgen-root? [source] (string/includes? source ":seedgen/root"))
+(defn seedgen-skip? [source] (string/includes? source ":seedgen/skip"))
+(defn seedgen-base? [source] (string/includes? source ":seedgen/base"))
+
+(defn seedgen-list [unit]
+  {:path (:path unit)
+   :namespace (framework/namespace-name (:source unit))
+   :root (seedgen-root? (:source unit))
+   :skip (seedgen-skip? (:source unit))
+   :base (seedgen-base? (:source unit))})
+
+(defn seedgen-root [unit] (and (seedgen-root? (:source unit)) (not (seedgen-skip? (:source unit)))))
+
+(defn incomplete [unit]
+  (if (seedgen-root unit)
+    (framework/grep-source (:source unit) ":refer")
+    []))
+
+(defn bench-namespace [language namespace]
+  (symbol (str "xtbench." (name language) "." namespace)))
+
+(defn bench-path [test-root language namespace]
+  (str test-root "/xtbench/" (name language) "/"
+       (string/replace (string/replace (str namespace) "." "/") "-" "_")
+       "_test.hal"))
+
+(defn bench-plan [unit language test-root]
+  (let [namespace (framework/namespace-name (:source unit))
+        language (normalize-runtime-language language)]
+    {:source (:path unit)
+     :namespace (bench-namespace language namespace)
+     :path (bench-path test-root language namespace)
+     :language language
+     :runtime (runtime-language-config language)
+     :write false}))
+
+(defn seedgen-work
+  [operation]
+  (command/batch
+   {:id (keyword (str "lang.seedgen/" (name operation)))
+    :version 1}
+   {:list (work/pure :list-tests (fn [input context] (:units input)))
+    :filter (work/pure :seed-root? (fn [unit context] (seedgen-root unit)))
+    :process (work/pure :process-test
+                        (fn [unit context]
+                          (cond (= operation :root) (seedgen-root unit)
+                                (= operation :list) (seedgen-list unit)
+                                (= operation :incomplete) (incomplete unit)
+                                (= operation :benchadd) (bench-plan unit (:language unit) (:test-root unit))
+                                :else (throw (ex-info "Unsupported seedgen workflow" {:operation operation})))))
+    :summarise (work/pure :summarise
+                          (fn [batch context]
+                            {:operation operation :count (count (:results batch))}))}))
+
+(defn run
+  [operation input]
+  (work/run (work/local-runtime) (seedgen-work operation) input))

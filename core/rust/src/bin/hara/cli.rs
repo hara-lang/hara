@@ -307,8 +307,10 @@ mod spec_tests {
             eprintln!("skipping: hara-specs-registry sibling repo not present");
             return;
         }
-        let document_path =
-            repository.join("contrib/greenways/build/spec/draft/greenways-buildspec.edn");
+        let document_path = repository
+            .parent()
+            .unwrap()
+            .join("hara-specs-registry/00-unsorted/contrib/greenways/build/spec/draft/greenways-buildspec.edn");
         let document = read_spec_document(&fs::read_to_string(&document_path).unwrap()).unwrap();
         let metaspec = read_spec_document(&fs::read_to_string(metaspec_path).unwrap()).unwrap();
         assert!(validate_against_metaspec(&document, &metaspec, &document_path).is_empty());
@@ -321,8 +323,12 @@ mod spec_tests {
             .unwrap()
             .parent()
             .unwrap();
-        let source_path = repository.join("contrib/greenways/build/examples/minimal-build.hal");
-        let edn_path = repository.join("contrib/greenways/build/examples/minimal-build.edn");
+        let contributions = repository
+            .parent()
+            .unwrap()
+            .join("hara-specs-registry/00-unsorted/contrib");
+        let source_path = contributions.join("greenways/build/examples/minimal-build.hal");
+        let edn_path = contributions.join("greenways/build/examples/minimal-build.edn");
         let source = fs::read_to_string(&source_path).unwrap();
         let canonical = read_spec_document(&fs::read_to_string(edn_path).unwrap()).unwrap();
         let (build, findings) = read_build_source(&source, source_path.to_str().unwrap()).unwrap();
@@ -359,7 +365,11 @@ mod spec_tests {
             .unwrap()
             .parent()
             .unwrap();
-        let cycle_path = repository.join("contrib/greenways/build/examples/invalid-cycle.hal");
+        let contributions = repository
+            .parent()
+            .unwrap()
+            .join("hara-specs-registry/00-unsorted/contrib");
+        let cycle_path = contributions.join("greenways/build/examples/invalid-cycle.hal");
         let (cycle, parse_findings) = read_build_source(
             &fs::read_to_string(&cycle_path).unwrap(),
             cycle_path.to_str().unwrap(),
@@ -372,7 +382,7 @@ mod spec_tests {
                 && finding.message.contains("parse → emit → analyze → parse")
         }));
 
-        let checker_path = repository.join("contrib/greenways/build/examples/invalid-checker.hal");
+        let checker_path = contributions.join("greenways/build/examples/invalid-checker.hal");
         let (checker_build, _) = read_build_source(
             &fs::read_to_string(&checker_path).unwrap(),
             checker_path.to_str().unwrap(),
@@ -399,11 +409,11 @@ mod spec_tests {
             return;
         }
         for path in [
-            "contrib/greenways/build",
-            "contrib/greenways/supersonic",
-            "contrib/greenways/usdskel",
+            "greenways/build",
+            "greenways/supersonic",
+            "greenways/usdskel",
         ] {
-            let root = repository.join(path);
+            let root = specs_root.join("00-unsorted/contrib").join(path);
             let envelope =
                 read_spec_document(&fs::read_to_string(root.join("CONTRIBUTION.edn")).unwrap())
                     .unwrap();
