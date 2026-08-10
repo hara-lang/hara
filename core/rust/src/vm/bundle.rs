@@ -1,10 +1,10 @@
-//! Deterministic container for the eagerly loaded Foundation bytecode modules.
+//! Deterministic indexed container for the embedded standard library.
 
 use sha2::{Digest, Sha256};
 
 use crate::{core, kernel, Runtime, EAGER_HAL_RESOURCES, EMBEDDED_HAL_RESOURCES};
 
-const MAGIC: &[u8; 4] = b"HBB1";
+const MAGIC: &[u8; 4] = b"HBB2";
 
 pub struct ModuleSource<'a> {
     pub resource: &'a str,
@@ -14,12 +14,26 @@ pub struct ModuleSource<'a> {
 struct Module<'a> {
     resource: &'a str,
     namespace_form: &'a str,
+    source_digest: &'a [u8; 32],
+    dependencies: &'a [String],
+    eager: bool,
     artifact: &'a [u8],
 }
 
-pub fn embedded_foundation_sources() -> Vec<ModuleSource<'static>> {
-    std::iter::once("std.foundation")
+pub fn embedded_standard_library_sources() -> Vec<ModuleSource<'static>> {
+    let ordered = std::iter::once("std.foundation")
         .chain(EAGER_HAL_RESOURCES.iter().copied())
+        .chain(
+            EMBEDDED_HAL_RESOURCES
+                .iter()
+                .map(|(namespace, _, _)| *namespace)
+                .filter(|namespace| {
+                    standard_library_namespace(namespace)
+                        && *namespace != "std.foundation"
+                        && !EAGER_HAL_RESOURCES.contains(namespace)
+                }),
+        );
+    ordered
         .map(|resource| {
             let source = EMBEDDED_HAL_RESOURCES
                 .iter()
@@ -32,33 +46,55 @@ pub fn embedded_foundation_sources() -> Vec<ModuleSource<'static>> {
 
 pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, String> {
     let mut runtime = Runtime::core();
+    for &(name, _, source) in EMBEDDED_HAL_RESOURCES {
+        runtime.register_resource(name, source);
+    }
     let mut encoded = Vec::new();
     for source in sources {
         let (namespace_form, body) = split_namespace_form(source.source)?;
-        runtime.eval_text(namespace_form)?;
+        runtime
+            .eval_text(namespace_form)
+            .map_err(|error| format!("{}: namespace declaration: {error}", source.resource))?;
         if source.resource == "std.foundation" {
             runtime.prepare_foundation_bytecode();
         }
-        let artifact = runtime.compile_bytecode_artifact(body)?;
+        let artifact = runtime
+            .compile_bytecode_artifact(body)
+            .map_err(|error| format!("{}: bytecode compilation: {error}", source.resource))?;
         core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
             runtime.eval_bytecode_artifact(&artifact)
-        })?;
-        encoded.push((source.resource, namespace_form, artifact));
+        })
+        .map_err(|error| format!("{}: bytecode execution: {error}", source.resource))?;
+        let source_digest: [u8; 32] = Sha256::digest(source.source.as_bytes()).into();
+        let dependencies = namespace_dependencies(namespace_form)?;
+        let eager = source.resource == "std.foundation"
+            || EAGER_HAL_RESOURCES.contains(&source.resource);
+        encoded.push((
+            source.resource,
+            namespace_form,
+            source_digest,
+            dependencies,
+            eager,
+            artifact,
+        ));
     }
 
     let modules = encoded
         .iter()
-        .map(|(resource, namespace_form, artifact)| Module {
+        .map(|(resource, namespace_form, source_digest, dependencies, eager, artifact)| Module {
             resource,
             namespace_form,
+            source_digest,
+            dependencies,
+            eager: *eager,
             artifact,
         })
         .collect::<Vec<_>>();
     encode(&modules)
 }
 
-pub fn compile_embedded_foundation_bundle() -> Result<Vec<u8>, String> {
-    compile_bytecode_bundle(&embedded_foundation_sources())
+pub fn compile_embedded_standard_library_bundle() -> Result<Vec<u8>, String> {
+    compile_bytecode_bundle(&embedded_standard_library_sources())
 }
 
 pub fn eval_bytecode_bundle(runtime: &mut Runtime, bytes: &[u8]) -> Result<(), String> {
@@ -76,9 +112,12 @@ pub fn eval_bytecode_bundle(runtime: &mut Runtime, bytes: &[u8]) -> Result<(), S
 }
 
 struct OwnedModule {
-    resource: String,
-    namespace_form: String,
-    artifact: Vec<u8>,
+    pub resource: String,
+    pub namespace_form: String,
+    pub source_digest: [u8; 32],
+    pub dependencies: Vec<String>,
+    pub eager: bool,
+    pub artifact: Vec<u8>,
 }
 
 fn encode(modules: &[Module<'_>]) -> Result<Vec<u8>, String> {
@@ -87,6 +126,12 @@ fn encode(modules: &[Module<'_>]) -> Result<Vec<u8>, String> {
     for module in modules {
         put_bytes(&mut payload, module.resource.as_bytes())?;
         put_bytes(&mut payload, module.namespace_form.as_bytes())?;
+        payload.extend_from_slice(module.source_digest);
+        put_u32(&mut payload, module.dependencies.len())?;
+        for dependency in module.dependencies {
+            put_bytes(&mut payload, dependency.as_bytes())?;
+        }
+        payload.push(u8::from(module.eager));
         put_bytes(&mut payload, module.artifact)?;
     }
     let checksum = Sha256::digest(&payload);
@@ -97,7 +142,7 @@ fn encode(modules: &[Module<'_>]) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-fn decode(bytes: &[u8]) -> Result<Vec<OwnedModule>, String> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<Vec<OwnedModule>, String> {
     if bytes.len() < 36 || &bytes[..4] != MAGIC {
         return Err("invalid foundation bytecode bundle header".into());
     }
@@ -109,16 +154,51 @@ fn decode(bytes: &[u8]) -> Result<Vec<OwnedModule>, String> {
     let count = take_u32(&mut input)? as usize;
     let mut modules = Vec::with_capacity(count);
     for _ in 0..count {
+        let resource = take_string(&mut input)?;
+        let namespace_form = take_string(&mut input)?;
+        let source_digest = take(&mut input, 32)?.try_into().unwrap();
+        let dependency_count = take_u32(&mut input)? as usize;
+        let dependencies = (0..dependency_count)
+            .map(|_| take_string(&mut input))
+            .collect::<Result<Vec<_>, _>>()?;
+        let eager = match take(&mut input, 1)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err("standard-library bundle contains invalid eager flag".into()),
+        };
+        let artifact = take_bytes(&mut input)?.to_vec();
         modules.push(OwnedModule {
-            resource: take_string(&mut input)?,
-            namespace_form: take_string(&mut input)?,
-            artifact: take_bytes(&mut input)?.to_vec(),
+            resource,
+            namespace_form,
+            source_digest,
+            dependencies,
+            eager,
+            artifact,
         });
     }
     if !input.is_empty() {
         return Err("trailing bytes in foundation bytecode bundle".into());
     }
     Ok(modules)
+}
+
+fn standard_library_namespace(namespace: &str) -> bool {
+    ["std.", "code.", "lang."]
+        .iter()
+        .any(|prefix| namespace.starts_with(prefix))
+}
+
+fn namespace_dependencies(namespace_form: &str) -> Result<Vec<String>, String> {
+    let forms = kernel::parse_forms(namespace_form)?;
+    let Some(kernel::Form::List(items)) = forms.first() else {
+        return Err("standard-library module has invalid ns form".into());
+    };
+    let config = kernel::GeneratedNamespaceConfig::configure_with(&items[2..], |_| true)?;
+    let mut dependencies = config.required_namespaces().to_vec();
+    dependencies.extend(config.used_namespaces().iter().cloned());
+    dependencies.sort();
+    dependencies.dedup();
+    Ok(dependencies)
 }
 
 fn split_namespace_form(source: &str) -> Result<(&str, &str), String> {
@@ -195,7 +275,7 @@ mod tests {
 
     #[test]
     fn embedded_bundle_round_trips_and_bootstraps() {
-        let bytes = compile_embedded_foundation_bundle().expect("compile foundation bundle");
+        let bytes = compile_embedded_standard_library_bundle().expect("compile standard library bundle");
         let mut runtime = Runtime::core();
         eval_bytecode_bundle(&mut runtime, &bytes).expect("load foundation bundle");
         let publics = runtime
@@ -206,5 +286,15 @@ mod tests {
         assert_eq!(runtime.eval_native("(upper \"hara\")").unwrap(), "\"HARA\"");
         assert!(runtime.use_namespace("std.foundation"));
         assert_eq!(runtime.eval_native("(if-not false 42)").unwrap(), "42");
+    }
+
+    #[test]
+    fn embedded_bundle_indexes_every_standard_library_namespace() {
+        let bytes = compile_embedded_standard_library_bundle().expect("compile standard library bundle");
+        let modules = decode(&bytes).expect("decode standard library bundle");
+        assert_eq!(modules.len(), embedded_standard_library_sources().len());
+        assert!(modules.len() >= 261, "expected the complete standard library");
+        assert!(modules.iter().any(|module| module.resource == "code.test"));
+        assert!(modules.iter().any(|module| module.resource == "lang.core"));
     }
 }

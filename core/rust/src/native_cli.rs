@@ -9,10 +9,14 @@ use crate::core::Value;
 use crate::lang::data::{Keyword, Symbol};
 use crate::Runtime;
 
-// The fiber evaluator bounds ordinary guest recursion. Keep a modest explicit
-// allowance for native namespace orchestration without reserving the former
-// 64 MiB workaround per broker.
-const RUNTIME_BROKER_STACK_SIZE: usize = 8 * 1024 * 1024;
+// Optimized brokers stay within the production 8 MiB ceiling. Debug evaluator
+// frames are much larger and need the same development allowance as the CLI
+// and portable test runner while loading the full language library.
+const RUNTIME_BROKER_STACK_SIZE: usize = if cfg!(debug_assertions) {
+    64 * 1024 * 1024
+} else {
+    8 * 1024 * 1024
+};
 
 enum Request {
     Eval {

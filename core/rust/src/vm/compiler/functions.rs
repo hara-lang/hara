@@ -53,6 +53,11 @@ impl Compiler {
                 let index = self.global_name_constant(name, span)?;
                 self.emit(Instruction::GetGlobal(index), Some(span.start))
             }
+            None if crate::core::is_bytecode_callable(name) =>
+            {
+                let index = self.name_constant(name, span)?;
+                self.emit(Instruction::BuiltinValue(index), Some(span.start))
+            }
             None => {
                 return Err(CompileError::new(
                     CompileErrorKind::UnboundSymbol,
@@ -429,6 +434,8 @@ impl Compiler {
                 if bound.iter().any(|b| b == name)
                     || free.iter().any(|(f, _)| f == name)
                     || self.visible_global(name)
+                    || Primitive::from_symbol(name).is_some()
+                    || crate::core::is_bytecode_callable(name)
                 {
                     // Bound locally, already collected, or a global:
                     // globals compile to GetGlobal (late binding through
@@ -510,9 +517,7 @@ impl Compiler {
                                         for pair in pairs.chunks(2) {
                                             if let [name, initializer] = pair {
                                                 self.collect_free(initializer, bound, free);
-                                                if let Form::Symbol(name) = name.form {
-                                                    bound.push(name.clone());
-                                                }
+                                                collect_pattern_names(name.form, bound);
                                             }
                                         }
                                         for c in &children[2..] {
@@ -567,6 +572,7 @@ impl Compiler {
                             if !bound.iter().any(|b| b == head)
                                 && !free.iter().any(|(f, _)| f == head)
                                 && !self.visible_global(head)
+                                && !crate::core::is_bytecode_callable(head)
                             {
                                 free.push((head.clone(), Some(children[0].span.start)));
                             }
@@ -657,6 +663,41 @@ impl Compiler {
             }
             _ => {}
         }
+    }
+}
+
+fn collect_pattern_names(pattern: &Form, output: &mut Vec<String>) {
+    match pattern {
+        Form::Symbol(name) if name != "&" => output.push(name.clone()),
+        Form::Vector(items) => {
+            let mut skip_marker = false;
+            for item in items {
+                if matches!(item, Form::Symbol(name) if name == "&")
+                    || matches!(item, Form::Keyword(name) if name == "as")
+                {
+                    skip_marker = true;
+                    continue;
+                }
+                collect_pattern_names(item, output);
+                skip_marker = false;
+            }
+            let _ = skip_marker;
+        }
+        Form::Map(entries) => {
+            for (binding, value) in entries {
+                match binding {
+                    Form::Keyword(name) if matches!(name.as_str(), "keys" | "strs" | "syms") => {
+                        if let Form::Vector(names) = value {
+                            for name in names { collect_pattern_names(name, output); }
+                        }
+                    }
+                    Form::Keyword(name) if name == "as" => collect_pattern_names(value, output),
+                    Form::Keyword(name) if name == "or" => {}
+                    _ => collect_pattern_names(binding, output),
+                }
+            }
+        }
+        _ => {}
     }
 }
 

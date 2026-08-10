@@ -347,6 +347,18 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
             out.u16(*count);
         }
         ToVector => out.byte(35),
+        EvalForm(index) => {
+            out.byte(36);
+            out.u32(*index);
+        }
+        PrimitiveValue(op) => {
+            out.byte(37);
+            out.byte(primitive_id(*op));
+        }
+        BuiltinValue(index) => {
+            out.byte(38);
+            out.u32(*index);
+        }
         Return => out.byte(24),
     }
 }
@@ -416,6 +428,9 @@ fn read_instruction(reader: &mut Reader<'_>) -> Result<Instruction, String> {
         33 => Instruction::BuildList(reader.u16()?),
         34 => Instruction::ConcatList(reader.u16()?),
         35 => Instruction::ToVector,
+        36 => Instruction::EvalForm(reader.u32()?),
+        37 => Instruction::PrimitiveValue(primitive(reader.byte()?)?),
+        38 => Instruction::BuiltinValue(reader.u32()?),
         _ => return Err("bytecode artifact contains an unknown opcode".into()),
     })
 }

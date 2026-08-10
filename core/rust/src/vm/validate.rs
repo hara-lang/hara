@@ -269,6 +269,20 @@ pub(crate) fn stack_heights(
                     ));
                 }
             }
+            Instruction::EvalForm(constant) if *constant as usize >= program.constants.len() => {
+                return Err(ValidationError::new(
+                    format!("constant index {constant} out of range"),
+                    at,
+                ));
+            }
+            Instruction::BuiltinValue(constant)
+                if !matches!(program.constants.get(*constant as usize), Some(Value::String(_))) =>
+            {
+                return Err(ValidationError::new(
+                    format!("builtin name constant {constant} is invalid"),
+                    at,
+                ));
+            }
             Instruction::Jump(target) | Instruction::JumpIfFalse(target)
                 if *target as usize >= code.len() =>
             {

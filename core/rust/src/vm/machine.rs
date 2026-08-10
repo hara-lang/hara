@@ -997,6 +997,32 @@ impl Machine {
                     next_ip = *target as usize;
                 }
             }
+            Instruction::EvalForm(index) => {
+                let Some(form) = program.constants.get(*index as usize) else {
+                    return Dispatch::Failed(
+                        self.error(function, format!("constant index {index} out of range")),
+                    );
+                };
+                match crate::core::eval_bytecode_form(form) {
+                    Ok(value) => self.stack.push(value.into()),
+                    Err(message) => match self.raise(function, message) {
+                        Ok(target) => return Dispatch::Unwound(target),
+                        Err(error) => return Dispatch::Failed(error),
+                    },
+                }
+            }
+            Instruction::PrimitiveValue(op) => self.stack.push(
+                crate::core::structural_function_value(op.operator()).into(),
+            ),
+            Instruction::BuiltinValue(index) => {
+                let Some(Value::String(name)) = program.constants.get(*index as usize) else {
+                    return Dispatch::Failed(
+                        self.error(function, format!("builtin name constant {index} is invalid")),
+                    );
+                };
+                self.stack
+                    .push(crate::core::structural_function_value(name).into());
+            }
             Instruction::Closure {
                 prototype,
                 captures,

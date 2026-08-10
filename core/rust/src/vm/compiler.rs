@@ -34,6 +34,8 @@ use super::validate::{self, stack_heights};
 
 #[path = "compiler/exceptions.rs"]
 mod exceptions;
+#[path = "compiler/destructure.rs"]
+mod destructure;
 #[path = "compiler/functions.rs"]
 mod functions;
 #[path = "compiler/scope.rs"]
@@ -236,6 +238,7 @@ struct Compiler {
     /// True while compiling a direct child of the top-level sequence;
     /// `defn` and `declare` are only legal there.
     top_level: bool,
+    next_destructure_id: u64,
 }
 
 /// The reservation placed in `functions` while a body is compiled: the
@@ -328,6 +331,7 @@ impl Compiler {
             globals: Vec::new(),
             var_metadata: Vec::new(),
             top_level: true,
+            next_destructure_id: 0,
         }
     }
 
@@ -566,6 +570,18 @@ impl Compiler {
             // matching the evaluator, which never reaches it.
             return Ok(());
         }
+        if let Some(expanded) = destructure::expand(form, &mut self.next_destructure_id)
+            .map_err(|message| {
+                CompileError::new(
+                    CompileErrorKind::UnsupportedForm,
+                    message,
+                    Some(span.start),
+                )
+            })?
+        {
+            self.top_level = top;
+            return self.compile_form(&expanded, span, None, tail);
+        }
         if let Form::List(values) = crate::core::form_without_metadata(form) {
             let protected = matches!(
                 values.first(),
@@ -661,6 +677,21 @@ impl Compiler {
                     Ok(())
                 }
                 None if self.visible_global(name) => self.emit_get_global(name, span),
+                None if Primitive::from_symbol(name).is_some() => {
+                    self.emit(
+                        Instruction::PrimitiveValue(
+                            Primitive::from_symbol(name).expect("primitive was checked"),
+                        ),
+                        Some(span.start),
+                    );
+                    Ok(())
+                }
+                None if crate::core::is_bytecode_callable(name) =>
+                {
+                    let index = self.name_constant(name, span)?;
+                    self.emit(Instruction::BuiltinValue(index), Some(span.start));
+                    Ok(())
+                }
                 None => Err(CompileError::new(
                     CompileErrorKind::UnboundSymbol,
                     format!("unbound symbol: {name}"),
@@ -673,6 +704,24 @@ impl Compiler {
             Form::List(elements) => {
                 let children = self.list_children(elements, span, children);
                 match &elements[0] {
+                    Form::Symbol(name)
+                        if top
+                            && matches!(
+                                name.as_str(),
+                                "defprotocol" | "extend-type" | "defmulti" | "defmethod"
+                            ) =>
+                    {
+                        let value = crate::core::form_to_value(form).map_err(|message| {
+                            CompileError::new(
+                                CompileErrorKind::UnsupportedForm,
+                                message,
+                                Some(span.start),
+                            )
+                        })?;
+                        let index = self.constant_index_of(value, span)?;
+                        self.emit(Instruction::EvalForm(index), Some(span.start));
+                        Ok(())
+                    }
                     Form::Symbol(name) if self.is_coroutine_var(name, "await") => {
                         self.compile_await(&children, span)
                     }
@@ -1084,16 +1133,24 @@ impl Compiler {
         let mut false_jumps = Vec::new();
         for child in &children[1..children.len() - 1] {
             self.compile_form(child.form, child.span, child.children, false)?;
+            if !self.ctx().fallthrough {
+                break;
+            }
             self.emit(Instruction::Dup, Some(child.span.start));
             false_jumps.push(self.emit(Instruction::JumpIfFalse(0), Some(child.span.start)));
             self.emit(Instruction::Pop, Some(child.span.start));
         }
-        let last = children.last().expect("and has an argument");
-        self.compile_form(last.form, last.span, last.children, tail)?;
+        if self.ctx().fallthrough {
+            let last = children.last().expect("and has an argument");
+            self.compile_form(last.form, last.span, last.children, tail)?;
+        }
+        let last_fell = self.ctx().fallthrough;
         let end = self.ctx().code.len();
+        let short_circuits = !false_jumps.is_empty();
         for jump in false_jumps {
             self.patch_jump(jump, end);
         }
+        self.ctx_mut().fallthrough = last_fell || short_circuits;
         Ok(())
     }
 
@@ -1110,6 +1167,9 @@ impl Compiler {
         let mut end_jumps = Vec::new();
         for child in &children[1..children.len() - 1] {
             self.compile_form(child.form, child.span, child.children, false)?;
+            if !self.ctx().fallthrough {
+                break;
+            }
             self.emit(Instruction::Dup, Some(child.span.start));
             let false_jump = self.emit(Instruction::JumpIfFalse(0), Some(child.span.start));
             end_jumps.push(self.emit(Instruction::Jump(0), Some(child.span.start)));
@@ -1117,12 +1177,17 @@ impl Compiler {
             self.patch_jump(false_jump, next);
             self.emit(Instruction::Pop, Some(child.span.start));
         }
-        let last = children.last().expect("or has an argument");
-        self.compile_form(last.form, last.span, last.children, tail)?;
+        if self.ctx().fallthrough {
+            let last = children.last().expect("or has an argument");
+            self.compile_form(last.form, last.span, last.children, tail)?;
+        }
+        let last_fell = self.ctx().fallthrough;
         let end = self.ctx().code.len();
+        let short_circuits = !end_jumps.is_empty();
         for jump in end_jumps {
             self.patch_jump(jump, end);
         }
+        self.ctx_mut().fallthrough = last_fell || short_circuits;
         Ok(())
     }
 
@@ -1372,10 +1437,60 @@ fn internal(message: String) -> CompileError {
 #[cfg(test)]
 mod tests {
     use super::compile_source;
+    use crate::Runtime;
 
     #[test]
     fn cond_compiles_a_terminating_loop_branch() {
         compile_source("(loop [i 0] (cond (< i 2) (recur (+ i 1)) :else i))")
             .expect("cond with a terminating branch compiles");
+    }
+
+    #[test]
+    fn short_circuit_forms_compile_with_a_terminating_final_operand() {
+        compile_source("(fn [x] (and x (throw \"and\")))")
+            .expect("and short-circuit path reaches the function return");
+        compile_source("(fn [x] (or x (throw \"or\")))")
+            .expect("or short-circuit path reaches the function return");
+    }
+
+    #[test]
+    fn structural_callable_compiles_as_a_first_class_value() {
+        assert!(crate::core::is_bytecode_callable("disj"));
+        compile_source("(fn [] disj)").expect("structural callable compiles");
+        compile_source("(fn [] (disj #{} 1))").expect("structural callable invocation compiles");
+    }
+
+    #[test]
+    fn destructuring_lowers_across_bindings_parameters_and_recur() {
+        let mut runtime = Runtime::core();
+        runtime.prepare_foundation_bytecode();
+        runtime.use_namespace("std.foundation");
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(let [[a b & more :as all] [1 2 3 4]
+                            {:keys [x] :or {x 9} :as m} {:x 5}]
+                       [a b more all x m])"
+                )
+                .unwrap(),
+            "[1 2 [3 4] [1 2 3 4] 5 {:x 5}]"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native("((fn [[a b] {:keys [x]}] (+ a b x)) [1 2] {:x 3})")
+                .unwrap(),
+            "6"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(loop [[head & tail] [1 2 3] out []]
+                       (if head
+                         (recur tail (conj out head))
+                         out))"
+                )
+                .unwrap(),
+            "[1 2 3]"
+        );
     }
 }

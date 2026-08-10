@@ -1667,8 +1667,10 @@ impl Runtime {
         program: std::rc::Rc<vm::Program>,
     ) -> Result<core::Value, String> {
         core::with_macros(self.macros.clone(), || {
-            vm::execute_program_with_globals(program, &self.namespace_registry)
-                .map_err(|error| error.to_string())
+            core::with_protocols(&self.protocols, || {
+                vm::execute_program_with_globals(program, &self.namespace_registry)
+                    .map_err(|error| error.to_string())
+            })
         })
     }
 
@@ -1724,9 +1726,11 @@ impl Runtime {
         let function_types = program.function_types.clone();
         let inferred_function_types = program.inferred_function_types.clone();
         let result = core::with_macros(self.macros.clone(), || {
-            vm::execute_program_with_globals(program, &self.namespace_registry)
-                .map(|value| value.display())
-                .map_err(|error| error.to_string())
+            core::with_protocols(&self.protocols, || {
+                vm::execute_program_with_globals(program, &self.namespace_registry)
+                    .map(|value| value.display())
+                    .map_err(|error| error.to_string())
+            })
         });
         if result.is_ok() {
             self.halc_schema_types.extend(schema_types);
@@ -8100,6 +8104,14 @@ mod tests {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.eval_text("(do (def ^:dynamic *answer* 1) (binding [*answer* 42] (binding [*answer* 43] *answer*)))").unwrap(), "43");
         assert_eq!(runtime.eval_text("*answer*").unwrap(), "1");
+        assert_eq!(
+            runtime
+                .eval_text("(do (ns binding.consumer) (binding [user/*answer* 44] user/*answer*))")
+                .unwrap(),
+            "44"
+        );
+        assert_eq!(runtime.eval_text("user/*answer*").unwrap(), "1");
+        runtime.eval_text("(ns user)").unwrap();
         assert_eq!(
             runtime
                 .eval_text("(ILookup/lookup (IObjType/meta (var *answer*)) :dynamic)")

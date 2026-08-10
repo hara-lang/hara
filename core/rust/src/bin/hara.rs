@@ -5,7 +5,14 @@ mod repl;
 #[path = "hara/terminal.rs"]
 mod terminal;
 
-const CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
+// Debug evaluator frames are substantially larger than optimized frames. Keep
+// the shipped runtime bounded at 8 MiB while giving developer builds enough
+// room to bootstrap the portable library without hiding release regressions.
+const CLI_STACK_SIZE: usize = if cfg!(debug_assertions) {
+    64 * 1024 * 1024
+} else {
+    8 * 1024 * 1024
+};
 
 fn run_main() {
     let options = match cli::parse_options() {

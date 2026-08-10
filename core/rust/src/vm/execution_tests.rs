@@ -274,7 +274,7 @@ fn arithmetic_errors() {
         "integer overflow [line 1, column 1]",
     );
     assert_eval_error("(+ 1 \"a\")", "+ expects numbers [line 1, column 1]");
-    assert_eval_error("(+ 1 1.5)", "+ expects numbers [line 1, column 1]");
+    assert_eq!(eval("(+ 1 1.5)"), "2.5");
     // `mod` reports its operator as `%`, matching the evaluator.
     assert_eval_error("(mod \"a\" 1)", "% expects numbers [line 1, column 1]");
 }

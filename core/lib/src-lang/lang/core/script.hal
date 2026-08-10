@@ -180,17 +180,47 @@
   `(lang.core.script/register-code!
     '~(apply list 'defn symbol body)))
 
+(defn- quote-macro-expansion
+  [forms]
+  (list 'list
+        (list 'quote 'quote)
+        (apply list 'do forms)))
+
+(defn- runtime-macro-body
+  [body]
+  (let [[prefix declarations]
+        (loop [prefix [] declarations (vec body)]
+          (if (or (string? (first declarations))
+                  (map? (first declarations)))
+            (recur (conj prefix (first declarations))
+                   (vec (rest declarations)))
+            [prefix declarations]))
+        transformed
+        (if (vector? (first declarations))
+          [(first declarations)
+           (quote-macro-expansion (vec (rest declarations)))]
+          (map (fn [clause]
+                 (list (first clause)
+                       (quote-macro-expansion (vec (rest clause)))))
+               declarations))]
+    (vec (concat prefix transformed))))
+
 (defmacro defmacro.xt
   [symbol & body]
   (let [form (apply list 'defmacro symbol body)
+        runtime-form (apply list 'defmacro symbol (runtime-macro-body body))
         qualified (symbol (str (:ns &env)) (name symbol))]
     `(do
-       ~form
+       ~runtime-form
        (lang.core.script/register-fragment!
         '~form
         (fn [& args]
-          (macroexpand-1
-           (apply list '~qualified args)))))))
+          (let [expanded (macroexpand-1
+                          (apply list '~qualified args))]
+            (if (and (list? expanded)
+                     (= 'quote (first expanded)))
+              (second expanded)
+              expanded)))))))
 
 (defn module-loaded?
   [module]

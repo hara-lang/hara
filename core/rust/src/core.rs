@@ -903,7 +903,11 @@ fn structural_native_dispatch_active(name: &str) -> bool {
 pub(crate) fn structural_function_value(name: impl Into<String>) -> Value {
     let name = name.into();
     let display_name = name.clone();
-    let call_name = crate::kernel::generated::canonical_native_call(&name);
+    let call_name = if name == "disj" {
+        "dissoc".to_owned()
+    } else {
+        crate::kernel::generated::canonical_native_call(&name)
+    };
     native_variadic_function(&display_name, move |arguments| {
         let mut env = HashMap::new();
         let mut call = Vec::with_capacity(arguments.len() + 1);
@@ -980,14 +984,64 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
 
 #[cfg(feature = "bytecode-vm")]
 pub(crate) fn bytecode_callable_names() -> impl Iterator<Item = &'static str> {
-    structural_callable_names().chain([
-        "macroexpand-1",
-        "gensym",
-        "type",
-        "meta",
-        "with-meta",
-        "ns-publics",
-    ])
+    structural_callable_names()
+        .chain(
+            FOUNDATION_PROTOCOLS
+                .iter()
+                .flat_map(|(_, methods)| methods.iter().map(|(name, _)| *name))
+                // These protocol method names are intentionally redefined by
+                // standard-library namespaces. Keeping them out of the
+                // implicit Foundation refer preserves the generated ns
+                // omission/alias contract during bytecode bootstrap.
+                .filter(|name| {
+                    !matches!(
+                        *name,
+                        "call"
+                            | "cancel"
+                            | "close"
+                            | "empty"
+                            | "find"
+                            | "invoke"
+                            | "meta"
+                            | "resume"
+                            | "rt-start"
+                            | "rt-stop"
+                            | "start"
+                            | "started?"
+                            | "state"
+                            | "status"
+                            | "stop"
+                            | "then"
+                            | "value"
+                    )
+                }),
+        )
+        .chain([
+            "macroexpand-1",
+            "gensym",
+            "type",
+            "meta",
+            "with-meta",
+            "ns-publics",
+        ])
+}
+
+#[cfg(feature = "bytecode-vm")]
+pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'static str> {
+    bytecode_callable_names()
+        .chain(NATIVE_TYPES.iter().flat_map(|(_, methods)| methods.iter().copied()))
+        .chain(
+            FOUNDATION_PROTOCOLS
+                .iter()
+                .flat_map(|(_, methods)| methods.iter().map(|(name, _)| *name)),
+        )
+        .chain(["disj"])
+}
+
+#[cfg(feature = "bytecode-vm")]
+pub(crate) fn is_bytecode_callable(name: &str) -> bool {
+    let local = name.rsplit_once('/').map_or(name, |(_, local)| local);
+    bytecode_compiler_callable_names().any(|builtin| builtin == local)
 }
 
 pub fn with_macros<R>(
@@ -1180,6 +1234,19 @@ fn value_to_form(value: &Value) -> Result<Form, String> {
         ),
         None => form,
     })
+}
+
+/// Evaluates code retained as an immutable bytecode constant. This is used
+/// for namespace-level declarations whose effect mutates runtime protocol or
+/// multimethod registries and therefore cannot be reduced to ordinary stack
+/// instructions.
+pub(crate) fn eval_bytecode_form(value: &Value) -> Result<Value, String> {
+    let form = value_to_form(value)?;
+    let mut env = HashMap::new();
+    if let Ok(registry) = namespace_registry() {
+        refresh_namespace_environment(&registry, &mut env);
+    }
+    eval(&form, &mut env)
 }
 
 fn macro_environment() -> Result<Value, String> {
@@ -13462,10 +13529,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             Form::Symbol(name) => name,
                             _ => return Err("binding name must be a symbol".into()),
                         };
-                        let var = match env.get(name) {
-                            Some(Value::Var(var)) => var.clone(),
-                            _ => return Err(format!("binding expects a Var: {name}")),
-                        };
+                        let var = binding_var(env, name)
+                            .ok_or_else(|| format!("binding expects a Var: {name}"))?;
                         if !var.is_dynamic() {
                             return Err(format!("binding expects a dynamic Var: {name}"));
                         }

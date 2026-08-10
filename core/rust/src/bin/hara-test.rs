@@ -4,7 +4,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const TEST_STACK_SIZE: usize = 8 * 1024 * 1024;
+// The test runner is normally a debug binary, whose tree-evaluator frames are
+// larger than the optimized production frames. Release verification still
+// exercises the production 8 MiB ceiling.
+const TEST_STACK_SIZE: usize = if cfg!(debug_assertions) {
+    64 * 1024 * 1024
+} else {
+    8 * 1024 * 1024
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestSummary {

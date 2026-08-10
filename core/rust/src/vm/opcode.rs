@@ -144,6 +144,14 @@ pub enum Instruction {
         name: u32,
         metadata: Option<u16>,
     },
+    /// Evaluates a namespace-level declaration retained as a Form constant.
+    /// This covers registry-mutating declarations such as protocols and
+    /// multimethods without reparsing source at load time.
+    EvalForm(u32),
+    /// Pushes a first-class callable for a primitive operator.
+    PrimitiveValue(Primitive),
+    /// Pushes a first-class callable implemented by the structural runtime.
+    BuiltinValue(u32),
     /// Replaces a settled promise with its value, raises a rejection, or
     /// suspends the current VM fiber while preserving the complete machine.
     Await,
@@ -193,6 +201,9 @@ impl Instruction {
             | Instruction::VarGlobal(_)
             | Instruction::DefStruct { .. }
             | Instruction::DeclareGlobal(_) => 1,
+            Instruction::EvalForm(_) => 1,
+            Instruction::PrimitiveValue(_) => 1,
+            Instruction::BuiltinValue(_) => 1,
             Instruction::DefGlobal { .. }
             | Instruction::SetGlobal(_)
             | Instruction::StructField(_) => 0,
@@ -278,6 +289,9 @@ impl std::fmt::Display for Instruction {
                 Some(metadata) => write!(formatter, "DefMacro {name} meta {metadata}"),
                 None => write!(formatter, "DefMacro {name}"),
             },
+            Instruction::EvalForm(index) => write!(formatter, "EvalForm {index}"),
+            Instruction::PrimitiveValue(op) => write!(formatter, "PrimitiveValue {}", op.operator()),
+            Instruction::BuiltinValue(index) => write!(formatter, "BuiltinValue {index}"),
             Instruction::Await => formatter.write_str("Await"),
             Instruction::HostCall => formatter.write_str("HostCall"),
             Instruction::Return => formatter.write_str("Return"),
