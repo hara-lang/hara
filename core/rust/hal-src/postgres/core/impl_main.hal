@@ -5,9 +5,6 @@
 (defn- collection-value? [value]
   (or (list? value) (vector? value) (set? value) (map? value)))
 
-(defn- table-symbol [entry]
-  (or (util/sym-full entry) (:id entry)))
-
 (defn- default-returning [table-schema]
   (reduce (fn [out key] (conj out key)) #{} (keys table-schema)))
 
@@ -16,7 +13,7 @@
   (let [entry (first prepared)
         table-schema (second prepared)
         options (nth prepared 2)
-        table-sym (table-symbol entry)
+        table-sym (base/table-symbol entry)
         as (get params :as :json)
         requested (:returning params)
         returning (if base/*skip-checks*
@@ -54,7 +51,9 @@
 
 (defn t-id-raw [prepared params]
   (with-meta
-    (t-select-raw prepared (merge {:single true :as :raw :returning #{:id}} params))
+    (list 'pg:scalar
+          (t-select-raw prepared
+                        (merge {:single true :as :raw :returning #{:id}} params)))
     {:op/type :id}))
 
 (defn t-id [spec params]
@@ -62,16 +61,19 @@
 
 (defn t-count-raw [prepared params]
   (with-meta
-    (t-select-raw prepared (merge {:as :raw :returning '(count *)} params))
+    (list 'pg:scalar
+          (t-select-raw prepared (merge {:as :raw :returning '(count *)} params)))
     {:op/type :count}))
 
 (defn t-count [spec params]
   (t-count-raw (base/prep-table spec false {}) params))
 
 (defn t-exists-raw [prepared params]
-  (with-meta [:select (list 'exists
-                            (t-select-raw prepared
-                                          (merge {:as :raw :returning 1} params)))]
+  (with-meta (list 'pg:scalar
+                   [:select (list 'exists
+                                  (t-select-raw prepared
+                                                (merge {:as :raw :returning 1}
+                                                       params)))])
              {:op/type :exists}))
 
 (defn t-exists [spec params]
@@ -81,7 +83,7 @@
   (let [entry (first prepared)
         table-schema (second prepared)
         options (nth prepared 2)
-        table-sym (table-symbol entry)
+        table-sym (base/table-symbol entry)
         as (get params :as :json)
         returning (base/t-returning
                    table-schema

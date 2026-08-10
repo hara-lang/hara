@@ -8,23 +8,25 @@
 (def entry {:id 'Entry :module 'demo :table-schema schema})
 
 (fact "exposes select operations through the implementation facade"
-  (impl/t:select entry {:as :raw}) => '[:select * :from demo/Entry]
-  (impl/t:count entry {}) => '[:select (count *) :from demo/Entry])
+  (macroexpand-1 (list 'impl/t:select entry {:as :raw})) => '[:select * :from demo/Entry]
+  (macroexpand-1 (list 'impl/t:count entry {}))
+  => '(pg:scalar [:select (count *) :from demo/Entry]))
 
 (fact "guards single-record reads with WHERE"
-  (impl/t:get entry {}) => (throws)
-  (impl/t:id entry {}) => (throws)
-  (impl/t:get entry {:where {:id "a"}})
-  => '[:with j-ret :as
-       [:select (--- [#{"id"} #{"name"}]) :from demo/Entry
-        \\ :where {"id" [:eq "a"]} \\ :limit 1]
-       \\ :select (to-jsonb j-ret) :from j-ret])
+  (macroexpand-1 (list 'impl/t:get entry {})) => (throws)
+  (macroexpand-1 (list 'impl/t:id entry {})) => (throws)
+  (macroexpand-1 (list 'impl/t:get entry {:where {:id "a"}}))
+  => '(pg:scalar
+       [:with j-ret :as
+        [:select (--- [#{"id"} #{"name"}]) :from demo/Entry
+         \\ :where {"id" [:eq "a"]} \\ :limit 1]
+        \\ :select (to-jsonb j-ret) :from j-ret]))
 
 (fact "exposes insert and update operations"
-  (impl/t:insert entry {:id "a"} {:as :raw})
+  (macroexpand-1 (list 'impl/t:insert entry {:id "a"} {:as :raw}))
   => '[:insert-into demo/Entry (>-< [#{"id"}]) :values (>-< [(:uuid "a")])]
-  (impl/t:update! entry {:set {:name "n"}})
-  => '[:update demo/Entry :set (--- [(== #{"name"} (:text "n"))])])
+  (macroexpand-1 (list 'impl/t:update! entry {:set {:name "n"}}))
+  => '[:update demo/Entry :set (== (>-< [#{"name"}]) (row (:text "n")))])
 
 (fact "exposes table fields"
-  (impl/t:fields entry {}) => '[name])
+  (macroexpand-1 (list 'impl/t:fields entry {})) => '[name])

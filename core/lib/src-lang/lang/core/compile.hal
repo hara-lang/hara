@@ -28,6 +28,10 @@
   [values]
   (vec (sort-by str (or values []))))
 
+(defn- set-remove
+  [values value]
+  (set (filter (fn [item] (not= item value)) values)))
+
 (defn- require-module-id
   [spec]
   (cond
@@ -130,7 +134,7 @@
                     "Tahto module dependency cycle"
                     {:modules cycle}))})
           (recur
-           (reduce disj remaining ready)
+           (reduce set-remove remaining ready)
            (into ordered ready)
            diagnostics))))))
 
@@ -261,20 +265,22 @@
   "Compiles one registered entry with the selected portable language book."
   [options modules module entry]
   (let [lang (:lang options)
-        book (registry/registry-book lang :default nil)]
+        book (or (:book options)
+                 (registry/registry-book lang :default nil))]
     (if (nil? book)
       (throw (ex-info "Tahto language book is not registered"
                       {:lang lang}))
       (let [selected (:selection book)
-            context {:book (assoc book :modules modules)
-                     :modules modules
+            all-modules (merge (or (:modules book) {}) modules)
+            context {:book (assoc book :modules all-modules)
+                     :modules all-modules
                      :module module
                      :entry entry
                      :lang lang
                      :layout (or (:layout options) :module)
                      :emit (or (:emit options) {})}]
         (compiler/compile-entry
-         (compiler/compiler)
+         (or (:compiler options) (compiler/compiler))
          entry
          selected
          context)))))
@@ -351,7 +357,8 @@
                :lang/unsupported-form
                "Tahto entry compilation failed"
                {:entry qualified
-                :module (:module entry)})]
+                :module (:module entry)
+                :cause-message (ex-message error)})]
           {:item (failed-entry entry qualified problem)
            :diagnostics [problem]})))))
 
@@ -371,17 +378,22 @@
 (defn compile-entries
   "Compiles every registered code entry in module order."
   [options modules module-order]
-  (reduce
-   (fn [state entry]
-     (let [compiled (compile-entry-safe options modules entry)]
-       {:entries (conj (:entries state) (:item compiled))
-        :diagnostics (into (:diagnostics state)
-                           (:diagnostics compiled))}))
-   {:entries []
-    :diagnostics []}
-   (mapcat (fn [module-id]
-             (module-code-entries module-id (get modules module-id)))
-           module-order)))
+  (let [prepared-options
+        (assoc options
+               :book (or (:book options)
+                         (registry/registry-book (:lang options) :default nil))
+               :compiler (or (:compiler options) (compiler/compiler)))]
+    (reduce
+     (fn [state entry]
+       (let [compiled (compile-entry-safe prepared-options modules entry)]
+         {:entries (conj (:entries state) (:item compiled))
+          :diagnostics (into (:diagnostics state)
+                             (:diagnostics compiled))}))
+     {:entries []
+      :diagnostics []}
+     (mapcat (fn [module-id]
+               (module-code-entries module-id (get modules module-id)))
+             module-order))))
 
 (defn missing-entry-diagnostics
   [entries]
@@ -481,7 +493,7 @@
                       "Tahto entry dependency cycle"
                       {:entries (vec (map :symbol cycle))}))})
             (recur
-             (reduce disj remaining (map :symbol ready))
+             (reduce set-remove remaining (map :symbol ready))
              (into ordered ready)
              diagnostics)))))))
 

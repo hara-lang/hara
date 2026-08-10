@@ -71,6 +71,10 @@ pub struct PostgresModule {
 
 impl PostgresModule {
     pub fn new() -> Result<Self, Error> {
+        // The parent Hara binary may link more than one rustls backend through
+        // unrelated native providers. Select this module's reviewed backend
+        // explicitly before any TLS configuration is constructed.
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let identity = NativeIdentity::new(
             "gh:hara-lang:std-db-postgres",
             "std.db.postgres",
@@ -1467,11 +1471,7 @@ fn integer_option(options: &BTreeMap<String, Value>, name: &str, fallback: i64) 
     }
 }
 fn identifier(value: &str) -> Result<String, Error> {
-    if value.is_empty()
-        || value
-            .bytes()
-            .any(|byte| !(byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$'))
-    {
+    if value.is_empty() || value.contains('\0') {
         Err(Error::new(
             "postgres/config-invalid",
             "invalid SQL identifier",
@@ -1564,6 +1564,14 @@ mod tests {
         let error = connection_config(&options).unwrap_err();
         assert_eq!(error.code, "postgres/config-invalid");
         assert!(!error.detail.contains("secret"));
+    }
+
+    #[test]
+    fn identifiers_quote_postgres_names_instead_of_restricting_them() {
+        assert_eq!(identifier("gw-ledger-test").unwrap(), "\"gw-ledger-test\"");
+        assert_eq!(identifier("quoted\"name").unwrap(), "\"quoted\"\"name\"");
+        assert!(identifier("").is_err());
+        assert!(identifier("bad\0name").is_err());
     }
 
     #[test]

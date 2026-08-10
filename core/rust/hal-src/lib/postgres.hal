@@ -41,30 +41,70 @@
 (def numeric postgres/numeric)
 (def sql-array postgres/sql-array)
 
-(defn run-lifecycle [runtime command]
-  (if command (if (fn? command) (command runtime) (throw (ex-info "PostgreSQL lifecycle hooks must be functions in HAL" {:command command}))) runtime))
+(defn run-lifecycle
+  [runtime command]
+  (if command
+    (if (fn? command)
+      (command runtime)
+      (throw (ex-info "PostgreSQL lifecycle hooks must be functions in HAL"
+                      {:command command})))
+    runtime))
 
-(defn connection-options [runtime]
-  (let [options (:config (:options runtime)) container (:container runtime) environment (get-in options [:container :environment])
+(defn connection-options
+  [runtime]
+  (let [options (:config (:options runtime))
+        container (:container runtime)
+        environment (get-in options [:container :environment])
         options (dissoc options :container :temp :startup :shutdown)
-        options (if container (merge options {:host (:host container) :port (:port container)}) options)
-        options (if (or (:user options) (nil? environment)) options (assoc options :user (get environment "POSTGRES_USER")))]
-    (if (or (:password options) (nil? environment)) options (assoc options :password (get environment "POSTGRES_PASSWORD")))))
+        options (if container
+                  (merge options {:host (:host container) :port (:port container)})
+                  options)
+        options (if (or (:user options) (nil? environment))
+                  options
+                  (assoc options :user (get environment "POSTGRES_USER")))]
+    (if (or (:password options) (nil? environment))
+      options
+      (assoc options :password (get environment "POSTGRES_PASSWORD")))))
 
-(defn admin-options [options] (assoc (dissoc options :database) :dbname "postgres"))
+(defn admin-options
+  [options]
+  (assoc (dissoc options :database) :dbname "postgres"))
 
-(defn start-pg-raw [runtime]
-  (let [options (connection-options runtime) admin (admin-options options) database (:dbname options) timeout (:timeout runtime)]
+(defn start-pg-raw
+  [runtime]
+  (let [options (connection-options runtime)
+        admin (admin-options options)
+        database (:dbname options)
+        timeout (:timeout runtime)]
     (deref (postgres/wait-ready admin))
-    (if (get-in runtime [:options :config :temp]) (deref (postgres/database-create admin database)))
-    (reset! (:connection runtime) (deref (postgres/open options))) runtime))
+    (if (get-in runtime [:options :config :temp])
+      (deref (postgres/database-create admin database)))
+    (reset! (:connection runtime)
+            (deref (postgres/open options)))
+    runtime))
 
-(defn stop-pg-raw [runtime]
-  (let [connection (deref (:connection runtime)) options (connection-options runtime) database (:dbname options)
-        temp (get-in runtime [:options :config :temp]) timeout (:timeout runtime)]
-    (if connection (deref (postgres/close connection)))
+(defn stop-pg-raw
+  [runtime]
+  (let [connection (deref (:connection runtime))
+        options (connection-options runtime)
+        database (:dbname options)
+        temp (get-in runtime [:options :config :temp])
+        timeout (:timeout runtime)]
+    (if connection
+      (deref (postgres/close connection)))
     (reset! (:connection runtime) nil)
-    (if (and temp (not= temp :create)) (deref (postgres/database-drop (admin-options options) database))) runtime))
+    (if (and temp (not= temp :create))
+      (deref (postgres/database-drop (admin-options options) database)))
+    runtime))
 
-(def start-pg (component/wrap-start start-pg-raw [{:key :startup :setup run-lifecycle} {:key :container :setup docker/start-runtime}]))
-(def stop-pg (component/wrap-stop stop-pg-raw [{:key :container :teardown docker/stop-runtime} {:key :shutdown :teardown run-lifecycle}]))
+(def start-pg
+  (component/wrap-start
+   start-pg-raw
+   [{:key :startup :setup run-lifecycle}
+    {:key :container :setup docker/start-runtime}]))
+
+(def stop-pg
+  (component/wrap-stop
+   stop-pg-raw
+   [{:key :container :teardown docker/stop-runtime}
+    {:key :shutdown :teardown run-lifecycle}]))

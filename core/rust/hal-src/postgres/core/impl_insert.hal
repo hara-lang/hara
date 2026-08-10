@@ -44,14 +44,11 @@
 (defn t-insert-record [table-sym data params]
   [:select '* :from (list 'jsonb-populate-record (list '++ nil table-sym) data)])
 
-(defn- table-symbol [entry]
-  (or (util/sym-full entry) (:id entry)))
-
 (defn t-insert-raw [prepared data params]
   (let [entry (first prepared)
         table-schema (second prepared)
         options (nth prepared 2)
-        table-sym (table-symbol entry)
+        table-sym (base/table-symbol entry)
         as (get params :as :json)
         requested (:returning params)
         defaults (reduce (fn [out key]
@@ -102,7 +99,8 @@
                                        base/t-key-attrs-fn)
         row (map (fn [column key]
                    (or (get (:on-update params) key)
-                       (list '. (list :- "EXCLUDED") column)))
+                       (list 'pg:raw
+                             (str "EXCLUDED.\"" (first column) "\""))))
                  columns update-keys)
         requested-conflict (or (:on-conflict params) primary)
         conflict-keys (if (set? requested-conflict)
@@ -111,11 +109,11 @@
         conflict-columns (base/t-returning-cols table-schema
                                                 conflict-keys
                                                 base/t-key-attrs-fn)
-        conflict (list 'quote (apply list conflict-columns))
+        conflict (list '>-< conflict-columns)
         args (if (= 0 (count update-keys))
                [:on-conflict conflict :do-nothing]
                (vec (concat [:on-conflict conflict :do-update :set
-                             (list 'quote (apply list columns)) :=]
+                             (list '>-< columns) :=]
                             [(apply list 'row row)])))]
     (with-meta (t-insert-raw prepared data (assoc params :args args))
                {:op/type :upsert})))

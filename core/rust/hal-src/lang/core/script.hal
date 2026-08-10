@@ -9,6 +9,7 @@
 (def +specs+ (atom {}))
 (def +scripts+ (atom {}))
 (def +loaded-modules+ (atom {}))
+(def +module-contexts+ (atom {}))
 
 (defn default-module-loader
   [qualified]
@@ -22,6 +23,15 @@
 (defn- namespace-symbol
   []
   (symbol (str (current-namespace))))
+
+(defn- module-symbol
+  []
+  (or (get (deref +module-contexts+) (namespace-symbol))
+      (namespace-symbol)))
+
+(defn current-module-id
+  []
+  (module-symbol))
 
 (defn- symbol-id
   [value]
@@ -64,22 +74,25 @@
            (select-keys config +module-metadata-keys+))))
 
 (defn configure-module!
-  [lang config]
-  (let [module (namespace-symbol)
-        current (get (deref +modules+) module)
-        value (module-config lang module config)
-        value (assoc value
-                     :code (or (:code current) {})
-                     :fragment (or (:fragment current) {}))
-        value (if (:native current)
-                (assoc value :native (:native current))
-                value)]
-    (swap! +modules+ assoc module value)
-    value))
+  ([lang config]
+   (configure-module! lang (namespace-symbol) config))
+  ([lang module config]
+   (let [source (namespace-symbol)
+         _ (swap! +module-contexts+ assoc source module)
+         current (get (deref +modules+) module)
+         value (module-config lang module config)
+         value (assoc value
+                      :code (or (:code current) {})
+                      :fragment (or (:fragment current) {}))
+         value (if (:native current)
+                 (assoc value :native (:native current))
+                 value)]
+     (swap! +modules+ assoc module value)
+     value)))
 
 (defn register-spec!
   [id type-form metadata]
-  (let [module (namespace-symbol)
+  (let [module (module-symbol)
         qualified (symbol (name module) (name id))
         value {:symbol qualified
                :module module
@@ -108,7 +121,7 @@
 
 (defn register-code!
   [form]
-  (let [module (namespace-symbol)
+  (let [module (module-symbol)
         symbol (second form)
         id (symbol-id symbol)
         op (first form)
@@ -141,7 +154,7 @@
 
 (defn register-fragment!
   [form template]
-  (let [module (namespace-symbol)
+  (let [module (module-symbol)
         symbol (second form)
         id (symbol-id symbol)
         entry {:id id
@@ -169,12 +182,15 @@
 
 (defmacro defmacro.xt
   [symbol & body]
-  (let [form (apply list 'defmacro symbol body)]
+  (let [form (apply list 'defmacro symbol body)
+        qualified (symbol (str (:ns &env)) (name symbol))]
     `(do
        ~form
        (lang.core.script/register-fragment!
         '~form
-        (deref (resolve '~symbol))))))
+        (fn [& args]
+          (macroexpand-1
+           (apply list '~qualified args)))))))
 
 (defn module-loaded?
   [module]
@@ -213,11 +229,22 @@
     (intern-var (current-namespace) target-symbol source)
     target-symbol))
 
+(defn script-options
+  [options]
+  (cond
+    (empty? options) [(namespace-symbol) {}]
+    (map? (first options)) [(namespace-symbol) (first options)]
+    (symbol? (first options)) [(first options) (or (second options) {})]
+    :else (throw (ex-info
+                  "script expects an optional module symbol and config map"
+                  {:options options}))))
+
 (defn script-form
   [lang options]
-  (let [config (or (first options) {})]
+  (let [[module config] (script-options options)]
     (list 'lang.core.script/setup!
           (list 'quote lang)
+          (list 'quote module)
           (list 'quote config)
           false)))
 
@@ -226,32 +253,36 @@
   (lang.core.script/script-form lang options))
 
 (defn register-script!
-  [lang config]
-  (let [module (namespace-symbol)
+  [lang module config]
+  (let [source (namespace-symbol)
         coordinate [module lang]
         value {:lang lang
                :module module
+               :source source
                :config config
                :runtime nil}]
     (swap! +scripts+ assoc coordinate value)
     value))
 
 (defn setup!
-  [lang config test?]
-  (reduce (fn [_ spec]
-            (load-module! spec))
-          nil
-          (or (:require config) []))
-  (configure-module! lang config)
-  (if test?
-    (register-script! lang config))
-  nil)
+  ([lang config test?]
+   (setup! lang (namespace-symbol) config test?))
+  ([lang module config test?]
+   (reduce (fn [_ spec]
+             (load-module! spec))
+           nil
+           (or (:require config) []))
+   (configure-module! lang module config)
+   (if test?
+     (register-script! lang module config))
+   nil))
 
 (defn script-test-form
   [lang options]
-  (let [config (or (first options) {})]
+  (let [[module config] (script-options options)]
     (list 'lang.core.script/setup!
           (list 'quote lang)
+          (list 'quote module)
           (list 'quote config)
           true)))
 
@@ -384,6 +415,18 @@
         sources (conj (nth compiled 1) expression)]
     (string/join "\n" sources)))
 
+(defn require-primary?
+  [spec]
+  (if (not (vector? spec))
+    false
+    (loop [index 1]
+      (if (>= index (count spec))
+        false
+        (if (and (= :primary (nth spec index))
+                 (= true (nth spec (inc index))))
+          true
+          (recur (+ index 2)))))))
+
 (defn restart!
   []
   (let [module (namespace-symbol)
@@ -402,9 +445,7 @@
                     (if (= lang :postgres)
                       (reduce
                        (fn [current spec]
-                         (if (and (vector? spec)
-                                  (some (fn [value] (= value :primary)) spec)
-                                  (some (fn [value] (= value true)) spec))
+                         (if (require-primary? spec)
                            (IContextLifeCycle/setup-module current (first spec))
                            current))
                        started

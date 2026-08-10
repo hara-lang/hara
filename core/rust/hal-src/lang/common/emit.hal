@@ -403,12 +403,15 @@
       (fail "Macro operation has no expansion function" {:form form :entry entry}))))
 
 (defn- operation-mode [entry]
-  (or (:emit entry)
-      (cond (= :fn (:type entry)) :fn
-            (and (= :def (:type entry)) (:fn entry)) :defn
-            (= :def (:type entry)) :def
-            (= :block (:type entry)) :block
-            :else :invoke)))
+  (let [mode (:emit entry)]
+    (if (fn? mode)
+      :custom
+      (or mode
+          (cond (= :fn (:type entry)) :fn
+                (and (= :def (:type entry)) (:fn entry)) :defn
+                (= :def (:type entry)) :def
+                (= :block (:type entry)) :block
+                :else :invoke)))))
 
 (defn- grouped [output grammar]
   (let [options (common-options grammar)]
@@ -433,6 +436,9 @@
 (defmethod operation-handler :defn [mode] emit-defn)
 (defmethod operation-handler :def-assign [mode] emit-def)
 (defmethod operation-handler :macro [mode] emit-macro)
+(defmethod operation-handler :custom [mode]
+  (fn [form entry grammar context]
+    ((:emit entry) form grammar context)))
 (defmethod operation-handler :return [mode] emit-return)
 (defmethod operation-handler :quote [mode]
   (fn [form entry grammar context]

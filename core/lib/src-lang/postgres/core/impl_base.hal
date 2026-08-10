@@ -1,9 +1,19 @@
 (ns postgres.core.impl-base
   (:config {:blank true})
   (:require [std.foundation :as foundation :refer :all :exclude [resolve]]
-            [lang.common.util :as util]))
+            [lang.common.preprocess-base :as preprocess]
+            [lang.common.util :as util]
+            [lang.model.v1.spec-postgres.deftype.common :as table]
+            [lang.model.v1.spec-postgres.deftype.hydrate :as hydrate]))
 
 (def ^:dynamic *skip-checks* false)
+
+(defn table-symbol
+  [entry]
+  (let [schema (:static/schema entry)]
+    (if schema
+      (list 'pg:raw (table/qualified-token schema (:id entry)))
+      (or (util/sym-full entry) (:id entry)))))
 
 (defn- schema-attrs [table-schema key]
   (let [entry (get table-schema key)]
@@ -12,13 +22,40 @@
 (defn- schema-key? [table-schema key]
   (not (nil? (get table-schema key))))
 
+(defn- portable-entry
+  [value]
+  (let [context (preprocess/macro-opts)
+        link (if context (table/target-link value context) nil)
+        entry (if link (table/linked-entry context link) nil)
+        form (if entry (table/linked-entry-form entry) nil)]
+    (if (and form (= 'deftype (first form)))
+      (let [formatted (hydrate/pg-deftype-format form)
+            hydrated (hydrate/pg-deftype-hydrate
+                      (second formatted) (:grammar context) context)
+            table-symbol (second (second hydrated))
+            metadata (or (meta table-symbol) {})
+            table-schema
+            (loop [index 0
+                   remaining (:static/columns metadata)
+                   output {}]
+              (if (= 0 (count remaining))
+                output
+                (let [pair (first remaining)]
+                  (recur (+ index 1)
+                         (vec (rest remaining))
+                         (assoc output
+                                (first pair)
+                                (assoc (second pair) :order index))))))]
+        (merge entry metadata {:table-schema table-schema})))))
+
 (defn prep-entry
   "Resolves a directly supplied or locally defined table entry."
   [value options]
   (cond (map? value) [nil value]
         (symbol? value)
         (let [resolved (foundation/resolve value)
-              entry (when resolved (deref resolved))]
+              entry (or (when resolved (deref resolved))
+                        (portable-entry value))]
           (if (map? entry)
             [nil entry]
             (throw (ex-info "No entry found" {:input value :options options}))))

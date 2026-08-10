@@ -63,6 +63,14 @@
   (str "(" (emit/*emit-fn* (nth form 1) grammar context) ")::"
        (pg-type-name (nth form 2))))
 
+(defn pg-keyword-invoke
+  [form grammar context]
+  (let [values (vec form)
+        target (last values)
+        casts (drop 1 (reverse values))]
+    (str "(" (emit/*emit-fn* target grammar context) ")::"
+         (string/join " " (map pg-type-name (reverse casts))))))
+
 (defn pg-array
   [form grammar context]
   (str "ARRAY["
@@ -74,6 +82,10 @@
 (defn pg-raw
   [form grammar context]
   (str (nth form 1)))
+
+(defn pg-scalar
+  [form grammar context]
+  (str "(" (emit/*emit-fn* (second form) grammar context) ")"))
 
 (defn pg-tag-string
   [value]
@@ -153,6 +165,55 @@
   [output]
   (if (string/ends-with? output ";") output (str output ";")))
 
+(defn pg-query-output?
+  [output]
+  (let [trimmed (string/trim output)]
+    (or (string/starts-with? trimmed "SELECT ")
+        (string/starts-with? trimmed "WITH ")
+        (string/starts-with? trimmed "INSERT ")
+        (string/starts-with? trimmed "UPDATE ")
+        (string/starts-with? trimmed "DELETE "))))
+
+(defn pg-outer-parenthesized?
+  [value]
+  (if (and (string/starts-with? value "(")
+           (string/ends-with? value ")"))
+    (loop [index 0
+           depth 0]
+      (if (= index (count value))
+        (= depth 0)
+        (let [character (string/char-at value index)
+              next-depth (cond (= character "(") (+ depth 1)
+                               (= character ")") (- depth 1)
+                               :else depth)]
+          (if (and (= next-depth 0)
+                   (< index (- (count value) 1)))
+            false
+            (recur (+ index 1) next-depth)))))
+    false))
+
+(defn pg-return
+  [form grammar context]
+  (let [output (emit/emit-return form {:raw "RETURN"} grammar context)
+        value-output (if (> (count output) 7) (string/slice output 7) "")]
+    (cond (pg-query-output? value-output)
+          (str "RETURN (" value-output ")")
+
+          (and (emit/emit-wrappable? (second form) grammar)
+               (pg-outer-parenthesized? value-output))
+          (str "RETURN "
+               (string/slice value-output 1 (- (count value-output) 1)))
+
+          :else output)))
+
+(defn pg-assignment
+  [form grammar context]
+  (let [target-output (emit/*emit-fn* (second form) grammar context)
+        value-output (emit/*emit-fn* (nth form 2) grammar context)]
+    (if (pg-query-output? value-output)
+      (str value-output " INTO " target-output)
+      (str target-output " := " value-output))))
+
 (defn pg-do-plpgsql
   [form grammar context]
   (let [body (map (fn [item]
@@ -168,6 +229,29 @@
   [value grammar context]
   (pg-map-entries value grammar context))
 
+(defn- pg-column-token
+  [value grammar context]
+  (if (set? value)
+    (let [identifier (first value)]
+      (str "\"" (string/replace (str identifier) "\"" "\"\"") "\""))
+    (emit/*emit-fn* value grammar context)))
+
+(defn pg-columns
+  [form grammar context]
+  (string/join
+   ","
+   (map (fn [value] (pg-column-token value grammar context))
+        (second form))))
+
+(defn pg-tuple
+  [form grammar context]
+  (str "("
+       (string/join
+        ","
+        (map (fn [value] (pg-column-token value grammar context))
+             (second form)))
+       ")"))
+
 (defn pg-section-keyword
   [value]
   (let [raw (name value)]
@@ -181,16 +265,57 @@
   (string/join
    ","
    (map (fn [entry]
-          (str "\"" (string/replace (name (first entry)) "-" "_") "\" = "
-               (emit/*emit-fn* (second entry) grammar context)))
+          (let [key (first entry)
+                raw (if (string? key) key (name key))]
+            (str "\"" (string/replace raw "-" "_") "\" = "
+                 (emit/*emit-fn* (second entry) grammar context))))
         value)))
 
-(defn pg-section-item
+(def +condition-operators+
+  {:eq "=" :not-eq "<>" :neq "<>"
+   :gt ">" :gte ">=" :lt "<" :lte "<="
+   :in "IN" :not-in "NOT IN"
+   :like "LIKE" :ilike "ILIKE"
+   :is "IS" :is-not "IS NOT"
+   :is-null "IS NULL" :is-not-null "IS NOT NULL"})
+
+(def +condition-unary-operators+ #{:is-null :is-not-null})
+
+(defn- pg-condition-entry
+  [entry grammar context]
+  (let [key (first entry)
+        raw (if (string? key) key (name key))
+        condition (second entry)
+        structured (and (vector? condition)
+                        (keyword? (first condition))
+                        (get +condition-operators+ (first condition)))
+        operator (if structured
+                   (get +condition-operators+ (first condition))
+                   "=")
+        operand (if structured (second condition) condition)
+        unary (and structured
+                   (has? +condition-unary-operators+ (first condition)))]
+    (str "\"" (string/replace raw "-" "_") "\" " operator
+         (if unary
+           ""
+           (str " " (emit/*emit-fn* operand grammar context))))))
+
+(defn pg-condition-map
   [value grammar context]
-  (cond (= value \\) "\n"
-        (keyword? value) (pg-section-keyword value)
-        (map? value) (pg-assignment-map value grammar context)
-        :else (emit/*emit-fn* value grammar context)))
+  (string/join
+   " AND "
+   (map (fn [entry] (pg-condition-entry entry grammar context)) value)))
+
+(defn pg-section-item
+  ([value grammar context]
+   (pg-section-item value nil grammar context))
+  ([value clause grammar context]
+   (cond (= value \\) "\n"
+         (keyword? value) (pg-section-keyword value)
+         (and (map? value) (or (= clause :where) (= clause :having)))
+         (pg-condition-map value grammar context)
+         (map? value) (pg-assignment-map value grammar context)
+         :else (emit/*emit-fn* value grammar context))))
 
 (defn pg-section
   "Emits SQL clause vectors while retaining JSON array values for data vectors."
@@ -200,15 +325,26 @@
                      (or found (keyword? item)))
                    false
                    value))
-    (string/replace
-     (string/replace
+    (let [parts
+          (loop [remaining value
+                 clause nil
+                 output []]
+            (if (= 0 (count remaining))
+              output
+              (let [item (first remaining)]
+                (recur (vec (rest remaining))
+                       (if (keyword? item) item clause)
+                       (conj output
+                             (if (and (= clause :as) (vector? item))
+                               (str "(" (pg-section-item item clause grammar context) ")")
+                               (pg-section-item item clause grammar context)))))))]
       (string/replace
-       (string/join " " (map (fn [item]
-                                (pg-section-item item grammar context))
-                              value))
-       " \n " "\n")
-      "\n " "\n")
-     " \n" "\n")
+       (string/replace
+        (string/replace
+         (string/join " " parts)
+         " \n " "\n")
+        "\n " "\n")
+       " \n" "\n"))
     (str "jsonb_build_array("
          (string/join "," (map (fn [item]
                                   (emit/*emit-fn* item grammar context))
@@ -242,7 +378,10 @@
         symbol (second normalized)
         args (nth normalized 2)
         body (drop 3 normalized)
-        symbol-metadata (assoc (pg-sym-meta symbol)
+        source-symbol (IObjType/with-meta
+                       symbol
+                       (merge (or (meta symbol) {}) entry-metadata))
+        symbol-metadata (assoc (pg-sym-meta source-symbol)
                                :static/input
                                (helper/emit-typed-args args {}))
         next-symbol (IObjType/with-meta symbol symbol-metadata)]
@@ -324,26 +463,122 @@
   [output]
   (str "  " (string/replace output "\n" "\n  ")))
 
+(defn pg-let-target
+  [binding]
+  (if (symbol? binding) binding (last binding)))
+
+(defn pg-let-declaration
+  [binding]
+  (let [target (pg-let-target binding)
+        types (if (symbol? binding) [:jsonb] (butlast binding))]
+    (cond (= '_ binding) nil
+          (or (symbol? binding) (list? binding))
+          (list 'pg:raw
+                (str (string/replace (name target) "-" "_")
+                     " " (pg-type-output types)))
+          :else
+          (throw (ex-info "Unsupported PostgreSQL let binding"
+                          {:binding binding})))))
+
+(declare pg-statement-form?)
+
+(defn pg-let-assignment
+  [binding value]
+  (let [target (pg-let-target binding)]
+    (cond (and (= '_ binding)
+               (or (vector? value)
+                   (pg-statement-form? value))) value
+          (= '_ binding) [:perform value]
+          (and (vector? value)
+               (= [target :into] (vec (take 2 (reverse value)))))
+          value
+          (vector? value) (conj (conj value :into) target)
+          :else (list ':= target value))))
+
+(defn pg-let-transform
+  "Transforms portable let bindings into a PL/pgSQL declaration block."
+  [form]
+  (let [bindings (nth form 1)
+        body (drop 2 form)
+        pairs (vec (partition 2 bindings))
+        declarations
+        (vec (filter (fn [value] (not (nil? value)))
+                     (map (fn [pair]
+                            (pg-let-declaration (first pair)))
+                          pairs)))
+        assignments
+        (map (fn [pair]
+               (pg-let-assignment (first pair) (second pair)))
+             pairs)]
+    (list 'do
+          (vec (concat
+                (if (= 0 (count declarations))
+                  []
+                  [:declare \\
+                   (apply list 'do declarations)
+                   \\])
+                [:begin \\
+                 (apply list 'do (concat assignments body))
+                 \\ :end])))))
+
+(defn pg-statement-form?
+  [form]
+  (and (list? form)
+       (let [head (first form)]
+         (or (has? #{'return 'let 'let:block 'do 'do* 'if 'when 'cond
+                     'for 'while 'loop 'pg:throw 'pg:assert 'pg:do-plpgsql}
+                   head)
+             (and (symbol? head)
+                  (namespace head)
+                  (has? #{"assert" "throw"} (name head)))))))
+
 (defn pg-plpgsql-body
   [body grammar context]
-  (let [statements
-        (map (fn [form]
-               (pg-indent
-                (pg-terminated (emit/*emit-fn* form grammar context))))
-             body)]
-    (str "BEGIN"
-         (if (= 0 (count statements))
-           ""
-           (str "\n" (string/join "\n" statements)))
-         "\nEND;")))
+  (if (and (= 1 (count body))
+           (list? (first body))
+           (has? #{'let 'let:block} (first (first body))))
+    (emit/*emit-fn* (first body) grammar context)
+    (let [forms (vec body)
+          last-index (- (count forms) 1)
+          statements
+          (loop [index 0
+                 remaining forms
+                 output []]
+            (if (= 0 (count remaining))
+              output
+              (let [form (first remaining)
+                    statement (emit/*emit-fn* form grammar context)
+                    implicit-return
+                    (and (= index last-index)
+                         (not (pg-statement-form? form))
+                         (not (vector? form)))
+                    statement
+                    (if implicit-return
+                      (if (pg-query-output? statement)
+                        (str "RETURN (" statement ")")
+                        (str "RETURN " statement))
+                      statement)]
+                (recur (+ index 1)
+                       (vec (rest remaining))
+                       (conj output
+                             (pg-indent (pg-terminated statement)))))))]
+      (str "BEGIN"
+           (if (= 0 (count statements))
+             ""
+             (str "\n" (string/join "\n" statements)))
+           "\nEND;"))))
 
 (defn pg-sql-body
   [body grammar context]
   (if (= 1 (count body))
-    (let [form (first body)
+    (let [raw-form (first body)
+          form (if (and (list? raw-form)
+                        (= 'return (first raw-form)))
+                 (second raw-form)
+                 raw-form)
           statement (if (vector? form) form [:select form])]
       (pg-indent
-       (pg-terminated (emit/*emit-fn* statement grammar context))))
+       (pg-terminated (pg-section statement grammar context))))
     (throw (ex-info "PostgreSQL SQL functions require one expression"
                     {:body body}))))
 
@@ -401,20 +636,25 @@
     :operators
     {:override
      {:eq {:symbol #{'== '=} :raw "="}
+      :mul {:raw "*" :value true}
       :not {:raw "NOT " :wrap true}
       :or {:raw "OR" :wrap true}
       :and {:raw "AND" :wrap true}
-      :seteq {:raw ":=" :value true}
-      :ret {:raw "RETURN"}
+      :seteq {:raw ":=" :value true :emit pg-assignment}
+      :ret {:emit pg-return}
+      :let-bind {:macro #'pg-let-transform :emit :macro}
       :defn {:format pg-defn-format
              :hydrate pg-hydrate
              :emit pg-defn
              :static/dbtype :function}}
      :define
      {:concat {:op :concat :symbol #{'||} :raw "||" :emit :infix :value true}
+      :pg-columns {:op :pg-columns :symbol #{'---} :emit pg-columns}
+      :pg-tuple {:op :pg-tuple :symbol #{'>-<} :emit pg-tuple}
       :cast {:op :cast :symbol #{'++} :emit pg-typecast}
       :pg-array {:op :pg-array :symbol #{'pg:array} :emit pg-array}
       :pg-raw {:op :pg-raw :symbol #{'pg:raw} :emit pg-raw}
+      :pg-scalar {:op :pg-scalar :symbol #{'pg:scalar} :emit pg-scalar}
       :pg-throw {:op :pg-throw :symbol #{'pg:throw} :emit pg-throw}
       :pg-assert {:op :pg-assert :symbol #{'pg:assert} :emit pg-assert}
       :pg-stack-diagnostics {:op :pg-stack-diagnostics
@@ -432,7 +672,8 @@
       {:comment {:prefix "--"}
        :common {:start "(" :end ")" :space " " :assign ":=" :sep ","
                 :statement ";" :namespace "." :newline "\n" :indent 2}
-       :invoke {:start "(" :end ")" :sep "," :space ""}}
+       :invoke {:start "(" :end ")" :sep "," :space ""
+                :keyword-fn pg-keyword-invoke}}
       :token
       {:nil "NULL"
        :true "TRUE"
@@ -443,7 +684,20 @@
                 :replace {"-" "_" "?" "p_"}}}
       :data
       {:vector {:custom pg-section}
-       :map {:custom pg-map}}}}}))
+       :map {:custom pg-map}}
+      :block
+      {:while {:parameter {:start " " :end " "}
+               :body {:start "LOOP" :end "END LOOP;"}}
+       :for {:parameter {:start " " :end " "}
+             :body {:start "LOOP" :end "END LOOP;"}}
+       :branch
+       {:wrap {:start "" :end "END IF;"}
+        :control
+        {:default {:parameter {:start " " :end " THEN"}
+                   :body {:start "" :end "" :append true}}
+         :if {:raw "IF"}
+         :elseif {:raw "ELSIF"}
+         :else {:raw "ELSE"}}}}}}}))
 
 (defn- install-source
   [catalog source]

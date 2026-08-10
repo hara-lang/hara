@@ -36,14 +36,16 @@
 
 (fact "constructs graph-aware id count and select forms"
   (graph/id-fn cache {:where {:tasks "t"}})
-  => '[:select (--- [#{"id"}]) :from demo/Cache
-       \\ :where {"id" [:in [:select (--- [#{"cache_id"}]) :from demo/Task
-                              \\ :where {"id" [:eq "t"]}]]}
-       \\ :limit 1]
+  => '(pg:scalar
+       [:select (--- [#{"id"}]) :from demo/Cache
+        \\ :where {"id" [:in [:select (--- [#{"cache_id"}]) :from demo/Task
+                               \\ :where {"id" [:eq "t"]}]]}
+        \\ :limit 1])
   (graph/count-fn cache {:where {:tasks "t"}})
-  => '[:select (count *) :from demo/Cache
-       \\ :where {"id" [:in [:select (--- [#{"cache_id"}]) :from demo/Task
-                              \\ :where {"id" [:eq "t"]}]]}]
+  => '(pg:scalar
+       [:select (count *) :from demo/Cache
+        \\ :where {"id" [:in [:select (--- [#{"cache_id"}]) :from demo/Task
+                               \\ :where {"id" [:eq "t"]}]]}])
   (graph/select-fn task {:as :raw :where {:cache {:id "c"}}})
   => '[:select * :from demo/Task \\ :where {"cache_id" [:eq "c"]}])
 
@@ -51,5 +53,5 @@
   (graph/delete-fn task {:as :raw :where {:cache "c"}})
   => '[:delete :from demo/Task :where {"cache_id" [:eq "c"]}]
   (graph/update-fn task {:as :raw :set {:name "n"} :where {:cache "c"}})
-  => '[:update demo/Task :set (--- [(== #{"name"} (:text "n"))])
+  => '[:update demo/Task :set (== (>-< [#{"name"}]) (row (:text "n")))
        :where {"cache_id" [:eq "c"]}])

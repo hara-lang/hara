@@ -1067,8 +1067,45 @@ pub(crate) fn form_to_value(form: &Form) -> Result<Value, String> {
     literal_value(form)
 }
 
-fn value_to_form(value: &Value) -> Result<Form, String> {
+fn metadata_value_to_form(value: &MetadataValue) -> Form {
     match value {
+        MetadataValue::Nil => Form::Nil,
+        MetadataValue::Boolean(value) => Form::Bool(*value),
+        MetadataValue::Number(value) => Form::Number(*value),
+        MetadataValue::Float(value) => Form::Float(*value),
+        MetadataValue::BigInteger(value) => Form::BigInteger(value.clone()),
+        MetadataValue::Decimal(value) => Form::Decimal(value.clone()),
+        MetadataValue::Character(value) => Form::Character(*value),
+        MetadataValue::Regex(value) => Form::Regex(value.clone()),
+        MetadataValue::Tagged(tag, value) => Form::Tagged(
+            tag.clone(),
+            Box::new(metadata_value_to_form(value)),
+        ),
+        MetadataValue::String(value) => Form::String(value.clone()),
+        MetadataValue::Keyword(value) => Form::Keyword(value.as_str().into()),
+        MetadataValue::Symbol(value) => Form::Symbol(value.as_str().into()),
+        MetadataValue::Vector(values) => {
+            Form::Vector(values.iter().map(metadata_value_to_form).collect())
+        }
+        MetadataValue::List(values) => {
+            Form::List(values.iter().map(metadata_value_to_form).collect())
+        }
+        MetadataValue::Set(values) => {
+            Form::Set(values.iter().map(metadata_value_to_form).collect())
+        }
+        MetadataValue::Map(values) => Form::Map(
+            values
+                .iter()
+                .map(|(key, value)| {
+                    (metadata_value_to_form(key), metadata_value_to_form(value))
+                })
+                .collect(),
+        ),
+    }
+}
+
+fn value_to_form(value: &Value) -> Result<Form, String> {
+    let form = match value {
         Value::Nil => Ok(Form::Nil),
         Value::Bool(value) => Ok(Form::Bool(*value)),
         Value::Number(value) => Ok(Form::Number(*value)),
@@ -1133,7 +1170,16 @@ fn value_to_form(value: &Value) -> Result<Form, String> {
             ))
         }
         value => Err(format!("cannot use {} as code", portable_type_name(value))),
-    }
+    }?;
+    Ok(match value_metadata(value) {
+        Some(metadata) => Form::Metadata(
+            Box::new(metadata_value_to_form(&MetadataValue::Map(
+                metadata.entries().to_vec(),
+            ))),
+            Box::new(form),
+        ),
+        None => form,
+    })
 }
 
 fn macro_environment() -> Result<Value, String> {
@@ -2516,12 +2562,17 @@ impl ProtocolRegistry {
             qualified.as_str()
         };
         if let Some(Value::Struct(receiver)) = arguments.first() {
-            if let Some(function) = self.guest_methods.borrow().get(&(
-                protocol.to_owned(),
-                receiver.ty.name.clone(),
-                method.to_owned(),
-            )) {
-                return call_function(function, arguments.to_vec());
+            let guest_function = self
+                .guest_methods
+                .borrow()
+                .get(&(
+                    protocol.to_owned(),
+                    receiver.ty.name.clone(),
+                    method.to_owned(),
+                ))
+                .cloned();
+            if let Some(function) = guest_function {
+                return call_function(&function, arguments.to_vec());
             }
             if FOUNDATION_PROTOCOLS
                 .iter()
@@ -6056,6 +6107,15 @@ fn value_to_metadata(value: &Value) -> Result<MetadataValue, String> {
         Value::Nil => Ok(MetadataValue::Nil),
         Value::Bool(value) => Ok(MetadataValue::Boolean(*value)),
         Value::Number(value) => Ok(MetadataValue::Number(*value)),
+        Value::Float(value) => Ok(MetadataValue::Float(*value)),
+        Value::BigInteger(value) => Ok(MetadataValue::BigInteger(value.clone())),
+        Value::Decimal(value) => Ok(MetadataValue::Decimal(value.clone())),
+        Value::Character(value) => Ok(MetadataValue::Character(*value)),
+        Value::Regex(value) => Ok(MetadataValue::Regex(value.clone())),
+        Value::Tagged(value) => Ok(MetadataValue::Tagged(
+            value.tag().get_name().into(),
+            Box::new(value_to_metadata(value.form())?),
+        )),
         Value::String(value) => Ok(MetadataValue::String(value.clone())),
         Value::Keyword(value) => Ok(MetadataValue::Keyword(value.clone())),
         Value::Symbol(value) => Ok(MetadataValue::Symbol(value.clone())),
@@ -6110,6 +6170,15 @@ fn metadata_to_value(value: &MetadataValue) -> Result<Value, String> {
         MetadataValue::Nil => Ok(Value::Nil),
         MetadataValue::Boolean(value) => Ok(Value::Bool(*value)),
         MetadataValue::Number(value) => Ok(Value::Number(*value)),
+        MetadataValue::Float(value) => Ok(Value::Float(*value)),
+        MetadataValue::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
+        MetadataValue::Decimal(value) => Ok(Value::Decimal(value.clone())),
+        MetadataValue::Character(value) => Ok(Value::Character(*value)),
+        MetadataValue::Regex(value) => Ok(Value::Regex(value.clone())),
+        MetadataValue::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(
+            Symbol::parse(tag),
+            metadata_to_value(value)?,
+        )))),
         MetadataValue::String(value) => Ok(Value::String(value.clone())),
         MetadataValue::Keyword(value) => Ok(Value::Keyword(value.clone())),
         MetadataValue::Symbol(value) => Ok(Value::Symbol(value.clone())),
@@ -6140,7 +6209,6 @@ fn metadata_to_value(value: &MetadataValue) -> Result<Value, String> {
                 .into_iter()
                 .collect(),
         )),
-        _ => Err("metadata value is not supported by the L0 evaluator".into()),
     }
 }
 
@@ -8996,6 +9064,51 @@ fn function_parts(
     Ok((params, variadic, patterns, variadic_pattern))
 }
 
+fn collect_capture_names(form: &Form, names: &mut std::collections::HashSet<String>) {
+    match form {
+        Form::Symbol(name) => {
+            names.insert(name.clone());
+        }
+        Form::List(values) | Form::Vector(values) | Form::Set(values) => {
+            for value in values {
+                collect_capture_names(value, names);
+            }
+        }
+        Form::Map(entries) => {
+            for (key, value) in entries {
+                collect_capture_names(key, names);
+                collect_capture_names(value, names);
+            }
+        }
+        Form::Metadata(metadata, value) => {
+            collect_capture_names(metadata, names);
+            collect_capture_names(value, names);
+        }
+        Form::Tagged(_, value) => collect_capture_names(value, names),
+        Form::Nil
+        | Form::Bool(_)
+        | Form::Number(_)
+        | Form::Float(_)
+        | Form::BigInteger(_)
+        | Form::Decimal(_)
+        | Form::Character(_)
+        | Form::Regex(_)
+        | Form::String(_)
+        | Form::Keyword(_) => {}
+    }
+}
+
+fn capture_environment(forms: &[Form], env: &HashMap<String, Value>) -> HashMap<String, Value> {
+    let mut names = std::collections::HashSet::new();
+    for form in forms {
+        collect_capture_names(form, &mut names);
+    }
+    names
+        .into_iter()
+        .filter_map(|name| env.get(&name).cloned().map(|value| (name, value)))
+        .collect()
+}
+
 fn destructuring_default<'a>(defaults: Option<&'a Form>, name: &str) -> Option<&'a Form> {
     let Form::Map(entries) = defaults? else {
         return None;
@@ -9175,7 +9288,7 @@ fn multi_arity_function(
             patterns,
             variadic_pattern,
             body: parts[1..].to_vec(),
-            captured: Rc::new(RefCell::new(captured.clone())),
+            captured: Rc::new(RefCell::new(capture_environment(&parts[1..], captured))),
             name: Some(name.into()),
             native: None,
             clauses: Vec::new(),
@@ -9552,8 +9665,16 @@ fn ensure_namespace(
 
     let requiring = registry.current().name().as_str().to_owned();
     let previous_state = registry.load_state(name);
-    let registry_before = registry.snapshot();
-    let environment_before = env.clone();
+    let registry_before = registry.transaction_snapshot([requiring.as_str(), name]);
+    // Qualified and aliased bindings are a derived namespace view. Snapshot
+    // only unqualified bindings (including lexical locals), then rebuild the
+    // derived view on rollback instead of cloning the full cross-namespace
+    // environment before every successful require.
+    let environment_before = env
+        .iter()
+        .filter(|(binding, _)| !binding.contains('/'))
+        .map(|(binding, value)| (binding.clone(), value.clone()))
+        .collect::<HashMap<_, _>>();
     let macros_before = ACTIVE_MACROS.with(|active| {
         active
             .borrow()
@@ -9582,7 +9703,8 @@ fn ensure_namespace(
     select_namespace_environment(registry, env, &requiring);
     if let Err(error) = loaded {
         *env = environment_before;
-        registry.restore(registry_before);
+        registry.restore_transaction(registry_before);
+        refresh_namespace_environment(registry, env);
         if previous_state != Some(NamespaceLoadState::Loaded) {
             registry.set_load_state(name, NamespaceLoadState::Failed);
             registry.set_load_failure(name, error.clone());
@@ -10225,13 +10347,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err("fn expects parameters and a body".into());
                     }
                     let (params, variadic, patterns, variadic_pattern) = function_parts(&fs[1])?;
+                    let body = fs[2..].to_vec();
                     Ok(Value::Function(Rc::new(Function {
                         params,
                         variadic,
                         patterns,
                         variadic_pattern,
-                        body: fs[2..].to_vec(),
-                        captured: Rc::new(RefCell::new(env.clone())),
+                        captured: Rc::new(RefCell::new(capture_environment(&body, env))),
+                        body,
                         name: None,
                         native: None,
                         clauses: Vec::new(),
@@ -10248,7 +10371,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             return Err("letfn expects a function binding vector and a body".into())
                         }
                     };
-                    let captured = Rc::new(RefCell::new(env.clone()));
+                    let mut capture_forms = fs[2..].to_vec();
+                    capture_forms.extend(definitions.iter().cloned());
+                    let captured = Rc::new(RefCell::new(capture_environment(
+                        &capture_forms,
+                        env,
+                    )));
                     let mut functions = Vec::with_capacity(definitions.len());
                     let mut names = std::collections::HashSet::new();
                     for definition in definitions {
@@ -11346,13 +11474,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         macro_params.extend_from_slice(params);
                         let (params, variadic, patterns, variadic_pattern) =
                             function_parts(&Form::Vector(macro_params))?;
+                        let body = rest[1..].to_vec();
                         Value::Function(Rc::new(Function {
                             params,
                             variadic,
                             patterns,
                             variadic_pattern,
-                            body: rest[1..].to_vec(),
-                            captured: Rc::new(RefCell::new(env.clone())),
+                            captured: Rc::new(RefCell::new(capture_environment(&body, env))),
+                            body,
                             name: Some(name.clone()),
                             native: None,
                             clauses: Vec::new(),
@@ -11407,13 +11536,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     ) {
                         let (params, variadic, patterns, variadic_pattern) =
                             function_parts(&rest[0])?;
+                        let body = rest[1..].to_vec();
                         Value::Function(Rc::new(Function {
                             params,
                             variadic,
                             patterns,
                             variadic_pattern,
-                            body: rest[1..].to_vec(),
-                            captured: Rc::new(RefCell::new(env.clone())),
+                            captured: Rc::new(RefCell::new(capture_environment(&body, env))),
+                            body,
                             name: Some(name.clone()),
                             native: None,
                             clauses: Vec::new(),
@@ -13094,6 +13224,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if [
                         "list?",
                         "vector?",
+                        "sequential?",
                         "map?",
                         "map-entry?",
                         "set?",
@@ -13118,6 +13249,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             matches!(value, Value::List(_) | Value::Cons(_) | Value::Queue(_))
                         }
                         "vector?" => matches!(value, Value::Vector(_) | Value::Tuple(_)),
+                        "sequential?" => matches!(
+                            value,
+                            Value::List(_)
+                                | Value::Cons(_)
+                                | Value::Queue(_)
+                                | Value::Vector(_)
+                                | Value::Tuple(_)
+                        ),
                         "map?" => match &value {
                             Value::Map(_)
                             | Value::OrderedMap(_)
@@ -13278,12 +13417,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                 }
                 Form::Symbol(n) if n == "conj" => {
-                    if fs.len() != 3 {
-                        return Err("conj expects two arguments".into());
+                    if fs.len() < 2 {
+                        return Err("conj expects a collection".into());
                     }
-                    let collection = eval(&fs[1], env)?;
-                    let item = eval(&fs[2], env)?;
-                    protocol_conj(&[collection, item])
+                    let mut collection = eval(&fs[1], env)?;
+                    for form in &fs[2..] {
+                        collection = protocol_conj(&[collection, eval(form, env)?])?;
+                    }
+                    Ok(collection)
                 }
                 Form::Symbol(n) if n == "cons" => {
                     if fs.len() != 3 {

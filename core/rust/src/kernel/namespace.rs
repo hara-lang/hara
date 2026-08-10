@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::kernel::{Var, VarMetadata, VarOrigin};
@@ -216,6 +216,17 @@ pub struct NamespaceRegistrySnapshot<V> {
     namespaces: HashMap<Symbol, NamespaceSnapshot<V>>,
     current: Symbol,
     loading_states: HashMap<Symbol, NamespaceLoadState>,
+    load_failures: HashMap<Symbol, String>,
+    module_revisions: HashMap<Symbol, u64>,
+    module_dependencies: HashMap<Symbol, Vec<Symbol>>,
+}
+
+pub struct NamespaceTransactionSnapshot<V> {
+    namespace_names: HashSet<Symbol>,
+    namespaces: HashMap<Symbol, NamespaceSnapshot<V>>,
+    current: Symbol,
+    loading_states: HashMap<Symbol, NamespaceLoadState>,
+    load_failures: HashMap<Symbol, String>,
     module_revisions: HashMap<Symbol, u64>,
     module_dependencies: HashMap<Symbol, Vec<Symbol>>,
 }
@@ -234,6 +245,31 @@ impl<V: Clone> Default for NamespaceRegistry<V> {
     }
 }
 impl<V: Clone> NamespaceRegistry<V> {
+    fn namespace_snapshot(namespace: &Namespace<V>) -> NamespaceSnapshot<V>
+    where
+        V: 'static,
+    {
+        let mappings = namespace
+            .mappings
+            .borrow()
+            .iter()
+            .map(|(name, var)| {
+                (
+                    name.clone(),
+                    (var.clone(), var.deref_value(), var.metadata()),
+                )
+            })
+            .collect();
+        NamespaceSnapshot {
+            namespace: namespace.clone(),
+            mappings,
+            aliases: namespace.aliases.borrow().clone(),
+            lazy_aliases: namespace.lazy_aliases.borrow().clone(),
+            imports: namespace.imports.borrow().clone(),
+            native_flavor: namespace.native_flavor.borrow().clone(),
+        }
+    }
+
     pub fn new(initial: impl AsRef<str>) -> Self {
         let name = Symbol::parse(initial.as_ref());
         let namespace = Namespace::new(name.as_str());
@@ -360,35 +396,40 @@ impl<V: Clone> NamespaceRegistry<V> {
             .namespaces
             .borrow()
             .iter()
-            .map(|(name, namespace)| {
-                let mappings = namespace
-                    .mappings
-                    .borrow()
-                    .iter()
-                    .map(|(name, var)| {
-                        (
-                            name.clone(),
-                            (var.clone(), var.deref_value(), var.metadata()),
-                        )
-                    })
-                    .collect();
-                (
-                    name.clone(),
-                    NamespaceSnapshot {
-                        namespace: namespace.clone(),
-                        mappings,
-                        aliases: namespace.aliases.borrow().clone(),
-                        lazy_aliases: namespace.lazy_aliases.borrow().clone(),
-                        imports: namespace.imports.borrow().clone(),
-                        native_flavor: namespace.native_flavor.borrow().clone(),
-                    },
-                )
-            })
+            .map(|(name, namespace)| (name.clone(), Self::namespace_snapshot(namespace)))
             .collect();
         NamespaceRegistrySnapshot {
             namespaces,
             current: self.current.borrow().clone(),
             loading_states: self.loading_states.borrow().clone(),
+            load_failures: self.load_failures.borrow().clone(),
+            module_revisions: self.module_revisions.borrow().clone(),
+            module_dependencies: self.module_dependencies.borrow().clone(),
+        }
+    }
+
+    pub fn transaction_snapshot<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> NamespaceTransactionSnapshot<V>
+    where
+        V: 'static,
+    {
+        let selected = names
+            .into_iter()
+            .map(Symbol::parse)
+            .collect::<HashSet<_>>();
+        let namespaces = self.namespaces.borrow();
+        NamespaceTransactionSnapshot {
+            namespace_names: namespaces.keys().cloned().collect(),
+            namespaces: namespaces
+                .iter()
+                .filter(|(name, _)| selected.contains(*name))
+                .map(|(name, namespace)| (name.clone(), Self::namespace_snapshot(namespace)))
+                .collect(),
+            current: self.current.borrow().clone(),
+            loading_states: self.loading_states.borrow().clone(),
+            load_failures: self.load_failures.borrow().clone(),
             module_revisions: self.module_revisions.borrow().clone(),
             module_dependencies: self.module_dependencies.borrow().clone(),
         }
@@ -416,6 +457,36 @@ impl<V: Clone> NamespaceRegistry<V> {
         *self.namespaces.borrow_mut() = namespaces;
         *self.current.borrow_mut() = snapshot.current;
         *self.loading_states.borrow_mut() = snapshot.loading_states;
+        *self.load_failures.borrow_mut() = snapshot.load_failures;
+        *self.module_revisions.borrow_mut() = snapshot.module_revisions;
+        *self.module_dependencies.borrow_mut() = snapshot.module_dependencies;
+    }
+
+    pub fn restore_transaction(&self, snapshot: NamespaceTransactionSnapshot<V>)
+    where
+        V: 'static,
+    {
+        let mut namespaces = self.namespaces.borrow_mut();
+        namespaces.retain(|name, _| snapshot.namespace_names.contains(name));
+        for (name, saved) in snapshot.namespaces {
+            let namespace = saved.namespace;
+            let mut mappings = HashMap::new();
+            for (local, (var, value, metadata)) in saved.mappings {
+                var.reset_value(value);
+                var.set_metadata(metadata);
+                mappings.insert(local, var);
+            }
+            *namespace.mappings.borrow_mut() = mappings;
+            *namespace.aliases.borrow_mut() = saved.aliases;
+            *namespace.lazy_aliases.borrow_mut() = saved.lazy_aliases;
+            *namespace.imports.borrow_mut() = saved.imports;
+            *namespace.native_flavor.borrow_mut() = saved.native_flavor;
+            namespaces.insert(name, namespace);
+        }
+        drop(namespaces);
+        *self.current.borrow_mut() = snapshot.current;
+        *self.loading_states.borrow_mut() = snapshot.loading_states;
+        *self.load_failures.borrow_mut() = snapshot.load_failures;
         *self.module_revisions.borrow_mut() = snapshot.module_revisions;
         *self.module_dependencies.borrow_mut() = snapshot.module_dependencies;
     }

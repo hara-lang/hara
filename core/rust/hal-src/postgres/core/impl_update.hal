@@ -21,32 +21,38 @@
                                 (if (and (:order a) (not (:primary a)) (not (:ignore a)))
                                   (conj out key) out))) [] (keys schema)))]
     (valid-keys! schema columns)
-    (list '---
-          (vec (map (fn [key]
-                      (let [value (base/t-sym-fn schema key sym)
-                            output (if (false? (:coalesce params))
-                                     value (list 'coalesce value #{(base/t-key-fn schema key)}))]
-                        (list '== #{(base/t-key-fn schema key)} output)))
-                    (ordered-keys schema columns))))))
+    (let [keys (ordered-keys schema columns)
+          values (map (fn [key]
+                        (let [value (base/t-sym-fn schema key sym)]
+                          (if (false? (:coalesce params))
+                            value
+                            (list 'coalesce value #{(base/t-key-fn schema key)}))))
+                      keys)]
+      (list '==
+            (list '>-< (vec (map (fn [key]
+                                   #{(base/t-key-fn schema key)})
+                                 keys)))
+            (apply list 'row values)))))
 
 (defn t-update-map [schema input params options]
   (valid-keys! schema (keys input))
   (let [keys (ordered-keys schema
                            (filter (fn [key] (not (:ignore (attrs schema key))))
                                    (keys input)))]
-    (list '---
-          (vec (map (fn [key]
-                      (list '== #{(base/t-key-fn schema key)}
-                            (base/t-val-fn schema key (get input key) params options)))
-                    keys)))))
-
-(defn- table-symbol [entry] (or (util/sym-full entry) (:id entry)))
+    (list '==
+          (list '>-< (vec (map (fn [key]
+                                 #{(base/t-key-fn schema key)})
+                               keys)))
+          (apply list 'row
+                 (map (fn [key]
+                        (base/t-val-fn schema key (get input key) params options))
+                      keys)))))
 
 (defn t-update-raw [prepared params]
   (let [entry (first prepared)
         schema (second prepared)
         options (nth prepared 2)
-        table-sym (table-symbol entry)
+        table-sym (base/table-symbol entry)
         as (get params :as :json)
         defaults (reduce (fn [out key]
                            (let [a (attrs schema key)]
@@ -72,7 +78,7 @@
 (defn t-modify-assign [prepared params target]
   (let [entry (first prepared)
         schema (second prepared)
-        table-sym (table-symbol entry)
+        table-sym (base/table-symbol entry)
         as (get params :as :json)
         single (get params :single true)
         returning (base/t-returning schema (or (:returning params) '*))

@@ -5,7 +5,7 @@ mod repl;
 #[path = "hara/terminal.rs"]
 mod terminal;
 
-const CLI_STACK_SIZE: usize = 64 * 1024 * 1024;
+const CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 fn run_main() {
     let options = match cli::parse_options() {

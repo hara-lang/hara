@@ -4,7 +4,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const TEST_STACK_SIZE: usize = 64 * 1024 * 1024;
+const TEST_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TestSummary {

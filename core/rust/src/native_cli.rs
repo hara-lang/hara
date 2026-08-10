@@ -9,6 +9,11 @@ use crate::core::Value;
 use crate::lang::data::{Keyword, Symbol};
 use crate::Runtime;
 
+// The fiber evaluator bounds ordinary guest recursion. Keep a modest explicit
+// allowance for native namespace orchestration without reserving the former
+// 64 MiB workaround per broker.
+const RUNTIME_BROKER_STACK_SIZE: usize = 8 * 1024 * 1024;
+
 enum Request {
     Eval {
         session: String,
@@ -96,6 +101,7 @@ impl RuntimeBroker {
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("hara-runtime-broker".into())
+            .stack_size(RUNTIME_BROKER_STACK_SIZE)
             .spawn(move || {
                 run(
                     receiver,

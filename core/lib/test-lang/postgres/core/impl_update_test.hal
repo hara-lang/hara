@@ -12,38 +12,39 @@
 
 (fact "constructs map updates in schema order"
   (update/t-update-map schema {:name "n" :status "open"} {} {})
-  => '(--- [(== #{"status"} (++ "open" demo/Status))
-            (== #{"name"} (:text "n"))]))
+  => '(== (>-< [#{"status"} #{"name"}])
+          (row (++ "open" demo/Status) (:text "n"))))
 
 (fact "constructs coalescing symbol updates"
   (update/t-update-symbol schema 'row {:columns [:name :cache]} {})
-  => '(--- [(== #{"name"} (coalesce (:text (:->> row "name")) #{"name"}))
-            (== #{"cache_id"}
-                (coalesce (:uuid (coalesce (:->> row "cache_id")
-                                            (:->> (:-> row "cache") "id")))
-                          #{"cache_id"}))]))
+  => '(== (>-< [#{"name"} #{"cache_id"}])
+          (row (coalesce (:text (:->> row "name")) #{"name"})
+               (coalesce (:uuid (coalesce (:->> row "cache_id")
+                                           (:->> (:-> row "cache") "id")))
+                         #{"cache_id"}))))
 
 (fact "can disable symbol coalescing"
   (update/t-update-symbol schema 'row {:columns [:status] :coalesce false} {})
-  => '(--- [(== #{"status"} (++ (:->> row "status") demo/Status))]))
+  => '(== (>-< [#{"status"}])
+          (row (++ (:->> row "status") demo/Status))))
 
 (fact "constructs raw update statements"
   (update/t-update-raw prepared {:as :raw :set {:status "open"}
                                  :where {:id "a"}})
-  => '[:update demo/Entry :set (--- [(== #{"status"} (++ "open" demo/Status))])
+  => '[:update demo/Entry :set (== (>-< [#{"status"}]) (row (++ "open" demo/Status)))
        :where {"id" [:eq "a"]}])
 
 (fact "wraps update returning rows as JSON"
   (update/t-update entry {:set {:name "n"}})
   => '[:with j-ret :as
-       [:update demo/Entry :set (--- [(== #{"name"} (:text "n"))])
+       [:update demo/Entry :set (== (>-< [#{"name"}]) (row (:text "n")))
         \\ :returning (--- [#{"id"} #{"status"} #{"name"} #{"cache_id"}])]
        \\ :select (jsonb-agg j-ret) :from j-ret])
 
 (fact "constructs guarded modify blocks"
   (update/t-modify-raw prepared {:set {:status "open"} :where {:id "a"}})
   => '(let [(++ u-ret demo/Entry)
-            [:update demo/Entry :set (--- [(== #{"status"} (++ "open" demo/Status))])
+            [:update demo/Entry :set (== (>-< [#{"status"}]) (row (++ "open" demo/Status)))
              :where {"id" [:eq "a"]} \\ :returning * :into u-ret]
             _ (if [:not (exists [:select u-ret])]
                 [:raise-exception (% "Record Not Found")])]
@@ -54,7 +55,7 @@
   => 'postgres.core.impl-update/t-modify-assign
   (update/t-modify-assign prepared {:set {:name "n"} :returning #{:name}} 'out)
   => '(let [(++ u-ret demo/Entry)
-            [:update demo/Entry :set (--- [(== #{"name"} (:text "n"))])
+            [:update demo/Entry :set (== (>-< [#{"name"}]) (row (:text "n")))
              \\ :returning (--- [#{"name"}]) :into u-ret]
             _ (if [:not (exists [:select u-ret])]
                 [:raise-exception (% "Record Not Found")])]

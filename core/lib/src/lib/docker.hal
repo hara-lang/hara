@@ -32,7 +32,8 @@
   [arguments flag values]
   (reduce (fn [out key]
             (conj (conj out flag)
-                  (str (name key) "=" (get values key))))
+                  (str (if (string? key) key (name key))
+                       "=" (get values key))))
           arguments
           (keys (or values {}))))
 
@@ -72,28 +73,32 @@
   [name port]
   (let [output (:stdout (command! ["docker" "port" name (str port)]))
         parts (string/split output ":")]
-    (parse-long (last parts))))
+    (read-string (last parts))))
 
 (defn start-container
   "Starts or attaches to a named Docker container without invoking a shell."
   [container]
   (let [name (container-name container)
         reused? (container-running? container)
+        published (if (empty? (:expose container))
+                    (map (fn [port] (str "127.0.0.1::" port))
+                         (:ports container))
+                    (:expose container))
         arguments (append-volumes ["docker" "run"] (:volumes container))
         arguments (append-map arguments "-l" (:labels container))
         arguments (append-map arguments "-e" (:environment container))
-        arguments (append-expose arguments (:expose container))
+        arguments (append-expose arguments published)
         arguments (if (false? (:detached container)) arguments (conj arguments "-d"))
         arguments (if (false? (:remove container)) arguments (conj arguments "--rm"))
         arguments (if (:no-host container)
                     arguments
                     (conj arguments "--add-host=host.docker.internal:host-gateway"))
         arguments (into arguments (or (:flags container) []))
-        arguments (conj arguments "--name" name (:image container))
+        arguments (into arguments ["--name" name (:image container)])
         arguments (into arguments (or (:cmd container) []))
         started (if reused? nil (command! arguments))
         internal-port (or (first (:ports container)) 5432)
-        exposed? (not (empty? (:expose container)))
+        exposed? (not (empty? published))
         host (if exposed? "127.0.0.1" (container-ip name))
         port (if exposed? (published-port name internal-port) internal-port)]
     (merge container

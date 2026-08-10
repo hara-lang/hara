@@ -3258,6 +3258,28 @@ mod tests {
     }
 
     #[test]
+    fn guest_protocol_dispatch_can_register_protocols_during_a_method_call() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (defstruct Loader []) \
+                     (defprotocol Loading (load [self])) \
+                     (extend-type Loader Loading \
+                       (load [self] \
+                         (do (defstruct Loaded [value]) \
+                             (defprotocol Reading (read-loaded [self])) \
+                             (extend-type Loaded Reading \
+                               (read-loaded [self] (field self :value))) \
+                             (read-loaded (Loaded 42))))) \
+                     (load (Loader)))",
+                )
+                .unwrap(),
+            "42"
+        );
+    }
+
+    #[test]
     fn guest_protocol_methods_reload_and_reject_collisions_atomically() {
         let mut runtime = Runtime::new();
         assert_eq!(
@@ -4438,6 +4460,13 @@ mod tests {
         );
         assert_eq!(runtime.eval_text("(last [1 2 3])").unwrap(), "3");
         assert_eq!(runtime.eval_text("(empty? [])").unwrap(), "true");
+        assert_eq!(runtime.eval_text("(conj [1] 2 3)").unwrap(), "[1 2 3]");
+        assert_eq!(
+            runtime
+                .eval_text("[(sequential? [1]) (sequential? '(1)) (sequential? {:a 1})]")
+                .unwrap(),
+            "[true true false]"
+        );
         assert_eq!(runtime.eval_text("(not false)").unwrap(), "true");
         assert_eq!(runtime.eval_text("(< 1 2 3)").unwrap(), "true");
         assert_eq!(runtime.eval_text("(>= 3 3)").unwrap(), "true");
@@ -4726,6 +4755,23 @@ mod tests {
     }
 
     #[test]
+    fn macro_expansion_preserves_nested_source_metadata() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(concat!(
+                    "(defmacro preserve-form [symbol & body]",
+                    "  (list 'quote (apply list 'defn symbol body)))",
+                    " (let [expanded (preserve-form ^{:- [:integer] :priority 100 :default 0.06}",
+                    "                              sample [] 1)]",
+                    "   (meta (second expanded)))"
+                ))
+                .unwrap(),
+            "{:- [:integer] :default 0.06 :priority 100}"
+        );
+    }
+
+    #[test]
     fn definitions_accept_source_metadata_around_hir_syntax() {
         let mut runtime = Runtime::new();
         runtime
@@ -4798,6 +4844,9 @@ mod tests {
         // raising the stack for every native runtime test.
         std::thread::Builder::new()
             .name("namespace-use-portable-test-probe".into())
+            // This is a debug-only portability probe for the recursive
+            // interpreter. Keep its exceptional headroom out of production
+            // runtime threads, which use the bounded 8 MiB stack.
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
                 let mut runtime = Runtime::new();

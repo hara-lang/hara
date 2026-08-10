@@ -11,32 +11,35 @@
 (view/register-table! 'Task Task)
 
 (fact "exposes graph where and id operations"
-  (graph/g:where Task {:name "n"}) => '[{:name [:eq "n"]}]
-  (graph/g:where Task {}) => (throws)
-  (graph/g:id Task {:where {:name "n"}})
-  => '[:select (--- [#{"id"}]) :from demo/Task
-       \\ :where {"name" [:eq "n"]} \\ :limit 1])
+  (macroexpand-1 (list 'graph/g:where Task {:name "n"})) => '[{:name [:eq "n"]}]
+  (macroexpand-1 (list 'graph/g:where Task {})) => (throws)
+  (macroexpand-1 (list 'graph/g:id Task {:where {:name "n"}}))
+  => '(pg:scalar
+       [:select (--- [#{"id"}]) :from demo/Task
+        \\ :where {"name" [:eq "n"]} \\ :limit 1]))
 
 (fact "exposes graph count exists and selects"
-  (graph/g:count Task {}) => '[:select (count *) :from demo/Task]
-  (graph/g:exists Task {}) => '[:select (exists [:select 1 :from demo/Task])]
-  (graph/g:select Task {:as :raw}) => '[:select * :from demo/Task])
+  (macroexpand-1 (list 'graph/g:count Task {}))
+  => '(pg:scalar [:select (count *) :from demo/Task])
+  (macroexpand-1 (list 'graph/g:exists Task {}))
+  => '(pg:scalar [:select (exists [:select 1 :from demo/Task])])
+  (macroexpand-1 (list 'graph/g:select Task {:as :raw})) => '[:select * :from demo/Task])
 
 (fact "guards and constructs graph gets"
-  (graph/g:get Task {}) => (throws)
-  (graph/g:get Task {:where {:id "a"} :as :raw})
+  (macroexpand-1 (list 'graph/g:get Task {})) => (throws)
+  (macroexpand-1 (list 'graph/g:get Task {:where {:id "a"} :as :raw}))
   => '[:select * :from demo/Task \\ :where {"id" [:eq "a"]} \\ :limit 1])
 
 (fact "exposes graph mutation operations"
-  (graph/g:update Task {:as :raw :set {:name "n"}})
-  => '[:update demo/Task :set (--- [(== #{"name"} (:text "n"))])]
-  (graph/g:delete Task {:as :raw :where {:id "a"}})
+  (macroexpand-1 (list 'graph/g:update Task {:as :raw :set {:name "n"}}))
+  => '[:update demo/Task :set (== (>-< [#{"name"}]) (row (:text "n"))) ]
+  (macroexpand-1 (list 'graph/g:delete Task {:as :raw :where {:id "a"}}))
   => '[:delete :from demo/Task :where {"id" [:eq "a"]}])
 
 (fact "exposes graph query operations"
-  (graph/q Task {:returning #{:id} :as :raw})
+  (macroexpand-1 (list 'graph/q Task {:returning #{:id} :as :raw}))
   => '[:select (--- [#{"id"}]) :from demo/Task]
-  (graph/q:get Task {:returning #{:id} :as :raw})
+  (macroexpand-1 (list 'graph/q:get Task {:returning #{:id} :as :raw}))
   => '[:select (--- [#{"id"}]) :from demo/Task \\ :limit 1])
 
 (view/defsel.pg ^{:- [Task] :args [:text input-name]}
@@ -45,8 +48,10 @@
   task-basic [:uuid task-id] #{:id :name})
 
 (fact "exposes composed views"
-  (graph/view ['postgres.core.graph-test/task-basic]
-              ['postgres.core.graph-test/task-by-name "n"] {:limit 2})
+  (macroexpand-1
+   (list 'graph/view
+         ['postgres.core.graph-test/task-basic]
+         ['postgres.core.graph-test/task-by-name "n"] {:limit 2}))
   => '[:with j-ret :as
        [:select (--- [#{"id"} #{"name"}]) :from demo/Task
         \\ :where {"name" [:eq "n"]} \\ :limit 2]

@@ -27,16 +27,92 @@
   (emit [:select "hello" :as 'message])
   => "SELECT 'hello' AS message")
 
+(fact "emits Foundation column lists and structured WHERE conditions"
+  (emit '(--- [#{"id"} #{"name"}]))
+  => "\"id\",\"name\""
+
+  (emit '[:select (--- [#{"id"} #{"name"}]) :from Task
+          \\ :where {"hash" [:eq i-hash]
+                      "role" [:eq "child"]
+                      "complete" [:is-null]}])
+  => (str "SELECT \"id\",\"name\" FROM Task\n"
+          "WHERE \"hash\" = i_hash AND \"role\" = 'child' "
+          "AND \"complete\" IS NULL"))
+
+(fact "emits PostgreSQL let bindings as declarations and query INTO clauses"
+  (emit '(let [o-row [:select 1]
+               (:integer n) 2]
+           (return n)))
+  => (str "DECLARE\n"
+          "o_row JSONB;\n"
+          "n INTEGER;\n"
+          "BEGIN\n"
+          "SELECT 1 INTO o_row;\n"
+          "n := 2;\n"
+          "RETURN n;\n"
+          "END;")
+
+  (emit '(let [o-row [:with j-ret :as [:select 1]
+                      :select (to-jsonb j-ret) :from j-ret]]
+           (return o-row)))
+  => (str "DECLARE\n"
+          "o_row JSONB;\n"
+          "BEGIN\n"
+          "WITH j_ret AS (SELECT 1) SELECT to_jsonb(j_ret) "
+          "FROM j_ret INTO o_row;\n"
+          "RETURN o_row;\n"
+          "END;")
+
+  (emit '(let [_ (pg-advisory-xact-lock lock-key)]
+           (return true)))
+  => (str "BEGIN\n"
+          "PERFORM pg_advisory_xact_lock(lock_key);\n"
+          "RETURN TRUE;\n"
+          "END;")
+
+  (emit '(let [_ [:delete t]]
+           (return true)))
+  => (str "BEGIN\n"
+          "DELETE t;\n"
+          "RETURN TRUE;\n"
+          "END;"))
+
 (fact "emits exported PostgreSQL builtins through the facade"
   (emit '(pg/abs -3))
   => "abs(-3)"
 
   (emit '(pg/jsonb-build-object "a" 1))
-  => "jsonb_build_object('a',1)")
+  => "jsonb_build_object('a',1)"
+
+  (emit '(pg/count *))
+  => "count(*)")
 
 (fact "emits PostgreSQL JSON field access"
   (emit '(pg/field-id m :field))
   => "coalesce(m ->> ':field_id',(m -> :field) ->> 'id')")
+
+(fact "emits typed coercions using PostgreSQL cast syntax"
+  (emit '(:bytea (:->> o "x")))
+  => "(o ->> 'x')::BYTEA")
+
+(fact "wraps query-valued returns as scalar PostgreSQL expressions"
+  (emit '(return [:with j-ret :as [:select 1]
+                  :select (to-jsonb j-ret) :from j-ret]))
+  => (str "RETURN (WITH j_ret AS (SELECT 1) "
+          "SELECT to_jsonb(j_ret) FROM j_ret)"))
+
+(fact "routes query-valued assignments through PL/pgSQL INTO"
+  (emit '(:= o-row [:select 1]))
+  => "SELECT 1 INTO o_row"
+
+  (emit '(:= n (+ n 1)))
+  => "n := n + 1")
+
+(fact "emits procedural loops with PL/pgSQL delimiters"
+  (emit '(while (< n 3) (:= n (+ n 1))))
+  => (str "while n < 3 LOOP\n"
+          "  n := n + 1;\n"
+          "END LOOP;"))
 
 (fact "emits basic DML aliases"
   (emit '(pg/b:select 1))
@@ -62,7 +138,7 @@
   => "(value)::UUID"
 
   (emit '(pg/time-ms))
-  => "((bigint)1000 * extract(epoch FROM now()))")
+  => "(1000 * extract(epoch FROM now()))::BIGINT")
 
 (fact "keeps entity coordinate helpers executable without a database"
   (pg/name {:id 'Task :static/schema "scratch"})
