@@ -157,6 +157,24 @@ public interface Macro {
       }
     }
 
+    @Module.Fn(name = "ns+", complete = true, env = true, vargs = true)
+    @Module.Var(macro = true)
+    public static Object nsPlusExpr(IEnv env, Object args) {
+      if (!(env.getRuntime() instanceof RT.Instance)) {
+        throw new Ex.Runtime("Runtime does not support namespaces");
+      }
+      Iterator it = Iter.iter(args);
+      while (it.hasNext()) {
+        Object clause = it.next();
+        if (!(clause instanceof List)) {
+          throw new Ex.Runtime("ns+ does not accept a namespace name");
+        }
+      }
+      RT.Instance rt = (RT.Instance) env.getRuntime();
+      nsExpr(env, rt.getCurrentNs().name, args);
+      return null;
+    }
+
     public static void processFlavor(RT.Instance rt, List l) {
       if (l.count() != 2 || !(l.nth(1) instanceof Keyword)) {
         throw new Ex.Runtime(":flavor expects one keyword");
@@ -358,8 +376,20 @@ public interface Macro {
     @Module.Var(control = true)
     public static Var defExpr(IEnv env, Symbol sym, Object expr) {
       var val = Eval.eval(expr, env);
-      Var v = (Var) new Var(sym.getName(), val).withMeta(sym.meta());
-      env.getRuntime().setObj(sym, v);
+      RT.Instance<?> runtime = (RT.Instance<?>) env.getRuntime();
+      String namespace = sym.getNamespace();
+      if (namespace == null || "-".equals(namespace)) {
+        namespace = runtime.getCurrentNs().name.getName();
+      }
+      String path = namespace + "/" + sym.getName();
+      Var v = runtime.getObj(sym);
+      if (v == null || !path.equals(v.pathString())) {
+        v = new Var(path, val);
+      } else {
+        v.reset(val);
+      }
+      v.withMeta(sym.meta());
+      runtime.setObj(sym, v);
       return v;
     }
 

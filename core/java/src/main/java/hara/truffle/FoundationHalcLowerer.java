@@ -103,6 +103,7 @@ final class FoundationHalcLowerer {
       case "declare" -> lowerDeclare(list);
       case "defmacro" -> lowerDefMacro(list);
       case "ns" -> lowerNamespace(list);
+      case "ns+" -> lowerAnonymousNamespace(list);
       case "+" -> lowerAdd(list);
       case "-" -> lowerVariadicNumeric(list, HaraNodes.Numeric.Operator.SUBTRACT, 0L);
       case "mod" -> lowerNumeric(list, HaraNodes.Numeric.Operator.REMAINDER);
@@ -587,6 +588,16 @@ final class FoundationHalcLowerer {
     Object[] clauses = bodyForms(form, 2);
     context.prepareCurrentNamespace(name, clauses);
     return new HaraNodes.SetNamespace(name, clauses);
+  }
+
+  private HaraExpressionNode lowerAnonymousNamespace(List<?> form) {
+    Object[] clauses = bodyForms(form, 1);
+    for (Object clause : clauses) {
+      if (!(clause instanceof List<?>)) fail("ns+ does not accept a namespace name");
+    }
+    Symbol name = Symbol.create(context.currentNamespaceName());
+    context.prepareCurrentNamespace(name, clauses);
+    return new HaraNodes.SetAnonymousNamespace(name, clauses);
   }
 
   private HaraExpressionNode lowerAdd(List<?> form) {

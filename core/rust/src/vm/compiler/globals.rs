@@ -255,7 +255,7 @@ impl Compiler {
     }
 
     /// `(def name init)`: interns the value in the current namespace and
-    /// evaluates to it (matching the evaluator's `def` arm). The name
+    /// evaluates to the interned Var. The name
     /// becomes visible only after the initializer compiles, so an
     /// initializer cannot self-reference — matching the evaluator's
     /// "unbound symbol" for `(def x x)` on a fresh name.

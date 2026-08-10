@@ -2725,7 +2725,7 @@ mod tests {
             runtime
                 .eval_text("(def socket-handle (socket/connect \"localhost\" 8080 {} (fn [error socket] socket)))")
                 .unwrap(),
-            "1"
+            "#'user/socket-handle"
         );
         assert_eq!(
             runtime
@@ -2939,7 +2939,7 @@ mod tests {
             runtime
                 .eval_in_namespace("alpha", "(def answer 41)")
                 .unwrap(),
-            "41"
+            "#'alpha/answer"
         );
         runtime.use_namespace("user");
         assert_eq!(runtime.eval_text("alpha/answer").unwrap(), "41");
@@ -3712,7 +3712,7 @@ mod tests {
                       (std.lib.substrate.protocol/list-subscriptions node \"main\" \"changed\")]",
                 )
                 .unwrap(),
-            "[42 42 {:count 1} {:count 1} #std.lib.substrate/SubstrateFrame{:id \"sub-1\" :kind :subscribe :space \"main\" :meta {} :action nil :args [] :reply-to nil :status nil :data nil :error nil :signal \"changed\" :cause nil} {\"peer-a\" {:id \"sub-1\" :meta {}}} [\"peer-a\"]]"
+            "[42 42 {:count 1} {:count 1} #'user/subscription {\"peer-a\" {:id \"sub-1\" :meta {}}} [\"peer-a\"]]"
         );
     }
 
@@ -7248,6 +7248,15 @@ mod tests {
     fn def_binds_values_in_the_current_environment() {
         let mut runtime = Runtime::new();
         assert_eq!(
+            runtime.eval_text("(def player 1)").unwrap(),
+            "#'user/player"
+        );
+        assert_eq!(
+            runtime.eval_text("(= (def player 1) #'player)").unwrap(),
+            "true"
+        );
+        assert_eq!(runtime.eval_text("(deref (def player 1))").unwrap(), "1");
+        assert_eq!(
             runtime
                 .eval_text("(do (def answer 41) (+ answer 1))")
                 .unwrap(),
@@ -7273,6 +7282,21 @@ mod tests {
             .eval_text("(def 1 2)")
             .unwrap_err()
             .contains("def name must be a symbol"));
+    }
+
+    #[test]
+    fn anonymous_namespace_form_reuses_the_current_session_namespace() {
+        let mut runtime = Runtime::new();
+        assert_eq!(runtime.eval_text("(ns+)").unwrap(), "nil");
+        assert_eq!(runtime.current_namespace(), "user");
+        assert_eq!(
+            runtime.eval_text("(ns+) (def player 1)").unwrap(),
+            "#'user/player"
+        );
+        assert!(runtime
+            .eval_text("(ns+ public.name)")
+            .unwrap_err()
+            .contains("does not accept a namespace name"));
     }
 
     #[test]

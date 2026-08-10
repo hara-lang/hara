@@ -883,11 +883,30 @@ public class HaraLanguageTest {
   @Test
   public void persistsDefinitionsAcrossEvaluations() {
     try (Context context = context()) {
-      assertTrue(
-          context.eval(HaraLanguage.ID, "(def answer 41)").toString().contains("user/answer"));
+      assertEquals(
+          "#'user/player", context.eval(HaraLanguage.ID, "(def player 1)").toString());
+      assertEquals(
+          "#'user/player", context.eval(HaraLanguage.ID, "(def player 2)").toString());
+      assertEquals(2, context.eval(HaraLanguage.ID, "player").asLong());
+      assertEquals(
+          "#'user/answer", context.eval(HaraLanguage.ID, "(def answer 41)").toString());
       assertEquals(42, context.eval(HaraLanguage.ID, "(+ answer 1)").asLong());
       context.eval(HaraLanguage.ID, "(def answer 42)");
       assertEquals(42, context.eval(HaraLanguage.ID, "answer").asLong());
+    }
+  }
+
+  @Test
+  public void anonymousNamespaceReusesTheCurrentSessionNamespace() {
+    try (Context context = context()) {
+      assertTrue(context.eval(HaraLanguage.ID, "(nil? (ns+))").asBoolean());
+      assertEquals(
+          "#'user/player", context.eval(HaraLanguage.ID, "(ns+) (def player 1)").toString());
+      PolyglotException error =
+          assertThrows(
+              PolyglotException.class,
+              () -> context.eval(HaraLanguage.ID, "(ns+ public.name)"));
+      assertTrue(error.getMessage().contains("does not accept a namespace name"));
     }
   }
 

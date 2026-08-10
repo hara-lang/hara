@@ -112,12 +112,10 @@ fn registry_only_execution_remains_visible_to_later_interpreter_entries() {
     let program = runtime
         .compile_bytecode("(def prepared-answer 42)")
         .expect("definition must compile");
-    assert_eq!(
-        runtime
-            .execute_compiled_bytecode_registry_value(program)
-            .expect("definition must execute"),
-        Value::Number(42)
-    );
+    let definition = runtime
+        .execute_compiled_bytecode_registry_value(program)
+        .expect("definition must execute");
+    assert_eq!(definition.display(), "#'user/prepared-answer");
 
     // eval_native refreshes from the authoritative namespace registry, so
     // omitting the eager compatibility copy does not make definitions stale.
@@ -872,7 +870,9 @@ fn uncaught_throw_carries_position() {
 
 #[test]
 fn global_forms_issue_223() {
-    assert_eq!(eval("(def answer 42)"), "42");
+    assert_eq!(eval("(ns+)"), "nil");
+    assert_eq!(eval("(def player 1)"), "#'user/player");
+    assert_eq!(eval("(= (def player 1) #'player)"), "true");
     assert_eq!(eval("(do (def answer 42) answer)"), "42");
     assert_eq!(
         eval("(do (def answer 19) (def answer (+ answer 23)) answer)"),

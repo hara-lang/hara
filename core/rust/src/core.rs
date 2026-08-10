@@ -9863,7 +9863,7 @@ fn force_lazy_alias(
     Ok(())
 }
 
-/// Handles the `ns` and `require` special forms.
+/// Handles the `ns`, `ns+`, and `require` special forms.
 ///
 /// Kept out of line so the giant `eval` dispatch does not reserve stack for
 /// these locals on every recursive call (the native runtime recurses through
@@ -9872,24 +9872,32 @@ fn force_lazy_alias(
 fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<Value, String> {
     let head = match &fs[0] {
         Form::Symbol(head) => head.as_str(),
-        _ => unreachable!("ns/require dispatch guarantees a symbol head"),
+        _ => unreachable!("ns/ns+/require dispatch guarantees a symbol head"),
     };
     if head == "require" {
         let registry = namespace_registry()?;
         eval_require_specs(&registry, env, &fs[1..])?;
         return Ok(Value::Nil);
     }
-    if fs.len() < 2 {
-        return Err("ns expects a namespace symbol".into());
-    }
-    let name = match &fs[1] {
-        Form::Symbol(name) if !name.contains('/') => name.clone(),
-        _ => return Err("ns expects a namespace symbol".into()),
-    };
     let registry = namespace_registry()?;
+    let (name, clauses) = if head == "ns+" {
+        if matches!(fs.get(1), Some(Form::Symbol(_))) {
+            return Err("ns+ does not accept a namespace name".into());
+        }
+        (registry.current().name().as_str().to_owned(), &fs[1..])
+    } else {
+        if fs.len() < 2 {
+            return Err("ns expects a namespace symbol".into());
+        }
+        let name = match &fs[1] {
+            Form::Symbol(name) if !name.contains('/') => name.clone(),
+            _ => return Err("ns expects a namespace symbol".into()),
+        };
+        (name, &fs[2..])
+    };
     refer_startup_defaults(&registry, &name);
     select_namespace_environment(&registry, env, &name);
-    for clause in &fs[2..] {
+    for clause in clauses {
         match clause {
             Form::List(clause_forms) if matches!(clause_forms.first(), Some(Form::Keyword(k)) if k == "require") =>
             {
@@ -10841,31 +10849,37 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err("def expects a name and value".into());
                     }
                     let (name, metadata) = binding_symbol(&fs[1], "def name")?;
-                    if let Some(value) = protected_fallback_binding(env, &name, metadata.clone()) {
-                        return Ok(value);
+                    if protected_fallback_binding(env, &name, metadata.clone()).is_some() {
+                        let Some(Value::Var(var)) = env.get(&name) else {
+                            unreachable!("protected fallback binding must be a Var")
+                        };
+                        return Ok(Value::Var(var.clone()));
                     }
                     require_owned_definition(env, &name)?;
                     let value = eval(&fs[2], env)?;
-                    if let Some(Value::Var(var)) = env.get(&name) {
+                    let var = if let Some(Value::Var(var)) = env.get(&name) {
                         if !binding_is_local(var) {
                             let var = KernelVar::new(local_var_name(&name), value.clone());
                             var.set_origin(definition_origin());
                             var.set_hara_metadata(metadata);
-                            env.insert(name, Value::Var(var));
-                            return Ok(value);
-                        }
-                        var.reset_value(value.clone());
-                        var.set_origin(definition_origin());
-                        if metadata.is_some() {
-                            var.set_hara_metadata(metadata);
+                            env.insert(name, Value::Var(var.clone()));
+                            var
+                        } else {
+                            var.reset_value(value);
+                            var.set_origin(definition_origin());
+                            if metadata.is_some() {
+                                var.set_hara_metadata(metadata);
+                            }
+                            var.clone()
                         }
                     } else {
-                        let var = KernelVar::new(local_var_name(&name), value.clone());
+                        let var = KernelVar::new(local_var_name(&name), value);
                         var.set_origin(definition_origin());
                         var.set_hara_metadata(metadata);
-                        env.insert(name, Value::Var(var));
-                    }
-                    Ok(value)
+                        env.insert(name, Value::Var(var.clone()));
+                        var
+                    };
+                    Ok(Value::Var(var))
                 }
                 Form::Symbol(n) if n == "declare" => {
                     if fs.len() < 2 {
@@ -11444,7 +11458,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     arguments.extend(rest);
                     apply_primitive(Primitive::Equal, &arguments)
                 }
-                Form::Symbol(n) if n == "ns" || n == "require" => eval_namespace_form(fs, env),
+                Form::Symbol(n) if n == "ns" || n == "ns+" || n == "require" => {
+                    eval_namespace_form(fs, env)
+                }
                 Form::Symbol(n) if n == "current-namespace" => {
                     if fs.len() != 1 {
                         return Err("current-namespace expects no arguments".into());

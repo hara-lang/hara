@@ -92,7 +92,7 @@ pub enum Instruction {
     GetGlobal(u32),
     /// Pops a value, interns it as a `Var` in the current namespace
     /// (optional hara metadata from the program's var-metadata table),
-    /// and pushes the value back (`def` returns the value).
+    /// and pushes the interned Var back (`def` returns the Var).
     DefGlobal {
         name: u32,
         metadata: Option<u16>,

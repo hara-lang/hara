@@ -735,7 +735,10 @@ mod tests {
     #[test]
     fn sessions_are_isolated_and_root_is_persistent() {
         let broker = RuntimeBroker::start().unwrap();
-        assert_eq!(broker.eval("ROOT", "(def answer 42)").unwrap(), "42");
+        assert_eq!(
+            broker.eval("ROOT", "(def answer 42)").unwrap(),
+            "#'user/answer"
+        );
         broker.create("APP").unwrap();
         assert!(broker
             .eval("APP", "answer")

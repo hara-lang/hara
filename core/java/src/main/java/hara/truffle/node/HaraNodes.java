@@ -1391,6 +1391,22 @@ public final class HaraNodes {
     }
   }
 
+  public static final class SetAnonymousNamespace extends HaraExpressionNode {
+    private final Symbol symbol;
+    private final Object[] clauses;
+
+    public SetAnonymousNamespace(Symbol symbol, Object[] clauses) {
+      this.symbol = symbol;
+      this.clauses = clauses;
+    }
+
+    @Override
+    public Object execute(VirtualFrame frame) {
+      HaraLanguage.currentContext(this).setCurrentNamespace(symbol, clauses);
+      return null;
+    }
+  }
+
   public static final class DefineAlias extends HaraExpressionNode {
     private final Symbol alias;
     private final Symbol target;

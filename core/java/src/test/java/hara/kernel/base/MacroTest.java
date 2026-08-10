@@ -98,9 +98,30 @@ public class MacroTest {
 
   @Test
   public void testDef() {
-    String code = "(def my-var 123)";
-    rt.eval(rt.readString(code));
-    assertNumber(123, rt.eval(Symbol.create("my-var")));
+    RT.Instance<Object> userRuntime = new RT.Instance<>(null, "user-def-test");
+    Object first = userRuntime.eval(userRuntime.readString("(def player 1)"));
+    assertTrue(first instanceof Var);
+    assertEquals("#'user/player", ((Var) first).display());
+    assertSame(first, userRuntime.getObj(Symbol.create("player")));
+    assertNumber(1, ((Var) first).deref());
+
+    Object second = userRuntime.eval(userRuntime.readString("(def player 2)"));
+    assertSame(first, second);
+    assertNumber(2, userRuntime.eval(Symbol.create("player")));
+  }
+
+  @Test
+  public void testAnonymousNamespace() {
+    RT.Instance<Object> userRuntime = new RT.Instance<>(null, "anonymous-ns-test");
+    assertNull(userRuntime.eval(userRuntime.readString("(ns+)")));
+    assertEquals(Symbol.create("user"), userRuntime.getCurrentNs().name);
+    try {
+      userRuntime.eval(userRuntime.readString("(ns+ public.name)"));
+      fail("Expected a named ns+ clause to fail");
+    } catch (Throwable error) {
+      Throwable cause = error.getCause() == null ? error : error.getCause();
+      assertTrue(cause.getMessage().contains("does not accept a namespace name"));
+    }
   }
 
   @Test

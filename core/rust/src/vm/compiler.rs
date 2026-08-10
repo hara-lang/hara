@@ -719,6 +719,13 @@ impl Compiler {
                     Form::Symbol(name) if name == "defstruct" => {
                         self.compile_defstruct(&children, span)
                     }
+                    Form::Symbol(name) if name == "ns+" => {
+                        if children.len() > 1 {
+                            return Err(self.unsupported(form, span));
+                        }
+                        self.emit(Instruction::Nil, Some(span.start));
+                        Ok(())
+                    }
                     Form::Symbol(name) if name == "field" => self.compile_field(&children, span),
                     Form::Symbol(name) if name == "instance?" => {
                         self.compile_instance_of(&children, span)

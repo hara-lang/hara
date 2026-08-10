@@ -291,6 +291,8 @@ final class HaraAnalyzer {
           return analyzeNativeNew(list);
         case "ns":
           return analyzeNamespace(list);
+        case "ns+":
+          return analyzeAnonymousNamespace(list);
         case "require":
           return analyzeRequire(list);
         case "alias":
@@ -1780,6 +1782,20 @@ final class HaraAnalyzer {
     for (int i = 2; i < form.count(); i++) clauses[i - 2] = form.nth(i);
     context.prepareCurrentNamespace((Symbol) name, clauses);
     return new HaraNodes.SetNamespace((Symbol) name, clauses);
+  }
+
+  private HaraExpressionNode analyzeAnonymousNamespace(List<?> form) {
+    Object[] clauses = new Object[(int) form.count() - 1];
+    for (int i = 1; i < form.count(); i++) {
+      Object clause = form.nth(i);
+      if (!(clause instanceof List<?>)) {
+        throw error("ns+ does not accept a namespace name");
+      }
+      clauses[i - 1] = clause;
+    }
+    Symbol name = Symbol.create(context.currentNamespaceName());
+    context.prepareCurrentNamespace(name, clauses);
+    return new HaraNodes.SetAnonymousNamespace(name, clauses);
   }
 
   private HaraExpressionNode analyzeAlias(List<?> form) {

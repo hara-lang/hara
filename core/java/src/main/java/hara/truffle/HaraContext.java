@@ -91,7 +91,8 @@ public final class HaraContext {
           "extend-type",
           "defmacro",
           "new",
-          "ns");
+          "ns",
+          "ns+");
   private static final String INTRINSIC_NAMESPACE = "hara.lang.intrinsic";
   private static final String FOUNDATION_NAMESPACE = "std.foundation";
   private static final String PROTOCOL_NAMESPACE_PREFIX = "std.protocol.";

@@ -43,6 +43,7 @@ const SYNC_SPECIAL_FORMS: &[&str] = &[
     "macroexpand-1",
     "meta",
     "ns",
+    "ns+",
     "read-forms",
     "recur",
     "require",
@@ -947,37 +948,49 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
         Box::new(move |r| match r {
             Ok(x) => {
                 let mut env = e.borrow_mut();
-                if op == "def" {
-                    if let Some(protected) =
-                        crate::core::protected_fallback_binding(&env, &name, metadata.clone())
+                let result = if op == "def" {
+                    if crate::core::protected_fallback_binding(&env, &name, metadata.clone())
+                        .is_some()
                     {
+                        let Some(Value::Var(var)) = env.get(&name) else {
+                            unreachable!("protected fallback binding must be a Var")
+                        };
+                        let result = Value::Var(var.clone());
                         drop(env);
-                        return k(Ok(protected));
+                        return k(Ok(result));
                     }
                     let origin = crate::core::definition_origin();
-                    if let Some(Value::Var(var)) = env.get(&name) {
+                    let var = if let Some(Value::Var(var)) = env.get(&name) {
                         if crate::core::binding_is_local(var) {
                             var.reset_value(x.clone());
-                            var.set_origin(origin);
-                            if let Some(meta) = metadata {
-                                var.set_hara_metadata(Some(meta));
-                            }
-                        } else {
-                            let var = crate::kernel::Var::new(name.clone(), x.clone());
                             var.set_origin(origin);
                             if let Some(meta) = &metadata {
                                 var.set_hara_metadata(Some(meta.clone()));
                             }
-                            env.insert(name.clone(), Value::Var(var));
+                            var.clone()
+                        } else {
+                            let var = crate::kernel::Var::new(
+                                crate::core::local_var_name(&name),
+                                x.clone(),
+                            );
+                            var.set_origin(origin);
+                            if let Some(meta) = &metadata {
+                                var.set_hara_metadata(Some(meta.clone()));
+                            }
+                            env.insert(name.clone(), Value::Var(var.clone()));
+                            var
                         }
                     } else {
-                        let var = crate::kernel::Var::new(name.clone(), x.clone());
+                        let var =
+                            crate::kernel::Var::new(crate::core::local_var_name(&name), x.clone());
                         var.set_origin(origin);
                         if let Some(meta) = &metadata {
                             var.set_hara_metadata(Some(meta.clone()));
                         }
-                        env.insert(name.clone(), Value::Var(var));
-                    }
+                        env.insert(name.clone(), Value::Var(var.clone()));
+                        var
+                    };
+                    Value::Var(var)
                 } else {
                     let Some(c) = binding_var(&mut env, &name) else {
                         return k(Err(format!("unbound var: {name}")));
@@ -986,9 +999,10 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
                     if let Some(meta) = metadata {
                         c.set_hara_metadata(Some(meta));
                     }
-                }
+                    x
+                };
                 drop(env);
-                k(Ok(x))
+                k(Ok(result))
             }
             Err(x) => k(Err(x)),
         }),
@@ -1243,6 +1257,30 @@ fn call(f: Rc<Function>, args: Vec<Value>, k: Cont) -> Step {
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn def_returns_the_qualified_var() {
+        let registry = crate::kernel::NamespaceRegistry::new("user");
+        crate::core::with_namespace_registry(&registry, || {
+            let mut fiber = EvalFiber::start("(def player 1)", HashMap::new()).unwrap();
+            let Value::Var(var) = fiber.drive_sync().unwrap() else {
+                panic!("def must return a Var")
+            };
+            assert_eq!(var.display(), "#'user/player");
+            assert_eq!(var.deref_value(), Value::Number(1));
+        });
+    }
+
+    #[test]
+    fn anonymous_namespace_form_is_a_session_local_noop() {
+        let registry = crate::kernel::NamespaceRegistry::new("user");
+        crate::core::with_namespace_registry(&registry, || {
+            let mut fiber = EvalFiber::start("(ns+)", HashMap::new()).unwrap();
+            assert_eq!(fiber.drive_sync(), Ok(Value::Nil));
+            assert_eq!(registry.current().name().as_str(), "user");
+        });
+    }
+
     #[test]
     fn resumes_nested() {
         let p = Promise::new();
