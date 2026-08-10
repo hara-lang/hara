@@ -7,6 +7,45 @@ OUT="$ROOT/core/target/www"
 RAW_DIR="$ROOT/core/rust/raw/target/wasm32-unknown-unknown/browser-release"
 HALC_OUT="$ROOT/core/target/www-halc"
 HARA_COMPILER="$ROOT/core/rust/target/debug/hara"
+
+check_site_inputs() {
+  local missing=0
+  local required_file
+
+  for required_file in \
+    "$ROOT/website/target/www-astro/index.html" \
+    "$ROOT/core/target/benchmarks/index.html"; do
+    if [[ ! -s "$required_file" ]]; then
+      echo "site assembly input is missing $required_file" >&2
+      missing=1
+    fi
+  done
+
+  if [[ ! -d "$ROOT/website/docs/docs" ]] \
+    || [[ -z "$(find "$ROOT/website/docs/docs" -mindepth 1 -print -quit)" ]]; then
+    echo "site assembly input is missing $ROOT/website/docs/docs" >&2
+    missing=1
+  fi
+
+  if (( missing != 0 )); then
+    return 1
+  fi
+
+  printf 'Site assembly inputs are ready\n'
+}
+
+case "${1:-}" in
+  --check-site-inputs)
+    check_site_inputs
+    exit 0
+    ;;
+  "") ;;
+  *)
+    echo "usage: packaging/scripts/build-www [--check-site-inputs]" >&2
+    exit 2
+    ;;
+esac
+
 RUNTIME_VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/core/rust/Cargo.toml" | head -n 1)
 if [ -z "$RUNTIME_VERSION" ]; then
   echo "unable to read the Hara runtime version from core/rust/Cargo.toml" >&2
@@ -15,6 +54,7 @@ fi
 
 npm run build --prefix "$ROOT/website/hara-www"
 HARA_BENCHMARK_BASE=/benchmarks npm run build --prefix "$ROOT/benchmarks"
+check_site_inputs
 bash "$ROOT/packaging/scripts/build-hara-wasm-raw" all
 cargo build --manifest-path "$ROOT/core/rust/Cargo.toml" --features hir-encoder --bin hara
 rm -rf "$HALC_OUT"
@@ -33,7 +73,7 @@ mkdir -p "$HALC_OUT"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/runtime/host" "$OUT/runtime/packages/hta" "$OUT/runtime/studio/hal" "$OUT/runtime/std/lib/substrate"
-cp -R "$ROOT/core/target/www-astro/." "$OUT/"
+cp -R "$ROOT/website/target/www-astro/." "$OUT/"
 mkdir -p "$OUT/benchmarks"
 cp -R "$ROOT/core/target/benchmarks/." "$OUT/benchmarks/"
 mkdir -p "$OUT/runtime/studio/capabilities"
@@ -148,7 +188,7 @@ cp -R "$ROOT/website/hara-www/vendor/hara-ui" "$OUT/vendor/"
 
 # Documentation stays owned by the pinned docs submodule. Astro renders the
 # Markdown collection; copy its runtime/static files alongside those pages.
-rsync -a --exclude '*.md' --exclude '*.mdx' "$ROOT/docs/docs/" "$OUT/docs/"
+rsync -a --exclude '*.md' --exclude '*.mdx' "$ROOT/website/docs/docs/" "$OUT/docs/"
 
 bash "$ROOT/packaging/scripts/build-demo-synth-wasm"
 bash "$ROOT/packaging/scripts/build-demo-fft-wasm"
