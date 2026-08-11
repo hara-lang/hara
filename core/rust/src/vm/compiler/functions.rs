@@ -53,8 +53,7 @@ impl Compiler {
                 let index = self.global_name_constant(name, span)?;
                 self.emit(Instruction::GetGlobal(index), Some(span.start))
             }
-            None if crate::core::is_bytecode_callable(name) =>
-            {
+            None if crate::core::is_bytecode_callable(name) => {
                 let index = self.name_constant(name, span)?;
                 self.emit(Instruction::BuiltinValue(index), Some(span.start))
             }
@@ -431,9 +430,7 @@ impl Compiler {
     ) {
         match child.form {
             Form::Symbol(name) => {
-                if bound.iter().any(|b| b == name)
-                    || free.iter().any(|(f, _)| f == name)
-                {
+                if bound.iter().any(|b| b == name) || free.iter().any(|(f, _)| f == name) {
                     // Bound in this function or already collected.
                 } else if self.ctx().scopes.resolve(name).is_some()
                     || (!self.visible_global(name)
@@ -488,6 +485,23 @@ impl Compiler {
                             }
                         }
                         "quote" => {}
+                        "." => {
+                            if let Some(receiver) = children.get(1) {
+                                self.collect_free(receiver, bound, free);
+                            }
+                            if let Some(method) = children.get(2) {
+                                if let Form::List(arguments) = method.form {
+                                    for argument in &arguments[1..] {
+                                        let argument = Child {
+                                            form: argument,
+                                            span: method.span,
+                                            children: None,
+                                        };
+                                        self.collect_free(&argument, bound, free);
+                                    }
+                                }
+                            }
+                        }
                         "syntax-quote" => {
                             if let Some(template) = children.get(1) {
                                 self.collect_syntax_free(template, bound, free);
@@ -580,10 +594,11 @@ impl Compiler {
                         }
                         "letfn" => {
                             let marked = bound.len();
-                            let definitions = children.get(1).and_then(|bindings| match bindings.form {
-                                Form::Vector(definitions) => Some((bindings, definitions)),
-                                _ => None,
-                            });
+                            let definitions =
+                                children.get(1).and_then(|bindings| match bindings.form {
+                                    Form::Vector(definitions) => Some((bindings, definitions)),
+                                    _ => None,
+                                });
                             if let Some((bindings, definitions)) = definitions {
                                 let definitions = self.list_children(
                                     definitions,
@@ -598,8 +613,12 @@ impl Compiler {
                                     }
                                 }
                                 for definition in &definitions {
-                                    let Form::List(parts) = definition.form else { continue };
-                                    if parts.len() < 3 { continue; }
+                                    let Form::List(parts) = definition.form else {
+                                        continue;
+                                    };
+                                    if parts.len() < 3 {
+                                        continue;
+                                    }
                                     let local_marked = bound.len();
                                     if let Form::Vector(params) = &parts[1] {
                                         for param in params {
@@ -607,7 +626,11 @@ impl Compiler {
                                         }
                                     }
                                     for form in &parts[2..] {
-                                        let child = Child { form, span: definition.span, children: None };
+                                        let child = Child {
+                                            form,
+                                            span: definition.span,
+                                            children: None,
+                                        };
                                         self.collect_free(&child, bound, free);
                                     }
                                     bound.truncate(local_marked);
@@ -626,9 +649,7 @@ impl Compiler {
                             {
                                 Some(Form::Vector(params)) => {
                                     for param in params {
-                                        if let Form::Symbol(name) = param {
-                                            bound.push(name.clone());
-                                        }
+                                        collect_pattern_names(param, bound);
                                     }
                                     for c in &children[2..] {
                                         self.collect_free(c, bound, free);
@@ -774,7 +795,9 @@ fn collect_pattern_names(pattern: &Form, output: &mut Vec<String>) {
                 match binding {
                     Form::Keyword(name) if matches!(name.as_str(), "keys" | "strs" | "syms") => {
                         if let Form::Vector(names) = value {
-                            for name in names { collect_pattern_names(name, output); }
+                            for name in names {
+                                collect_pattern_names(name, output);
+                            }
                         }
                     }
                     Form::Keyword(name) if name == "as" => collect_pattern_names(value, output),

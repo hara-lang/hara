@@ -3,8 +3,12 @@
 use crate::kernel::Form;
 
 pub(super) fn expand(form: &Form, next: &mut u64) -> Result<Option<Form>, String> {
-    let Form::List(items) = form else { return Ok(None) };
-    let Some(Form::Symbol(operator)) = items.first() else { return Ok(None) };
+    let Form::List(items) = form else {
+        return Ok(None);
+    };
+    let Some(Form::Symbol(operator)) = items.first() else {
+        return Ok(None);
+    };
     match operator.as_str() {
         "let" => expand_let(items, next),
         "loop" => expand_loop(items, next),
@@ -17,7 +21,9 @@ pub(super) fn expand(form: &Form, next: &mut u64) -> Result<Option<Form>, String
 }
 
 fn expand_letfn(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
-    let Some(Form::Vector(definitions)) = items.get(1) else { return Ok(None) };
+    let Some(Form::Vector(definitions)) = items.get(1) else {
+        return Ok(None);
+    };
     let mut cells = Vec::new();
     let mut names = Vec::new();
     let mut parsed = Vec::new();
@@ -39,17 +45,25 @@ fn expand_letfn(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> 
     }
     let mut initialization = Vec::new();
     for parts in parsed {
-        let Form::Symbol(name) = &parts[0] else { unreachable!() };
-        let cell = names.iter().find(|(local, _)| local == name).unwrap().1.clone();
+        let Form::Symbol(name) = &parts[0] else {
+            unreachable!()
+        };
+        let cell = names
+            .iter()
+            .find(|(local, _)| local == name)
+            .unwrap()
+            .1
+            .clone();
         let function = Form::List(
             std::iter::once(Form::Symbol("fn".into()))
-                .chain(parts[1..].iter().map(|form| replace_letfn_refs(form, &names)))
+                .chain(
+                    parts[1..]
+                        .iter()
+                        .map(|form| replace_letfn_refs(form, &names)),
+                )
                 .collect(),
         );
-        initialization.push(call(
-            "reset!",
-            vec![Form::Symbol(cell), function],
-        ));
+        initialization.push(call("reset!", vec![Form::Symbol(cell), function]));
     }
     let aliases = names
         .iter()
@@ -79,9 +93,7 @@ fn replace_letfn_refs(form: &Form, names: &[(String, String)]) -> Form {
             .find(|(name, _)| name == symbol)
             .map(|(_, cell)| call("deref", vec![Form::Symbol(cell.clone())]))
             .unwrap_or_else(|| form.clone()),
-        Form::List(items)
-            if matches!(items.first(), Some(Form::Symbol(name)) if name == "quote" || name == "syntax-quote") =>
-        {
+        Form::List(items) if matches!(items.first(), Some(Form::Symbol(name)) if name == "quote" || name == "syntax-quote") => {
             form.clone()
         }
         Form::List(items) => Form::List(
@@ -125,7 +137,9 @@ fn replace_letfn_refs(form: &Form, names: &[(String, String)]) -> Form {
 }
 
 fn expand_binding(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
-    let Some(Form::Vector(bindings)) = items.get(1) else { return Ok(None) };
+    let Some(Form::Vector(bindings)) = items.get(1) else {
+        return Ok(None);
+    };
     if bindings.len() % 2 != 0 {
         return Err("binding bindings require name/value pairs".into());
     }
@@ -143,15 +157,15 @@ fn expand_binding(items: &[Form], next: &mut u64) -> Result<Option<Form>, String
             "__dynamic-bind",
             vec![Form::Symbol(name.clone()), Form::Symbol(temporary)],
         ));
-        unbinds.push(call(
-            "__dynamic-unbind",
-            vec![Form::Symbol(name.clone())],
-        ));
+        unbinds.push(call("__dynamic-unbind", vec![Form::Symbol(name.clone())]));
     }
     unbinds.reverse();
     let body = list(
         "do",
-        binds.into_iter().chain(items[2..].iter().cloned()).collect(),
+        binds
+            .into_iter()
+            .chain(items[2..].iter().cloned())
+            .collect(),
     );
     let cleanup = list("do", unbinds);
     Ok(Some(list(
@@ -164,7 +178,9 @@ fn expand_binding(items: &[Form], next: &mut u64) -> Result<Option<Form>, String
 }
 
 fn expand_let(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
-    let Some(Form::Vector(bindings)) = items.get(1) else { return Ok(None) };
+    let Some(Form::Vector(bindings)) = items.get(1) else {
+        return Ok(None);
+    };
     if bindings.len() % 2 != 0 || !bindings.chunks(2).any(|pair| pattern(&pair[0])) {
         return Ok(None);
     }
@@ -181,7 +197,9 @@ fn expand_let(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
 }
 
 fn expand_loop(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
-    let Some(Form::Vector(bindings)) = items.get(1) else { return Ok(None) };
+    let Some(Form::Vector(bindings)) = items.get(1) else {
+        return Ok(None);
+    };
     if bindings.len() % 2 != 0 || !bindings.chunks(2).any(|pair| pattern(&pair[0])) {
         return Ok(None);
     }
@@ -194,12 +212,7 @@ fn expand_loop(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
             let temporary = temporary(next);
             raw.push(Form::Symbol(temporary.clone()));
             raw.push(pair[1].clone());
-            bind(
-                &pair[0],
-                Form::Symbol(temporary),
-                &mut inner,
-                next,
-            )?;
+            bind(&pair[0], Form::Symbol(temporary), &mut inner, next)?;
         }
     }
     let body = if inner.is_empty() {
@@ -231,25 +244,30 @@ fn expand_fn(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
     let mut changed = false;
     let mut clauses = Vec::new();
     for clause in &items[1..] {
-        let Form::List(parts) = clause else { return Ok(None) };
+        let Form::List(parts) = clause else {
+            return Ok(None);
+        };
         let Some((params, body)) = expand_params(&parts[0], &parts[1..], next)? else {
             clauses.push(clause.clone());
             continue;
         };
         changed = true;
-        clauses.push(Form::List(
-            std::iter::once(params).chain(body).collect(),
-        ));
+        clauses.push(Form::List(std::iter::once(params).chain(body).collect()));
     }
     Ok(changed.then(|| list("fn", clauses)))
 }
 
 fn expand_definition(items: &[Form], next: &mut u64) -> Result<Option<Form>, String> {
-    let Some(parameter_at) = items.iter().position(|item| matches!(item, Form::Vector(_) | Form::List(_))) else {
+    let Some(parameter_at) = items
+        .iter()
+        .position(|item| matches!(item, Form::Vector(_) | Form::List(_)))
+    else {
         return Ok(None);
     };
     if matches!(&items[parameter_at], Form::Vector(_)) {
-        let Some((params, body)) = expand_params(&items[parameter_at], &items[parameter_at + 1..], next)? else {
+        let Some((params, body)) =
+            expand_params(&items[parameter_at], &items[parameter_at + 1..], next)?
+        else {
             return Ok(None);
         };
         let mut output = items[..parameter_at].to_vec();
@@ -260,15 +278,15 @@ fn expand_definition(items: &[Form], next: &mut u64) -> Result<Option<Form>, Str
     let mut changed = false;
     let mut output = items[..parameter_at].to_vec();
     for clause in &items[parameter_at..] {
-        let Form::List(parts) = clause else { return Ok(None) };
+        let Form::List(parts) = clause else {
+            return Ok(None);
+        };
         let Some((params, body)) = expand_params(&parts[0], &parts[1..], next)? else {
             output.push(clause.clone());
             continue;
         };
         changed = true;
-        output.push(Form::List(
-            std::iter::once(params).chain(body).collect(),
-        ));
+        output.push(Form::List(std::iter::once(params).chain(body).collect()));
     }
     Ok(changed.then_some(Form::List(output)))
 }
@@ -278,7 +296,9 @@ fn expand_params(
     body: &[Form],
     next: &mut u64,
 ) -> Result<Option<(Form, Vec<Form>)>, String> {
-    let Form::Vector(params) = params else { return Ok(None) };
+    let Form::Vector(params) = params else {
+        return Ok(None);
+    };
     if !params.iter().any(pattern) {
         return Ok(None);
     }
@@ -313,12 +333,7 @@ fn expand_params(
     Ok(Some((Form::Vector(raw), wrapped)))
 }
 
-fn bind(
-    pattern: &Form,
-    value: Form,
-    output: &mut Vec<Form>,
-    next: &mut u64,
-) -> Result<(), String> {
+fn bind(pattern: &Form, value: Form, output: &mut Vec<Form>, next: &mut u64) -> Result<(), String> {
     match pattern {
         Form::Symbol(_) => {
             output.push(pattern.clone());
@@ -344,11 +359,18 @@ fn bind_vector(
         match &items[cursor] {
             Form::Symbol(marker) if marker == "&" => {
                 let rest = items.get(cursor + 1).ok_or("vector & requires a binding")?;
-                bind(rest, call("drop", vec![Form::Number(index), source.clone()]), output, next)?;
+                bind(
+                    rest,
+                    call("drop", vec![Form::Number(index), source.clone()]),
+                    output,
+                    next,
+                )?;
                 cursor += 2;
             }
             Form::Keyword(marker) if marker == "as" => {
-                let alias = items.get(cursor + 1).ok_or("vector :as requires a binding")?;
+                let alias = items
+                    .get(cursor + 1)
+                    .ok_or("vector :as requires a binding")?;
                 bind(alias, source.clone(), output, next)?;
                 cursor += 2;
             }
@@ -415,7 +437,9 @@ fn bind_map(
 }
 
 fn default_for(defaults: Option<&Form>, name: &str) -> Option<Form> {
-    let Form::Map(entries) = defaults? else { return None };
+    let Form::Map(entries) = defaults? else {
+        return None;
+    };
     entries.iter().find_map(|(key, value)| {
         matches!(key, Form::Symbol(symbol) if symbol == name).then(|| value.clone())
     })
@@ -423,12 +447,16 @@ fn default_for(defaults: Option<&Form>, name: &str) -> Option<Form> {
 
 fn lookup_form(source: &Form, key: Form, default: Option<Form>) -> Form {
     let mut arguments = vec![source.clone(), key];
-    if let Some(default) = default { arguments.push(default); }
+    if let Some(default) = default {
+        arguments.push(default);
+    }
     call("get", arguments)
 }
 
 fn ensure_symbol(value: Form, output: &mut Vec<Form>, next: &mut u64) -> Form {
-    if matches!(value, Form::Symbol(_)) { return value; }
+    if matches!(value, Form::Symbol(_)) {
+        return value;
+    }
     let name = temporary(next);
     output.push(Form::Symbol(name.clone()));
     output.push(value);

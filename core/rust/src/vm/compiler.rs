@@ -32,10 +32,10 @@ use super::program::{
 use super::source_map::SourceMap;
 use super::validate::{self, stack_heights};
 
-#[path = "compiler/exceptions.rs"]
-mod exceptions;
 #[path = "compiler/destructure.rs"]
 mod destructure;
+#[path = "compiler/exceptions.rs"]
+mod exceptions;
 #[path = "compiler/functions.rs"]
 mod functions;
 #[path = "compiler/scope.rs"]
@@ -570,13 +570,9 @@ impl Compiler {
             // matching the evaluator, which never reaches it.
             return Ok(());
         }
-        if let Some(expanded) = destructure::expand(form, &mut self.next_destructure_id)
-            .map_err(|message| {
-                CompileError::new(
-                    CompileErrorKind::UnsupportedForm,
-                    message,
-                    Some(span.start),
-                )
+        if let Some(expanded) =
+            destructure::expand(form, &mut self.next_destructure_id).map_err(|message| {
+                CompileError::new(CompileErrorKind::UnsupportedForm, message, Some(span.start))
             })?
         {
             self.top_level = top;
@@ -686,8 +682,7 @@ impl Compiler {
                     );
                     Ok(())
                 }
-                None if crate::core::is_bytecode_callable(name) =>
-                {
+                None if crate::core::is_bytecode_callable(name) => {
                     let index = self.name_constant(name, span)?;
                     self.emit(Instruction::BuiltinValue(index), Some(span.start));
                     Ok(())
@@ -719,7 +714,16 @@ impl Compiler {
                             )
                         })?;
                         let index = self.constant_index_of(value, span)?;
-                        self.emit(Instruction::EvalForm(index), Some(span.start));
+                        self.emit(
+                            match name.as_str() {
+                                "defprotocol" => Instruction::DefProtocol(index),
+                                "extend-type" => Instruction::ExtendType(index),
+                                "defmulti" => Instruction::DefMulti(index),
+                                "defmethod" => Instruction::DefMethod(index),
+                                _ => unreachable!("declaration operator was checked"),
+                            },
+                            Some(span.start),
+                        );
                         Ok(())
                     }
                     Form::Symbol(name) if self.is_coroutine_var(name, "await") => {
@@ -727,6 +731,42 @@ impl Compiler {
                     }
                     Form::Symbol(name) if self.is_host_call_var(name) => {
                         self.compile_host_call(&children, span)
+                    }
+                    Form::Symbol(name) if name == "." => {
+                        if elements.len() != 3 {
+                            return Err(CompileError::new(
+                                CompileErrorKind::UnsupportedForm,
+                                "dot expects a receiver and method",
+                                Some(span.start),
+                            ));
+                        }
+                        let Form::List(method_form) = &elements[2] else {
+                            return Err(CompileError::new(
+                                CompileErrorKind::UnsupportedForm,
+                                "dot call expects a method list",
+                                Some(span.start),
+                            ));
+                        };
+                        let Some(Form::Symbol(method_name)) = method_form.first() else {
+                            return Err(CompileError::new(
+                                CompileErrorKind::UnsupportedForm,
+                                "dot method must be a symbol",
+                                Some(span.start),
+                            ));
+                        };
+                        self.compile_form(&elements[1], span, None, false)?;
+                        for argument in &method_form[1..] {
+                            self.compile_form(argument, span, None, false)?;
+                        }
+                        let method = self.name_constant(method_name, span)?;
+                        self.emit(
+                            Instruction::DotCall {
+                                method,
+                                argc: (method_form.len() - 1) as u8,
+                            },
+                            Some(span.start),
+                        );
+                        Ok(())
                     }
                     Form::Symbol(name) if name == "if" => self.compile_if(&children, span, tail),
                     Form::Symbol(name) if name == "and" => self.compile_and(&children, span, tail),
@@ -1580,6 +1620,43 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_bytecode_native(
+                    "((fn [{:keys [callback]
+                            :or {callback (fn [value] value)}}]
+                        (callback 41))
+                      {})"
+                )
+                .unwrap(),
+            "41"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(map (fn [{:keys [name optional?]}]
+                            [name optional?])
+                          [{:name \"id\" :optional? true}])"
+                )
+                .unwrap(),
+            "[[\"id\" true]]"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(defn parts [form]
+                       (let [[_ head & tail] form]
+                         (if (symbol? head)
+                           [head (first tail) (rest tail)]
+                           [nil head tail])))
+                     (defn compatible? [form]
+                       (let [[name] (parts form)]
+                         (nil? name)))
+                     (compatible? '(fn [x] x))"
+                )
+                .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
                     "(loop [[head & tail] [1 2 3] out []]
                        (if head
                          (recur tail (conj out head))
@@ -1713,6 +1790,23 @@ mod tests {
                 )
                 .unwrap(),
             "{:profile/id :xtalk :profile/version 1 :profile/operators {:a 1} :source/kind :profile :source/id :xtalk :source/version 1}"
+        );
+    }
+
+    #[test]
+    fn dot_calls_compile_to_native_method_bytecode() {
+        let mut runtime = Runtime::core();
+        runtime.prepare_foundation_bytecode();
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(defn mutate-and-clone [array value]
+                       (. array (push-last value))
+                       (vec (. array (clone))))
+                     (mutate-and-clone (array 1 2) 3)"
+                )
+                .unwrap(),
+            "[1 2 3]"
         );
     }
 }

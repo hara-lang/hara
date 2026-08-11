@@ -8,6 +8,7 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import hara.lang.data.Symbol;
 import hara.lang.data.Keyword;
 import hara.lang.data.TaggedLiteral;
+import hara.kernel.builtin.BuiltinStruct;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.ILookup;
 import hara.lang.data.types.ILinearType;
@@ -19,7 +20,7 @@ import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 
-/** Executes a validated portable HBC3 program using the ordinary Hara runtime boundaries. */
+/** Executes a validated portable HBC5 program using the ordinary Hara runtime boundaries. */
 public final class HbcMachine {
   private HbcMachine() {}
 
@@ -59,6 +60,28 @@ public final class HbcMachine {
                       locals[index(instruction.second())],
                       program.constants().get(index(instruction.third()))
                     }));
+        case PRIMITIVE_VALUE -> {
+          int primitive = index(instruction.first());
+          stack.add(new HbcNativeCallable(args -> invokePrimitive(context, primitive, args)));
+        }
+        case BUILTIN_VALUE -> {
+          String name = stringConstant(program, instruction.first());
+          Integer primitive = primitiveId(name);
+          stack.add(
+              primitive == null
+                  ? resolve(context, name).deref()
+                  : new HbcNativeCallable(args -> invokePrimitive(context, primitive, args)));
+        }
+        case DYNAMIC_BIND -> {
+          HaraVar variable = resolve(context, stringConstant(program, instruction.first()));
+          if (!variable.isDynamic()) throw new HaraException("binding requires a dynamic Var");
+          variable.bind(pop(stack));
+          stack.add(null);
+        }
+        case DYNAMIC_UNBIND -> {
+          resolve(context, stringConstant(program, instruction.first())).unbind();
+          stack.add(null);
+        }
         case JUMP -> {
           ip = index(instruction.first());
           continue;
@@ -210,6 +233,22 @@ public final class HbcMachine {
               symbol, new HaraMacro(context, context.currentNamespaceName(), symbol, value));
           stack.add(value);
         }
+        case DEF_PROTOCOL ->
+            stack.add(
+                context.executeBytecodeDeclaration(
+                    "defprotocol", program.constants().get(index(instruction.first()))));
+        case EXTEND_TYPE ->
+            stack.add(
+                context.executeBytecodeDeclaration(
+                    "extend-type", program.constants().get(index(instruction.first()))));
+        case DEF_MULTI ->
+            stack.add(
+                context.executeBytecodeDeclaration(
+                    "defmulti", program.constants().get(index(instruction.first()))));
+        case DEF_METHOD ->
+            stack.add(
+                context.executeBytecodeDeclaration(
+                    "defmethod", program.constants().get(index(instruction.first()))));
         case STRUCT_FIELD -> {
           Object target = pop(stack);
           if (!(target instanceof HaraStruct struct)) throw new HaraException("field expects a struct");
@@ -234,6 +273,14 @@ public final class HbcMachine {
                   context,
                   "std.native.Host/call",
                   new Object[] {service, method, argumentsValue}));
+        }
+        case DOT_CALL -> {
+          int argumentCount = index(instruction.second());
+          Object[] methodArguments = popArguments(stack, argumentCount);
+          Object receiver = pop(stack);
+          stack.add(
+              context.invokeMarkerMethod(
+                  receiver, stringConstant(program, instruction.first()), methodArguments));
         }
         case AWAIT ->
             stack.add(
@@ -479,7 +526,8 @@ public final class HbcMachine {
   }
 
   private static Object invokePrimitive(HaraContext context, int id, Object[] arguments) {
-    if (HbcProgram.Primitive.fromId(id) == HbcProgram.Primitive.EQUAL) {
+    HbcProgram.Primitive primitive = HbcProgram.Primitive.fromId(id);
+    if (primitive == HbcProgram.Primitive.EQUAL) {
       if (arguments.length < 2) throw new HaraException("= expects at least 2 arguments");
       Object first = HaraBox.unwrap(arguments[0]);
       for (int i = 1; i < arguments.length; i++) {
@@ -492,10 +540,31 @@ public final class HbcMachine {
       }
       return true;
     }
+    if (primitive == HbcProgram.Primitive.FIRST
+        || primitive == HbcProgram.Primitive.REST
+        || primitive == HbcProgram.Primitive.SECOND) {
+      if (arguments.length != 1) {
+        throw new HaraException(primitiveName(id) + " expects one argument");
+      }
+      Object value = HaraBox.unwrap(arguments[0]);
+      if (value == null) return null;
+      if (!(value instanceof ILinearType<?> linear)) {
+        throw new HaraException(primitiveName(id) + " expects a sequential value");
+      }
+      int start = primitive == HbcProgram.Primitive.SECOND ? 1 : 0;
+      if (primitive != HbcProgram.Primitive.REST) {
+        return linear.count() > start ? linear.nth(start) : null;
+      }
+      if (linear.count() == 0) return null;
+      Object[] remaining = new Object[Math.toIntExact(linear.count() - 1)];
+      for (int index = 0; index < remaining.length; index++) {
+        remaining[index] = linear.nth(index + 1L);
+      }
+      return BuiltinStruct.list(remaining);
+    }
     try {
       return invokeGlobal(context, primitiveName(id), arguments);
     } catch (RuntimeException failure) {
-      HbcProgram.Primitive primitive = HbcProgram.Primitive.fromId(id);
       if ((primitive == HbcProgram.Primitive.DIVIDE
               || primitive == HbcProgram.Primitive.REMAINDER)
           && failure.getMessage() != null
@@ -507,8 +576,10 @@ public final class HbcMachine {
   }
 
   private static Integer primitiveId(String name) {
+    String local = name.contains("/") ? name.substring(name.lastIndexOf('/') + 1) : name;
     for (HbcProgram.Primitive primitive : HbcProgram.Primitive.values()) {
       if (primitiveName(primitive.id()).equals(name)
+          || primitiveName(primitive.id()).equals(local)
           || (primitive == HbcProgram.Primitive.REMAINDER && "%".equals(name))) {
         return primitive.id();
       }

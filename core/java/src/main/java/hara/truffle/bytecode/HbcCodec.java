@@ -31,21 +31,24 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-/** Canonical HBC4 encoder/decoder shared with {@code rust/src/vm/artifact.rs}. */
+/** Canonical HBC5 encoder/decoder shared with {@code rust/src/vm/artifact.rs}. */
 public final class HbcCodec {
   private static final byte[] MAGIC_V3 = {'H', 'B', 'C', '3'};
   private static final byte[] MAGIC_V4 = {'H', 'B', 'C', '4'};
+  private static final byte[] MAGIC_V5 = {'H', 'B', 'C', '5'};
   private static final int DIGEST_BYTES = 32;
 
   private HbcCodec() {}
 
   public static HbcProgram decode(byte[] artifact) {
-    if (artifact.length < MAGIC_V4.length + Integer.BYTES + DIGEST_BYTES) {
+    if (artifact.length < MAGIC_V5.length + Integer.BYTES + DIGEST_BYTES) {
       throw malformed("bytecode artifact is truncated");
     }
-    byte[] magic = Arrays.copyOf(artifact, MAGIC_V4.length);
+    byte[] magic = Arrays.copyOf(artifact, MAGIC_V5.length);
     int version;
-    if (Arrays.equals(MAGIC_V4, magic)) {
+    if (Arrays.equals(MAGIC_V5, magic)) {
+      version = 5;
+    } else if (Arrays.equals(MAGIC_V4, magic)) {
       version = 4;
     } else if (Arrays.equals(MAGIC_V3, magic)) {
       version = 3;
@@ -103,7 +106,7 @@ public final class HbcCodec {
     out.many(program.functions(), function -> writeFunction(out, function));
     byte[] payload = out.toByteArray();
     Writer artifact = new Writer();
-    artifact.raw(MAGIC_V4);
+    artifact.raw(MAGIC_V5);
     artifact.u32(payload.length);
     artifact.raw(payload);
     artifact.raw(sha256(payload));
@@ -193,7 +196,9 @@ public final class HbcCodec {
     Opcode opcode = Opcode.fromId(in.u8());
     return switch (opcode) {
       case CONSTANT, JUMP, JUMP_IF_FALSE, GET_GLOBAL, SET_GLOBAL, VAR_GLOBAL,
-          DECLARE_GLOBAL, STRUCT_FIELD -> new Instruction(opcode, in.u32(), 0, 0);
+          DECLARE_GLOBAL, STRUCT_FIELD, BUILTIN_VALUE, DYNAMIC_BIND, DYNAMIC_UNBIND,
+          DEF_PROTOCOL, EXTEND_TYPE, DEF_MULTI, DEF_METHOD ->
+          new Instruction(opcode, in.u32(), 0, 0);
       case LOAD_LOCAL, STORE_LOCAL, BUILD_VECTOR, BUILD_MAP, BUILD_SET, BUILD_LIST,
           CONCAT_LIST -> new Instruction(opcode, in.u16(), 0, 0);
       case PRIMITIVE -> new Instruction(opcode, Primitive.fromId(in.u8()).id(), in.u8(), 0);
@@ -205,6 +210,8 @@ public final class HbcCodec {
           new Instruction(opcode, in.u32(), optionalSentinel(in.optionalU16()), 0);
       case DEF_STRUCT -> new Instruction(opcode, in.u32(), in.u32(), 0);
       case MAKE_MULTI_ARITY -> new Instruction(opcode, in.u32(), in.u8(), 0);
+      case PRIMITIVE_VALUE -> new Instruction(opcode, Primitive.fromId(in.u8()).id(), 0, 0);
+      case DOT_CALL -> new Instruction(opcode, in.u32(), in.u8(), 0);
       default -> Instruction.of(opcode);
     };
   }
@@ -214,7 +221,8 @@ public final class HbcCodec {
     out.u8(opcode.id());
     switch (opcode) {
       case CONSTANT, JUMP, JUMP_IF_FALSE, GET_GLOBAL, SET_GLOBAL, VAR_GLOBAL,
-          DECLARE_GLOBAL, STRUCT_FIELD -> out.u32(instruction.first());
+          DECLARE_GLOBAL, STRUCT_FIELD, BUILTIN_VALUE, DYNAMIC_BIND, DYNAMIC_UNBIND,
+          DEF_PROTOCOL, EXTEND_TYPE, DEF_MULTI, DEF_METHOD -> out.u32(instruction.first());
       case LOAD_LOCAL, STORE_LOCAL, BUILD_VECTOR, BUILD_MAP, BUILD_SET, BUILD_LIST,
           CONCAT_LIST -> out.u16(instruction.first());
       case PRIMITIVE -> {
@@ -240,6 +248,11 @@ public final class HbcCodec {
         out.u32(instruction.second());
       }
       case MAKE_MULTI_ARITY -> {
+        out.u32(instruction.first());
+        out.u8(instruction.second());
+      }
+      case PRIMITIVE_VALUE -> out.u8(instruction.first());
+      case DOT_CALL -> {
         out.u32(instruction.first());
         out.u8(instruction.second());
       }

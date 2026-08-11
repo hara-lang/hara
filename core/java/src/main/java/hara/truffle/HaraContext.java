@@ -28,6 +28,7 @@ import hara.lang.protocol.IDerefTimeout;
 import hara.lang.protocol.IDisplay;
 import hara.lang.protocol.ICount;
 import hara.lang.protocol.ICons;
+import hara.truffle.bytecode.HbcProgram;
 import hara.lang.protocol.INth;
 import hara.lang.protocol.IPromise;
 import java.io.File;
@@ -197,6 +198,8 @@ public final class HaraContext {
   private final HaraExtensionRegistry extensionRegistry =
       new HaraExtensionRegistry(HaraContext.class.getClassLoader());
   private final HaraLibraryLoader libraryLoader = new HaraLibraryLoader();
+  private final HbcBundleLibrary bytecodeLibrary =
+      new HbcBundleLibrary(HaraContext.class.getClassLoader());
   private HaraVar.Origin definitionOrigin = HaraVar.Origin.SOURCE;
   private boolean eagerFallbacksLoading;
   private boolean eagerFallbacksLoaded;
@@ -323,7 +326,13 @@ public final class HaraContext {
     if (eagerFallbacksLoaded || eagerFallbacksLoading) return;
     eagerFallbacksLoading = true;
     try {
-      libraryLoader.installEagerResources(this);
+      if (bytecodeLibrary.available()) {
+        for (HbcBundleLibrary.Module module : bytecodeLibrary.eagerModules()) {
+          requiredNamespace(module.namespace());
+        }
+      } else {
+        libraryLoader.installEagerResources(this);
+      }
       eagerFallbacksLoaded = true;
     } finally {
       eagerFallbacksLoading = false;
@@ -973,6 +982,7 @@ public final class HaraContext {
     HaraNamespace existing = namespaces.get(target);
     if (existing != null
         && namespaceStates.get(target) == NamespaceLoadState.LOADED
+        && !bytecodeLibrary.provides(target)
         && (!libraryLoader.provides(target) || sourceNamespaceLoaded(target))) {
       return existing;
     }
@@ -991,11 +1001,14 @@ public final class HaraContext {
     ContextSnapshot snapshot = snapshot();
     namespaceStates.put(target, NamespaceLoadState.LOADING);
     try {
-      libraryLoader.ensure(this, target);
-      HaraNamespace loaded =
-          libraryLoader.provides(target)
-              ? loadLibraryResource(target, false)
-              : namespaces.get(target);
+      HaraNamespace loaded = loadBytecodeNamespace(target);
+      if (loaded == null) libraryLoader.ensure(this, target);
+      if (loaded == null) {
+        loaded =
+            libraryLoader.provides(target)
+                ? loadLibraryResource(target, false)
+                : namespaces.get(target);
+      }
       if (loaded == null) loaded = namespaces.get(target);
       if (loaded == null) loaded = requireSourceNamespace(target);
       if (loaded == null) {
@@ -1025,6 +1038,36 @@ public final class HaraContext {
           target,
           failure.getMessage() == null ? failure.getClass().getSimpleName() : failure.getMessage());
       throw failure;
+    }
+  }
+
+  private HaraNamespace loadBytecodeNamespace(String target) {
+    HbcBundleLibrary.Module module = bytecodeLibrary.module(target);
+    if (module == null) return null;
+    boolean trace = Boolean.getBoolean("hara.hbb.trace");
+    if (trace) System.err.println("HBB2 load start " + target);
+    String previousNamespace = currentNamespace.name();
+    HaraVar.Origin previousOrigin = definitionOrigin;
+    try {
+      for (String dependency : module.descriptor().dependencies()) {
+        if (!dependency.equals(target) && requiredNamespace(dependency) == null) {
+          throw new HaraException(
+              "Cannot require HBB2 dependency " + dependency + " for " + target);
+        }
+      }
+      definitionOrigin = HaraVar.Origin.BYTECODE;
+      parseAndExecute(module.descriptor().namespaceForm(), module.descriptor().resource() + "#ns");
+      HbcProgram program = module.program();
+      currentNamespace = namespace(module.namespace());
+      installHbcTypes(
+          program.schemaTypes(), program.functionTypes(), program.inferredFunctionTypes());
+      HbcMachine.execute(program, this);
+      if (FOUNDATION_NAMESPACE.equals(target)) captureSequenceIntrinsics();
+      if (trace) System.err.println("HBB2 load done " + target);
+      return namespaces.get(target);
+    } finally {
+      definitionOrigin = previousOrigin;
+      currentNamespace = namespace(previousNamespace);
     }
   }
 
@@ -3742,6 +3785,21 @@ public final class HaraContext {
           "Dot calls are only supported on values created by array or object unless the namespace selects a native flavor");
     }
     return provider.invokeMember(receiver, method, arguments, nativeAccess());
+  }
+
+  @TruffleBoundary
+  Object executeBytecodeDeclaration(String expectedOperator, Object form) {
+    Object raw = HaraBox.unwrap(form);
+    if (!(raw instanceof hara.lang.data.List<?> list)
+        || list.count() == 0
+        || !(list.nth(0) instanceof Symbol operator)
+        || operator.getNamespace() != null
+        || !expectedOperator.equals(operator.getName())) {
+      throw new HaraException(
+          expectedOperator + " instruction contains the wrong declaration");
+    }
+    return parseAndExecute(
+        hara.kernel.builtin.BuiltinUtil.prStr(raw), "<hbc-" + expectedOperator + ">");
   }
 
   private Object nativeMutableCall(String type, String method, Object[] values) {

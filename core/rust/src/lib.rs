@@ -146,6 +146,8 @@ pub struct Runtime {
     wasm_extensions: HashMap<String, extension::WasmExtension>,
     providers: core::ProviderRegistry,
     resources: HashMap<String, String>,
+    #[cfg(feature = "bytecode-vm")]
+    bytecode_resources: HashMap<String, (String, Vec<u8>)>,
     loaded_resources: HashSet<String>,
     halc_schema_definitions: HashMap<String, Form>,
     halc_function_schemas: HashMap<String, Form>,
@@ -630,6 +632,8 @@ impl Runtime {
             wasm_extensions: HashMap::new(),
             providers: core::ProviderRegistry::new(),
             resources: HashMap::new(),
+            #[cfg(feature = "bytecode-vm")]
+            bytecode_resources: HashMap::new(),
             loaded_resources: HashSet::new(),
             halc_schema_definitions: HashMap::new(),
             halc_function_schemas: HashMap::new(),
@@ -879,6 +883,7 @@ impl Runtime {
                             if self.namespace_registry.find(target).is_some()
                                 || self.resources.contains_key(target)
                                 || self.wasm_extensions.contains_key(target)
+                                || self.has_bytecode_resource(target)
                             {
                                 return true;
                             }
@@ -892,6 +897,7 @@ impl Runtime {
                     for target in config.required_namespaces() {
                         if self.resources.contains_key(target)
                             || self.loaded_resources.contains(target)
+                            || self.has_bytecode_resource(target)
                         {
                             continue;
                         }
@@ -1402,6 +1408,50 @@ impl Runtime {
         }
     }
 
+    #[cfg(feature = "bytecode-vm")]
+    fn has_bytecode_resource(&self, name: &str) -> bool {
+        self.bytecode_resources.contains_key(name)
+    }
+
+    #[cfg(not(feature = "bytecode-vm"))]
+    fn has_bytecode_resource(&self, _name: &str) -> bool {
+        false
+    }
+
+    #[cfg(feature = "bytecode-vm")]
+    pub(crate) fn register_bytecode_resource(
+        &mut self,
+        name: String,
+        namespace_form: String,
+        artifact: Vec<u8>,
+    ) {
+        self.bytecode_resources
+            .insert(name.clone(), (namespace_form, artifact));
+        self.loaded_resources.remove(&name);
+        self.namespace_registry
+            .set_load_state(&name, kernel::NamespaceLoadState::Unloaded);
+    }
+
+    #[cfg(feature = "bytecode-vm")]
+    pub(crate) fn load_bytecode_resource(&mut self, name: &str) -> Result<String, String> {
+        self.bytecode_resources
+            .get(name)
+            .ok_or("module/not-found")?;
+        let namespace_source = self.namespace_source();
+        core::with_macros(self.macros.clone(), || {
+            core::with_namespace_source(namespace_source, || {
+                core::with_protocols(&self.protocols, || {
+                    core::with_namespace_registry(&self.namespace_registry, || {
+                        core::require_namespace(&self.namespace_registry, &mut self.env, name)
+                    })
+                })
+            })
+        })?;
+        self.save_namespace();
+        self.refresh_qualified_bindings();
+        Ok(":loaded".into())
+    }
+
     /// Evaluates a registered resource in the current lexical namespace.
     pub fn load_resource(&mut self, name: &str) -> Result<String, JsValue> {
         let source = self
@@ -1417,6 +1467,14 @@ impl Runtime {
     pub fn require_resource(&mut self, name: &str) -> Result<String, JsValue> {
         if self.loaded_resources.contains(name) {
             return Ok(":loaded".into());
+        }
+        #[cfg(feature = "bytecode-vm")]
+        if self.bytecode_resources.contains_key(name) {
+            let result = self
+                .load_bytecode_resource(name)
+                .map_err(|error| JsValue::from_str(&error))?;
+            self.loaded_resources.insert(name.into());
+            return Ok(result);
         }
         if self.resources.contains_key(name) {
             let result = self.load_resource(name)?;
@@ -1924,9 +1982,23 @@ impl Runtime {
         binding.invoke(arguments)
     }
 
-    fn namespace_source(&self) -> Rc<dyn Fn(&str) -> Option<String>> {
+    fn namespace_source(&self) -> Rc<dyn Fn(&str) -> Option<core::NamespaceResource>> {
         let resources = self.resources.clone();
-        Rc::new(move |name: &str| resources.get(name).cloned())
+        #[cfg(feature = "bytecode-vm")]
+        let bytecode_resources = self.bytecode_resources.clone();
+        Rc::new(move |name: &str| {
+            #[cfg(feature = "bytecode-vm")]
+            if let Some((namespace_form, artifact)) = bytecode_resources.get(name) {
+                return Some(core::NamespaceResource::Bytecode {
+                    namespace_form: namespace_form.clone(),
+                    artifact: artifact.clone(),
+                });
+            }
+            resources
+                .get(name)
+                .cloned()
+                .map(core::NamespaceResource::Source)
+        })
     }
 
     fn load_wasm_extension_namespace(&mut self, name: &str) -> Result<String, String> {

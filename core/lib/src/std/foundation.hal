@@ -886,6 +886,36 @@
             (recur (assoc seen value true))))
         true))))
 
+(defn ^{:schema [:fn [:fn & :any] :vector]}
+  mapv
+  "Returns a vector containing function applied across one or more collections."
+  [function & collections]
+  (vec (apply map function collections)))
+
+(defn ^{:schema [:fn [:fn :any] :vector]}
+  map-indexed
+  "Returns a vector of function applied to each index and value."
+  [function values]
+  (let [it (iter values)]
+    (loop [index 0
+           result []]
+      (if (iter-next? it)
+        (recur (+ index 1)
+               (conj result (function index (iter-next it))))
+        result))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  ffirst
+  "Returns the first item of the first item in values."
+  [values]
+  (first (first values)))
+
+(defn ^{:schema [:fn [:fn :any] :vector]}
+  remove
+  "Returns the values for which predicate is false."
+  [predicate values]
+  (filter (complement predicate) values))
+
 (defn ^{:schema [:fn [:any :any] :map]}
   zipmap
   "Returns a map of map-keys to map-values, stopping at the shorter input."
@@ -896,6 +926,12 @@
       (if (if (iter-next? key-it) (iter-next? value-it) false)
         (recur (assoc result (iter-next key-it) (iter-next value-it)))
         result))))
+
+(defn ^{:schema [:fn [& :any] :map]}
+  hash-map
+  "Returns a map containing the supplied key/value pairs."
+  [& keyvals]
+  (apply assoc {} keyvals))
 
 (defn ^{:schema [:fn [:fn :map] :map]}
   map-keys
@@ -1088,9 +1124,65 @@
                     (conditional-thread-form threaded remaining last?)
                     (conditional-thread-form result-symbol remaining last?))))))
 
+(defn- ^{:schema [:fn [:any :vector] :any]}
+  case-form
+  "Builds a single-evaluation case decision from constant/expression clauses."
+  [target clauses]
+  (if (= 0 (count clauses))
+    nil
+    (if (= 1 (count clauses))
+      (first clauses)
+      (list 'if
+            (list '= target (list 'quote (first clauses)))
+            (second clauses)
+            (case-form target (vec (drop 2 clauses)))))))
+
+(defn- ^{:schema [:fn [:any :vector :bool] :any]}
+  some-thread-form
+  "Builds nil-short-circuiting first- or last-threaded forms."
+  [value forms last?]
+  (if (= 0 (count forms))
+    value
+    (let [result (gensym "some")
+          step (first forms)
+          threaded (if last?
+                     (thread-last-form result step)
+                     (thread-first-form result step))]
+      (list 'let [result value]
+            (list 'if
+                  (list 'nil? result)
+                  nil
+                  (some-thread-form threaded (vec (rest forms)) last?))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Macros
 ;; ---------------------------------------------------------------------------
+
+(defmacro ->
+  "Threads value through forms, inserting it as the first argument."
+  [value & forms]
+  (reduce thread-first-form value forms))
+
+(defmacro ->>
+  "Threads value through forms, inserting it as the last argument."
+  [value & forms]
+  (reduce thread-last-form value forms))
+
+(defmacro case
+  "Selects the expression paired with the matching constant, or the optional default."
+  [value & clauses]
+  (let [target (gensym "case")]
+    (list 'let [target value] (case-form target clauses))))
+
+(defmacro some->
+  "Threads a non-nil value through forms as their first argument."
+  [value & forms]
+  (some-thread-form value forms false))
+
+(defmacro some->>
+  "Threads a non-nil value through forms as their last argument."
+  [value & forms]
+  (some-thread-form value forms true))
 
 ;; ---------------------------------------------------------------------------
 ;; Application

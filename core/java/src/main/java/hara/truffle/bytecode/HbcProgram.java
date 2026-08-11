@@ -181,7 +181,7 @@ public record HbcProgram(
     }
   }
 
-  /** Stable HBC3 opcode identifiers. Generated Truffle bytecodes are deliberately private. */
+  /** Stable HBC5 opcode identifiers. Generated Truffle bytecodes are deliberately private. */
   public enum Opcode {
     CONSTANT(0),
     NIL(1),
@@ -218,7 +218,16 @@ public record HbcProgram(
     DEF_MACRO(32),
     BUILD_LIST(33),
     CONCAT_LIST(34),
-    TO_VECTOR(35);
+    TO_VECTOR(35),
+    PRIMITIVE_VALUE(37),
+    BUILTIN_VALUE(38),
+    DYNAMIC_BIND(39),
+    DYNAMIC_UNBIND(40),
+    DEF_PROTOCOL(41),
+    EXTEND_TYPE(42),
+    DEF_MULTI(43),
+    DEF_METHOD(44),
+    DOT_CALL(45);
 
     private final int id;
 

@@ -269,14 +269,42 @@ pub(crate) fn stack_heights(
                     ));
                 }
             }
-            Instruction::EvalForm(constant) if *constant as usize >= program.constants.len() => {
-                return Err(ValidationError::new(
-                    format!("constant index {constant} out of range"),
-                    at,
-                ));
+            Instruction::DefProtocol(constant)
+            | Instruction::ExtendType(constant)
+            | Instruction::DefMulti(constant)
+            | Instruction::DefMethod(constant) => {
+                let Some(value) = program.constants.get(*constant as usize) else {
+                    return Err(ValidationError::new(
+                        format!("constant index {constant} out of range"),
+                        at,
+                    ));
+                };
+                let expected = match instruction {
+                    Instruction::DefProtocol(_) => "defprotocol",
+                    Instruction::ExtendType(_) => "extend-type",
+                    Instruction::DefMulti(_) => "defmulti",
+                    Instruction::DefMethod(_) => "defmethod",
+                    _ => unreachable!("declaration instruction was matched"),
+                };
+                let valid = crate::core::value_to_form(value).is_ok_and(|form| {
+                    matches!(
+                        form,
+                        crate::kernel::Form::List(items)
+                            if matches!(items.first(), Some(crate::kernel::Form::Symbol(operator)) if operator == expected)
+                    )
+                });
+                if !valid {
+                    return Err(ValidationError::new(
+                        format!("{expected} declaration constant {constant} is invalid"),
+                        at,
+                    ));
+                }
             }
             Instruction::BuiltinValue(constant)
-                if !matches!(program.constants.get(*constant as usize), Some(Value::String(_))) =>
+                if !matches!(
+                    program.constants.get(*constant as usize),
+                    Some(Value::String(_))
+                ) =>
             {
                 return Err(ValidationError::new(
                     format!("builtin name constant {constant} is invalid"),
@@ -284,7 +312,10 @@ pub(crate) fn stack_heights(
                 ));
             }
             Instruction::DynamicBind(constant) | Instruction::DynamicUnbind(constant)
-                if !matches!(program.constants.get(*constant as usize), Some(Value::String(_))) =>
+                if !matches!(
+                    program.constants.get(*constant as usize),
+                    Some(Value::String(_))
+                ) =>
             {
                 return Err(ValidationError::new(
                     format!("binding name constant {constant} is invalid"),

@@ -13,16 +13,18 @@ import java.util.List;
 /** A Clojure-shaped multimethod: dispatches on the result of a function call. */
 @ExportLibrary(InteropLibrary.class)
 public final class HaraMultiFunction implements TruffleObject {
-  private final HaraFunction dispatchFunction;
+  private final HaraContext context;
+  private final Object dispatchFunction;
   private final List<Method> methods = new ArrayList<>();
-  private HaraFunction defaultMethod;
+  private Object defaultMethod;
 
-  public HaraMultiFunction(HaraFunction dispatchFunction) {
+  public HaraMultiFunction(HaraContext context, Object dispatchFunction) {
+    this.context = context;
     this.dispatchFunction = dispatchFunction;
   }
 
   @TruffleBoundary
-  public void addMethod(Object dispatchValue, HaraFunction method) {
+  public void addMethod(Object dispatchValue, Object method) {
     if (dispatchValue instanceof hara.lang.data.Keyword
         && ((hara.lang.data.Keyword) dispatchValue).getNamespace() == null
         && ((hara.lang.data.Keyword) dispatchValue).getName().equals("default")) {
@@ -40,13 +42,8 @@ public final class HaraMultiFunction implements TruffleObject {
 
   @TruffleBoundary
   public Object invoke(Object[] arguments) {
-    HaraFunction dispatch = dispatchFunction.resolveArity(arguments.length);
-    if (dispatch == null) {
-      throw new HaraException(
-          "Multimethod dispatch function does not accept " + arguments.length + " arguments");
-    }
-    Object dispatchValue = dispatch.callTarget().call(dispatch.callArguments(arguments));
-    HaraFunction selected = null;
+    Object dispatchValue = context.invokeCallable(dispatchFunction, arguments);
+    Object selected = null;
     for (Method method : methods) {
       if (Eq.eq(dispatchValue, method.dispatchValue)) {
         selected = method.function;
@@ -57,12 +54,7 @@ public final class HaraMultiFunction implements TruffleObject {
     if (selected == null) {
       throw new HaraException("No multimethod method for dispatch value " + dispatchValue);
     }
-    HaraFunction method = selected.resolveArity(arguments.length);
-    if (method == null) {
-      throw new HaraException(
-          "Multimethod method does not accept " + arguments.length + " arguments");
-    }
-    return method.callTarget().call(method.callArguments(arguments));
+    return context.invokeCallable(selected, arguments);
   }
 
   @ExportMessage
@@ -82,9 +74,9 @@ public final class HaraMultiFunction implements TruffleObject {
 
   private static final class Method {
     private final Object dispatchValue;
-    private final HaraFunction function;
+    private final Object function;
 
-    private Method(Object dispatchValue, HaraFunction function) {
+    private Method(Object dispatchValue, Object function) {
       this.dispatchValue = dispatchValue;
       this.function = function;
     }

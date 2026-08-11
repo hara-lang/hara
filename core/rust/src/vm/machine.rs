@@ -927,17 +927,9 @@ impl Machine {
                 } else {
                     self.scratch.clear();
                     let argument_base = self.stack.len() - argc;
-                    let mut values_supported = true;
                     for value in self.stack.drain(argument_base..) {
-                        match value.into_runtime_value() {
-                            Some(value) => self.scratch.push(value),
-                            None => values_supported = false,
-                        }
-                    }
-                    if !values_supported {
-                        return Dispatch::Failed(
-                            self.error(function, format!("{} expects values", op.operator())),
-                        );
+                        self.scratch
+                            .push(Machine::into_value(self.program.clone(), value));
                     }
                     apply_primitive(*op, &self.scratch).map(VmSlot::from)
                 };
@@ -997,13 +989,23 @@ impl Machine {
                     next_ip = *target as usize;
                 }
             }
-            Instruction::EvalForm(index) => {
+            Instruction::DefProtocol(index)
+            | Instruction::ExtendType(index)
+            | Instruction::DefMulti(index)
+            | Instruction::DefMethod(index) => {
                 let Some(form) = program.constants.get(*index as usize) else {
                     return Dispatch::Failed(
                         self.error(function, format!("constant index {index} out of range")),
                     );
                 };
-                match crate::core::eval_bytecode_form(form) {
+                let operator = match instruction {
+                    Instruction::DefProtocol(_) => "defprotocol",
+                    Instruction::ExtendType(_) => "extend-type",
+                    Instruction::DefMulti(_) => "defmulti",
+                    Instruction::DefMethod(_) => "defmethod",
+                    _ => unreachable!("declaration instruction was matched"),
+                };
+                match crate::core::eval_bytecode_declaration(operator, form) {
                     Ok(value) => self.stack.push(value.into()),
                     Err(message) => match self.raise(function, message) {
                         Ok(target) => return Dispatch::Unwound(target),
@@ -1011,23 +1013,25 @@ impl Machine {
                     },
                 }
             }
-            Instruction::PrimitiveValue(op) => self.stack.push(
-                crate::core::structural_function_value(op.operator()).into(),
-            ),
+            Instruction::PrimitiveValue(op) => self
+                .stack
+                .push(crate::core::structural_function_value(op.operator()).into()),
             Instruction::BuiltinValue(index) => {
                 let Some(Value::String(name)) = program.constants.get(*index as usize) else {
-                    return Dispatch::Failed(
-                        self.error(function, format!("builtin name constant {index} is invalid")),
-                    );
+                    return Dispatch::Failed(self.error(
+                        function,
+                        format!("builtin name constant {index} is invalid"),
+                    ));
                 };
                 self.stack
                     .push(crate::core::structural_function_value(name).into());
             }
             Instruction::DynamicBind(index) => {
                 let Some(Value::String(name)) = program.constants.get(*index as usize) else {
-                    return Dispatch::Failed(
-                        self.error(function, format!("binding name constant {index} is invalid")),
-                    );
+                    return Dispatch::Failed(self.error(
+                        function,
+                        format!("binding name constant {index} is invalid"),
+                    ));
                 };
                 let Some(value) = self.stack.pop() else {
                     return Dispatch::Failed(self.error(function, "stack underflow"));
@@ -1045,9 +1049,10 @@ impl Machine {
             }
             Instruction::DynamicUnbind(index) => {
                 let Some(Value::String(name)) = program.constants.get(*index as usize) else {
-                    return Dispatch::Failed(
-                        self.error(function, format!("binding name constant {index} is invalid")),
-                    );
+                    return Dispatch::Failed(self.error(
+                        function,
+                        format!("binding name constant {index} is invalid"),
+                    ));
                 };
                 match crate::core::bytecode_dynamic_unbind(name) {
                     Ok(()) => self.stack.push(VmSlot::Nil),
@@ -1231,6 +1236,29 @@ impl Machine {
                     Err(message) => return Dispatch::Failed(self.error(function, message)),
                 };
                 match crate::core::call_host_value(service, target, arguments) {
+                    Ok(value) => self.stack.push(value.into()),
+                    Err(message) => match self.raise(function, message) {
+                        Ok(target) => return Dispatch::Unwound(target),
+                        Err(error) => return Dispatch::Failed(error),
+                    },
+                }
+            }
+            Instruction::DotCall { method, argc } => {
+                let count = usize::from(*argc) + 1;
+                if self.stack.len() < count {
+                    return Dispatch::Failed(self.error(function, "stack underflow"));
+                }
+                let Some(method) = constant_string(program, *method) else {
+                    return Dispatch::Failed(
+                        self.error(function, "dot method constant is invalid"),
+                    );
+                };
+                let values = self.stack.split_off(self.stack.len() - count);
+                let mut values = values
+                    .into_iter()
+                    .map(|value| Machine::into_value(self.program.clone(), value));
+                let receiver = values.next().expect("dot receiver was counted");
+                match crate::core::dot_call_values(receiver, method, values.collect()) {
                     Ok(value) => self.stack.push(value.into()),
                     Err(message) => match self.raise(function, message) {
                         Ok(target) => return Dispatch::Unwound(target),

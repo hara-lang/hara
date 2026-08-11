@@ -415,10 +415,7 @@ impl<V: Clone> NamespaceRegistry<V> {
     where
         V: 'static,
     {
-        let selected = names
-            .into_iter()
-            .map(Symbol::parse)
-            .collect::<HashSet<_>>();
+        let selected = names.into_iter().map(Symbol::parse).collect::<HashSet<_>>();
         let namespaces = self.namespaces.borrow();
         NamespaceTransactionSnapshot {
             namespace_names: namespaces.keys().cloned().collect(),

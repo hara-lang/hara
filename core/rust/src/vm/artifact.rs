@@ -18,6 +18,7 @@ const MAGIC_V1: &[u8; 4] = b"HBC1";
 const MAGIC_V2: &[u8; 4] = b"HBC2";
 const MAGIC_V3: &[u8; 4] = b"HBC3";
 const MAGIC_V4: &[u8; 4] = b"HBC4";
+const MAGIC_V5: &[u8; 4] = b"HBC5";
 
 /// Encodes a program after validating it. Constants use the portable HTA
 /// value codec; unsupported runtime-only values are rejected explicitly.
@@ -42,7 +43,7 @@ pub fn encode_program(program: &Program) -> Result<Vec<u8>, String> {
         write_function(&mut payload, function)?;
     }
     let digest = Sha256::digest(&payload.bytes);
-    let mut output = MAGIC_V4.to_vec();
+    let mut output = MAGIC_V5.to_vec();
     output.extend_from_slice(
         &u32::try_from(payload.bytes.len())
             .map_err(|_| "bytecode artifact is too large")?
@@ -55,7 +56,9 @@ pub fn encode_program(program: &Program) -> Result<Vec<u8>, String> {
 
 /// Decodes, authenticates, and validates a persistent VM program.
 pub fn decode_program(bytes: &[u8]) -> Result<Program, String> {
-    let version = if bytes.starts_with(MAGIC_V4) {
+    let version = if bytes.starts_with(MAGIC_V5) {
+        5
+    } else if bytes.starts_with(MAGIC_V4) {
         4
     } else if bytes.starts_with(MAGIC_V3) {
         3
@@ -321,6 +324,11 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
         }
         Await => out.byte(26),
         HostCall => out.byte(27),
+        DotCall { method, argc } => {
+            out.byte(45);
+            out.u32(*method);
+            out.byte(*argc);
+        }
         BuildVector(count) => {
             out.byte(29);
             out.u16(*count);
@@ -347,8 +355,20 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
             out.u16(*count);
         }
         ToVector => out.byte(35),
-        EvalForm(index) => {
-            out.byte(36);
+        DefProtocol(index) => {
+            out.byte(41);
+            out.u32(*index);
+        }
+        ExtendType(index) => {
+            out.byte(42);
+            out.u32(*index);
+        }
+        DefMulti(index) => {
+            out.byte(43);
+            out.u32(*index);
+        }
+        DefMethod(index) => {
+            out.byte(44);
             out.u32(*index);
         }
         PrimitiveValue(op) => {
@@ -436,11 +456,18 @@ fn read_instruction(reader: &mut Reader<'_>) -> Result<Instruction, String> {
         33 => Instruction::BuildList(reader.u16()?),
         34 => Instruction::ConcatList(reader.u16()?),
         35 => Instruction::ToVector,
-        36 => Instruction::EvalForm(reader.u32()?),
         37 => Instruction::PrimitiveValue(primitive(reader.byte()?)?),
         38 => Instruction::BuiltinValue(reader.u32()?),
         39 => Instruction::DynamicBind(reader.u32()?),
         40 => Instruction::DynamicUnbind(reader.u32()?),
+        41 => Instruction::DefProtocol(reader.u32()?),
+        42 => Instruction::ExtendType(reader.u32()?),
+        43 => Instruction::DefMulti(reader.u32()?),
+        44 => Instruction::DefMethod(reader.u32()?),
+        45 => Instruction::DotCall {
+            method: reader.u32()?,
+            argc: reader.byte()?,
+        },
         _ => return Err("bytecode artifact contains an unknown opcode".into()),
     })
 }
@@ -973,7 +1000,7 @@ mod tests {
             }]),
         );
         let encoded = encode_program(&program).unwrap();
-        assert!(encoded.starts_with(b"HBC4"));
+        assert!(encoded.starts_with(b"HBC5"));
         let decoded = decode_program(&encoded).unwrap();
         assert_eq!(disassemble(&decoded), disassemble(&program));
         assert_eq!(decoded.schema_types, program.schema_types);

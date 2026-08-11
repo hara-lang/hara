@@ -12,7 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Rust-compatible structural and abstract-stack validation for HBC4. */
+/** Rust-compatible structural and abstract-stack validation for HBC5. */
 public final class HbcValidator {
   public static final int MAX_CONSTANTS = 1 << 24;
   public static final int MAX_INSTRUCTIONS = 1 << 24;
@@ -171,6 +171,16 @@ public final class HbcValidator {
       }
       case GET_GLOBAL, SET_GLOBAL, VAR_GLOBAL, DECLARE_GLOBAL, STRUCT_FIELD ->
           stringConstant(program, instruction.first(), ip);
+      case BUILTIN_VALUE, DYNAMIC_BIND, DYNAMIC_UNBIND ->
+          stringConstant(program, instruction.first(), ip);
+      case PRIMITIVE_VALUE ->
+          HbcProgram.Primitive.fromId(Math.toIntExact(instruction.first()));
+      case DEF_PROTOCOL, EXTEND_TYPE, DEF_MULTI, DEF_METHOD ->
+          constant(program, instruction.first(), ip);
+      case DOT_CALL -> {
+        stringConstant(program, instruction.first(), ip);
+        unsigned(instruction.second(), 0xff, "dot-call argc", ip);
+      }
       case DEF_GLOBAL, DEF_MACRO -> {
         stringConstant(program, instruction.first(), ip);
         if (instruction.second() >= 0 && instruction.second() >= program.varMetadata().size()) {
@@ -233,17 +243,20 @@ public final class HbcValidator {
   private static int stackEffect(Instruction instruction) {
     return switch (instruction.opcode()) {
       case CONSTANT, NIL, TRUE, FALSE, LOAD_LOCAL, DUP, PRIMITIVE_LOCAL_CONST,
-          GET_GLOBAL, VAR_GLOBAL, DECLARE_GLOBAL, DEF_STRUCT -> 1;
+          GET_GLOBAL, VAR_GLOBAL, DECLARE_GLOBAL, DEF_STRUCT, PRIMITIVE_VALUE,
+          BUILTIN_VALUE, DYNAMIC_UNBIND, DEF_PROTOCOL, EXTEND_TYPE, DEF_MULTI, DEF_METHOD -> 1;
       case STORE_LOCAL, POP, JUMP_IF_FALSE -> -1;
       case PRIMITIVE, CALL_STATIC -> 1 - Math.toIntExact(instruction.second());
       case CLOSURE -> 1 - Math.toIntExact(instruction.second());
       case CALL -> -Math.toIntExact(instruction.first());
-      case DEF_GLOBAL, SET_GLOBAL, STRUCT_FIELD, DEF_MACRO, AWAIT, JUMP, TO_VECTOR -> 0;
+      case DEF_GLOBAL, SET_GLOBAL, STRUCT_FIELD, DEF_MACRO, AWAIT, JUMP, TO_VECTOR,
+          DYNAMIC_BIND -> 0;
       case INSTANCE_OF -> -1;
       case MAKE_MULTI_ARITY -> 1 - Math.toIntExact(instruction.second());
       case BUILD_VECTOR, BUILD_SET, BUILD_LIST, CONCAT_LIST -> 1 - Math.toIntExact(instruction.first());
       case BUILD_MAP -> 1 - (2 * Math.toIntExact(instruction.first()));
       case HOST_CALL -> -2;
+      case DOT_CALL -> -Math.toIntExact(instruction.second());
       case RETURN, THROW, RETHROW -> throw new AssertionError("terminal instruction has no stack effect");
     };
   }

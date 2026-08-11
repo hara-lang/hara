@@ -22,6 +22,7 @@ public final class HaraVar
     implements TruffleObject, IDeref<Object>, IReset<Object>, IVarType, IObjType {
   enum Origin {
     SOURCE,
+    BYTECODE,
     HAL_FALLBACK,
     JAVA_LIBRARY,
     RUNTIME_PRIMITIVE

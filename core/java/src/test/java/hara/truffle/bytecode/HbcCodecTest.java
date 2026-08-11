@@ -2,6 +2,7 @@ package hara.truffle.bytecode;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -39,7 +40,9 @@ public class HbcCodecTest {
     assertTrue(decoded.schemaTypes().containsKey("demo/Customer"));
     assertTrue(decoded.functionTypes().containsKey("demo/add-one"));
     assertTrue(decoded.inferredFunctionTypes().containsKey("demo/inferred"));
-    assertArrayEquals(artifact, HbcCodec.encode(decoded));
+    byte[] reencoded = HbcCodec.encode(decoded);
+    assertArrayEquals(new byte[] {'H', 'B', 'C', '5'}, Arrays.copyOf(reencoded, 4));
+    assertEquals(decoded, HbcCodec.decode(reencoded));
   }
 
   @Test
@@ -76,7 +79,7 @@ public class HbcCodecTest {
             base.functions(),
             base.entry());
     byte[] first = HbcCodec.encode(program);
-    assertArrayEquals(new byte[] {'H', 'B', 'C', '4'}, Arrays.copyOf(first, 4));
+    assertArrayEquals(new byte[] {'H', 'B', 'C', '5'}, Arrays.copyOf(first, 4));
     HbcProgram decoded = HbcCodec.decode(first);
     assertEquals(program, decoded);
     assertArrayEquals(first, HbcCodec.encode(decoded));
@@ -177,21 +180,17 @@ public class HbcCodecTest {
   @Test
   public void decodesEveryArtifactInTheTrackedRustFoundationBundle() throws Exception {
     byte[] bundle = Files.readAllBytes(Path.of("rust/assets/std.foundation.hbb"));
-    assertArrayEquals(new byte[] {'H', 'B', 'B', '1'}, Arrays.copyOf(bundle, 4));
+    assertArrayEquals(new byte[] {'H', 'B', 'B', '2'}, Arrays.copyOf(bundle, 4));
     byte[] payload = Arrays.copyOfRange(bundle, 36, bundle.length);
     assertArrayEquals(Arrays.copyOfRange(bundle, 4, 36), MessageDigest.getInstance("SHA-256").digest(payload));
-    ByteBuffer input = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
-    int modules = input.getInt();
-    assertTrue(modules > 0);
-    for (int i = 0; i < modules; i++) {
-      takeBundleField(input); // resource name
-      takeBundleField(input); // namespace form
-      byte[] artifact = takeBundleField(input);
-      HbcProgram decoded = HbcCodec.decode(artifact);
+    List<HbcBundleCodec.Module> modules = HbcBundleCodec.decode(bundle);
+    assertTrue(modules.size() >= 250);
+    for (HbcBundleCodec.Module module : modules) {
+      assertEquals(32, module.sourceDigest().length);
+      HbcProgram decoded = HbcCodec.decode(module.artifact());
       assertTrue(decoded.functions().size() > 0);
       assertTrue(HbcDisassembler.disassemble(decoded).startsWith("HBC3 entry="));
     }
-    assertEquals(0, input.remaining());
   }
 
   @Test
@@ -231,23 +230,16 @@ public class HbcCodecTest {
   }
 
   @Test
-  public void executesTheRustFoundationBundleAndExposesItsDefinitions() throws Exception {
-    List<HbcBundleCodec.Module> modules =
-        HbcBundleCodec.decode(Files.readAllBytes(Path.of("rust/assets/std.foundation.hbb")));
+  public void automaticallyLoadsEagerAndRequiredRustFoundationModules() throws Exception {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      for (HbcBundleCodec.Module module : modules) {
-        context.eval(HaraLanguage.ID, module.namespaceForm());
-        Source source =
-            Source.newBuilder(
-                    HaraLanguage.ID,
-                    ByteSequence.create(module.artifact()),
-                    module.resource() + ".hbc")
-                .mimeType(HaraLanguage.BYTECODE_MIME_TYPE)
-                .build();
-        context.eval(source);
-      }
       assertEquals("HARA", context.eval(HaraLanguage.ID, "(std.foundation.string/upper \"hara\")").asString());
       assertEquals(42L, context.eval(HaraLanguage.ID, "(std.foundation/if-not false 42)").asLong());
+      assertFalse(
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (require 'code.vm.model) (the-ns 'code.vm.model))")
+              .isNull());
     }
   }
 
@@ -479,7 +471,13 @@ public class HbcCodecTest {
         try {
           actual = context.eval(source);
         } catch (RuntimeException failure) {
-          throw new AssertionError(testCase.id(), failure);
+          throw new AssertionError(
+              testCase.id()
+                  + "\nconstants="
+                  + HbcCodec.decode(testCase.artifact()).constants()
+                  + "\n"
+                  + HbcDisassembler.disassemble(HbcCodec.decode(testCase.artifact())),
+              failure);
         }
         String display =
             actual.isNull()

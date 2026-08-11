@@ -9,15 +9,28 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/** Decoder for Rust's deterministic HBB1 Foundation-module container. */
+/** Decoder for Rust's deterministic HBB2 indexed standard-library container. */
 public final class HbcBundleCodec {
-  private static final byte[] MAGIC = {'H', 'B', 'B', '1'};
+  private static final byte[] MAGIC = {'H', 'B', 'B', '2'};
 
   private HbcBundleCodec() {}
 
-  public record Module(String resource, String namespaceForm, byte[] artifact) {
+  public record Module(
+      String resource,
+      String namespaceForm,
+      byte[] sourceDigest,
+      List<String> dependencies,
+      boolean eager,
+      byte[] artifact) {
     public Module {
+      sourceDigest = sourceDigest.clone();
+      dependencies = List.copyOf(dependencies);
       artifact = artifact.clone();
+    }
+
+    @Override
+    public byte[] sourceDigest() {
+      return sourceDigest.clone();
     }
 
     @Override
@@ -38,7 +51,29 @@ public final class HbcBundleCodec {
     int count = size(input);
     ArrayList<Module> modules = new ArrayList<>(count);
     for (int i = 0; i < count; i++) {
-      modules.add(new Module(text(input), text(input), bytes(input)));
+      String resource = text(input);
+      String namespaceForm = text(input);
+      byte[] sourceDigest = fixed(input, 32);
+      int dependencyCount = size(input);
+      ArrayList<String> dependencies = new ArrayList<>(dependencyCount);
+      for (int dependency = 0; dependency < dependencyCount; dependency++) {
+        dependencies.add(text(input));
+      }
+      if (!input.hasRemaining()) {
+        throw new HbcFormatException("truncated foundation bytecode bundle");
+      }
+      int eager = Byte.toUnsignedInt(input.get());
+      if (eager > 1) {
+        throw new HbcFormatException("standard-library bundle contains invalid eager flag");
+      }
+      modules.add(
+          new Module(
+              resource,
+              namespaceForm,
+              sourceDigest,
+              dependencies,
+              eager == 1,
+              bytes(input)));
     }
     if (input.hasRemaining()) throw new HbcFormatException("trailing bytes in foundation bytecode bundle");
     return List.copyOf(modules);
@@ -51,6 +86,15 @@ public final class HbcBundleCodec {
   private static byte[] bytes(ByteBuffer input) {
     int size = size(input);
     if (input.remaining() < size) throw new HbcFormatException("truncated foundation bytecode bundle");
+    byte[] value = new byte[size];
+    input.get(value);
+    return value;
+  }
+
+  private static byte[] fixed(ByteBuffer input, int size) {
+    if (input.remaining() < size) {
+      throw new HbcFormatException("truncated foundation bytecode bundle");
+    }
     byte[] value = new byte[size];
     input.get(value);
     return value;

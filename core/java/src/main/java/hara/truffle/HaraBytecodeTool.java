@@ -27,7 +27,7 @@ final class HaraBytecodeTool {
           && artifact[0] == 'H'
           && artifact[1] == 'B'
           && artifact[2] == 'B'
-          && artifact[3] == '1') {
+          && artifact[3] == '2') {
         return runBundle(artifact, arguments[0], output);
       }
       if ("disassemble".equals(arguments[0])) {
@@ -64,6 +64,7 @@ final class HaraBytecodeTool {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       Value result = null;
       for (HbcBundleCodec.Module module : modules) {
+        if (!module.eager()) continue;
         context.eval(HaraLanguage.ID, module.namespaceForm());
         Source source =
             Source.newBuilder(

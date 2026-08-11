@@ -144,10 +144,14 @@ pub enum Instruction {
         name: u32,
         metadata: Option<u16>,
     },
-    /// Evaluates a namespace-level declaration retained as a Form constant.
-    /// This covers registry-mutating declarations such as protocols and
-    /// multimethods without reparsing source at load time.
-    EvalForm(u32),
+    /// Defines a protocol from a validated structured declaration constant.
+    DefProtocol(u32),
+    /// Extends a struct type from a validated structured declaration constant.
+    ExtendType(u32),
+    /// Defines a multimethod from a validated structured declaration constant.
+    DefMulti(u32),
+    /// Adds one multimethod implementation from a validated declaration.
+    DefMethod(u32),
     /// Pushes a first-class callable for a primitive operator.
     PrimitiveValue(Primitive),
     /// Pushes a first-class callable implemented by the structural runtime.
@@ -162,6 +166,11 @@ pub enum Instruction {
     /// Pops service, method, and argument-vector values and returns the
     /// provider's ordinary Promise value.
     HostCall,
+    /// Invokes a native collection method with an evaluated receiver and arguments.
+    DotCall {
+        method: u32,
+        argc: u8,
+    },
     /// Returns the top of the stack as the function result.
     Return,
 }
@@ -205,7 +214,10 @@ impl Instruction {
             | Instruction::VarGlobal(_)
             | Instruction::DefStruct { .. }
             | Instruction::DeclareGlobal(_) => 1,
-            Instruction::EvalForm(_) => 1,
+            Instruction::DefProtocol(_)
+            | Instruction::ExtendType(_)
+            | Instruction::DefMulti(_)
+            | Instruction::DefMethod(_) => 1,
             Instruction::PrimitiveValue(_) => 1,
             Instruction::BuiltinValue(_) => 1,
             Instruction::DynamicBind(_) => 0,
@@ -224,6 +236,7 @@ impl Instruction {
             Instruction::DefMacro { .. } => 0,
             Instruction::Await => 0,
             Instruction::HostCall => -2,
+            Instruction::DotCall { argc, .. } => -i32::from(*argc),
             Instruction::Jump(_) => 0,
             Instruction::Return | Instruction::Throw | Instruction::Rethrow => return None,
         })
@@ -295,13 +308,21 @@ impl std::fmt::Display for Instruction {
                 Some(metadata) => write!(formatter, "DefMacro {name} meta {metadata}"),
                 None => write!(formatter, "DefMacro {name}"),
             },
-            Instruction::EvalForm(index) => write!(formatter, "EvalForm {index}"),
-            Instruction::PrimitiveValue(op) => write!(formatter, "PrimitiveValue {}", op.operator()),
+            Instruction::DefProtocol(index) => write!(formatter, "DefProtocol {index}"),
+            Instruction::ExtendType(index) => write!(formatter, "ExtendType {index}"),
+            Instruction::DefMulti(index) => write!(formatter, "DefMulti {index}"),
+            Instruction::DefMethod(index) => write!(formatter, "DefMethod {index}"),
+            Instruction::PrimitiveValue(op) => {
+                write!(formatter, "PrimitiveValue {}", op.operator())
+            }
             Instruction::BuiltinValue(index) => write!(formatter, "BuiltinValue {index}"),
             Instruction::DynamicBind(index) => write!(formatter, "DynamicBind {index}"),
             Instruction::DynamicUnbind(index) => write!(formatter, "DynamicUnbind {index}"),
             Instruction::Await => formatter.write_str("Await"),
             Instruction::HostCall => formatter.write_str("HostCall"),
+            Instruction::DotCall { method, argc } => {
+                write!(formatter, "DotCall {method} {argc}")
+            }
             Instruction::Return => formatter.write_str("Return"),
         }
     }

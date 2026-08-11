@@ -564,7 +564,8 @@ pub struct Function {
     is_macro: bool,
 }
 
-struct MultiMethod {
+#[derive(Clone)]
+pub(crate) struct MultiMethod {
     dispatch: Rc<Function>,
     methods: Vec<(Value, Rc<Function>)>,
     default: Option<Rc<Function>>,
@@ -984,21 +985,24 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
 
 #[cfg(feature = "bytecode-vm")]
 pub(crate) fn foundation_bootstrap_callable_names() -> impl Iterator<Item = &'static str> {
-    structural_callable_names()
-        .chain([
-            "macroexpand-1",
-            "gensym",
-            "type",
-            "meta",
-            "with-meta",
-            "ns-publics",
-        ])
+    structural_callable_names().chain([
+        "macroexpand-1",
+        "gensym",
+        "type",
+        "meta",
+        "with-meta",
+        "ns-publics",
+    ])
 }
 
 #[cfg(feature = "bytecode-vm")]
 pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'static str> {
     foundation_bootstrap_callable_names()
-        .chain(NATIVE_TYPES.iter().flat_map(|(_, methods)| methods.iter().copied()))
+        .chain(
+            NATIVE_TYPES
+                .iter()
+                .flat_map(|(_, methods)| methods.iter().copied()),
+        )
         .chain(
             FOUNDATION_PROTOCOLS
                 .iter()
@@ -1127,10 +1131,9 @@ fn metadata_value_to_form(value: &MetadataValue) -> Form {
         MetadataValue::Decimal(value) => Form::Decimal(value.clone()),
         MetadataValue::Character(value) => Form::Character(*value),
         MetadataValue::Regex(value) => Form::Regex(value.clone()),
-        MetadataValue::Tagged(tag, value) => Form::Tagged(
-            tag.clone(),
-            Box::new(metadata_value_to_form(value)),
-        ),
+        MetadataValue::Tagged(tag, value) => {
+            Form::Tagged(tag.clone(), Box::new(metadata_value_to_form(value)))
+        }
         MetadataValue::String(value) => Form::String(value.clone()),
         MetadataValue::Keyword(value) => Form::Keyword(value.as_str().into()),
         MetadataValue::Symbol(value) => Form::Symbol(value.as_str().into()),
@@ -1146,15 +1149,13 @@ fn metadata_value_to_form(value: &MetadataValue) -> Form {
         MetadataValue::Map(values) => Form::Map(
             values
                 .iter()
-                .map(|(key, value)| {
-                    (metadata_value_to_form(key), metadata_value_to_form(value))
-                })
+                .map(|(key, value)| (metadata_value_to_form(key), metadata_value_to_form(value)))
                 .collect(),
         ),
     }
 }
 
-fn value_to_form(value: &Value) -> Result<Form, String> {
+pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
     let form = match value {
         Value::Nil => Ok(Form::Nil),
         Value::Bool(value) => Ok(Form::Bool(*value)),
@@ -1236,8 +1237,20 @@ fn value_to_form(value: &Value) -> Result<Form, String> {
 /// for namespace-level declarations whose effect mutates runtime protocol or
 /// multimethod registries and therefore cannot be reduced to ordinary stack
 /// instructions.
-pub(crate) fn eval_bytecode_form(value: &Value) -> Result<Value, String> {
+pub(crate) fn eval_bytecode_declaration(
+    expected_operator: &str,
+    value: &Value,
+) -> Result<Value, String> {
     let form = value_to_form(value)?;
+    if !matches!(
+        &form,
+        Form::List(items)
+            if matches!(items.first(), Some(Form::Symbol(operator)) if operator == expected_operator)
+    ) {
+        return Err(format!(
+            "{expected_operator} instruction contains the wrong declaration"
+        ));
+    }
     let mut env = HashMap::new();
     if let Ok(registry) = namespace_registry() {
         env.extend(
@@ -1249,7 +1262,16 @@ pub(crate) fn eval_bytecode_form(value: &Value) -> Result<Value, String> {
         );
         refresh_namespace_environment(&registry, &mut env);
     }
-    eval(&form, &mut env)
+    let result = eval(&form, &mut env).map_err(|error| {
+        let namespace = namespace_registry()
+            .map(|registry| registry.current().name().as_str().to_owned())
+            .unwrap_or_else(|_| "<unavailable>".into());
+        format!("{expected_operator} in {namespace}: {error}")
+    })?;
+    if let Ok(registry) = namespace_registry() {
+        save_namespace_environment(&registry, &mut env);
+    }
+    Ok(result)
 }
 
 pub(crate) fn bytecode_dynamic_bind(name: &str, value: Value) -> Result<(), String> {
@@ -2515,10 +2537,37 @@ pub struct ProtocolRegistry {
     guest_declarations: Rc<RefCell<HashSet<(String, String)>>>,
 }
 
+#[derive(Clone)]
+pub(crate) struct ProtocolRegistrySnapshot {
+    methods: HashMap<(String, String), Vec<ProtocolFn>>,
+    extension_methods: HashMap<(String, String, String, String), ProtocolFn>,
+    extension_categories: HashSet<(String, String, String)>,
+    guest_methods: HashMap<(String, String, String), Rc<Function>>,
+    guest_declarations: HashSet<(String, String)>,
+}
+
 #[allow(dead_code)]
 impl ProtocolRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn snapshot(&self) -> ProtocolRegistrySnapshot {
+        ProtocolRegistrySnapshot {
+            methods: self.methods.borrow().clone(),
+            extension_methods: self.extension_methods.borrow().clone(),
+            extension_categories: self.extension_categories.borrow().clone(),
+            guest_methods: self.guest_methods.borrow().clone(),
+            guest_declarations: self.guest_declarations.borrow().clone(),
+        }
+    }
+
+    pub(crate) fn restore(&self, snapshot: ProtocolRegistrySnapshot) {
+        *self.methods.borrow_mut() = snapshot.methods;
+        *self.extension_methods.borrow_mut() = snapshot.extension_methods;
+        *self.extension_categories.borrow_mut() = snapshot.extension_categories;
+        *self.guest_methods.borrow_mut() = snapshot.guest_methods;
+        *self.guest_declarations.borrow_mut() = snapshot.guest_declarations;
     }
 
     pub fn register<F>(
@@ -2887,9 +2936,38 @@ thread_local! {
     static ACTIVE_KERNEL_PROVIDER: RefCell<Option<Rc<KernelProvider>>> = const { RefCell::new(None) };
     static ACTIVE_PROCESS_ALLOWED: Cell<bool> = const { Cell::new(false) };
     static HOST_CALL_HANDLER: RefCell<Option<Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>>> = const { RefCell::new(None) };
-    static NAMESPACE_SOURCE_PROVIDER: RefCell<Option<Rc<dyn Fn(&str) -> Option<String>>>> = const { RefCell::new(None) };
+    static NAMESPACE_SOURCE_PROVIDER: RefCell<Option<Rc<dyn Fn(&str) -> Option<NamespaceResource>>>> = const { RefCell::new(None) };
     static ACTIVE_THROWN_VALUE: RefCell<Option<(String, Value)>> = const { RefCell::new(None) };
     static ACTIVE_MULTIMETHODS: RefCell<HashMap<String, Rc<RefCell<MultiMethod>>>> = RefCell::new(HashMap::new());
+}
+
+pub(crate) fn snapshot_multimethods() -> HashMap<String, MultiMethod> {
+    ACTIVE_MULTIMETHODS.with(|active| {
+        active
+            .borrow()
+            .iter()
+            .map(|(name, state)| (name.clone(), state.borrow().clone()))
+            .collect()
+    })
+}
+
+pub(crate) fn restore_multimethods(snapshot: HashMap<String, MultiMethod>) {
+    ACTIVE_MULTIMETHODS.with(|active| {
+        *active.borrow_mut() = snapshot
+            .into_iter()
+            .map(|(name, state)| (name, Rc::new(RefCell::new(state))))
+            .collect();
+    });
+}
+
+#[derive(Clone)]
+pub(crate) enum NamespaceResource {
+    Source(String),
+    #[cfg(feature = "bytecode-vm")]
+    Bytecode {
+        namespace_form: String,
+        artifact: Vec<u8>,
+    },
 }
 
 pub(crate) fn thrown_error(value: Value) -> String {
@@ -3989,8 +4067,8 @@ pub fn with_host_calls<R>(
 }
 
 /// Runs an evaluation with a source provider used to satisfy `require` loads.
-pub fn with_namespace_source<R>(
-    provider: Rc<dyn Fn(&str) -> Option<String>>,
+pub(crate) fn with_namespace_source<R>(
+    provider: Rc<dyn Fn(&str) -> Option<NamespaceResource>>,
     action: impl FnOnce() -> R,
 ) -> R {
     NAMESPACE_SOURCE_PROVIDER.with(|active| {
@@ -7555,6 +7633,14 @@ fn dot_call(
         .iter()
         .map(|form| eval(form, env))
         .collect::<Result<Vec<_>, _>>()?;
+    dot_call_values(receiver, name, args)
+}
+
+pub(crate) fn dot_call_values(
+    receiver: Value,
+    name: &str,
+    args: Vec<Value>,
+) -> Result<Value, String> {
     match receiver {
         Value::Array(array) => match name {
             "get" => {
@@ -9777,12 +9863,35 @@ fn ensure_namespace(
     registry.set_load_state(name, NamespaceLoadState::Loading);
 
     let loaded = (|| {
-        let source = NAMESPACE_SOURCE_PROVIDER
+        let resource = NAMESPACE_SOURCE_PROVIDER
             .with(|active| active.borrow().as_ref().and_then(|provider| provider(name)))
             .ok_or_else(|| format!("Cannot require missing namespace: {name}"))?;
-        for (index, form) in crate::kernel::parse_forms(&source)?.into_iter().enumerate() {
-            eval(&form, env)
-                .map_err(|error| format!("{name}: top-level form {}: {error}", index + 1))?;
+        match resource {
+            NamespaceResource::Source(source) => {
+                for (index, form) in crate::kernel::parse_forms(&source)?.into_iter().enumerate() {
+                    eval(&form, env).map_err(|error| {
+                        format!("{name}: top-level form {}: {error}", index + 1)
+                    })?;
+                }
+            }
+            #[cfg(feature = "bytecode-vm")]
+            NamespaceResource::Bytecode {
+                namespace_form,
+                artifact,
+            } => {
+                for (index, form) in crate::kernel::parse_forms(&namespace_form)?
+                    .into_iter()
+                    .enumerate()
+                {
+                    eval(&form, env).map_err(|error| {
+                        format!("{name}: namespace form {}: {error}", index + 1)
+                    })?;
+                }
+                let program = Rc::new(crate::vm::decode_program(&artifact)?);
+                registry.set_current(name);
+                crate::vm::execute_program_with_globals(program, registry)
+                    .map_err(|error| error.to_string())?;
+            }
         }
         if registry.find(name).is_none() {
             return Err(format!(
@@ -9815,6 +9924,14 @@ fn ensure_namespace(
     registry.clear_load_failure(name);
     registry.commit_module_revision(name);
     Ok(())
+}
+
+pub(crate) fn require_namespace(
+    registry: &NamespaceRegistry<Value>,
+    env: &mut HashMap<String, Value>,
+    name: &str,
+) -> Result<(), String> {
+    ensure_namespace(registry, env, name, false)
 }
 
 fn eval_require_spec(
@@ -10465,10 +10582,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     };
                     let mut capture_forms = fs[2..].to_vec();
                     capture_forms.extend(definitions.iter().cloned());
-                    let captured = Rc::new(RefCell::new(capture_environment(
-                        &capture_forms,
-                        env,
-                    )));
+                    let captured = Rc::new(RefCell::new(capture_environment(&capture_forms, env)));
                     let mut functions = Vec::with_capacity(definitions.len());
                     let mut names = std::collections::HashSet::new();
                     for definition in definitions {
@@ -10628,12 +10742,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err("the-ns expects one symbol".into());
                     }
                     match eval(&fs[1], env)? {
-                        Value::Symbol(value) if value.get_namespace().is_none() => Ok(
-                            namespace_registry()?
+                        Value::Symbol(value) if value.get_namespace().is_none() => {
+                            Ok(namespace_registry()?
                                 .find(value.as_str())
                                 .map(|namespace| Value::Namespace(Rc::new(namespace)))
-                                .unwrap_or(Value::Nil),
-                        ),
+                                .unwrap_or(Value::Nil))
+                        }
                         _ => Err("the-ns expects an unqualified symbol".into()),
                     }
                 }

@@ -133,6 +133,34 @@ fn preserves_metadata_and_rejects_unknown_dispatch_forms() {
         .unwrap_err()
         .contains("No dispatch macro for: ["));
 }
+
+#[test]
+fn expands_anonymous_function_reader_arguments() {
+    assert_eq!(
+        parse_forms("#(+ % %2 (count %&))").unwrap(),
+        vec![Form::List(vec![
+            Form::Symbol("fn".into()),
+            Form::Vector(vec![
+                Form::Symbol("__reader_fn_0_1".into()),
+                Form::Symbol("__reader_fn_0_2".into()),
+                Form::Symbol("&".into()),
+                Form::Symbol("__reader_fn_0_rest".into()),
+            ]),
+            Form::List(vec![
+                Form::Symbol("+".into()),
+                Form::Symbol("__reader_fn_0_1".into()),
+                Form::Symbol("__reader_fn_0_2".into()),
+                Form::List(vec![
+                    Form::Symbol("count".into()),
+                    Form::Symbol("__reader_fn_0_rest".into()),
+                ]),
+            ]),
+        ])]
+    );
+    assert!(parse_forms("#(+ %0 1)")
+        .unwrap_err()
+        .contains("arguments begin at %1"));
+}
 #[test]
 fn matches_extended_canonical_reader_categories() {
     for unsupported in ["9223372036854775808"] {

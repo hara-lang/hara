@@ -49,6 +49,9 @@ pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, 
     for &(name, _, source) in EMBEDDED_HAL_RESOURCES {
         runtime.register_resource(name, source);
     }
+    for source in sources {
+        runtime.register_resource(source.resource, source.source);
+    }
     let mut encoded = Vec::new();
     for source in sources {
         let (namespace_form, body) = split_namespace_form(source.source)?;
@@ -67,8 +70,8 @@ pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, 
         .map_err(|error| format!("{}: bytecode execution: {error}", source.resource))?;
         let source_digest: [u8; 32] = Sha256::digest(source.source.as_bytes()).into();
         let dependencies = namespace_dependencies(namespace_form)?;
-        let eager = source.resource == "std.foundation"
-            || EAGER_HAL_RESOURCES.contains(&source.resource);
+        let eager =
+            source.resource == "std.foundation" || EAGER_HAL_RESOURCES.contains(&source.resource);
         encoded.push((
             source.resource,
             namespace_form,
@@ -81,14 +84,16 @@ pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, 
 
     let modules = encoded
         .iter()
-        .map(|(resource, namespace_form, source_digest, dependencies, eager, artifact)| Module {
-            resource,
-            namespace_form,
-            source_digest,
-            dependencies,
-            eager: *eager,
-            artifact,
-        })
+        .map(
+            |(resource, namespace_form, source_digest, dependencies, eager, artifact)| Module {
+                resource,
+                namespace_form,
+                source_digest,
+                dependencies,
+                eager: *eager,
+                artifact,
+            },
+        )
         .collect::<Vec<_>>();
     encode(&modules)
 }
@@ -98,20 +103,61 @@ pub fn compile_embedded_standard_library_bundle() -> Result<Vec<u8>, String> {
 }
 
 pub fn eval_bytecode_bundle(runtime: &mut Runtime, bytes: &[u8]) -> Result<(), String> {
-    for module in decode(bytes)? {
-        runtime.eval_text(&module.namespace_form)?;
-        if module.resource == "std.foundation" {
-            runtime.prepare_foundation_bytecode();
+    let modules = decode(bytes)?;
+    let mut names = std::collections::HashSet::with_capacity(modules.len());
+    for module in &modules {
+        if !names.insert(module.resource.clone()) {
+            return Err(format!(
+                "duplicate bytecode bundle module: {}",
+                module.resource
+            ));
         }
-        core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
-            runtime.eval_bytecode_artifact(&module.artifact)
-        })?;
+        crate::vm::decode_program(&module.artifact)
+            .map_err(|error| format!("{}: invalid bytecode artifact: {error}", module.resource))?;
     }
-    runtime.use_namespace("user");
+    let namespaces_before = runtime.namespace_registry.snapshot();
+    let environment_before = runtime.env.clone();
+    let macros_before = runtime.macros.borrow().clone();
+    let protocols_before = runtime.protocols.snapshot();
+    let multimethods_before = core::snapshot_multimethods();
+    let resources_before = runtime.bytecode_resources.clone();
+    let loaded_before = runtime.loaded_resources.clone();
+    let loaded = (|| {
+        for module in &modules {
+            runtime.register_bytecode_resource(
+                module.resource.clone(),
+                module.namespace_form.clone(),
+                module.artifact.clone(),
+            );
+        }
+        for module in modules.iter().filter(|module| module.eager) {
+            if module.resource == "std.foundation" {
+                runtime.prepare_foundation_bytecode();
+            }
+            core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
+                runtime.load_bytecode_resource(&module.resource).map(|_| ())
+            })
+            .map_err(|error| format!("{}: {error}", module.resource))?;
+            runtime.loaded_resources.insert(module.resource.clone());
+        }
+        runtime.use_namespace("user");
+        Ok(())
+    })();
+    if let Err(error) = loaded {
+        runtime.namespace_registry.restore(namespaces_before);
+        runtime.env = environment_before;
+        *runtime.macros.borrow_mut() = macros_before;
+        runtime.protocols.restore(protocols_before);
+        core::restore_multimethods(multimethods_before);
+        runtime.bytecode_resources = resources_before;
+        runtime.loaded_resources = loaded_before;
+        return Err(error);
+    }
     Ok(())
 }
 
-struct OwnedModule {
+#[derive(Clone)]
+pub(crate) struct OwnedModule {
     pub resource: String,
     pub namespace_form: String,
     pub source_digest: [u8; 32],
@@ -275,8 +321,12 @@ mod tests {
 
     #[test]
     fn embedded_bundle_round_trips_and_bootstraps() {
-        let bytes = compile_embedded_standard_library_bundle().expect("compile standard library bundle");
+        let bytes =
+            compile_embedded_standard_library_bundle().expect("compile standard library bundle");
         let mut runtime = Runtime::core();
+        for &(name, _, source) in EMBEDDED_HAL_RESOURCES {
+            runtime.register_resource(name, source);
+        }
         eval_bytecode_bundle(&mut runtime, &bytes).expect("load foundation bundle");
         let publics = runtime
             .eval_native("(keys (ns-publics 'std.foundation.string))")
@@ -286,14 +336,192 @@ mod tests {
         assert_eq!(runtime.eval_native("(upper \"hara\")").unwrap(), "\"HARA\"");
         assert!(runtime.use_namespace("std.foundation"));
         assert_eq!(runtime.eval_native("(if-not false 42)").unwrap(), "42");
+        assert!(
+            runtime.namespace_registry.find("lang.core").is_none(),
+            "non-eager namespaces must remain indexed but unloaded"
+        );
+        runtime
+            .load_bytecode_resource("lang.core")
+            .expect("load lazy bytecode namespace");
+        assert!(runtime.namespace_registry.find("lang.core").is_some());
+    }
+
+    #[test]
+    fn foundation_module_loads_through_the_bytecode_index() {
+        let source = embedded_standard_library_sources()
+            .into_iter()
+            .find(|source| source.resource == "std.foundation")
+            .expect("embedded foundation source");
+        let bytes = compile_bytecode_bundle(&[source]).expect("compile foundation module");
+        let modules = decode(&bytes).expect("decode foundation bundle");
+        let program =
+            crate::vm::decode_program(&modules[0].artifact).expect("decode foundation HBC");
+        let first_macro = program
+            .entry_function()
+            .code
+            .iter()
+            .position(|instruction| matches!(instruction, crate::vm::Instruction::DefMacro { .. }));
+        let first_return = program
+            .entry_function()
+            .code
+            .iter()
+            .position(|instruction| matches!(instruction, crate::vm::Instruction::Return));
+        assert!(
+            first_macro.is_some() && first_return.is_some_and(|index| index > first_macro.unwrap()),
+            "Foundation artifact must execute macros before return: macro={first_macro:?}, return={first_return:?}"
+        );
+        let mut runtime = Runtime::core();
+        eval_bytecode_bundle(&mut runtime, &bytes).expect("load indexed foundation module");
+        assert!(runtime.use_namespace("std.foundation"));
+        assert_eq!(
+            runtime.eval_native("(vec (repeat 3 :x))").unwrap(),
+            "[:x :x :x]"
+        );
+        assert!(
+            runtime
+                .macros
+                .borrow()
+                .contains_key(&("std.foundation".into(), "if-not".into())),
+            "indexed Foundation load must register macros: {:?}",
+            runtime.macros.borrow().keys().collect::<Vec<_>>()
+        );
+        assert_eq!(runtime.eval_native("(if-not false 42)").unwrap(), "42");
+    }
+
+    #[test]
+    fn bundle_encoding_is_deterministic() {
+        let sources = [ModuleSource {
+            resource: "example.deterministic",
+            source: "(ns example.deterministic) (def answer 42)",
+        }];
+        let first = compile_bytecode_bundle(&sources).expect("first deterministic bundle");
+        let second = compile_bytecode_bundle(&sources).expect("second deterministic bundle");
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn eager_failure_rolls_back_the_whole_bundle() {
+        let mut compiler = Runtime::core();
+        compiler.use_namespace("example.good");
+        let good_artifact = compiler
+            .compile_bytecode_artifact("(def marker 42)")
+            .expect("compile successful eager module");
+        compiler.use_namespace("example.bad");
+        let bad_artifact = compiler
+            .compile_bytecode_artifact("(throw \"boom\")")
+            .expect("compile failing eager module");
+        let good_digest = Sha256::digest(b"good").into();
+        let bad_digest = Sha256::digest(b"bad").into();
+        let modules = [
+            Module {
+                resource: "example.good",
+                namespace_form: "(ns example.good)",
+                source_digest: &good_digest,
+                dependencies: &[],
+                eager: true,
+                artifact: &good_artifact,
+            },
+            Module {
+                resource: "example.bad",
+                namespace_form: "(ns example.bad)",
+                source_digest: &bad_digest,
+                dependencies: &[],
+                eager: true,
+                artifact: &bad_artifact,
+            },
+        ];
+        let bytes = encode(&modules).expect("encode transactional fixture");
+        let mut runtime = Runtime::core();
+        let namespaces_before = runtime
+            .namespace_registry
+            .all()
+            .into_iter()
+            .map(|namespace| namespace.name().as_str().to_owned())
+            .collect::<std::collections::HashSet<_>>();
+
+        let error = eval_bytecode_bundle(&mut runtime, &bytes).unwrap_err();
+
+        assert!(error.contains("example.bad"), "{error}");
+        assert!(!runtime.bytecode_resources.contains_key("example.good"));
+        assert!(!runtime.bytecode_resources.contains_key("example.bad"));
+        assert!(!runtime.loaded_resources.contains("example.good"));
+        assert!(!runtime.loaded_resources.contains("example.bad"));
+        assert_eq!(
+            runtime
+                .namespace_registry
+                .all()
+                .into_iter()
+                .map(|namespace| namespace.name().as_str().to_owned())
+                .collect::<std::collections::HashSet<_>>(),
+            namespaces_before
+        );
+        assert_eq!(runtime.namespace_registry.current().name().as_str(), "user");
+    }
+
+    #[test]
+    fn lazy_module_loads_protocol_dependency_before_extend_type() {
+        let sources = [
+            ModuleSource {
+                resource: "example.protocol",
+                source: "(ns example.protocol) (defprotocol IEmitter (emit-form [value]))",
+            },
+            ModuleSource {
+                resource: "example.emit",
+                source: "(ns example.emit (:require [example.protocol :as compiler])) (defstruct Emitter []) (extend-type Emitter compiler/IEmitter (emit-form [value] value))",
+            },
+        ];
+        let bytes = compile_bytecode_bundle(&sources).expect("compile lazy protocol fixture");
+        let mut runtime = Runtime::core();
+        eval_bytecode_bundle(&mut runtime, &bytes).expect("index lazy protocol fixture");
+
+        runtime
+            .load_bytecode_resource("example.emit")
+            .expect("load protocol consumer and dependency");
+
+        assert!(runtime
+            .namespace_registry
+            .find("example.protocol")
+            .is_some());
+        assert!(runtime.namespace_registry.find("example.emit").is_some());
+    }
+
+    #[test]
+    fn eager_modules_load_in_their_own_namespaces() {
+        let sources = embedded_standard_library_sources()
+            .into_iter()
+            .filter(|source| {
+                source.resource == "std.foundation"
+                    || EAGER_HAL_RESOURCES.contains(&source.resource)
+            })
+            .collect::<Vec<_>>();
+        let bytes = compile_bytecode_bundle(&sources).expect("compile eager modules");
+        let mut runtime = Runtime::core();
+        eval_bytecode_bundle(&mut runtime, &bytes).expect("load eager modules");
+        assert!(runtime.use_namespace("std.foundation.string"));
+        assert_eq!(runtime.eval_native("(repeat \"x\" 3)").unwrap(), "\"xxx\"");
     }
 
     #[test]
     fn embedded_bundle_indexes_every_standard_library_namespace() {
-        let bytes = compile_embedded_standard_library_bundle().expect("compile standard library bundle");
+        let sources = embedded_standard_library_sources();
+        let expected = sources
+            .iter()
+            .map(|source| source.resource)
+            .collect::<Vec<_>>();
+        let bytes = compile_bytecode_bundle(&sources).expect("compile standard library bundle");
         let modules = decode(&bytes).expect("decode standard library bundle");
-        assert_eq!(modules.len(), embedded_standard_library_sources().len());
-        assert!(modules.len() >= 261, "expected the complete standard library");
+        let actual = modules
+            .iter()
+            .map(|module| module.resource.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual, expected,
+            "bundle inventory must be exact and ordered"
+        );
+        assert!(
+            modules.len() >= 250,
+            "standard-library inventory was truncated"
+        );
         assert!(modules.iter().any(|module| module.resource == "code.test"));
         assert!(modules.iter().any(|module| module.resource == "lang.core"));
     }

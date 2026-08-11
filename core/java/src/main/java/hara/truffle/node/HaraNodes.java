@@ -1332,11 +1332,12 @@ public final class HaraNodes {
     @Override
     public Object execute(VirtualFrame frame) {
       Object value = dispatch.execute(frame);
-      if (!(value instanceof HaraFunction)) {
+      if (!(value instanceof HaraFunction)
+          && !InteropLibrary.getUncached(value).isExecutable(value)) {
         throw new HaraException("defmulti dispatch function must be a function", this);
       }
-      return HaraLanguage.currentContext(this)
-          .define(symbol, new HaraMultiFunction((HaraFunction) value));
+      HaraContext context = HaraLanguage.currentContext(this);
+      return context.define(symbol, new HaraMultiFunction(context, value));
     }
   }
 
@@ -1360,11 +1361,11 @@ public final class HaraNodes {
         throw defmultiError();
       }
       Object method = function.execute(frame);
-      if (!(method instanceof HaraFunction)) {
+      if (!(method instanceof HaraFunction)
+          && !InteropLibrary.getUncached(method).isExecutable(method)) {
         throw new HaraException("defmethod body did not produce a function", this);
       }
-      ((HaraMultiFunction) var.get())
-          .addMethod(dispatchValue.execute(frame), (HaraFunction) method);
+      ((HaraMultiFunction) var.get()).addMethod(dispatchValue.execute(frame), method);
       return var;
     }
 
@@ -2090,6 +2091,10 @@ public final class HaraNodes {
         Object[] values = evaluateArguments(frame);
         return new HaraStruct(haraType, values);
       }
+      if (!(target instanceof HaraFunction)
+          && InteropLibrary.getUncached(target).isExecutable(target)) {
+        return invokeExecutable(target, evaluateArguments(frame));
+      }
       if (!(target instanceof HaraFunction)) {
         throw notCallable(target);
       }
@@ -2131,6 +2136,15 @@ public final class HaraNodes {
     @TruffleBoundary
     private Object invokeMultiFunction(HaraMultiFunction target, Object[] values) {
       return HaraBox.export(target.invoke(values));
+    }
+
+    @TruffleBoundary
+    private Object invokeExecutable(Object target, Object[] values) {
+      try {
+        return InteropLibrary.getUncached(target).execute(target, values);
+      } catch (UnsupportedMessageException | UnsupportedTypeException | ArityException error) {
+        throw new HaraException(error.getMessage(), this);
+      }
     }
 
     @TruffleBoundary

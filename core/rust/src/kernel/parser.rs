@@ -44,20 +44,16 @@ fn anonymous_arguments(
     form: &Form,
     maximum: &mut usize,
     variadic: &mut bool,
-) -> Result<()> {
+) -> std::result::Result<(), String> {
     match form {
         Form::Symbol(name) if name == "%" => *maximum = (*maximum).max(1),
         Form::Symbol(name) if name == "%&" => *variadic = true,
         Form::Symbol(name) if name.starts_with('%') => {
-            let index = name[1..].parse::<usize>().map_err(|_| ParseError {
-                message: format!("Invalid anonymous function argument: {name}"),
-                position: Position::default(),
-            })?;
+            let index = name[1..]
+                .parse::<usize>()
+                .map_err(|_| format!("Invalid anonymous function argument: {name}"))?;
             if index == 0 {
-                return Err(ParseError {
-                    message: "Anonymous function arguments begin at %1".into(),
-                    position: Position::default(),
-                });
+                return Err("Anonymous function arguments begin at %1".into());
             }
             *maximum = (*maximum).max(index);
         }
@@ -330,7 +326,10 @@ impl<'a> Parser<'a> {
         );
         let mut maximum = 0usize;
         let mut variadic = false;
-        anonymous_arguments(&body, &mut maximum, &mut variadic)?;
+        anonymous_arguments(&body, &mut maximum, &mut variadic).map_err(|message| ParseError {
+            message,
+            position: self.reader.position(),
+        })?;
         let id = self.anonymous_function_id;
         self.anonymous_function_id = self.anonymous_function_id.wrapping_add(1);
         let parameters = (1..=maximum)
@@ -365,7 +364,7 @@ impl<'a> Parser<'a> {
     }
     fn dispatch(&mut self) -> Result<Option<(Form, Vec<SpannedForm>)>> {
         match self.reader.read_char() {
-            Some('(') => self.anonymous_function(),
+            Some('(') => self.anonymous_function().map(Some),
             Some(ch @ (':' | '=' | '?' | '|')) => {
                 self.error(format!("No dispatch macro for: {ch}"))
             }
