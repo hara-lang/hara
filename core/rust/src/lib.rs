@@ -1206,6 +1206,12 @@ impl Runtime {
         self.namespace_registry.visible_symbol_names()
     }
 
+    pub(crate) fn var_metadata(&self, symbol: &str) -> Option<kernel::VarMetadata> {
+        self.namespace_registry
+            .resolve(&crate::lang::data::Symbol::parse(symbol))
+            .map(|var| var.metadata())
+    }
+
     pub fn current_namespace(&self) -> String {
         self.namespace_registry.current().name().as_str().to_owned()
     }

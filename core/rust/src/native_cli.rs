@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 
 use crate::core::Value;
-use crate::lang::data::{Keyword, Symbol};
+use crate::lang::data::{Keyword, MetadataValue, Symbol};
 use crate::Runtime;
 
 // Optimized brokers stay within the production 8 MiB ceiling. Debug evaluator
@@ -17,6 +17,25 @@ const RUNTIME_BROKER_STACK_SIZE: usize = if cfg!(debug_assertions) {
 } else {
     8 * 1024 * 1024
 };
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DocumentationValue {
+    Nil,
+    Boolean(bool),
+    Integer(i64),
+    String(String),
+    Array(Vec<DocumentationValue>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Documentation {
+    pub symbol: String,
+    pub doc: Option<String>,
+    pub arglists: DocumentationValue,
+    pub file: Option<String>,
+    pub line: Option<i64>,
+    pub column: Option<i64>,
+}
 
 enum Request {
     Eval {
@@ -32,6 +51,11 @@ enum Request {
         session: String,
         prefix: String,
         reply: mpsc::Sender<Result<Vec<String>, String>>,
+    },
+    Doc {
+        session: String,
+        symbol: String,
+        reply: mpsc::Sender<Result<Documentation, String>>,
     },
     Create {
         session: String,
@@ -140,6 +164,14 @@ impl RuntimeBroker {
         self.call(|reply| Request::Complete {
             session: session.into(),
             prefix: prefix.into(),
+            reply,
+        })
+    }
+
+    pub fn documentation(&self, session: &str, symbol: &str) -> Result<Documentation, String> {
+        self.call(|reply| Request::Doc {
+            session: session.into(),
+            symbol: symbol.into(),
             reply,
         })
     }
@@ -309,6 +341,17 @@ fn run(
                     .ok_or_else(|| format!("No session: {session}"));
                 let _ = reply.send(result);
             }
+            Request::Doc {
+                session,
+                symbol,
+                reply,
+            } => {
+                let result = sessions
+                    .get(&session)
+                    .ok_or_else(|| format!("No session: {session}"))
+                    .and_then(|runtime| documentation(runtime, &symbol));
+                let _ = reply.send(result);
+            }
             Request::Create { session, reply } => {
                 let result = if session.is_empty() || sessions.contains_key(&session) {
                     Err(format!("Session already exists or is invalid: {session}"))
@@ -419,6 +462,83 @@ fn run(
             Request::Shutdown => break,
         }
     }
+}
+
+fn documentation_value(value: &MetadataValue) -> DocumentationValue {
+    match value {
+        MetadataValue::Nil => DocumentationValue::Nil,
+        MetadataValue::Boolean(value) => DocumentationValue::Boolean(*value),
+        MetadataValue::Number(value) => DocumentationValue::Integer(*value),
+        MetadataValue::Float(value) => DocumentationValue::String(value.to_string()),
+        MetadataValue::BigInteger(value)
+        | MetadataValue::Decimal(value)
+        | MetadataValue::Regex(value) => DocumentationValue::String(value.clone()),
+        MetadataValue::Character(value) => DocumentationValue::String(value.to_string()),
+        MetadataValue::Tagged(tag, value) => DocumentationValue::Array(vec![
+            DocumentationValue::String(tag.clone()),
+            documentation_value(value),
+        ]),
+        MetadataValue::String(value) => DocumentationValue::String(value.clone()),
+        MetadataValue::Keyword(value) => DocumentationValue::String(format!(":{}", value.as_str())),
+        MetadataValue::Symbol(value) => DocumentationValue::String(value.as_str().to_owned()),
+        MetadataValue::Vector(values)
+        | MetadataValue::List(values)
+        | MetadataValue::Set(values) => {
+            DocumentationValue::Array(values.iter().map(documentation_value).collect())
+        }
+        MetadataValue::Map(values) => DocumentationValue::Array(
+            values
+                .iter()
+                .flat_map(|(key, value)| [documentation_value(key), documentation_value(value)])
+                .collect(),
+        ),
+    }
+}
+
+fn metadata_string(value: Option<&MetadataValue>) -> Option<String> {
+    match value {
+        Some(MetadataValue::String(value)) => Some(value.clone()),
+        Some(MetadataValue::Symbol(value)) => Some(value.as_str().to_owned()),
+        _ => None,
+    }
+}
+
+fn metadata_integer(value: Option<&MetadataValue>) -> Option<i64> {
+    match value {
+        Some(MetadataValue::Number(value)) => Some(*value),
+        Some(MetadataValue::String(value)) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn documentation(runtime: &Runtime, symbol: &str) -> Result<Documentation, String> {
+    let metadata = runtime
+        .var_metadata(symbol)
+        .ok_or_else(|| format!("No documentation symbol: {symbol}"))?;
+    let hara = metadata.hara.as_deref();
+    let doc = hara
+        .and_then(|value| value.doc().map(str::to_owned))
+        .or(metadata.doc);
+    let arglists = hara
+        .and_then(|value| value.get_keyword("arglists"))
+        .map(documentation_value)
+        .unwrap_or_else(|| {
+            DocumentationValue::Array(
+                metadata
+                    .arglists
+                    .into_iter()
+                    .map(DocumentationValue::String)
+                    .collect(),
+            )
+        });
+    Ok(Documentation {
+        symbol: symbol.into(),
+        doc,
+        arglists,
+        file: metadata_string(hara.and_then(|value| value.get_keyword("file"))),
+        line: metadata_integer(hara.and_then(|value| value.get_keyword("line"))),
+        column: metadata_integer(hara.and_then(|value| value.get_keyword("column"))),
+    })
 }
 
 /// Installs the generic native driver behind `std.native.Kernel/*`.
@@ -740,7 +860,7 @@ fn strings_value(values: Vec<String>) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::RuntimeBroker;
+    use super::{DocumentationValue, RuntimeBroker};
 
     #[test]
     fn sessions_are_isolated_and_root_is_persistent() {
@@ -758,5 +878,32 @@ mod tests {
         assert_eq!(broker.list().unwrap(), vec!["APP", "ROOT"]);
         broker.close("APP").unwrap();
         assert!(broker.close("ROOT").is_err());
+    }
+
+    #[test]
+    fn documentation_preserves_runtime_metadata() {
+        let broker = RuntimeBroker::start().unwrap();
+        broker
+            .eval(
+                "ROOT",
+                concat!(
+                    "(defn ^{:file \"/tmp/sample.hal\" :line 12 :column 3} located ",
+                    "\"A located function.\" [value] value)"
+                ),
+            )
+            .unwrap();
+        let documentation = broker.documentation("ROOT", "located").unwrap();
+        assert_eq!(documentation.symbol, "located");
+        assert_eq!(documentation.doc.as_deref(), Some("A located function."));
+        assert_eq!(documentation.file.as_deref(), Some("/tmp/sample.hal"));
+        assert_eq!(documentation.line, Some(12));
+        assert_eq!(documentation.column, Some(3));
+        assert_eq!(
+            documentation.arglists,
+            DocumentationValue::Array(vec![DocumentationValue::Array(vec![
+                DocumentationValue::String("value".into())
+            ])])
+        );
+        assert!(broker.documentation("ROOT", "missing").is_err());
     }
 }

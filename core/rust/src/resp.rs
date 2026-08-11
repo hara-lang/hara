@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::native_cli::RuntimeBroker;
+use crate::native_cli::{Documentation, DocumentationValue, RuntimeBroker};
 
 const MAX_LINE: usize = 64 * 1024;
 const MAX_BULK: usize = 64 * 1024 * 1024;
@@ -369,7 +369,11 @@ fn handle_v4(
     let result = operation_result(broker, attached, operation, arguments);
     match result {
         Ok(value) => {
-            let _ = connection.write(&RespValue::array(["RESULT", id, &value]));
+            let _ = connection.write(&RespValue::Array(Some(vec![
+                RespValue::bulk("RESULT"),
+                RespValue::bulk(id),
+                value,
+            ])));
             let _ = connection.write(&RespValue::array(["DONE", id, "OK"]));
         }
         Err((code, message)) => {
@@ -389,12 +393,13 @@ fn handle_legacy(
     let result = if operation == "EVAL" && arguments.len() >= 2 {
         broker
             .eval(&arguments[0], &arguments[1])
+            .map(RespValue::bulk)
             .map_err(|message| ("EVAL_ERROR", message))
     } else {
         operation_result(broker, attached, operation, arguments)
     };
     let response = match result {
-        Ok(value) => RespValue::bulk(value),
+        Ok(value) => legacy_value(value),
         Err((code, message)) => RespValue::Error(format!("{code} {message}")),
     };
     let _ = connection.write(&response);
@@ -405,7 +410,7 @@ fn operation_result(
     attached: &mut String,
     operation: &str,
     arguments: &[String],
-) -> Result<String, (&'static str, String)> {
+) -> Result<RespValue, (&'static str, String)> {
     match operation {
         "EVAL" => {
             let source = arguments
@@ -413,18 +418,39 @@ fn operation_result(
                 .ok_or(("BAD_REQUEST", "EVAL requires source".into()))?;
             broker
                 .eval(attached, source)
+                .map(RespValue::bulk)
                 .map_err(|error| ("EVAL_ERROR", error))
         }
         "COMPLETE" => {
             let prefix = arguments.first().map_or("", String::as_str);
             broker
                 .complete(attached, prefix)
-                .map(|values| values.join("\n"))
+                .map(RespValue::array)
                 .map_err(|error| ("NO_SESSION", error))
         }
+        "DOC" => {
+            let symbol = arguments
+                .first()
+                .ok_or(("BAD_REQUEST", "DOC requires symbol".into()))?;
+            broker
+                .documentation(attached, symbol)
+                .map(documentation_value)
+                .map_err(|error| {
+                    if error.starts_with("No session:") {
+                        ("NO_SESSION", error)
+                    } else {
+                        ("DOC_NOT_FOUND", error)
+                    }
+                })
+        }
         "SESSION" => session_operation(broker, attached, arguments),
-        "COMMANDS" => Ok("HELLO EVAL COMPLETE SESSION COMMANDS INFO QUIT".into()),
-        "INFO" => broker.info(attached).map_err(|error| ("NO_SESSION", error)),
+        "COMMANDS" => Ok(RespValue::bulk(
+            "HELLO EVAL COMPLETE DOC SESSION COMMANDS INFO QUIT",
+        )),
+        "INFO" => broker
+            .info(attached)
+            .map(RespValue::bulk)
+            .map_err(|error| ("NO_SESSION", error)),
         _ => Err(("UNKNOWN_OP", format!("Unknown operation: {operation}"))),
     }
 }
@@ -433,7 +459,7 @@ fn session_operation(
     broker: &RuntimeBroker,
     attached: &mut String,
     arguments: &[String],
-) -> Result<String, (&'static str, String)> {
+) -> Result<RespValue, (&'static str, String)> {
     let action = arguments
         .first()
         .map(|value| value.to_ascii_uppercase())
@@ -445,10 +471,11 @@ fn session_operation(
                     .get(1)
                     .ok_or(("BAD_REQUEST", "SESSION NEW requires name".into()))?,
             )
+            .map(RespValue::bulk)
             .map_err(|error| ("BAD_REQUEST", error)),
         "LIST" => broker
             .list()
-            .map(|values| values.join("\n"))
+            .map(RespValue::array)
             .map_err(|error| ("INTERNAL_ERROR", error)),
         "ATTACH" => {
             let name = arguments
@@ -456,21 +483,75 @@ fn session_operation(
                 .ok_or(("BAD_REQUEST", "SESSION ATTACH requires name".into()))?;
             broker.info(name).map_err(|error| ("NO_SESSION", error))?;
             *attached = name.clone();
-            Ok(name.clone())
+            Ok(RespValue::bulk(name))
         }
         "DETACH" => {
             *attached = "ROOT".into();
-            Ok("ROOT".into())
+            Ok(RespValue::bulk("ROOT"))
         }
-        "INFO" => broker.info(attached).map_err(|error| ("NO_SESSION", error)),
+        "INFO" => broker
+            .info(attached)
+            .map(RespValue::bulk)
+            .map_err(|error| ("NO_SESSION", error)),
         "CLOSE" => broker
             .close(
                 arguments
                     .get(1)
                     .ok_or(("BAD_REQUEST", "SESSION CLOSE requires name".into()))?,
             )
+            .map(RespValue::bulk)
             .map_err(|error| ("BAD_REQUEST", error)),
         _ => Err(("BAD_REQUEST", format!("Unknown SESSION action: {action}"))),
+    }
+}
+
+fn documentation_part(value: DocumentationValue) -> RespValue {
+    match value {
+        DocumentationValue::Nil => RespValue::Bulk(None),
+        DocumentationValue::Boolean(value) => RespValue::bulk(value.to_string()),
+        DocumentationValue::Integer(value) => RespValue::Integer(value),
+        DocumentationValue::String(value) => RespValue::bulk(value),
+        DocumentationValue::Array(values) => {
+            RespValue::Array(Some(values.into_iter().map(documentation_part).collect()))
+        }
+    }
+}
+
+fn documentation_value(documentation: Documentation) -> RespValue {
+    RespValue::Array(Some(vec![
+        RespValue::bulk("SYMBOL"),
+        RespValue::bulk(documentation.symbol),
+        RespValue::bulk("DOC"),
+        documentation
+            .doc
+            .map_or(RespValue::Bulk(None), RespValue::bulk),
+        RespValue::bulk("ARGLISTS"),
+        documentation_part(documentation.arglists),
+        RespValue::bulk("FILE"),
+        documentation
+            .file
+            .map_or(RespValue::Bulk(None), RespValue::bulk),
+        RespValue::bulk("LINE"),
+        documentation
+            .line
+            .map_or(RespValue::Bulk(None), RespValue::Integer),
+        RespValue::bulk("COLUMN"),
+        documentation
+            .column
+            .map_or(RespValue::Bulk(None), RespValue::Integer),
+    ]))
+}
+
+fn legacy_value(value: RespValue) -> RespValue {
+    match value {
+        RespValue::Array(Some(values)) => RespValue::bulk(
+            values
+                .into_iter()
+                .filter_map(|value| value.text())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        value => value,
     }
 }
 
@@ -534,6 +615,61 @@ mod tests {
         assert_eq!(
             modern.read().unwrap().unwrap(),
             RespValue::array(["DONE", "REQ-1", "OK"])
+        );
+        modern
+            .write(&RespValue::array(["COMPLETE", "REQ-2", "ans"]))
+            .unwrap();
+        assert_eq!(
+            modern.read().unwrap().unwrap(),
+            RespValue::Array(Some(vec![
+                RespValue::bulk("RESULT"),
+                RespValue::bulk("REQ-2"),
+                RespValue::array(["answer"]),
+            ]))
+        );
+        assert_eq!(
+            modern.read().unwrap().unwrap(),
+            RespValue::array(["DONE", "REQ-2", "OK"])
+        );
+        modern
+            .write(&RespValue::array([
+                "EVAL",
+                "REQ-3",
+                concat!(
+                    "(defn ^{:file \"/tmp/sample.hal\" :line 12 :column 3} located ",
+                    "\"A located function.\" [value] value)"
+                ),
+            ]))
+            .unwrap();
+        modern.read().unwrap().unwrap();
+        modern.read().unwrap().unwrap();
+        modern
+            .write(&RespValue::array(["DOC", "REQ-4", "located"]))
+            .unwrap();
+        assert_eq!(
+            modern.read().unwrap().unwrap(),
+            RespValue::Array(Some(vec![
+                RespValue::bulk("RESULT"),
+                RespValue::bulk("REQ-4"),
+                RespValue::Array(Some(vec![
+                    RespValue::bulk("SYMBOL"),
+                    RespValue::bulk("located"),
+                    RespValue::bulk("DOC"),
+                    RespValue::bulk("A located function."),
+                    RespValue::bulk("ARGLISTS"),
+                    RespValue::Array(Some(vec![RespValue::array(["value"])])),
+                    RespValue::bulk("FILE"),
+                    RespValue::bulk("/tmp/sample.hal"),
+                    RespValue::bulk("LINE"),
+                    RespValue::Integer(12),
+                    RespValue::bulk("COLUMN"),
+                    RespValue::Integer(3),
+                ])),
+            ]))
+        );
+        assert_eq!(
+            modern.read().unwrap().unwrap(),
+            RespValue::array(["DONE", "REQ-4", "OK"])
         );
         server.stop();
     }
