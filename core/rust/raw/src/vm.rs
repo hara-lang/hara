@@ -28,8 +28,9 @@ pub mod source_map;
 #[path = "../../src/vm/validate.rs"]
 pub mod validate;
 
+pub use artifact::decode_program;
 pub use compiler::{compile_source, compile_source_with};
 pub use disassemble::disassemble;
 pub use fiber::{VmFiber, VmFiberState};
-pub use machine::execute_program;
+pub use machine::{execute_program, execute_program_with_globals};
 pub use program::Program;
