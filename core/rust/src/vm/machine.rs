@@ -913,17 +913,11 @@ impl Machine {
                     let replacement = self.stack.pop().expect("primitive arity checked above");
                     let key = self.stack.pop().expect("primitive arity checked above");
                     let collection = self.stack.pop().expect("primitive arity checked above");
-                    match (
-                        collection.into_runtime_value(),
-                        key.into_runtime_value(),
-                        replacement.into_runtime_value(),
-                    ) {
-                        (Some(collection), Some(key), Some(replacement)) => {
-                            apply_ternary_primitive_owned(*op, collection, key, replacement)
-                                .map(VmSlot::from)
-                        }
-                        _ => Err(format!("{} expects values", op.operator())),
-                    }
+                    let collection = Machine::into_value(self.program.clone(), collection);
+                    let key = Machine::into_value(self.program.clone(), key);
+                    let replacement = Machine::into_value(self.program.clone(), replacement);
+                    apply_ternary_primitive_owned(*op, collection, key, replacement)
+                        .map(VmSlot::from)
                 } else {
                     self.scratch.clear();
                     let argument_base = self.stack.len() - argc;

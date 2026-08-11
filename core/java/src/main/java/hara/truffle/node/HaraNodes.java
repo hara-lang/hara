@@ -2092,8 +2092,8 @@ public final class HaraNodes {
         return new HaraStruct(haraType, values);
       }
       if (!(target instanceof HaraFunction)
-          && InteropLibrary.getUncached(target).isExecutable(target)) {
-        return invokeExecutable(target, evaluateArguments(frame));
+          && HaraLanguage.currentContext(this).isFunctionValue(target)) {
+        return HaraLanguage.currentContext(this).invokeCallable(target, evaluateArguments(frame));
       }
       if (!(target instanceof HaraFunction)) {
         throw notCallable(target);
@@ -2136,15 +2136,6 @@ public final class HaraNodes {
     @TruffleBoundary
     private Object invokeMultiFunction(HaraMultiFunction target, Object[] values) {
       return HaraBox.export(target.invoke(values));
-    }
-
-    @TruffleBoundary
-    private Object invokeExecutable(Object target, Object[] values) {
-      try {
-        return InteropLibrary.getUncached(target).execute(target, values);
-      } catch (UnsupportedMessageException | UnsupportedTypeException | ArityException error) {
-        throw new HaraException(error.getMessage(), this);
-      }
     }
 
     @TruffleBoundary

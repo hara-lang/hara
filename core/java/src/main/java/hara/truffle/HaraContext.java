@@ -2040,6 +2040,10 @@ public final class HaraContext {
     target.define("iter-iterate", new VariadicBuiltin("iter-iterate", this::iterIterate));
     target.define("alter-var-root", new VariadicBuiltin("alter-var-root", this::alterVarRoot));
     target.define("apply", new VariadicBuiltin("apply", this::applyFunction));
+    target.define(
+        "deref",
+        new UnaryBuiltin(
+            "deref", value -> protocolCall("IDeref", "deref", new Object[] {value})));
     target.define("module-revision", new UnaryBuiltin("module-revision", this::moduleRevision));
     target.define(
         "module-dependencies", new UnaryBuiltin("module-dependencies", this::moduleDependencies));
@@ -5389,7 +5393,7 @@ public final class HaraContext {
   }
 
   @TruffleBoundary
-  Object invokeCallable(Object value, Object[] arguments) {
+  public Object invokeCallable(Object value, Object[] arguments) {
     Object function = HaraBox.unwrap(value);
     if (function instanceof HaraFunction) {
       HaraFunction haraFunction = (HaraFunction) function;
@@ -5397,22 +5401,22 @@ public final class HaraContext {
       if (selected == null) {
         throw new HaraException("function has no matching arity: " + arguments.length);
       }
-      return HaraBox.export(selected.callTarget().call(selected.callArguments(arguments)));
+      return HaraBox.unwrap(selected.callTarget().call(selected.callArguments(arguments)));
     }
     if (function instanceof HbcMachine.HbcClosure) {
-      return HaraBox.export(((HbcMachine.HbcClosure) function).invoke(arguments));
+      return HaraBox.unwrap(((HbcMachine.HbcClosure) function).invoke(arguments));
     }
     if (function instanceof HbcMachine.HbcMultiArity) {
-      return HaraBox.export(((HbcMachine.HbcMultiArity) function).invoke(arguments));
+      return HaraBox.unwrap(((HbcMachine.HbcMultiArity) function).invoke(arguments));
     }
     if (function instanceof HbcMachine.HbcNativeCallable) {
-      return HaraBox.export(((HbcMachine.HbcNativeCallable) function).invoke(arguments));
+      return HaraBox.unwrap(((HbcMachine.HbcNativeCallable) function).invoke(arguments));
     }
     if (function instanceof HaraMultiFunction) {
-      return HaraBox.export(((HaraMultiFunction) function).invoke(arguments));
+      return HaraBox.unwrap(((HaraMultiFunction) function).invoke(arguments));
     }
     if (function instanceof HaraStruct || function instanceof IFn) {
-      return ifnProtocol.invoke("invoke", function, arguments);
+      return HaraBox.unwrap(ifnProtocol.invoke("invoke", function, arguments));
     }
     if (function instanceof HaraType) {
       HaraType type = (HaraType) function;
@@ -5438,10 +5442,13 @@ public final class HaraContext {
     return new HaraPromise(future);
   }
 
-  boolean isFunctionValue(Object value) {
+  public boolean isFunctionValue(Object value) {
     Object function = HaraBox.unwrap(value);
     return function instanceof HaraFunction
         || function instanceof HaraMultiFunction
+        || function instanceof HbcMachine.HbcClosure
+        || function instanceof HbcMachine.HbcMultiArity
+        || function instanceof HbcMachine.HbcNativeCallable
         || function instanceof UnaryBuiltin
         || function instanceof VariadicBuiltin;
   }

@@ -87,7 +87,8 @@ public final class HbcMachine {
           continue;
         }
         case JUMP_IF_FALSE -> {
-          if (!truthy(pop(stack))) {
+          Object condition = pop(stack);
+          if (!truthy(condition)) {
             ip = index(instruction.first());
             continue;
           }
@@ -140,10 +141,11 @@ public final class HbcMachine {
         case GET_GLOBAL -> {
           String name = stringConstant(program, instruction.first());
           Integer primitive = primitiveId(name);
-          stack.add(
+          Object value =
               primitive == null
                   ? resolve(context, name).deref()
-                  : new HbcNativeCallable(args -> invokePrimitive(context, primitive, args)));
+                  : new HbcNativeCallable(args -> invokePrimitive(context, primitive, args));
+          stack.add(value);
         }
         case DEF_GLOBAL -> {
           Object value = pop(stack);
@@ -483,7 +485,7 @@ public final class HbcMachine {
   }
 
   private static boolean truthy(Object value) {
-    return value != null && !Boolean.FALSE.equals(value);
+    return !HaraBox.isNil(value) && !Boolean.FALSE.equals(HaraBox.unwrap(value));
   }
 
   private static void checkArity(Function function, int actual) {

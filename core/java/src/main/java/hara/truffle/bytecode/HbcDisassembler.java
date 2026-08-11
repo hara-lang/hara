@@ -9,6 +9,14 @@ public final class HbcDisassembler {
 
   public static String disassemble(HbcProgram program) {
     StringBuilder output = new StringBuilder("HBC3 entry=").append(program.entry()).append('\n');
+    for (int constant = 0; constant < program.constants().size(); constant++) {
+      output
+          .append("const ")
+          .append(constant)
+          .append(' ')
+          .append(String.valueOf(program.constants().get(constant)))
+          .append('\n');
+    }
     for (int functionIndex = 0; functionIndex < program.functions().size(); functionIndex++) {
       Function function = program.functions().get(functionIndex);
       output

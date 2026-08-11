@@ -34,6 +34,14 @@ fn embedded_foundation_reduce_executes_in_bytecode() {
     );
 }
 
+#[test]
+fn assoc_accepts_a_bytecode_closure_as_the_replacement() {
+    assert_eq!(
+        eval("(let [f (fn [value] (+ value 1)) m (assoc {} :f f)] ((get m :f) 41))"),
+        "42"
+    );
+}
+
 fn eval_error(source: &str) -> String {
     eval_source(source).expect_err("evaluation must fail")
 }
