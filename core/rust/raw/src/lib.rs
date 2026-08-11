@@ -279,7 +279,13 @@ impl Session {
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let resources = self.resources.clone();
-        let provider = Rc::new(move |name: &str| resources.borrow().get(name).cloned());
+        let provider = Rc::new(move |name: &str| {
+            resources
+                .borrow()
+                .get(name)
+                .cloned()
+                .map(core::NamespaceResource::Source)
+        });
         let mut environment = self.env.clone();
         let (result, journal) = core::with_evaluation_journal(
             journal_id,
@@ -521,7 +527,13 @@ impl Session {
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let resources = self.resources.clone();
-        let provider = Rc::new(move |name: &str| resources.borrow().get(name).cloned());
+        let provider = Rc::new(move |name: &str| {
+            resources
+                .borrow()
+                .get(name)
+                .cloned()
+                .map(core::NamespaceResource::Source)
+        });
         let mut environment = self.env.clone();
         for (index, value) in bindings.into_iter().enumerate() {
             environment.insert(format!("__hta_arg_{index}"), value);
@@ -558,7 +570,13 @@ impl Session {
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let resources = self.resources.clone();
-        let provider = Rc::new(move |name: &str| resources.borrow().get(name).cloned());
+        let provider = Rc::new(move |name: &str| {
+            resources
+                .borrow()
+                .get(name)
+                .cloned()
+                .map(core::NamespaceResource::Source)
+        });
         let fiber = core::with_capability_providers(file_provider, None, false, None, || {
             core::with_namespace_registry(&namespaces, || {
                 core::with_namespace_source(provider, || {
@@ -685,7 +703,13 @@ impl Session {
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let resources = self.resources.clone();
-        let provider = Rc::new(move |name: &str| resources.borrow().get(name).cloned());
+        let provider = Rc::new(move |name: &str| {
+            resources
+                .borrow()
+                .get(name)
+                .cloned()
+                .map(core::NamespaceResource::Source)
+        });
         core::with_capability_providers(file_provider, None, false, None, || {
             core::with_namespace_registry(&namespaces, || {
                 core::with_namespace_source(provider, || {
