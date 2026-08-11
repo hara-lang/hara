@@ -20,7 +20,7 @@ public class HaraAssetToolTest {
       Files.write(root.resolve("images/hero.png"), "png".getBytes(StandardCharsets.UTF_8));
       Files.writeString(
           root.resolve("asset.edn"),
-          "{:asset/format 1 :asset/coordinate \"alice/gallery\" "
+          "{:asset/format \"0.0.0-alpha\" :asset/coordinate \"alice/gallery\" "
               + ":asset/version \"1.0.0\" "
               + ":asset/entries [{:entry/path \"images/hero.png\" "
               + ":entry/media-type \"image/png\"}]}\n");

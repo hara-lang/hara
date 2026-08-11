@@ -12,7 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Rust-compatible structural and abstract-stack validation for HBC5. */
+/** Rust-compatible structural and abstract-stack validation for HBC0. */
 public final class HbcValidator {
   public static final int MAX_CONSTANTS = 1 << 24;
   public static final int MAX_INSTRUCTIONS = 1 << 24;

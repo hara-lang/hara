@@ -1,4 +1,4 @@
-//! Borrowed structural views over exact HTA1 frames.
+//! Borrowed structural views over exact HTA0 frames.
 //!
 //! This module validates the complete runtime wire format without constructing
 //! executable Hara values. Callers can inspect a closed envelope while retaining
@@ -54,7 +54,7 @@ impl<'a> FrameView<'a> {
             ));
         }
         if !bytes.starts_with(MAGIC) {
-            return Err("hta/frame-invalid: expected HTA1 magic".into());
+            return Err("hta/frame-invalid: expected HTA0 magic".into());
         }
         let bare = &bytes[MAGIC.len()..];
         let end = scan_value(bare, 0, 0)?;

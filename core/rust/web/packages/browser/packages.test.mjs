@@ -28,7 +28,7 @@ async function fixture() {
     "src/demo/world.hal": source
   });
   const archiveDigest = await digest(archive);
-  const lock = `{:lock/format 2 :packages {"demo:world" `
+  const lock = `{:lock/format \"0.0.0-alpha\" :packages {"demo:world" `
     + `{:packages/url "https://packages.example/demo.harp" `
     + `:release-url "https://github.example/demo.harp" `
     + `:size ${archive.byteLength} :harp-sha256 "${archiveDigest}"}}}`;

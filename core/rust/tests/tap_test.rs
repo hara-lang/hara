@@ -76,7 +76,7 @@ fn official_bootstrap_is_narrowly_scoped_and_accepts_read_only_mirrors() {
 #[test]
 fn publisher_signature_requires_an_authorized_non_revoked_key() {
     let signing = SigningKey::from_bytes(&[7; 32]);
-    let intent = b"{:intent/format 1 :coordinate \"acme:widgets/core\"}";
+    let intent = b"{:intent/format \"0.0.0-alpha\" :coordinate \"acme:widgets/core\"}";
     let signature = hex(&signing.sign(intent).to_bytes());
     let mut keys = BTreeMap::new();
     keys.insert(
@@ -124,7 +124,7 @@ fn signed_identity_policy_is_verified_against_the_pinned_tap_root() {
     let signing = SigningKey::from_bytes(&[9; 32]);
     let public = hex(&signing.verifying_key().to_bytes());
     let policy = format!(
-        "{{:identity/format 1 :identity/root-key \"{public}\" :publisher-keys {{\"publisher-1\" {{:public-key \"{public}\" :coordinates [\"acme:widgets/core\"] :revoked false}}}}}}\n"
+        "{{:identity/format \"0.0.0-alpha\" :identity/root-key \"{public}\" :publisher-keys {{\"publisher-1\" {{:public-key \"{public}\" :coordinates [\"acme:widgets/core\"] :revoked false}}}}}}\n"
     );
     fs::write(root.join("identity.edn"), &policy).unwrap();
     fs::write(
@@ -183,7 +183,7 @@ fn signed_initializer_creates_a_pair_without_private_key_material() {
     let signing = SigningKey::from_bytes(&[4; 32]);
     let root = signing.verifying_key().to_bytes();
     let policy = format!(
-        "{{:identity/format 1 :identity/root-key \"{}\" :publisher-keys {{}}}}\n",
+        "{{:identity/format \"0.0.0-alpha\" :identity/root-key \"{}\" :publisher-keys {{}}}}\n",
         hex(&root)
     );
     let initialized = tap::initialize_signed(

@@ -762,7 +762,7 @@ impl Runtime {
         }
         #[cfg(feature = "bytecode-vm")]
         {
-            vm::eval_bytecode_bundle(self, include_bytes!("../assets/std.foundation.hbb"))?;
+            vm::eval_bytecode_bundle(self, include_bytes!("../assets/std.foundation.hbx"))?;
             self.loaded_resources.insert("std.foundation".into());
             for &name in EAGER_HAL_RESOURCES {
                 self.loaded_resources.insert(name.into());
@@ -1557,7 +1557,7 @@ impl Runtime {
             .map_err(|error| JsValue::from_str(&error))
     }
 
-    /// Compiles source into an HNW1 artifact whose generated module can be
+    /// Compiles source into an HNW0 artifact whose generated module can be
     /// instantiated by either Wasmtime or a browser WebAssembly engine.
     #[cfg(feature = "whole-wasm")]
     #[wasm_bindgen(js_name = compileWholeWasmArtifact)]
@@ -1963,7 +1963,7 @@ impl Runtime {
     }
 
     /// Invokes an installed WASM extension without routing the call through
-    /// source text. Service hosts use this binary-safe boundary for HTA1
+    /// source text. Service hosts use this binary-safe boundary for HTA0
     /// arguments and results.
     pub fn invoke_wasm_extension(
         &mut self,

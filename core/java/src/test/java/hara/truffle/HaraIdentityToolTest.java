@@ -8,7 +8,7 @@ public class HaraIdentityToolTest {
   @Test
   public void enrollmentBytesMatchTheRustContract() {
     assertEquals(
-        "{:enrollment/format 1 :enrollment/tap \"hara\" "
+        "{:enrollment/format \"0.0.0-alpha\" :enrollment/tap \"hara\" "
             + ":enrollment/provider :github :enrollment/owner \"alice\" "
             + ":enrollment/public-key \""
             + "ab".repeat(32)

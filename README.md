@@ -126,7 +126,7 @@ points are available as `runtime-benchmark`, `truffle-benchmark`,
 and `parity-benchmark`; each accepts additional arguments
 through `ARGS`.
 
-Portable bytecode uses HBC5 artifacts and deterministic HBB2 bundles across
+Portable bytecode uses HBC0 artifacts and deterministic HBX0 bundles across
 the Rust, Truffle JVM, and Truffle native-image runtimes. Inspect or execute an
 artifact with `hara bytecode disassemble FILE` and `hara bytecode run FILE`.
 `hara bytecode conformance core/rust/assets/bytecode-conformance.hcc` executes

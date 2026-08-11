@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const SCHEMA = "hara-release-cut/v1";
+const SCHEMA = "hara-release-cut/0-alpha";
 const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const COMMIT = /^[0-9a-f]{40}$/;
 const WORKFLOW = /^[A-Za-z0-9_.-]+\.ya?ml$/;

@@ -1,6 +1,6 @@
 # `hara-hta`
 
-`hara-hta` is the dependency-free canonical HTA1 codec for portable
+`hara-hta` is the dependency-free canonical HTA0 codec for portable
 [`hara-abi`](../abi/) values.
 
 It exists for embedding hosts, native providers, package tooling, and durable
@@ -28,7 +28,7 @@ rejects maps with duplicate or non-keyword keys.
 
 Runtime-only tags such as symbols, lists, sets, handles, namespaces, vars,
 atoms, arrays, objects, characters, big integers, and regex values fail closed.
-The crate shares HTA1's 64 MiB frame bound and 256-level nesting bound.
+The crate shares HTA0's 64 MiB frame bound and 256-level nesting bound.
 
 `hara-wasm` contains byte-for-byte cross-codec tests. A change to either codec
 must preserve identical encoding for every portable value before it can merge.

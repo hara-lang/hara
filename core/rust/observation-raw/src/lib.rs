@@ -477,7 +477,7 @@ mod tests {
         ));
         assert_eq!(
             field(&trace, "schema"),
-            Some(Value::String("hal.bytecode-trace/v1".into()))
+            Some(Value::String("hal.bytecode-trace/0-alpha".into()))
         );
         assert_eq!(
             invoke(&format!(
@@ -488,13 +488,13 @@ mod tests {
         let metrics = invoke(&format!("{{\"op\":\"metrics\",\"handle\":{handle}}}"));
         assert_eq!(
             field(&metrics, "schema"),
-            Some(Value::String("hal.bytecode-metrics/v1".into()))
+            Some(Value::String("hal.bytecode-metrics/0-alpha".into()))
         );
         assert!(matches!(field(&metrics, "instructions"), Some(Value::Number(value)) if value > 0));
         let events = invoke(&format!("{{\"op\":\"events\",\"handle\":{handle}}}"));
         assert_eq!(
             field(&events, "schema"),
-            Some(Value::String("hal.bytecode-events/v1".into()))
+            Some(Value::String("hal.bytecode-events/0-alpha".into()))
         );
     }
 

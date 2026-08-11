@@ -14,8 +14,8 @@ mod run;
 
 pub use ring::{EventRing, SampledProbe, VmEvent};
 
-pub const BYTECODE_METRICS_SCHEMA: &str = "hal.bytecode-metrics/v1";
-pub const BYTECODE_EVENTS_SCHEMA: &str = "hal.bytecode-events/v1";
+pub const BYTECODE_METRICS_SCHEMA: &str = "hal.bytecode-metrics/0-alpha";
+pub const BYTECODE_EVENTS_SCHEMA: &str = "hal.bytecode-events/0-alpha";
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

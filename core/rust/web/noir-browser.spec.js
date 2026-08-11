@@ -11,7 +11,7 @@ test("descriptor-selected browser worker compiles, proves, and verifies Noir", a
     identity: "hara/ledger.noir",
     namespace: "ledger.noir",
     artifact: "hara/ledger.noir/v1",
-    proof: "hara.noir.proof/v1",
+    proof: "hara.noir.proof/0-alpha",
     verified: true
   });
   await page.evaluate(() => window.noirContext.close());

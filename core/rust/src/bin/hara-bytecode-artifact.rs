@@ -1,4 +1,4 @@
-//! Compile one Hara source expression to a portable HBC4 artifact.
+//! Compile one Hara source expression to a portable HBC0 artifact.
 
 use hara_wasm::Runtime;
 use std::path::Path;

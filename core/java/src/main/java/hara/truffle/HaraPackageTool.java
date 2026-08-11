@@ -244,7 +244,7 @@ final class HaraPackageTool {
                 .append(" ")
                 .append(edn(path))
                 .append("\n"));
-    return "{:harp/format 1\n :package {:identity "
+    return "{:harp/format \"0.0.0-alpha\"\n :package {:identity "
         + edn(project.name().display())
         + " :version "
         + edn(project.version())

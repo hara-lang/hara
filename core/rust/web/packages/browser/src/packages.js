@@ -55,8 +55,8 @@ export async function loadLockedPackageResources(
   request = (...args) => globalThis.fetch(...args)
 ) {
   const lock = parseEdn(lockSource);
-  if (lock["lock/format"] !== 2) {
-    throw new Error("project.lock.edn requires :lock/format 2");
+  if (lock["lock/format"] !== "0.0.0-alpha") {
+    throw new Error("project.lock.edn requires :lock/format \"0.0.0-alpha\"");
   }
 
   const staged = {};

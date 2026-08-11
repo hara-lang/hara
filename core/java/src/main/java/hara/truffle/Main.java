@@ -346,14 +346,14 @@ public final class Main {
     Path lock = project.root().resolve("project.lock.edn");
     boolean locked = args.length == 2 && ("--locked".equals(args[1]) || "--frozen".equals(args[1]));
     if (locked && !Files.isRegularFile(lock)) throw new HaraException(args[1] + " requires an existing project.lock.edn");
-    if (locked && !"{:lock/format 1 :packages {}}\n".equals(Files.readString(lock)))
+    if (locked && !"{:lock/format \"0.0.0-alpha\" :packages {}}\n".equals(Files.readString(lock)))
       throw new HaraException(lock + " is not a lockfile written by this CLI");
     boolean offline =
         capabilities.offline
             || (args.length == 2
                 && ("--offline".equals(args[1]) || "--frozen".equals(args[1])));
     java.util.List<Path> artifacts = HaraJvmProject.resolveDependencies(project, offline);
-    if (!locked) Files.writeString(lock, "{:lock/format 1 :packages {}}\n");
+    if (!locked) Files.writeString(lock, "{:lock/format \"0.0.0-alpha\" :packages {}}\n");
     output.println("project sync: " + lock);
     if (!project.jvmDependencies().isEmpty()) {
       output.println(
@@ -1449,7 +1449,7 @@ public final class Main {
     output.println("  hara tap <bootstrap|init|add|remove|list|verify|mirror> ...");
     output.println("  hara spec <COMMAND> ...");
     output.println("  hara extension <check|build|install|test> ...");
-    output.println("  hara bytecode <run|disassemble> FILE.hbc|FILE.hbb");
+    output.println("  hara bytecode <run|disassemble> FILE.hbc|FILE.hbx");
     output.println("  hara bytecode conformance FILE.hcc");
     output.println();
     output.println("Compatibility aliases:");

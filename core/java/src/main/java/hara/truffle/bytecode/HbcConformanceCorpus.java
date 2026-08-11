@@ -9,9 +9,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/** Decoder for the Rust-generated HCC1 bytecode conformance artifact. */
+/** Decoder for the Rust-generated HCC0 bytecode conformance artifact. */
 public final class HbcConformanceCorpus {
-  private static final byte[] MAGIC = {'H', 'C', 'C', '1'};
+  private static final byte[] MAGIC = {'H', 'C', 'C', '0'};
 
   private HbcConformanceCorpus() {}
 

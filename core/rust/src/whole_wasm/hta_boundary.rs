@@ -8,10 +8,10 @@ const INVOCATION_ABI_ERROR: &str =
     "hta/invocation-abi: whole-Wasm function must declare handle-backed arguments and result";
 
 impl NativeModule {
-    /// Calls a whole-Wasm function through the portable HTA1 value boundary.
+    /// Calls a whole-Wasm function through the portable HTA0 value boundary.
     ///
-    /// `request` is one HTA1-encoded Hara list, tuple, or vector containing
-    /// the function arguments. The result is returned as one HTA1 frame.
+    /// `request` is one HTA0-encoded Hara list, tuple, or vector containing
+    /// the function arguments. The result is returned as one HTA0 frame.
     /// Internally, decoded values use the process-local scoped arena so calls
     /// between compiled Hara functions do not repeatedly encode or decode.
     ///

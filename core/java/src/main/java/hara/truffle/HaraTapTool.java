@@ -52,7 +52,7 @@ final class HaraTapTool {
     Path root = configRoot();
     Files.createDirectories(root);
     String document =
-        "{:tap-store/format 1\n :taps {\n"
+        "{:tap-store/format \"0.0.0-alpha\"\n :taps {\n"
             + "  \"hara\" {:registry [\"https://packages.hara-lang.org\"] "
             + ":identity [\"https://id.hara-lang.org\"] "
             + ":identity-key \""
@@ -66,7 +66,7 @@ final class HaraTapTool {
   private static int list(PrintStream output) throws IOException {
     Path path = configRoot().resolve("taps.edn");
     if (!Files.exists(path)) {
-      output.println("{:tap-store/format 1 :taps {}}");
+      output.println("{:tap-store/format \"0.0.0-alpha\" :taps {}}");
       return 0;
     }
     output.print(Files.readString(path, StandardCharsets.UTF_8));

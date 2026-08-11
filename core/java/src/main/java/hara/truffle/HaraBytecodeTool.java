@@ -3,7 +3,7 @@ package hara.truffle;
 import hara.truffle.bytecode.HbcCodec;
 import hara.truffle.bytecode.HbcConformanceCorpus;
 import hara.truffle.bytecode.HbcDisassembler;
-import hara.truffle.bytecode.HbcBundleCodec;
+import hara.truffle.bytecode.HbxBundleCodec;
 import hara.lang.base.G;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -24,7 +24,7 @@ final class HaraBytecodeTool {
             || "disassemble".equals(arguments[0])
             || "conformance".equals(arguments[0]))) {
       error.println(
-          "usage: hara bytecode <run|disassemble> FILE.hbc|FILE.hbb\n"
+          "usage: hara bytecode <run|disassemble> FILE.hbc|FILE.hbx\n"
               + "       hara bytecode conformance FILE.hcc");
       return 2;
     }
@@ -85,7 +85,7 @@ final class HaraBytecodeTool {
                   : actual.isString() ? G.display(actual.asString()) : actual.toString();
           if (!testCase.expectedDisplay().equals(display)) {
             throw new HaraException(
-                "HBC5 conformance failed for :"
+                "HBC0 conformance failed for :"
                     + testCase.id()
                     + ": expected "
                     + testCase.expectedDisplay()
@@ -95,14 +95,14 @@ final class HaraBytecodeTool {
         }
       }
     }
-    output.println("HBC5 conformance passed: " + cases.size() + " cases");
+    output.println("HBC0 conformance passed: " + cases.size() + " cases");
     return 0;
   }
 
   private static int runBundle(byte[] bundle, String command, PrintStream output) throws IOException {
-    java.util.List<HbcBundleCodec.Module> modules = HbcBundleCodec.decode(bundle);
+    java.util.List<HbxBundleCodec.Module> modules = HbxBundleCodec.decode(bundle);
     if ("disassemble".equals(command)) {
-      for (HbcBundleCodec.Module module : modules) {
+      for (HbxBundleCodec.Module module : modules) {
         output.println("module " + module.resource());
         output.print(HbcDisassembler.disassemble(HbcCodec.decode(module.artifact())));
       }
@@ -110,7 +110,7 @@ final class HaraBytecodeTool {
     }
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       Value result = null;
-      for (HbcBundleCodec.Module module : modules) {
+      for (HbxBundleCodec.Module module : modules) {
         if (!module.eager()) continue;
         context.eval(HaraLanguage.ID, module.namespaceForm());
         Source source =

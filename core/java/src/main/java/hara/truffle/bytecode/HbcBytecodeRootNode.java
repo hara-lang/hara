@@ -16,7 +16,7 @@ import hara.truffle.HaraLanguage;
 import hara.truffle.HbcMachine;
 import hara.lang.data.Symbol;
 
-/** Truffle Bytecode DSL entry point for the portable HBC4 instruction set. */
+/** Truffle Bytecode DSL entry point for the portable HBC0 instruction set. */
 @GenerateBytecode(
     languageClass = HaraLanguage.class,
     enableUncachedInterpreter = true,

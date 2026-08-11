@@ -35,7 +35,7 @@ public class HaraNoirProcessExtensionTest {
           HaraLanguage.ID,
           "(def proof (deref (noir/prove artifact {:secret \"7\" :expected \"49\"})))");
       assertEquals(
-          "hara.noir.proof/v1",
+          "hara.noir.proof/0-alpha",
           context.eval(HaraLanguage.ID, "(get proof :format)").asString());
       assertTrue(context.eval(HaraLanguage.ID, "(deref (noir/verify artifact proof))").asBoolean());
     } finally {

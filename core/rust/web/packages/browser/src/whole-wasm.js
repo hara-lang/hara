@@ -10,10 +10,10 @@ function readU32(bytes, offset) {
     .getUint32(offset, false);
 }
 
-/** Extracts the WebAssembly payload from an HNW1 artifact produced by Rust. */
+/** Extracts the WebAssembly payload from an HNW0 artifact produced by Rust. */
 export function decodeHnw1(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  if (bytes.length < 40 || String.fromCharCode(...bytes.subarray(0, 4)) !== "HNW1") {
+  if (bytes.length < 40 || String.fromCharCode(...bytes.subarray(0, 4)) !== "HNW0") {
     throw new Error("native artifact has invalid magic");
   }
   const payloadLength = readU32(bytes, 4);

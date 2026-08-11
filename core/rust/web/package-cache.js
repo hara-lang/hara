@@ -41,7 +41,7 @@ export async function inspectHarp(input) {
   const manifestBytes = entries.get("package.edn");
   if (!manifestBytes) throw new Error("package/manifest-missing");
   const manifest = parseEdnData(decoder.decode(manifestBytes), "package/manifest-malformed");
-  if (!(manifest instanceof Map) || field(manifest, "harp/format") !== 1) {
+  if (!(manifest instanceof Map) || field(manifest, "harp/format") !== "0.0.0-alpha") {
     throw new Error("package/manifest-malformed: unsupported :harp/format");
   }
   const declaredFiles = field(manifest, "files");

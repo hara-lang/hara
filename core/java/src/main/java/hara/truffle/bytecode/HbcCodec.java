@@ -31,28 +31,19 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-/** Canonical HBC5 encoder/decoder shared with {@code rust/src/vm/artifact.rs}. */
+/** Canonical HBC0 encoder/decoder shared with {@code rust/src/vm/artifact.rs}. */
 public final class HbcCodec {
-  private static final byte[] MAGIC_V3 = {'H', 'B', 'C', '3'};
-  private static final byte[] MAGIC_V4 = {'H', 'B', 'C', '4'};
-  private static final byte[] MAGIC_V5 = {'H', 'B', 'C', '5'};
+  private static final byte[] MAGIC = {'H', 'B', 'C', '0'};
   private static final int DIGEST_BYTES = 32;
 
   private HbcCodec() {}
 
   public static HbcProgram decode(byte[] artifact) {
-    if (artifact.length < MAGIC_V5.length + Integer.BYTES + DIGEST_BYTES) {
+    if (artifact.length < MAGIC.length + Integer.BYTES + DIGEST_BYTES) {
       throw malformed("bytecode artifact is truncated");
     }
-    byte[] magic = Arrays.copyOf(artifact, MAGIC_V5.length);
-    int version;
-    if (Arrays.equals(MAGIC_V5, magic)) {
-      version = 5;
-    } else if (Arrays.equals(MAGIC_V4, magic)) {
-      version = 4;
-    } else if (Arrays.equals(MAGIC_V3, magic)) {
-      version = 3;
-    } else {
+    byte[] magic = Arrays.copyOf(artifact, MAGIC.length);
+    if (!Arrays.equals(MAGIC, magic)) {
       throw malformed("bytecode artifact has invalid magic");
     }
     long payloadLength = Integer.toUnsignedLong(ByteBuffer.wrap(artifact, 4, 4).getInt());
@@ -68,15 +59,12 @@ public final class HbcCodec {
 
     Reader in = new Reader(payload);
     int entry = in.u16();
-    String namespace = version >= 4 ? in.optionalString() : null;
+    String namespace = in.optionalString();
     List<Object> constants = in.many(reader -> HtaValueCodec.decodeCanonical(reader.bytes()));
     List<List<MetadataEntry>> metadata = in.many(HbcCodec::readMetadata);
-    Map<String, HalcSchema.Type> schemaTypes =
-        version >= 4 ? readSchemaMap(in) : Map.of();
-    Map<String, HalcSchema.Type> functionTypes =
-        version >= 4 ? readSchemaMap(in) : Map.of();
-    Map<String, HalcSchema.Type> inferredFunctionTypes =
-        version >= 4 ? readSchemaMap(in) : Map.of();
+    Map<String, HalcSchema.Type> schemaTypes = readSchemaMap(in);
+    Map<String, HalcSchema.Type> functionTypes = readSchemaMap(in);
+    Map<String, HalcSchema.Type> inferredFunctionTypes = readSchemaMap(in);
     List<Function> functions = in.many(HbcCodec::readFunction);
     in.finish();
     HbcProgram program =
@@ -106,7 +94,7 @@ public final class HbcCodec {
     out.many(program.functions(), function -> writeFunction(out, function));
     byte[] payload = out.toByteArray();
     Writer artifact = new Writer();
-    artifact.raw(MAGIC_V5);
+    artifact.raw(MAGIC);
     artifact.u32(payload.length);
     artifact.raw(payload);
     artifact.raw(sha256(payload));

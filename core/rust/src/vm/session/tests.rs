@@ -25,17 +25,17 @@ fn live_session_runs_real_bytecode_and_emits_all_three_contracts() {
     assert_eq!(session.result(), Some(&Value::Number(7)));
 
     let metrics = json(&session.metrics());
-    assert!(metrics.contains("\"schema\":\"hal.bytecode-metrics/v1\""));
+    assert!(metrics.contains("\"schema\":\"hal.bytecode-metrics/0-alpha\""));
     assert!(metrics.contains("\"instructions\":"));
     assert!(metrics.contains("\"primitive\":"));
 
     let events = json(&session.events());
-    assert!(events.contains("\"schema\":\"hal.bytecode-events/v1\""));
+    assert!(events.contains("\"schema\":\"hal.bytecode-events/0-alpha\""));
     assert!(events.contains("\"kind\":\"terminal\""));
     assert!(events.contains("\"terminal\":\"machine/return\""));
 
     let trace = json(&session.trace());
-    assert!(trace.contains("\"schema\":\"hal.bytecode-trace/v1\""));
+    assert!(trace.contains("\"schema\":\"hal.bytecode-trace/0-alpha\""));
     assert!(trace.contains("\"sourceId\":\"example/core.hal\""));
     assert!(trace.contains("\"display\":\"7\""));
     assert!(json(&delta).contains("\"steps\":["));

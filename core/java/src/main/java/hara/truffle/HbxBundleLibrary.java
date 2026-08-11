@@ -1,6 +1,6 @@
 package hara.truffle;
 
-import hara.truffle.bytecode.HbcBundleCodec;
+import hara.truffle.bytecode.HbxBundleCodec;
 import hara.truffle.bytecode.HbcCodec;
 import hara.truffle.bytecode.HbcFormatException;
 import hara.truffle.bytecode.HbcProgram;
@@ -11,15 +11,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Immutable namespace index over the shared Rust-produced HBB2 standard-library bundle. */
-final class HbcBundleLibrary {
-  static final String RESOURCE = "std.foundation.hbb";
+/** Immutable namespace index over the shared Rust-produced HBX0 standard-library bundle. */
+final class HbxBundleLibrary {
+  static final String RESOURCE = "std.foundation.hbx";
 
-  record Module(String namespace, HbcBundleCodec.Module descriptor, HbcProgram program) {}
+  record Module(String namespace, HbxBundleCodec.Module descriptor, HbcProgram program) {}
 
   private final Map<String, Module> modules;
 
-  HbcBundleLibrary(ClassLoader loader) {
+  HbxBundleLibrary(ClassLoader loader) {
     this.modules = load(loader);
   }
 
@@ -51,15 +51,15 @@ final class HbcBundleLibrary {
     try (InputStream input = loader.getResourceAsStream(RESOURCE)) {
       if (input == null) return Map.of();
       LinkedHashMap<String, Module> indexed = new LinkedHashMap<>();
-      for (HbcBundleCodec.Module descriptor : HbcBundleCodec.decode(input.readAllBytes())) {
+      for (HbxBundleCodec.Module descriptor : HbxBundleCodec.decode(input.readAllBytes())) {
         HbcProgram program = HbcCodec.decode(descriptor.artifact());
         String namespace =
             program.namespace() == null ? descriptor.resource() : program.namespace();
         if (namespace == null || namespace.isBlank()) {
-          throw new HbcFormatException("HBB2 module has no namespace: " + descriptor.resource());
+          throw new HbcFormatException("HBX0 module has no namespace: " + descriptor.resource());
         }
         if (indexed.put(namespace, new Module(namespace, descriptor, program)) != null) {
-          throw new HbcFormatException("HBB2 contains duplicate namespace: " + namespace);
+          throw new HbcFormatException("HBX0 contains duplicate namespace: " + namespace);
         }
       }
       return Map.copyOf(indexed);

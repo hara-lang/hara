@@ -113,7 +113,7 @@ mod tests {
             "gh:greenways-ai:hoplite-store-sqlite",
             "hoplite/store",
             "hoplite-store-sqlite",
-            "hoplite-auth-store/1",
+            "hoplite-auth-store/0-alpha",
         )
         .unwrap();
         assert_eq!(identity.crate_name, "hoplite-store-sqlite");

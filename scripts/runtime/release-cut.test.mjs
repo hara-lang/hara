@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { formatGitHubOutput, normalizeReleaseCut } from "./release-cut.mjs";
 
 const valid = Object.freeze({
-  schema: "hara-release-cut/v1",
+  schema: "hara-release-cut/0-alpha",
   tag: "v0.1.2",
   version: "0.1.2",
   commit: "08322990fd1a26e3a004e7bf3459f45a25158311",
@@ -53,7 +53,7 @@ test("unknown manifest fields are rejected", () => {
 
 test("GitHub output contains only validated scalar fields", () => {
   assert.equal(formatGitHubOutput(valid), [
-    "schema=hara-release-cut/v1",
+    "schema=hara-release-cut/0-alpha",
     "tag=v0.1.2",
     "version=0.1.2",
     "commit=08322990fd1a26e3a004e7bf3459f45a25158311",

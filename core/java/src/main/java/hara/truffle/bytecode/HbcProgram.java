@@ -7,7 +7,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Map;
 
-/** Immutable, runtime-neutral representation of a validated HBC4 program. */
+/** Immutable, runtime-neutral representation of a validated HBC0 program. */
 public record HbcProgram(
     String namespace,
     List<Object> constants,
@@ -27,7 +27,7 @@ public record HbcProgram(
     functions = List.copyOf(functions);
   }
 
-  /** Compatibility constructor for untyped HBC1-HBC3 programs and tests. */
+  /** Compatibility constructor for untyped HBC0-HBC0 programs and tests. */
   public HbcProgram(
       List<Object> constants,
       List<List<MetadataEntry>> varMetadata,
@@ -181,7 +181,7 @@ public record HbcProgram(
     }
   }
 
-  /** Stable HBC5 opcode identifiers. Generated Truffle bytecodes are deliberately private. */
+  /** Stable HBC0 opcode identifiers. Generated Truffle bytecodes are deliberately private. */
   public enum Opcode {
     CONSTANT(0),
     NIL(1),

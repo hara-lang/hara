@@ -94,8 +94,8 @@ final class HaraAssetTool {
         Parser.LispReader.readString(Files.readString(descriptor, StandardCharsets.UTF_8), null);
     if (!(value instanceof IMapType map)) throw new HaraException("asset.edn must be an EDN map");
     Object format = map.lookup(Keyword.create("asset/format"));
-    if (!(format instanceof Number number) || number.longValue() != 1)
-      throw new HaraException("asset.edn :asset/format must be 1");
+    if (!"0.0.0-alpha".equals(format))
+      throw new HaraException("asset.edn requires alpha asset format");
     String coordinate = scalar(map, "asset/coordinate");
     coordinate = normalizeCoordinate(coordinate);
     String version = scalar(map, "asset/version");
@@ -123,7 +123,7 @@ final class HaraAssetTool {
     entries.sort(Comparator.comparing(Entry::path));
     StringBuilder output =
         new StringBuilder(
-            "{:asset/format 1\n :asset/coordinate "
+            "{:asset/format \"0.0.0-alpha\"\n :asset/coordinate "
                 + G.display(collection.coordinate())
                 + "\n :asset/version "
                 + G.display(collection.version())

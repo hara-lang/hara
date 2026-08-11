@@ -206,8 +206,8 @@ public final class HaraContext {
   private final HaraExtensionRegistry extensionRegistry =
       new HaraExtensionRegistry(HaraContext.class.getClassLoader());
   private final HaraLibraryLoader libraryLoader = new HaraLibraryLoader();
-  private final HbcBundleLibrary bytecodeLibrary =
-      new HbcBundleLibrary(HaraContext.class.getClassLoader());
+  private final HbxBundleLibrary bytecodeLibrary =
+      new HbxBundleLibrary(HaraContext.class.getClassLoader());
   private HaraVar.Origin definitionOrigin = HaraVar.Origin.SOURCE;
   private boolean eagerFallbacksLoading;
   private boolean eagerFallbacksLoaded;
@@ -338,7 +338,7 @@ public final class HaraContext {
     eagerFallbacksLoading = true;
     try {
       if (bytecodeLibrary.available()) {
-        for (HbcBundleLibrary.Module module : bytecodeLibrary.eagerModules()) {
+        for (HbxBundleLibrary.Module module : bytecodeLibrary.eagerModules()) {
           requiredNamespace(module.namespace());
         }
       } else {
@@ -1072,17 +1072,17 @@ public final class HaraContext {
   }
 
   private HaraNamespace loadBytecodeNamespace(String target) {
-    HbcBundleLibrary.Module module = bytecodeLibrary.module(target);
+    HbxBundleLibrary.Module module = bytecodeLibrary.module(target);
     if (module == null) return null;
-    boolean trace = Boolean.getBoolean("hara.hbb.trace");
-    if (trace) System.err.println("HBB2 load start " + target);
+    boolean trace = Boolean.getBoolean("hara.hbx.trace");
+    if (trace) System.err.println("HBX0 load start " + target);
     String previousNamespace = currentNamespace.name();
     HaraVar.Origin previousOrigin = definitionOrigin;
     try {
       for (String dependency : module.descriptor().dependencies()) {
         if (!dependency.equals(target) && requiredNamespace(dependency) == null) {
           throw new HaraException(
-              "Cannot require HBB2 dependency " + dependency + " for " + target);
+              "Cannot require HBX0 dependency " + dependency + " for " + target);
         }
       }
       definitionOrigin = HaraVar.Origin.BYTECODE;
@@ -1093,7 +1093,7 @@ public final class HaraContext {
           program.schemaTypes(), program.functionTypes(), program.inferredFunctionTypes());
       HbcMachine.execute(program, this);
       if (FOUNDATION_NAMESPACE.equals(target)) captureSequenceIntrinsics();
-      if (trace) System.err.println("HBB2 load done " + target);
+      if (trace) System.err.println("HBX0 load done " + target);
       return namespaces.get(target);
     } finally {
       definitionOrigin = previousOrigin;

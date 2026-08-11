@@ -6,9 +6,9 @@ use crate::vm::machine::observation::{
     SourcePositionSnapshot,
 };
 
-pub const BYTECODE_METRICS_SCHEMA: &str = "hal.bytecode-metrics/v1";
-pub const BYTECODE_EVENTS_SCHEMA: &str = "hal.bytecode-events/v1";
-pub const BYTECODE_TRACE_SCHEMA: &str = "hal.bytecode-trace/v1";
+pub const BYTECODE_METRICS_SCHEMA: &str = "hal.bytecode-metrics/0-alpha";
+pub const BYTECODE_EVENTS_SCHEMA: &str = "hal.bytecode-events/0-alpha";
+pub const BYTECODE_TRACE_SCHEMA: &str = "hal.bytecode-trace/0-alpha";
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 

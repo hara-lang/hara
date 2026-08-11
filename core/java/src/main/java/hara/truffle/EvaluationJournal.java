@@ -20,7 +20,7 @@ import java.util.function.Supplier;
 
 /** Bounded, runtime-neutral diagnostic journal for semantic HAL operations. */
 public final class EvaluationJournal {
-  public static final String SCHEMA = "hal.evaluation-journal/v1";
+  public static final String SCHEMA = "hal.evaluation-journal/0-alpha";
   public static final Limits DEFAULT_LIMITS = new Limits(10_000, 100, 1_000);
 
   private static final AtomicInteger ENABLED = new AtomicInteger();

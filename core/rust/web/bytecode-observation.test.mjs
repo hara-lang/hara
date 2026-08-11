@@ -74,15 +74,15 @@ test("runtime owns opaque sessions and keeps evidence as plain serializable docu
       case "step":
         status = "running";
         trace += 1;
-        return { schema: "hal.bytecode-trace/v1", steps: [{ sequence: trace }] };
+        return { schema: "hal.bytecode-trace/0-alpha", steps: [{ sequence: trace }] };
       case "run":
         status = "returned";
         trace += 6;
-        return { schema: "hal.bytecode-trace/v1", steps: [{ sequence: trace }] };
+        return { schema: "hal.bytecode-trace/0-alpha", steps: [{ sequence: trace }] };
       case "metrics":
-        return { schema: "hal.bytecode-metrics/v1", instructions: 7 };
+        return { schema: "hal.bytecode-metrics/0-alpha", instructions: 7 };
       case "events":
-        return { schema: "hal.bytecode-events/v1", events: [] };
+        return { schema: "hal.bytecode-events/0-alpha", events: [] };
       case "result-display":
         return "7";
       case "dispose":
@@ -97,16 +97,16 @@ test("runtime owns opaque sessions and keeps evidence as plain serializable docu
   const runtime = new BytecodeObservationRuntime({ invoke });
   const session = runtime.compileNamed("lesson", "example/core.hal", "(+ 1 (* 2 3))");
   assert.equal(session.status, "ready");
-  assert.equal(session.step().schema, "hal.bytecode-trace/v1");
+  assert.equal(session.step().schema, "hal.bytecode-trace/0-alpha");
   assert.equal(session.status, "running");
-  assert.equal(session.run(100).schema, "hal.bytecode-trace/v1");
+  assert.equal(session.run(100).schema, "hal.bytecode-trace/0-alpha");
   assert.equal(session.status, "returned");
   assert.deepEqual(session.metrics(), {
-    schema: "hal.bytecode-metrics/v1",
+    schema: "hal.bytecode-metrics/0-alpha",
     instructions: 7,
   });
   assert.deepEqual(session.events(), {
-    schema: "hal.bytecode-events/v1",
+    schema: "hal.bytecode-events/0-alpha",
     events: [],
   });
   assert.equal(session.resultDisplay(), "7");
@@ -140,7 +140,7 @@ test("settlement and limits remain JSON-safe scalar requests", () => {
         sequence: 4,
       };
     }
-    if (request.op === "resume") return { schema: "hal.bytecode-trace/v1", steps: [] };
+    if (request.op === "resume") return { schema: "hal.bytecode-trace/0-alpha", steps: [] };
     if (request.op === "dispose-all") return 1;
     return true;
   };

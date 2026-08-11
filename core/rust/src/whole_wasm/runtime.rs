@@ -18,7 +18,7 @@ struct HostState {
     constants: Vec<Value>,
 }
 
-/// A validated HNW1 module instantiated by Wasmtime. Calls enter a generated
+/// A validated HNW0 module instantiated by Wasmtime. Calls enter a generated
 /// whole Wasm function directly; the bytecode program is retained as fallback
 /// metadata, not interpreted on this path.
 pub struct NativeModule {

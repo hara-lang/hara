@@ -4,7 +4,7 @@
 //! path. Enabling `bytecode-observation` adds a separate stepping API that
 //! executes exactly one instruction or one documented call, return, unwind,
 //! suspension, resume, or terminal boundary and projects the resulting state
-//! into owned scalar/string/vector data suitable for `hal.bytecode-trace/v1`.
+//! into owned scalar/string/vector data suitable for `hal.bytecode-trace/0-alpha`.
 
 use super::{Dispatch, Machine, VmSlot};
 use crate::core::{Promise, PromiseState, Value};
@@ -13,7 +13,7 @@ use crate::vm::error::VmError;
 use crate::vm::opcode::Instruction;
 
 /// Portable schema consumed by `code.vm.bytecode` and Hodos.
-pub const BYTECODE_TRACE_SCHEMA: &str = "hal.bytecode-trace/v1";
+pub const BYTECODE_TRACE_SCHEMA: &str = "hal.bytecode-trace/0-alpha";
 
 /// Bounded projection limits. Stack and call projections retain the most
 /// recent values/frames; locals and handlers retain their leading entries.

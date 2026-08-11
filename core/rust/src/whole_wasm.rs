@@ -2,7 +2,7 @@
 //!
 //! Unlike the tracing experiment, this tier consumes a complete validated
 //! bytecode [`Program`](crate::vm::Program), constructs typed basic-block IR,
-//! and emits a deterministic portable Wasm module. HNW1 retains the HBC4
+//! and emits a deterministic portable Wasm module. HNW0 retains the HBC0
 //! program as the semantic fallback and binds it to the generated module.
 
 #[path = "whole_wasm/artifact.rs"]
@@ -48,8 +48,8 @@ mod tests {
 
     fn module(source: &str) -> NativeModule {
         let program = compile_source(source).expect("source must compile to bytecode");
-        let bytes = compile_artifact(&program).expect("bytecode must compile to HNW1");
-        NativeModule::load(&bytes).expect("HNW1 must load")
+        let bytes = compile_artifact(&program).expect("bytecode must compile to HNW0");
+        NativeModule::load(&bytes).expect("HNW0 must load")
     }
 
     #[test]

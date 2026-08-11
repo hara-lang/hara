@@ -29,9 +29,9 @@
 //! - `runtime-registry-execute` — compile once against a `Runtime`; execute
 //!                       against its namespace registry without copying the
 //!                       registry into the tree-walker environment per call.
-//! - `halc-execute`    — encode as HALC and lower to typed HBC4 once, then
+//! - `halc-execute`    — encode as HALC and lower to typed HBC0 once, then
 //!                       execute it against the module namespace.
-//! - `whole-wasm`      — compile HBC4 to an HNW1 whole-function Wasm module
+//! - `whole-wasm`      — compile HBC0 to an HNW0 whole-function Wasm module
 //!                       once, then call the generated entry through Wasmtime.
 //!
 //! Every call checks the result against EXPECTED (the correctness

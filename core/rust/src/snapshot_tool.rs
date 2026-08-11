@@ -1,4 +1,4 @@
-//! Native CLI adapter for portable HSS1 snapshots.
+//! Native CLI adapter for portable HSS0 snapshots.
 
 use crate::core;
 use crate::kernel::{self, Form};
@@ -94,7 +94,7 @@ pub fn inspect_path(path: &Path) -> Result<String, String> {
     use std::fmt::Write as _;
     let artifact = read_artifact(path)?;
     let mut output = String::new();
-    writeln!(output, "format: HSS1").unwrap();
+    writeln!(output, "format: HSS0").unwrap();
     writeln!(
         output,
         "artifact: {}",

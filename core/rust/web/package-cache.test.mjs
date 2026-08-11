@@ -63,7 +63,7 @@ test("HARP inspection verifies every file and activates namespaces atomically", 
   }
   const treeBytes = concat(tree);
   const manifest = encoder.encode(
-    `{:harp/format 1\n :package {:identity "example/app" :version "1.0.0"}\n`
+    `{:harp/format \"0.0.0-alpha\"\n :package {:identity "example/app" :version "1.0.0"}\n`
     + ` :files {\n${declarations}} :resources {"example.main" "src/example/main.hal" "example.fast" "halc/example.fast.halc"}`
     + ` :extensions []\n :integrity {:tree-sha256 ${JSON.stringify(await sha256(treeBytes))}}}\n`
   );

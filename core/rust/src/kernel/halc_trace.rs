@@ -1,7 +1,7 @@
 use super::halc::{decode_halc, HalcOrigin};
 use std::collections::BTreeMap;
 
-pub const HALC_TRACE_SCHEMA: &str = "hal.halc-trace/v1";
+pub const HALC_TRACE_SCHEMA: &str = "hal.halc-trace/0-alpha";
 
 const MAGIC_BYTES: usize = 4;
 const VERSION_OFFSET: usize = MAGIC_BYTES;

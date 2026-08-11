@@ -1,4 +1,4 @@
-//! Dependency-free canonical HTA1 codec for portable Hara ABI values.
+//! Dependency-free canonical HTA0 codec for portable Hara ABI values.
 //!
 //! `hara-hta` deliberately operates on [`hara_abi::Value`] rather than the
 //! executable runtime value graph. It is suitable for native providers,
@@ -10,7 +10,7 @@ pub mod view;
 use hara_abi::Value;
 use std::collections::BTreeMap;
 
-pub const MAGIC: &[u8; 4] = b"HTA1";
+pub const MAGIC: &[u8; 4] = b"HTA0";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_NESTING_DEPTH: usize = 256;
 
@@ -38,7 +38,7 @@ const BIG_INTEGER: u8 = 20;
 const DECIMAL: u8 = 21;
 const REGEX: u8 = 22;
 
-/// Encode one portable value as an exact canonical HTA1 frame.
+/// Encode one portable value as an exact canonical HTA0 frame.
 pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(128);
     write(&mut output, MAGIC)?;
@@ -46,7 +46,7 @@ pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     Ok(output)
 }
 
-/// Decode one exact canonical HTA1 frame into a portable value.
+/// Decode one exact canonical HTA0 frame into a portable value.
 ///
 /// Runtime-only wire tags such as symbols, lists, sets, handles, namespaces,
 /// vars, atoms, arrays, objects, characters, big integers, and regex values
@@ -61,7 +61,7 @@ pub fn decode(bytes: &[u8]) -> Result<Value, String> {
         ));
     }
     if !bytes.starts_with(MAGIC) {
-        return Err("hta/frame-invalid: expected HTA1 magic".into());
+        return Err("hta/frame-invalid: expected HTA0 magic".into());
     }
     let mut reader = Reader {
         bytes: &bytes[MAGIC.len()..],
@@ -74,7 +74,7 @@ pub fn decode(bytes: &[u8]) -> Result<Value, String> {
     Ok(value)
 }
 
-/// Decode one portable HTA1 value only when the supplied bytes are bounded and
+/// Decode one portable HTA0 value only when the supplied bytes are bounded and
 /// already use the exact canonical encoding produced by [`encode`].
 ///
 /// This is the generic provider boundary for small values. It deliberately does
@@ -418,7 +418,7 @@ mod tests {
     fn frame_shape_and_lengths_are_bounded() {
         assert!(decode(b"not-hta")
             .unwrap_err()
-            .contains("expected HTA1 magic"));
+            .contains("expected HTA0 magic"));
 
         let trailing = [MAGIC.as_slice(), &[NIL, NIL]].concat();
         assert!(decode(&trailing).unwrap_err().contains("trailing bytes"));

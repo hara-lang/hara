@@ -11,7 +11,7 @@ import org.junit.Test;
 
 public class HaraBytecodeToolTest {
   @Test
-  public void executesTheRustProducedHbc5ConformanceCorpus() throws Exception {
+  public void executesTheRustProducedAlphaConformanceCorpus() throws Exception {
     ByteArrayOutputStream outputBytes = new ByteArrayOutputStream();
     ByteArrayOutputStream errorBytes = new ByteArrayOutputStream();
     int status;
@@ -32,7 +32,7 @@ public class HaraBytecodeToolTest {
     assertTrue(
         outputBytes
             .toString(StandardCharsets.UTF_8)
-            .matches("HBC5 conformance passed: [1-9][0-9]+ cases\\R"));
+            .matches("HBC0 conformance passed: [1-9][0-9]+ cases\\R"));
     assertEquals("", errorBytes.toString(StandardCharsets.UTF_8));
   }
 }

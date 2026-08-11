@@ -9,11 +9,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-/** Decoder for Rust's deterministic HBB2 indexed standard-library container. */
-public final class HbcBundleCodec {
-  private static final byte[] MAGIC = {'H', 'B', 'B', '2'};
+/** Decoder for Rust's deterministic HBX0 indexed standard-library container. */
+public final class HbxBundleCodec {
+  private static final byte[] MAGIC = {'H', 'B', 'X', '0'};
 
-  private HbcBundleCodec() {}
+  private HbxBundleCodec() {}
 
   public record Module(
       String resource,

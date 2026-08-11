@@ -72,16 +72,16 @@ for (const [wasmPath, hostPath] of payloads) {
     "(+ 1 (* 2 3))",
   );
   const trace = session.run(1_000);
-  if (trace?.schema !== "hal.bytecode-trace/v1") {
+  if (trace?.schema !== "hal.bytecode-trace/0-alpha") {
     throw new Error(`${wasmPath} did not emit a versioned live trace`);
   }
   if (session.resultDisplay() !== "7") {
     throw new Error(`${wasmPath} did not execute the packaged bytecode machine`);
   }
-  if (session.metrics()?.schema !== "hal.bytecode-metrics/v1") {
+  if (session.metrics()?.schema !== "hal.bytecode-metrics/0-alpha") {
     throw new Error(`${wasmPath} did not emit versioned metrics`);
   }
-  if (session.events()?.schema !== "hal.bytecode-events/v1") {
+  if (session.events()?.schema !== "hal.bytecode-events/0-alpha") {
     throw new Error(`${wasmPath} did not emit versioned events`);
   }
   if (session.dispose() !== true || runtime.dispose() !== true) {

@@ -2,7 +2,7 @@ use hara_wasm::{kernel::Form, Runtime};
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::PathBuf, process};
 
-const MAGIC: &[u8; 4] = b"HCC1";
+const MAGIC: &[u8; 4] = b"HCC0";
 
 fn main() {
     if let Err(error) = run() {

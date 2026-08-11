@@ -9,7 +9,7 @@ resources.
 
 The first slice provides:
 
-- `workspace.component/1` component descriptors;
+- `workspace.component/0-alpha` component descriptors;
 - area and component lookup;
 - deterministic initial selection;
 - headless area-selection transitions;

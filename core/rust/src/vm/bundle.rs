@@ -4,16 +4,16 @@ use sha2::{Digest, Sha256};
 
 use crate::{core, kernel, Runtime, EAGER_HAL_RESOURCES, EMBEDDED_HAL_RESOURCES};
 
-const MAGIC: &[u8; 4] = b"HBB2";
+const MAGIC: &[u8; 4] = b"HBX0";
 
 pub struct ModuleSource<'a> {
     pub resource: &'a str,
     pub source: &'a str,
 }
 
-/// One validated module in the shared HBB2 container format.
+/// One validated module in the shared HBX0 container format.
 ///
-/// Products such as Hoplite use this descriptor to package application HBC5
+/// Products such as Hoplite use this descriptor to package application HBC0
 /// artifacts without maintaining a second, subtly different bundle codec.
 #[derive(Clone)]
 pub struct BytecodeBundleModule {
@@ -147,7 +147,7 @@ pub fn eval_bytecode_bundle(runtime: &mut Runtime, bytes: &[u8]) -> Result<(), S
     Ok(())
 }
 
-/// Transactionally load a fully eager HBB2 application bundle into an
+/// Transactionally load a fully eager HBX0 application bundle into an
 /// embedding host's existing namespace and protocol registries.
 ///
 /// The ordinary [`eval_bytecode_bundle`] API additionally indexes lazy
@@ -234,7 +234,7 @@ pub fn eval_eager_bytecode_bundle_with_registries(
     Ok(())
 }
 
-/// Encode modules into the deterministic, checksummed HBB2 container shared by
+/// Encode modules into the deterministic, checksummed HBX0 container shared by
 /// the Rust, Truffle/native-image, and embedding runtimes.
 pub fn encode_bytecode_bundle(modules: &[BytecodeBundleModule]) -> Result<Vec<u8>, String> {
     let mut payload = Vec::new();
@@ -260,11 +260,11 @@ pub fn encode_bytecode_bundle(modules: &[BytecodeBundleModule]) -> Result<Vec<u8
 
 fn decode(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
     if bytes.len() < 36 || &bytes[..4] != MAGIC {
-        return Err("invalid HBB2 bytecode bundle header".into());
+        return Err("invalid HBX0 bytecode bundle header".into());
     }
     let payload = &bytes[36..];
     if Sha256::digest(payload).as_slice() != &bytes[4..36] {
-        return Err("HBB2 bytecode bundle checksum mismatch".into());
+        return Err("HBX0 bytecode bundle checksum mismatch".into());
     }
     let mut input = payload;
     let count = take_u32(&mut input)? as usize;
@@ -280,7 +280,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
         let eager = match take(&mut input, 1)?[0] {
             0 => false,
             1 => true,
-            _ => return Err("HBB2 bytecode bundle contains invalid eager flag".into()),
+            _ => return Err("HBX0 bytecode bundle contains invalid eager flag".into()),
         };
         let artifact = take_bytes(&mut input)?.to_vec();
         modules.push(BytecodeBundleModule {
@@ -293,7 +293,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
         });
     }
     if !input.is_empty() {
-        return Err("trailing bytes in HBB2 bytecode bundle".into());
+        return Err("trailing bytes in HBX0 bytecode bundle".into());
     }
     Ok(modules)
 }
@@ -378,7 +378,7 @@ fn take_string(input: &mut &[u8]) -> Result<String, String> {
 
 fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8], String> {
     if input.len() < len {
-        return Err("truncated HBB2 bytecode bundle".into());
+        return Err("truncated HBX0 bytecode bundle".into());
     }
     let (value, rest) = input.split_at(len);
     *input = rest;

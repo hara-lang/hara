@@ -4,7 +4,7 @@ use crate::vm::{decode_program, encode_program, FunctionId, Program};
 
 use super::codegen::compile_program;
 
-const MAGIC: &[u8; 4] = b"HNW1";
+const MAGIC: &[u8; 4] = b"HNW0";
 pub const HNW_ABI_VERSION: u16 = 2;
 
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ pub fn compile_artifact(program: &Program) -> Result<Vec<u8>, String> {
     put_u16(&mut payload, HNW_ABI_VERSION);
     put_u16(
         &mut payload,
-        u16::try_from(program.functions.len()).map_err(|_| "too many HNW1 functions")?,
+        u16::try_from(program.functions.len()).map_err(|_| "too many HNW0 functions")?,
     );
     for (id, function) in program.functions.iter().enumerate() {
         put_u16(&mut payload, id as u16);
@@ -34,7 +34,7 @@ pub fn compile_artifact(program: &Program) -> Result<Vec<u8>, String> {
     let mut output = MAGIC.to_vec();
     put_u32(
         &mut output,
-        u32::try_from(payload.len()).map_err(|_| "HNW1 artifact is too large")?,
+        u32::try_from(payload.len()).map_err(|_| "HNW0 artifact is too large")?,
     );
     output.extend_from_slice(&payload);
     output.extend_from_slice(&digest);
@@ -109,7 +109,7 @@ fn put_u32(out: &mut Vec<u8>, value: u32) {
 fn put_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), String> {
     put_u32(
         out,
-        u32::try_from(bytes.len()).map_err(|_| "HNW1 section is too large")?,
+        u32::try_from(bytes.len()).map_err(|_| "HNW0 section is too large")?,
     );
     out.extend_from_slice(bytes);
     Ok(())

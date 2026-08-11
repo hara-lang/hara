@@ -101,7 +101,7 @@ final class HaraIdentityTool {
   }
 
   static String canonicalEnrollment(String tap, String owner, String publicKey, String challenge) {
-    return "{:enrollment/format 1 :enrollment/tap "
+    return "{:enrollment/format \"0.0.0-alpha\" :enrollment/tap "
         + G.display(tap)
         + " :enrollment/provider :github :enrollment/owner "
         + G.display(owner)

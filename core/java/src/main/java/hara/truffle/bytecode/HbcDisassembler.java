@@ -3,12 +3,12 @@ package hara.truffle.bytecode;
 import hara.truffle.bytecode.HbcProgram.Function;
 import hara.truffle.bytecode.HbcProgram.Instruction;
 
-/** Stable, human-readable HBC3 disassembly for diagnostics and cross-runtime fixtures. */
+/** Stable, human-readable HBC0 disassembly for diagnostics and cross-runtime fixtures. */
 public final class HbcDisassembler {
   private HbcDisassembler() {}
 
   public static String disassemble(HbcProgram program) {
-    StringBuilder output = new StringBuilder("HBC3 entry=").append(program.entry()).append('\n');
+    StringBuilder output = new StringBuilder("HBC0 entry=").append(program.entry()).append('\n');
     for (int constant = 0; constant < program.constants().size(); constant++) {
       output
           .append("const ")

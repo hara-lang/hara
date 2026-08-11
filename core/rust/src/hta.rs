@@ -2,7 +2,7 @@ use crate::core::Value;
 #[cfg(test)]
 use crate::lang::data::{Tuple as PTuple, Vector as PVector};
 
-const MAGIC: &[u8; 4] = b"HTA1";
+const MAGIC: &[u8; 4] = b"HTA0";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_NESTING_DEPTH: usize = 256;
 const NIL: u8 = 0;
@@ -43,7 +43,7 @@ pub fn decode(bytes: &[u8]) -> Result<Value, String> {
         return Err("hta/value-too-large: frame exceeds 64 MiB".into());
     }
     if !bytes.starts_with(MAGIC) {
-        return Err("hta/value-malformed: invalid HTA1 header".into());
+        return Err("hta/value-malformed: invalid HTA0 header".into());
     }
     let mut reader = Reader {
         bytes,

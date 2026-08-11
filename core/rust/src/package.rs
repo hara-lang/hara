@@ -545,6 +545,34 @@ fn build_archive(project: &Project, output: &Path) -> Result<(), String> {
             .map_err(|error| format!("cannot read {}: {error}", source.display()))?;
         contents.push((archive.clone(), bytes));
     }
+    let hal_modules = contents
+        .iter()
+        .filter(|(path, _)| path.extension().and_then(|value| value.to_str()) == Some("hal"))
+        .map(|(path, bytes)| {
+            let source = std::str::from_utf8(bytes)
+                .map_err(|_| format!("HAL package resource is not UTF-8: {}", path.display()))?;
+            let namespace = hal_namespace(source)
+                .map_err(|error| {
+                    format!("cannot parse package resource {}: {error}", path.display())
+                })?
+                .ok_or_else(|| {
+                    format!("HAL package resource has no namespace: {}", path.display())
+                })?;
+            Ok((namespace, source.to_owned()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if !hal_modules.is_empty() {
+        let sources = hal_modules
+            .iter()
+            .map(|(namespace, source)| crate::vm::ModuleSource {
+                resource: namespace,
+                source,
+            })
+            .collect::<Vec<_>>();
+        let bundle = crate::vm::compile_bytecode_bundle(&sources)?;
+        contents.push((PathBuf::from("bytecode/package.hbx"), bundle));
+        contents.sort_by(|left, right| left.0.cmp(&right.0));
+    }
     let package_edn = package_manifest(project, &contents)?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
@@ -631,13 +659,24 @@ fn package_manifest(project: &Project, contents: &[(PathBuf, Vec<u8>)]) -> Resul
             .collect(),
     )
     .to_string();
+    let bytecode = contents
+        .iter()
+        .find(|(path, _)| path == Path::new("bytecode/package.hbx"))
+        .map(|(_, bytes)| {
+            format!(
+                "\n :bytecode {{:format \"0.0.0-alpha\" :path \"bytecode/package.hbx\" :sha256 \"sha256:{}\"}}",
+                hex(&Sha256::digest(bytes))
+            )
+        })
+        .unwrap_or_default();
     Ok(format!(
-        "{{:harp/format 1\n :package {{:identity {} :version {}}}\n :files {{\n{}}} :resources {{\n{}}} :extensions {}\n :integrity {{:tree-sha256 \"sha256:{}\"}}}}\n",
+        "{{:harp/format \"0.0.0-alpha\"\n :package {{:identity {} :version {}}}\n :files {{\n{}}} :resources {{\n{}}} :extensions {}{}\n :integrity {{:tree-sha256 \"sha256:{}\"}}}}\n",
         edn_string(&project.id),
         edn_string(&project.version.to_string()),
         files,
         resources,
         extensions,
+        bytecode,
         hex(&hasher.finalize())
     ))
 }

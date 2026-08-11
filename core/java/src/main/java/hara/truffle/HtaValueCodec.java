@@ -22,7 +22,7 @@ import java.util.Map;
 
 /** Canonical, dependency-free value encoding used by HTA v1. */
 public final class HtaValueCodec {
-  private static final byte[] MAGIC = {'H', 'T', 'A', '1'};
+  private static final byte[] MAGIC = {'H', 'T', 'A', '0'};
   private static final int MAX_FRAME_BYTES = 64 * 1024 * 1024;
   private static final int MAX_NESTING_DEPTH = 256;
   private static final int NIL = 0;
@@ -57,16 +57,16 @@ public final class HtaValueCodec {
     return decode(bytes, false);
   }
 
-  /** Decodes list and vector tags to their distinct Hara persistent values for HBC3 constants. */
+  /** Decodes list and vector tags to their distinct Hara persistent values for HBC0 constants. */
   public static Object decodeCanonical(byte[] bytes) {
     return decode(bytes, true);
   }
 
   private static Object decode(byte[] bytes, boolean canonicalCollections) {
     if (bytes.length > MAX_FRAME_BYTES) throw malformed("frame too large");
-    if (bytes.length < MAGIC.length) throw malformed("missing HTA1 header");
+    if (bytes.length < MAGIC.length) throw malformed("missing HTA0 header");
     for (int i = 0; i < MAGIC.length; i++) {
-      if (bytes[i] != MAGIC[i]) throw malformed("invalid HTA1 header");
+      if (bytes[i] != MAGIC[i]) throw malformed("invalid HTA0 header");
     }
     Reader reader = new Reader(bytes, MAGIC.length, canonicalCollections);
     Object value = reader.read(0);

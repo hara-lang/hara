@@ -1,4 +1,4 @@
-const MAGIC = new Uint8Array([0x48, 0x54, 0x41, 0x31]);
+const MAGIC = new Uint8Array([0x48, 0x54, 0x41, 0x30]);
 const TAG = { nil: 0, false: 1, true: 2, i64: 3, string: 4, bytes: 5, keyword: 6, symbol: 7, list: 8, vector: 9, set: 10, map: 11, handle: 12, namespace: 13, var: 14, f64: 15, atom: 16, array: 17, object: 18 };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -61,7 +61,7 @@ export function decodeHta(input) {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   if(bytes.length>HTA_MAX_FRAME_BYTES)throw new Error("hta/value-too-large: frame exceeds 64 MiB");
   if (bytes.length < 4 || !MAGIC.every((byte, index) => bytes[index] === byte)) {
-    throw new Error("hta/value-malformed: invalid HTA1 header");
+    throw new Error("hta/value-malformed: invalid HTA0 header");
   }
   const reader = new Reader(bytes, 4);
   const value = reader.value(0);

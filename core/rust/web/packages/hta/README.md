@@ -1,6 +1,6 @@
 # @hara-lang/hta
 
-Portable HTA1 codecs, manifests, browser host contexts, and provider
+Portable HTA0 codecs, manifests, browser host contexts, and provider
 transports.
 
 ```js

@@ -29,24 +29,17 @@ import org.graalvm.polyglot.io.ByteSequence;
 import org.junit.Test;
 
 public class HbcCodecTest {
-  private static final String RUST_TYPED_HBC4 =
+  private static final String LEGACY_NUMBERED_HBC =
       "48424334000001c50000010000000464656d6f000000030000000d48544131030000000000000001000000104854413104000000076164642d6f6e650000000d4854413103000000000000002900000001000000010a000000086172676c697374730c000000010c000000010b0000000178000000010000000d64656d6f2f437573746f6d65720500000001000000033a69640000000003696e74000000010000000c64656d6f2f6164642d6f6e650600000001000000010000000003696e74000000000003696e74000000010000000d64656d6f2f696e666572726564060000000100000000000000000003696e74000000020000000000000000000002000000090a0001001000000001010000061200000001060f0000000100000000020b0118000000090100000004000000010000000501000000040000000100000005010000000400000001000000050100000004000000010000000501000000040000000100000005010000001f000000010000002001000000280000000100000029010000001f0000000100000020000000000001000000076164642d6f6e6500000100000000010001000000021900000000000000180000000201000000160000000100000017000000000048e8738a0750e3d46e11844b412d363e80c58f2099e6b4ae1582fd6f87061cbf";
 
   @Test
-  public void decodesAndCanonicallyReencodesRustTypedHbc4() {
-    byte[] artifact = HexFormat.of().parseHex(RUST_TYPED_HBC4);
-    HbcProgram decoded = HbcCodec.decode(artifact);
-    assertEquals("demo", decoded.namespace());
-    assertTrue(decoded.schemaTypes().containsKey("demo/Customer"));
-    assertTrue(decoded.functionTypes().containsKey("demo/add-one"));
-    assertTrue(decoded.inferredFunctionTypes().containsKey("demo/inferred"));
-    byte[] reencoded = HbcCodec.encode(decoded);
-    assertArrayEquals(new byte[] {'H', 'B', 'C', '5'}, Arrays.copyOf(reencoded, 4));
-    assertEquals(decoded, HbcCodec.decode(reencoded));
+  public void rejectsNumberedRustTypedHbcArtifacts() {
+    byte[] artifact = HexFormat.of().parseHex(LEGACY_NUMBERED_HBC);
+    assertThrows(HbcFormatException.class, () -> HbcCodec.decode(artifact));
   }
 
   @Test
-  public void hbc4TypedProgramsRoundTripCanonically() {
+  public void alphaTypedProgramsRoundTripCanonically() {
     HbcProgram base = arithmeticProgram();
     HbcProgram program =
         new HbcProgram(
@@ -79,7 +72,7 @@ public class HbcCodecTest {
             base.functions(),
             base.entry());
     byte[] first = HbcCodec.encode(program);
-    assertArrayEquals(new byte[] {'H', 'B', 'C', '5'}, Arrays.copyOf(first, 4));
+    assertArrayEquals(new byte[] {'H', 'B', 'C', '0'}, Arrays.copyOf(first, 4));
     HbcProgram decoded = HbcCodec.decode(first);
     assertEquals(program, decoded);
     assertArrayEquals(first, HbcCodec.encode(decoded));
@@ -217,17 +210,17 @@ public class HbcCodecTest {
 
   @Test
   public void decodesEveryArtifactInTheTrackedRustFoundationBundle() throws Exception {
-    byte[] bundle = Files.readAllBytes(Path.of("rust/assets/std.foundation.hbb"));
-    assertArrayEquals(new byte[] {'H', 'B', 'B', '2'}, Arrays.copyOf(bundle, 4));
+    byte[] bundle = Files.readAllBytes(Path.of("rust/assets/std.foundation.hbx"));
+    assertArrayEquals(new byte[] {'H', 'B', 'X', '0'}, Arrays.copyOf(bundle, 4));
     byte[] payload = Arrays.copyOfRange(bundle, 36, bundle.length);
     assertArrayEquals(Arrays.copyOfRange(bundle, 4, 36), MessageDigest.getInstance("SHA-256").digest(payload));
-    List<HbcBundleCodec.Module> modules = HbcBundleCodec.decode(bundle);
+    List<HbxBundleCodec.Module> modules = HbxBundleCodec.decode(bundle);
     assertTrue(modules.size() >= 250);
-    for (HbcBundleCodec.Module module : modules) {
+    for (HbxBundleCodec.Module module : modules) {
       assertEquals(32, module.sourceDigest().length);
       HbcProgram decoded = HbcCodec.decode(module.artifact());
       assertTrue(decoded.functions().size() > 0);
-      assertTrue(HbcDisassembler.disassemble(decoded).startsWith("HBC3 entry="));
+      assertTrue(HbcDisassembler.disassemble(decoded).startsWith("HBC0 entry="));
     }
   }
 

@@ -140,7 +140,7 @@ test("previewDocument retains structured traces until disposal", async () => {
   const { spawn, spawned } = mockSpawn();
   const kw = (name) => new HtaKeyword(name);
   const trace = (id, source) => new Map([
-    [kw("schema"), "hara.trace/v1"],
+    [kw("schema"), "hara.trace/0-alpha"],
     [kw("trace-id"), id],
     [kw("status"), kw(source === "(broken)" ? "error" : "ok")],
     [kw("result"), new Map([[kw("type"), "number"], [kw("display"), "42"]])],
@@ -499,7 +499,7 @@ test("real wasm kernel evals hara source through the broker", { skip: wasmBytes 
     "(defn observed [x] (+ x 1)) (observed 41)"
   );
   const field = (map, name) => [...map].find(([key]) => key?.name === name)?.[1];
-  assert.equal(field(structured, "schema"), "hara.trace/v1");
+  assert.equal(field(structured, "schema"), "hara.trace/0-alpha");
   assert.equal(field(field(structured, "result"), "display"), "42");
   assert.ok(field(structured, "events").some(
     (event) => field(event, "kind")?.name === "operation-enter"

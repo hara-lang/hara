@@ -21,7 +21,7 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Iterator;
 
-/** Executes a validated portable HBC5 program using the ordinary Hara runtime boundaries. */
+/** Executes a validated portable HBC0 program using the ordinary Hara runtime boundaries. */
 public final class HbcMachine {
   private HbcMachine() {}
 
@@ -172,7 +172,7 @@ public final class HbcMachine {
           Symbol symbol = Symbol.create(stringConstant(program, instruction.first()));
           IMetadata metadata = metadata(program, instruction.second());
           if (metadata != null) symbol = symbol.withMeta(metadata);
-          // HBC5 follows HAL `def`: the expression returns the newly interned
+          // HBC0 follows HAL `def`: the expression returns the newly interned
           // Var, not its root value.  Rust's VM uses the same contract and the
           // portable conformance corpus observes its printed `#'ns/name` form.
           stack.add(context.define(symbol, value));
@@ -485,25 +485,25 @@ public final class HbcMachine {
 
   private static String stringConstant(HbcProgram program, long operand) {
     Object value = program.constants().get(index(operand));
-    if (!(value instanceof String string)) throw new HaraException("HBC3 name constant is not a string");
+    if (!(value instanceof String string)) throw new HaraException("HBC0 name constant is not a string");
     return string;
   }
 
   private static Object[] popArguments(ArrayList<Object> stack, int count) {
     int start = stack.size() - count;
-    if (start < 0) throw new HaraException("HBC3 stack underflow");
+    if (start < 0) throw new HaraException("HBC0 stack underflow");
     Object[] values = new Object[count];
     for (int i = 0; i < count; i++) values[i] = stack.remove(start);
     return values;
   }
 
   private static Object pop(ArrayList<Object> stack) {
-    if (stack.isEmpty()) throw new HaraException("HBC3 stack underflow");
+    if (stack.isEmpty()) throw new HaraException("HBC0 stack underflow");
     return stack.remove(stack.size() - 1);
   }
 
   private static Object peek(ArrayList<Object> stack) {
-    if (stack.isEmpty()) throw new HaraException("HBC3 stack underflow");
+    if (stack.isEmpty()) throw new HaraException("HBC0 stack underflow");
     return stack.get(stack.size() - 1);
   }
 

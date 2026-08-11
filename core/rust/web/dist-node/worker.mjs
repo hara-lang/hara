@@ -1724,7 +1724,7 @@ function Le(e) {
 }
 function Re(e) {
 	let t = e instanceof Uint8Array ? e : new Uint8Array(e);
-	if (t.length < 4 || !Pe.every((e, n) => t[n] === e)) throw Error("hta/value-malformed: invalid HTA1 header");
+	if (t.length < 4 || !Pe.every((e, n) => t[n] === e)) throw Error("hta/value-malformed: invalid HTA0 header");
 	let n = new We(t, 4), r = n.value();
 	if (n.cursor !== t.length) throw Error("hta/value-malformed: trailing bytes");
 	return r;
@@ -1892,7 +1892,7 @@ function Xe(e) {
 	};
 }
 function Ze(e) {
-	if (!e || e.format !== "hara.noir.proof/v1") throw TypeError("noir/proof-format: expected hara.noir.proof/v1");
+	if (!e || e.format !== "hara.noir.proof/0-alpha") throw TypeError("noir/proof-format: expected hara.noir.proof/0-alpha");
 	return {
 		format: e.format,
 		programKey: e.programKey,
