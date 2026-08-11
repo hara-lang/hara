@@ -787,7 +787,11 @@ impl Compiler {
                         self.compile_dynamic_binding(&children, span, false)
                     }
                     Form::Symbol(name) if name == "throw" => self.compile_throw(&children, span),
-                    Form::Symbol(name) if UNSUPPORTED_OPERATORS.contains(&name.as_str()) => {
+                    Form::Symbol(name)
+                        if UNSUPPORTED_OPERATORS.contains(&name.as_str())
+                            && self.ctx().scopes.resolve(name).is_none()
+                            && !self.visible_global(name) =>
+                    {
                         Err(self.unsupported(form, span))
                     }
                     Form::Symbol(name)
@@ -1506,6 +1510,23 @@ mod tests {
         assert!(crate::core::is_bytecode_callable("disj"));
         compile_source("(fn [] disj)").expect("structural callable compiles");
         compile_source("(fn [] (disj #{} 1))").expect("structural callable invocation compiles");
+    }
+
+    #[test]
+    fn a_declared_global_wins_over_a_reserved_operator_name() {
+        let mut runtime = Runtime::core();
+        runtime.prepare_foundation_bytecode();
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(defn await
+                       ([value] (await value 2))
+                       ([value extra] (+ value extra)))
+                     (await 40)"
+                )
+                .unwrap(),
+            "42"
+        );
     }
 
     #[test]

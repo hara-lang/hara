@@ -1240,6 +1240,13 @@ pub(crate) fn eval_bytecode_form(value: &Value) -> Result<Value, String> {
     let form = value_to_form(value)?;
     let mut env = HashMap::new();
     if let Ok(registry) = namespace_registry() {
+        env.extend(
+            registry
+                .current()
+                .mappings()
+                .into_iter()
+                .map(|(name, var)| (name.as_str().to_owned(), Value::Var(var))),
+        );
         refresh_namespace_environment(&registry, &mut env);
     }
     eval(&form, &mut env)

@@ -433,15 +433,21 @@ impl Compiler {
             Form::Symbol(name) => {
                 if bound.iter().any(|b| b == name)
                     || free.iter().any(|(f, _)| f == name)
-                    || self.visible_global(name)
-                    || Primitive::from_symbol(name).is_some()
-                    || crate::core::is_bytecode_callable(name)
                 {
-                    // Bound locally, already collected, or a global:
-                    // globals compile to GetGlobal (late binding through
-                    // the shared var cell, issue #223), never captures.
-                } else {
+                    // Bound in this function or already collected.
+                } else if self.ctx().scopes.resolve(name).is_some()
+                    || (!self.visible_global(name)
+                        && Primitive::from_symbol(name).is_none()
+                        && !crate::core::is_bytecode_callable(name))
+                {
+                    // An enclosing lexical binding always wins over a Var or
+                    // builtin with the same name. Everything else that is not
+                    // globally resolvable is a prospective capture; closure
+                    // emission reports it if no enclosing slot exists.
                     free.push((name.clone(), Some(child.span.start)));
+                } else {
+                    // Globals compile to GetGlobal (late binding through the
+                    // shared Var cell, issue #223), never captures.
                 }
             }
             Form::List(elements) if !elements.is_empty() => {
@@ -633,8 +639,9 @@ impl Compiler {
                             // reference unless it is a visible global.
                             if !bound.iter().any(|b| b == head)
                                 && !free.iter().any(|(f, _)| f == head)
-                                && !self.visible_global(head)
-                                && !crate::core::is_bytecode_callable(head)
+                                && (self.ctx().scopes.resolve(head).is_some()
+                                    || (!self.visible_global(head)
+                                        && !crate::core::is_bytecode_callable(head)))
                             {
                                 free.push((head.clone(), Some(children[0].span.start)));
                             }
