@@ -39,13 +39,107 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 type Result<T> = std::result::Result<T, ParseError>;
+
+fn anonymous_arguments(
+    form: &Form,
+    maximum: &mut usize,
+    variadic: &mut bool,
+) -> Result<()> {
+    match form {
+        Form::Symbol(name) if name == "%" => *maximum = (*maximum).max(1),
+        Form::Symbol(name) if name == "%&" => *variadic = true,
+        Form::Symbol(name) if name.starts_with('%') => {
+            let index = name[1..].parse::<usize>().map_err(|_| ParseError {
+                message: format!("Invalid anonymous function argument: {name}"),
+                position: Position::default(),
+            })?;
+            if index == 0 {
+                return Err(ParseError {
+                    message: "Anonymous function arguments begin at %1".into(),
+                    position: Position::default(),
+                });
+            }
+            *maximum = (*maximum).max(index);
+        }
+        Form::List(values) | Form::Vector(values) | Form::Set(values) => {
+            for value in values {
+                anonymous_arguments(value, maximum, variadic)?;
+            }
+        }
+        Form::Map(entries) => {
+            for (key, value) in entries {
+                anonymous_arguments(key, maximum, variadic)?;
+                anonymous_arguments(value, maximum, variadic)?;
+            }
+        }
+        Form::Metadata(metadata, value) => {
+            anonymous_arguments(metadata, maximum, variadic)?;
+            anonymous_arguments(value, maximum, variadic)?;
+        }
+        Form::Tagged(_, value) => anonymous_arguments(value, maximum, variadic)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+fn rewrite_anonymous_arguments(form: Form, id: u64) -> Form {
+    match form {
+        Form::Symbol(name) if name == "%" || name == "%1" => {
+            Form::Symbol(format!("__reader_fn_{id}_1"))
+        }
+        Form::Symbol(name) if name == "%&" => Form::Symbol(format!("__reader_fn_{id}_rest")),
+        Form::Symbol(name) if name.starts_with('%') => {
+            Form::Symbol(format!("__reader_fn_{id}_{}", &name[1..]))
+        }
+        Form::List(values) => Form::List(
+            values
+                .into_iter()
+                .map(|value| rewrite_anonymous_arguments(value, id))
+                .collect(),
+        ),
+        Form::Vector(values) => Form::Vector(
+            values
+                .into_iter()
+                .map(|value| rewrite_anonymous_arguments(value, id))
+                .collect(),
+        ),
+        Form::Set(values) => Form::Set(
+            values
+                .into_iter()
+                .map(|value| rewrite_anonymous_arguments(value, id))
+                .collect(),
+        ),
+        Form::Map(entries) => Form::Map(
+            entries
+                .into_iter()
+                .map(|(key, value)| {
+                    (
+                        rewrite_anonymous_arguments(key, id),
+                        rewrite_anonymous_arguments(value, id),
+                    )
+                })
+                .collect(),
+        ),
+        Form::Metadata(metadata, value) => Form::Metadata(
+            Box::new(rewrite_anonymous_arguments(*metadata, id)),
+            Box::new(rewrite_anonymous_arguments(*value, id)),
+        ),
+        Form::Tagged(tag, value) => {
+            Form::Tagged(tag, Box::new(rewrite_anonymous_arguments(*value, id)))
+        }
+        value => value,
+    }
+}
+
 pub struct Parser<'a> {
     reader: Reader<'a>,
+    anonymous_function_id: u64,
 }
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Self {
         Self {
             reader: Reader::new(source),
+            anonymous_function_id: 0,
         }
     }
     fn error<T>(&self, message: impl Into<String>) -> Result<T> {
@@ -226,6 +320,42 @@ impl<'a> Parser<'a> {
         let form = Form::List(vec![Form::Symbol(name.into()), value.form.clone()]);
         Ok((form, vec![value]))
     }
+
+    fn anonymous_function(&mut self) -> Result<(Form, Vec<SpannedForm>)> {
+        let body = Form::List(
+            self.delimited(')', "anonymous function")?
+                .into_iter()
+                .map(|form| form.form)
+                .collect(),
+        );
+        let mut maximum = 0usize;
+        let mut variadic = false;
+        anonymous_arguments(&body, &mut maximum, &mut variadic)?;
+        let id = self.anonymous_function_id;
+        self.anonymous_function_id = self.anonymous_function_id.wrapping_add(1);
+        let parameters = (1..=maximum)
+            .map(|index| Form::Symbol(format!("__reader_fn_{id}_{index}")))
+            .chain(
+                variadic
+                    .then(|| {
+                        [
+                            Form::Symbol("&".into()),
+                            Form::Symbol(format!("__reader_fn_{id}_rest")),
+                        ]
+                    })
+                    .into_iter()
+                    .flatten(),
+            )
+            .collect();
+        Ok((
+            Form::List(vec![
+                Form::Symbol("fn".into()),
+                Form::Vector(parameters),
+                rewrite_anonymous_arguments(body, id),
+            ]),
+            Vec::new(),
+        ))
+    }
     fn read_required(&mut self, context: &str) -> Result<SpannedForm> {
         self.whitespace();
         self.read_one()?.ok_or_else(|| ParseError {
@@ -235,7 +365,8 @@ impl<'a> Parser<'a> {
     }
     fn dispatch(&mut self) -> Result<Option<(Form, Vec<SpannedForm>)>> {
         match self.reader.read_char() {
-            Some(ch @ ('(' | ':' | '=' | '?' | '|')) => {
+            Some('(') => self.anonymous_function(),
+            Some(ch @ (':' | '=' | '?' | '|')) => {
                 self.error(format!("No dispatch macro for: {ch}"))
             }
             Some('{') => {
