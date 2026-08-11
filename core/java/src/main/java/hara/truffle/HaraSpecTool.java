@@ -14,11 +14,11 @@ import org.graalvm.polyglot.Value;
 /** Portable HAL-backed specification commands for the Truffle CLI. */
 final class HaraSpecTool {
   private static final String TEMPLATE =
-      "{:document/id :example/metaspec :document/type :hara/metaspec "
+      "{:document/id :example/metaspec :document/type :tool/metaspec "
           + ":document/version \"0.1.0\" :document/status :draft "
           + ":document/title \"Example Meta-Specification\" "
           + ":document/summary \"Describe the generated artifact contract.\" "
-          + ":spec/conforms-to {:spec/id :hara/metaspec-metaspec :spec/version \"0.1.0\"} "
+          + ":spec/conforms-to {:spec/id :tool/metaspec-metaspec :spec/version \"0.1.0\"} "
           + ":spec/artifact-kind :example/artifact "
           + ":meta/document-schema {:schema/id :example/document :schema/type :map} "
           + ":meta/schemas [] :meta/cross-references [] :meta/requirements [] "
@@ -65,8 +65,8 @@ final class HaraSpecTool {
       try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
         context.eval(
             HaraLanguage.ID,
-            "(ns hara.cli.spec-runner "
-                + "(:require [hara.metaspec.core :as metaspec]))");
+            "(ns tool.cli.spec-runner "
+                + "(:require [tool.metaspec.core :as metaspec]))");
         Value value =
             context.eval(
                 HaraLanguage.ID,

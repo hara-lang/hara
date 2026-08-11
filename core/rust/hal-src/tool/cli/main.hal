@@ -1,0 +1,37 @@
+(ns tool.cli.main
+  (:require [tool.cli.dispatch :as dispatch]
+            [tool.cli.model :as model]
+            [tool.cli.options :as options]
+            [tool.cli.route :as route]
+            [tool.cli.verify :as verify]))
+
+(defn run
+  "Pure authoritative CLI entry point. Host launchers supply the embedded
+   manifest, raw argv, runtime context, and closed handler registry."
+  [manifest argv context handlers]
+  (let [findings (verify/verify manifest)]
+    (if (not (empty? findings))
+      (model/failure
+       :tool.cli.outcome/internal-error
+       :tool.cli/invalid-manifest
+       "embedded CLI manifest is invalid"
+       {:error/findings findings})
+      (let [parsed (options/parse argv)
+            action (:action parsed)]
+        (cond
+          (= action :help)
+          (model/success (route/help-model manifest)
+                         [(model/message (route/help-text manifest))])
+
+          (= action :version)
+          (model/success {:cli/version (:document/version manifest)}
+                         [(model/message
+                           (str "hara " (:document/version manifest) "\n"))])
+
+          :else
+          (dispatch/invoke
+           handlers
+           (dispatch/request-for manifest
+                                 (:arguments parsed)
+                                 (:options parsed)
+                                 context)))))))

@@ -9,6 +9,29 @@
     nil
     (string/char-at source index)))
 
+(defn source-position
+  [source offset]
+  (let [prefix (string/slice source 0 offset)
+        normalized (string/replace (string/replace prefix "\r\n" "\n")
+                                   "\r" "\n")
+        lines (string/split normalized "\n")]
+    {:offset offset
+     :row (count lines)
+     :col (inc (string/length (last lines)))}))
+
+(defn with-range
+  [block source start end]
+  (let [start-position (source-position source start)
+        end-position (source-position source end)]
+    (assoc block :props
+           (merge (field block :props)
+                  {:start-offset start
+                   :end-offset end
+                   :row (:row start-position)
+                   :col (:col start-position)
+                   :end-row (:row end-position)
+                   :end-col (:col end-position)}))))
+
 (defn whitespace?
   [character]
   (or (= character " ")
@@ -51,31 +74,34 @@
 
 (defn scan-token-end
   [source index]
-  (if (boundary? (source-char source index))
-    index
-    (scan-token-end source (inc index))))
+  (loop [current index]
+    (if (boundary? (source-char source current))
+      current
+      (recur (inc current)))))
 
 (defn scan-comment-end
   [source index]
-  (let [character (source-char source index)]
-    (if (or (nil? character)
-            (= character "\n")
-            (= character "\r"))
-      index
-      (scan-comment-end source (inc index)))))
+  (loop [current index]
+    (let [character (source-char source current)]
+      (if (or (nil? character)
+              (= character "\n")
+              (= character "\r"))
+        current
+        (recur (inc current))))))
 
 (defn scan-string-end
   [source index escaped]
-  (let [character (source-char source index)]
-    (if (nil? character)
-      (throw "EOF while reading string")
-      (if escaped
-        (scan-string-end source (inc index) false)
-        (if (= character "\\")
-          (scan-string-end source (inc index) true)
-          (if (= character "\"")
-            (inc index)
-            (scan-string-end source (inc index) false)))))))
+  (loop [current index escaping escaped]
+    (let [character (source-char source current)]
+      (if (nil? character)
+        (throw "EOF while reading string")
+        (if escaping
+          (recur (inc current) false)
+          (if (= character "\\")
+            (recur (inc current) true)
+            (if (= character "\"")
+              (inc current)
+              (recur (inc current) false))))))))
 
 (defn token-block
   [text]
@@ -87,17 +113,17 @@
 
 (defn parse-children
   [source index expected children parser]
-  (let [character (source-char source index)]
-    (if (nil? character)
-      (throw (str "EOF while reading collection, expected " expected))
-      (if (= character expected)
-        [children index]
-        (if (closing-delimiter? character)
-          (throw (str "Mismatched delimiter: expected "
-                      expected " but found " character))
-          (let [[child next-index] (parser source index)]
-            (parse-children source next-index expected
-                            (conj children child) parser)))))))
+  (loop [current index output children]
+    (let [character (source-char source current)]
+      (if (nil? character)
+        (throw (str "EOF while reading collection, expected " expected))
+        (if (= character expected)
+          [output current]
+          (if (closing-delimiter? character)
+            (throw (str "Mismatched delimiter: expected "
+                        expected " but found " character))
+            (let [[child next-index] (parser source current)]
+              (recur next-index (conj output child)))))))))
 
 (defn parse-container
   [source index tag expected parser]
@@ -137,7 +163,9 @@
                     (throw "Reader conditional requires a list")))
                 (throw (str "Unsupported hash dispatch: " next))))))))))
 
-(defn parse-at
+(declare parse-at)
+
+(defn parse-at-raw
   [source index]
   (let [character (source-char source index)]
     (if (nil? character)
@@ -191,16 +219,82 @@
                                                 text (string/slice source index end)]
                                             [(token-block text) end]))))))))))))))))))))))
 
+(defn parse-at
+  [source index]
+  (let [[block end] (parse-at-raw source index)]
+    [(with-range block source index end) end]))
+
 (defn parse-root-children
   [source index children]
-  (if (= index (string/length source))
-    children
-    (let [[child next-index] (parse-at source index)]
-      (parse-root-children source next-index (conj children child)))))
+  (loop [current index output children]
+    (if (= current (string/length source))
+      output
+      (let [[child next-index] (parse-at source current)]
+        (recur next-index (conj output child))))))
 
 (defn parse-root
   [source]
-  (construct/root (parse-root-children source 0 []) source))
+  (with-range
+   (construct/root (parse-root-children source 0 []) source)
+   source 0 (string/length source)))
+
+(defn recovery-end
+  [source start]
+  (let [first-character (source-char source start)]
+    (if (closing-delimiter? first-character)
+      (inc start)
+      (loop [index (inc start)]
+        (let [character (source-char source index)]
+          (if (or (nil? character) (= character "\n") (= character "\r"))
+            index
+            (recur (inc index))))))))
+
+(defn parse-root-recovering
+  [source]
+  (loop [index 0 children [] diagnostics []]
+    (if (= index (string/length source))
+      {:block (with-range (construct/root children source)
+                          source 0 (string/length source))
+       :diagnostics diagnostics}
+      (try
+        (let [[child next-index] (parse-at source index)]
+          (recur next-index (conj children child) diagnostics))
+        (catch Throwable error
+          (let [end (recovery-end source index)
+                message (or (ex-message error) (str error))
+                block (with-range
+                       (construct/error (string/slice source index end) message)
+                       source index end)
+                finding {:type :tool.lint/reader-error
+                         :level :error
+                         :message message
+                         :row (:row (field block :props))
+                         :col (:col (field block :props))
+                         :end-row (:end-row (field block :props))
+                         :end-col (:end-col (field block :props))
+                         :start-offset index
+                         :end-offset end}]
+            (recur end
+                   (conj children block)
+                   (conj diagnostics finding))))))))
+
+(defn attach-file
+  [block file]
+  (let [children (field block :children)]
+    (assoc (assoc block :children
+                  (vec (map (fn [child] (attach-file child file)) children)))
+           :props
+           (assoc (field block :props) :file file))))
+
+(defn parse-source
+  ([source] (parse-source source {}))
+  ([source options]
+   (let [result (parse-root-recovering source)
+         file (or (:file options) "<memory>")]
+     {:block (attach-file (:block result) file)
+      :diagnostics
+      (vec (map (fn [finding] (assoc finding :file file))
+                (:diagnostics result)))})))
 
 (defn parse-string
   [source]

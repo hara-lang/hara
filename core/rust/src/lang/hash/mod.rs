@@ -175,15 +175,20 @@ pub fn hash_bytes(bytes: &[u8]) -> i32 {
 /// Double/BigInteger/BigDecimal paths which go through `canonicalDecimal`),
 /// so in Java `hashValue(100L) = 3100` while `hashValue(100.0) = 29`.
 pub fn hash_long(n: i64) -> i32 {
+    if n == 0 {
+        return 0;
+    }
     let mag = n.unsigned_abs();
-    let words: Vec<u32> = if mag == 0 {
-        Vec::new()
-    } else if mag >> 32 == 0 {
-        vec![mag as u32]
-    } else {
-        vec![(mag >> 32) as u32, mag as u32]
-    };
-    bigdecimal_hash(&words, n.signum() as i32, 0)
+    if mag < (1u64 << 63) {
+        let temp = ((mag >> 32) as i32)
+            .wrapping_mul(31)
+            .wrapping_add(mag as u32 as i32);
+        return 31i32.wrapping_mul(if n < 0 { temp.wrapping_neg() } else { temp });
+    }
+    // Long.MIN_VALUE is BigDecimal's INFLATED sentinel. Mirror the two-word
+    // BigInteger hash directly without allocating its temporary word vector.
+    let magnitude_hash = (mag >> 32) as u32 as i32;
+    31i32.wrapping_mul(magnitude_hash.wrapping_mul(-31))
 }
 
 /// `G.hashValue(Double)`:

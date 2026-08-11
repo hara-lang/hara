@@ -618,9 +618,20 @@ impl Compiler {
             // is structural across concrete sequential/map/set types.  Do
             // not intern collection literals in the Value-keyed constant
             // pool: `[]` may otherwise alias an earlier `()`, and the HTA
-            // constant codec canonicalizes ordered maps and sets.  Building
-            // them in bytecode preserves their concrete type and order.
+            // constant codec canonicalizes ordered maps and sets. Literal
+            // vectors use a non-interned constant; dynamic collections are
+            // built in bytecode so concrete type and order remain intact.
             Form::Vector(values) => {
+                if values.iter().all(literal_collection_form) {
+                    let value = crate::core::form_to_value(form).map_err(|message| {
+                        CompileError::new(
+                            CompileErrorKind::UnsupportedForm,
+                            message,
+                            Some(span.start),
+                        )
+                    })?;
+                    return self.unique_constant(value, span);
+                }
                 self.compile_collection_values(values.iter(), span)?;
                 self.emit(
                     Instruction::BuildVector(self.collection_count(values.len(), span)?),

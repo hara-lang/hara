@@ -1,5 +1,7 @@
 (ns lang.model.v1.spec-js
   (:require [lang.base.v1.grammar-spec :as spec]
+            [lang.common.emit-common :as common]
+            [lang.common.emit-data :as data]
             [lang.common.grammar-api :as grammar]
             [lang.common.registry :as registry]
             [lang.model.v1.spec-xtalk :as xtalk]))
@@ -7,6 +9,39 @@
 (def +language+ :js)
 (def +tag+ :js)
 (def +version+ spec/+version+)
+
+(defn js-set
+  "Emits JavaScript object destructuring and object-set forms."
+  [values grammar mopts]
+  (let [layout (reduce (fn [found value]
+                         (or found (if (vector? value) value nil)))
+                       nil values)]
+    (if layout
+      (common/*emit-fn* (apply list 'tab layout) grammar mopts)
+      (let [ordered (sort-by (fn [value]
+                             (if (map? value)
+                               [1 (pr-str value)]
+                               [0 (pr-str value)]))
+                           values)
+          emitted (map (fn [value]
+                         (cond (map? value)
+                               (str/join ","
+                                         (map (fn [entry]
+                                                (data/emit-map-entry
+                                                 entry grammar mopts))
+                                              value))
+
+                               (or (symbol? value)
+                                   (string? value)
+                                   (and (list? value)
+                                        (= :.. (first value))))
+                               (common/*emit-fn* value grammar mopts)
+
+                               :else
+                               (throw (ex-info "Not allowed in JavaScript set form"
+                                               {:entry value}))))
+                         ordered)]
+        (str "{" (str/join "," emitted) "}")))))
 
 (defn js-math-quot
   [form]
@@ -636,7 +671,8 @@
       :instof {:op :instof :symbol #{'instanceof} :raw "instanceof" :emit :infix}}}
     :emit
     {:defaults
-     {:allow {:assign #{:symbol :vector :set :map}}
+     {:banned #{:keyword}
+      :allow {:assign #{:symbol :vector :set :map}}
       :default
       {:comment {:prefix "//"}
        :common {:start "("
@@ -668,7 +704,7 @@
                           "!" "_bang"}}}
       :data
       {:vector {:start "[" :end "]" :sep "," :space " "}
-       :set {:start "new Set([" :end "])" :sep "," :space " "}
+       :set {:start "{" :end "}" :sep "," :space " " :custom js-set}
        :map {:start "{" :end "}" :sep "," :space " "}
        :map-entry {:assign ":" :space " "}}
       :function {:defgen {:raw "function*"}}

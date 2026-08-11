@@ -106,6 +106,24 @@
                  [(block/string form)
                   (block/string formatted)])
                ["(if\nready\ndone)"
-                "(if\n  ready\n  done)"])])
+                "(if\n  ready\n  done)"])
+   (test/check "recovering parser preserves ranges and malformed source"
+               (let [source "(def x 1)\n)\n[:ok"
+                     result (block/parse-source source {:file "demo.hal"})
+                     root (:block result)
+                     forms (filter block/code? (block/children root))
+                     first-form (first forms)
+                     errors (filter block/error? (block/children root))]
+                 [(block/string root)
+                  (select-keys (block/info first-form)
+                               [:file :start-offset :end-offset
+                                :row :col :end-row :end-col])
+                  (count errors)
+                  (vec (map :type (:diagnostics result)))])
+               ["(def x 1)\n)\n[:ok"
+                {:file "demo.hal" :start-offset 0 :end-offset 9
+                 :row 1 :col 1 :end-row 1 :end-col 10}
+                2
+                [:tool.lint/reader-error :tool.lint/reader-error]])])
 
 (test/print-results results)

@@ -1,0 +1,269 @@
+(ns tool.cli.extension
+  (:require [code.deploy.runtime :as process]
+            [tool.cli.asset :as asset]
+            [tool.cli.model :as model]
+            [tool.cli.project-command :as project-command]
+            [tool.project :as project]
+            [std.foundation.file :as file]
+            [std.foundation.os :as os]
+            [std.foundation.string :as string]
+            [std.work :as work]))
+
+(def +route-operations+
+  {:tool.cli.route/extension-check :check
+   :tool.cli.route/extension-build :build
+   :tool.cli.route/extension-install :install
+   :tool.cli.route/extension-test :test})
+
+(def +manifest-fields+
+  #{:root :provider :module :abi :exports
+    :capabilities :host-calls :handles :targets :assets})
+
+(defn operation-request [request]
+  (let [operation (get +route-operations+ (:request/route request))
+        arguments (:request/arguments request)]
+    (if operation
+      {:operation operation :arguments arguments}
+      (if (empty? arguments)
+        (throw (ex-info "extension requires check, build, install, or test" {}))
+        {:operation (keyword (first arguments))
+         :arguments (vec (rest arguments))}))))
+
+(defn required [document key origin]
+  (if (has? document key)
+    (get document key)
+    (throw (ex-info (str origin " requires " key) {:key key}))))
+
+(defn non-empty-string [value label]
+  (if (and (string? value) (not (string/blank? value)))
+    value
+    (throw (ex-info (str label " must be a non-empty string") {:value value}))))
+
+(defn valid-namespace? [value]
+  (and (string? value)
+       (let [parts (string/split value ".")]
+         (and (> (count parts) 1)
+              (every? project-command/valid-coordinate-component? parts)))))
+
+(defn validate-export [name export]
+  (if (not (map? export))
+    (throw (ex-info "extension export must be a map" {:export name}))
+    nil)
+  (if (not (vector? (required export :args "extension export")))
+    (throw (ex-info "extension export :args must be a vector" {:export name}))
+    nil)
+  (required export :returns "extension export")
+  export)
+
+(defn target-files [targets]
+  (if (nil? targets)
+    []
+    (if (not (map? targets))
+      (throw (ex-info "extension :targets must be a map" {}))
+      (vec
+       (map (fn [entry]
+              (let [target (val entry)]
+                (if (not (map? target))
+                  (throw (ex-info "extension target must be a map" {}))
+                  (asset/safe-path
+                   (non-empty-string
+                    (required target :module "extension target")
+                    "extension target :module")))))
+            targets)))))
+
+(defn declared-path [root path]
+  (let [safe (asset/safe-path path)]
+    (if root (asset/safe-path (file/join root safe)) safe)))
+
+(defn validate-manifest [namespace document origin]
+  (if (not (map? document))
+    (throw (ex-info (str "extension/malformed " origin ": manifest must be a map") {}))
+    nil)
+  (let [unknown (vec (filter (fn [key] (not (get +manifest-fields+ key)))
+                             (keys document)))]
+    (if (empty? unknown)
+      nil
+      (throw (ex-info (str "extension/malformed " origin
+                           ": unknown manifest fields " unknown)
+                      {:fields unknown}))))
+  (let [namespace (str namespace)
+        provider (required document :provider origin)
+        abi (required document :abi origin)
+        exports (or (:exports document) {})
+        capabilities (or (:capabilities document) [])
+        module (:module document)
+        targets (:targets document)
+        target-paths (target-files targets)
+        assets (or (:assets document) [])
+        root (if-let [value (:root document)] (asset/safe-path value) nil)]
+    (if (valid-namespace? namespace)
+      nil
+      (throw (ex-info "namespace must be a qualified lower-case symbol"
+                      {:namespace namespace})))
+    (if (and (map? exports)
+             (every? (fn [entry] (do (validate-export (key entry) (val entry)) true))
+                     exports))
+      nil
+      (throw (ex-info "extension :exports must be a map" {})))
+    (if (and (vector? capabilities) (every? keyword? capabilities))
+      nil
+      (throw (ex-info "extension :capabilities must be a keyword vector" {})))
+    (if (and (vector? assets) (every? string? assets))
+      nil
+      (throw (ex-info "extension :assets must be a string vector" {})))
+    (cond
+      (= provider :wasm)
+      (if (and (string? module) (empty? target-paths) (= abi :core.v1))
+        nil
+        (throw (ex-info
+                "WASM providers require :module, :abi :core.v1, and cannot declare :targets"
+                {})))
+      (= provider :hta)
+      (if (and (nil? module) (not (empty? target-paths)) (= abi :hta.v1))
+        nil
+        (throw (ex-info
+                "HTA providers require :targets, :abi :hta.v1, and cannot declare :module"
+                {})))
+      :else
+      (throw (ex-info (str "unsupported extension provider " provider) {})))
+    (assoc document
+           :namespace namespace
+           :declared/files
+           (vec (distinct
+                 (sort
+                  (concat (if module [(declared-path root module)] [])
+                          (map (fn [path] (declared-path root path)) target-paths)
+                          (map (fn [path] (declared-path root path)) assets))))))))
+
+(defn read-package [root]
+  (let [descriptor (file/join root "project.edn")]
+    (if (deref (file/exists? descriptor))
+      nil
+      (throw (ex-info (str "extension/malformed: missing project.edn at " descriptor)
+                      {:path descriptor})))
+    (let [project-document (project/read-project descriptor)
+          declarations (:project/extensions project-document)]
+      (if (and (map? declarations) (not (empty? declarations)))
+        nil
+        (throw (ex-info "project.edn :project/extensions must be a non-empty map" {})))
+      (let [extensions
+            (vec (map (fn [entry]
+                        (validate-manifest (key entry) (val entry) descriptor))
+                      declarations))
+            package (assoc project-document
+                           :package/root root
+                           :package/descriptor descriptor
+                           :extensions extensions
+                           :declared/files
+                           (vec (distinct
+                                 (sort (mapcat (fn [extension]
+                                                (:declared/files extension))
+                                              extensions)))))]
+      (reduce
+       (fn [verified relative]
+         (let [path (file/join root relative)]
+           (if (and (deref (file/exists? path))
+                    (= :file (:type (deref (file/stat path)))))
+             verified
+             (throw (ex-info
+                     (str "extension/asset-unavailable: " relative)
+                     {:path path})))))
+       package
+       (:declared/files package))))))
+
+(defn package-argument [arguments operation]
+  (if (= 1 (count arguments))
+    (first arguments)
+    (throw (ex-info (str "extension " (name operation)
+                         " requires one package directory")
+                    {:arguments arguments}))))
+
+(defn checked-result [package operation]
+  (let [identity (:project/id package)
+        extensions (:extensions package)]
+    (if (= operation :test)
+      (model/success package
+                     [(model/message
+                       (str "Extension project " identity
+                            " passed package validation\n"))])
+      (model/success
+       package
+       [(model/message
+         (str "Extension project " identity " " (:project/version package)
+              " is valid (" (count extensions) " extensions, "
+              (count (:declared/files package)) " files)\n"))]))))
+
+(defn read-build [root]
+  (let [document (project/read-project (file/join root "project.edn"))
+        build (:project/build document)]
+    (if (map? build)
+      build
+      (throw (ex-info "project.edn requires a :project/build map" {})))))
+
+(defn build-command [request root]
+  (let [document (read-build root)
+        adapter (required document :adapter ":project/build")
+        output (non-empty-string (required document :output ":project/build") :output)]
+    (if (= adapter :command)
+      (let [argv (required document :command ":project/build")]
+        (if (not (:allow-process (:request/options request)))
+          (throw (ex-info
+                  "extension/capability-denied: build requires --allow-process" {}))
+          nil)
+        (if (and (vector? argv) (not (empty? argv)) (every? string? argv))
+          (process/run argv {:cwd (file/join root (or (:working-directory document) "."))})
+          (throw (ex-info ":project/build :command cannot be empty" {}))))
+      (if (= adapter :prebuilt)
+        nil
+        (throw (ex-info (str "unsupported extension build adapter: " adapter) {}))))
+    (let [result (file/join root output)
+          package (read-package result)]
+      (model/success package
+                     [(model/message
+                       (str "Built " (:project/id package) " at " result "\n"))]))))
+
+(defn copy-file! [source target]
+  (if-let [parent (file/parent target)] (deref (file/mkdir parent)) nil)
+  (deref (file/write target (deref (file/read source)))))
+
+(defn install-command [request source]
+  (let [package (read-package source)
+        current (or (:request/cwd request) (os/cwd))
+        project (project/discover current)
+        extension-root (or (first (:project/extension-paths project)) "extensions")
+        destination (file/join
+                     (file/join (:project/root project) extension-root)
+                     (string/replace (str (:project/id package)) "/" "_"))]
+    (if (deref (file/exists? destination))
+      (throw (ex-info (str "Extension is already installed: " destination) {}))
+      nil)
+    (reduce
+     (fn [installed relative]
+       (copy-file! (file/join source relative)
+                   (file/join destination relative))
+       (inc installed))
+     0
+     (:declared/files package))
+    (copy-file! (:package/descriptor package) (file/join destination "project.edn"))
+    (model/success package
+                   [(model/message
+                     (str "Installed " (:project/id package) " at " destination "\n"))])))
+
+(defn execute [request]
+  (let [resolved (operation-request request)
+        operation (:operation resolved)
+        arguments (:arguments resolved)
+        root (package-argument arguments operation)]
+    (cond
+      (= operation :check) (checked-result (read-package root) operation)
+      (= operation :test) (checked-result (read-package root) operation)
+      (= operation :build) (build-command request root)
+      (= operation :install) (install-command request root)
+      :else (throw (ex-info (str "unknown extension command: " (name operation)) {})))))
+
+(def +command-work+
+  (work/step {:id 'tool.cli/extension :version 1}
+             (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run (work/local-runtime) +command-work+ request))

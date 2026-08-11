@@ -34,7 +34,7 @@ serialization.
 
 ## Promotion boundary
 
-- Keep `hara.metaspec.lint` and `hara.metaspec.verify` authoritative during the
+- Keep `tool.metaspec.lint` and `tool.metaspec.verify` authoritative during the
   experiment.
 - Promote `std.typed.schema` only after its surface grammar is reconciled with
   every existing `^{:schema ...}` annotation.

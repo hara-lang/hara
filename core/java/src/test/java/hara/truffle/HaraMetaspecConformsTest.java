@@ -25,8 +25,8 @@ public class HaraMetaspecConformsTest {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       context.eval(
           HaraLanguage.ID,
-          "(ns hara.metaspec.conforms-test "
-              + "(:require [hara.metaspec.core :as metaspec]))");
+          "(ns tool.metaspec.conforms-test "
+              + "(:require [tool.metaspec.core :as metaspec]))");
       assertPass(context, root, root);
       Object language = read(LANGUAGE);
       assertPass(context, language, root);
@@ -40,8 +40,8 @@ public class HaraMetaspecConformsTest {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       context.eval(
           HaraLanguage.ID,
-          "(ns hara.metaspec.blocked-test "
-              + "(:require [hara.metaspec.core :as metaspec]))");
+          "(ns tool.metaspec.blocked-test "
+              + "(:require [tool.metaspec.core :as metaspec]))");
       String unresolved =
           Main.display(
               context.eval(

@@ -8,7 +8,7 @@ use super::{
     ExitReason, ExitSnapshot, Hotness, JitConfig, LoopKey, TraceBackend, TraceOutcome,
     TraceRecorder, TraceValue,
 };
-use crate::vm::Program;
+use crate::vm::{Instruction, Program};
 
 /// Per-program tracing-JIT counters. They make it possible to distinguish a
 /// cold loop, an unsupported trace, and a trace that is compiled but exits.
@@ -86,7 +86,10 @@ impl JitRuntime {
             disabled: HashSet::new(),
             profiles: HashMap::new(),
             config,
-            batch_iterations: 1024,
+            // Keep ordinary benchmark/application loops inside one native
+            // entry. Guards still side-exit at the exact guest iteration, so
+            // this changes boundary frequency rather than semantics.
+            batch_iterations: 16_384,
             telemetry: JitTelemetry::default(),
         }
     }
@@ -151,6 +154,15 @@ impl JitRuntime {
                         self.rejected.insert(path_key);
                         self.telemetry.rejected += 1;
                         self.telemetry.recording_aborts += 1;
+                        // A primary path that the backend cannot compile is a
+                        // structural dead end for this loop.  Disable further
+                        // tracing so the interpreter does not keep collecting
+                        // the same path on every backedge.  Side-path failures
+                        // remain path-local when a usable trace already exists.
+                        if trace_count == 0 {
+                            self.disabled.insert(key);
+                            self.telemetry.disabled_loops += 1;
+                        }
                         return None;
                     }
                 },
@@ -158,6 +170,10 @@ impl JitRuntime {
                     self.rejected.insert(path_key);
                     self.telemetry.rejected += 1;
                     self.telemetry.recording_aborts += 1;
+                    if trace_count == 0 {
+                        self.disabled.insert(key);
+                        self.telemetry.disabled_loops += 1;
+                    }
                     return None;
                 }
             }
@@ -236,5 +252,31 @@ impl JitRuntime {
 
     pub(crate) fn is_disabled(&self, function: u16, header: u32) -> bool {
         self.disabled.contains(&LoopKey { function, header })
+    }
+
+    /// True when the function has at least one loop and every loop backedge
+    /// targets a header that has been permanently disabled.  A fresh Machine
+    /// can then skip tracing from its first instruction instead of rebuilding
+    /// a rejected path before it reaches the cached backedge.
+    pub(crate) fn function_is_fully_disabled(&self, program: &Program, function: u16) -> bool {
+        let Some(prototype) = program.functions.get(usize::from(function)) else {
+            return false;
+        };
+        let mut found = false;
+        for (instruction, opcode) in prototype.code.iter().enumerate() {
+            let target = match opcode {
+                Instruction::Jump(target) | Instruction::JumpIfFalse(target)
+                    if usize::try_from(*target).is_ok_and(|target| target <= instruction) =>
+                {
+                    *target
+                }
+                _ => continue,
+            };
+            found = true;
+            if !self.is_disabled(function, target) {
+                return false;
+            }
+        }
+        found
     }
 }

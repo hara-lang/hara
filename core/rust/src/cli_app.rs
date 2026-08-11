@@ -1,6 +1,6 @@
 //! Runtime-neutral CLI contracts shared by native Hara entrypoints.
 //!
-//! Command routing is implemented by `hara.cli.route`; Rust only embeds the
+//! Command routing is implemented by `tool.cli.route`; Rust only embeds the
 //! normative manifest and maps public outcomes to process exit codes.
 
 pub const MANIFEST_SOURCE: &str = include_str!("../resources/hara-cli.edn");

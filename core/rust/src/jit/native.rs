@@ -184,15 +184,13 @@ impl TraceBackend for NativeBackend {
             Ok(result) => result,
             Err(_) => return side_exit(&compiled.trace, ExitReason::Unsupported, 0, locals),
         };
-        let completed = result >= max_iterations as i32;
         {
             let data = compiled.memory.data(&compiled.store);
             for (index, value) in locals.iter_mut().take(compiled.local_count).enumerate() {
-                let offset = if completed {
-                    index * 8
-                } else {
-                    compiled.checkpoint_start + index * 8
-                };
+                // The generated function selects current state on completion
+                // and the iteration checkpoint on every side exit, then
+                // writes that selection into the primary ABI bank.
+                let offset = index * 8;
                 let bits = i64::from_le_bytes(data[offset..offset + 8].try_into().unwrap());
                 match value {
                     TraceValue::I64(_) => *value = TraceValue::I64(bits),
@@ -325,9 +323,11 @@ fn write_vector(data: &mut [u8], offset: usize, values: &[i64]) -> Result<(), St
 fn lower(
     trace: &Trace,
     local_count: usize,
-    checkpoint_start: usize,
+    _checkpoint_start: usize,
     constant_offsets: &[usize],
 ) -> Result<Vec<u8>, String> {
+    const COUNTER_LOCAL: u8 = 1;
+    const TRACE_LOCAL_BASE: usize = 5;
     let vector_locals = trace
         .operations
         .iter()
@@ -348,7 +348,26 @@ fn lower(
                 _ => None,
             }),
     );
-    let mut body = vec![0x02, 0x01, 0x7f, 0x03, 0x7e]; // counter i32; a,b,result i64
+    // Keep traced VM locals in Wasm locals for the whole native entry. Linear
+    // memory is only the host ABI at entry/exit. The second bank is the
+    // current-iteration checkpoint used by precise side exits.
+    let trace_local_count = local_count
+        .checked_mul(2)
+        .and_then(|count| count.checked_add(3))
+        .ok_or_else(|| "native trace local count overflow".to_string())?;
+    let mut body = vec![0x02, 0x01, 0x7f]; // counter i32
+    uleb(
+        &mut body,
+        u32::try_from(trace_local_count).map_err(|_| "native trace local count exceeds u32")?,
+    );
+    body.push(0x7e); // a,b,result plus current/checkpoint trace locals: i64
+    for local in 0..local_count {
+        i32_const(&mut body, (local * 8) as i32);
+        body.extend([0x29, 0x03, 0x00]);
+        local_set(&mut body, TRACE_LOCAL_BASE + local)?;
+        local_get(&mut body, TRACE_LOCAL_BASE + local)?;
+        local_set(&mut body, TRACE_LOCAL_BASE + local_count + local)?;
+    }
     body.extend([0x41, 0x00, 0x21, 0x01, 0x02, 0x40, 0x03, 0x40]);
     for operation in &trace.operations {
         match *operation {
@@ -357,8 +376,7 @@ fn lower(
             | TraceOp::GuardLocalNil { .. }
             | TraceOp::GuardLocalVectorI64 { .. } => {}
             TraceOp::LoadLocal { local } => {
-                i32_const(&mut body, i32::from(local) * 8);
-                body.extend([0x29, 0x03, 0x00]);
+                local_get(&mut body, TRACE_LOCAL_BASE + usize::from(local))?;
                 if i32_locals.contains(&local) {
                     body.push(0xa7); // i32.wrap_i64
                 }
@@ -379,9 +397,7 @@ fn lower(
                 if i32_locals.contains(&local) {
                     body.push(0xad); // i64.extend_i32_u
                 }
-                body.extend([0x21, 0x04]);
-                i32_const(&mut body, i32::from(local) * 8);
-                body.extend([0x20, 0x04, 0x37, 0x03, 0x00]);
+                local_set(&mut body, TRACE_LOCAL_BASE + usize::from(local))?;
             }
             TraceOp::Pop => {
                 body.push(0x1a);
@@ -399,10 +415,8 @@ fn lower(
             TraceOp::VectorNthI64 => vector_nth(&mut body),
             TraceOp::LoopBackedge => {
                 for local in 0..local_count {
-                    i32_const(&mut body, (local * 8) as i32);
-                    body.extend([0x29, 0x03, 0x00, 0x21, 0x04]);
-                    i32_const(&mut body, (checkpoint_start + local * 8) as i32);
-                    body.extend([0x20, 0x04, 0x37, 0x03, 0x00]);
+                    local_get(&mut body, TRACE_LOCAL_BASE + local)?;
+                    local_set(&mut body, TRACE_LOCAL_BASE + local_count + local)?;
                 }
                 body.extend([
                     0x20, 0x01, 0x41, 0x01, 0x6a, 0x21, 0x01, 0x20, 0x01, 0x20, 0x00, 0x48, 0x0d,
@@ -411,7 +425,17 @@ fn lower(
             }
         }
     }
-    body.extend([0x0b, 0x0b, 0x20, 0x01, 0x0b]);
+    body.extend([0x0b, 0x0b]);
+    for local in 0..local_count {
+        i32_const(&mut body, (local * 8) as i32);
+        body.extend([0x20, COUNTER_LOCAL, 0x20, 0x00, 0x46]); // counter == max
+        body.extend([0x04, 0x7e]); // if (result i64)
+        local_get(&mut body, TRACE_LOCAL_BASE + local)?;
+        body.push(0x05); // else: restore iteration checkpoint
+        local_get(&mut body, TRACE_LOCAL_BASE + local_count + local)?;
+        body.extend([0x0b, 0x37, 0x03, 0x00]);
+    }
+    body.extend([0x20, COUNTER_LOCAL, 0x0b]);
     let mut module = b"\0asm\x01\0\0\0".to_vec();
     section(&mut module, 1, vec![0x01, 0x60, 0x01, 0x7f, 0x01, 0x7f]);
     section(&mut module, 3, vec![0x01, 0x00]);
@@ -433,6 +457,24 @@ fn lower(
         return Err("native trace locals exceed the memory limit".into());
     }
     Ok(module)
+}
+
+fn local_get(body: &mut Vec<u8>, local: usize) -> Result<(), String> {
+    body.push(0x20);
+    uleb(
+        body,
+        u32::try_from(local).map_err(|_| "native trace local index exceeds u32")?,
+    );
+    Ok(())
+}
+
+fn local_set(body: &mut Vec<u8>, local: usize) -> Result<(), String> {
+    body.push(0x21);
+    uleb(
+        body,
+        u32::try_from(local).map_err(|_| "native trace local index exceeds u32")?,
+    );
+    Ok(())
 }
 
 fn binary(body: &mut Vec<u8>, op: Primitive) -> Result<(), String> {

@@ -1,0 +1,82 @@
+(ns tool.cli.verify-test
+  (:require [tool.cli.report :as report]
+            [tool.cli.verify :as verify]
+            [std.lib.test :as test]))
+
+(def manifest
+  {:document/id :demo/cli
+   :document/type :tool/cli-application
+   :document/version "0.1.0"
+   :document/status :draft
+   :document/title "Demo"
+   :document/summary "Demo CLI"
+   :spec/conforms-to
+   {:spec/id :tool/cli-app-metaspec
+    :spec/version "0.1.0"}
+   :cli/apps []
+   :cli/routes
+   [{:route/id :demo.route/check
+     :route/path ["check"]
+     :route/aliases []
+     :route/handler :demo.handler/check
+     :route/options [:demo.option/format]}]
+   :cli/options [{:option/id :demo.option/format}]
+   :cli/outcomes [{:outcome/id :demo.outcome/success
+                   :outcome/exit 0}]
+   :cli/handlers [{:handler/id :demo.handler/check}]})
+
+(test/print-results
+ [(test/check "valid manifests verify without findings"
+              (verify/verify manifest)
+              [])
+  (test/check "unresolved handlers are structured findings"
+              (:rule/id
+               (first
+                (verify/verify
+                 (update
+                  manifest
+                  :cli/routes
+                  (fn [routes]
+                    [(assoc (first routes)
+                            :route/handler
+                            :missing/handler)])))))
+              :tool.cli.rule/unresolved-handler)
+  (test/check "unresolved options are structured findings"
+              (:rule/id
+               (first
+                (verify/verify
+                 (update
+                  manifest
+                  :cli/routes
+                  (fn [routes]
+                    [(assoc (first routes)
+                            :route/options
+                            [:missing/option])])))))
+              :tool.cli.rule/unresolved-option)
+  (test/check "ambiguous aliases are rejected"
+              (:rule/id
+               (first
+                (verify/verify
+                 (update
+                  manifest
+                  :cli/routes
+                  conj
+                  {:route/id :demo.route/other
+                   :route/path ["other"]
+                   :route/aliases [["check"]]
+                   :route/handler :demo.handler/check
+                   :route/options []}))))
+              :tool.cli.rule/ambiguous-path)
+  (test/check "verification reports cannot pass findings"
+              (:report/status
+               (report/verification-report
+                manifest
+                (verify/verify
+                 (update
+                  manifest
+                  :cli/routes
+                  (fn [routes]
+                    [(assoc (first routes)
+                            :route/handler
+                            :missing/handler)])))))
+              :fail)])

@@ -120,14 +120,16 @@
   (lang.core.script/defspec-form symbol body))
 
 (defn register-code!
-  [form]
-  (let [module (module-symbol)
+  ([form]
+   (register-code! nil form))
+  ([explicit-language form]
+   (let [module (module-symbol)
         symbol (second form)
         id (symbol-id symbol)
         op (first form)
         module-value (get (deref +modules+) module)
         metadata (or (meta symbol) {})
-        language (or (:lang module-value) :xtalk)
+        language (or explicit-language (:lang module-value) :xtalk)
         schema (or (:static/schema metadata)
                    (:schema module-value)
                    (first (get-in module-value [:static :all :schema])))
@@ -150,7 +152,7 @@
                                (module-config :xtalk module {}))]
                (assoc modules module
                       (assoc-in current [:code id] entry)))))
-    nil))
+     nil)))
 
 (defn register-fragment!
   [form template]
@@ -206,10 +208,10 @@
     (vec (concat prefix transformed))))
 
 (defmacro defmacro.xt
-  [symbol & body]
-  (let [form (apply list 'defmacro symbol body)
-        runtime-form (apply list 'defmacro symbol (runtime-macro-body body))
-        qualified (symbol (str (:ns &env)) (name symbol))]
+  [sym & body]
+  (let [form (apply list 'defmacro sym body)
+        runtime-form (apply list 'defmacro sym (runtime-macro-body body))
+        qualified (symbol (str (:ns &env)) (name sym))]
     `(do
        ~runtime-form
        (lang.core.script/register-fragment!
@@ -344,6 +346,20 @@
         id (symbol (name qualified))]
     (get-in (deref +modules+) [module :code id])))
 
+(defn- flat-forward-alias?
+  "True when a flat-layout def only republishes an identically named linked
+   value. The linked dependency already owns that target declaration."
+  [entry]
+  (let [form (:form-input entry)]
+    (and (list? form)
+         (= (quote def) (first form))
+         (= 3 (count form))
+         (symbol? (second form))
+         (symbol? (nth form 2))
+         (namespace (nth form 2))
+         (= (name (second form))
+            (name (nth form 2))))))
+
 (defn- dependency-source
   [lang qualified emitted]
   (if (get emitted qualified)
@@ -366,7 +382,9 @@
                              [emitted []]
                              dependencies)
               seen (assoc (nth nested 0) qualified true)
-              sources (conj (nth nested 1) (:output result))]
+              sources (if (flat-forward-alias? entry)
+                        (nth nested 1)
+                        (conj (nth nested 1) (:output result)))]
           [seen sources])))))
 
 (defn- lua-expression-form

@@ -90,8 +90,8 @@ fn indexed_numeric_vectors_trace_from_constants_and_locals() {
         );
         assert!(
             recorded.is_ok(),
-            "vector loop was rejected: {recorded:?}; constants: {:?}",
-            program.constants
+            "vector loop was rejected: {recorded:?}; code: {:?}; constants: {:?}",
+            function.code, program.constants
         );
         assert_eq!(crate::execute_bytecode(&program).unwrap(), "32500");
         assert!(
@@ -116,6 +116,28 @@ fn unsupported_vectors_and_late_bounds_errors_fall_back_to_vm_semantics() {
     let vm = eval_bytecode_native(&source).unwrap_err();
     assert!(evaluator.contains("nth index out of bounds"), "{evaluator}");
     assert!(vm.contains("nth index out of bounds"), "{vm}");
+}
+
+#[test]
+fn unsupported_primary_path_disables_repeated_trace_collection() {
+    let source = "(loop [i 0 value {}] (if (< i 500) (recur (+ i 1) (assoc value i (+ i 1))) (get value 499)))";
+    let program = crate::compile_bytecode(source).unwrap();
+
+    assert_eq!(crate::execute_bytecode(&program).unwrap(), "500");
+    let first = crate::bytecode_jit_telemetry(&program);
+    assert_eq!(first.compile_attempts, 1, "{first:?}");
+    assert_eq!(first.compiled, 0, "{first:?}");
+    assert_eq!(first.rejected, 1, "{first:?}");
+    assert_eq!(first.disabled_loops, 1, "{first:?}");
+
+    assert_eq!(crate::execute_bytecode(&program).unwrap(), "500");
+    let second = crate::bytecode_jit_telemetry(&program);
+    assert_eq!(
+        second.compile_attempts, first.compile_attempts,
+        "{second:?}"
+    );
+    assert_eq!(second.rejected, first.rejected, "{second:?}");
+    assert_eq!(second.disabled_loops, first.disabled_loops, "{second:?}");
 }
 
 #[test]

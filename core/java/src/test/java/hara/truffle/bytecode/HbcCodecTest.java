@@ -178,6 +178,44 @@ public class HbcCodecTest {
   }
 
   @Test
+  public void concatListMaterializesSyntaxQuoteSplices() throws Exception {
+    Function entry =
+        new Function(
+            null,
+            false,
+            0,
+            false,
+            0,
+            0,
+            2,
+            List.of(
+                new Instruction(Opcode.CONSTANT, 0, 0, 0),
+                new Instruction(Opcode.CONSTANT, 1, 0, 0),
+                new Instruction(Opcode.CONCAT_LIST, 2, 0, 0),
+                Instruction.of(Opcode.RETURN)),
+            Arrays.asList(null, null, null, null),
+            List.of());
+    HbcProgram program =
+        new HbcProgram(
+            List.of(
+                hara.lang.data.Vector.Standard.from(null, 1L, 2L),
+                hara.lang.data.List.Standard.from(null, 3L)),
+            List.of(),
+            List.of(entry),
+            0);
+    Source source =
+        Source.newBuilder(
+                HaraLanguage.ID,
+                ByteSequence.create(HbcCodec.encode(program)),
+                "concat-list.hbc")
+            .mimeType(HaraLanguage.BYTECODE_MIME_TYPE)
+            .build();
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals("(1 2 3)", context.eval(source).toString());
+    }
+  }
+
+  @Test
   public void decodesEveryArtifactInTheTrackedRustFoundationBundle() throws Exception {
     byte[] bundle = Files.readAllBytes(Path.of("rust/assets/std.foundation.hbb"));
     assertArrayEquals(new byte[] {'H', 'B', 'B', '2'}, Arrays.copyOf(bundle, 4));

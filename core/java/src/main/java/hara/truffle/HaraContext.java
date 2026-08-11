@@ -40,6 +40,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.LinkedHashMap;
 import java.util.Collections;
 import java.util.Map;
@@ -48,6 +49,7 @@ import java.util.Deque;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.HexFormat;
 import java.util.NoSuchElementException;
 import java.util.LinkedHashSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -145,6 +147,9 @@ public final class HaraContext {
           Map.entry("Kernel", java.util.List.of("session-create", "session-close", "session-list", "session-info", "session-eval", "session-namespace", "session-complete", "resource-register", "resource-remove", "resource-list", "filesystem-create", "filesystem-attach", "filesystem-detach", "filesystem-info", "filesystem-close", "capabilities")),
           Map.entry("String", java.util.List.of("length", "blank?", "includes?", "starts-with?", "ends-with?", "char-at", "slice", "index-of", "last-index-of", "join", "split", "split-lines", "repeat", "replace", "replace-first", "trim", "trim-left", "trim-right", "upper", "lower", "capitalize", "decapitalize", "pad-left", "pad-right", "reverse", "encode-utf8", "decode-utf8", "to-fixed")),
           Map.entry("Bytes", java.util.List.of("new", "instance?", "count", "get", "set", "copy", "slice", "u8", "s8")),
+          Map.entry("Crypto", java.util.List.of("sha256")),
+          Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv")),
+          Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "wait", "kill")),
           Map.entry("File", java.util.List.of("resolve", "read", "write", "exists?", "list", "mkdir", "delete")),
           Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close")),
           Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
@@ -171,15 +176,18 @@ public final class HaraContext {
                   "iter-partition", "iter-range", "iter-constantly",
                   "iter-repeatedly", "iter-iterate")));
   private static final Map<String, String> NATIVE_LIBRARY_SOURCES =
-      Map.of(
-          "std.native.String", "std.foundation.string",
-          "std.native.Bytes", "std.foundation.bytes",
-          "std.native.File", "std.foundation.file",
-          "std.native.Socket", "std.foundation.socket",
-          "std.native.Promise", "std.foundation.promise",
-          "std.native.Coroutine", "std.foundation.coroutine",
-          "std.native.Edn", "std.foundation.edn",
-          "std.native.Json", "std.foundation.json");
+      Map.ofEntries(
+          Map.entry("std.native.String", "std.foundation.string"),
+          Map.entry("std.native.Bytes", "std.foundation.bytes"),
+          Map.entry("std.native.Crypto", "std.foundation.crypto"),
+          Map.entry("std.native.OS", "std.foundation.os"),
+          Map.entry("std.native.Process", "std.foundation.os"),
+          Map.entry("std.native.File", "std.foundation.file"),
+          Map.entry("std.native.Socket", "std.foundation.socket"),
+          Map.entry("std.native.Promise", "std.foundation.promise"),
+          Map.entry("std.native.Coroutine", "std.foundation.coroutine"),
+          Map.entry("std.native.Edn", "std.foundation.edn"),
+          Map.entry("std.native.Json", "std.foundation.json"));
   private final TruffleLanguage.Env environment;
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
@@ -390,6 +398,7 @@ public final class HaraContext {
       installNativeExportGroup(
           "Bytes", exports, java.util.List.of("new", "instance?"),
           Map.of("new", "bytes", "instance?", "bytes?"));
+      installNativeExportGroup("Crypto", exports, NATIVE_TYPES.get("Crypto"), Map.of());
       installNativeExportGroup(
           "Promise", exports, java.util.List.of("run", "instance?"),
           Map.of("run", "promise", "instance?", "promise?"));
@@ -416,6 +425,23 @@ public final class HaraContext {
               "message", "ex-message",
               "class", "ex-class"));
       installNativeExportGroup("Iter", exports, NATIVE_TYPES.get("Iter"), Map.of());
+      return;
+    }
+    if ("std.foundation.os".equals(sourceNamespace)) {
+      installNativeExportGroup("OS", exports, NATIVE_TYPES.get("OS"), Map.of());
+      installNativeExportGroup(
+          "Process",
+          exports,
+          NATIVE_TYPES.get("Process"),
+          Map.of(
+              "instance?", "process?",
+              "alive?", "process-alive?",
+              "write", "process-write",
+              "close-input", "process-close-input",
+              "stdout", "process-stdout",
+              "stderr", "process-stderr",
+              "wait", "process-wait",
+              "kill", "process-kill"));
       return;
     }
     String type =
@@ -2359,6 +2385,20 @@ public final class HaraContext {
 
   private void installCoreBuiltins(HaraNamespace target) {
     target.define("str", new VariadicBuiltin("str", HaraContext::concatenateStrings));
+    target.define(
+        "sha256",
+        new UnaryBuiltin(
+            "sha256",
+            value -> {
+              try {
+                return HexFormat.of()
+                    .formatHex(
+                        MessageDigest.getInstance("SHA-256")
+                            .digest(bytesValue(value, "sha256")));
+              } catch (java.security.NoSuchAlgorithmException impossible) {
+                throw new HaraException("SHA-256 is unavailable");
+              }
+            }));
     target.define("p", new VariadicBuiltin("p", values -> printValues(values, false)));
     target.define(
         "println", new VariadicBuiltin("println", values -> printValues(values, true)));
@@ -4733,7 +4773,7 @@ public final class HaraContext {
   }
 
   @TruffleBoundary
-  private Object iterValue(Object value) {
+  Object iterValue(Object value) {
     Object target = HaraBox.unwrap(value);
     if (target == null || target == HaraNull.SINGLETON) return Iter.emptyIterator();
     if (target instanceof String) return Iter.chars(((String) target).toCharArray());
@@ -5395,6 +5435,13 @@ public final class HaraContext {
   @TruffleBoundary
   public Object invokeCallable(Object value, Object[] arguments) {
     Object function = HaraBox.unwrap(value);
+    if (function instanceof HaraVar variable) {
+      Object dereferenced = variable.deref();
+      if (dereferenced == variable) {
+        throw new HaraException("Var refers to itself: " + variable);
+      }
+      return invokeCallable(dereferenced, arguments);
+    }
     if (function instanceof HaraFunction) {
       HaraFunction haraFunction = (HaraFunction) function;
       HaraFunction selected = haraFunction.resolveArity(arguments.length);
@@ -5444,6 +5491,10 @@ public final class HaraContext {
 
   public boolean isFunctionValue(Object value) {
     Object function = HaraBox.unwrap(value);
+    if (function instanceof HaraVar variable) {
+      Object dereferenced = variable.deref();
+      return dereferenced != variable && isFunctionValue(dereferenced);
+    }
     return function instanceof HaraFunction
         || function instanceof HaraMultiFunction
         || function instanceof HbcMachine.HbcClosure

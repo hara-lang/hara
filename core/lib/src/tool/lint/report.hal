@@ -1,0 +1,33 @@
+(ns tool.lint.report
+  (:require [std.foundation.string :as string]
+            [tool.lint.model :as model]))
+
+(defn finding-key
+  [finding]
+  [(:file finding) (:start-offset finding) (str (:type finding)) (:message finding)])
+
+(defn sort-findings [findings]
+  (vec (sort-by finding-key findings)))
+
+(defn finding-line
+  [finding]
+  (str (:file finding) ":" (:row finding) ":" (:col finding) ": "
+       (name (:level finding)) ": " (:message finding)
+       " [" (:type finding) "]"))
+
+(defn text
+  [findings]
+  (let [ordered (sort-findings findings)
+        summary (model/summarize ordered)]
+    (str (if (empty? ordered)
+           ""
+           (str (string/join "\n" (map finding-line ordered)) "\n"))
+         (:error summary) " error(s), " (:warning summary) " warning(s)\n")))
+
+(defn edn
+  [findings profile]
+  {:profile/id (:profile/id profile)
+   :profile/version (:profile/version profile)
+   :findings (sort-findings findings)
+   :summary (model/summarize findings)})
+

@@ -18,6 +18,7 @@ WASM_RAW := rust/raw/target/wasm32-unknown-unknown/release/hara_wasm_raw.wasm
 WEB_DIR := rust/web
 CHROME_DIR := ../../application/greenways-os/extension/hara-chrome
 HARA_WWW_DIR := ../website/hara-www
+HARA_BENCH_SCRIPTS := ../../../website/hara-benchmarks/scripts/hara-runtime
 
 .PHONY: help all build-all check-all test-all clean \
         java java-offline java-headless java-build java-test java-conformance \
@@ -165,14 +166,17 @@ chrome-test: ## Test the Chrome extension
 docs-build: ## Build the hara-www documentation site
 	npm run build --prefix $(HARA_WWW_DIR)
 
+runtime-benchmark: ## Run the shared cross-runtime benchmark corpus
+	$(HARA_BENCH_SCRIPTS)/run-runtime-benchmarks $(ARGS)
+
 vm-bb-benchmark: ## Compare bytecode/native trace VM tiers with babashka
-	../scripts/runtime/run-vm-bb-benchmark $(ARGS)
+	$(HARA_BENCH_SCRIPTS)/run-vm-bb-benchmark $(ARGS)
 
 truffle-benchmark: ## Run the JVM Truffle benchmark
-	../scripts/runtime/run-truffle-benchmark $(ARGS)
+	$(HARA_BENCH_SCRIPTS)/run-truffle-benchmark $(ARGS)
 
 parity-benchmark: ## Benchmark Rust WASM and Truffle parity
-	../scripts/runtime/run-wasm-truffle-parity-benchmark $(ARGS)
+	$(HARA_BENCH_SCRIPTS)/run-wasm-truffle-parity-benchmark $(ARGS)
 
 build-all: java-build rust-build-release wasm-build ## Build all portable runtime artifacts
 

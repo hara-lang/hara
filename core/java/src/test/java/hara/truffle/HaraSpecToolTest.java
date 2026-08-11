@@ -24,7 +24,7 @@ public class HaraSpecToolTest {
             new PrintStream(output, true, StandardCharsets.UTF_8),
             new PrintStream(error, true, StandardCharsets.UTF_8));
     assertEquals(error.toString(StandardCharsets.UTF_8), 0, status);
-    assertTrue(output.toString(StandardCharsets.UTF_8).contains(":report/type :hara/metaspec-verification"));
+    assertTrue(output.toString(StandardCharsets.UTF_8).contains(":report/type :tool/metaspec-verification"));
     assertTrue(output.toString(StandardCharsets.UTF_8).contains(":report/status :pass"));
   }
 

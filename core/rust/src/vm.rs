@@ -110,7 +110,9 @@ pub(crate) fn error_category(message: &str) -> &'static str {
 
 pub use artifact::{decode_program, encode_program};
 pub use bundle::{
-    compile_bytecode_bundle, compile_embedded_standard_library_bundle, eval_bytecode_bundle,
+    compile_bytecode_bundle, compile_embedded_standard_library_bundle, encode_bytecode_bundle,
+    eval_bytecode_bundle, eval_eager_bytecode_bundle_with_registries, BytecodeBundleModule,
+    ModuleSource,
 };
 pub use compiler::{compile_halc_module, compile_source, compile_source_with};
 pub use disassemble::disassemble;

@@ -24,7 +24,7 @@ public class HaraHtaExtensionTest {
               context
                   .eval(
                       HaraLanguage.ID,
-                      "(ns app (:require [hara.runtime.wasm :as runtime])) "
+                      "(ns app (:require [tool.runtime.wasm :as runtime])) "
                           + "(deref (runtime/eval \"(+ 20 22)\"))")
                   .asLong());
         });
@@ -38,7 +38,7 @@ public class HaraHtaExtensionTest {
           Value digest =
               context.eval(
                   HaraLanguage.ID,
-                  "(ns app (:require [hara.runtime.wasm :as runtime])) "
+                  "(ns app (:require [tool.runtime.wasm :as runtime])) "
                       + "(deref (runtime/eval "
                       + "\"(ns user (:require [std.foundation.host :as host])) "
                       + "(host/call \\\"crypto.hash.sha256\\\" \\\"digest\\\" (bytes 97 98 99))\"))");
@@ -59,7 +59,7 @@ public class HaraHtaExtensionTest {
                 context
                     .eval(
                         HaraLanguage.ID,
-                        "(ns app (:require [hara.runtime.wasm :as runtime])) "
+                        "(ns app (:require [tool.runtime.wasm :as runtime])) "
                             + "(deref (runtime/eval \"(ns user (:require [std.foundation.host :as host])) "
                             + "(+ 10 (count (deref (host/call \\\"crypto.hash.sha256\\\" \\\"digest\\\" (bytes 97 98 99)))))\"))")
                     .asLong()));
@@ -75,7 +75,7 @@ public class HaraHtaExtensionTest {
                 context
                     .eval(
                         HaraLanguage.ID,
-                        "(ns app (:require [hara.runtime.wasm :as runtime])) "
+                        "(ns app (:require [tool.runtime.wasm :as runtime])) "
                             + "(deref (runtime/eval \"(ns user (:require [std.foundation.host :as host])) "
                             + "(try (deref (host/call \\\"denied\\\" \\\"call\\\")) (catch error 42))\"))")
                     .asLong()));
@@ -88,7 +88,7 @@ public class HaraHtaExtensionTest {
     Files.createDirectories(extension);
     HaraExtensionTestProject.write(
         extension,
-        "{:namespace \"hara.runtime.wasm\" :version \"0.1.0\" :provider :wasm "
+        "{:namespace \"tool.runtime.wasm\" :version \"0.1.0\" :provider :wasm "
             + ":module \"hara.wasm\" :abi :hta.v1 "
             + ":exports {\"eval\" {:args [:value] :returns :value :async true}} "
             + ":capabilities [] "

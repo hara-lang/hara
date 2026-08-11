@@ -639,7 +639,11 @@ fn canonical(namespace: &str, method: &str) -> String {
         ("std.native.Error", method) => format!("std.native.Error/{method}"),
         ("std.native.Iter", method) => format!("std.native.Iter/{method}"),
         ("std.foundation.coroutine", method) => format!("std.foundation.coroutine/{method}"),
-        ("std.foundation.string", method) => format!("std.foundation.string/{method}"),
+        // std.foundation.string is the documented compatibility facade.  Calls
+        // compiled through it must use the same intrinsic spelling as
+        // std.native.String and the default `str` library alias; otherwise an
+        // imported facade creates a needless runtime namespace lookup.
+        ("std.foundation.string", method) => format!("str/{method}"),
         ("std.lib.string", method) => format!("str/{method}"),
         ("std.foundation.promise", method) => format!("std.foundation.promise/{method}"),
         ("std.foundation.bytes", method) => format!("std.foundation.bytes/{method}"),
@@ -683,8 +687,8 @@ mod tests {
                 .remove(0),
         );
         let display = format!("{rewritten:?}");
-        assert!(display.contains("std.foundation.string/trim"));
-        assert!(display.contains("std.foundation.string/upper"));
+        assert!(display.contains("str/trim"));
+        assert!(display.contains("str/upper"));
         assert!(display.contains("bytes/count") == false);
         assert!(GeneratedNamespaceConfig::configure(
             &parse_forms("(:require [missing.lib :as x])").unwrap()

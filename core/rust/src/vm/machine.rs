@@ -95,6 +95,10 @@ pub struct Machine {
     jit_suppressed_range: Option<(usize, u32, u32)>,
     #[cfg(feature = "tracing-jit")]
     jit_loop_entries: HashMap<(usize, u32), Vec<crate::jit::TraceValue>>,
+    #[cfg(feature = "tracing-jit")]
+    jit_status_function: usize,
+    #[cfg(feature = "tracing-jit")]
+    jit_function_disabled: bool,
 }
 
 #[cfg(feature = "tracing-jit")]
@@ -203,6 +207,10 @@ impl Machine {
             jit_suppressed_range: None,
             #[cfg(feature = "tracing-jit")]
             jit_loop_entries: HashMap::new(),
+            #[cfg(feature = "tracing-jit")]
+            jit_status_function: usize::MAX,
+            #[cfg(feature = "tracing-jit")]
+            jit_function_disabled: false,
         }
     }
 
@@ -286,6 +294,10 @@ impl Machine {
             jit_suppressed_range: None,
             #[cfg(feature = "tracing-jit")]
             jit_loop_entries: HashMap::new(),
+            #[cfg(feature = "tracing-jit")]
+            jit_status_function: usize::MAX,
+            #[cfg(feature = "tracing-jit")]
+            jit_function_disabled: false,
         }
     }
 
@@ -662,24 +674,37 @@ impl Machine {
             };
             #[cfg(feature = "tracing-jit")]
             {
-                let instruction = self.ip as u32;
-                let suppressed =
-                    self.jit_suppressed_range
-                        .is_some_and(|(function, header, backedge)| {
-                            function == self.function
-                                && instruction >= header
-                                && instruction <= backedge
-                        });
-                if !suppressed {
-                    self.jit_suppressed_range = None;
-                    self.jit_path.push((self.function, instruction));
+                // A cached fully-disabled function takes the shortest fallback
+                // path: one predictable flag check per instruction. Recompute
+                // only if control moved to another function.
+                if !self.jit_function_disabled || self.jit_status_function != self.function {
+                    if self.jit_status_function != self.function {
+                        self.jit_function_disabled = self
+                            .jit
+                            .function_is_fully_disabled(&program, self.function as u16);
+                        self.jit_status_function = self.function;
+                    }
+                    if !self.jit_function_disabled {
+                        let instruction = self.ip as u32;
+                        let suppressed = self.jit_suppressed_range.is_some_and(
+                            |(function, header, backedge)| {
+                                function == self.function
+                                    && instruction >= header
+                                    && instruction <= backedge
+                            },
+                        );
+                        if !suppressed {
+                            self.jit_suppressed_range = None;
+                            self.jit_path.push((self.function, instruction));
+                        }
+                    }
                 }
             }
             match self.dispatch(&program, function, instruction) {
                 Dispatch::Next(ip) | Dispatch::Unwound(ip) => {
                     let mut next_ip = ip;
                     #[cfg(feature = "tracing-jit")]
-                    if ip <= self.ip {
+                    if !self.jit_function_disabled && ip <= self.ip {
                         let header = ip as u32;
                         if self.jit.is_disabled(self.function as u16, header) {
                             self.jit_suppressed_range =
@@ -719,6 +744,7 @@ impl Machine {
                             if self.jit.is_disabled(self.function as u16, header) {
                                 self.jit_suppressed_range =
                                     Some((self.function, header, self.ip as u32));
+                                self.jit_status_function = usize::MAX;
                             }
                         }
                         self.jit_path.clear();
@@ -912,7 +938,26 @@ impl Machine {
                 } else if argc == 3 && matches!(op, crate::core::Primitive::Assoc) {
                     let replacement = self.stack.pop().expect("primitive arity checked above");
                     let key = self.stack.pop().expect("primitive arity checked above");
-                    let collection = self.stack.pop().expect("primitive arity checked above");
+                    let mut collection = self.stack.pop().expect("primitive arity checked above");
+                    // Tail-recur map builders compile to
+                    // `LoadLocal ... Primitive assoc; StoreLocal same-slot`.
+                    // The store proves the old local is dead. Move it out so
+                    // Rc::try_unwrap below exposes the uniquely owned map and
+                    // its HAMT can update through the owned COW path.
+                    let infallible_owned_map = matches!(
+                        &collection,
+                        VmSlot::Value(value)
+                            if matches!(value.as_ref(), Value::Map(_) | Value::OrderedMap(_))
+                    );
+                    if infallible_owned_map {
+                        if let Some(Instruction::StoreLocal(slot)) = function.code.get(self.ip + 1)
+                        {
+                            if let Some(local) = self.frame.take_value_alias(*slot, &collection) {
+                                drop(collection);
+                                collection = local;
+                            }
+                        }
+                    }
                     let collection = Machine::into_value(self.program.clone(), collection);
                     let key = Machine::into_value(self.program.clone(), key);
                     let replacement = Machine::into_value(self.program.clone(), replacement);

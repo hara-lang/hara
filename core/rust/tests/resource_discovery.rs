@@ -77,7 +77,7 @@ fn metaspec_conformance_reports_match_the_hal_contract() {
     let mut runtime = Runtime::new();
     let pass = runtime
         .eval_native(
-            "(require [hara.metaspec.core :as metaspec]) \
+            "(require [tool.metaspec.core :as metaspec]) \
              (def meta-document \
                {:document/id :demo/meta \
                 :document/version \"1.0.0\" \
@@ -94,7 +94,7 @@ fn metaspec_conformance_reports_match_the_hal_contract() {
     let blocked = runtime
         .eval_native(
             "(:report/status \
-               (hara.metaspec.core/conforms \
+               (tool.metaspec.core/conforms \
                  (assoc meta-document :spec/conforms-to \
                    {:spec/id :missing/meta :spec/version \"1.0.0\"})))",
         )

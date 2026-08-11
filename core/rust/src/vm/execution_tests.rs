@@ -509,6 +509,21 @@ fn literal_collections_and_collection_primitives() {
 }
 
 #[test]
+fn tail_recur_assoc_moves_dead_local_without_mutating_persistent_aliases() {
+    assert_eq!(
+        eval(
+            "(let [original {:seed 1}
+                   built (loop [i 0 value original]
+                           (if (< i 500)
+                             (recur (+ i 1) (assoc value i (+ i 1)))
+                             value))]
+               [(count original) (get original 499) (count built) (get built 499)])"
+        ),
+        "[1 nil 501 500]"
+    );
+}
+
+#[test]
 fn mutable_collections_build_in_place_and_freeze_once() {
     assert_eq!(
         eval(

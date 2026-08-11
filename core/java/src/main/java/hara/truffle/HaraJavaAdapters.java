@@ -817,7 +817,13 @@ public final class HaraJavaAdapters {
     if (arguments.length < 1 || arguments.length > 2) {
       throw new HaraException("ILookup/lookup expects one or two arguments");
     }
-    return lookupValueUnchecked(lookup, arguments);
+    try {
+      return lookupValueUnchecked(lookup, arguments);
+    } catch (IndexOutOfBoundsException error) {
+      // `get` is safe associative lookup, including for sequential values.
+      // Positional `nth` remains the operation that reports an invalid index.
+      return arguments.length == 2 ? arguments[1] : null;
+    }
   }
 
   private static Object lookupBytes(Object receiver, Object[] arguments) {

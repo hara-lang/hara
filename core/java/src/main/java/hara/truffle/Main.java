@@ -1450,6 +1450,7 @@ public final class Main {
     output.println("  hara spec <COMMAND> ...");
     output.println("  hara extension <check|build|install|test> ...");
     output.println("  hara bytecode <run|disassemble> FILE.hbc|FILE.hbb");
+    output.println("  hara bytecode conformance FILE.hcc");
     output.println();
     output.println("Compatibility aliases:");
     output.println("  new check test add remove sync update headless standalone");

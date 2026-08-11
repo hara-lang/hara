@@ -19,6 +19,7 @@ import hara.truffle.bytecode.HbcProgram.TryEntry;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Arrays;
+import java.util.Iterator;
 
 /** Executes a validated portable HBC5 program using the ordinary Hara runtime boundaries. */
 public final class HbcMachine {
@@ -104,7 +105,6 @@ public final class HbcMachine {
           if (closure != null
               && closure.program == program
               && closure.context == context
-              && closure.namespace.equals(context.currentNamespaceName())
               && !program.functions().get(closure.prototype).asyncFunction()) {
             calls.push(new CallFrame(functionIndex, function, locals, stack, ip + 1));
             functionIndex = closure.prototype;
@@ -114,7 +114,27 @@ public final class HbcMachine {
             ip = 0;
             continue;
           }
-          stack.add(context.invokeCallable(callee, args));
+          try {
+            stack.add(context.invokeCallable(callee, args));
+          } catch (RuntimeException failure) {
+            if (Boolean.getBoolean("hara.hbc.trace")) {
+              System.err.println(
+                  "HBC call failure "
+                      + (program.namespace() == null ? "<anonymous>" : program.namespace())
+                      + "/"
+                      + (function.name() == null ? "<entry>" : function.name())
+                      + " ip="
+                      + ip
+                      + " callee="
+                      + (callee == null ? "nil" : callee.getClass().getName())
+                      + ": "
+                      + failure.getMessage());
+              if (Boolean.getBoolean("hara.hbc.trace.stack")) {
+                failure.printStackTrace(System.err);
+              }
+            }
+            throw failure;
+          }
         }
         case CALL_STATIC -> {
           Object[] args = popArguments(stack, index(instruction.second()));
@@ -152,8 +172,10 @@ public final class HbcMachine {
           Symbol symbol = Symbol.create(stringConstant(program, instruction.first()));
           IMetadata metadata = metadata(program, instruction.second());
           if (metadata != null) symbol = symbol.withMeta(metadata);
-          context.define(symbol, value);
-          stack.add(value);
+          // HBC5 follows HAL `def`: the expression returns the newly interned
+          // Var, not its root value.  Rust's VM uses the same contract and the
+          // portable conformance corpus observes its printed `#'ns/name` form.
+          stack.add(context.define(symbol, value));
         }
         case SET_GLOBAL -> {
           Object value = pop(stack);
@@ -212,7 +234,12 @@ public final class HbcMachine {
             stack.add(hara.lang.data.Set.Standard.from(null, popArguments(stack, index(instruction.first()))));
         case CONCAT_LIST -> {
           Object[] values = popArguments(stack, index(instruction.first()));
-          stack.add(invokeGlobal(context, "concat", values));
+          ArrayList<Object> concatenated = new ArrayList<>();
+          for (Object value : values) {
+            Iterator<?> iterator = (Iterator<?>) context.iterValue(value);
+            while (iterator.hasNext()) concatenated.add(iterator.next());
+          }
+          stack.add(hara.lang.data.List.Standard.from(null, concatenated.toArray()));
         }
         case TO_VECTOR -> stack.add(invokeGlobal(context, "vec", new Object[] {pop(stack)}));
         case MAKE_MULTI_ARITY -> {
@@ -609,13 +636,9 @@ public final class HbcMachine {
     Object invoke(Object[] arguments) {
       Function function = program.functions().get(prototype);
       if (function.asyncFunction()) {
-        return context.hbcAsync(
-            () ->
-                context.callInNamespace(
-                    namespace, () -> call(program, context, prototype, arguments, captures)));
+        return context.hbcAsync(() -> call(program, context, prototype, arguments, captures));
       }
-      return context.callInNamespace(
-          namespace, () -> call(program, context, prototype, arguments, captures));
+      return call(program, context, prototype, arguments, captures);
     }
 
     @ExportMessage

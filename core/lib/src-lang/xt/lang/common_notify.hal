@@ -150,7 +150,11 @@
            (and repl? (or (= op-name "notify")
                           (= op-name "print")
                           (= op-name "capture")))
-           (list (quote return) (second node))
+           (if (> (count node) 1)
+             (list (quote return) (second node))
+             ;; A zero-argument notification can be a `->` step. Preserve
+             ;; its open argument slot so threading produces `(return value)`.
+             (list (quote return)))
 
            (and repl? (= op-name ">notify"))
            (list (quote fn) [(quote value)]
@@ -232,7 +236,10 @@
                (vec (rest form))
                [form])
         statements (vec (drop-last body))
-        raw-result (last body)
+        ;; Direct notification rewriting can leave a threading form whose
+        ;; final open `(return)` step has not expanded yet. Expand the result
+        ;; before deciding whether it is a returned value.
+        raw-result (macroexpand (last body))
         result-form (if (and (list? raw-result)
                              (= (quote return) (first raw-result)))
                       (second raw-result)

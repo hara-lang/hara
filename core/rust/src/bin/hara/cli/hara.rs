@@ -40,13 +40,13 @@ fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
         .map(|path| format!("{:?}", path.to_string_lossy()))
         .unwrap_or_else(|| "nil".into());
     let source = format!(
-        "(do (require [std.foundation.edn :as edn] [hara.cli.main :as main] [hara.cli.handlers :as handlers] [hara.cli.model :as model]) \
+        "(do (require [std.foundation.edn :as edn] [tool.cli.main :as main] [tool.cli.handlers :as handlers] [tool.cli.model :as model]) \
          (try (main/run (edn/read {:?}) {:?} \
           {{:runtime/id :native :runtime/cwd {:?} :runtime/project {} :runtime/capabilities {}}} \
           (handlers/registry)) \
           (catch Throwable error \
            (let [data (ex-data error) message (or (:error data) (ex-message error) (str error))] \
-            (model/failure :hara.cli.outcome/usage-error :hara.cli/command-error message)))))",
+            (model/failure :tool.cli.outcome/usage-error :tool.cli/command-error message)))))",
         cli_app::MANIFEST_SOURCE,
         full_argv,
         cwd.to_string_lossy(),

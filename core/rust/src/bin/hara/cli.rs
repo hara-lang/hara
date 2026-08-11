@@ -242,7 +242,7 @@ mod spec_tests {
         let document = parse("{}").unwrap();
         let findings = lint_metaspec(&document);
         assert_eq!(findings.len(), METASPEC_REQUIRED_KEYS.len());
-        assert_eq!(findings[0].rule, "hara.metaspec.rule/required-key");
+        assert_eq!(findings[0].rule, "tool.metaspec.rule/required-key");
         assert_eq!(
             findings[0].repair,
             map_form(vec![
@@ -270,7 +270,7 @@ mod spec_tests {
             .into_iter()
             .map(|finding| finding.rule)
             .collect::<Vec<_>>();
-        assert!(rules.contains(&"hara.metaspec.rule/duplicate-id"));
+        assert!(rules.contains(&"tool.metaspec.rule/duplicate-id"));
     }
 
     #[test]
@@ -286,7 +286,7 @@ mod spec_tests {
         let findings = verify_metaspec(&document, Path::new("metaspec.edn"));
         assert!(findings
             .iter()
-            .any(|finding| finding.rule == "hara.metaspec.rule/schema-reference"));
+            .any(|finding| finding.rule == "tool.metaspec.rule/schema-reference"));
         let report = metaspec_report(&document, &findings);
         assert_eq!(map_get(&report, "report/status"), Some(&keyword("fail")));
     }

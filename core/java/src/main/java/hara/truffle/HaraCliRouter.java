@@ -53,9 +53,9 @@ final class HaraCliRouter {
 
   Resolution resolve(String[] arguments) {
     List<String> argv = List.of(arguments);
-    if (argv.isEmpty()) return resolveId("hara.cli.route/repl", List.of(), false);
+    if (argv.isEmpty()) return resolveId("tool.cli.route/repl", List.of(), false);
     if (argv.equals(List.of("run")))
-      return resolveId("hara.cli.route/project-run", List.of(), true);
+      return resolveId("tool.cli.route/project-run", List.of(), true);
     ArrayList<Match> matches = new ArrayList<>();
     for (Route route : routes) {
       if (startsWith(argv, route.path())) matches.add(new Match(route.path(), route, false));
@@ -81,14 +81,14 @@ final class HaraCliRouter {
 
   static int outcomeExit(String outcome) {
     return switch (outcome) {
-      case "hara.cli.outcome/success" -> 0;
-      case "hara.cli.outcome/failed" -> 1;
-      case "hara.cli.outcome/interrupted" -> 130;
-      case "hara.cli.outcome/usage-error",
-          "hara.cli.outcome/read-error",
-          "hara.cli.outcome/resolution-error",
-          "hara.cli.outcome/unavailable",
-          "hara.cli.outcome/internal-error" -> 2;
+      case "tool.cli.outcome/success" -> 0;
+      case "tool.cli.outcome/failed" -> 1;
+      case "tool.cli.outcome/interrupted" -> 130;
+      case "tool.cli.outcome/usage-error",
+          "tool.cli.outcome/read-error",
+          "tool.cli.outcome/resolution-error",
+          "tool.cli.outcome/unavailable",
+          "tool.cli.outcome/internal-error" -> 2;
       default -> throw new IllegalArgumentException("Unknown CLI outcome: " + outcome);
     };
   }
@@ -109,39 +109,39 @@ final class HaraCliRouter {
     if (resolution == null) return arguments;
     String command =
         switch (resolution.route().handler()) {
-          case "hara.cli.handler/eval" -> "eval";
-          case "hara.cli.handler/run-file" -> "run";
-          case "hara.cli.handler/stdin" -> "stdin";
-          case "hara.cli.handler/repl" -> "repl";
-          case "hara.cli.handler/server" -> "server";
-          case "hara.cli.handler/remote" -> "remote";
-          case "hara.cli.handler/project-new" -> "new";
-          case "hara.cli.handler/project-check" -> "check";
-          case "hara.cli.handler/project-run" -> "run";
-          case "hara.cli.handler/project-test" -> "test";
-          case "hara.cli.handler/project-add" -> "add";
-          case "hara.cli.handler/project-remove" -> "remove";
-          case "hara.cli.handler/project-sync" -> "sync";
-          case "hara.cli.handler/project-update" -> "update";
-          case "hara.cli.handler/package" -> "package";
-          case "hara.cli.handler/spec" -> "spec";
-          case "hara.cli.handler/extension" -> "extension";
-          case "hara.cli.handler/identity" -> "id";
-          case "hara.cli.handler/asset" -> "asset";
-          case "hara.cli.handler/tap" -> "tap";
+          case "tool.cli.handler/eval" -> "eval";
+          case "tool.cli.handler/run-file" -> "run";
+          case "tool.cli.handler/stdin" -> "stdin";
+          case "tool.cli.handler/repl" -> "repl";
+          case "tool.cli.handler/server" -> "server";
+          case "tool.cli.handler/remote" -> "remote";
+          case "tool.cli.handler/project-new" -> "new";
+          case "tool.cli.handler/project-check" -> "check";
+          case "tool.cli.handler/project-run" -> "run";
+          case "tool.cli.handler/project-test" -> "test";
+          case "tool.cli.handler/project-add" -> "add";
+          case "tool.cli.handler/project-remove" -> "remove";
+          case "tool.cli.handler/project-sync" -> "sync";
+          case "tool.cli.handler/project-update" -> "update";
+          case "tool.cli.handler/package" -> "package";
+          case "tool.cli.handler/spec" -> "spec";
+          case "tool.cli.handler/extension" -> "extension";
+          case "tool.cli.handler/identity" -> "id";
+          case "tool.cli.handler/asset" -> "asset";
+          case "tool.cli.handler/tap" -> "tap";
           default -> null;
         };
     if (command == null) return arguments;
     ArrayList<String> normalized = new ArrayList<>();
     normalized.add(command);
-    if (!"hara.cli.route/package-extension".equals(resolution.route().id())
+    if (!"tool.cli.route/package-extension".equals(resolution.route().id())
         && java.util.Set.of(
-            "hara.cli.handler/package",
-            "hara.cli.handler/spec",
-            "hara.cli.handler/extension",
-            "hara.cli.handler/identity",
-            "hara.cli.handler/asset",
-            "hara.cli.handler/tap")
+            "tool.cli.handler/package",
+            "tool.cli.handler/spec",
+            "tool.cli.handler/extension",
+            "tool.cli.handler/identity",
+            "tool.cli.handler/asset",
+            "tool.cli.handler/tap")
         .contains(resolution.route().handler()))
       normalized.addAll(resolution.route().path().subList(1, resolution.route().path().size()));
     normalized.addAll(resolution.arguments());

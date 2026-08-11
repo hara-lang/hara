@@ -70,6 +70,8 @@ public class HaraLanguageTest {
       assertEquals(3, context.eval(HaraLanguage.ID, "(count [1 2 3])").asLong());
       assertEquals(1, context.eval(HaraLanguage.ID, "(get {:a 1} :a)").asLong());
       assertEquals(7, context.eval(HaraLanguage.ID, "(get {} :missing 7)").asLong());
+      assertTrue(context.eval(HaraLanguage.ID, "(nil? (get '(1) 1))").asBoolean());
+      assertEquals(7, context.eval(HaraLanguage.ID, "(get [1] 2 7)").asLong());
       assertEquals(2, context.eval(HaraLanguage.ID, "(get (assoc {:a 1} :b 2) :b)").asLong());
       assertEquals(4, context.eval(HaraLanguage.ID, "(nth [3 4] 1)").asLong());
       assertEquals(2, context.eval(HaraLanguage.ID, "(count (conj [5] 6))").asLong());

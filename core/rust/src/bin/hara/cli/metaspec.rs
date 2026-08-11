@@ -70,8 +70,8 @@ pub(crate) fn lint_metaspec(document: &Form) -> Vec<SpecFinding> {
     for key in METASPEC_REQUIRED_KEYS {
         if map_get(document, key).is_none() {
             findings.push(finding(
-                "hara.metaspec.rule/required-key",
-                "hara.metaspec/required-sections",
+                "tool.metaspec.rule/required-key",
+                "tool.metaspec/required-sections",
                 vec![],
                 format!("Missing required meta-spec key: :{key}"),
                 map_form(vec![
@@ -97,8 +97,8 @@ pub(crate) fn lint_metaspec(document: &Form) -> Vec<SpecFinding> {
                 .collect::<Vec<_>>();
             if !qualified_keyword(key) {
                 findings.push(finding(
-                    "hara.metaspec.rule/qualified-key",
-                    "hara.metaspec/qualified-keys",
+                    "tool.metaspec.rule/qualified-key",
+                    "tool.metaspec/qualified-keys",
                     key_path.clone(),
                     format!("Map key must be a qualified keyword: {key}"),
                     map_form(vec![
@@ -115,8 +115,8 @@ pub(crate) fn lint_metaspec(document: &Form) -> Vec<SpecFinding> {
             let duplicate_key = key.to_string();
             if !map_keys.insert(duplicate_key) {
                 findings.push(finding(
-                    "hara.metaspec.rule/duplicate-key",
-                    "hara.metaspec/unique-identifiers",
+                    "tool.metaspec.rule/duplicate-key",
+                    "tool.metaspec/unique-identifiers",
                     key_path.clone(),
                     format!("Duplicate map key: {key}"),
                     map_form(vec![
@@ -128,8 +128,8 @@ pub(crate) fn lint_metaspec(document: &Form) -> Vec<SpecFinding> {
             if METASPEC_IDENTIFIER_KEYS.contains(&key_text) && !matches!(value, Form::Map(_)) {
                 if !qualified_keyword(value) {
                     findings.push(finding(
-                        "hara.metaspec.rule/stable-id",
-                        "hara.metaspec/stable-identifiers",
+                        "tool.metaspec.rule/stable-id",
+                        "tool.metaspec/stable-identifiers",
                         key_path.clone(),
                         format!("Declaration ID must be a qualified keyword: {value}"),
                         map_form(vec![
@@ -153,8 +153,8 @@ pub(crate) fn lint_metaspec(document: &Form) -> Vec<SpecFinding> {
     duplicate_ids.sort_by(|left, right| left.0.cmp(&right.0));
     for ((_, value), paths) in duplicate_ids {
         findings.push(finding(
-            "hara.metaspec.rule/duplicate-id",
-            "hara.metaspec/unique-identifiers",
+            "tool.metaspec.rule/duplicate-id",
+            "tool.metaspec/unique-identifiers",
             paths[1].clone(),
             format!("Duplicate declaration identifier: {value}"),
             map_form(vec![
@@ -201,8 +201,8 @@ pub(crate) fn verify_metaspec(document: &Form, path: &Path) -> Vec<SpecFinding> 
                     .chain([key.clone()])
                     .collect::<Vec<_>>();
                 findings.push(finding(
-                    "hara.metaspec.rule/schema-reference",
-                    "hara.metaspec/resolved-schema-references",
+                    "tool.metaspec.rule/schema-reference",
+                    "tool.metaspec/resolved-schema-references",
                     reference_path,
                     format!("Unresolved schema reference: {reference}"),
                     map_form(vec![
@@ -223,8 +223,8 @@ pub(crate) fn verify_metaspec(document: &Form, path: &Path) -> Vec<SpecFinding> 
                 || map_get(reference, "reference/to").is_none()
             {
                 findings.push(finding(
-                    "hara.metaspec.rule/cross-reference",
-                    "hara.metaspec/resolved-cross-references",
+                    "tool.metaspec.rule/cross-reference",
+                    "tool.metaspec/resolved-cross-references",
                     base.clone(),
                     "Cross-reference declaration requires :reference/id, :reference/from and :reference/to",
                     map_form(vec![
@@ -242,8 +242,8 @@ pub(crate) fn verify_metaspec(document: &Form, path: &Path) -> Vec<SpecFinding> 
         let own_id = map_get(document, "document/id");
         if own_id != Some(spec_id) && !sibling_document_ids(path).contains(&spec_id.to_string()) {
             findings.push(finding(
-                "hara.metaspec.rule/conforms-to",
-                "hara.metaspec/resolved-cross-references",
+                "tool.metaspec.rule/conforms-to",
+                "tool.metaspec/resolved-cross-references",
                 vec![keyword("spec/conforms-to"), keyword("spec/id")],
                 format!("Unresolved conforming meta-spec: {spec_id}"),
                 map_form(vec![
@@ -319,8 +319,8 @@ pub(crate) fn validate_against_metaspec(
             .and_then(|reference| map_get(reference, "spec/id"));
         if actual != Some(expected) {
             findings.push(finding(
-                "hara.metaspec.rule/document-reference",
-                "hara.metaspec/generated-document-conformance",
+                "tool.metaspec.rule/document-reference",
+                "tool.metaspec/generated-document-conformance",
                 vec![keyword("spec/conforms-to"), keyword("spec/id")],
                 format!("Document must conform to {expected}"),
                 map_form(vec![
@@ -480,8 +480,8 @@ fn schema_validation_finding(
     repair: Form,
 ) -> SpecFinding {
     finding(
-        "hara.metaspec.rule/schema-validation",
-        "hara.metaspec/generated-document-conformance",
+        "tool.metaspec.rule/schema-validation",
+        "tool.metaspec/generated-document-conformance",
         path,
         message,
         repair,
@@ -540,8 +540,8 @@ fn validate_declared_references(
                     .join(&relative);
                 if !resolved.is_file() {
                     findings.push(finding(
-                        "hara.metaspec.rule/document-reference",
-                        "hara.metaspec/generated-document-conformance",
+                        "tool.metaspec.rule/document-reference",
+                        "tool.metaspec/generated-document-conformance",
                         vec![],
                         format!("Document-relative reference does not exist: {relative}"),
                         map_form(vec![
@@ -560,8 +560,8 @@ fn validate_declared_references(
         for source in source_values {
             if !targets.contains(&source.to_string()) {
                 findings.push(finding(
-                    "hara.metaspec.rule/document-reference",
-                    "hara.metaspec/generated-document-conformance",
+                    "tool.metaspec.rule/document-reference",
+                    "tool.metaspec/generated-document-conformance",
                     vec![],
                     format!("Unresolved document reference: {source} -> {to}"),
                     map_form(vec![
