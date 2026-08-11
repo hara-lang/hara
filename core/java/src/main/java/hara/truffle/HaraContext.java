@@ -245,6 +245,9 @@ public final class HaraContext {
     installNativeLibraries();
     collectBuiltins(FOUNDATION_NAMESPACE, () -> libraryLoader.installEagerJava(this));
     hideIteratorImplementationBindings();
+    for (String namespace : bytecodeLibrary.namespaces()) {
+      namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
+    }
     currentNamespace = namespace("user");
     initializeUserNamespace(currentNamespace);
   }
@@ -982,8 +985,9 @@ public final class HaraContext {
     HaraNamespace existing = namespaces.get(target);
     if (existing != null
         && namespaceStates.get(target) == NamespaceLoadState.LOADED
-        && !bytecodeLibrary.provides(target)
-        && (!libraryLoader.provides(target) || sourceNamespaceLoaded(target))) {
+        && (bytecodeLibrary.provides(target)
+            || !libraryLoader.provides(target)
+            || sourceNamespaceLoaded(target))) {
       return existing;
     }
     NamespaceLoadState state = namespaceStates.get(target);

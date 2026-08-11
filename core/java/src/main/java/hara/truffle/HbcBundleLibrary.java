@@ -35,6 +35,10 @@ final class HbcBundleLibrary {
     return modules.get(namespace);
   }
 
+  Iterable<String> namespaces() {
+    return modules.keySet();
+  }
+
   List<Module> eagerModules() {
     ArrayList<Module> eager = new ArrayList<>();
     for (Module module : modules.values()) {
