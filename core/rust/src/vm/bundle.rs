@@ -4,8 +4,13 @@ use sha2::{Digest, Sha256};
 
 use crate::{core, kernel, Runtime, EAGER_HAL_RESOURCES, EMBEDDED_HAL_RESOURCES};
 
+#[path = "bundle/order.rs"]
+mod order;
+use order::order_module_sources;
+
 const MAGIC: &[u8; 4] = b"HBX0";
 
+#[derive(Clone, Copy)]
 pub struct ModuleSource<'a> {
     pub resource: &'a str,
     pub source: &'a str,
@@ -38,7 +43,7 @@ pub fn embedded_standard_library_sources() -> Vec<ModuleSource<'static>> {
                         && !EAGER_HAL_RESOURCES.contains(namespace)
                 }),
         );
-    ordered
+    let sources = ordered
         .map(|resource| {
             let source = EMBEDDED_HAL_RESOURCES
                 .iter()
@@ -46,6 +51,11 @@ pub fn embedded_standard_library_sources() -> Vec<ModuleSource<'static>> {
                 .unwrap_or_else(|| panic!("missing embedded HAL resource: {resource}"));
             ModuleSource { resource, source }
         })
+        .collect::<Vec<_>>();
+    order_module_sources(&sources)
+        .expect("embedded standard-library dependencies must be acyclic")
+        .into_iter()
+        .map(|index| sources[index])
         .collect()
 }
 
@@ -58,7 +68,8 @@ pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, 
         runtime.register_resource(source.resource, source.source);
     }
     let mut encoded = Vec::new();
-    for source in sources {
+    for index in order_module_sources(sources)? {
+        let source = &sources[index];
         let (namespace_form, body) = split_namespace_form(source.source)?;
         runtime
             .eval_text(namespace_form)
@@ -308,7 +319,7 @@ fn standard_library_namespace(namespace: &str) -> bool {
         .any(|prefix| namespace.starts_with(prefix))
 }
 
-fn namespace_dependencies(namespace_form: &str) -> Result<Vec<String>, String> {
+pub(super) fn namespace_dependencies(namespace_form: &str) -> Result<Vec<String>, String> {
     let forms = kernel::parse_forms(namespace_form)?;
     let Some(kernel::Form::List(items)) = forms.first() else {
         return Err("standard-library module has invalid ns form".into());
@@ -321,7 +332,7 @@ fn namespace_dependencies(namespace_form: &str) -> Result<Vec<String>, String> {
     Ok(dependencies)
 }
 
-fn split_namespace_form(source: &str) -> Result<(&str, &str), String> {
+pub(super) fn split_namespace_form(source: &str) -> Result<(&str, &str), String> {
     let start = source.find("(ns ").ok_or("HAL module is missing ns form")?;
     let mut depth = 0usize;
     let mut string = false;
@@ -612,6 +623,24 @@ mod tests {
             .namespace_registry
             .find("example.lazy.target")
             .is_some());
+    }
+
+    #[test]
+    fn bundle_compilation_orders_eager_dependencies_before_consumers() {
+        let sources = [
+            ModuleSource {
+                resource: "example.client",
+                source: "(ns example.client (:require [example.target :as target])) (def answer target/answer)",
+            },
+            ModuleSource {
+                resource: "example.target",
+                source: "(ns example.target) (def answer 42)",
+            },
+        ];
+        let bytes = compile_bytecode_bundle(&sources).expect("compile dependency fixture");
+        let modules = decode(&bytes).expect("decode dependency fixture");
+        assert_eq!(modules[0].resource, "example.target");
+        assert_eq!(modules[1].resource, "example.client");
     }
 
     #[test]

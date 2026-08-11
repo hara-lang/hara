@@ -220,13 +220,9 @@ impl Compiler {
             .strip_prefix("-/")
             .is_some_and(|local| self.globals.iter().any(|global| global == local))
             || self.globals.iter().any(|global| global == name)
-            || crate::core::namespace_registry()
-                .ok()
-                .and_then(|registry| {
-                    name.strip_prefix(&format!("{}/", self.namespace))
-                        .map(|local| self.globals.iter().any(|global| global == local))
-                })
-                .unwrap_or(false);
+            || name
+                .strip_prefix(&format!("{}/", self.namespace))
+                .is_some_and(|local| self.globals.iter().any(|global| global == local));
         declared
             || crate::core::namespace_registry()
                 .map(|registry| {

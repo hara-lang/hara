@@ -265,6 +265,9 @@ impl GeneratedNamespaceConfig {
         let Some((alias, method)) = symbol.split_once('/') else {
             return symbol.into();
         };
+        if self.lazy_aliases.contains_key(alias) {
+            return symbol.into();
+        }
         if LIBRARIES
             .iter()
             .any(|(_, _, default_alias)| *default_alias == alias)
@@ -627,6 +630,13 @@ fn known_namespace(value: &str) -> bool {
 fn canonical(namespace: &str, method: &str) -> String {
     if namespace == "std.foundation" {
         return format!("std.foundation/{method}");
+    }
+    // Coroutine operations are evaluator control forms, not ordinary HAL
+    // function calls. Keep their canonical names so `co/yield` and
+    // `co/await` remain visible to the fiber evaluator instead of routing
+    // through the synchronous Foundation wrapper namespace.
+    if normalize_namespace(namespace) == "std.foundation.coroutine" {
+        return format!("std.foundation.coroutine/{method}");
     }
     if let Some((_, _, alias)) = LIBRARIES
         .iter()

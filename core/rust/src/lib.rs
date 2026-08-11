@@ -79,8 +79,10 @@ const EAGER_HAL_RESOURCES: &[&str] = &[
     "std.foundation.os",
     "std.foundation.edn",
     "std.foundation.json",
+    "std.foundation.set",
     "std.foundation.pretty.engine",
     "std.foundation.pretty",
+    "std.foundation.kernel",
 ];
 
 fn ignore_socket_event(_event: core::SocketEvent) {}
@@ -895,6 +897,7 @@ impl Runtime {
     fn eval_forms(&mut self, forms: Vec<Form>, traced: bool) -> Result<core::Value, String> {
         let mut result = core::Value::Nil;
         for form in forms {
+            let mut restore_namespace = None;
             if let Form::List(values) = &form {
                 if matches!(values.first(), Some(Form::Symbol(name)) if name == "ns") {
                     let name = match values.get(1) {
@@ -1008,6 +1011,7 @@ impl Runtime {
             if let Form::List(values) = &form {
                 if matches!(values.first(), Some(Form::Symbol(name)) if name == "require") {
                     let current = self.current_namespace();
+                    restore_namespace = Some(current.clone());
                     let mut config = self
                         .generated_configs
                         .get(&current)
@@ -1046,6 +1050,9 @@ impl Runtime {
             reject_legacy_iterator_calls(&form)?;
             let resolved = config.rewrite(form);
             result = self.eval_form(resolved, traced)?;
+            if let Some(namespace) = restore_namespace {
+                self.use_namespace(&namespace);
+            }
             if matches!(result, core::Value::Recur(_)) {
                 return Err("recur must be inside loop".into());
             }
@@ -3096,6 +3103,13 @@ mod tests {
             .unwrap();
         assert_eq!(runtime.current_namespace(), "example.client");
         assert_eq!(runtime.eval_text("required/answer").unwrap(), "42");
+
+        runtime.use_namespace("user");
+        runtime
+            .eval_text("(require [example.required :as direct])")
+            .unwrap();
+        assert_eq!(runtime.current_namespace(), "user");
+        assert_eq!(runtime.eval_text("direct/answer").unwrap(), "42");
     }
 
     #[test]
@@ -7964,6 +7978,19 @@ mod tests {
     }
 
     #[test]
+    fn increment_and_decrement_report_integer_overflow_without_panicking() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.eval_text("(inc 9223372036854775807)").unwrap_err(),
+            "integer overflow"
+        );
+        assert_eq!(
+            runtime.eval_text("(dec -9223372036854775808)").unwrap_err(),
+            "integer overflow"
+        );
+    }
+
+    #[test]
     fn declare_noop() {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.eval_text("(declare x)").unwrap(), "nil");
@@ -8338,14 +8365,11 @@ mod tests {
     #[test]
     fn fiber_cli_path_evaluates_coroutine_resume_and_yield() {
         let mut runtime = Runtime::new();
-        runtime
-            .eval_text("(require [std.foundation.coroutine :as c])")
-            .unwrap();
         assert_eq!(
-            runtime.eval_text("(do (def co (c/create (fn [x] (let [y (c/yield (* x 2))] (+ y 1))))) (c/resume co 21))").unwrap(),
+            runtime.eval_text("(do (def coroutine (co/create (fn [x] (let [y (co/yield (* x 2))] (+ y 1))))) (co/resume coroutine 21))").unwrap(),
             "42"
         );
-        assert_eq!(runtime.eval_text("(c/resume co 20)").unwrap(), "21");
+        assert_eq!(runtime.eval_text("(co/resume coroutine 20)").unwrap(), "21");
     }
     #[test]
     fn binding_forms_evaluate_multiple_body_expressions() {
@@ -8366,35 +8390,26 @@ mod tests {
     #[test]
     fn fiber_cli_path_awaits_promise_inside_coroutine() {
         let mut runtime = Runtime::new();
-        runtime
-            .eval_text("(require [std.foundation.coroutine :as c])")
-            .unwrap();
         assert_eq!(
             runtime
                 .eval_text(
-                    "(def co (c/create (fn [] (c/await (promise/run (fn [] 42)))))) (c/resume co)"
+                    "(def coroutine (co/create (fn [] (co/await (promise/run (fn [] 42)))))) (co/resume coroutine)"
                 )
                 .unwrap(),
             "42"
         );
     }
     #[test]
-    fn coroutine_namespace_can_be_required_and_aliased() {
+    fn coroutine_builtin_alias_does_not_require_the_foundation_namespace() {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
-                .eval_text("(require 'std.foundation.coroutine) :loaded")
-                .unwrap(),
-            ":loaded"
-        );
-        assert_eq!(
-            runtime
-                .eval_text("(coroutine/status (coroutine/create (fn [x] x)))")
+                .eval_text("(co/status (co/create (fn [x] x)))")
                 .unwrap(),
             ":suspended"
         );
         assert_eq!(
-            runtime.eval_text("(require [std.foundation.coroutine :as co]) (co/coroutine? (co/create (fn [] 1)))").unwrap(),
+            runtime.eval_text("(co/coroutine? (co/create (fn [] 1)))").unwrap(),
             "true"
         );
     }

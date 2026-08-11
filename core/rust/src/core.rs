@@ -13124,11 +13124,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err(format!("{n} expects one number"));
                     }
                     match eval(&fs[1], env)? {
-                        Value::Number(value) => Ok(Value::Number(if n == "inc" {
-                            value + 1
-                        } else {
-                            value - 1
-                        })),
+                        Value::Number(value) => value
+                            .checked_add(if n == "inc" { 1 } else { -1 })
+                            .map(Value::Number)
+                            .ok_or_else(|| "integer overflow".to_string()),
                         _ => Err(format!("{n} expects a number")),
                     }
                 }

@@ -69,6 +69,29 @@ fn records_lazy_alias_without_an_eager_dependency() {
     .unwrap();
     assert!(config.required_namespaces().is_empty());
     assert_eq!(config.lazy_target("test"), Some("code.test"));
+    assert_eq!(
+        config
+            .rewrite(parse_forms("test/run").unwrap().remove(0))
+            .to_string(),
+        "test/run"
+    );
+}
+
+#[test]
+fn coroutine_aliases_rewrite_to_fiber_control_forms() {
+    let config = GeneratedNamespaceConfig::defaults();
+    assert_eq!(
+        config
+            .rewrite(parse_forms("co/yield").unwrap().remove(0))
+            .to_string(),
+        "std.foundation.coroutine/yield"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("co/await").unwrap().remove(0))
+            .to_string(),
+        "std.foundation.coroutine/await"
+    );
 }
 
 #[test]

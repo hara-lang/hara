@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Codex/Kimi source gate for alpha Hara modules.
+
+Policy source: hara-specs-registry/01-lang/004-foundation/draft/
+conformance/source-gates.edn
+"""
+
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+
+RULES = (
+    ("hara.source/no-requiring-resolve", re.compile(r"\brequiring-resolve\b"),
+     "use an explicit namespace alias or a registered loader"),
+    ("hara.source/no-clojure-namespace", re.compile(r"\bclojure\."),
+     "use Foundation APIs rather than Clojure namespaces"),
+    ("hara.source/foundation-builtin-alias",
+     re.compile(
+         r"\[\s*std\.foundation\."
+         r"(?:string|promise|bytes|socket|file|coroutine|edn|json|set|pretty|"
+         r"host|kernel|os|crypto)\s"),
+     "use the builtin str/*, co/*, json/*, bytes/*, host/*, or corresponding alias"),
+)
+
+
+def response(event, message):
+    if os.environ.get("HARA_HOOK_MODE") == "kimi":
+        print(message, file=sys.stderr)
+        raise SystemExit(2)
+    body = {"hookSpecificOutput": {"hookEventName": event}}
+    if event == "PreToolUse":
+        body["hookSpecificOutput"].update(
+            {"permissionDecision": "deny", "permissionDecisionReason": message})
+    else:
+        body.update({"decision": "block", "reason": message})
+        body["hookSpecificOutput"]["additionalContext"] = message
+    print(json.dumps(body))
+    raise SystemExit(0)
+
+
+def violations(path, content):
+    findings = []
+    normalized = str(path).replace("\\", "/")
+    if "/core/lib/src-lang/lang/" in normalized:
+        findings.append(
+            "hara.source/lang-canonical-root: move lang.* source to core/lib/src/lang/")
+    for rule, pattern, message in RULES:
+        if pattern.search(content or ""):
+            findings.append(f"{rule}: {message}")
+    return findings
+
+
+def patch_additions(patch, cwd):
+    path = None
+    added = []
+    for line in patch.splitlines():
+        if line.startswith(("*** Add File: ", "*** Update File: ")):
+            if path is not None:
+                yield path, "\n".join(added)
+            path = Path(line.split(": ", 1)[1])
+            if not path.is_absolute():
+                path = cwd / path
+            added = []
+        elif line.startswith("*** Delete File: "):
+            if path is not None:
+                yield path, "\n".join(added)
+            path = None
+            added = []
+        elif path is not None and line.startswith("+") and not line.startswith("+++"):
+            added.append(line[1:])
+    if path is not None:
+        yield path, "\n".join(added)
+
+
+def hara_binary(path):
+    configured = os.environ.get("HARA_BIN")
+    if configured:
+        return configured
+    for parent in (path.parent, *path.parents):
+        for candidate in (parent / "core" / "hara",
+                          parent / "technology" / "hara" / "core" / "hara"):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return shutil.which("hara")
+
+
+def validate_runtime(path):
+    runtime = hara_binary(path)
+    if not runtime:
+        return "hara.source/runtime: no Hara executable found (set HARA_BIN)"
+    result = subprocess.run(
+        [runtime, "run", str(path)], capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        return f"hara.source/evaluation: {detail or 'Hara evaluation failed'}"
+    return None
+
+
+def main():
+    payload = json.load(sys.stdin)
+    event = payload.get("hook_event_name", "PreToolUse")
+    tool = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input") or {}
+    cwd = Path(payload.get("cwd") or os.getcwd()).resolve()
+    candidates = []
+
+    if tool == "apply_patch":
+        patch = tool_input.get("command") or tool_input.get("patch") or ""
+        if event == "PreToolUse":
+            candidates.extend(patch_additions(patch, cwd))
+        else:
+            candidates.extend((path, path.read_text()) for path, _ in patch_additions(patch, cwd)
+                              if path.exists())
+    elif tool in {"Edit", "Write"}:
+        raw_path = tool_input.get("file_path")
+        if raw_path:
+            path = Path(raw_path)
+            if not path.is_absolute():
+                path = cwd / path
+            if event == "PostToolUse" and path.exists():
+                candidates.append((path, path.read_text()))
+            else:
+                candidates.append((path, tool_input.get("content") or
+                                   tool_input.get("new_string") or ""))
+
+    for path, content in candidates:
+        if path.suffix != ".hal":
+            continue
+        findings = violations(path, content)
+        if findings:
+            response(event, "Hara source gate rejected the edit:\n" + "\n".join(findings))
+        if event == "PostToolUse":
+            failure = validate_runtime(path)
+            if failure:
+                response(event, failure)
+
+
+if __name__ == "__main__":
+    main()
