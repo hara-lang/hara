@@ -2,7 +2,7 @@
 ;; std.db.node.kernel-batch — sequential and transactional statement batches.
 ;; ============================================================================
 (ns std.db.node.kernel-batch
-  (:require [std.db.node.kernel-base :as kernel]
+  (:require [std.db.node.kernel-base :as db-kernel]
             [std.lib.substrate.protocol :as substrate]))
 
 (def ACTION-BATCH "@xt.db/batch")
@@ -30,8 +30,8 @@
         parameters (or (compatible-get statement :parameters) [])
         mode (normalize-mode (compatible-get statement :mode))]
     (if (= mode :query)
-      (kernel/query-service-main service sql parameters)
-      (kernel/exec-service-main service sql parameters))))
+      (db-kernel/query-service-main service sql parameters)
+      (db-kernel/exec-service-main service sql parameters))))
 
 (defn run-statements
   "Runs statement descriptors sequentially and returns ordered results."
@@ -52,28 +52,28 @@
   "Runs statements within one already-acquired service queue."
   [service statements]
   (promise/then
-   (kernel/exec-service-main service "begin" [])
+   (db-kernel/exec-service-main service "begin" [])
    (fn [_]
      (promise/catch
       (promise/then
        (run-statements service statements)
        (fn [results]
          (promise/then
-          (kernel/exec-service-main service "commit" [])
+          (db-kernel/exec-service-main service "commit" [])
           (fn [_]
             {:status :committed
              :results results}))))
       (fn [error]
         (promise/then
-         (kernel/exec-service-main service "rollback" [])
+         (db-kernel/exec-service-main service "rollback" [])
          (fn [_]
            (throw error))))))))
 
 (defn batch-main
   "Runs a sequential batch under one service queue acquisition."
   [node service-id statements transactional]
-  (let [service (kernel/get-database-service node service-id)]
-    (kernel/service-submit
+  (let [service (db-kernel/get-database-service node service-id)]
+    (db-kernel/service-submit
      service
      (fn []
        (if transactional

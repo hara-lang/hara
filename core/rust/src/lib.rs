@@ -996,6 +996,11 @@ impl Runtime {
                             .expect("ns config was installed");
                         self.sync_generated_aliases(config);
                     }
+                    // Loading required modules may select their namespaces.
+                    // The namespace declaration itself must always finish in
+                    // the namespace it declared so later compilation binds
+                    // aliases and globals against the defining module.
+                    self.use_namespace(&name);
                     result = core::Value::Nil;
                     continue;
                 }
@@ -3080,6 +3085,17 @@ mod tests {
         );
         runtime.use_namespace("alpha");
         assert_eq!(runtime.eval_text("answer").unwrap(), "42");
+    }
+
+    #[test]
+    fn namespace_declaration_restores_declared_namespace_after_requires() {
+        let mut runtime = Runtime::new();
+        runtime.register_resource("example.required", "(ns example.required) (def answer 42)");
+        runtime
+            .eval_text("(ns example.client (:require [example.required :as required]))")
+            .unwrap();
+        assert_eq!(runtime.current_namespace(), "example.client");
+        assert_eq!(runtime.eval_text("required/answer").unwrap(), "42");
     }
 
     #[test]

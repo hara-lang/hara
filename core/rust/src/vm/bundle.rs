@@ -66,6 +66,10 @@ pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, 
         if source.resource == "std.foundation" {
             runtime.prepare_foundation_bytecode();
         }
+        // Required modules and macro expansion are allowed to select their
+        // own namespaces. Pin compilation to the module being emitted so
+        // aliases become canonical globals owned by its declaration.
+        runtime.use_namespace(source.resource);
         let artifact = runtime
             .compile_bytecode_artifact(body)
             .map_err(|error| format!("{}: bytecode compilation: {error}", source.resource))?;

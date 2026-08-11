@@ -138,7 +138,9 @@ impl Compiler {
         let referred = crate::core::namespace_registry()
             .ok()
             .and_then(|registry| {
-                let current = registry.current();
+                let current = registry
+                    .find(&self.namespace)
+                    .unwrap_or_else(|| registry.current());
                 current
                     .resolve(&crate::lang::data::Symbol::parse(name))
                     .map(|var| var.symbol().get_namespace() != Some(current.name().as_str()))
@@ -172,31 +174,28 @@ impl Compiler {
         let qualified = crate::core::namespace_registry()
             .ok()
             .and_then(|registry| {
+                let current = registry
+                    .find(&self.namespace)
+                    .unwrap_or_else(|| registry.current());
                 if let Some(local) = current_alias_local {
-                    Some(format!("{}/{}", registry.current().name().as_str(), local))
+                    Some(format!("{}/{}", self.namespace, local))
                 } else if !name.contains('/') && self.globals.iter().any(|global| global == name) {
-                    Some(format!("{}/{}", registry.current().name().as_str(), name))
+                    Some(format!("{}/{}", self.namespace, name))
                 } else if let Some((alias, local)) = name.split_once('/') {
-                    registry
-                        .current()
+                    current
                         .lazy_target(alias)
                         .map(|target| format!("{}/{}", target.as_str(), local))
                         .or_else(|| {
-                            registry
-                                .resolve(&crate::lang::data::Symbol::parse(name))
-                                .map(|var| var.symbol().as_str().to_owned())
+                            (if registry.find(alias).is_some() {
+                                registry.resolve(&crate::lang::data::Symbol::parse(name))
+                            } else {
+                                current.resolve(&crate::lang::data::Symbol::parse(name))
+                            })
+                            .map(|var| var.symbol().as_str().to_owned())
                         })
                 } else {
-                    registry
+                    current
                         .resolve(&crate::lang::data::Symbol::parse(name))
-                        .or_else(|| {
-                            (!name.contains('/'))
-                                .then(|| registry.find("std.foundation"))
-                                .flatten()
-                                .and_then(|foundation| {
-                                    foundation.resolve(&crate::lang::data::Symbol::parse(name))
-                                })
-                        })
                         .map(|var| var.symbol().as_str().to_owned())
                 }
             })
@@ -224,31 +223,29 @@ impl Compiler {
             || crate::core::namespace_registry()
                 .ok()
                 .and_then(|registry| {
-                    name.strip_prefix(&format!("{}/", registry.current().name().as_str()))
+                    name.strip_prefix(&format!("{}/", self.namespace))
                         .map(|local| self.globals.iter().any(|global| global == local))
                 })
                 .unwrap_or(false);
         declared
             || crate::core::namespace_registry()
                 .map(|registry| {
+                    let current = registry
+                        .find(&self.namespace)
+                        .unwrap_or_else(|| registry.current());
                     let lazy_visible = name
                         .split_once('/')
-                        .is_some_and(|(alias, _)| registry.current().lazy_target(alias).is_some());
+                        .is_some_and(|(alias, _)| current.lazy_target(alias).is_some());
                     lazy_visible
-                        || registry
-                            .resolve(&crate::lang::data::Symbol::parse(name))
-                            .is_some_and(|var| {
-                                crate::core::Primitive::from_symbol(name).is_none()
-                                    || var.symbol().get_namespace() != Some("std.foundation")
-                            })
-                        || (!name.contains('/')
-                            && crate::core::Primitive::from_symbol(name).is_none()
-                            && registry
-                                .find("std.foundation")
-                                .and_then(|foundation| {
-                                    foundation.resolve(&crate::lang::data::Symbol::parse(name))
-                                })
-                                .is_some())
+                        || (name
+                            .split_once('/')
+                            .and_then(|(namespace, _)| registry.find(namespace))
+                            .and_then(|_| registry.resolve(&crate::lang::data::Symbol::parse(name)))
+                            .or_else(|| current.resolve(&crate::lang::data::Symbol::parse(name))))
+                        .is_some_and(|var| {
+                            crate::core::Primitive::from_symbol(name).is_none()
+                                || var.symbol().get_namespace() != Some("std.foundation")
+                        })
                 })
                 .unwrap_or(false)
     }

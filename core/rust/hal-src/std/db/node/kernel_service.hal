@@ -3,7 +3,7 @@
 ;; ============================================================================
 (ns std.db.node.kernel-service
   (:require [std.db :as db]
-            [std.db.node.kernel-base :as kernel]
+            [std.db.node.kernel-base :as db-kernel]
             [std.db.node.kernel-batch :as batch]
             [std.db.node.lifecycle :as lifecycle]
             [std.lib.substrate.protocol :as substrate]))
@@ -62,7 +62,7 @@
 (defn driver-list-main
   "Returns driver IDs registered on node."
   [node]
-  (kernel/list-drivers node))
+  (db-kernel/list-drivers node))
 
 (defn service-list-main
   "Returns dynamically managed service IDs."
@@ -77,16 +77,16 @@
 (defn- optional-service-info
   [node service-id]
   (when (service-exists-main node service-id)
-    (kernel/service-info-main node service-id)))
+    (db-kernel/service-info-main node service-id)))
 
 (defn runtime-status-main
   "Returns an inspectable snapshot of the database runtime node."
   [node]
   {:node-id (field node :id)
    :drivers (driver-list-main node)
-   :common (service-exists-main node kernel/COMMON-SERVICE)
-   :primary (optional-service-info node kernel/PRIMARY-SERVICE)
-   :caching (optional-service-info node kernel/CACHING-SERVICE)
+   :common (service-exists-main node db-kernel/COMMON-SERVICE)
+   :primary (optional-service-info node db-kernel/PRIMARY-SERVICE)
+   :caching (optional-service-info node db-kernel/CACHING-SERVICE)
    :dynamic-services (service-list-main node)
    :finalizers (lifecycle/list-finalizers node)})
 
@@ -96,16 +96,16 @@
   (let [existing (substrate/get-service node service-id)]
     (if existing
       (promise/from {:status :no-change
-                     :service (kernel/service-info-main node service-id)})
+                     :service (db-kernel/service-info-main node service-id)})
       (let [normalized (normalize-entry service-id entry)
             role (or (compatible-get normalized :role) :service)
             metadata (or (compatible-get normalized :metadata) {})]
         (promise/then
-         (kernel/kernel-setup-single node role normalized schema lookup metadata)
+         (db-kernel/kernel-setup-single node role normalized schema lookup metadata)
          (fn [_]
            (register-service node service-id)
            {:status :opened
-            :service (kernel/service-info-main node service-id)}))))))
+            :service (db-kernel/service-info-main node service-id)}))))))
 
 (defn service-close-main
   "Closes and removes a dynamically managed database service."
@@ -125,10 +125,10 @@
       :else
       (promise/then
        (promise/finally
-        (kernel/service-submit
+        (db-kernel/service-submit
          service
          (fn []
-           (db/close (kernel/service-connection service))))
+           (db/close (db-kernel/service-connection service))))
         (fn []
           (substrate/remove-service node service-id)
           (unregister-service node service-id)))

@@ -231,6 +231,9 @@ struct FnContext {
 }
 
 struct Compiler {
+    /// Namespace selected when compilation began. Macro expansion may load
+    /// other modules, but global binding must remain relative to this owner.
+    namespace: String,
     constants: Vec<Value>,
     constant_index: HashMap<Value, u32>,
     functions: Vec<FunctionPrototype>,
@@ -315,6 +318,9 @@ impl Compiler {
         let mut scopes = ScopeStack::new();
         scopes.push_scope();
         Compiler {
+            namespace: crate::core::namespace_registry()
+                .map(|registry| registry.current().name().as_str().to_owned())
+                .unwrap_or_else(|_| "user".into()),
             constants: Vec::new(),
             constant_index: HashMap::new(),
             functions: vec![placeholder(None, 0, 0, false, false)],

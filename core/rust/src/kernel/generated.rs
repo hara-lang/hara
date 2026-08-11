@@ -421,6 +421,9 @@ impl GeneratedNamespaceConfig {
                             .entry(target.into())
                             .or_default()
                             .insert(name.into());
+                        if target == "std.foundation" {
+                            self.excluded_foundation.insert(name.into());
+                        }
                     }
                 }
                 other => return Err(format!("Unsupported :require option: :{other}")),

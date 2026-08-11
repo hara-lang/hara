@@ -72,6 +72,15 @@ fn records_lazy_alias_without_an_eager_dependency() {
 }
 
 #[test]
+fn foundation_require_exclusions_remove_implicit_refers() {
+    let config = GeneratedNamespaceConfig::configure(
+        &parse_forms("(:require [std.foundation :refer :all :exclude [eval-in-ns]])").unwrap(),
+    )
+    .unwrap();
+    assert!(config.excluded_foundation().contains("eval-in-ns"));
+}
+
+#[test]
 fn native_aliases_are_universal_and_cannot_be_rebound() {
     let config =
         GeneratedNamespaceConfig::configure(&parse_forms("(:config {:blank true})").unwrap())
