@@ -1530,6 +1530,33 @@ mod tests {
     }
 
     #[test]
+    fn macro_introduced_lexical_bindings_are_not_captures() {
+        let mut runtime = Runtime::core();
+        runtime.prepare_foundation_bytecode();
+        runtime
+            .eval_native(
+                "(defmacro if-let [binding then alternative]
+                   (let [name (nth binding 0)
+                         expression (nth binding 1)]
+                     `(let [~name ~expression]
+                        (if ~name ~then ~alternative))))",
+            )
+            .unwrap();
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(defn invoke-selected [candidate]
+                       (if-let [selected candidate]
+                         (selected 41)
+                         0))
+                     (invoke-selected inc)"
+                )
+                .unwrap(),
+            "42"
+        );
+    }
+
+    #[test]
     fn destructuring_lowers_across_bindings_parameters_and_recur() {
         let mut runtime = Runtime::core();
         runtime.prepare_foundation_bytecode();

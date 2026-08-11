@@ -451,6 +451,23 @@ impl Compiler {
                 }
             }
             Form::List(elements) if !elements.is_empty() => {
+                let protected = matches!(
+                    elements.first(),
+                    Some(Form::Symbol(name)) if name == "quote" || name == "syntax-quote"
+                );
+                if !protected {
+                    if let Ok(expanded) = crate::core::vm_macroexpand(child.form) {
+                        if expanded != *child.form {
+                            let expanded = Child {
+                                form: &expanded,
+                                span: child.span,
+                                children: None,
+                            };
+                            self.collect_free(&expanded, bound, free);
+                            return;
+                        }
+                    }
+                }
                 let children = self.list_children(elements, child.span, child.children);
                 match &elements[0] {
                     Form::Symbol(head) if self.is_coroutine_var(head, "await") => {
