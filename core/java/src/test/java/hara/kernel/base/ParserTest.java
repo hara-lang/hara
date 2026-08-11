@@ -40,7 +40,7 @@ public class ParserTest {
             Files.readString(Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn")), null);
     assertTrue(corpus instanceof hara.lang.data.types.IMapType);
     hara.lang.data.types.IMapType map = (hara.lang.data.types.IMapType) corpus;
-    assertEquals("0.1", map.lookup(Keyword.create("spec/version")));
+    assertEquals("0.0.0-alpha", map.lookup(Keyword.create("spec/version")));
     assertTrue(map.lookup(Keyword.create("cases")) instanceof hara.lang.data.types.ILinearType);
   }
 
@@ -74,6 +74,19 @@ public class ParserTest {
     assertEquals(Symbol.create("+"), list.nth(0));
     assertEquals(1L, list.nth(1));
     assertEquals(2L, list.nth(2));
+  }
+
+  @Test
+  public void expandsAnonymousFunctionArgumentsDeterministically() {
+    assertEquals(
+        "(fn [__reader_fn_0_1 __reader_fn_0_2 & __reader_fn_0_rest] (+ __reader_fn_0_1 __reader_fn_0_2 (count __reader_fn_0_rest)))",
+        hara.lang.base.G.display(
+            Parser.LispReader.readString("#(+ % %2 (count %&))", null)));
+    RuntimeException error =
+        assertThrows(
+            RuntimeException.class,
+            () -> Parser.LispReader.readString("#(+ %0 1)", null));
+    assertTrue(error.getCause().getMessage().contains("arguments begin at %1"));
   }
 
   @Test

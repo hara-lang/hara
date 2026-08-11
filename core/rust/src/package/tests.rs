@@ -1,6 +1,9 @@
 use super::*;
+use std::fs::File;
+use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zip::ZipArchive;
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 

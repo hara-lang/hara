@@ -1,7 +1,5 @@
-//! Tests for the compiler and the synchronous machine: every instruction
-//! exercised end to end, literal/local/control-flow semantics, arithmetic
-//! and comparison success and failure, loop/recur behavior, and
-//! source-aware diagnostics.
+//! End-to-end compiler and synchronous-machine execution tests, including
+//! control flow, arithmetic, loop/recur behavior, and source diagnostics.
 
 use super::error::CompileErrorKind;
 use super::{
@@ -13,6 +11,9 @@ use crate::kernel::NamespaceRegistry;
 use crate::Runtime;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+
+#[path = "execution_tests/bindings.rs"]
+mod bindings;
 
 fn eval(source: &str) -> String {
     eval_source(source)
@@ -211,26 +212,6 @@ fn multiple_top_level_forms() {
 }
 
 #[test]
-fn local_load_and_store() {
-    assert_eq!(eval("(let [x 19] x)"), "19");
-    assert_eq!(eval("(let [x 19 y 23] (+ x y))"), "42");
-    assert_eq!(eval("(let [x 1] (let [y 2] (+ x y)))"), "3");
-}
-
-#[test]
-fn sequential_let_bindings_observe_earlier_names() {
-    assert_eq!(eval("(let [x 19 y (+ x 23)] y)"), "42");
-    assert_eq!(eval("(let [x 1 x (+ x 1)] x)"), "2");
-}
-
-#[test]
-fn lexical_shadowing() {
-    assert_eq!(eval("(let [x 1] (let [x 2] x))"), "2");
-    assert_eq!(eval("(let [x 1] (do (let [x 2] x) x))"), "1");
-    assert_eq!(eval("(let [x 1 y 2] (+ (let [x 10] x) y))"), "12");
-}
-
-#[test]
 fn if_branches() {
     assert_eq!(eval("(if true 1 2)"), "1");
     assert_eq!(eval("(if false 1 2)"), "2");
@@ -418,26 +399,6 @@ fn recur_errors() {
         message.contains("recur must be in tail position"),
         "{message}"
     );
-}
-
-#[test]
-fn unsupported_forms_are_typed_compile_errors() {
-    let cases = [
-        (
-            "(let [[a b] [1 2]] a)",
-            "let destructuring is not supported",
-        ),
-        (
-            "(loop [[a b] [1 2]] a)",
-            "loop destructuring is not supported",
-        ),
-    ];
-    for (source, expected) in cases {
-        let (kind, message) = compile_error(source);
-        assert_eq!(kind, CompileErrorKind::UnsupportedForm, "{source}");
-        assert!(message.contains(expected), "{source}: {message}");
-        assert!(message.contains("[line 1, column"), "{source}: {message}");
-    }
 }
 
 #[test]

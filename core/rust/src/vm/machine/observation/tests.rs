@@ -19,6 +19,7 @@ fn run_observed(machine: &mut Machine) -> (Vec<ObservationEventKind>, Value) {
             ObservedStepOutcome::Continue => {}
             ObservedStepOutcome::Returned(value) => return (kinds, value),
             ObservedStepOutcome::Suspended(_) => panic!("unexpected suspension"),
+            ObservedStepOutcome::Yielded(_) => panic!("unexpected yield"),
             ObservedStepOutcome::Failed(error) => panic!("unexpected failure: {error}"),
         }
     }
@@ -55,6 +56,7 @@ fn arithmetic_steps_project_instructions_and_return_value() {
                 break;
             }
             ObservedStepOutcome::Suspended(_) => panic!("unexpected suspension"),
+            ObservedStepOutcome::Yielded(_) => panic!("unexpected yield"),
             ObservedStepOutcome::Failed(error) => panic!("unexpected failure: {error}"),
         }
     }
@@ -104,6 +106,7 @@ fn uncaught_runtime_errors_keep_source_and_terminal_diagnostics() {
                 panic!("unexpected return: {}", value.display())
             }
             ObservedStepOutcome::Suspended(_) => panic!("unexpected suspension"),
+            ObservedStepOutcome::Yielded(_) => panic!("unexpected yield"),
         }
     }
     panic!("failure was not observed");
@@ -171,7 +174,45 @@ fn pending_await_resumes_as_one_boundary() {
 
 #[test]
 fn snapshot_limits_bound_stack_and_preserve_the_top() {
-    let mut machine = machine("[1 2 3 4]");
+    let mut source_map = SourceMap::default();
+    for _ in 0..6 {
+        source_map.record(None);
+    }
+    let program = Program {
+        namespace: None,
+        constants: vec![
+            Value::Number(1),
+            Value::Number(2),
+            Value::Number(3),
+            Value::Number(4),
+        ],
+        var_metadata: Vec::new(),
+        schema_types: Default::default(),
+        function_types: Default::default(),
+        inferred_function_types: Default::default(),
+        functions: vec![FunctionPrototype {
+            name: Some("bounded-stack-demo".into()),
+            async_function: false,
+            arity: 0,
+            variadic: false,
+            capture_count: 0,
+            local_count: 0,
+            max_stack: 4,
+            code: vec![
+                Instruction::Constant(0),
+                Instruction::Constant(1),
+                Instruction::Constant(2),
+                Instruction::Constant(3),
+                Instruction::BuildVector(4),
+                Instruction::Return,
+            ],
+            source_map,
+            handlers: Vec::new(),
+        }],
+        entry: 0,
+    };
+    validate(&program).expect("program must validate");
+    let mut machine = Machine::entry(Rc::new(program));
     for _ in 0..4 {
         assert!(matches!(
             machine.step_observed().outcome,
@@ -191,4 +232,66 @@ fn snapshot_limits_bound_stack_and_preserve_the_top() {
             .collect::<Vec<_>>(),
         vec!["3", "4"]
     );
+}
+
+#[test]
+fn declaration_and_runtime_instructions_have_stable_observation_operands() {
+    use crate::core::Primitive;
+
+    let cases = [
+        (
+            Instruction::DefProtocol(1),
+            "def-protocol",
+            vec![InstructionOperand::Unsigned(1)],
+        ),
+        (
+            Instruction::ExtendType(2),
+            "extend-type",
+            vec![InstructionOperand::Unsigned(2)],
+        ),
+        (
+            Instruction::DefMulti(3),
+            "def-multi",
+            vec![InstructionOperand::Unsigned(3)],
+        ),
+        (
+            Instruction::DefMethod(4),
+            "def-method",
+            vec![InstructionOperand::Unsigned(4)],
+        ),
+        (
+            Instruction::PrimitiveValue(Primitive::Add),
+            "primitive-value",
+            vec![InstructionOperand::Text("+".into())],
+        ),
+        (
+            Instruction::BuiltinValue(5),
+            "builtin-value",
+            vec![InstructionOperand::Unsigned(5)],
+        ),
+        (
+            Instruction::DynamicBind(6),
+            "dynamic-bind",
+            vec![InstructionOperand::Unsigned(6)],
+        ),
+        (
+            Instruction::DynamicUnbind(7),
+            "dynamic-unbind",
+            vec![InstructionOperand::Unsigned(7)],
+        ),
+        (
+            Instruction::DotCall { method: 8, argc: 2 },
+            "dot-call",
+            vec![
+                InstructionOperand::Unsigned(8),
+                InstructionOperand::Unsigned(2),
+            ],
+        ),
+    ];
+
+    for (instruction, opcode, operands) in cases {
+        let snapshot = instruction_snapshot(&instruction);
+        assert_eq!(snapshot.opcode, opcode);
+        assert_eq!(snapshot.operands, operands);
+    }
 }

@@ -13,7 +13,7 @@ public class HaraCliRouterTest {
     HaraCliRouter router = HaraCliRouter.instance();
     for (HaraCliRouter.Route route : router.publicRoutes()) {
       java.util.ArrayList<String> argv = new java.util.ArrayList<>(route.path());
-      if ("tool.cli.route/run-file".equals(route.id())) argv.add("fixture.hal");
+      if ("hara.cli.route/run-file".equals(route.id())) argv.add("fixture.hal");
       HaraCliRouter.Resolution resolution =
           router.resolve(argv.toArray(new String[0]));
       assertEquals(route.id(), resolution.route().id());
@@ -28,7 +28,7 @@ public class HaraCliRouterTest {
     HaraCliRouter.Resolution alias =
         router.resolve(new String[] {"check", "demo"});
 
-    assertEquals("tool.cli.route/project-check", canonical.route().id());
+    assertEquals("hara.cli.route/project-check", canonical.route().id());
     assertEquals(canonical.route().id(), alias.route().id());
     assertEquals(java.util.List.of("demo"), canonical.arguments());
     assertFalse(canonical.alias());
@@ -48,10 +48,10 @@ public class HaraCliRouterTest {
   public void runFileAndProjectRunAreUnambiguous() {
     HaraCliRouter router = HaraCliRouter.instance();
     assertEquals(
-        "tool.cli.route/project-run",
+        "hara.cli.route/project-run",
         router.resolve(new String[] {"run"}).route().id());
     assertEquals(
-        "tool.cli.route/run-file",
+        "hara.cli.route/run-file",
         router.resolve(new String[] {"run", "main.hal"}).route().id());
   }
 

@@ -1,5 +1,5 @@
 (ns lang.model.v1.spec-postgres
-  (:require [std.foundation.string :as string]
+  (:require
             [lang.base.v1.grammar-spec :as spec]
             [lang.common.emit :as emit]
             [lang.common.emit-helper :as helper]
@@ -30,19 +30,19 @@
 (defn pg-symbol
   "Emits PostgreSQL identifiers using Foundation's dash-to-underscore rule."
   [value grammar context]
-  (string/replace (name value) "-" "_"))
+  (str/replace (name value) "-" "_"))
 
 (defn pg-type-name
   [value]
-  (string/upper (string/replace (name value) "-" " ")))
+  (str/upper (str/replace (name value) "-" " ")))
 
 (defn pg-type-part
   [value]
   (cond (keyword? value) (pg-type-name value)
         (symbol? value) (pg-type-name value)
-        (string? value) (string/upper value)
+        (string? value) (str/upper value)
         (and (vector? value) (= 0 (count value))) "[]"
-        (vector? value) (str "[" (string/join "," (map str value)) "]")
+        (vector? value) (str "[" (str/join "," (map str value)) "]")
         :else (str value)))
 
 (defn pg-type-output
@@ -69,12 +69,12 @@
         target (last values)
         casts (drop 1 (reverse values))]
     (str "(" (emit/*emit-fn* target grammar context) ")::"
-         (string/join " " (map pg-type-name (reverse casts))))))
+         (str/join " " (map pg-type-name (reverse casts))))))
 
 (defn pg-array
   [form grammar context]
   (str "ARRAY["
-       (string/join "," (map (fn [item]
+       (str/join "," (map (fn [item]
                                 (emit/*emit-fn* item grammar context))
                               (rest form)))
        "]"))
@@ -102,7 +102,7 @@
   "Emits ordered key/value pairs as a jsonb_build_object expression."
   [entries grammar context]
   (str "jsonb_build_object("
-       (string/join
+       (str/join
         ","
         (mapcat (fn [entry]
                   (let [entry-value (second entry)]
@@ -163,26 +163,26 @@
 
 (defn pg-terminated
   [output]
-  (if (string/ends-with? output ";") output (str output ";")))
+  (if (str/ends-with? output ";") output (str output ";")))
 
 (defn pg-query-output?
   [output]
-  (let [trimmed (string/trim output)]
-    (or (string/starts-with? trimmed "SELECT ")
-        (string/starts-with? trimmed "WITH ")
-        (string/starts-with? trimmed "INSERT ")
-        (string/starts-with? trimmed "UPDATE ")
-        (string/starts-with? trimmed "DELETE "))))
+  (let [trimmed (str/trim output)]
+    (or (str/starts-with? trimmed "SELECT ")
+        (str/starts-with? trimmed "WITH ")
+        (str/starts-with? trimmed "INSERT ")
+        (str/starts-with? trimmed "UPDATE ")
+        (str/starts-with? trimmed "DELETE "))))
 
 (defn pg-outer-parenthesized?
   [value]
-  (if (and (string/starts-with? value "(")
-           (string/ends-with? value ")"))
+  (if (and (str/starts-with? value "(")
+           (str/ends-with? value ")"))
     (loop [index 0
            depth 0]
       (if (= index (count value))
         (= depth 0)
-        (let [character (string/char-at value index)
+        (let [character (str/char-at value index)
               next-depth (cond (= character "(") (+ depth 1)
                                (= character ")") (- depth 1)
                                :else depth)]
@@ -195,14 +195,14 @@
 (defn pg-return
   [form grammar context]
   (let [output (emit/emit-return form {:raw "RETURN"} grammar context)
-        value-output (if (> (count output) 7) (string/slice output 7) "")]
+        value-output (if (> (count output) 7) (str/slice output 7) "")]
     (cond (pg-query-output? value-output)
           (str "RETURN (" value-output ")")
 
           (and (emit/emit-wrappable? (second form) grammar)
                (pg-outer-parenthesized? value-output))
           (str "RETURN "
-               (string/slice value-output 1 (- (count value-output) 1)))
+               (str/slice value-output 1 (- (count value-output) 1)))
 
           :else output)))
 
@@ -221,7 +221,7 @@
                                (emit/*emit-fn* item grammar context))))
                   (rest form))]
     (str "DO $$\nBEGIN\n"
-         (string/join "\n" body)
+         (str/join "\n" body)
          "\nEND\n$$ LANGUAGE plpgsql")))
 
 (defn pg-map
@@ -233,12 +233,12 @@
   [value grammar context]
   (if (set? value)
     (let [identifier (first value)]
-      (str "\"" (string/replace (str identifier) "\"" "\"\"") "\""))
+      (str "\"" (str/replace (str identifier) "\"" "\"\"") "\""))
     (emit/*emit-fn* value grammar context)))
 
 (defn pg-columns
   [form grammar context]
-  (string/join
+  (str/join
    ","
    (map (fn [value] (pg-column-token value grammar context))
         (second form))))
@@ -246,7 +246,7 @@
 (defn pg-tuple
   [form grammar context]
   (str "("
-       (string/join
+       (str/join
         ","
         (map (fn [value] (pg-column-token value grammar context))
              (second form)))
@@ -258,16 +258,16 @@
     (cond (= value :->) "->"
           (= value :->>) "->>"
           (= value :#>>) "#>>"
-          :else (string/upper (string/replace raw "-" " ")))))
+          :else (str/upper (str/replace raw "-" " ")))))
 
 (defn pg-assignment-map
   [value grammar context]
-  (string/join
+  (str/join
    ","
    (map (fn [entry]
           (let [key (first entry)
                 raw (if (string? key) key (name key))]
-            (str "\"" (string/replace raw "-" "_") "\" = "
+            (str "\"" (str/replace raw "-" "_") "\" = "
                  (emit/*emit-fn* (second entry) grammar context))))
         value)))
 
@@ -295,14 +295,14 @@
         operand (if structured (second condition) condition)
         unary (and structured
                    (has? +condition-unary-operators+ (first condition)))]
-    (str "\"" (string/replace raw "-" "_") "\" " operator
+    (str "\"" (str/replace raw "-" "_") "\" " operator
          (if unary
            ""
            (str " " (emit/*emit-fn* operand grammar context))))))
 
 (defn pg-condition-map
   [value grammar context]
-  (string/join
+  (str/join
    " AND "
    (map (fn [entry] (pg-condition-entry entry grammar context)) value)))
 
@@ -338,15 +338,15 @@
                              (if (and (= clause :as) (vector? item))
                                (str "(" (pg-section-item item clause grammar context) ")")
                                (pg-section-item item clause grammar context)))))))]
-      (string/replace
-       (string/replace
-        (string/replace
-         (string/join " " parts)
+      (str/replace
+       (str/replace
+        (str/replace
+         (str/join " " parts)
          " \n " "\n")
         "\n " "\n")
        " \n" "\n"))
     (str "jsonb_build_array("
-         (string/join "," (map (fn [item]
+         (str/join "," (map (fn [item]
                                   (emit/*emit-fn* item grammar context))
                                 value))
          ")")))
@@ -452,7 +452,7 @@
     (if (= 0 (count arguments))
       "()"
       (str "(\n  "
-           (string/join
+           (str/join
             ",\n  "
             (map (fn [argument]
                    (pg-argument-output argument grammar context))
@@ -461,7 +461,7 @@
 
 (defn pg-indent
   [output]
-  (str "  " (string/replace output "\n" "\n  ")))
+  (str "  " (str/replace output "\n" "\n  ")))
 
 (defn pg-let-target
   [binding]
@@ -474,7 +474,7 @@
     (cond (= '_ binding) nil
           (or (symbol? binding) (list? binding))
           (list 'pg:raw
-                (str (string/replace (name target) "-" "_")
+                (str (str/replace (name target) "-" "_")
                      " " (pg-type-output types)))
           :else
           (throw (ex-info "Unsupported PostgreSQL let binding"
@@ -565,7 +565,7 @@
       (str "BEGIN"
            (if (= 0 (count statements))
              ""
-             (str "\n" (string/join "\n" statements)))
+             (str "\n" (str/join "\n" statements)))
            "\nEND;"))))
 
 (defn pg-sql-body
@@ -597,7 +597,7 @@
 
 (defn pg-property-output
   [props]
-  (string/join " " (map pg-type-name (or props []))))
+  (str/join " " (map pg-type-name (or props []))))
 
 (defn pg-defn
   "Emits a complete CREATE OR REPLACE FUNCTION declaration."

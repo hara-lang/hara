@@ -107,6 +107,14 @@ impl Machine {
                     ));
                     return VmOutcome::Suspended(promise);
                 }
+                Dispatch::Yielded(value) => {
+                    probe.on_transition(self.transition_event(
+                        TransitionKind::MachineSuspend,
+                        from_function,
+                        from_ip,
+                    ));
+                    return VmOutcome::Yielded(value);
+                }
                 Dispatch::Failed(error) => {
                     probe.on_terminal(self.terminal_event(TerminalKind::Fail));
                     return VmOutcome::Failed(error);

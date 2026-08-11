@@ -16,6 +16,7 @@ fn returned(outcome: VmOutcome) -> Value {
         VmOutcome::Returned(value) => value,
         VmOutcome::Failed(error) => panic!("unexpected failure: {error}"),
         VmOutcome::Suspended(_) => panic!("unexpected suspension"),
+        VmOutcome::Yielded(_) => panic!("unexpected yield"),
     }
 }
 
@@ -77,7 +78,7 @@ fn caught_failures_emit_unwind_without_terminal_failure() {
 
 #[test]
 fn event_ring_is_fixed_capacity_and_reports_overwrite() {
-    let mut machine = machine("[1 2 3 4]");
+    let mut machine = machine("(let [x 1] [x 2 3 4])");
     let mut events = EventRing::with_capacity(3);
     assert_eq!(
         returned(machine.run_instrumented(&mut events)),

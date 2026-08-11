@@ -164,9 +164,9 @@ public final class HaraNativeTestRunnerTest {
             ROOT, ROOT.resolve("lib/test-lang/postgres/core_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
-    assertEquals(12, result.facts());
-    assertEquals(28, result.checks());
-    assertEquals(28, result.passedChecks());
+    assertEquals(18, result.facts());
+    assertEquals(40, result.checks());
+    assertEquals(40, result.passedChecks());
     assertEquals(0, result.failedChecks());
     assertEquals(0, result.errors());
     assertEquals(0, result.timeouts());

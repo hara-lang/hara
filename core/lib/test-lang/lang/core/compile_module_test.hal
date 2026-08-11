@@ -74,21 +74,23 @@
            calls (atom [])
            _ (reset! script/+modules+ {})
            _ (reset! script/+loaded-modules+ {})
+           _ (reset! script/+module-loaders+ {})
+           _ (reduce-kv
+              (fn [_ module-id module]
+                (script/register-module-loader!
+                 module-id
+                 (fn []
+                   (do
+                     (swap! calls conj module-id)
+                     (swap! script/+modules+ assoc module-id module)))))
+              nil
+              modules)
            options {:lang :postgres
                     :main 'demo.base
                     :layout :module
                     :emit {:code {:label true}}}
            compiled
-           (binding [script/*module-loader*
-                     (fn [sentinel]
-                       (let [module-id (symbol (namespace sentinel))]
-                         (swap! calls conj sentinel)
-                         (swap! script/+modules+
-                                assoc
-                                module-id
-                                (get modules module-id))
-                         sentinel))
-                     compile/*entry-compiler* fixture-compiler]
+           (binding [compile/*entry-compiler* fixture-compiler]
              [(compile/compile-module options)
               (compile/compile-module options)])
            first-result (first compiled)
@@ -106,8 +108,7 @@
               "-- demo.base/b\nCREATE B;\n\n"
               "-- demo.base/a\nCREATE A;")
          []
-         ['demo.base/__tahto_load__
-          'demo.dep/__tahto_load__]])
+         ['demo.base 'demo.dep]])
 
    (fact "missing code dependencies produce a stable diagnostic"
      (let [modules

@@ -591,8 +591,10 @@ public final class Main {
             }
           } catch (RuntimeException readerError) {
             if (expectedError == null) throw readerError;
+            Throwable readerCause =
+                readerError.getCause() == null ? readerError : readerError.getCause();
             if (expectedMessage != null
-                && !readerError.getMessage().contains(expectedMessage.toString())) {
+                && !readerCause.getMessage().contains(expectedMessage.toString())) {
               throw new IllegalStateException(
                   id + " reader error mismatch: expected message containing " + expectedMessage);
             }

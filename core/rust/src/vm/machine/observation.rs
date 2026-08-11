@@ -43,6 +43,7 @@ pub enum MachineObservationStatus {
     Ready,
     Running,
     Suspended,
+    Yielded,
     Returned,
     Failed,
 }
@@ -53,6 +54,7 @@ impl MachineObservationStatus {
             Self::Ready => "ready",
             Self::Running => "running",
             Self::Suspended => "suspended",
+            Self::Yielded => "yielded",
             Self::Returned => "returned",
             Self::Failed => "failed",
         }
@@ -66,6 +68,7 @@ pub enum ObservationEventKind {
     CallReturn,
     ExceptionUnwind,
     MachineSuspend,
+    MachineYield,
     MachineResume,
     MachineReturn,
     MachineFail,
@@ -79,6 +82,7 @@ impl ObservationEventKind {
             Self::CallReturn => "call/return",
             Self::ExceptionUnwind => "exception/unwind",
             Self::MachineSuspend => "machine/suspend",
+            Self::MachineYield => "machine/yield",
             Self::MachineResume => "machine/resume",
             Self::MachineReturn => "machine/return",
             Self::MachineFail => "machine/fail",
@@ -91,6 +95,7 @@ pub enum ObservationEventStatus {
     Ok,
     Error,
     Suspended,
+    Yielded,
 }
 
 impl ObservationEventStatus {
@@ -99,6 +104,7 @@ impl ObservationEventStatus {
             Self::Ok => "ok",
             Self::Error => "error",
             Self::Suspended => "suspended",
+            Self::Yielded => "yielded",
         }
     }
 }
@@ -186,6 +192,7 @@ pub struct MachineSnapshot {
 pub enum ObservedStepOutcome {
     Continue,
     Suspended(Promise),
+    Yielded(Value),
     Returned(Value),
     Failed(VmError),
 }
@@ -376,6 +383,25 @@ impl Machine {
                     instruction: instruction_snapshot,
                     source: source_snapshot,
                     outcome: ObservedStepOutcome::Suspended(promise),
+                }
+            }
+            Dispatch::Yielded(value) => {
+                let result = value_snapshot(&value, limits.display_chars);
+                let after = self.snapshot_for(
+                    MachineObservationStatus::Yielded,
+                    limits,
+                    Some(result),
+                    None,
+                );
+                ObservedStep {
+                    schema: BYTECODE_TRACE_SCHEMA,
+                    kind: ObservationEventKind::MachineYield,
+                    status: ObservationEventStatus::Yielded,
+                    before,
+                    after,
+                    instruction: instruction_snapshot,
+                    source: source_snapshot,
+                    outcome: ObservedStepOutcome::Yielded(value),
                 }
             }
             Dispatch::Failed(error) => self.failed_observation(

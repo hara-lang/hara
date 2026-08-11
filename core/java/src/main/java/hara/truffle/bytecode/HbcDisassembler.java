@@ -49,7 +49,7 @@ public final class HbcDisassembler {
 
   private static int operandCount(HbcProgram.Opcode opcode) {
     return switch (opcode) {
-      case NIL, TRUE, FALSE, POP, THROW, RETHROW, RETURN, AWAIT, HOST_CALL, DUP, INSTANCE_OF,
+      case NIL, TRUE, FALSE, POP, THROW, RETHROW, RETURN, AWAIT, YIELD, HOST_CALL, DUP, INSTANCE_OF,
           TO_VECTOR -> 0;
       case CONSTANT, LOAD_LOCAL, STORE_LOCAL, JUMP, JUMP_IF_FALSE, CALL, GET_GLOBAL, SET_GLOBAL,
           VAR_GLOBAL, DECLARE_GLOBAL, STRUCT_FIELD, BUILD_VECTOR, BUILD_MAP, BUILD_SET, BUILD_LIST,

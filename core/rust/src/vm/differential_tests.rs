@@ -201,12 +201,12 @@ fn recur_tail_tightening_is_a_documented_divergence() {
 
 /// Reads the shared benchmark corpus and runs every workload whose
 /// source is inside the supported subset, exactly as written in
-/// `lib/bench/runtime/workloads.json`.
+/// `hara-benchmarks/runtime/hara/runtime/workloads.json`.
 #[test]
 fn shared_benchmark_workloads_match() {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../lib/bench/runtime/workloads.json"
+        "/../../../../website/hara-benchmarks/runtime/hara/runtime/workloads.json"
     );
     let text = std::fs::read_to_string(path).expect("workloads.json must exist");
     let parsed = crate::json::read(&text).expect("workloads.json parses");

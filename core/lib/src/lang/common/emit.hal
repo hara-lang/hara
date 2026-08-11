@@ -1,9 +1,11 @@
 (ns lang.common.emit
-  (:require [std.foundation.string :as string]
+  (:require
             [lang.common.compat :as compat]
+            [lang.common.emit-common :as emit-common :lazy true]
             [lang.common.emit-helper :as helper]
             [lang.common.emit-preprocess :as preprocess]
             [lang.common.emit-rewrite :as rewrite]
+            [lang.common.emit-top-level :as emit-top-level :lazy true]
             [lang.protocol.compiler :as compiler]))
 
 (declare emit-node emit-main default-grammar)
@@ -16,6 +18,12 @@
 
 (defn- fail [message data]
   (throw (ex-info message data)))
+
+(defn- declared-var [qualified]
+  (let [form (list 'resolve (list 'quote qualified))]
+    (or (eval-in-ns 'lang.common.emit [form])
+        (fail "Declared emitter dependency did not load"
+              {:symbol qualified}))))
 
 (defn- common-options [grammar]
   (merge {:start "(" :end ")" :space " " :assign "=" :sep ","
@@ -30,7 +38,7 @@
 (defn newline-indent []
   (if *compressed*
     " "
-    (str "\n" (string/repeat " " *indent*))))
+    (str "\n" (str/repeat " " *indent*))))
 
 (defn emit-reserved-value [form grammar context]
   (let [entry (get-in grammar [:reserved form])]
@@ -45,15 +53,14 @@
 
 (defn- replace-symbol-parts [value replacements]
   (reduce-kv (fn [out match replacement]
-               (string/replace out (str match) replacement))
+               (str/replace out (str match) replacement))
              value
              (or replacements {})))
 
 (defn emit-symbol [form grammar context]
   (or (emit-reserved-value form grammar context)
       (if (namespace form)
-        ((deref (requiring-resolve
-                 'lang.common.emit-common/emit-symbol))
+        ((deref (declared-var 'emit-common/emit-symbol))
          form grammar context)
         (let [options (get-in grammar [:token :symbol])]
           (replace-symbol-parts (name form) (:replace options))))))
@@ -80,7 +87,7 @@
    (map (fn [value] (emit-function value grammar context)) values)))
 
 (defn emit-free-raw [separator values grammar context]
-  (string/join (or separator " ") (emit-array values grammar context)))
+  (str/join (or separator " ") (emit-array values grammar context)))
 
 (defn emit-free [form entry grammar context]
   (emit-free-raw (:sep entry) (rest form) grammar context))
@@ -90,8 +97,8 @@
 
 (defn emit-comment [form entry grammar context]
   (let [prefix (or (:raw entry) (get-in grammar [:default :comment :prefix]) "//")
-        lines (string/split-lines (emit-free-raw " " (rest form) grammar context))]
-    (string/join (newline-indent)
+        lines (str/split-lines (emit-free-raw " " (rest form) grammar context))]
+    (str/join (newline-indent)
                  (map (fn [line] (str prefix " " line)) lines))))
 
 (defn emit-wrappable? [form grammar]
@@ -110,8 +117,8 @@
   (let [output (lang.common.emit/emit-node form grammar context)
         options (common-options grammar)]
     (if (and (emit-wrappable? form grammar)
-             (not (and (string/starts-with? output (:start options))
-                       (string/ends-with? output (:end options)))))
+             (not (and (str/starts-with? output (:start options))
+                       (str/ends-with? output (:end options)))))
       (str (:start options) output (:end options))
       output)))
 
@@ -146,7 +153,7 @@
     (if (= 0 (count arguments))
       (fail "Infix operation expects arguments" {:raw raw :arguments arguments})
       (let [space (:space (common-options grammar))]
-        (string/join (str space raw space)
+        (str/join (str space raw space)
                      (emit-array arguments grammar context emit-wrapping))))))
 
 (defn emit-infix-default [raw arguments default grammar context]
@@ -170,14 +177,14 @@
       (emit-infix raw arguments grammar context))))
 
 (defn emit-between [raw arguments grammar context]
-  (string/join raw (emit-array arguments grammar context emit-wrapping)))
+  (str/join raw (emit-array arguments grammar context emit-wrapping)))
 
 (defn emit-assign [raw arguments grammar context]
   (let [arguments (vec arguments)]
     (if (not (= 2 (count arguments)))
       (fail "Assignment expects two arguments" {:raw raw :arguments arguments})
       (let [options (common-options grammar)]
-        (string/join (str (:space options) (or raw (:assign options)) (:space options))
+        (str/join (str (:space options) (or raw (:assign options)) (:space options))
                      (emit-array arguments grammar context emit-wrapping))))))
 
 (defn emit-infix-if [form entry grammar context]
@@ -200,7 +207,7 @@
       (fail "Return operation expects zero or one argument" {:form form :entry entry})
       (str (:raw entry)
            (if (> (count arguments) 0) (:space options) "")
-           (string/join (str (:sep options) (:space options))
+           (str/join (str (:sep options) (:space options))
                         (emit-array arguments grammar context))))))
 
 (defn- collection-options [grammar key defaults]
@@ -208,7 +215,7 @@
 
 (defn- emit-collection [values options grammar context]
   (str (:start options)
-       (string/join (str (:sep options) (:space options))
+       (str/join (str (:sep options) (:space options))
                     (emit-array values grammar context))
        (:end options)))
 
@@ -240,7 +247,7 @@
                                   (lang.common.emit/emit-node item grammar context))))
                  [] value)]
     (str (:start options)
-         (string/join (str (:sep options) (:space options)) entries)
+         (str/join (str (:sep options) (:space options)) entries)
          (:end options))))
 
 (defn emit-data [form grammar context]
@@ -253,7 +260,7 @@
   (let [options (merge {:start "(" :end ")" :sep "," :space " "}
                        (get-in grammar [:default :invoke]))]
     (str (:start options)
-         (string/join (str (:sep options) (:space options))
+         (str/join (str (:sep options) (:space options))
                       (emit-array arguments grammar context))
          (:end options))))
 
@@ -296,34 +303,34 @@
                             (or (vector? target-form)
                                 (map? target-form)
                                 (set? target-form)
-                                (string/starts-with? target "{")))
+                                (str/starts-with? target "{")))
                      (str (:start options) target (:end options))
                      target)]
   (str target-out
-       (string/join ""
+       (str/join ""
                     (map (fn [value] (emit-index-entry value grammar context))
                          (drop 2 form))))))
 
 (defn- statement-output [form grammar context]
   (let [output (lang.common.emit/emit-node form grammar context)
         statement (:statement (common-options grammar))]
-    (if (or (= "" statement) (= 0 (string/length output))
-            (string/ends-with? output statement)
-            (string/ends-with? output "}"))
+    (if (or (= "" statement) (= 0 (str/length output))
+            (str/ends-with? output statement)
+            (str/ends-with? output "}"))
       output
       (str output statement))))
 
 (defn emit-do [form entry grammar context]
-  (string/join (newline-indent)
+  (str/join (newline-indent)
                (map (fn [value] (statement-output value grammar context))
                     (rest form))))
 
 (defn- body-output [body body-options grammar context]
   (let [common (common-options grammar)
         previous *indent*
-        next-indent (+ previous (string/length (:indent common)))
+        next-indent (+ previous (str/length (:indent common)))
         output (binding [*indent* next-indent]
-                 (string/join (newline-indent)
+                 (str/join (newline-indent)
                               (map (fn [value]
                                      (statement-output value grammar context))
                                    body)))]
@@ -347,7 +354,7 @@
                                  (get-in entry [:block :parameter]))
         body-options (merge (:body options) (get-in entry [:block :body]))
         parameter-output (if (vector? parameter)
-                           (string/join (str (:sep common) (:space common))
+                           (str/join (str (:sep common) (:space common))
                                         (emit-array parameter grammar context))
                            (lang.common.emit/emit-node parameter grammar context))]
     (str (or (get-in entry [:block :raw]) (:raw entry) (name (first form)))
@@ -362,7 +369,7 @@
   (let [options (merge {:start "(" :end ")" :sep "," :space " "}
                        (get-in grammar [:default :function :args]))]
     (str (:start options)
-         (string/join (str (:sep options) (:space options))
+         (str/join (str (:sep options) (:space options))
                       (emit-array arguments grammar context))
          (:end options))))
 
@@ -526,14 +533,11 @@
   "emits one form through the Foundation common/top-level pipeline"
   {:added "4.0"}
   [form grammar mopts]
-  ((deref (requiring-resolve
-           'lang.common.emit-common/emit-common-loop-bound))
+  ((deref (declared-var 'emit-common/emit-common-loop-bound))
    form grammar mopts
-   (deref (requiring-resolve
-           'lang.common.emit-top-level/+emit-lookup+))
-   (deref (requiring-resolve
-           'lang.common.emit-top-level/emit-form))
-   (deref (resolve 'lang.common.emit/emit-main-loop))))
+   (deref (declared-var 'emit-top-level/+emit-lookup+))
+   (deref (declared-var 'emit-top-level/emit-form))
+   emit-main-loop))
 
 (defn emit-main
   "emits one top-level form with recursive emission"
@@ -545,9 +549,9 @@
                    (emit-main-loop form grammar mopts))
           options (common-options grammar)]
       (if (and (emit-wrappable? form grammar)
-               (string/starts-with? output (:start options))
-               (string/ends-with? output (:end options)))
-        (string/slice output 1 (- (string/length output) 1))
+               (str/starts-with? output (:start options))
+               (str/ends-with? output (:end options)))
+        (str/slice output 1 (- (str/length output) 1))
         output))))
 
 (defn emit
@@ -582,14 +586,22 @@
         snapshot (:snapshot metadata)
         book-value (:book metadata)
         book (or (if (symbol? book-value)
-                   (deref (requiring-resolve book-value))
+                   (let [resolved (resolve book-value)]
+                     (if resolved
+                       (deref resolved)
+                       (fail "Book namespace is not explicitly loaded"
+                             {:symbol book-value})))
                    book-value)
                  (get-in snapshot [lang :book]))
         step (or (get metadata :-)
                  (if (or book (and lang snapshot)) :staging :input))
         grammar-value (:grammar metadata)
         grammar (or (if (symbol? grammar-value)
-                      (deref (requiring-resolve grammar-value))
+                      (let [resolved (resolve grammar-value)]
+                        (if resolved
+                          (deref resolved)
+                          (fail "Grammar namespace is not explicitly loaded"
+                                {:symbol grammar-value})))
                       grammar-value)
                     (:grammar book)
                     +test-grammar+)

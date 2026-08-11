@@ -1,10 +1,6 @@
 (ns tool.cli.project-command
   (:require [tool.cli.model :as model]
             [tool.project :as project]
-            [std.foundation.edn :as edn]
-            [std.foundation.file :as file]
-            [std.foundation.os :as os]
-            [std.foundation.string :as string]
             [std.work :as work]))
 
 (def +name-characters+
@@ -16,35 +12,35 @@
 
 (defn valid-name? [value]
   (and
-   (not (string/blank? value))
+   (not (str/blank? value))
    (loop [index 0]
-     (if (= index (string/length value))
+     (if (= index (str/length value))
        true
-       (if (get +name-characters+ (string/char-at value index))
+       (if (get +name-characters+ (str/char-at value index))
          (recur (inc index))
          false)))))
 
 (defn valid-coordinate-component? [value]
   (and
-   (not (string/blank? value))
+   (not (str/blank? value))
    (loop [index 0]
-     (if (= index (string/length value))
+     (if (= index (str/length value))
        true
-       (if (get +coordinate-characters+ (string/char-at value index))
+       (if (get +coordinate-characters+ (str/char-at value index))
          (recur (inc index))
          false)))))
 
 (defn normalize-coordinate [value]
   (let [qualified (cond
-                    (string/starts-with? value "official:")
-                    (str "hara:" (string/slice value 9))
-                    (string/includes? value ":") value
+                    (str/starts-with? value "official:")
+                    (str "hara:" (str/slice value 9))
+                    (str/includes? value ":") value
                     :else (str "hara:" value))
-        coordinate-parts (string/split qualified ":")]
+        coordinate-parts (str/split qualified ":")]
     (if (not= 2 (count coordinate-parts))
       (throw (ex-info (str "invalid package coordinate: " value) {}))
       (let [tap (nth coordinate-parts 0)
-            package-parts (string/split (nth coordinate-parts 1) "/")]
+            package-parts (str/split (nth coordinate-parts 1) "/")]
         (if (and (= 2 (count package-parts))
                  (valid-coordinate-component? tap)
                  (valid-coordinate-component? (nth package-parts 0))
@@ -65,13 +61,13 @@
                     {:arguments arguments}))))
 
 (defn write-text! [path source]
-  (deref (file/write path (string/encode-utf8 source)))
+  (deref (file/write path (str/encode-utf8 source)))
   path)
 
 (defn scaffold! [request]
   (let [name (one-argument (:request/arguments request) "new")
         cwd (or (:request/cwd request) (os/cwd))
-        destination (if (string/starts-with? name "/") name (file/join cwd name))]
+        destination (if (str/starts-with? name "/") name (file/join cwd name))]
     (if (not (valid-name? name))
       (throw (ex-info
               "project name must contain only lowercase letters, numbers, and hyphens"
@@ -81,7 +77,7 @@
       (throw (ex-info (str "destination already exists: " destination)
                       {:path destination}))
       nil)
-    (let [namespace (string/replace name "-" "_")
+    (let [namespace (str/replace name "-" "_")
           source-root (file/join (file/join destination "src") namespace)
           test-root (file/join (file/join destination "test") namespace)]
       (deref (file/mkdir source-root))
@@ -124,10 +120,10 @@
                 (:project/version current-project) "\n"))])))))
 
 (defn split-coordinate [value]
-  (let [index (string/last-index-of value "@")]
+  (let [index (str/last-index-of value "@")]
     (if (< index 0)
       nil
-      [(string/slice value 0 index) (string/slice value (inc index))])))
+      [(str/slice value 0 index) (str/slice value (inc index))])))
 
 (defn dependency-document [current-project coordinate version]
   (let [dependencies (or (:project/dependencies current-project) {})]
@@ -142,7 +138,7 @@
   (let [label (if add "add" "remove")
         argument (one-argument (:request/arguments request) label)
         pair (if add (split-coordinate argument) [argument nil])]
-    (if (and add (or (nil? pair) (string/blank? (second pair))))
+    (if (and add (or (nil? pair) (str/blank? (second pair))))
       (throw (ex-info "add requires COORDINATE@RANGE" {:coordinate argument}))
       (let [coordinate (normalize-coordinate (first pair))
             version (second pair)

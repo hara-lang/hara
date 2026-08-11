@@ -17,9 +17,9 @@ public final class HaraLangScriptMetadataTest {
             ROOT.resolve("lib/test-lang/lang/core/script_metadata_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
-    assertEquals(5, result.facts());
-    assertEquals(5, result.checks());
-    assertEquals(5, result.passedChecks());
+    assertEquals(6, result.facts());
+    assertEquals(6, result.checks());
+    assertEquals(6, result.passedChecks());
     assertEquals(0, result.failedChecks());
     assertEquals(0, result.errors());
     assertEquals(0, result.timeouts());

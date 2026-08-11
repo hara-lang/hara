@@ -255,7 +255,6 @@ fn supports_dispatch_and_quote_forms() {
 #[test]
 fn rejects_dispatch_forms_absent_from_the_java_reference() {
     for source in [
-        "#(inc %)",
         "#:hello{:a 1}",
         "#?(:clj hello)",
         "#?@(:clj [x])",

@@ -163,6 +163,9 @@ pub enum Instruction {
     /// Replaces a settled promise with its value, raises a rejection, or
     /// suspends the current VM fiber while preserving the complete machine.
     Await,
+    /// Suspends the current bytecode coroutine with the value on top of
+    /// the stack. Resumption replaces it with the caller-supplied value.
+    Yield,
     /// Pops service, method, and argument-vector values and returns the
     /// provider's ordinary Promise value.
     HostCall,
@@ -222,6 +225,7 @@ impl Instruction {
             Instruction::BuiltinValue(_) => 1,
             Instruction::DynamicBind(_) => 0,
             Instruction::DynamicUnbind(_) => 1,
+            Instruction::Yield => 0,
             Instruction::DefGlobal { .. }
             | Instruction::SetGlobal(_)
             | Instruction::StructField(_) => 0,
@@ -319,6 +323,7 @@ impl std::fmt::Display for Instruction {
             Instruction::DynamicBind(index) => write!(formatter, "DynamicBind {index}"),
             Instruction::DynamicUnbind(index) => write!(formatter, "DynamicUnbind {index}"),
             Instruction::Await => formatter.write_str("Await"),
+            Instruction::Yield => formatter.write_str("Yield"),
             Instruction::HostCall => formatter.write_str("HostCall"),
             Instruction::DotCall { method, argc } => {
                 write!(formatter, "DotCall {method} {argc}")

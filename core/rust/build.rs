@@ -52,13 +52,21 @@ fn declared_namespace(source: &str, path: &Path) -> String {
     );
 }
 
+fn standard_library_namespace(namespace: &str) -> bool {
+    ["std.", "code.", "lang."]
+        .iter()
+        .any(|prefix| namespace.starts_with(prefix))
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     // Cargo packages cannot include files above the crate root. Keep the
     // distributable HAL snapshot inside this crate so verification from the
     // unpacked `.crate` archive exercises the same embedded library.
     let source_root = manifest.join("hal-src");
+    let inventory_path = manifest.join("standard-library.namespaces");
     println!("cargo:rerun-if-changed={}", source_root.display());
+    println!("cargo:rerun-if-changed={}", inventory_path.display());
 
     let mut paths = Vec::new();
     collect_hal(&source_root, &mut paths);
@@ -74,6 +82,25 @@ fn main() {
                 path.display()
             );
         }
+    }
+
+    let expected_inventory = fs::read_to_string(&inventory_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", inventory_path.display()))
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let actual_inventory = resources
+        .keys()
+        .filter(|namespace| standard_library_namespace(namespace))
+        .cloned()
+        .collect::<Vec<_>>();
+    if expected_inventory != actual_inventory {
+        panic!(
+            "{} is stale; expected exact embedded standard-library inventory:\n{}",
+            inventory_path.display(),
+            actual_inventory.join("\n")
+        );
     }
 
     let mut generated =
@@ -95,6 +122,12 @@ fn main() {
             relative = relative,
             path = path.to_string_lossy()
         ));
+    }
+    generated.push_str("];\n");
+    generated
+        .push_str("#[cfg(test)]\npub(crate) static STANDARD_LIBRARY_INVENTORY: &[&str] = &[\n");
+    for namespace in expected_inventory {
+        generated.push_str(&format!("    {namespace:?},\n"));
     }
     generated.push_str("];\n");
 

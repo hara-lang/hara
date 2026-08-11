@@ -218,6 +218,8 @@ public final class StdFoundationCoroutine {
     Object f = HaraBox.unwrap(values[0]);
     if (!(f instanceof HaraFunction)
         && !(f instanceof HaraMultiFunction)
+        && !(f instanceof HbcMachine.HbcClosure)
+        && !(f instanceof HbcMachine.HbcMultiArity)
         && !(f instanceof hara.lang.protocol.IFn)) {
       throw new HaraException("coroutine/create expects a function");
     }

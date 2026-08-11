@@ -13,11 +13,11 @@ import org.junit.Test;
 
 public class HtaValueCodecTest {
   @Test
-  public void encodesTheHta1GoldenVector() {
+  public void encodesTheAlphaHtaGoldenVector() {
     byte[] encoded = HtaValueCodec.encode(List.of("x", 42L, true));
     assertArrayEquals(
         new byte[] {
-          'H', 'T', 'A', '1', 9, 0, 0, 0, 3, 4, 0, 0, 0, 1, 'x', 3, 0, 0, 0, 0, 0, 0, 0, 42, 2
+          'H', 'T', 'A', '0', 9, 0, 0, 0, 3, 4, 0, 0, 0, 1, 'x', 3, 0, 0, 0, 0, 0, 0, 0, 42, 2
         },
         encoded);
     assertEquals(List.of("x", 42L, true), HtaValueCodec.decode(encoded));
@@ -45,7 +45,7 @@ public class HtaValueCodecTest {
 
   @Test
   public void rejectsImpossibleContainerLengthsAndExcessiveNesting() {
-    byte[] impossible = {'H', 'T', 'A', '1', 9, 127, -1, -1, -1};
+    byte[] impossible = {'H', 'T', 'A', '0', 9, 127, -1, -1, -1};
     assertThrows(HaraException.class, () -> HtaValueCodec.decode(impossible));
 
     Object nested = "leaf";

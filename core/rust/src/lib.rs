@@ -146,6 +146,7 @@ pub struct Runtime {
     wasm_extensions: HashMap<String, extension::WasmExtension>,
     providers: core::ProviderRegistry,
     resources: HashMap<String, String>,
+    resource_overrides: HashSet<String>,
     #[cfg(feature = "bytecode-vm")]
     bytecode_resources: HashMap<String, (String, Vec<u8>)>,
     loaded_resources: HashSet<String>,
@@ -168,6 +169,29 @@ pub struct Runtime {
     native_modules: native_module::Registry,
     #[cfg(not(target_arch = "wasm32"))]
     extension_roots: Vec<std::path::PathBuf>,
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // Namespace vars and the flattened environment retain native export
+        // closures, and those closures retain the extension session. Release
+        // the bindings before dropping the session owners so provider
+        // shutdown is deterministic at the Runtime boundary.
+        let namespaces = self.wasm_extensions.keys().cloned().collect::<Vec<_>>();
+        for namespace in self.namespace_registry.all() {
+            for (symbol, var) in namespace.mappings() {
+                if var
+                    .symbol()
+                    .get_namespace()
+                    .is_some_and(|owner| namespaces.iter().any(|extension| extension == owner))
+                {
+                    namespace.unmap(&symbol);
+                }
+            }
+        }
+        self.env.clear();
+        self.wasm_extensions.clear();
+    }
 }
 
 /// A process-local kernel that multiplexes isolated evaluator sessions.
@@ -632,6 +656,7 @@ impl Runtime {
             wasm_extensions: HashMap::new(),
             providers: core::ProviderRegistry::new(),
             resources: HashMap::new(),
+            resource_overrides: HashSet::new(),
             #[cfg(feature = "bytecode-vm")]
             bytecode_resources: HashMap::new(),
             loaded_resources: HashSet::new(),
@@ -1411,6 +1436,10 @@ impl Runtime {
         self.resources.insert(name.into(), source.into());
         if changed {
             self.loaded_resources.remove(name);
+            #[cfg(feature = "bytecode-vm")]
+            if self.bytecode_resources.contains_key(name) {
+                self.resource_overrides.insert(name.into());
+            }
         }
     }
 
@@ -1473,6 +1502,11 @@ impl Runtime {
     pub fn require_resource(&mut self, name: &str) -> Result<String, JsValue> {
         if self.loaded_resources.contains(name) {
             return Ok(":loaded".into());
+        }
+        if self.resource_overrides.contains(name) && self.resources.contains_key(name) {
+            let result = self.load_resource(name)?;
+            self.loaded_resources.insert(name.into());
+            return Ok(result);
         }
         #[cfg(feature = "bytecode-vm")]
         if self.bytecode_resources.contains_key(name) {
@@ -1695,6 +1729,11 @@ impl Runtime {
     pub fn compile_bytecode(&self, source: &str) -> Result<std::rc::Rc<vm::Program>, String> {
         core::with_macros(self.macros.clone(), || {
             vm::compile_source_with(source, &self.namespace_registry)
+                .map(|mut program| {
+                    program.namespace =
+                        Some(self.namespace_registry.current().name().as_str().to_owned());
+                    program
+                })
                 .map(std::rc::Rc::new)
                 .map_err(|error| error.to_string())
         })
@@ -3113,12 +3152,20 @@ mod tests {
     }
 
     #[test]
-    fn requiring_resolve_loads_a_qualified_resource_and_returns_its_var() {
+    fn resolve_does_not_load_an_unregistered_qualified_resource() {
         let mut runtime = Runtime::new();
         runtime.register_resource("demo.required", "(ns demo.required) (def answer 42)");
         assert_eq!(
             runtime
-                .eval_text("(deref (requiring-resolve 'demo.required/answer))")
+                .eval_text("(resolve 'demo.required/answer)")
+                .unwrap(),
+            "nil"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns gate.resolve (:require [demo.required :as required])) required/answer"
+                )
                 .unwrap(),
             "42"
         );
@@ -4506,10 +4553,8 @@ mod tests {
                 .unwrap(),
             "9"
         );
-        assert!(runtime
-            .eval_text("(hash-map :a)")
-            .unwrap_err()
-            .contains("even number"));
+        let error = runtime.eval_text("(hash-map :a)").unwrap_err();
+        assert!(error.contains("even number"), "{error}");
         assert!(runtime
             .eval_text("(trie :a 1)")
             .unwrap_err()
@@ -8257,12 +8302,14 @@ mod tests {
     }
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn coroutine_suspending_forms_error_in_traced_path() {
+    fn coroutine_resume_without_suspension_works_in_traced_path() {
         let mut runtime = Runtime::new();
-        assert!(runtime
-            .eval_native_traced("(def c (std.foundation.coroutine/create (fn [] 1))) (std.foundation.coroutine/resume c)")
-            .unwrap_err()
-            .contains("fiber evaluator"));
+        assert_eq!(
+            runtime
+                .eval_native_traced("(def c (std.foundation.coroutine/create (fn [] 1))) (std.foundation.coroutine/resume c)")
+                .unwrap(),
+            "1"
+        );
         assert!(runtime
             .eval_native_traced("(std.foundation.coroutine/yield 1)")
             .unwrap_err()

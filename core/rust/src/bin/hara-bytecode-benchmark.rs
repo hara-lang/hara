@@ -281,6 +281,7 @@ fn execute_observed(program: &std::rc::Rc<hara_wasm::vm::Program>) -> Result<Str
             ObservedStepOutcome::Returned(value) => return Ok(value.display()),
             ObservedStepOutcome::Failed(error) => return Err(error.to_string()),
             ObservedStepOutcome::Suspended(_) => return Err("observed benchmark suspended".into()),
+            ObservedStepOutcome::Yielded(_) => return Err("observed benchmark yielded".into()),
         }
     }
 }
@@ -296,6 +297,7 @@ fn display_outcome(outcome: hara_wasm::vm::VmOutcome) -> Result<String, String> 
         hara_wasm::vm::VmOutcome::Returned(value) => Ok(value.display()),
         hara_wasm::vm::VmOutcome::Failed(error) => Err(error.to_string()),
         hara_wasm::vm::VmOutcome::Suspended(_) => Err("instrumented benchmark suspended".into()),
+        hara_wasm::vm::VmOutcome::Yielded(_) => Err("instrumented benchmark yielded".into()),
     }
 }
 

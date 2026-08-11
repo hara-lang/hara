@@ -2,7 +2,6 @@
 ;; until a host explicitly applies their returned edits with :write true.
 (ns code.manage
   (:require [code.framework :as framework]
-            [std.foundation.string :as string]
             [std.work :as work]
             [std.work.command :as command]))
 
@@ -24,10 +23,10 @@
 
 (defn grep-replace
   [unit match replacement]
-  (transform-code unit (fn [source] (string/replace source match replacement))))
+  (transform-code unit (fn [source] (str/replace source match replacement))))
 
 (defn heal-code [unit]
-  (transform-code unit (fn [source] (str (string/trim-right source) "\n"))))
+  (transform-code unit (fn [source] (str (str/trim-right source) "\n"))))
 
 (defn unclean [unit]
   (if (= (:source unit) (:after (heal-code unit))) [] [(:path unit)]))
@@ -39,24 +38,24 @@
   "Returns comment-only lines so callers can decide whether to remove them."
   [unit]
   (vec (filter (fn [entry]
-                 (string/starts-with? (string/trim (:text entry)) ";"))
+                 (str/starts-with? (str/trim (:text entry)) ";"))
                (framework/grep-source (:source unit) ";"))))
 
 (defn unclean-findings
   "Reports normalisation issues without modifying the source."
   [unit]
-  (let [lines (string/split-lines (:source unit))
+  (let [lines (str/split-lines (:source unit))
         trailing (loop [index 0 output []]
                    (if (= index (count lines))
                      output
                      (let [line (nth lines index)]
                        (recur (inc index)
-                              (if (not= line (string/trim-right line))
+                              (if (not= line (str/trim-right line))
                                 (conj output {:path (:path unit)
                                               :line (inc index)
                                               :kind :trailing-whitespace})
                                 output)))))]
-    (if (string/ends-with? (:source unit) "\n")
+    (if (str/ends-with? (:source unit) "\n")
       trailing
       (conj trailing {:path (:path unit) :kind :missing-final-newline}))))
 
@@ -91,17 +90,17 @@
     (= names (vec (sort names)))))
 
 (defn orphaned-meta [unit]
-  (let [lines (string/split-lines (:source unit))]
+  (let [lines (str/split-lines (:source unit))]
     (loop [index 0 output []]
       (if (= index (count lines))
         output
-        (let [line (string/trim (nth lines index))
+        (let [line (str/trim (nth lines index))
               next-line (if (< (inc index) (count lines))
-                          (string/trim (nth lines (inc index)))
+                          (str/trim (nth lines (inc index)))
                           "")]
           (recur (inc index)
-                 (if (and (string/starts-with? line "^")
-                          (not (string/starts-with? next-line "(def")))
+                 (if (and (str/starts-with? line "^")
+                          (not (str/starts-with? next-line "(def")))
                    (conj output {:path (:path unit)
                                  :line (inc index)
                                  :kind :orphaned-metadata})
@@ -132,25 +131,25 @@
   (loop [remaining patterns]
     (if (empty? remaining)
       false
-      (if (string/includes? line (first remaining))
+      (if (str/includes? line (first remaining))
         true
         (recur (rest remaining))))))
 
 (defn remove-matching-lines [source patterns]
-  (str (string/join
+  (str (str/join
         "\n"
         (filter (fn [line]
                   (not (includes-any? line patterns)))
-                (string/split-lines source)))
+                (str/split-lines source)))
        "\n"))
 
 (defn import-unit [unit options]
   (let [form (:form options)]
-    (if (or (nil? form) (string/blank? (str form)))
+    (if (or (nil? form) (str/blank? (str form)))
       (transform-code unit identity)
       (transform-code unit
                       (fn [source]
-                        (str (string/trim-right source) "\n" form "\n"))))))
+                        (str (str/trim-right source) "\n" form "\n"))))))
 
 (def import import-unit)
 
@@ -167,7 +166,7 @@
 
 (defn replace-all [source pairs]
   (reduce (fn [output pair]
-            (string/replace output (str (first pair)) (str (second pair))))
+            (str/replace output (str (first pair)) (str (second pair))))
           source
           pairs))
 
@@ -199,7 +198,7 @@
 (defn test-path-for [unit options]
   (or (:test-path options)
       (:test-path unit)
-      (string/replace (:path unit) ".hal" "_test.hal")))
+      (str/replace (:path unit) ".hal" "_test.hal")))
 
 (defn test-namespace-for [unit options]
   (or (:test-namespace options)
@@ -224,12 +223,12 @@
 (defn isolate [unit options]
   (let [needle (or (:needle options) "(fact")
         selected (filter (fn [line]
-                           (or (string/starts-with? (string/trim line) "(ns ")
-                               (string/includes? line needle)))
-                         (string/split-lines (:source unit)))]
+                           (or (str/starts-with? (str/trim line) "(ns ")
+                               (str/includes? line needle)))
+                         (str/split-lines (:source unit)))]
     (transform-code unit
                     (fn [source]
-                      (str (string/join "\n" selected) "\n")))))
+                      (str (str/join "\n" selected) "\n")))))
 
 (defn factcheck-remove [unit options]
   (purge unit {:patterns [(or (:marker options) "#fact")]}))

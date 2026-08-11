@@ -66,19 +66,22 @@
      (let [calls (atom [])
            _ (reset! script/+modules+ {})
            _ (reset! script/+loaded-modules+ {})
+           _ (reset! script/+module-loaders+ {})
+           _ (script/register-module-loader!
+              'demo.module
+              (fn []
+                (do
+                  (swap! calls conj 'demo.module)
+                  (swap! script/+modules+ assoc 'demo.module
+                         {:id 'demo.module}))))
            loaded
-           (binding [script/*module-loader*
-                     (fn [sentinel]
-                       (do
-                         (swap! calls conj sentinel)
-                         sentinel))]
-             [(script/load-module! (vector 'demo.module))
-              (script/load-module! 'demo.module)])]
+           [(script/load-module! (vector 'demo.module))
+            (script/load-module! 'demo.module)]]
        [loaded
         (deref calls)
         (script/module-loaded? 'demo.module)])
      => [['demo.module 'demo.module]
-         ['demo.module/__tahto_load__]
+         ['demo.module]
          true])
 
    (fact "registered modules with no entries are already loaded"
@@ -91,13 +94,8 @@
                    :fragment {}}
            _ (reset! script/+modules+ {'demo.empty module})
            _ (reset! script/+loaded-modules+ {})
-           loaded
-           (binding [script/*module-loader*
-                     (fn [sentinel]
-                       (do
-                         (swap! calls conj sentinel)
-                         sentinel))]
-             (script/load-module! 'demo.empty))]
+           _ (reset! script/+module-loaders+ {})
+           loaded (script/load-module! 'demo.empty)]
        [loaded
         (script/module-loaded? 'demo.empty)
         (deref calls)])
@@ -111,14 +109,17 @@
                    :schema {:ledger {:version 1}}}
            _ (reset! script/+modules+ {})
            _ (reset! script/+loaded-modules+ {})
-           _ (binding [script/*module-loader*
-                       (fn [sentinel]
-                         (do
-                           (swap! calls conj sentinel)
-                           sentinel))]
-               (do
-                 (script/setup! :postgres config false)
-                 (script/setup! :postgres config false)))
+           _ (reset! script/+module-loaders+ {})
+           _ (script/register-module-loader!
+              'demo.dependency
+              (fn []
+                (do
+                  (swap! calls conj 'demo.dependency)
+                  (swap! script/+modules+ assoc 'demo.dependency
+                         {:id 'demo.dependency}))))
+           _ (do
+               (script/setup! :postgres config false)
+               (script/setup! :postgres config false))
            configured (get (deref script/+modules+) module)]
        [(:lang configured)
         (:static configured)
@@ -127,7 +128,7 @@
      => [:postgres
          {:mode :compile}
          {:ledger {:version 1}}
-         ['demo.dependency/__tahto_load__]])
+         ['demo.dependency]])
 
    (fact "script contributors register entries in their logical module"
      (let [source (current-module)

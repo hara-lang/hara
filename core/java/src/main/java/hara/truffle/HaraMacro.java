@@ -44,6 +44,13 @@ final class HaraMacro {
     return name;
   }
 
+  @Override
+  public String toString() {
+    return namespace == null
+        ? "#<macro " + name + ">"
+        : "#<macro " + namespace + "/" + name.getName() + ">";
+  }
+
   Object expand(List<?> invocation) {
     return expand(invocation, hara.lang.data.Map.Standard.EMPTY);
   }

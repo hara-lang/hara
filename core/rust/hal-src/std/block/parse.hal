@@ -1,23 +1,21 @@
 (ns std.block.parse
-  (:require [std.block.construct :as construct]
-            [std.foundation.string :as string]
-            [std.foundation.edn :as edn]))
+  (:require [std.block.construct :as construct]))
 
 (defn source-char
   [source index]
-  (if (or (< index 0) (>= index (string/length source)))
+  (if (or (< index 0) (>= index (str/length source)))
     nil
-    (string/char-at source index)))
+    (str/char-at source index)))
 
 (defn source-position
   [source offset]
-  (let [prefix (string/slice source 0 offset)
-        normalized (string/replace (string/replace prefix "\r\n" "\n")
+  (let [prefix (str/slice source 0 offset)
+        normalized (str/replace (str/replace prefix "\r\n" "\n")
                                    "\r" "\n")
-        lines (string/split normalized "\n")]
+        lines (str/split normalized "\n")]
     {:offset offset
      :row (count lines)
-     :col (inc (string/length (last lines)))}))
+     :col (inc (str/length (last lines)))}))
 
 (defn with-range
   [block source start end]
@@ -180,18 +178,18 @@
               [(construct/void :space character) (inc index)]
               (if (= character ";")
                 (let [end (scan-comment-end source index)]
-                  [(construct/comment (string/slice source index end)) end])
+                  [(construct/comment (str/slice source index end)) end])
                 (if (= character "\"")
                   (let [end (scan-string-end source (inc index) false)
-                        text (string/slice source index end)]
+                        text (str/slice source index end)]
                     [(token-block text) end])
                   (if (= character ":")
                     (let [end (scan-token-end source (inc index))
-                          text (string/slice source index end)]
+                          text (str/slice source index end)]
                       [(token-block text) end])
                     (if (= character "\\")
                       (let [end (scan-token-end source (inc index))
-                            text (string/slice source index end)]
+                            text (str/slice source index end)]
                         [(token-block text) end])
                       (if (= character "(")
                         (parse-container source (inc index) :list ")" parse-at)
@@ -216,7 +214,7 @@
                                         (if (closing-delimiter? character)
                                           (throw (str "Unmatched delimiter: " character))
                                           (let [end (scan-token-end source index)
-                                                text (string/slice source index end)]
+                                                text (str/slice source index end)]
                                             [(token-block text) end]))))))))))))))))))))))
 
 (defn parse-at
@@ -227,7 +225,7 @@
 (defn parse-root-children
   [source index children]
   (loop [current index output children]
-    (if (= current (string/length source))
+    (if (= current (str/length source))
       output
       (let [[child next-index] (parse-at source current)]
         (recur next-index (conj output child))))))
@@ -236,7 +234,7 @@
   [source]
   (with-range
    (construct/root (parse-root-children source 0 []) source)
-   source 0 (string/length source)))
+   source 0 (str/length source)))
 
 (defn recovery-end
   [source start]
@@ -252,9 +250,9 @@
 (defn parse-root-recovering
   [source]
   (loop [index 0 children [] diagnostics []]
-    (if (= index (string/length source))
+    (if (= index (str/length source))
       {:block (with-range (construct/root children source)
-                          source 0 (string/length source))
+                          source 0 (str/length source))
        :diagnostics diagnostics}
       (try
         (let [[child next-index] (parse-at source index)]
@@ -263,7 +261,7 @@
           (let [end (recovery-end source index)
                 message (or (ex-message error) (str error))
                 block (with-range
-                       (construct/error (string/slice source index end) message)
+                       (construct/error (str/slice source index end) message)
                        source index end)
                 finding {:type :tool.lint/reader-error
                          :level :error

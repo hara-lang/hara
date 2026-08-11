@@ -53,13 +53,23 @@ pub enum Opcode {
     ConcatList,
     ToVector,
     DefMacro,
+    DefProtocol,
+    ExtendType,
+    DefMulti,
+    DefMethod,
+    PrimitiveValue,
+    BuiltinValue,
+    DynamicBind,
+    DynamicUnbind,
     Await,
     HostCall,
+    DotCall,
+    Yield,
     Return,
 }
 
 impl Opcode {
-    pub const COUNT: usize = 36;
+    pub const COUNT: usize = 46;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Constant,
         Self::Nil,
@@ -94,8 +104,18 @@ impl Opcode {
         Self::ConcatList,
         Self::ToVector,
         Self::DefMacro,
+        Self::DefProtocol,
+        Self::ExtendType,
+        Self::DefMulti,
+        Self::DefMethod,
+        Self::PrimitiveValue,
+        Self::BuiltinValue,
+        Self::DynamicBind,
+        Self::DynamicUnbind,
         Self::Await,
         Self::HostCall,
+        Self::DotCall,
+        Self::Yield,
         Self::Return,
     ];
 
@@ -138,8 +158,18 @@ impl Opcode {
             Self::ConcatList => "concat-list",
             Self::ToVector => "to-vector",
             Self::DefMacro => "def-macro",
+            Self::DefProtocol => "def-protocol",
+            Self::ExtendType => "extend-type",
+            Self::DefMulti => "def-multi",
+            Self::DefMethod => "def-method",
+            Self::PrimitiveValue => "primitive-value",
+            Self::BuiltinValue => "builtin-value",
+            Self::DynamicBind => "dynamic-bind",
+            Self::DynamicUnbind => "dynamic-unbind",
             Self::Await => "await",
             Self::HostCall => "host-call",
+            Self::DotCall => "dot-call",
+            Self::Yield => "yield",
             Self::Return => "return",
         }
     }
@@ -179,8 +209,18 @@ impl Opcode {
             Instruction::ConcatList(_) => Self::ConcatList,
             Instruction::ToVector => Self::ToVector,
             Instruction::DefMacro { .. } => Self::DefMacro,
+            Instruction::DefProtocol(_) => Self::DefProtocol,
+            Instruction::ExtendType(_) => Self::ExtendType,
+            Instruction::DefMulti(_) => Self::DefMulti,
+            Instruction::DefMethod(_) => Self::DefMethod,
+            Instruction::PrimitiveValue(_) => Self::PrimitiveValue,
+            Instruction::BuiltinValue(_) => Self::BuiltinValue,
+            Instruction::DynamicBind(_) => Self::DynamicBind,
+            Instruction::DynamicUnbind(_) => Self::DynamicUnbind,
             Instruction::Await => Self::Await,
             Instruction::HostCall => Self::HostCall,
+            Instruction::DotCall { .. } => Self::DotCall,
+            Instruction::Yield => Self::Yield,
             Instruction::Return => Self::Return,
         }
     }

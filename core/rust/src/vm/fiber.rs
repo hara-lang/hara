@@ -10,6 +10,7 @@ use super::program::Program;
 pub enum VmFiberState {
     Running,
     Suspended,
+    Yielded(Value),
     Completed(Value),
     Failed(VmError),
     Cancelled,
@@ -25,8 +26,11 @@ pub struct VmFiber {
 
 impl VmFiber {
     pub fn start(program: Rc<Program>) -> Self {
+        let mut machine = Machine::entry(program);
+        #[cfg(feature = "tracing-jit")]
+        machine.attach_cached_jit();
         let mut fiber = Self {
-            machine: Machine::entry(program),
+            machine,
             state: VmFiberState::Running,
             pending: None,
         };
@@ -44,8 +48,11 @@ impl VmFiber {
         arguments: Vec<Value>,
         captures: Vec<Value>,
     ) -> Self {
+        let mut machine = Machine::call(program, prototype, arguments, captures);
+        #[cfg(feature = "tracing-jit")]
+        machine.attach_cached_jit();
         let mut fiber = Self {
-            machine: Machine::call(program, prototype, arguments, captures),
+            machine,
             state: VmFiberState::Running,
             pending: None,
         };
@@ -73,6 +80,16 @@ impl VmFiber {
         self.state()
     }
 
+    pub fn resume_yield(&mut self, value: Value) -> VmFiberState {
+        if !matches!(self.state, VmFiberState::Yielded(_)) {
+            return self.state();
+        }
+        self.state = VmFiberState::Running;
+        let outcome = self.machine.resume_yield(value);
+        self.apply(outcome);
+        self.state()
+    }
+
     /// Drains queued child resumptions and advances this fiber when its
     /// awaited promise became settled. Hosts call this from their event loop.
     pub fn poll(&mut self) -> VmFiberState {
@@ -96,6 +113,8 @@ impl VmFiber {
         if let Some(promise) = self.pending.take() {
             promise.notify_cancel();
         }
+        #[cfg(feature = "tracing-jit")]
+        self.machine.detach_cached_jit();
         self.state = VmFiberState::Cancelled;
         true
     }
@@ -119,6 +138,13 @@ impl VmFiber {
                     }
                     self.resume(state);
                 }
+                VmFiberState::Yielded(_) => {
+                    return Err(VmError::new(
+                        "VM fiber yielded outside of a coroutine driver",
+                        0,
+                        None,
+                    ));
+                }
                 VmFiberState::Running => {
                     let outcome = self.machine.run();
                     self.apply(outcome);
@@ -129,12 +155,21 @@ impl VmFiber {
 
     fn apply(&mut self, outcome: VmOutcome) {
         match outcome {
-            VmOutcome::Returned(value) => self.state = VmFiberState::Completed(value),
-            VmOutcome::Failed(error) => self.state = VmFiberState::Failed(error),
+            VmOutcome::Returned(value) => {
+                #[cfg(feature = "tracing-jit")]
+                self.machine.detach_cached_jit();
+                self.state = VmFiberState::Completed(value);
+            }
+            VmOutcome::Failed(error) => {
+                #[cfg(feature = "tracing-jit")]
+                self.machine.detach_cached_jit();
+                self.state = VmFiberState::Failed(error);
+            }
             VmOutcome::Suspended(promise) => {
                 self.pending = Some(promise);
                 self.state = VmFiberState::Suspended;
             }
+            VmOutcome::Yielded(value) => self.state = VmFiberState::Yielded(value),
         }
     }
 }

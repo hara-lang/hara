@@ -14,65 +14,6 @@ use super::scope::ScopeStack;
 use super::{placeholder, Child, Compiler, FnContext};
 
 impl Compiler {
-    /// A call whose operator is a symbol: a lexical slot holding a
-    /// function value, a visible global (late-bound through the var,
-    /// issue #223), or an unbound symbol.
-    pub(super) fn compile_named_call(
-        &mut self,
-        name: &str,
-        children: &[Child<'_>],
-        span: &Span,
-    ) -> Result<(), CompileError> {
-        let argc = (children.len() - 1) as u8;
-        // A named function's self-reference targets the prototype already
-        // being compiled. Keep the externally visible Var late-bound, but do
-        // not load, dereference, and convert that Var for every recursive
-        // call. Defn prototypes are capture-free; closures with captures keep
-        // the generic lexical-call path below.
-        if self.ctx().name.as_deref() == Some(name) && self.ctx().captures.is_empty() {
-            let prototype = self.ctx().proto_id as u16;
-            let accepts = {
-                let proto = &self.functions[usize::from(prototype)];
-                (!proto.variadic && proto.arity == u16::from(argc))
-                    || (proto.variadic && u16::from(argc) >= proto.arity)
-            };
-            if accepts {
-                self.compile_call_arguments(children, span)?;
-                if self.ctx().fallthrough {
-                    self.emit(
-                        Instruction::CallStatic { prototype, argc },
-                        Some(span.start),
-                    );
-                }
-                return Ok(());
-            }
-        }
-        match self.ctx().scopes.resolve(name) {
-            Some(slot) => self.emit(Instruction::LoadLocal(slot), Some(span.start)),
-            None if self.visible_global(name) => {
-                let index = self.global_name_constant(name, span)?;
-                self.emit(Instruction::GetGlobal(index), Some(span.start))
-            }
-            None if crate::core::is_bytecode_callable(name) => {
-                let index = self.name_constant(name, span)?;
-                self.emit(Instruction::BuiltinValue(index), Some(span.start))
-            }
-            None => {
-                return Err(CompileError::new(
-                    CompileErrorKind::UnboundSymbol,
-                    format!("unbound symbol: {name}"),
-                    Some(span.start),
-                ))
-            }
-        };
-        self.compile_call_arguments(children, span)?;
-        if !self.ctx().fallthrough {
-            return Ok(());
-        }
-        self.emit(Instruction::Call { argc }, Some(span.start));
-        Ok(())
-    }
-
     /// A call whose operator is itself an expression, e.g. `((fn [x] x) 1)`.
     pub(super) fn compile_expression_call(
         &mut self,
@@ -121,77 +62,6 @@ impl Compiler {
         Ok(())
     }
 
-    /// Inlines a fixed-arity function literal that is invoked immediately.
-    /// Arguments are evaluated before the parameter scope exists, then stored
-    /// right-to-left so their normal left-to-right stack order is preserved.
-    fn compile_immediate_fn_call(
-        &mut self,
-        children: &[Child<'_>],
-        span: &Span,
-    ) -> Result<bool, CompileError> {
-        let callee = &children[0];
-        let Form::List(elements) = callee.form else {
-            return Ok(false);
-        };
-        if !matches!(elements.first(), Some(Form::Symbol(name)) if name == "fn") {
-            return Ok(false);
-        }
-        let fn_children = self.list_children(elements, callee.span, callee.children);
-        if fn_children.len() < 3 {
-            return Ok(false);
-        }
-        let Form::Vector(params) = fn_children[1].form else {
-            return Ok(false);
-        };
-        if params.len() != children.len() - 1
-            || params
-                .iter()
-                .any(|param| !matches!(param, Form::Symbol(name) if name != "&"))
-            || fn_children[2..]
-                .iter()
-                .any(|body| contains_recur(body.form))
-        {
-            return Ok(false);
-        }
-        if params.len() > crate::vm::program::MAX_PRIMITIVE_ARGUMENTS {
-            return Err(CompileError::new(
-                CompileErrorKind::Limit,
-                format!(
-                    "calls support at most {} arguments",
-                    crate::vm::program::MAX_PRIMITIVE_ARGUMENTS
-                ),
-                Some(span.start),
-            ));
-        }
-        for argument in &children[1..] {
-            self.compile_form(argument.form, argument.span, argument.children, false)?;
-        }
-        if !self.ctx().fallthrough {
-            return Ok(true);
-        }
-        let param_children =
-            self.list_children(params, fn_children[1].span, fn_children[1].children);
-        self.ctx_mut().scopes.push_scope();
-        let result = (|| {
-            let mut slots = Vec::with_capacity(params.len());
-            for param in &param_children {
-                let Form::Symbol(name) = param.form else {
-                    unreachable!("parameter shape checked above")
-                };
-                slots.push(self.ctx_mut().scopes.declare(name).map_err(|error| {
-                    CompileError::new(error.kind(), error.message(), Some(param.span.start))
-                })?);
-            }
-            for (slot, param) in slots.iter().zip(&param_children).rev() {
-                self.emit(Instruction::StoreLocal(*slot), Some(param.span.start));
-            }
-            self.compile_sequence(&fn_children[2..], false)
-        })();
-        self.ctx_mut().scopes.pop_scope();
-        result?;
-        Ok(true)
-    }
-
     pub(super) fn compile_fn_form(
         &mut self,
         children: &[Child<'_>],
@@ -226,7 +96,7 @@ impl Compiler {
     pub(super) fn form_may_suspend(&self, form: &Form) -> bool {
         match crate::core::form_without_metadata(form) {
             Form::List(values) => {
-                if matches!(values.first(), Some(Form::Symbol(name)) if self.is_coroutine_var(name, "await"))
+                if matches!(values.first(), Some(Form::Symbol(name)) if self.is_coroutine_var(name, "await") || self.is_coroutine_var(name, "yield"))
                 {
                     return true;
                 }
@@ -468,6 +338,11 @@ impl Compiler {
                 let children = self.list_children(elements, child.span, child.children);
                 match &elements[0] {
                     Form::Symbol(head) if self.is_coroutine_var(head, "await") => {
+                        for c in &children[1..] {
+                            self.collect_free(c, bound, free);
+                        }
+                    }
+                    Form::Symbol(head) if self.is_coroutine_var(head, "yield") => {
                         for c in &children[1..] {
                             self.collect_free(c, bound, free);
                         }
@@ -817,19 +692,4 @@ fn metadata_flag(form: &Form, key: &str) -> Result<bool, CompileError> {
     crate::core::metadata_from_form(metadata)
         .map(|metadata| metadata.flag(key))
         .map_err(|message| CompileError::new(CompileErrorKind::UnsupportedForm, message, None))
-}
-
-fn contains_recur(form: &Form) -> bool {
-    match form {
-        Form::List(values) => {
-            matches!(values.first(), Some(Form::Symbol(name)) if name == "recur")
-                || values.iter().any(contains_recur)
-        }
-        Form::Vector(values) | Form::Set(values) => values.iter().any(contains_recur),
-        Form::Map(values) => values
-            .iter()
-            .any(|(key, value)| contains_recur(key) || contains_recur(value)),
-        Form::Tagged(_, value) | Form::Metadata(_, value) => contains_recur(value),
-        _ => false,
-    }
 }

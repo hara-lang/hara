@@ -1,18 +1,33 @@
 (ns lang.runtime.basic
   (:require [lang.core.registry :as registry]
+            [lang.runtime.basic.impl.process-js :as process-js :lazy true]
+            [lang.runtime.basic.impl.process-python :as process-python :lazy true]
+            [lang.runtime.basic.impl.process-lua :as process-lua :lazy true]
             [lang.runtime.basic.type-basic :as basic]
             [lang.runtime.basic.type-oneshot :as oneshot]
             [lang.runtime.basic.type-verify :as verify]))
+
+(defn- declared-init
+  [qualified]
+  (let [form (list 'resolve (list 'quote qualified))
+        source (eval-in-ns 'lang.runtime.basic [form])]
+    (if source
+      (deref source)
+      (throw (ex-info "Declared runtime dependency did not load"
+                      {:symbol qualified})))))
 
 ;; Verification is implemented by the same process modules as oneshot/basic.
 ;; Register the additional coordinates without eagerly loading target modules.
 (def +verify-registry+
   [(registry/registry-add! :js :verify
-                           'lang.runtime.basic.impl.process-js)
+                           'lang.runtime.basic.impl.process-js
+                           (fn [] (declared-init 'process-js/+init+)))
    (registry/registry-add! :python :verify
-                           'lang.runtime.basic.impl.process-python)
+                           'lang.runtime.basic.impl.process-python
+                           (fn [] (declared-init 'process-python/+init+)))
    (registry/registry-add! :lua :verify
-                           'lang.runtime.basic.impl.process-lua)])
+                           'lang.runtime.basic.impl.process-lua
+                           (fn [] (declared-init 'process-lua/+init+)))])
 
 (def rt-basic basic/rt-basic)
 (def rt-basic:create basic/rt-basic:create)

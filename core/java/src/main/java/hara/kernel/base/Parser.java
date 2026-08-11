@@ -8,11 +8,11 @@ import hara.kernel.builtin.BuiltinStruct;
 import hara.lang.data.*;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
+import hara.lang.data.types.ISetType;
 import hara.lang.protocol.Constant;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -60,6 +60,7 @@ public interface Parser {
       dispatchMacros['^'] = new MetaReader();
       dispatchMacros['"'] = new RegexReader();
       dispatchMacros['{'] = new SetReader();
+      dispatchMacros['('] = new AnonymousFunctionReader();
       dispatchMacros[39] = new VarReader();
       dispatchMacros['<'] = new UnreadableReader();
       dispatchMacros['_'] = new DiscardReader();
@@ -347,7 +348,7 @@ public interface Parser {
       Matcher m = intPat.matcher(s);
       if (m.matches()) {
         if (m.group(2) != null) {
-          if (m.group(8) != null) return BigInteger.ZERO;
+          if (m.group(8) != null) return null;
           return Num.num(0);
         }
         boolean negate = (m.group(1).equals("-"));
@@ -360,12 +361,12 @@ public interface Parser {
         if (n == null) return null;
         BigInteger bn = new BigInteger(n, radix);
         if (negate) bn = bn.negate();
-        if (m.group(8) != null || bn.bitLength() >= 64) return bn;
+        if (m.group(8) != null || bn.bitLength() >= 64) return null;
         return Num.num(bn.longValue());
       }
       m = floatPat.matcher(s);
       if (m.matches()) {
-        if (m.group(4) != null) return new BigDecimal(m.group(1));
+        if (m.group(4) != null) return null;
         return Double.parseDouble(s);
       }
       return null;
@@ -596,6 +597,121 @@ public interface Parser {
         Object form = read(r, true, null, true, opts);
         return new TaggedLiteral((Symbol) tag, form);
       }
+    }
+
+    public static class AnonymousFunctionReader implements BiFunction<Reader, Map, Object> {
+      @Override
+      public Object apply(Reader r, Map opts) {
+        Object body = List.Standard.from(null, readDelimitedList(')', r, true, opts).toArray());
+        AnonymousArguments arguments = new AnonymousArguments();
+        collectAnonymousArguments(body, arguments);
+        long id = r.nextAnonymousFunctionId();
+        ArrayList<Object> parameters = new ArrayList<>();
+        for (int index = 1; index <= arguments.maximum; index++) {
+          parameters.add(anonymousArgument(id, index));
+        }
+        if (arguments.variadic) {
+          parameters.add(Symbol.create("&"));
+          parameters.add(anonymousRestArgument(id));
+        }
+        return List.Standard.from(
+            null,
+            Symbol.create("fn"),
+            Vector.Standard.from(null, parameters.toArray()),
+            rewriteAnonymousArguments(body, id));
+      }
+    }
+
+    private static final class AnonymousArguments {
+      int maximum;
+      boolean variadic;
+    }
+
+    private static Symbol anonymousArgument(long id, int index) {
+      return Symbol.create("__reader_fn_" + id + "_" + index);
+    }
+
+    private static Symbol anonymousRestArgument(long id) {
+      return Symbol.create("__reader_fn_" + id + "_rest");
+    }
+
+    private static void collectAnonymousArguments(Object form, AnonymousArguments arguments) {
+      if (form instanceof Symbol symbol) {
+        String name = symbol.getName();
+        if (symbol.getNamespace() != null || !name.startsWith("%")) return;
+        if (name.equals("%") || name.equals("%1")) {
+          arguments.maximum = Math.max(arguments.maximum, 1);
+        } else if (name.equals("%&")) {
+          arguments.variadic = true;
+        } else {
+          try {
+            int index = Integer.parseInt(name.substring(1));
+            if (index == 0) {
+              throw new Ex.Runtime("Anonymous function arguments begin at %1");
+            }
+            arguments.maximum = Math.max(arguments.maximum, index);
+          } catch (NumberFormatException error) {
+            throw new Ex.Runtime("Invalid anonymous function argument: " + name);
+          }
+        }
+      } else if (form instanceof IMapType<?, ?> map) {
+        for (Object rawEntry : map) {
+          java.util.Map.Entry<?, ?> entry = (java.util.Map.Entry<?, ?>) rawEntry;
+          collectAnonymousArguments(entry.getKey(), arguments);
+          collectAnonymousArguments(entry.getValue(), arguments);
+        }
+      } else if (form instanceof Iterable<?> values) {
+        for (Object value : values) collectAnonymousArguments(value, arguments);
+      } else if (form instanceof TaggedLiteral tagged) {
+        collectAnonymousArguments(tagged.form(), arguments);
+      }
+    }
+
+    private static Object rewriteAnonymousArguments(Object form, long id) {
+      if (form instanceof Symbol symbol) {
+        if (symbol.getNamespace() != null) return form;
+        String name = symbol.getName();
+        if (name.equals("%") || name.equals("%1")) return anonymousArgument(id, 1);
+        if (name.equals("%&")) return anonymousRestArgument(id);
+        if (name.startsWith("%")) {
+          return anonymousArgument(id, Integer.parseInt(name.substring(1)));
+        }
+        return form;
+      }
+      if (form instanceof List<?> values) {
+        ArrayList<Object> rewritten = rewriteAnonymousValues(values, id);
+        return List.Standard.from(formMeta(form), rewritten.toArray());
+      }
+      if (form instanceof Vector<?> values) {
+        ArrayList<Object> rewritten = rewriteAnonymousValues(values, id);
+        return Vector.Standard.from(formMeta(form), rewritten.toArray());
+      }
+      if (form instanceof IMapType<?, ?> map) {
+        ArrayList<Object> entries = new ArrayList<>();
+        for (Object rawEntry : map) {
+          java.util.Map.Entry<?, ?> entry = (java.util.Map.Entry<?, ?>) rawEntry;
+          entries.add(rewriteAnonymousArguments(entry.getKey(), id));
+          entries.add(rewriteAnonymousArguments(entry.getValue(), id));
+        }
+        return BuiltinStruct.orderedMap(entries);
+      }
+      if (form instanceof ISetType<?> values) {
+        return BuiltinStruct.orderedSet(rewriteAnonymousValues(values, id));
+      }
+      if (form instanceof TaggedLiteral tagged) {
+        return new TaggedLiteral(tagged.tag(), rewriteAnonymousArguments(tagged.form(), id));
+      }
+      return form;
+    }
+
+    private static ArrayList<Object> rewriteAnonymousValues(Iterable<?> values, long id) {
+      ArrayList<Object> rewritten = new ArrayList<>();
+      for (Object value : values) rewritten.add(rewriteAnonymousArguments(value, id));
+      return rewritten;
+    }
+
+    private static IMetadata formMeta(Object form) {
+      return form instanceof IObjType object ? object.meta() : null;
     }
 
     public static class SymbolicValueReader implements BiFunction<Reader, Map, Object> {

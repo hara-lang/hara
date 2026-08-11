@@ -12,6 +12,7 @@ public class Reader {
   private final PushbackReader reader;
   private int lineNumber = 1;
   private int columnNumber = 1;
+  private long anonymousFunctionId;
   private final Deque<Position> positions = new ArrayDeque<>();
 
   private static final class Position {
@@ -42,6 +43,10 @@ public class Reader {
 
   public int getColumnNumber() {
     return columnNumber;
+  }
+
+  long nextAnonymousFunctionId() {
+    return anonymousFunctionId++;
   }
 
   public Character peekChar() {

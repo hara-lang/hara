@@ -1,8 +1,7 @@
 (ns lang.runtime.postgres.db-client
   (:require [lib.postgres :as base]
+            [lang.core.compile :as compile :lazy true]
             [std.db.postgres :as postgres]
-            [std.foundation.promise :as promise]
-            [std.foundation.string :as string]
             [std.protocol.icontexteval :as context-eval]))
 
 (defstruct RuntimePostgresDbClient
@@ -41,10 +40,10 @@
 
 (defn execute-only?
   [source]
-  (let [statement (string/upper (string/trim source))]
+  (let [statement (str/upper (str/trim source))]
     (boolean
      (first
-      (filter (fn [prefix] (string/starts-with? statement prefix))
+      (filter (fn [prefix] (str/starts-with? statement prefix))
               ["DO " "BEGIN " "DECLARE " "INSERT " "UPDATE " "DELETE "
                "CREATE " "DROP " "ALTER " "GRANT " "REVOKE " "TRUNCATE "
                "COMMENT " "VACUUM "])))))
@@ -74,11 +73,15 @@
 
 (defn module-compile
   [module]
-  (let [compile-module (requiring-resolve 'lang.core.compile/compile-module)]
-    (compile-module {:lang :postgres
-                     :main module
-                     :layout :module
-                     :emit {:code {:label true}}})))
+  (let [compile-form (list 'resolve (list 'quote 'compile/compile-module))
+        compile-var (eval-in-ns 'lang.runtime.postgres.db-client [compile-form])]
+    (if compile-var
+      ((deref compile-var) {:lang :postgres
+                            :main module
+                            :layout :module
+                            :emit {:code {:label true}}})
+      (throw (ex-info "Declared compiler dependency did not load"
+                      {:symbol 'compile/compile-module})))))
 
 (defn setup-module!
   [runtime module]

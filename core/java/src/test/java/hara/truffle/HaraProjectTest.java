@@ -102,9 +102,23 @@ public class HaraProjectTest {
   }
 
   @Test
-  public void requiresProjectNamespacesByConvention() {
-    Path benchmark =
-        Path.of("lib", "bench", "001-simple-test").toAbsolutePath().normalize();
+  public void requiresProjectNamespacesByConvention() throws Exception {
+    Path benchmark = Files.createTempDirectory("hara-project-convention");
+    Files.writeString(
+        benchmark.resolve("project.edn"),
+        "{:hara/type :project :project/id fixture :project/source-paths [\"src\"]"
+            + " :project/test-paths [\"test\"]}");
+    Path source = benchmark.resolve("src/testing/project_fixture.hal");
+    Files.createDirectories(source.getParent());
+    Files.writeString(source, "(ns testing.project-fixture) (def answer 42)");
+    Path testSource = benchmark.resolve("test/testing/project_test_path_test.hal");
+    Files.createDirectories(testSource.getParent());
+    Files.writeString(
+        testSource,
+        "(ns testing.project-test-path-test) (def location :test-path)");
+    Files.writeString(
+        benchmark.resolve("test/testing/project_mismatch_test.hal"),
+        "(ns testing.not-project-mismatch-test)");
     try (Context project =
         Context.newBuilder(HaraLanguage.ID)
             .currentWorkingDirectory(benchmark)
@@ -171,6 +185,13 @@ public class HaraProjectTest {
             .currentWorkingDirectory(root)
             .allowIO(IOAccess.ALL)
             .build()) {
+      assertEquals(
+          "nil",
+          context
+              .eval(HaraLanguage.ID, "(pr-str (resolve 'sample.lazy/leaked))")
+              .asString());
+      assertEquals(
+          ":unknown", context.eval(HaraLanguage.ID, "(ns-state 'sample.lazy)").toString());
       context.eval(
           HaraLanguage.ID,
           "(ns user (:require [sample.lazy :as lazy :lazy true]))");

@@ -32,12 +32,18 @@ use super::program::{
 use super::source_map::SourceMap;
 use super::validate::{self, stack_heights};
 
+#[path = "compiler/calls.rs"]
+mod calls;
+#[path = "compiler/coroutines.rs"]
+mod coroutines;
 #[path = "compiler/destructure.rs"]
 mod destructure;
 #[path = "compiler/exceptions.rs"]
 mod exceptions;
 #[path = "compiler/functions.rs"]
 mod functions;
+#[path = "compiler/literals.rs"]
+mod literals;
 #[path = "compiler/scope.rs"]
 mod scope;
 use exceptions::TryContext;
@@ -394,29 +400,6 @@ impl Compiler {
         Ok(())
     }
 
-    fn compile_await(&mut self, children: &[Child<'_>], span: &Span) -> Result<(), CompileError> {
-        if children.len() != 2 {
-            return Err(CompileError::new(
-                CompileErrorKind::Arity,
-                "co/await expects one promise",
-                Some(span.start),
-            ));
-        }
-        if !self.ctx().suspend_allowed {
-            return Err(CompileError::new(
-                CompileErrorKind::InvalidEffect,
-                "co/await requires ^:async or co/create",
-                Some(span.start),
-            ));
-        }
-        let promise = &children[1];
-        self.compile_form(promise.form, promise.span, promise.children, false)?;
-        if self.ctx().fallthrough {
-            self.emit(Instruction::Await, Some(span.start));
-        }
-        Ok(())
-    }
-
     /// Pairs parsed forms with their spans. When a node's children do not
     /// match its element count (reader macros expand to synthetic lists),
     /// elements inherit the parent span.
@@ -640,18 +623,11 @@ impl Compiler {
                 Ok(())
             }
             Form::Map(entries) => {
-                if entries.iter().all(|(key, value)| {
-                    literal_collection_form(key) && literal_collection_form(value)
-                }) {
-                    let value = crate::core::form_to_value(form).map_err(|message| {
-                        CompileError::new(
-                            CompileErrorKind::UnsupportedForm,
-                            message,
-                            Some(span.start),
-                        )
-                    })?;
-                    return self.unique_constant(value, span);
-                }
+                // HTA canonicalization sorts map keys and intentionally does
+                // not encode the concrete ordered-map representation. Map
+                // literals therefore cannot enter the HBC constant pool:
+                // BuildMap is what preserves source insertion order across
+                // Rust and Truffle runtimes.
                 if entries.len() > usize::from(u16::MAX) {
                     return Err(CompileError::new(
                         CompileErrorKind::Limit,
@@ -739,6 +715,9 @@ impl Compiler {
                     }
                     Form::Symbol(name) if self.is_coroutine_var(name, "await") => {
                         self.compile_await(&children, span)
+                    }
+                    Form::Symbol(name) if self.is_coroutine_var(name, "yield") => {
+                        self.compile_yield(&children, span)
                     }
                     Form::Symbol(name) if self.is_host_call_var(name) => {
                         self.compile_host_call(&children, span)
@@ -897,218 +876,6 @@ impl Compiler {
         for value in values {
             self.compile_form(value, span, None, false)?;
         }
-        Ok(())
-    }
-
-    fn compile_quote(&mut self, children: &[Child<'_>], span: &Span) -> Result<(), CompileError> {
-        if children.len() != 2 {
-            return Err(CompileError::new(
-                CompileErrorKind::Arity,
-                "quote expects one argument",
-                Some(span.start),
-            ));
-        }
-        let value = crate::core::form_to_value(children[1].form).map_err(|message| {
-            CompileError::new(CompileErrorKind::UnsupportedForm, message, Some(span.start))
-        })?;
-        self.constant(value, span)
-    }
-
-    fn compile_syntax_quote(
-        &mut self,
-        children: &[Child<'_>],
-        span: &Span,
-    ) -> Result<(), CompileError> {
-        if children.len() != 2 {
-            return Err(CompileError::new(
-                CompileErrorKind::Arity,
-                "syntax-quote expects one argument",
-                Some(span.start),
-            ));
-        }
-        self.compile_syntax_value(children[1].form, span, false)
-    }
-
-    fn compile_syntax_value(
-        &mut self,
-        form: &Form,
-        span: &Span,
-        nested: bool,
-    ) -> Result<(), CompileError> {
-        if let Some(argument) = unquote_argument(form, "unquote") {
-            let argument = argument.map_err(|message| {
-                CompileError::new(CompileErrorKind::Arity, message, Some(span.start))
-            })?;
-            return self.compile_form(&argument, span, None, false);
-        }
-        if unquote_argument(form, "unquote-splicing").is_some() {
-            return Err(CompileError::new(
-                CompileErrorKind::UnsupportedForm,
-                if nested {
-                    "unquote-splicing is only valid as a collection element"
-                } else {
-                    "unquote-splicing is not valid at the root of syntax-quote"
-                },
-                Some(span.start),
-            ));
-        }
-        match crate::core::form_without_metadata(form) {
-            Form::List(values) | Form::Vector(values) => {
-                let vector = matches!(crate::core::form_without_metadata(form), Form::Vector(_));
-                let spliced = values
-                    .iter()
-                    .any(|value| unquote_argument(value, "unquote-splicing").is_some());
-                for value in values {
-                    if let Some(argument) = unquote_argument(value, "unquote-splicing") {
-                        let argument = argument.map_err(|message| {
-                            CompileError::new(CompileErrorKind::Arity, message, Some(span.start))
-                        })?;
-                        self.compile_form(&argument, span, None, false)?;
-                    } else {
-                        self.compile_syntax_value(value, span, true)?;
-                        if spliced {
-                            self.emit(Instruction::BuildList(1), Some(span.start));
-                        }
-                    }
-                }
-                let count = self.collection_count(values.len(), span)?;
-                if spliced {
-                    self.emit(Instruction::ConcatList(count), Some(span.start));
-                    if vector {
-                        self.emit(Instruction::ToVector, Some(span.start));
-                    }
-                } else if vector {
-                    self.emit(Instruction::BuildVector(count), Some(span.start));
-                } else {
-                    self.emit(Instruction::BuildList(count), Some(span.start));
-                }
-                Ok(())
-            }
-            Form::Map(entries) => {
-                for (key, value) in entries {
-                    self.compile_syntax_value(key, span, true)?;
-                    self.compile_syntax_value(value, span, true)?;
-                }
-                self.emit(
-                    Instruction::BuildMap(entries.len() as u16),
-                    Some(span.start),
-                );
-                Ok(())
-            }
-            Form::Set(values) => {
-                for value in values {
-                    self.compile_syntax_value(value, span, true)?;
-                }
-                self.emit(Instruction::BuildSet(values.len() as u16), Some(span.start));
-                Ok(())
-            }
-            _ => {
-                let value = crate::core::form_to_value(form).map_err(|message| {
-                    CompileError::new(CompileErrorKind::UnsupportedForm, message, Some(span.start))
-                })?;
-                self.constant(value, span)
-            }
-        }
-    }
-
-    fn compile_primitive(
-        &mut self,
-        children: &[Child<'_>],
-        span: &Span,
-        op: Primitive,
-    ) -> Result<(), CompileError> {
-        let argc = children.len() - 1;
-        if argc > MAX_PRIMITIVE_ARGUMENTS {
-            return Err(CompileError::new(
-                CompileErrorKind::Limit,
-                format!("primitive calls support at most {MAX_PRIMITIVE_ARGUMENTS} arguments"),
-                Some(span.start),
-            ));
-        }
-        // Mutable conversion creates/consumes runtime identity and must run on
-        // every execution. Folding it would place a one-shot transient in the
-        // constant pool, so the second execution would observe a frozen value.
-        if !matches!(
-            op,
-            Primitive::ToMutable
-                | Primitive::ToPersistent
-                | Primitive::ArrayNew
-                | Primitive::ArraySet
-                | Primitive::ObjectNew
-                | Primitive::ObjectSet
-        ) && children[1..]
-            .iter()
-            .all(|argument| constant_form(argument.form))
-        {
-            let arguments = children[1..]
-                .iter()
-                .map(|argument| crate::core::form_to_value(argument.form))
-                .collect::<Result<Vec<_>, _>>();
-            if let Ok(arguments) = arguments {
-                if let Ok(value) = crate::core::apply_primitive(op, &arguments) {
-                    return self.constant(value, span);
-                }
-            }
-        }
-        if op == Primitive::First && argc == 1 {
-            if let Form::List(elements) = children[1].form {
-                if matches!(elements.as_slice(), [Form::Symbol(name), _] if name == "rest") {
-                    let nested =
-                        self.list_children(elements, children[1].span, children[1].children);
-                    if constant_form(nested[1].form) {
-                        if let Ok(argument) = crate::core::form_to_value(nested[1].form) {
-                            if let Ok(value) =
-                                crate::core::apply_primitive(Primitive::Second, &[argument])
-                            {
-                                return self.constant(value, span);
-                            }
-                        }
-                    }
-                    self.compile_form(nested[1].form, nested[1].span, nested[1].children, false)?;
-                    if self.ctx().fallthrough {
-                        self.emit(
-                            Instruction::Primitive {
-                                op: Primitive::Second,
-                                argc: 1,
-                            },
-                            Some(span.start),
-                        );
-                    }
-                    return Ok(());
-                }
-            }
-        }
-        if argc == 2 {
-            if let (Form::Symbol(name), Form::Number(value)) = (children[1].form, children[2].form)
-            {
-                if let Some(local) = self.ctx().scopes.resolve(name) {
-                    let constant =
-                        self.constant_index_of(Value::Number(*value), children[2].span)?;
-                    self.emit(
-                        Instruction::PrimitiveLocalConst {
-                            op,
-                            local,
-                            constant,
-                        },
-                        Some(span.start),
-                    );
-                    return Ok(());
-                }
-            }
-        }
-        for argument in &children[1..] {
-            self.compile_form(argument.form, argument.span, argument.children, false)?;
-        }
-        if !self.ctx().fallthrough {
-            return Ok(());
-        }
-        self.emit(
-            Instruction::Primitive {
-                op,
-                argc: argc as u8,
-            },
-            Some(span.start),
-        );
         Ok(())
     }
 
@@ -1538,286 +1305,5 @@ fn internal(message: String) -> CompileError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::compile_source;
-    use crate::Runtime;
-
-    #[test]
-    fn cond_compiles_a_terminating_loop_branch() {
-        compile_source("(loop [i 0] (cond (< i 2) (recur (+ i 1)) :else i))")
-            .expect("cond with a terminating branch compiles");
-    }
-
-    #[test]
-    fn short_circuit_forms_compile_with_a_terminating_final_operand() {
-        compile_source("(fn [x] (and x (throw \"and\")))")
-            .expect("and short-circuit path reaches the function return");
-        compile_source("(fn [x] (or x (throw \"or\")))")
-            .expect("or short-circuit path reaches the function return");
-    }
-
-    #[test]
-    fn structural_callable_compiles_as_a_first_class_value() {
-        assert!(crate::core::is_bytecode_callable("disj"));
-        compile_source("(fn [] disj)").expect("structural callable compiles");
-        compile_source("(fn [] (disj #{} 1))").expect("structural callable invocation compiles");
-    }
-
-    #[test]
-    fn a_declared_global_wins_over_a_reserved_operator_name() {
-        let mut runtime = Runtime::core();
-        runtime.prepare_foundation_bytecode();
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(defn await
-                       ([value] (await value 2))
-                       ([value extra] (+ value extra)))
-                     (await 40)"
-                )
-                .unwrap(),
-            "42"
-        );
-    }
-
-    #[test]
-    fn macro_introduced_lexical_bindings_are_not_captures() {
-        let mut runtime = Runtime::core();
-        runtime.prepare_foundation_bytecode();
-        runtime
-            .eval_native(
-                "(defmacro if-let [binding then alternative]
-                   (let [name (nth binding 0)
-                         expression (nth binding 1)]
-                     `(let [~name ~expression]
-                        (if ~name ~then ~alternative))))",
-            )
-            .unwrap();
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(defn invoke-selected [candidate]
-                       (if-let [selected candidate]
-                         (selected 41)
-                         0))
-                     (invoke-selected inc)"
-                )
-                .unwrap(),
-            "42"
-        );
-    }
-
-    #[test]
-    fn destructuring_lowers_across_bindings_parameters_and_recur() {
-        let mut runtime = Runtime::core();
-        runtime.prepare_foundation_bytecode();
-        runtime.use_namespace("std.foundation");
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(let [[a b & more :as all] [1 2 3 4]
-                            {:keys [x] :or {x 9} :as m} {:x 5}]
-                       [a b more all x m])"
-                )
-                .unwrap(),
-            "[1 2 [3 4] [1 2 3 4] 5 {:x 5}]"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native("((fn [[a b] {:keys [x]}] (+ a b x)) [1 2] {:x 3})")
-                .unwrap(),
-            "6"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "((fn [{:keys [callback]
-                            :or {callback (fn [value] value)}}]
-                        (callback 41))
-                      {})"
-                )
-                .unwrap(),
-            "41"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(map (fn [{:keys [name optional?]}]
-                            [name optional?])
-                          [{:name \"id\" :optional? true}])"
-                )
-                .unwrap(),
-            "[[\"id\" true]]"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(defn parts [form]
-                       (let [[_ head & tail] form]
-                         (if (symbol? head)
-                           [head (first tail) (rest tail)]
-                           [nil head tail])))
-                     (defn compatible? [form]
-                       (let [[name] (parts form)]
-                         (nil? name)))
-                     (compatible? '(fn [x] x))"
-                )
-                .unwrap(),
-            "true"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(loop [[head & tail] [1 2 3] out []]
-                       (if head
-                         (recur tail (conj out head))
-                         out))"
-                )
-                .unwrap(),
-            "[1 2 3]"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(letfn [(even* [n] (if (= n 0) true (odd* (- n 1))))
-                              (odd* [n] (if (= n 0) false (even* (- n 1))))]
-                       [(even* 10) (odd* 9)])"
-                )
-                .unwrap(),
-            "[true true]"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(let [require-fields (fn [source fields]
-                              (reduce (fn [out field]
-                                        (if (nil? (get source field)) out out))
-                                      source
-                                      fields))
-                           profile (fn [value]
-                                     (require-fields value
-                                                     [:profile/id
-                                                      :profile/version
-                                                      :profile/operators]))]
-                       (profile {:profile/id :xtalk
-                                 :profile/version 1
-                                 :profile/operators {:a 1}}))"
-                )
-                .unwrap(),
-            "{:profile/id :xtalk :profile/version 1 :profile/operators {:a 1}}"
-        );
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(defn __gate-require-fields [source fields]
-                       (reduce (fn [out field]
-                                 (if (nil? (get source field)) out out))
-                               source
-                               fields))
-                     (defn __gate-profile [value]
-                       (__gate-require-fields value
-                                              [:profile/id
-                                               :profile/version
-                                               :profile/operators]))
-                     (__gate-profile {:profile/id :xtalk
-                                      :profile/version 1
-                                      :profile/operators {:a 1}})"
-                )
-                .unwrap(),
-            "{:profile/id :xtalk :profile/version 1 :profile/operators {:a 1}}"
-        );
-
-        runtime.register_resource(
-            "__gate.grammar",
-            "(ns __gate.grammar)
-             (defn fail [message data]
-               (throw (ex-info message data)))
-             (defn require-fields [source fields]
-               (reduce (fn [out field]
-                         (if (nil? (get source field))
-                           (fail \"Missing grammar source field\"
-                                 {:field field :source source})
-                           out))
-                       source
-                       fields))
-             (defn source [kind id version value]
-               (if (or (nil? id) (not (number? version)) (<= version 0))
-                 (fail \"Invalid grammar source identity\"
-                       {:kind kind :id id :version version})
-                 (assoc value
-                        :source/kind kind
-                        :source/id id
-                        :source/version version)))
-             (defn profile [value]
-               (source :profile
-                       (:profile/id value)
-                       (:profile/version value)
-                       (require-fields value
-                                       [:profile/id
-                                        :profile/version
-                                        :profile/operators])))",
-        );
-        runtime
-            .eval_text("(ns __gate.consumer (:require [__gate.grammar :as grammar]))")
-            .unwrap();
-        runtime.eval_text("(ns __gate.grammar)").unwrap();
-        runtime
-            .eval_bytecode_native(
-                "(defn fail [message data]
-                   (throw (ex-info message data)))
-                 (defn require-fields [source fields]
-                   (reduce (fn [out field]
-                             (if (nil? (get source field))
-                               (fail \"Missing grammar source field\"
-                                     {:field field :source source})
-                               out))
-                           source
-                           fields))
-                 (defn source [kind id version value]
-                   (if (or (nil? id) (not (number? version)) (<= version 0))
-                     (fail \"Invalid grammar source identity\"
-                           {:kind kind :id id :version version})
-                     (assoc value
-                            :source/kind kind
-                            :source/id id
-                            :source/version version)))
-                 (defn profile [value]
-                   (source :profile
-                           (:profile/id value)
-                           (:profile/version value)
-                           (require-fields value
-                                           [:profile/id
-                                            :profile/version
-                                            :profile/operators])))",
-            )
-            .unwrap();
-        runtime.use_namespace("__gate.consumer");
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(grammar/profile {:profile/id :xtalk
-                                       :profile/version 1
-                                       :profile/operators {:a 1}})"
-                )
-                .unwrap(),
-            "{:profile/id :xtalk :profile/version 1 :profile/operators {:a 1} :source/kind :profile :source/id :xtalk :source/version 1}"
-        );
-    }
-
-    #[test]
-    fn dot_calls_compile_to_native_method_bytecode() {
-        let mut runtime = Runtime::core();
-        runtime.prepare_foundation_bytecode();
-        assert_eq!(
-            runtime
-                .eval_bytecode_native(
-                    "(defn mutate-and-clone [array value]
-                       (. array (push-last value))
-                       (vec (. array (clone))))
-                     (mutate-and-clone (array 1 2) 3)"
-                )
-                .unwrap(),
-            "[1 2 3]"
-        );
-    }
-}
+#[path = "compiler/tests.rs"]
+mod tests;

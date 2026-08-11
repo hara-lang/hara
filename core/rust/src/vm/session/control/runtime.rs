@@ -87,6 +87,11 @@ impl BytecodeObservationSession {
                 self.status = BytecodeSessionStatus::Suspended;
                 self.suspension = Some(promise);
             }
+            ObservedStepOutcome::Yielded(value) => {
+                self.status = BytecodeSessionStatus::Suspended;
+                self.result = Some(value);
+                self.suspension = None;
+            }
             ObservedStepOutcome::Returned(value) => {
                 self.status = BytecodeSessionStatus::Returned;
                 self.result = Some(value);

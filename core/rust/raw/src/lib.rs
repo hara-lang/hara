@@ -680,6 +680,17 @@ impl Session {
                 self.event(event(1, task, PromiseRejection::cancelled().value()));
                 self.finish_evaluation(task);
             }
+            vm::VmFiberState::Yielded(_) => {
+                self.event(event(
+                    1,
+                    task,
+                    error_value(
+                        "vm/invalid-state",
+                        "VM fiber yielded outside of a coroutine driver".into(),
+                    ),
+                ));
+                self.finish_evaluation(task);
+            }
             vm::VmFiberState::Running => {
                 self.event(event(
                     1,
@@ -2450,13 +2461,13 @@ mod tests {
 
     #[test]
     fn raw_kernels_expose_the_foundation_data_namespaces() {
-        assert_eq!(crate::core::NATIVE_TYPES.len(), 21);
+        assert_eq!(crate::core::NATIVE_TYPES.len(), 24);
         assert_eq!(
             crate::core::NATIVE_TYPES
                 .iter()
                 .map(|(_, methods)| methods.len())
                 .sum::<usize>(),
-            162
+            181
         );
         let mut runtime = Session::new();
         assert!(runtime.env.contains_key("edn/write"));
@@ -2465,8 +2476,12 @@ mod tests {
             "Maths",
             "Numbers",
             "Bits",
+            "Kernel",
             "String",
             "Bytes",
+            "Crypto",
+            "OS",
+            "Process",
             "File",
             "Socket",
             "Promise",
@@ -2481,6 +2496,7 @@ mod tests {
             "Regex",
             "UUID",
             "Error",
+            "Iter",
         ] {
             assert!(runtime.env.contains_key(native_type), "{native_type}");
         }

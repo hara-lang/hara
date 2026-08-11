@@ -10,6 +10,13 @@ const LIBRARIES: &[(&str, &str, &str)] = &[
     ("file", "std.foundation.file", "file"),
     ("coroutine", "std.foundation.coroutine", "co"),
     ("edn", "std.foundation.edn", "edn"),
+    ("json", "std.foundation.json", "json"),
+    ("set", "std.foundation.set", "set"),
+    ("pretty", "std.foundation.pretty", "pretty"),
+    ("host", "std.foundation.host", "host"),
+    ("kernel", "std.foundation.kernel", "kernel"),
+    ("os", "std.foundation.os", "os"),
+    ("crypto", "std.foundation.crypto", "crypto"),
 ];
 const NATIVE_TYPES: &[&str] = &[
     "Maths",
@@ -27,6 +34,7 @@ const NATIVE_TYPES: &[&str] = &[
     "Printer",
     "Edn",
     "Json",
+    "Crypto",
     "Host",
     "Regex",
     "UUID",
@@ -38,6 +46,7 @@ const NATIVE_TYPES: &[&str] = &[
 #[derive(Debug, Clone, Default)]
 pub struct GeneratedNamespaceConfig {
     aliases: HashMap<String, String>,
+    lazy_aliases: HashMap<String, String>,
     refers: HashMap<String, String>,
     required_namespaces: Vec<String>,
     used_namespaces: Vec<String>,
@@ -53,13 +62,12 @@ impl GeneratedNamespaceConfig {
             .iter()
             .map(|(_, namespace, alias)| ((*alias).into(), (*namespace).into()))
             .collect();
-        // Allow both the spec alias (coroutine) and the user-facing short alias (co).
-        aliases.insert("coroutine".into(), "std.foundation.coroutine".into());
         for native_type in NATIVE_TYPES {
             aliases.insert((*native_type).into(), format!("std.native.{native_type}"));
         }
         Self {
             aliases,
+            lazy_aliases: HashMap::new(),
             refers: HashMap::new(),
             required_namespaces: Vec::new(),
             used_namespaces: Vec::new(),
@@ -168,6 +176,10 @@ impl GeneratedNamespaceConfig {
 
     pub fn required_namespaces(&self) -> &[String] {
         &self.required_namespaces
+    }
+
+    pub fn lazy_target(&self, alias: &str) -> Option<&str> {
+        self.lazy_aliases.get(alias).map(String::as_str)
     }
 
     pub fn used_namespaces(&self) -> &[String] {
@@ -315,9 +327,6 @@ impl GeneratedNamespaceConfig {
                 "Cannot require missing generated namespace: {target}"
             ));
         }
-        if !self.required_namespaces.iter().any(|value| value == target) {
-            self.required_namespaces.push(target.into());
-        }
         if options.len() % 2 != 0 {
             return Err(format!("Malformed :require options for {target}"));
         }
@@ -331,6 +340,9 @@ impl GeneratedNamespaceConfig {
         if lazy && !has_alias {
             return Err(":require :lazy requires :as".into());
         }
+        if !lazy && !self.required_namespaces.iter().any(|value| value == target) {
+            self.required_namespaces.push(target.into());
+        }
         for option in options.chunks(2) {
             let name = keyword(&option[0], "Malformed :require options")?;
             match name {
@@ -340,6 +352,9 @@ impl GeneratedNamespaceConfig {
                         return Err(":require :as expects an unqualified symbol".into());
                     }
                     self.put_alias(alias, target)?;
+                    if lazy {
+                        self.lazy_aliases.insert(alias.into(), target.into());
+                    }
                 }
                 "refer" => {
                     if lazy {
@@ -610,6 +625,12 @@ fn canonical(namespace: &str, method: &str) -> String {
     if namespace == "std.foundation" {
         return format!("std.foundation/{method}");
     }
+    if let Some((_, _, alias)) = LIBRARIES
+        .iter()
+        .find(|(_, library_namespace, _)| *library_namespace == normalize_namespace(namespace))
+    {
+        return format!("{alias}/{method}");
+    }
     match (normalize_namespace(namespace), method) {
         ("std.foundation", method) => method.into(),
         ("std.native.Maths", method) => format!("std.native.Maths/{method}"),
@@ -638,21 +659,11 @@ fn canonical(namespace: &str, method: &str) -> String {
         ("std.native.UUID", "instance?") => "uuid?".into(),
         ("std.native.Error", method) => format!("std.native.Error/{method}"),
         ("std.native.Iter", method) => format!("std.native.Iter/{method}"),
-        ("std.foundation.coroutine", method) => format!("std.foundation.coroutine/{method}"),
-        // std.foundation.string is the documented compatibility facade.  Calls
-        // compiled through it must use the same intrinsic spelling as
-        // std.native.String and the default `str` library alias; otherwise an
-        // imported facade creates a needless runtime namespace lookup.
-        ("std.foundation.string", method) => format!("str/{method}"),
         ("std.lib.string", method) => format!("str/{method}"),
-        ("std.foundation.promise", method) => format!("std.foundation.promise/{method}"),
-        ("std.foundation.bytes", method) => format!("std.foundation.bytes/{method}"),
-        ("std.foundation.file", method) => format!("std.foundation.file/{method}"),
         ("std.lib.promise", "then") => "promise/then".into(),
         ("std.lib.promise", "catch") => "promise/catch".into(),
         ("std.lib.promise", method) => format!("promise/{method}"),
         ("std.lib.bytes", method) => format!("bytes/{method}"),
-        ("std.foundation.socket", method) => format!("std.foundation.socket/{method}"),
         ("std.lib.socket", method) => format!("socket/{method}"),
         ("std.lib.file", method) => format!("file/{method}"),
         (namespace, method) => format!("{namespace}/{method}"),
@@ -669,84 +680,5 @@ pub(crate) fn canonical_native_call(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::GeneratedNamespaceConfig;
-    use crate::kernel::parse_forms;
-
-    #[test]
-    fn configures_defaults_exclusions_aliases_and_requires_without_sources() {
-        let forms = parse_forms(
-            "(:intrinsics {:exclude [bytes] :aliases {string text}}) \
-             (:require [hara.lib.string :as s :refer [trim]])",
-        )
-        .unwrap();
-        let config = GeneratedNamespaceConfig::configure(&forms).unwrap();
-        let rewritten = config.rewrite(
-            parse_forms("(trim (s/trim (text/upper \" x \")))")
-                .unwrap()
-                .remove(0),
-        );
-        let display = format!("{rewritten:?}");
-        assert!(display.contains("str/trim"));
-        assert!(display.contains("str/upper"));
-        assert!(display.contains("bytes/count") == false);
-        assert!(GeneratedNamespaceConfig::configure(
-            &parse_forms("(:require [missing.lib :as x])").unwrap()
-        )
-        .unwrap_err()
-        .contains("missing generated namespace"));
-    }
-
-    #[test]
-    fn parses_config_clause_with_builtins_blank_and_intrinsics() {
-        let forms = parse_forms(
-            "(:config {:blank true \
-                       :builtins [+ - = count get] \
-                       :intrinsics {:exclude [bytes]}})",
-        )
-        .unwrap();
-        let config = GeneratedNamespaceConfig::configure(&forms).unwrap();
-        assert!(config.blank());
-        assert_eq!(config.builtins(), &["+", "-", "=", "count", "get"]);
-        assert_eq!(
-            config
-                .rewrite(parse_forms("bytes").unwrap().remove(0))
-                .to_string(),
-            "bytes"
-        );
-    }
-
-    #[test]
-    fn records_used_namespaces_for_runtime_referral() {
-        let config = GeneratedNamespaceConfig::configure_with(
-            &parse_forms("(:use code.test)").unwrap(),
-            |target| target == "code.test",
-        )
-        .unwrap();
-        assert_eq!(config.required_namespaces(), &["code.test"]);
-        assert_eq!(config.used_namespaces(), &["code.test"]);
-        assert!(
-            GeneratedNamespaceConfig::configure(&parse_forms("(:use [code.test])").unwrap())
-                .unwrap_err()
-                .contains(":use expects unqualified namespace symbols")
-        );
-    }
-
-    #[test]
-    fn native_aliases_are_universal_and_cannot_be_rebound() {
-        let config =
-            GeneratedNamespaceConfig::configure(&parse_forms("(:config {:blank true})").unwrap())
-                .unwrap();
-        assert_eq!(
-            config
-                .rewrite(parse_forms("Iter/iter-map").unwrap().remove(0))
-                .to_string(),
-            "std.native.Iter/iter-map"
-        );
-        assert!(GeneratedNamespaceConfig::configure(
-            &parse_forms("(:require [std.native.Maths :as Iter])").unwrap()
-        )
-        .unwrap_err()
-        .contains("Namespace alias already refers to std.native.Iter"));
-    }
-}
+#[path = "generated/tests.rs"]
+mod tests;

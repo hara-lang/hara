@@ -176,6 +176,16 @@ impl Compiler {
                     Some(format!("{}/{}", registry.current().name().as_str(), local))
                 } else if !name.contains('/') && self.globals.iter().any(|global| global == name) {
                     Some(format!("{}/{}", registry.current().name().as_str(), name))
+                } else if let Some((alias, local)) = name.split_once('/') {
+                    registry
+                        .current()
+                        .lazy_target(alias)
+                        .map(|target| format!("{}/{}", target.as_str(), local))
+                        .or_else(|| {
+                            registry
+                                .resolve(&crate::lang::data::Symbol::parse(name))
+                                .map(|var| var.symbol().as_str().to_owned())
+                        })
                 } else {
                     registry
                         .resolve(&crate::lang::data::Symbol::parse(name))
@@ -221,12 +231,16 @@ impl Compiler {
         declared
             || crate::core::namespace_registry()
                 .map(|registry| {
-                    registry
-                        .resolve(&crate::lang::data::Symbol::parse(name))
-                        .is_some_and(|var| {
-                            crate::core::Primitive::from_symbol(name).is_none()
-                                || var.symbol().get_namespace() != Some("std.foundation")
-                        })
+                    let lazy_visible = name
+                        .split_once('/')
+                        .is_some_and(|(alias, _)| registry.current().lazy_target(alias).is_some());
+                    lazy_visible
+                        || registry
+                            .resolve(&crate::lang::data::Symbol::parse(name))
+                            .is_some_and(|var| {
+                                crate::core::Primitive::from_symbol(name).is_none()
+                                    || var.symbol().get_namespace() != Some("std.foundation")
+                            })
                         || (!name.contains('/')
                             && crate::core::Primitive::from_symbol(name).is_none()
                             && registry

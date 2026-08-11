@@ -1,17 +1,55 @@
-(ns lang.core.registry)
+(ns lang.core.registry
+  (:require [lang.model.v1.spec-xtalk :as spec-xtalk]
+            [lang.model.v1.spec-hara :as spec-hara]
+            [lang.model.v1.spec-js :as spec-js]
+            [lang.model.v1.spec-python :as spec-python]
+            [lang.model.v1.spec-lua :as spec-lua]
+            [lang.model.v1.spec-postgres :as spec-postgres]
+            [lang.runtime.basic.impl.process-js :as process-js :lazy true]
+            [lang.runtime.basic.impl.process-python :as process-python :lazy true]
+            [lang.runtime.basic.impl.process-lua :as process-lua :lazy true]
+            [lang.runtime.basic.impl.process-xtalk :as process-xtalk :lazy true]
+            [lang.runtime.postgres.db-client :as postgres-client :lazy true]))
+
+(defn- load-declared
+  [qualified]
+  (let [form (list 'resolve (list 'quote qualified))
+        source (eval-in-ns 'lang.core.registry [form])]
+    (if source
+      (deref source)
+      (throw (ex-info "Declared registry loader did not provide its export"
+                      {:symbol qualified})))))
 
 ;; Foundation-compatible runtime registry. Runtime implementations are loaded
 ;; lazily from the exact [language runtime] coordinate.
 (def +registry+
-  (atom {[:js :oneshot] 'lang.runtime.basic.impl.process-js
-         [:js :basic] 'lang.runtime.basic.impl.process-js
-         [:python :oneshot] 'lang.runtime.basic.impl.process-python
-         [:python :basic] 'lang.runtime.basic.impl.process-python
-         [:lua :oneshot] 'lang.runtime.basic.impl.process-lua
-         [:lua :basic] 'lang.runtime.basic.impl.process-lua
-         [:xtalk :basic] 'lang.runtime.basic.impl.process-xtalk
-         [:hara :basic] 'lang.runtime.basic.impl.process-xtalk
-         [:postgres :db.client] 'lang.runtime.postgres.db-client}))
+  (atom {[:js :oneshot]
+         {:namespace 'lang.runtime.basic.impl.process-js
+          :load (fn [] (load-declared 'process-js/+init+))}
+         [:js :basic]
+         {:namespace 'lang.runtime.basic.impl.process-js
+          :load (fn [] (load-declared 'process-js/+init+))}
+         [:python :oneshot]
+         {:namespace 'lang.runtime.basic.impl.process-python
+          :load (fn [] (load-declared 'process-python/+init+))}
+         [:python :basic]
+         {:namespace 'lang.runtime.basic.impl.process-python
+          :load (fn [] (load-declared 'process-python/+init+))}
+         [:lua :oneshot]
+         {:namespace 'lang.runtime.basic.impl.process-lua
+          :load (fn [] (load-declared 'process-lua/+init+))}
+         [:lua :basic]
+         {:namespace 'lang.runtime.basic.impl.process-lua
+          :load (fn [] (load-declared 'process-lua/+init+))}
+         [:xtalk :basic]
+         {:namespace 'lang.runtime.basic.impl.process-xtalk
+          :load (fn [] (load-declared 'process-xtalk/+init+))}
+         [:hara :basic]
+         {:namespace 'lang.runtime.basic.impl.process-xtalk
+          :load (fn [] (load-declared 'process-xtalk/+init+))}
+         [:postgres :db.client]
+         {:namespace 'lang.runtime.postgres.db-client
+          :load (fn [] (load-declared 'postgres-client/+init+))}}))
 
 ;; Foundation keeps the public [:language :default] coordinate stable. Each
 ;; coordinate owns a configurable default and any number of immutable versions.
@@ -20,49 +58,45 @@
          {:default-version 1
           :versions
           {1 {:ns 'lang.model.v1.spec-xtalk
-              :book '+book+}}}
+              :load (fn [] (load-declared 'spec-xtalk/+book+))}}}
 
          [:hara :default]
          {:default-version 1
           :versions
           {1 {:ns 'lang.model.v1.spec-hara
-              :book '+book+
+              :load (fn [] (load-declared 'spec-hara/+book+))
               :parent :xtalk}}}
 
          [:js :default]
          {:default-version 1
           :versions
           {1 {:ns 'lang.model.v1.spec-js
-              :book '+book+
+              :load (fn [] (load-declared 'spec-js/+book+))
               :parent :xtalk}}}
 
          [:python :default]
          {:default-version 1
           :versions
           {1 {:ns 'lang.model.v1.spec-python
-              :book '+book+
+              :load (fn [] (load-declared 'spec-python/+book+))
               :parent :xtalk}}}
 
          [:lua :default]
          {:default-version 1
           :versions
           {1 {:ns 'lang.model.v1.spec-lua
-              :book '+book+
+              :load (fn [] (load-declared 'spec-lua/+book+))
               :parent :xtalk}}}
 
          [:postgres :default]
          {:default-version 1
           :versions
           {1 {:ns 'lang.model.v1.spec-postgres
-              :book '+book+
+              :load (fn [] (load-declared 'spec-postgres/+book+))
               :parent :xtalk}}}}))
 
 (defn- atom-value [reference]
   (deref (identity reference)))
-
-(defn- resolve-required [qualified]
-  (or (resolve qualified)
-      (requiring-resolve qualified)))
 
 (defn registry-list
   "Lists registered [language runtime] coordinates."
@@ -70,30 +104,38 @@
   (vec (keys (atom-value +registry+))))
 
 (defn registry-add!
-  "Registers one runtime implementation namespace."
-  [language runtime namespace-symbol]
-  (swap! +registry+ assoc [language runtime] namespace-symbol)
-  namespace-symbol)
+  "Registers one exact runtime coordinate and its loader."
+  [language runtime namespace-symbol loader]
+  (if (not (fn? loader))
+    (throw (ex-info "Runtime registry loader must be a function"
+                    {:lang language :runtime runtime :namespace namespace-symbol}))
+    (do
+      (swap! +registry+ assoc [language runtime]
+             {:namespace namespace-symbol :load loader})
+      namespace-symbol)))
 
 (defn registry-runtime-ns
   "Returns the implementation namespace for a runtime coordinate."
   [language runtime]
-  (get (atom-value +registry+) [language runtime]))
+  (get-in (atom-value +registry+) [[language runtime] :namespace]))
 
 (defn registry-runtime
   "Loads a registered runtime implementation and returns its namespace."
   [language runtime]
-  (let [namespace-symbol (registry-runtime-ns language runtime)]
-    (if namespace-symbol
-      (let [init-symbol (symbol (name namespace-symbol) "+init+")
-            init-var (resolve-required init-symbol)]
-        (if init-var
+  (let [entry (get (atom-value +registry+) [language runtime])]
+    (if entry
+      (let [namespace-symbol (:namespace entry)
+            _ ((:load entry))
+            init-symbol (symbol (name namespace-symbol) "+init+")
+            init-var (resolve init-symbol)]
+        (if (and (ns-loaded? namespace-symbol) init-var)
           namespace-symbol
           (throw
-           (ex-info "Registered runtime namespace has no +init+ Var"
+           (ex-info "Registered runtime loader did not provide its exact namespace"
                     {:lang language
                      :runtime runtime
-                     :namespace namespace-symbol}))))
+                     :namespace namespace-symbol
+                     :export init-symbol}))))
       nil)))
 
 (defn registry-book-list
@@ -158,7 +200,7 @@
            (not (number? version))
            (<= version 0)
            (nil? (get info :ns))
-           (nil? (get info :book)))
+           (not (fn? (get info :load))))
      (throw
       (ex-info "Invalid versioned book registration"
                {:language language
@@ -269,30 +311,26 @@
   ([language key]
    (registry-book language key nil))
   ([language key requested-version]
-   (let [{:keys [ns book version] :as info}
+   (let [{:keys [ns load version] :as info}
          (registry-book-info language key requested-version)]
      (if (nil? info)
        nil
-       (let [qualified (symbol (name ns) (name book))
-             resolved (resolve-required qualified)]
-         (if resolved
-           (let [value (deref resolved)
-                 actual-version (get value :version)]
-             (if (and actual-version
-                      (not= actual-version version))
-               (throw
-                (ex-info "Registered book version does not match loaded book"
-                         {:language language
-                          :key key
-                          :requested version
-                          :loaded actual-version
-                          :namespace ns
-                          :book book}))
-               value))
+       (let [value (load)
+             actual-version (get value :version)]
+         (if (not (ns-loaded? ns))
            (throw
-            (ex-info "Registered book Var is missing"
+            (ex-info "Registered book loader did not provide its exact namespace"
                      {:language language
                       :key key
                       :version version
-                      :namespace ns
-                      :book book}))))))))
+                      :namespace ns}))
+           (if (and actual-version
+                    (not= actual-version version))
+             (throw
+              (ex-info "Registered book version does not match loaded book"
+                       {:language language
+                        :key key
+                        :requested version
+                        :loaded actual-version
+                        :namespace ns}))
+             value)))))))

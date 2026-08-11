@@ -249,7 +249,7 @@ public final class HbcValidator {
       case PRIMITIVE, CALL_STATIC -> 1 - Math.toIntExact(instruction.second());
       case CLOSURE -> 1 - Math.toIntExact(instruction.second());
       case CALL -> -Math.toIntExact(instruction.first());
-      case DEF_GLOBAL, SET_GLOBAL, STRUCT_FIELD, DEF_MACRO, AWAIT, JUMP, TO_VECTOR,
+      case DEF_GLOBAL, SET_GLOBAL, STRUCT_FIELD, DEF_MACRO, AWAIT, YIELD, JUMP, TO_VECTOR,
           DYNAMIC_BIND -> 0;
       case INSTANCE_OF -> -1;
       case MAKE_MULTI_ARITY -> 1 - Math.toIntExact(instruction.second());

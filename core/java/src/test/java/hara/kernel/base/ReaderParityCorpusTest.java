@@ -49,6 +49,7 @@ public class ReaderParityCorpusTest {
     for (Object rawCase : cases) {
       IMapType testCase = (IMapType) rawCase;
       Object id = testCase.lookup(key("id"));
+      String caseId = G.display(id);
       String source = (String) testCase.lookup(key("source"));
       String readable = (String) testCase.lookup(key("readable"));
       String expectedError = (String) testCase.lookup(key("error"));
@@ -59,15 +60,15 @@ public class ReaderParityCorpusTest {
 
       if (readable != null) {
         String actual = readAllDisplay(source);
-        assertEquals(id.toString(), readable, actual);
+        assertEquals(caseId, readable, actual);
         assertEquals(
-            id + " canonical output must round-trip",
+            caseId + " canonical output must round-trip",
             actual,
             readAllDisplay(actual));
       } else {
         RuntimeException error =
             assertThrows(
-                id.toString(),
+                caseId,
                 RuntimeException.class,
                 () -> readAllDisplay(source));
         Throwable cause = error.getCause() == null ? error : error.getCause();

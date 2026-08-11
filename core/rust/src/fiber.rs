@@ -2,7 +2,7 @@ use super::*;
 use crate::lang::data::{List as PList, OrderedMap, OrderedSet};
 
 #[path = "fiber/coroutine.rs"]
-mod coroutine;
+pub(crate) mod coroutine;
 #[cfg(test)]
 #[path = "fiber/coroutine_tests.rs"]
 mod coroutine_tests;
@@ -327,6 +327,14 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "vector",
     "vector?",
     "fn?",
+    "hash-map",
+    "hash-set",
+    "ordered-map",
+    "ordered-set",
+    "queue",
+    "sorted-map",
+    "sorted-set",
+    "trie",
     "zero?",
     "zip",
     "__map-transform",
@@ -337,7 +345,7 @@ pub(crate) fn completion_symbols() -> &'static [&'static str] {
     CORE_SPECIAL_FORMS
 }
 
-type Cont = Box<dyn FnOnce(Result<Value, String>) -> Step>;
+pub(crate) type Cont = Box<dyn FnOnce(Result<Value, String>) -> Step>;
 pub type Resume = Box<dyn FnOnce(PromiseState) -> Step>;
 pub enum Step {
     Done(Result<Value, String>),
@@ -1215,6 +1223,9 @@ fn call(f: Rc<Function>, args: Vec<Value>, k: Cont) -> Step {
         };
         return call(clause, args, k);
     }
+    if let Some(fiber_native) = &f.fiber_native {
+        return fiber_native(args, k);
+    }
     if f.native.is_some() {
         return k(crate::core::call_function(&f, args));
     }
@@ -1234,12 +1245,24 @@ fn call(f: Rc<Function>, args: Vec<Value>, k: Cont) -> Step {
     for (n, x) in f.params.iter().zip(args.iter()) {
         env.insert(n.clone(), x.clone());
     }
+    let mut bound = Vec::new();
+    for (pattern, value) in f.patterns.iter().zip(args.iter()) {
+        if let Err(error) =
+            crate::core::bind_pattern(pattern, value.clone(), &mut env, &mut bound, None)
+        {
+            return k(Err(format!("function destructuring failed: {error}")));
+        }
+    }
     if let Some(n) = &f.variadic {
         let skip = f.params.len();
-        env.insert(
-            n.clone(),
-            Value::List(args.into_iter().skip(skip).collect()),
-        );
+        let rest = Value::List(args.into_iter().skip(skip).collect());
+        env.insert(n.clone(), rest.clone());
+        if let Some(pattern) = &f.variadic_pattern {
+            if let Err(error) = crate::core::bind_pattern(pattern, rest, &mut env, &mut bound, None)
+            {
+                return k(Err(format!("function destructuring failed: {error}")));
+            }
+        }
     }
     forms_cps(
         Rc::new(f.body.clone()),

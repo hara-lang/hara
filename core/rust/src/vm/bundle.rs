@@ -574,6 +574,43 @@ mod tests {
     }
 
     #[test]
+    fn lazy_alias_compiles_without_an_eager_edge_and_loads_on_first_call() {
+        let sources = [
+            ModuleSource {
+                resource: "example.lazy.target",
+                source: "(ns example.lazy.target) (defn answer [] 42)",
+            },
+            ModuleSource {
+                resource: "example.lazy.client",
+                source: "(ns example.lazy.client (:require [example.lazy.target :as target :lazy true])) (defn answer [] (target/answer))",
+            },
+        ];
+        let bytes = compile_bytecode_bundle(&sources).expect("compile lazy alias fixture");
+        let modules = decode(&bytes).expect("decode lazy alias fixture");
+        let client = modules
+            .iter()
+            .find(|module| module.resource == "example.lazy.client")
+            .expect("client module");
+        assert!(client.dependencies.is_empty());
+
+        let mut runtime = Runtime::core();
+        eval_bytecode_bundle(&mut runtime, &bytes).expect("index lazy alias fixture");
+        runtime
+            .load_bytecode_resource("example.lazy.client")
+            .expect("load lazy client");
+        assert!(runtime
+            .namespace_registry
+            .find("example.lazy.target")
+            .is_none());
+        assert!(runtime.use_namespace("example.lazy.client"));
+        assert_eq!(runtime.eval_native("(answer)").unwrap(), "42");
+        assert!(runtime
+            .namespace_registry
+            .find("example.lazy.target")
+            .is_some());
+    }
+
+    #[test]
     fn eager_modules_load_in_their_own_namespaces() {
         let sources = embedded_standard_library_sources()
             .into_iter()
@@ -587,6 +624,39 @@ mod tests {
         eval_bytecode_bundle(&mut runtime, &bytes).expect("load eager modules");
         assert!(runtime.use_namespace("std.foundation.string"));
         assert_eq!(runtime.eval_native("(repeat \"x\" 3)").unwrap(), "\"xxx\"");
+    }
+
+    #[cfg(feature = "tracing-jit")]
+    #[test]
+    fn hbx_installed_functions_remain_eligible_for_jit_compilation() {
+        let mut compiler = Runtime::core();
+        compiler.use_namespace("example.jit");
+        let artifact = compiler
+            .compile_bytecode_artifact(
+                "(defn sum-to [n] (loop [i 0 total 0] (if (< i n) (recur (+ i 1) (+ total i)) total)))",
+            )
+            .expect("compile hot bundle function");
+        let bytes = encode_bytecode_bundle(&[BytecodeBundleModule {
+            resource: "example.jit".into(),
+            namespace_form: "(ns example.jit)".into(),
+            source_digest: Sha256::digest(b"example.jit hot function").into(),
+            dependencies: vec![],
+            eager: true,
+            artifact,
+        }])
+        .expect("encode eager JIT fixture");
+        let mut runtime = Runtime::core();
+
+        eval_bytecode_bundle(&mut runtime, &bytes).expect("load eager JIT fixture through HBX");
+        assert_eq!(
+            runtime.eval_native("(example.jit/sum-to 100)").unwrap(),
+            "4950"
+        );
+        let telemetry = crate::vm::machine::active_jit_telemetry();
+        assert!(
+            crate::vm::machine::active_compiled_trace_count() > 0,
+            "an HBC function installed through HBX must retain its program and JIT state: {telemetry:?}"
+        );
     }
 
     #[test]
@@ -607,12 +677,36 @@ mod tests {
                 actual, expected,
                 "bundle inventory must be exact and ordered"
             );
-            assert!(
-                modules.len() >= 250,
-                "standard-library inventory was truncated"
-            );
+            let mut inventory = actual.clone();
+            inventory.sort_unstable();
+            assert_eq!(inventory, crate::STANDARD_LIBRARY_INVENTORY);
             assert!(modules.iter().any(|module| module.resource == "code.test"));
             assert!(modules.iter().any(|module| module.resource == "lang.core"));
+        });
+    }
+
+    #[test]
+    fn bundled_global_reads_are_bound_to_their_defining_namespaces() {
+        on_compiler_gate_stack(|| {
+            let bytes = compile_embedded_standard_library_bundle()
+                .expect("compile standard library bundle");
+            for module in decode(&bytes).expect("decode standard library bundle") {
+                let program = crate::vm::decode_program(&module.artifact)
+                    .unwrap_or_else(|error| panic!("decode {}: {error}", module.resource));
+                assert_eq!(program.namespace.as_deref(), Some(module.resource.as_str()));
+                for function in &program.functions {
+                    for instruction in &function.code {
+                        if let crate::vm::Instruction::GetGlobal(index) = instruction {
+                            let name = program.constants[*index as usize].display();
+                            assert!(
+                                name.contains('/'),
+                                "{} contains caller-relative global read {name}",
+                                module.resource
+                            );
+                        }
+                    }
+                }
+            }
         });
     }
 }

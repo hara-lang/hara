@@ -4,9 +4,7 @@
 ;; Native Hara port of xt.db.text.sql-util. It keeps the original SQL AST data
 ;; shapes while exposing runtime PostgreSQL and SQLite option maps.
 ;; ============================================================================
-(ns std.db.text.sql-util
-  (:require [std.foundation.json :as json]
-            [std.foundation.string :as string]))
+(ns std.db.text.sql-util)
 
 (def OPERATORS
   {"neq" "!=" :neq "!="
@@ -45,7 +43,7 @@
 
 (defn- ^{:schema [:fn [:map :any] :any]}
   compatible-get
-  "Gets key directly, then by its string/keyword counterpart."
+  "Gets key directly, then by its str/keyword counterpart."
   [value lookup-key]
   (cond
     (not (map? value)) nil
@@ -91,10 +89,10 @@
   pad-lines
   "Prefixes every line with amount repetitions of padding."
   [value amount padding]
-  (let [prefix (string/repeat padding amount)]
-    (string/join "\n"
+  (let [prefix (str/repeat padding amount)]
+    (str/join "\n"
                  (map (fn [line] (str prefix line))
-                      (string/split-lines value)))))
+                      (str/split-lines value)))))
 
 (defn ^{:schema [:fn [:str] :str]}
   sqlite-json-values
@@ -171,7 +169,7 @@
   encode-json
   "Encodes a JSON value as a single-quoted SQL literal."
   [value]
-  (str "'" (string/replace (json/write (json-compatible value)) "'" "''") "'"))
+  (str "'" (str/replace (json/write (json-compatible value)) "'" "''") "'"))
 
 (defn ^{:schema [:fn [:any] :str]}
   encode-value
@@ -179,7 +177,7 @@
   [value]
   (cond
     (nil? value) "NULL"
-    (string? value) (str "'" (string/replace value "'" "''") "'")
+    (string? value) (str "'" (str/replace value "'" "''") "'")
     (boolean? value) (encode-bool value)
     (or (vector? value) (map? value)) (encode-json value)
     (number? value) (encode-number value)
@@ -202,7 +200,7 @@
   "Encodes an sql/tuple node."
   [value column-function options loop-function]
   (let [arguments (arrayify (compatible-field value :args "args"))]
-    (string/join ", "
+    (str/join ", "
                  (map (fn [argument]
                         (loop-function argument
                                        column-function
@@ -247,7 +245,7 @@
                      arguments)]
     (if (empty? encoded)
       (str keyword-name)
-      (str keyword-name " " (string/join " " encoded)))))
+      (str keyword-name " " (str/join " " encoded)))))
 
 (defn ^{:schema [:fn [:map :fn :map :fn] :str]}
   encode-sql-fn
@@ -262,16 +260,16 @@
                                       loop-function))
                      arguments)]
     (if (has? INFIX function-name)
-      (str "(" (string/join (str " " function-name " ") encoded) ")")
+      (str "(" (str/join (str " " function-name " ") encoded) ")")
       (let [replacement (compatible-get (path options [:values :replace])
                                         function-name)]
         (cond
           (nil? replacement)
-          (str function-name "(" (string/join ", " encoded) ")")
+          (str function-name "(" (str/join ", " encoded) ")")
 
           (= "alias" (compatible-field replacement :type "type"))
           (str (compatible-field replacement :name "name")
-               "(" (string/join ", " encoded) ")")
+               "(" (str/join ", " encoded) ")")
 
           (= "macro" (compatible-field replacement :type "type"))
           (apply (compatible-field replacement :fn "fn") encoded)
@@ -301,7 +299,7 @@
                                         options
                                         loop-function)))
                      arguments)]
-    (str "(SELECT " (string/join " " encoded) ")")))
+    (str "(SELECT " (str/join " " encoded) ")")))
 
 (def ENCODE_SQL
   {"sql/arg" encode-sql-arg
@@ -354,14 +352,14 @@
            (vector? (first value))
            (every? string? (first value)))
       (str "("
-           (string/join ", " (map encode-value (first value)))
+           (str/join ", " (map encode-value (first value)))
            ")")
 
       (and (= 1 (count value)) (string? (first value)))
       (first value)
 
       :else
-      (string/join " "
+      (str/join " "
                    (map (fn [item]
                           (encode-query-value item column-function options))
                         value)))
@@ -383,7 +381,7 @@
                          (vec (drop 1 value)))]
         (str column
              " " (encode-operator (first value) options)
-             " " (string/join " " encoded)))
+             " " (str/join " " encoded)))
       (str column " = " (encode-query-value value column-function options)))))
 
 (defn ^{:schema [:fn [:map :map] :str]}
@@ -395,7 +393,7 @@
         pairs (if sort-keys
                 (sort-by (fn [pair] (str (key pair))) parameters)
                 (vec parameters))]
-    (string/join " AND "
+    (str/join " AND "
                  (map (fn [pair]
                         (encode-query-segment (key pair)
                                               (val pair)
@@ -413,7 +411,7 @@
                         (map (fn [parameter]
                                (encode-query-single-string parameter options))
                              (arrayify parameters)))
-        joined (string/join " OR "
+        joined (str/join " OR "
                             (map (fn [value] (str "(" value ")")) encoded))]
     (cond
       (= 0 (count encoded)) ""
@@ -457,7 +455,7 @@
   ORDER-SORT
   "Creates an uppercase ordering keyword node."
   [order]
-  {"::" "sql/keyword" :name (string/upper order)})
+  {"::" "sql/keyword" :name (str/upper order)})
 
 (defn ^{:schema [:fn [:str] :str]}
   default-quote-fn
@@ -517,7 +515,7 @@
    :table-fn (fn [table] (default-table-fn table lookup))
    :return-format-fn default-return-format-fn
    :return-count-fn (fn [] "count(*)")
-   :return-join-fn (fn [values] (string/join ", " values))
+   :return-join-fn (fn [values] (str/join ", " values))
    :return-link-fn (fn [value link-name]
                      (str "(" value ") AS " link-name))})
 
@@ -567,7 +565,7 @@
    :return-count-fn (fn [] "json_array(json_object('count',count(*)))")
    :return-join-fn (fn [values]
                      (str "json_group_array(json_object("
-                          (string/join ", " values)
+                          (str/join ", " values)
                           "))"))
    :return-link-fn (fn [value link-name]
                      (str "'" link-name "', " value))})

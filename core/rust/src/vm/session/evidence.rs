@@ -113,6 +113,7 @@ impl CompactEventRecord {
             | ObservationEventKind::CallReturn
             | ObservationEventKind::ExceptionUnwind
             | ObservationEventKind::MachineSuspend
+            | ObservationEventKind::MachineYield
             | ObservationEventKind::MachineResume => Self::Transition {
                 id,
                 sequence: step.sequence,
@@ -182,6 +183,10 @@ impl SessionMetrics {
                 self.observe_after(step);
             }
             ObservationEventKind::MachineSuspend => {
+                self.suspensions = self.suspensions.saturating_add(1);
+                self.observe_after(step);
+            }
+            ObservationEventKind::MachineYield => {
                 self.suspensions = self.suspensions.saturating_add(1);
                 self.observe_after(step);
             }

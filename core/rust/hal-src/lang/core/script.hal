@@ -1,5 +1,5 @@
 (ns lang.core.script
-  (:require [std.foundation.string :as string]
+  (:require
             [lang.common.compiler :as compiler]
             [lang.core.eval :as evaluation]
             [lang.core.registry :as registry]
@@ -10,12 +10,27 @@
 (def +scripts+ (atom {}))
 (def +loaded-modules+ (atom {}))
 (def +module-contexts+ (atom {}))
+(def +module-loaders+ (atom {}))
 
-(defn default-module-loader
-  [qualified]
-  (requiring-resolve qualified))
+(defn register-module-loader!
+  "Registers the only loader permitted to provide one exact script module."
+  [module loader]
+  (if (not (fn? loader))
+    (throw (ex-info "Module loader must be a function"
+                    {:module module}))
+    (do
+      (swap! +module-loaders+ assoc module loader)
+      module)))
 
-(def ^:dynamic *module-loader* default-module-loader)
+(defn remove-module-loader!
+  [module]
+  (let [loader (get (deref +module-loaders+) module)]
+    (swap! +module-loaders+ dissoc module)
+    loader))
+
+(defn module-loader-info
+  [module]
+  (get (deref +module-loaders+) module))
 
 (def +module-metadata-keys+
   [:static :application :schema :source])
@@ -235,9 +250,16 @@
   [spec]
   (let [module (require-module spec)]
     (if (not (module-loaded? module))
-      (let [sentinel (symbol (name module) "__tahto_load__")]
-        (*module-loader* sentinel)
-        (swap! +loaded-modules+ assoc module true)))
+      (let [loader (module-loader-info module)]
+        (if (nil? loader)
+          (throw (ex-info "Script module has no registered loader"
+                          {:module module}))
+          (do
+            (loader)
+            (if (nil? (get (deref +modules+) module))
+              (throw (ex-info "Registered loader did not provide its exact module"
+                              {:module module}))
+              (swap! +loaded-modules+ assoc module true))))))
     module))
 
 (defn- script-load-forms
@@ -257,7 +279,7 @@
 (defn- install-macro!
   [target-symbol]
   (let [qualified (symbol "lang.core.script" (name target-symbol))
-        source (requiring-resolve qualified)]
+        source (resolve qualified)]
     (intern-var (current-namespace) target-symbol source)
     target-symbol))
 
@@ -415,12 +437,12 @@
 
 (defn- lua-return-output
   [output]
-  (if (string/starts-with? output "local ")
-    (let [index (string/last-index-of output "\nend\n")
+  (if (str/starts-with? output "local ")
+    (let [index (str/last-index-of output "\nend\n")
           offset (+ index 5)]
-      (str (string/slice output 0 offset)
+      (str (str/slice output 0 offset)
            "return "
-           (string/slice output offset)))
+           (str/slice output offset)))
     (str "return " output)))
 
 (defn compile-form
@@ -457,11 +479,11 @@
                      expression)
         expression (if (and (= lang :js)
                             (not js-do?)
-                            (string/starts-with? expression "{"))
+                            (str/starts-with? expression "{"))
                      (str "(" expression ")")
                      expression)
         sources (conj (nth compiled 1) expression)]
-    (string/join "\n" sources)))
+    (str/join "\n" sources)))
 
 (defn require-primary?
   [spec]

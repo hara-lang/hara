@@ -6,8 +6,16 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 
 use crate::core::Value;
-use crate::lang::data::{Keyword, MetadataValue, Symbol};
+use crate::lang::data::Symbol;
 use crate::Runtime;
+
+mod arguments;
+mod documentation;
+use arguments::{
+    boolean as boolean_argument, keyword, optional_string as optional_string_argument,
+    string as string_argument, strings as strings_argument, strings_value, tap_value,
+};
+pub use documentation::{Documentation, DocumentationValue};
 
 // Optimized brokers stay within the production 8 MiB ceiling. Debug evaluator
 // frames are much larger and need the same development allowance as the CLI
@@ -17,25 +25,6 @@ const RUNTIME_BROKER_STACK_SIZE: usize = if cfg!(debug_assertions) {
 } else {
     8 * 1024 * 1024
 };
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum DocumentationValue {
-    Nil,
-    Boolean(bool),
-    Integer(i64),
-    String(String),
-    Array(Vec<DocumentationValue>),
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Documentation {
-    pub symbol: String,
-    pub doc: Option<String>,
-    pub arglists: DocumentationValue,
-    pub file: Option<String>,
-    pub line: Option<i64>,
-    pub column: Option<i64>,
-}
 
 enum Request {
     Eval {
@@ -464,81 +453,8 @@ fn run(
     }
 }
 
-fn documentation_value(value: &MetadataValue) -> DocumentationValue {
-    match value {
-        MetadataValue::Nil => DocumentationValue::Nil,
-        MetadataValue::Boolean(value) => DocumentationValue::Boolean(*value),
-        MetadataValue::Number(value) => DocumentationValue::Integer(*value),
-        MetadataValue::Float(value) => DocumentationValue::String(value.to_string()),
-        MetadataValue::BigInteger(value)
-        | MetadataValue::Decimal(value)
-        | MetadataValue::Regex(value) => DocumentationValue::String(value.clone()),
-        MetadataValue::Character(value) => DocumentationValue::String(value.to_string()),
-        MetadataValue::Tagged(tag, value) => DocumentationValue::Array(vec![
-            DocumentationValue::String(tag.clone()),
-            documentation_value(value),
-        ]),
-        MetadataValue::String(value) => DocumentationValue::String(value.clone()),
-        MetadataValue::Keyword(value) => DocumentationValue::String(format!(":{}", value.as_str())),
-        MetadataValue::Symbol(value) => DocumentationValue::String(value.as_str().to_owned()),
-        MetadataValue::Vector(values)
-        | MetadataValue::List(values)
-        | MetadataValue::Set(values) => {
-            DocumentationValue::Array(values.iter().map(documentation_value).collect())
-        }
-        MetadataValue::Map(values) => DocumentationValue::Array(
-            values
-                .iter()
-                .flat_map(|(key, value)| [documentation_value(key), documentation_value(value)])
-                .collect(),
-        ),
-    }
-}
-
-fn metadata_string(value: Option<&MetadataValue>) -> Option<String> {
-    match value {
-        Some(MetadataValue::String(value)) => Some(value.clone()),
-        Some(MetadataValue::Symbol(value)) => Some(value.as_str().to_owned()),
-        _ => None,
-    }
-}
-
-fn metadata_integer(value: Option<&MetadataValue>) -> Option<i64> {
-    match value {
-        Some(MetadataValue::Number(value)) => Some(*value),
-        Some(MetadataValue::String(value)) => value.parse().ok(),
-        _ => None,
-    }
-}
-
 fn documentation(runtime: &Runtime, symbol: &str) -> Result<Documentation, String> {
-    let metadata = runtime
-        .var_metadata(symbol)
-        .ok_or_else(|| format!("No documentation symbol: {symbol}"))?;
-    let hara = metadata.hara.as_deref();
-    let doc = hara
-        .and_then(|value| value.doc().map(str::to_owned))
-        .or(metadata.doc);
-    let arglists = hara
-        .and_then(|value| value.get_keyword("arglists"))
-        .map(documentation_value)
-        .unwrap_or_else(|| {
-            DocumentationValue::Array(
-                metadata
-                    .arglists
-                    .into_iter()
-                    .map(DocumentationValue::String)
-                    .collect(),
-            )
-        });
-    Ok(Documentation {
-        symbol: symbol.into(),
-        doc,
-        arglists,
-        file: metadata_string(hara.and_then(|value| value.get_keyword("file"))),
-        line: metadata_integer(hara.and_then(|value| value.get_keyword("line"))),
-        column: metadata_integer(hara.and_then(|value| value.get_keyword("column"))),
-    })
+    documentation::lookup(runtime, symbol)
 }
 
 /// Installs the generic native driver behind `std.native.Kernel/*`.
@@ -770,140 +686,5 @@ fn kernel_call(
     }
 }
 
-fn string_argument<'a>(
-    arguments: &'a [Value],
-    index: usize,
-    operation: &str,
-) -> Result<&'a str, String> {
-    match arguments.get(index) {
-        Some(Value::String(value)) => Ok(value),
-        _ => Err(format!(
-            "foundation.kernel/{operation} expects string arguments"
-        )),
-    }
-}
-
-fn optional_string_argument<'a>(
-    arguments: &'a [Value],
-    index: usize,
-    operation: &str,
-) -> Result<Option<&'a str>, String> {
-    match arguments.get(index) {
-        None | Some(Value::Nil) => Ok(None),
-        Some(Value::String(value)) => Ok(Some(value)),
-        _ => Err(format!(
-            "foundation.kernel/{operation} expects an optional string argument"
-        )),
-    }
-}
-
-fn boolean_argument(arguments: &[Value], index: usize, operation: &str) -> Result<bool, String> {
-    match arguments.get(index) {
-        Some(Value::Bool(value)) => Ok(*value),
-        _ => Err(format!(
-            "foundation.kernel/{operation} expects a boolean argument"
-        )),
-    }
-}
-
-fn strings_argument(
-    arguments: &[Value],
-    index: usize,
-    operation: &str,
-) -> Result<Vec<String>, String> {
-    match arguments.get(index) {
-        Some(Value::Vector(values)) => values
-            .iter()
-            .map(|value| match value {
-                Value::String(value) => Ok(value.clone()),
-                _ => Err(format!(
-                    "foundation.kernel/{operation} expects vectors of strings"
-                )),
-            })
-            .collect(),
-        _ => Err(format!(
-            "foundation.kernel/{operation} expects a vector argument"
-        )),
-    }
-}
-
-fn tap_value(tap: &crate::tap::Tap) -> Value {
-    Value::Map(
-        [
-            (keyword("name"), Value::String(tap.name.clone())),
-            (keyword("registry"), strings_value(tap.registry.clone())),
-            (keyword("identity"), strings_value(tap.identity.clone())),
-            (
-                keyword("identity-key"),
-                Value::String(tap.identity_key.clone()),
-            ),
-            (
-                keyword("trust"),
-                keyword(match tap.trust {
-                    crate::tap::TrustMode::SignedRoot => "signed-root",
-                    crate::tap::TrustMode::GithubGoverned => "github-governed",
-                }),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    )
-}
-
-fn keyword(name: &str) -> Value {
-    Value::Keyword(Keyword::from(name))
-}
-
-fn strings_value(values: Vec<String>) -> Value {
-    Value::Vector(values.into_iter().map(Value::String).collect())
-}
-
 #[cfg(test)]
-mod tests {
-    use super::{DocumentationValue, RuntimeBroker};
-
-    #[test]
-    fn sessions_are_isolated_and_root_is_persistent() {
-        let broker = RuntimeBroker::start().unwrap();
-        assert_eq!(
-            broker.eval("ROOT", "(def answer 42)").unwrap(),
-            "#'user/answer"
-        );
-        broker.create("APP").unwrap();
-        assert!(broker
-            .eval("APP", "answer")
-            .unwrap_err()
-            .contains("unbound"));
-        assert_eq!(broker.eval("ROOT", "answer").unwrap(), "42");
-        assert_eq!(broker.list().unwrap(), vec!["APP", "ROOT"]);
-        broker.close("APP").unwrap();
-        assert!(broker.close("ROOT").is_err());
-    }
-
-    #[test]
-    fn documentation_preserves_runtime_metadata() {
-        let broker = RuntimeBroker::start().unwrap();
-        broker
-            .eval(
-                "ROOT",
-                concat!(
-                    "(defn ^{:file \"/tmp/sample.hal\" :line 12 :column 3} located ",
-                    "\"A located function.\" [value] value)"
-                ),
-            )
-            .unwrap();
-        let documentation = broker.documentation("ROOT", "located").unwrap();
-        assert_eq!(documentation.symbol, "located");
-        assert_eq!(documentation.doc.as_deref(), Some("A located function."));
-        assert_eq!(documentation.file.as_deref(), Some("/tmp/sample.hal"));
-        assert_eq!(documentation.line, Some(12));
-        assert_eq!(documentation.column, Some(3));
-        assert_eq!(
-            documentation.arglists,
-            DocumentationValue::Array(vec![DocumentationValue::Array(vec![
-                DocumentationValue::String("value".into())
-            ])])
-        );
-        assert!(broker.documentation("ROOT", "missing").is_err());
-    }
-}
+mod tests;

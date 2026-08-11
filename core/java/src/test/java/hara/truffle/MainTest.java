@@ -136,13 +136,32 @@ public class MainTest {
       String escaped = directory.toString().replace("\\", "\\\\").replace("\"", "\\\"");
       String child = escaped + "/child.bin";
       String form =
-          "[(deref (file/write \""
+          "[(= (file/parent \""
+              + child
+              + "\") \""
+              + escaped
+              + "\") "
+              + "(= (file/join \""
+              + escaped
+              + "\" \"child.bin\") \""
+              + child
+              + "\") "
+              + "(deref (file/write \""
               + child
               + "\" (bytes 1 2 3))) "
               + "(deref (file/exists? \""
               + child
               + "\")) "
+              + "(:size (deref (file/stat \""
+              + child
+              + "\"))) "
+              + "(:type (deref (file/stat \""
+              + child
+              + "\"))) "
               + "(count (deref (file/list \""
+              + escaped
+              + "\"))) "
+              + "(count (deref (file/walk \""
               + escaped
               + "\"))) "
               + "(deref (file/delete \""
@@ -157,7 +176,9 @@ public class MainTest {
               new PrintStream(output, true, StandardCharsets.UTF_8),
               new PrintStream(error, true, StandardCharsets.UTF_8));
       assertEquals(error.toString(StandardCharsets.UTF_8), 0, status);
-      assertEquals("[nil true 1 nil false]\n", output.toString(StandardCharsets.UTF_8));
+      assertEquals(
+          "[true true nil true 3 :file 1 1 nil false]\n",
+          output.toString(StandardCharsets.UTF_8));
     } finally {
       Files.walk(directory)
           .sorted(java.util.Comparator.reverseOrder())

@@ -399,15 +399,16 @@ public class HalcArtifactTest {
   }
 
   @Test
-  public void strictAndOffModesBothPreserveFoundationSemantics() {
+  public void embeddedHbxSupersedesLegacyFoundationHalcMode() {
     String previous = System.getProperty("hara.HalcMode");
     try {
       System.setProperty("hara.HalcMode", "strict");
       long before = FoundationHalcLowerer.compilationCount();
       assertFoundation();
-      assertTrue(FoundationHalcLowerer.compilationCount() > before);
+      assertEquals(before, FoundationHalcLowerer.compilationCount());
       System.setProperty("hara.HalcMode", "off");
       assertFoundation();
+      assertEquals(before, FoundationHalcLowerer.compilationCount());
     } finally {
       if (previous == null) System.clearProperty("hara.HalcMode");
       else System.setProperty("hara.HalcMode", previous);

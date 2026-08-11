@@ -27,6 +27,7 @@ use std::rc::Rc;
 
 #[path = "fiber.rs"]
 mod fiber;
+pub(crate) use fiber::Cont;
 pub use fiber::{EvalFiber, EvalFiberState, Step};
 
 pub fn completion_symbols() -> &'static [&'static str] {
@@ -558,6 +559,7 @@ pub struct Function {
     captured: Rc<RefCell<HashMap<String, Value>>>,
     pub name: Option<String>,
     native: Option<Rc<dyn Fn(Vec<Value>) -> Result<Value, String>>>,
+    fiber_native: Option<Rc<dyn Fn(Vec<Value>, Cont) -> Step>>,
     /// Arity clauses for multi-arity `defn`/`fn` dispatchers; empty otherwise.
     clauses: Vec<Rc<Function>>,
     /// Whether this function is a macro expander.
@@ -736,6 +738,7 @@ pub fn native_function(
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(name.into()),
         native: Some(Rc::new(callback)),
+        fiber_native: None,
         clauses: Vec::new(),
         is_macro: false,
     }))
@@ -762,6 +765,7 @@ pub(crate) fn native_fixed_variadic_function(
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(name.into()),
         native: Some(Rc::new(callback)),
+        fiber_native: None,
         clauses: Vec::new(),
         is_macro: false,
     }))
@@ -780,6 +784,31 @@ pub(crate) fn native_variadic_function(
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(name.into()),
         native: Some(Rc::new(callback)),
+        fiber_native: None,
+        clauses: Vec::new(),
+        is_macro: false,
+    }))
+}
+
+pub(crate) fn native_fiber_function(
+    name: &str,
+    fixed_arity: usize,
+    variadic: bool,
+    callback: impl Fn(Vec<Value>) -> Result<Value, String> + 'static,
+    fiber_callback: impl Fn(Vec<Value>, Cont) -> Step + 'static,
+) -> Value {
+    Value::Function(Rc::new(Function {
+        params: (0..fixed_arity)
+            .map(|index| format!("arg{index}"))
+            .collect(),
+        variadic: variadic.then(|| "rest".into()),
+        patterns: Vec::new(),
+        variadic_pattern: None,
+        body: Vec::new(),
+        captured: Rc::new(RefCell::new(HashMap::new())),
+        name: Some(name.into()),
+        native: Some(Rc::new(callback)),
+        fiber_native: Some(Rc::new(fiber_callback)),
         clauses: Vec::new(),
         is_macro: false,
     }))
@@ -1010,7 +1039,6 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
         )
         .chain([
             "disj",
-            "requiring-resolve",
             "list?",
             "vector?",
             "sequential?",
@@ -2908,6 +2936,11 @@ impl ProtocolRegistry {
             protocol_coroutine_status,
         );
         registry.register(
+            "std.protocol.icoroutine/ICoroutine",
+            "resume",
+            protocol_coroutine_resume,
+        );
+        registry.register(
             "std.protocol.iwatch/IWatch",
             "watch-add",
             protocol_watch_add,
@@ -3170,9 +3203,24 @@ pub(crate) fn vm_declare_global(name: &str) -> Result<KernelVar<Value>, String> 
 /// Resolves a global var by (possibly qualified) name through the
 /// registry: current-namespace mappings, aliases, and qualified names.
 pub(crate) fn vm_resolve_global(name: &str) -> Result<KernelVar<Value>, String> {
-    namespace_registry()?
-        .resolve(&Symbol::parse(name))
-        .ok_or_else(|| format!("unbound symbol: {name}"))
+    let registry = namespace_registry()?;
+    if let Some(var) = registry.resolve(&Symbol::parse(name)) {
+        return Ok(var);
+    }
+    if let Some((namespace, _)) = name.rsplit_once('/') {
+        if NAMESPACE_SOURCE_PROVIDER.with(|active| {
+            active
+                .borrow()
+                .as_ref()
+                .is_some_and(|provider| provider(namespace).is_some())
+        }) {
+            require_namespace(&registry, &mut HashMap::new(), namespace)?;
+            if let Some(var) = registry.resolve(&Symbol::parse(name)) {
+                return Ok(var);
+            }
+        }
+    }
+    Err(format!("unbound symbol: {name}"))
 }
 
 /// `defstruct` against the registry directly, mirroring the evaluator's
@@ -6753,6 +6801,13 @@ fn protocol_coroutine_status(arguments: &[Value]) -> Result<Value, String> {
     }
 }
 
+fn protocol_coroutine_resume(arguments: &[Value]) -> Result<Value, String> {
+    let Some(Value::Coroutine(coroutine)) = arguments.first() else {
+        return Err("ICoroutine/resume expects a coroutine".into());
+    };
+    fiber::coroutine::resume_sync(coroutine.clone(), arguments[1..].to_vec())
+}
+
 fn protocol_watch_add(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
         [Value::Atom(atom), key, Value::Function(function)] => {
@@ -9175,6 +9230,7 @@ fn generated_function(
         captured: Rc::new(RefCell::new(captured)),
         name: None,
         native: None,
+        fiber_native: None,
         clauses: Vec::new(),
         is_macro: false,
     }))
@@ -9469,6 +9525,7 @@ fn multi_arity_function(
             captured: Rc::new(RefCell::new(capture_environment(&parts[1..], captured))),
             name: Some(name.into()),
             native: None,
+            fiber_native: None,
             clauses: Vec::new(),
             is_macro,
         }));
@@ -9503,6 +9560,7 @@ pub(crate) fn arity_dispatcher(name: &str, functions: Vec<Rc<Function>>, is_macr
             })?;
             call_function(&function, arguments)
         })),
+        fiber_native: None,
         is_macro,
     }))
 }
@@ -10175,13 +10233,7 @@ fn force_lazy_alias(
     if registry.current().name().as_str() == alias {
         return Ok(());
     }
-    let target = registry.current().lazy_target(alias).or_else(|| {
-        matches!(
-            registry.load_state(alias),
-            Some(NamespaceLoadState::Unloaded)
-        )
-        .then(|| crate::lang::data::Symbol::parse(alias))
-    });
+    let target = registry.current().lazy_target(alias);
     let Some(target) = target else {
         return Ok(());
     };
@@ -10566,6 +10618,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         body,
                         name: None,
                         native: None,
+                        fiber_native: None,
                         clauses: Vec::new(),
                         is_macro: false,
                     })))
@@ -10619,6 +10672,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 captured: captured.clone(),
                                 name: Some(name.clone()),
                                 native: None,
+                                fiber_native: None,
                                 clauses: Vec::new(),
                                 is_macro: false,
                             })),
@@ -10765,25 +10819,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         }
                         _ => Err("ns-name expects a namespace".into()),
                     }
-                }
-                Form::Symbol(n) if n == "requiring-resolve" && !env.contains_key(n) => {
-                    if fs.len() != 2 {
-                        return Err("requiring-resolve expects one symbol".into());
-                    }
-                    let symbol = match eval(&fs[1], env)? {
-                        Value::Symbol(value) => value,
-                        _ => return Err("requiring-resolve expects a symbol".into()),
-                    };
-                    let namespace = symbol
-                        .get_namespace()
-                        .ok_or_else(|| "requiring-resolve expects a qualified symbol".to_string())?
-                        .to_owned();
-                    let registry = namespace_registry()?;
-                    ensure_namespace(&registry, env, &namespace, false)?;
-                    Ok(registry
-                        .resolve(&symbol)
-                        .map(Value::Var)
-                        .unwrap_or(Value::Nil))
                 }
                 Form::Symbol(n) if n == "module-revision" => {
                     if fs.len() != 2 {
@@ -11730,6 +11765,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             body,
                             name: Some(name.clone()),
                             native: None,
+                            fiber_native: None,
                             clauses: Vec::new(),
                             is_macro: true,
                         }))
@@ -11792,6 +11828,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             body,
                             name: Some(name.clone()),
                             native: None,
+                            fiber_native: None,
                             clauses: Vec::new(),
                             is_macro: false,
                         }))
@@ -11916,7 +11953,20 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if n == "std.foundation.coroutine/resume"
                         || n == "std.protocol.icoroutine/resume" =>
                 {
-                    Err("coroutine/resume requires the fiber evaluator".into())
+                    if fs.len() < 2 {
+                        return Err("coroutine/resume expects a coroutine".into());
+                    }
+                    let coroutine = eval(&fs[1], env)?;
+                    let arguments = fs[2..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    match coroutine {
+                        Value::Coroutine(coroutine) => {
+                            fiber::coroutine::resume_sync(coroutine, arguments)
+                        }
+                        _ => Err("coroutine/resume expects a coroutine".into()),
+                    }
                 }
                 Form::Symbol(n) if n == "std.foundation.coroutine/yield" => {
                     Err("coroutine/yield requires the fiber evaluator".into())
@@ -13263,6 +13313,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         captured: Rc::new(RefCell::new(captured)),
                         name: None,
                         native: None,
+                        fiber_native: None,
                         clauses: Vec::new(),
                         is_macro: false,
                     })))

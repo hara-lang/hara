@@ -18,19 +18,25 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 
 use super::error::VmError;
+use super::fiber::{VmFiber, VmFiberState};
 use super::frame::Frame;
 use super::opcode::Instruction;
 use super::program::{FunctionPrototype, Program};
 use super::slot::{VmClosure, VmMultiArity, VmSlot};
 use crate::core::{
     apply_binary_numbers, apply_binary_primitive, apply_primitive, apply_ternary_primitive_owned,
-    call_value, native_fixed_variadic_function, native_function, with_namespace_registry, Promise,
-    PromiseState, Value,
+    call_value, native_fiber_function, with_namespace_registry, Cont, Promise, PromiseState, Step,
+    Value,
 };
 use crate::task::promise::settle_result;
 
+#[path = "machine/async_runtime.rs"]
+mod async_runtime;
+#[path = "machine/coroutine_runtime.rs"]
+mod coroutine_runtime;
 #[path = "machine/globals.rs"]
 mod globals;
+use async_runtime::{async_result, async_result_from_outcome};
 #[cfg(feature = "bytecode-instrumentation")]
 #[path = "machine/instrumentation.rs"]
 pub mod instrumentation;
@@ -45,6 +51,7 @@ pub enum VmOutcome {
     Returned(Value),
     Failed(VmError),
     Suspended(Promise),
+    Yielded(Value),
 }
 
 /// Result of executing one instruction. Call actions only carry their
@@ -70,6 +77,7 @@ enum Dispatch {
     Returned(VmSlot),
     Failed(VmError),
     Suspended(Promise),
+    Yielded(Value),
 }
 
 /// A synchronous interpreter for one function of a validated [`Program`].
@@ -179,6 +187,16 @@ struct AsyncScheduler {
 }
 
 impl Machine {
+    #[cfg(feature = "tracing-jit")]
+    pub(super) fn attach_cached_jit(&mut self) {
+        self.jit = take_program_jit(&self.program);
+    }
+
+    #[cfg(feature = "tracing-jit")]
+    pub(super) fn detach_cached_jit(&mut self) {
+        store_program_jit(&self.program.clone(), std::mem::take(&mut self.jit));
+    }
+
     /// The machine for the program's entry function.
     pub fn entry(program: Rc<Program>) -> Machine {
         let index = usize::from(program.entry);
@@ -343,178 +361,6 @@ impl Machine {
         if let Some(key) = Self::callable_key(value) {
             self.vm_globals.insert(key, slot);
         }
-    }
-
-    fn closure_value(program: Rc<Program>, closure: Rc<VmClosure>) -> Value {
-        let proto = &program.functions[usize::from(closure.prototype)];
-        let arity = usize::from(proto.arity);
-        let variadic = proto.variadic;
-        let async_function = proto.async_function;
-        let name = proto.name.clone();
-        let registry = crate::core::namespace_registry().ok();
-        let callback = move |args: Vec<Value>| {
-            let run = || {
-                let mut machine = Machine::call_slots(
-                    program.clone(),
-                    closure.prototype,
-                    args.into_iter().map(VmSlot::from).collect(),
-                    closure.captures.clone(),
-                );
-                if async_function {
-                    return Ok(Value::Promise(async_result(machine)));
-                }
-                match machine.run() {
-                    VmOutcome::Returned(value) => Ok(value),
-                    VmOutcome::Failed(error) => Err(error.message),
-                    outcome @ VmOutcome::Suspended(_) => {
-                        Ok(Value::Promise(async_result_from_outcome(machine, outcome)))
-                    }
-                }
-            };
-            match &registry {
-                Some(registry) => with_namespace_registry(registry, run),
-                None => run(),
-            }
-        };
-        if variadic {
-            native_fixed_variadic_function(name.as_deref().unwrap_or("fn"), arity, callback)
-        } else {
-            native_function(name.as_deref().unwrap_or("fn"), arity, callback)
-        }
-    }
-
-    fn retain_async_child(
-        scheduler: &Rc<RefCell<AsyncScheduler>>,
-        machine: Machine,
-        result: Promise,
-        pending: Promise,
-    ) {
-        let id = {
-            let mut state = scheduler.borrow_mut();
-            let id = state.next_id;
-            state.next_id = id.wrapping_add(1);
-            state.children.insert(
-                id,
-                AsyncChild {
-                    machine,
-                    result: result.downgrade(),
-                    pending: pending.clone(),
-                },
-            );
-            id
-        };
-        let weak = Rc::downgrade(scheduler);
-        pending.on_settle(Rc::new(move |state| {
-            if let Some(scheduler) = weak.upgrade() {
-                scheduler.borrow_mut().ready.push_back((id, state));
-            }
-        }));
-    }
-
-    fn finish_async(
-        scheduler: &Rc<RefCell<AsyncScheduler>>,
-        machine: Machine,
-        result: Promise,
-        outcome: VmOutcome,
-    ) {
-        match outcome {
-            VmOutcome::Returned(value) => settle_result(&result, Ok(value)),
-            VmOutcome::Failed(error) => {
-                result.reject(error.message);
-            }
-            VmOutcome::Suspended(pending) => {
-                Self::retain_async_child(scheduler, machine, result, pending);
-            }
-        }
-    }
-
-    fn poll_scheduler(scheduler: &Rc<RefCell<AsyncScheduler>>) -> usize {
-        {
-            let mut state = scheduler.borrow_mut();
-            if state.polling {
-                return 0;
-            }
-            state.polling = true;
-        }
-        let pending = scheduler
-            .borrow()
-            .children
-            .values()
-            .map(|child| child.pending.clone())
-            .collect::<Vec<_>>();
-        for promise in pending {
-            promise.state();
-        }
-        let mut count = 0;
-        loop {
-            let ready = scheduler.borrow_mut().ready.pop_front();
-            let Some((id, state)) = ready else { break };
-            let child = scheduler.borrow_mut().children.remove(&id);
-            let Some(mut child) = child else { continue };
-            let Some(result) = child.result.upgrade() else {
-                child.pending.cancel();
-                continue;
-            };
-            count += 1;
-            let outcome = child.machine.resume(state);
-            Self::finish_async(scheduler, child.machine, result, outcome);
-        }
-        scheduler.borrow_mut().polling = false;
-        count
-    }
-
-    fn cancel_async_result(scheduler: &Rc<RefCell<AsyncScheduler>>, identity: usize) {
-        let ids = scheduler
-            .borrow()
-            .children
-            .iter()
-            .filter_map(|(id, child)| {
-                child
-                    .result
-                    .upgrade()
-                    .is_some_and(|candidate| candidate.identity_address() == identity)
-                    .then_some(*id)
-            })
-            .collect::<Vec<_>>();
-        for id in ids {
-            let child = { scheduler.borrow_mut().children.remove(&id) };
-            if let Some(child) = child {
-                child.pending.cancel();
-            }
-        }
-    }
-
-    fn spawn_async(&self, mut machine: Machine) -> Promise {
-        let scheduler = self
-            .scheduler
-            .upgrade()
-            .expect("root VM owns its async scheduler");
-        machine.scheduler = Rc::downgrade(&scheduler);
-        machine.scheduler_owner = None;
-        let result = Promise::new();
-        let poll = scheduler.clone();
-        result.set_poller(Rc::new(move || {
-            Self::poll_scheduler(&poll);
-        }));
-        let wait = scheduler.clone();
-        result.set_waiter(Rc::new(move || {
-            Self::poll_scheduler(&wait);
-        }));
-        let cancel_scheduler = scheduler.clone();
-        let cancel_identity = result.identity_address();
-        result.set_cancel_hook(Rc::new(move || {
-            Self::cancel_async_result(&cancel_scheduler, cancel_identity);
-        }));
-        let outcome = machine.run();
-        Self::finish_async(&scheduler, machine, result.clone(), outcome);
-        result
-    }
-
-    pub fn poll_async(&mut self) -> usize {
-        self.scheduler
-            .upgrade()
-            .map(|scheduler| Self::poll_scheduler(&scheduler))
-            .unwrap_or(0)
     }
 
     fn enter_callable(
@@ -802,6 +648,7 @@ impl Machine {
                     }
                 }
                 Dispatch::Suspended(promise) => return VmOutcome::Suspended(promise),
+                Dispatch::Yielded(value) => return VmOutcome::Yielded(value),
                 Dispatch::Failed(error) => return VmOutcome::Failed(error),
             }
         }
@@ -1254,6 +1101,12 @@ impl Machine {
                     }
                 }
             }
+            Instruction::Yield => {
+                let Some(value) = self.stack.pop() else {
+                    return Dispatch::Failed(self.error(function, "stack underflow"));
+                };
+                return Dispatch::Yielded(Self::into_value(program.clone(), value));
+            }
             Instruction::HostCall => {
                 if self.stack.len() < 3 {
                     return Dispatch::Failed(self.error(function, "stack underflow"));
@@ -1502,37 +1355,18 @@ impl Machine {
         }
         self.run()
     }
-}
 
-fn async_result(mut machine: Machine) -> Promise {
-    let outcome = machine.run();
-    async_result_from_outcome(machine, outcome)
-}
-
-fn async_result_from_outcome(mut machine: Machine, outcome: VmOutcome) -> Promise {
-    let scheduler = machine
-        .scheduler
-        .upgrade()
-        .or_else(|| machine.scheduler_owner.clone())
-        .expect("VM owns its async scheduler");
-    machine.scheduler = Rc::downgrade(&scheduler);
-    machine.scheduler_owner = None;
-    let result = Promise::new();
-    let poll = scheduler.clone();
-    result.set_poller(Rc::new(move || {
-        Machine::poll_scheduler(&poll);
-    }));
-    let wait = scheduler.clone();
-    result.set_waiter(Rc::new(move || {
-        Machine::poll_scheduler(&wait);
-    }));
-    let cancel_scheduler = scheduler.clone();
-    let cancel_identity = result.identity_address();
-    result.set_cancel_hook(Rc::new(move || {
-        Machine::cancel_async_result(&cancel_scheduler, cancel_identity);
-    }));
-    Machine::finish_async(&scheduler, machine, result.clone(), outcome);
-    result
+    pub fn resume_yield(&mut self, value: Value) -> VmOutcome {
+        let Some(function) = self.program.functions.get(self.function).cloned() else {
+            return VmOutcome::Failed(VmError::new("function index out of range", 0, None));
+        };
+        if !matches!(function.code.get(self.ip), Some(Instruction::Yield)) {
+            return VmOutcome::Failed(self.error(&function, "VM is not suspended at yield"));
+        }
+        self.stack.push(value.into());
+        self.ip += 1;
+        self.run()
+    }
 }
 
 /// Reads a string constant (the global-name operands).
@@ -1574,6 +1408,11 @@ fn run_entry(program: Rc<Program>) -> Result<Value, VmError> {
             0,
             None,
         )),
+        VmOutcome::Yielded(_) => Err(VmError::new(
+            "coroutine/yield used outside of a coroutine",
+            0,
+            None,
+        )),
     }
 }
 
@@ -1600,6 +1439,30 @@ fn cached_jit_runtime<R>(
 #[cfg(all(test, feature = "tracing-jit"))]
 pub(crate) fn cached_trace_count(program: &Rc<Program>) -> usize {
     cached_jit_runtime(program, crate::jit::runtime::JitRuntime::compiled_count).unwrap_or(0)
+}
+
+#[cfg(all(test, feature = "tracing-jit"))]
+pub(crate) fn active_compiled_trace_count() -> usize {
+    PROGRAM_JITS.with(|cache| {
+        cache
+            .borrow()
+            .values()
+            .filter(|cached| cached.program.strong_count() > 0)
+            .map(|cached| cached.runtime.compiled_count())
+            .sum()
+    })
+}
+
+#[cfg(all(test, feature = "tracing-jit"))]
+pub(crate) fn active_jit_telemetry() -> Vec<crate::jit::JitTelemetry> {
+    PROGRAM_JITS.with(|cache| {
+        cache
+            .borrow()
+            .values()
+            .filter(|cached| cached.program.strong_count() > 0)
+            .map(|cached| cached.runtime.telemetry())
+            .collect()
+    })
 }
 
 #[cfg(feature = "tracing-jit")]

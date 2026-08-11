@@ -1,9 +1,5 @@
 (ns tool.cli.identity
   (:require [tool.cli.model :as model]
-            [std.foundation.edn :as edn]
-            [std.foundation.os :as os]
-            [std.foundation.promise :as promise]
-            [std.foundation.string :as string]
             [std.work :as work]))
 
 (def +default-endpoint+ "https://id.hara-lang.org")
@@ -29,21 +25,21 @@
   (or (os/getenv "HARA_ID_ENDPOINT") +default-endpoint+))
 
 (defn trim-end-slash [value]
-  (if (string/ends-with? value "/")
-    (string/slice value 0 (dec (string/length value)))
+  (if (str/ends-with? value "/")
+    (str/slice value 0 (dec (str/length value)))
     value))
 
 (defn option [request name]
   (get (:request/options request) name))
 
 (defn hex-character? [value]
-  (string/includes? "0123456789abcdef" value))
+  (str/includes? "0123456789abcdef" value))
 
 (defn valid-hex? [value bytes]
   (and (string? value)
-       (= (* bytes 2) (string/length value))
-       (every? (fn [index] (hex-character? (string/char-at value index)))
-               (range (string/length value)))))
+       (= (* bytes 2) (str/length value))
+       (every? (fn [index] (hex-character? (str/char-at value index)))
+               (range (str/length value)))))
 
 (defn canonical-enrollment [tap owner public-key challenge]
   (str "{:enrollment/format \"0.0.0-alpha\" :enrollment/tap " (pr-str tap)
@@ -54,18 +50,18 @@
 (defn run-process [argv input]
   (let [process (os/spawn argv)]
     (if input
-      (do (deref (os/process-write process (string/encode-utf8 input)))
+      (do (deref (os/process-write process (str/encode-utf8 input)))
           (deref (os/process-close-input process)))
       nil)
     (let [values (deref (promise/all [(os/process-stdout process)
                                       (os/process-stderr process)
                                       (os/process-wait process)]))
-          result {:stdout (string/decode-utf8 (nth values 0))
-                  :stderr (string/decode-utf8 (nth values 1))
+          result {:stdout (str/decode-utf8 (nth values 0))
+                  :stderr (str/decode-utf8 (nth values 1))
                   :exit (nth values 2)}]
       (if (= 0 (:exit result))
         result
-        (throw (ex-info (string/trim (:stderr result)) result))))))
+        (throw (ex-info (str/trim (:stderr result)) result))))))
 
 (defn request [method path body]
   (let [url (str (trim-end-slash (endpoint)) path)
@@ -78,17 +74,17 @@
     (:stdout (run-process argv body))))
 
 (defn fetch-challenge [owner]
-  (let [challenge (string/trim
+  (let [challenge (str/trim
                    (request "GET"
                             (str "/v1/enrollments/challenge?owner=" owner)
                             nil))]
-    (if (string/blank? challenge)
+    (if (str/blank? challenge)
       (throw (ex-info "identity service returned an empty challenge" {}))
       challenge)))
 
 (defn sign [source]
   (let [signer (os/getenv "HARA_SIGNER")]
-    (if (or (nil? signer) (string/blank? signer))
+    (if (or (nil? signer) (str/blank? signer))
       (throw (ex-info "HARA_SIGNER must name an external signer command" {}))
       nil)
     (let [response (edn/read (:stdout (run-process [signer] source)))
@@ -103,7 +99,7 @@
         tap-option (or (option request :tap) "hara")
         tap (if (= tap-option "official") "hara" tap-option)
         public-key (os/getenv "HARA_SIGNER_PUBLIC_KEY")]
-    (if (string/blank? owner)
+    (if (str/blank? owner)
       (throw (ex-info "id enroll requires --owner" {}))
       nil)
     (if (valid-hex? public-key 32)

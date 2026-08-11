@@ -227,7 +227,8 @@ public record HbcProgram(
     EXTEND_TYPE(42),
     DEF_MULTI(43),
     DEF_METHOD(44),
-    DOT_CALL(45);
+    DOT_CALL(45),
+    YIELD(46);
 
     private final int id;
 

@@ -61,6 +61,31 @@ pub fn coroutine_resume(coroutine: Rc<Coroutine>, args: Vec<Value>, k: Cont) -> 
     }
 }
 
+pub(crate) fn resume_sync(
+    coroutine: Rc<Coroutine>,
+    arguments: Vec<Value>,
+) -> Result<Value, String> {
+    let mut step = coroutine_resume(coroutine, arguments, Box::new(Step::Done));
+    loop {
+        match step {
+            Step::Done(result) => return result,
+            Step::Continue(next) => step = next(),
+            Step::Wait(promise, resume) => {
+                let state = promise.wait_state();
+                if matches!(state, PromiseState::Pending) {
+                    return Err(
+                        "coroutine/resume cannot synchronously await a pending promise".into(),
+                    );
+                }
+                step = resume(state);
+            }
+            Step::Yield(_, _) => {
+                return Err("coroutine/yield escaped its coroutine boundary".into());
+            }
+        }
+    }
+}
+
 pub fn create_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step {
     if v.len() != 2 {
         return k(Err("coroutine/create expects one function".into()));

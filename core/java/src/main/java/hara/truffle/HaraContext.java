@@ -100,23 +100,37 @@ public final class HaraContext {
   private static final String FOUNDATION_NAMESPACE = "std.foundation";
   private static final String PROTOCOL_NAMESPACE_PREFIX = "std.protocol.";
   private static final Map<String, String> GENERATED_LIBRARIES =
-      Map.of(
-          "string", "std.foundation.string",
-          "coroutine", "std.foundation.coroutine",
-          "promise", "std.foundation.promise",
-          "bytes", "std.foundation.bytes",
-          "file", "std.foundation.file",
-          "socket", "std.foundation.socket",
-          "edn", "std.foundation.edn");
+      Map.ofEntries(
+          Map.entry("string", "std.foundation.string"),
+          Map.entry("coroutine", "std.foundation.coroutine"),
+          Map.entry("promise", "std.foundation.promise"),
+          Map.entry("bytes", "std.foundation.bytes"),
+          Map.entry("file", "std.foundation.file"),
+          Map.entry("socket", "std.foundation.socket"),
+          Map.entry("edn", "std.foundation.edn"),
+          Map.entry("json", "std.foundation.json"),
+          Map.entry("set", "std.foundation.set"),
+          Map.entry("pretty", "std.foundation.pretty"),
+          Map.entry("host", "std.foundation.host"),
+          Map.entry("kernel", "std.foundation.kernel"),
+          Map.entry("os", "std.foundation.os"),
+          Map.entry("crypto", "std.foundation.crypto"));
   private static final Map<String, String> DEFAULT_LIBRARY_ALIASES =
-      Map.of(
-          "string", "str",
-          "coroutine", "co",
-          "promise", "promise",
-          "bytes", "bytes",
-          "file", "file",
-          "socket", "socket",
-          "edn", "edn");
+      Map.ofEntries(
+          Map.entry("string", "str"),
+          Map.entry("coroutine", "co"),
+          Map.entry("promise", "promise"),
+          Map.entry("bytes", "bytes"),
+          Map.entry("file", "file"),
+          Map.entry("socket", "socket"),
+          Map.entry("edn", "edn"),
+          Map.entry("json", "json"),
+          Map.entry("set", "set"),
+          Map.entry("pretty", "pretty"),
+          Map.entry("host", "host"),
+          Map.entry("kernel", "kernel"),
+          Map.entry("os", "os"),
+          Map.entry("crypto", "crypto"));
   private static final Set<String> MARKER_METHOD_NAMES =
       Set.of(
           "get",
@@ -150,7 +164,7 @@ public final class HaraContext {
           Map.entry("Crypto", java.util.List.of("sha256")),
           Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv")),
           Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "wait", "kill")),
-          Map.entry("File", java.util.List.of("resolve", "read", "write", "exists?", "list", "mkdir", "delete")),
+          Map.entry("File", java.util.List.of("parent", "join", "resolve", "read", "write", "exists?", "stat", "list", "walk", "mkdir", "delete")),
           Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close")),
           Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
           Map.entry("Coroutine", java.util.List.of("create", "yield", "await", "instance?")),
@@ -343,6 +357,13 @@ public final class HaraContext {
         }
       } else {
         libraryLoader.installEagerResources(this);
+      }
+      // The user namespace exists before the lazy HBX library is activated.
+      // Refresh every ordinary namespace after eager modules load so newly
+      // materialized std.foundation Vars have the same builtin-alias behavior
+      // as the source/Java startup path.
+      for (HaraNamespace namespace : namespaces.values()) {
+        if (!blankNamespaces.contains(namespace.name())) referFoundation(namespace);
       }
       eagerFallbacksLoaded = true;
     } finally {
@@ -659,7 +680,8 @@ public final class HaraContext {
     } else {
       blankNamespaces.remove(currentNamespace.name());
     }
-    referRuntimeIntrinsics(currentNamespace);
+    if (!declaration.blank) referRuntimeIntrinsics(currentNamespace);
+    referNativeTypeDescriptors(currentNamespace);
     configureNativeAliases(currentNamespace);
     if (!declaration.blank) referFoundation(currentNamespace);
     configureProtocolAliases(currentNamespace);
@@ -710,6 +732,17 @@ public final class HaraContext {
         aliases.computeIfAbsent(target.name(), ignored -> new ConcurrentHashMap<>());
     NATIVE_TYPES.keySet().forEach(
         name -> putAlias(namespaceAliases, name, "std.native." + name));
+  }
+
+  private void referNativeTypeDescriptors(HaraNamespace target) {
+    HaraNamespace intrinsic = namespace(INTRINSIC_NAMESPACE);
+    for (String name : NATIVE_TYPES.keySet()) {
+      HaraVar descriptor = intrinsic.lookup(name);
+      if (descriptor == null) continue;
+      if (target.lookup(name) == null) target.refer(name, descriptor);
+      String canonicalName = "std.native." + name;
+      if (target.lookup(canonicalName) == null) target.refer(canonicalName, descriptor);
+    }
   }
 
   private void applyNamespaceRequires(Object[] clauses) {
@@ -1008,10 +1041,11 @@ public final class HaraContext {
   }
 
   private synchronized HaraNamespace requiredNamespace(String target) {
+    Path projectSource = resolveProjectSource(target);
     HaraNamespace existing = namespaces.get(target);
     if (existing != null
         && namespaceStates.get(target) == NamespaceLoadState.LOADED
-        && (bytecodeLibrary.provides(target)
+        && (projectSource == null && bytecodeLibrary.provides(target)
             || !libraryLoader.provides(target)
             || sourceNamespaceLoaded(target))) {
       return existing;
@@ -1031,7 +1065,12 @@ public final class HaraContext {
     ContextSnapshot snapshot = snapshot();
     namespaceStates.put(target, NamespaceLoadState.LOADING);
     try {
-      HaraNamespace loaded = loadBytecodeNamespace(target);
+      HaraNamespace loaded = null;
+      if (projectSource != null) {
+        requireResolvedSource(projectSource.toString(), false);
+        loaded = loadedSourceNamespace(target, projectSource.toString());
+      }
+      if (loaded == null) loaded = loadBytecodeNamespace(target);
       if (loaded == null) libraryLoader.ensure(this, target);
       if (loaded == null) {
         loaded =
@@ -1085,7 +1124,11 @@ public final class HaraContext {
               "Cannot require HBX0 dependency " + dependency + " for " + target);
         }
       }
-      definitionOrigin = HaraVar.Origin.BYTECODE;
+      // The embedded HBX is the compiled representation of the portable HAL
+      // fallback library. Host primitives keep ownership of same-named Vars;
+      // application HBC evaluated through the public artifact API still uses
+      // BYTECODE origin and can define ordinary program Vars.
+      definitionOrigin = HaraVar.Origin.HAL_FALLBACK;
       parseAndExecute(module.descriptor().namespaceForm(), module.descriptor().resource() + "#ns");
       HbcProgram program = module.program();
       currentNamespace = namespace(module.namespace());
@@ -1166,22 +1209,29 @@ public final class HaraContext {
 
   private HaraNamespace requireSourceNamespace(String target, boolean reload) {
     String resourceName = namespaceResource(target);
-    if (environment.isFileIOAllowed()) {
-      HaraProject currentProject = project();
-      Path source =
-          currentProject == null
-              ? null
-              : currentProject.resolve(target, target.endsWith("-test"));
-      if (source != null) {
-        requireResolvedSource(source.toString(), reload);
-        return loadedSourceNamespace(target, source.toString());
-      }
+    Path source = resolveProjectSource(target);
+    if (source != null) {
+      requireResolvedSource(source.toString(), reload);
+      return loadedSourceNamespace(target, source.toString());
     }
     if (getResource(resourceName) != null) {
       requireResolvedSource("classpath:" + resourceName, reload);
       return loadedSourceNamespace(target, "classpath:" + resourceName);
     }
     return null;
+  }
+
+  private Path resolveProjectSource(String target) {
+    if (!environment.isFileIOAllowed()) return null;
+    HaraProject currentProject = project();
+    if (currentProject != null
+        && "hara.lang".equals(currentProject.name().display())
+        && bytecodeLibrary.provides(target)) {
+      return null;
+    }
+    return currentProject == null
+        ? null
+        : currentProject.resolve(target, target.endsWith("-test"));
   }
 
   private void requireResolvedSource(String source, boolean reload) {
@@ -1270,10 +1320,6 @@ public final class HaraContext {
       String nativeSource = NATIVE_LIBRARY_SOURCES.get(namespaceName);
       if (nativeSource != null) libraryLoader.ensure(this, nativeSource);
       if (alias) {
-        HaraNamespace required = requiredNamespace(namespaceName);
-        if (required == null) return null;
-      }
-      if (libraryLoader.provides(namespaceName)) {
         HaraNamespace required = requiredNamespace(namespaceName);
         if (required == null) return null;
       }
@@ -2010,8 +2056,6 @@ public final class HaraContext {
               return raw instanceof Symbol symbol && isSpecialSymbol(symbol);
             }));
     target.define(
-        "requiring-resolve", new UnaryBuiltin("requiring-resolve", this::requiringResolve));
-    target.define(
         "current-namespace",
         new VariadicBuiltin(
             "current-namespace",
@@ -2406,6 +2450,10 @@ public final class HaraContext {
         "list",
         new VariadicBuiltin(
             "list", values -> hara.lang.data.List.Standard.from(null, values)));
+    target.define(
+        "vector",
+        new VariadicBuiltin(
+            "vector", values -> hara.lang.data.Vector.Standard.from(null, values)));
     target.define(
         "atom",
         new UnaryBuiltin(
@@ -2963,11 +3011,15 @@ public final class HaraContext {
 
   private void defineFileLibrary() {
     HaraNamespace file = namespace("std.foundation.file");
+    file.define("parent", new UnaryBuiltin("file/parent", this::fileParent));
+    file.define("join", new VariadicBuiltin("file/join", this::fileJoin));
     file.define("resolve", new VariadicBuiltin("file/resolve", this::fileResolve));
     file.define("read", new UnaryBuiltin("file/read", this::fileRead));
     file.define("write", new VariadicBuiltin("file/write", this::fileWrite));
     file.define("exists?", new UnaryBuiltin("file/exists?", this::fileExists));
+    file.define("stat", new UnaryBuiltin("file/stat", this::fileStat));
     file.define("list", new UnaryBuiltin("file/list", this::fileList));
+    file.define("walk", new UnaryBuiltin("file/walk", this::fileWalk));
     file.define("mkdir", new UnaryBuiltin("file/mkdir", this::fileMkdir));
     file.define("delete", new UnaryBuiltin("file/delete", this::fileDelete));
   }
@@ -3709,10 +3761,24 @@ public final class HaraContext {
   }
 
   private Object fileResolve(Object[] values) {
-    requireFileIO("file/resolve");
     if (values.length != 2) throw new HaraException("file/resolve expects a root and path");
-    TruffleFile root = environment.getPublicTruffleFile(stringValue(values[0], "file/resolve"));
-    return root.resolve(stringValue(values[1], "file/resolve")).normalize().getPath();
+    return Path.of(stringValue(values[0], "file/resolve"))
+        .resolve(stringValue(values[1], "file/resolve"))
+        .normalize()
+        .toString();
+  }
+
+  private Object fileParent(Object value) {
+    Path parent = Path.of(stringValue(value, "file/parent")).normalize().getParent();
+    return parent == null ? null : parent.toString();
+  }
+
+  private Object fileJoin(Object[] values) {
+    if (values.length != 2) throw new HaraException("file/join expects a base and path");
+    return Path.of(stringValue(values[0], "file/join"))
+        .resolve(stringValue(values[1], "file/join"))
+        .normalize()
+        .toString();
   }
 
   private Object fileRead(Object value) {
@@ -3784,6 +3850,62 @@ public final class HaraContext {
                     })));
   }
 
+  private Object fileStat(Object value) {
+    requireFileIO("file/stat");
+    String path = stringValue(value, "file/stat");
+    return new HaraPromise(
+        CompletableFuture.supplyAsync(
+            () ->
+                invokeInContext(
+                    () -> {
+                      try {
+                        TruffleFile target = environment.getPublicTruffleFile(path);
+                        String type =
+                            target.isSymbolicLink()
+                                ? "symlink"
+                                : target.isDirectory() ? "directory" : "file";
+                        return hara.lang.data.Map.Standard.from(
+                            null,
+                            Keyword.create("size"),
+                            target.size(),
+                            Keyword.create("type"),
+                            Keyword.create(type));
+                      } catch (IOException error) {
+                        throw new CompletionException(error);
+                      }
+                    })));
+  }
+
+  private Object fileWalk(Object value) {
+    requireFileIO("file/walk");
+    String path = stringValue(value, "file/walk");
+    return new HaraPromise(
+        CompletableFuture.supplyAsync(
+            () ->
+                invokeInContext(
+                    () -> {
+                      try {
+                        ArrayList<String> files = new ArrayList<>();
+                        collectFiles(environment.getPublicTruffleFile(path), files);
+                        Collections.sort(files);
+                        return files.toArray(new String[0]);
+                      } catch (IOException error) {
+                        throw new CompletionException(error);
+                      }
+                    })));
+  }
+
+  private static void collectFiles(TruffleFile current, ArrayList<String> files)
+      throws IOException {
+    if (current.isSymbolicLink()) return;
+    if (current.isRegularFile()) {
+      files.add(current.normalize().getPath());
+      return;
+    }
+    if (!current.isDirectory()) return;
+    for (TruffleFile child : current.list()) collectFiles(child, files);
+  }
+
   private Object fileMkdir(Object value) {
     requireFileIO("file/mkdir");
     String path = stringValue(value, "file/mkdir");
@@ -3846,8 +3968,14 @@ public final class HaraContext {
       throw new HaraException(
           expectedOperator + " instruction contains the wrong declaration");
     }
-    return parseAndExecute(
-        hara.kernel.builtin.BuiltinUtil.prStr(raw), "<hbc-" + expectedOperator + ">");
+    Source source = Source.newBuilder(HaraLanguage.ID, "", "<hbc-" + expectedOperator + ">")
+        .build();
+    return HaraAnalyzer.compile(
+            HaraLanguage.currentLanguage(),
+            new Object[] {raw},
+            source.createUnavailableSection(),
+            this)
+        .call();
   }
 
   private Object nativeMutableCall(String type, String method, Object[] values) {
@@ -4427,16 +4555,6 @@ public final class HaraContext {
               entries.add(Symbol.create(entry.getValue()));
             });
     return hara.lang.data.OrderedMap.Standard.from(null, entries.toArray());
-  }
-
-  private Object requiringResolve(Object value) {
-    Object unwrapped = unwrapQuoted(HaraBox.unwrap(value));
-    if (!(unwrapped instanceof Symbol symbol) || symbol.getNamespace() == null) {
-      throw new HaraException("requiring-resolve expects a qualified symbol");
-    }
-    HaraNamespace target = requiredNamespace(symbol.getNamespace());
-    if (target == null) return null;
-    return target.lookup(symbol.getName());
   }
 
   @TruffleBoundary

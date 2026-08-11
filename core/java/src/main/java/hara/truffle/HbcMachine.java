@@ -229,9 +229,13 @@ public final class HbcMachine {
         case BUILD_LIST ->
             stack.add(hara.lang.data.List.Standard.from(null, popArguments(stack, index(instruction.first()))));
         case BUILD_MAP ->
-            stack.add(hara.lang.data.Map.Standard.from(null, popArguments(stack, index(instruction.first()) * 2)));
+            stack.add(
+                hara.lang.data.OrderedMap.Standard.from(
+                    null, popArguments(stack, index(instruction.first()) * 2)));
         case BUILD_SET ->
-            stack.add(hara.lang.data.Set.Standard.from(null, popArguments(stack, index(instruction.first()))));
+            stack.add(
+                hara.lang.data.OrderedSet.Standard.from(
+                    null, popArguments(stack, index(instruction.first()))));
         case CONCAT_LIST -> {
           Object[] values = popArguments(stack, index(instruction.first()));
           ArrayList<Object> concatenated = new ArrayList<>();
@@ -315,6 +319,10 @@ public final class HbcMachine {
             stack.add(
                 invokeGlobal(
                     context, "std.foundation.coroutine/await", new Object[] {pop(stack)}));
+        case YIELD ->
+            stack.add(
+                invokeGlobal(
+                    context, "std.foundation.coroutine/yield", new Object[] {pop(stack)}));
         case RETURN -> {
           Object result = pop(stack);
           if (calls.isEmpty()) return result;
@@ -518,7 +526,11 @@ public final class HbcMachine {
   private static void checkArity(Function function, int actual) {
     if ((!function.variadic() && actual != function.arity())
         || (function.variadic() && actual < function.arity())) {
-      throw new HaraException("function has no matching arity: " + actual);
+      String expected =
+          function.variadic()
+              ? "at least " + function.arity()
+              : Integer.toString(function.arity());
+      throw new HaraException("Expected " + expected + " arguments, received " + actual);
     }
   }
 
@@ -561,11 +573,11 @@ public final class HbcMachine {
       Object first = HaraBox.unwrap(arguments[0]);
       for (int i = 1; i < arguments.length; i++) {
         Object value = HaraBox.unwrap(arguments[i]);
-        if (first instanceof Number
-            && value instanceof Number
-            && (!first.getClass().equals(value.getClass()) || !first.equals(value))) return false;
-        if (!(first instanceof Number && value instanceof Number)
-            && !hara.lang.base.Eq.eq(first, value)) return false;
+        if (first instanceof Number left && value instanceof Number right) {
+          if (!hara.lang.base.primitive.Num.eq(left, right)) return false;
+        } else if (!hara.lang.base.Eq.eq(first, value)) {
+          return false;
+        }
       }
       return true;
     }
@@ -576,23 +588,19 @@ public final class HbcMachine {
         throw new HaraException(primitiveName(id) + " expects one argument");
       }
       Object value = HaraBox.unwrap(arguments[0]);
-      if (value == null) return null;
-      if (!(value instanceof ILinearType<?> linear)) {
-        throw new HaraException(primitiveName(id) + " expects a sequential value");
-      }
-      int start = primitive == HbcProgram.Primitive.SECOND ? 1 : 0;
-      if (primitive != HbcProgram.Primitive.REST) {
-        return linear.count() > start ? linear.nth(start) : null;
-      }
-      if (linear.count() == 0) return null;
-      Object[] remaining = new Object[Math.toIntExact(linear.count() - 1)];
-      for (int index = 0; index < remaining.length; index++) {
-        remaining[index] = linear.nth(index + 1L);
-      }
-      return BuiltinStruct.list(remaining);
+      Iterator<?> iterator = (Iterator<?>) context.iterValue(value);
+      if (primitive == HbcProgram.Primitive.REST) return context.restSequence(iterator);
+      if (!iterator.hasNext()) return null;
+      Object first = iterator.next();
+      if (primitive == HbcProgram.Primitive.FIRST) return first;
+      return iterator.hasNext() ? iterator.next() : null;
     }
     try {
-      return invokeGlobal(context, primitiveName(id), arguments);
+      String name = primitiveName(id);
+      return invokeGlobal(
+          context,
+          name.contains("/") ? name : "std.foundation/" + name,
+          arguments);
     } catch (RuntimeException failure) {
       if ((primitive == HbcProgram.Primitive.DIVIDE
               || primitive == HbcProgram.Primitive.REMAINDER)
@@ -605,11 +613,15 @@ public final class HbcMachine {
   }
 
   private static Integer primitiveId(String name) {
-    String local = name.contains("/") ? name.substring(name.lastIndexOf('/') + 1) : name;
+    boolean foundationQualified = name.startsWith("std.foundation/");
+    String local =
+        foundationQualified ? name.substring("std.foundation/".length()) : name;
     for (HbcProgram.Primitive primitive : HbcProgram.Primitive.values()) {
-      if (primitiveName(primitive.id()).equals(name)
-          || primitiveName(primitive.id()).equals(local)
-          || (primitive == HbcProgram.Primitive.REMAINDER && "%".equals(name))) {
+      String primitiveName = primitiveName(primitive.id());
+      if (primitiveName.equals(name)
+          || (foundationQualified && !primitiveName.contains("/") && primitiveName.equals(local))
+          || (primitive == HbcProgram.Primitive.REMAINDER
+              && ("%".equals(name) || (foundationQualified && "%".equals(local))))) {
         return primitive.id();
       }
     }

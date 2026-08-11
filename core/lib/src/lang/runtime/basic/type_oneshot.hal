@@ -1,6 +1,7 @@
 (ns lang.runtime.basic.type-oneshot
-  (:require [std.foundation.string :as string]
-            [lang.runtime.basic.type-common :as common]))
+  (:require
+            [lang.runtime.basic.type-common :as common]
+            [tool.runtime :as tool-runtime :lazy true]))
 
 (defstruct RuntimeOneshot [id lang runtime program exec process])
 
@@ -43,19 +44,15 @@
   [options]
   (rt-oneshot:create options))
 
-(defn- resolve-required
-  [qualified]
-  (or (resolve qualified)
-      (requiring-resolve qualified)))
-
 (defn raw-eval-oneshot
   "Evaluates emitted target source using the selected local program."
   [runtime source]
-  (let [run-var (resolve-required 'tool.runtime/run)
+  (let [run-form (list 'resolve (list 'quote 'tool-runtime/run))
+        run-var (eval-in-ns 'lang.runtime.basic.type-oneshot [run-form])
         run-fn (if run-var
                  (deref run-var)
-                 (throw (ex-info "Hara host runtime is unavailable"
-                                 {:symbol 'tool.runtime/run})))
+                 (throw (ex-info "Declared host runtime did not load"
+                                 {:symbol 'tool-runtime/run})))
         exec (get runtime :exec)
         result
         (deref
@@ -68,4 +65,4 @@
            :env (get-in runtime [:process :env])}))]
     (if (get-in runtime [:process :raw])
       result
-      (string/trim-right (get result :stdout)))))
+      (str/trim-right (get result :stdout)))))

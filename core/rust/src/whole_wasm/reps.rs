@@ -34,7 +34,9 @@ pub(crate) fn analyze_function(
                 native_collection.unwrap_or_else(|| {
                     if scalar_kernel || program.function_has_i64_parameters(function_id) {
                         Rep::I64
-                    } else if function_uses_tagged_collections(function) {
+                    } else if function_uses_tagged_collections(function)
+                        && !program_uses_collection_constants(program)
+                    {
                         Rep::TaggedRef
                     } else {
                         Rep::TruthyHandle
@@ -45,7 +47,9 @@ pub(crate) fn analyze_function(
                 || program.function_has_i64_parameters(function_id)
             {
                 Rep::I64
-            } else if function_uses_tagged_collections(function) {
+            } else if function_uses_tagged_collections(function)
+                && !program_uses_collection_constants(program)
+            {
                 Rep::TaggedRef
             } else {
                 Rep::TruthyHandle
@@ -395,6 +399,14 @@ fn function_uses_tagged_collections(function: &FunctionPrototype) -> bool {
 }
 
 pub(crate) fn function_enables_tagged_vectors(program: &Program, function: FunctionId) -> bool {
+    // Constant collections enter through the host handle table. Until the
+    // whole-Wasm tier can recursively materialize those constants into its
+    // tagged linear-memory layout, keep the entire call graph on the handle
+    // representation. Mixing a host handle with TaggedRef is type-correct at
+    // the Wasm boundary but interprets the handle number as a memory address.
+    if program_uses_collection_constants(program) {
+        return false;
+    }
     let Some(current) = program.functions.get(usize::from(function)) else {
         return false;
     };
@@ -416,6 +428,26 @@ pub(crate) fn function_enables_tagged_vectors(program: &Program, function: Funct
                 .get(usize::from(*prototype))
                 .is_some_and(function_uses_tagged_collections)
         })
+}
+
+fn program_uses_collection_constants(program: &Program) -> bool {
+    program.constants.iter().any(|value| {
+        matches!(
+            value,
+            Value::Vector(_)
+                | Value::Tuple(_)
+                | Value::List(_)
+                | Value::Cons(_)
+                | Value::Queue(_)
+                | Value::Map(_)
+                | Value::OrderedMap(_)
+                | Value::SortedMap(_)
+                | Value::Trie(_)
+                | Value::Set(_)
+                | Value::OrderedSet(_)
+                | Value::SortedSet(_)
+        )
+    })
 }
 
 fn resolve_function(program: &Program, constant: u32) -> Option<FunctionId> {

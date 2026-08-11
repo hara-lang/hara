@@ -22,22 +22,12 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
-import java.util.HexFormat;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.io.ByteSequence;
 import org.junit.Test;
 
 public class HbcCodecTest {
-  private static final String LEGACY_NUMBERED_HBC =
-      "48424334000001c50000010000000464656d6f000000030000000d48544131030000000000000001000000104854413104000000076164642d6f6e650000000d4854413103000000000000002900000001000000010a000000086172676c697374730c000000010c000000010b0000000178000000010000000d64656d6f2f437573746f6d65720500000001000000033a69640000000003696e74000000010000000c64656d6f2f6164642d6f6e650600000001000000010000000003696e74000000000003696e74000000010000000d64656d6f2f696e666572726564060000000100000000000000000003696e74000000020000000000000000000002000000090a0001001000000001010000061200000001060f0000000100000000020b0118000000090100000004000000010000000501000000040000000100000005010000000400000001000000050100000004000000010000000501000000040000000100000005010000001f000000010000002001000000280000000100000029010000001f0000000100000020000000000001000000076164642d6f6e6500000100000000010001000000021900000000000000180000000201000000160000000100000017000000000048e8738a0750e3d46e11844b412d363e80c58f2099e6b4ae1582fd6f87061cbf";
-
-  @Test
-  public void rejectsNumberedRustTypedHbcArtifacts() {
-    byte[] artifact = HexFormat.of().parseHex(LEGACY_NUMBERED_HBC);
-    assertThrows(HbcFormatException.class, () -> HbcCodec.decode(artifact));
-  }
-
   @Test
   public void alphaTypedProgramsRoundTripCanonically() {
     HbcProgram base = arithmeticProgram();
@@ -171,6 +161,44 @@ public class HbcCodecTest {
   }
 
   @Test
+  public void portablePrimitivesCannotBeRedirectedByCallerMacros() throws Exception {
+    Function entry =
+        new Function(
+            null,
+            false,
+            0,
+            false,
+            0,
+            0,
+            1,
+            List.of(
+                new Instruction(Opcode.CONSTANT, 0, 0, 0),
+                new Instruction(Opcode.PRIMITIVE, Primitive.COUNT.id(), 1, 0),
+                Instruction.of(Opcode.RETURN)),
+            Arrays.asList(null, null, null),
+            List.of());
+    HbcProgram program =
+        new HbcProgram(
+            List.of(hara.lang.data.Vector.Standard.from(null, 1L, 2L, 3L)),
+            List.of(),
+            List.of(entry),
+            0);
+    Source source =
+        Source.newBuilder(
+                HaraLanguage.ID,
+                ByteSequence.create(HbcCodec.encode(program)),
+                "primitive-shadow.hbc")
+            .mimeType(HaraLanguage.BYTECODE_MIME_TYPE)
+            .build();
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      context.eval(
+          HaraLanguage.ID,
+          "(do (ns primitive.shadow) (defmacro count [& values] nil))");
+      assertEquals(3L, context.eval(source).asLong());
+    }
+  }
+
+  @Test
   public void concatListMaterializesSyntaxQuoteSplices() throws Exception {
     Function entry =
         new Function(
@@ -215,10 +243,15 @@ public class HbcCodecTest {
     byte[] payload = Arrays.copyOfRange(bundle, 36, bundle.length);
     assertArrayEquals(Arrays.copyOfRange(bundle, 4, 36), MessageDigest.getInstance("SHA-256").digest(payload));
     List<HbxBundleCodec.Module> modules = HbxBundleCodec.decode(bundle);
-    assertTrue(modules.size() >= 250);
+    List<String> expectedInventory =
+        Files.readAllLines(Path.of("rust/standard-library.namespaces"));
+    List<String> actualInventory =
+        modules.stream().map(HbxBundleCodec.Module::resource).sorted().toList();
+    assertEquals(expectedInventory, actualInventory);
     for (HbxBundleCodec.Module module : modules) {
       assertEquals(32, module.sourceDigest().length);
       HbcProgram decoded = HbcCodec.decode(module.artifact());
+      assertEquals(module.resource(), decoded.namespace());
       assertTrue(decoded.functions().size() > 0);
       assertTrue(HbcDisassembler.disassemble(decoded).startsWith("HBC0 entry="));
     }
@@ -265,6 +298,19 @@ public class HbcCodecTest {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals("HARA", context.eval(HaraLanguage.ID, "(std.foundation.string/upper \"hara\")").asString());
       assertEquals(42L, context.eval(HaraLanguage.ID, "(std.foundation/if-not false 42)").asLong());
+      assertEquals(
+          "[1 2]",
+          context
+              .eval(HaraLanguage.ID, "(do (ns hbx.referral) (vector 1 2))")
+              .toString());
+      assertEquals(
+          "[42]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (require 'std.logic.kanren) "
+                      + "(std.logic.kanren/run* (fn [query] (std.logic.kanren/== query 42))))")
+              .toString());
       assertFalse(
           context
               .eval(

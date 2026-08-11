@@ -1,9 +1,5 @@
 (ns lang.runtime.basic.transport-node
-  (:require [std.foundation.json :as json]
-            [std.foundation.os :as os]
-            [std.foundation.promise :as promise]
-            [std.foundation.socket :as socket]
-            [std.foundation.string :as string]
+  (:require
             [lang.core.eval :as evaluation]
             [lang.protocol.runtime :as transport]))
 
@@ -16,7 +12,7 @@
 
 (defn- node-source
   [port]
-  (string/join
+  (str/join
    "\n"
    ["const net=require(\"net\"),vm=require(\"vm\"),readline=require(\"readline\");"
     (str "const socket=net.createConnection({host:\"127.0.0.1\",port:" port "});")
@@ -31,7 +27,7 @@
 
 (defn- python-source
   [port]
-  (string/join
+  (str/join
    "\n"
    ["import ast,json,math,socket,traceback"
     (str "wire=socket.create_connection(('127.0.0.1'," port "))")
@@ -63,7 +59,7 @@
 
 (defn- lua-source
   [port]
-  (string/join
+  (str/join
    "\n"
     ["local socket=require('socket');cjson=require('cjson');unpack=unpack or table.unpack"
     (str "local wire=assert(socket.connect('127.0.0.1'," port "))")
@@ -129,7 +125,7 @@
     (let [stderr
           (if child
             (try
-              (string/decode-utf8
+              (str/decode-utf8
                (evaluation/await (os/process-stderr child) 1000))
               (catch Throwable ignored nil))
             nil)
@@ -193,10 +189,10 @@
 (defn- take-buffered-line!
   [node]
   (let [buffer (get (state node) :buffer)
-        index (string/index-of buffer "\n")]
+        index (str/index-of buffer "\n")]
     (if (>= index 0)
-      (let [line (string/slice buffer 0 index)
-            rest (string/slice buffer (+ index 1))]
+      (let [line (str/slice buffer 0 index)
+            rest (str/slice buffer (+ index 1))]
         (swap! (get node :state) assoc :buffer rest)
         line)
       nil)))
@@ -214,7 +210,7 @@
                  update
                  :buffer
                  str
-                 (string/decode-utf8 (get event :bytes)))
+                 (str/decode-utf8 (get event :bytes)))
           (read-line! node))
 
         (= kind :error)
@@ -247,7 +243,7 @@
           request {"id" id
                    "source" source
                    "timeout" timeout}
-          payload (string/encode-utf8 (str (json/write request) "\n"))]
+          payload (str/encode-utf8 (str (json/write request) "\n"))]
       (socket/send (get (state node) :connection) payload)
       (let [response (json/read (read-line! node))
             response-id (wire-get response :id)]
@@ -305,7 +301,7 @@
                   {:error/type :lang/target
                    :target (get-in frame [:context :lang])
                    :target-source-tail (vec (take-last 4
-                                            (string/split-lines
+                                            (str/split-lines
                                              (get-in frame [:exchange :request "source"]))))
                    :target-error error}))))))
 

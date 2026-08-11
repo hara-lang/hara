@@ -177,8 +177,23 @@ pub(super) fn instruction_snapshot(instruction: &Instruction) -> InstructionSnap
             }
             ("def-macro", operands)
         }
+        Instruction::DefProtocol(index) => ("def-protocol", vec![Unsigned(*index as u64)]),
+        Instruction::ExtendType(index) => ("extend-type", vec![Unsigned(*index as u64)]),
+        Instruction::DefMulti(index) => ("def-multi", vec![Unsigned(*index as u64)]),
+        Instruction::DefMethod(index) => ("def-method", vec![Unsigned(*index as u64)]),
+        Instruction::PrimitiveValue(op) => {
+            ("primitive-value", vec![Text(op.operator().to_string())])
+        }
+        Instruction::BuiltinValue(index) => ("builtin-value", vec![Unsigned(*index as u64)]),
+        Instruction::DynamicBind(index) => ("dynamic-bind", vec![Unsigned(*index as u64)]),
+        Instruction::DynamicUnbind(index) => ("dynamic-unbind", vec![Unsigned(*index as u64)]),
         Instruction::Await => ("await", vec![]),
         Instruction::HostCall => ("host-call", vec![]),
+        Instruction::DotCall { method, argc } => (
+            "dot-call",
+            vec![Unsigned(*method as u64), Unsigned(*argc as u64)],
+        ),
+        Instruction::Yield => ("yield", vec![]),
         Instruction::Return => ("return", vec![]),
     };
 
