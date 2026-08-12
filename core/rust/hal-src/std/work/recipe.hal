@@ -1,0 +1,648 @@
+(ns std.work.recipe
+  (:refer-clojure :exclude [compile])
+  (:require [std.work :as work]))
+
+;; Portable recipes contain only data. Executable functions live in a trusted
+;; host-installed registry and compile into ordinary std.work values.
+(def schema-id "std.work.recipe/0-alpha")
+
+(def leaf-operations #{:pure-ref :step-ref})
+(def collection-operations #{:each :filter :fold})
+(def composite-operations #{:chain :all :choose :batch :ensure})
+(def supported-operations
+  (set
+   (concat leaf-operations
+           collection-operations
+           composite-operations)))
+
+(defn contains-value?
+  [values target]
+  (reduce
+   (fn [found value]
+     (or found (= value target)))
+   false
+   (or values [])))
+
+(defn distinct-values
+  [values]
+  (reduce
+   (fn [output value]
+     (if (contains-value? output value)
+       output
+       (conj output value)))
+   []
+   (or values [])))
+
+(defn portable-value?
+  [value]
+  (cond
+    (or (nil? value)
+        (boolean? value)
+        (number? value)
+        (string? value)
+        (keyword? value)
+        (symbol? value))
+    true
+
+    (vector? value)
+    (reduce
+     (fn [valid item]
+       (and valid (portable-value? item)))
+     true
+     value)
+
+    (set? value)
+    (reduce
+     (fn [valid item]
+       (and valid (portable-value? item)))
+     true
+     value)
+
+    (map? value)
+    (reduce
+     (fn [valid key]
+       (and valid
+            (portable-value? key)
+            (portable-value? (get value key))))
+     true
+     (keys value))
+
+    :else
+    false))
+
+(defn assert-portable!
+  [value path]
+  (if (not (portable-value? value))
+    (throw
+     (ex-info "Work recipe contains a non-portable value"
+              {:recipe/path path
+               :recipe/value value})))
+  value)
+
+(defn normalise-capabilities
+  [value]
+  (cond
+    (nil? value) []
+    (set? value) (distinct-values (vec value))
+    (vector? value) (distinct-values value)
+    :else
+    (throw
+     (ex-info "Work recipe capabilities must be a set or vector"
+              {:capabilities value}))))
+
+(defn missing-capabilities
+  [required installed]
+  (reduce
+   (fn [missing capability]
+     (if (contains-value? installed capability)
+       missing
+       (conj missing capability)))
+   []
+   (or required [])))
+
+(defn operation
+  ([id kind function]
+   (operation id kind function {}))
+  ([id kind function options]
+   (let [options (or options {})
+         version (or (:version options) 1)
+         capabilities
+         (normalise-capabilities (:capabilities options))
+         metadata (or (:metadata options) {})]
+     (if (nil? id)
+       (throw (ex-info "Work recipe operation requires an id" {})))
+     (assert-portable! id [:operation :id])
+     (if (not (contains-value? #{:pure :step} kind))
+       (throw
+        (ex-info "Work recipe operation kind is not supported"
+                 {:operation/id id
+                  :operation/kind kind})))
+     (if (not (fn? function))
+       (throw
+        (ex-info "Work recipe operation requires a function"
+                 {:operation/id id})))
+     (assert-portable! version [:operation id :version])
+     (assert-portable! capabilities [:operation id :capabilities])
+     (assert-portable! metadata [:operation id :metadata])
+     {:operation/id id
+      :operation/kind kind
+      :operation/version version
+      :operation/function function
+      :operation/capabilities capabilities
+      :operation/metadata metadata})))
+
+(defn assert-operation-descriptor!
+  [descriptor]
+  (if (not (map? descriptor))
+    (throw
+     (ex-info "Work recipe registry entry must be a map"
+              {:operation descriptor})))
+  (let [id (:operation/id descriptor)
+        kind (:operation/kind descriptor)
+        function (:operation/function descriptor)]
+    (if (nil? id)
+      (throw
+       (ex-info "Work recipe registry entry requires an operation id"
+                {:operation descriptor})))
+    (if (not (contains-value? #{:pure :step} kind))
+      (throw
+       (ex-info "Work recipe registry operation kind is not supported"
+                {:operation/id id
+                 :operation/kind kind})))
+    (if (not (fn? function))
+      (throw
+       (ex-info "Work recipe registry entry requires a function"
+                {:operation/id id})))
+    (assert-portable! id [:operation :id])
+    (assert-portable!
+     (:operation/version descriptor)
+     [:operation id :version])
+    (normalise-capabilities (:operation/capabilities descriptor))
+    (assert-portable!
+     (or (:operation/metadata descriptor) {})
+     [:operation id :metadata])
+    descriptor))
+
+(defn registry
+  [operations]
+  (reduce
+   (fn [output input]
+     (let [descriptor (assert-operation-descriptor! input)
+           id (:operation/id descriptor)]
+       (if (has? output id)
+         (throw
+          (ex-info "Work recipe registry contains a duplicate operation"
+                   {:operation/id id})))
+       (assoc output id descriptor)))
+   {}
+   (or operations [])))
+
+(defn registry-operation
+  [registry id]
+  (let [descriptor (get registry id)]
+    (if (nil? descriptor)
+      (throw
+       (ex-info "Work recipe references an unknown operation"
+                {:operation/id id})))
+    descriptor))
+
+(defn required-node-id
+  [node path]
+  (let [id (:id node)]
+    (if (nil? id)
+      (throw
+       (ex-info "Work recipe node requires a stable :id"
+                {:recipe/path path
+                 :recipe/node node})))
+    (assert-portable! id (conj path :id))
+    id))
+
+(defn assert-node-operation!
+  [node path]
+  (let [operation (:op node)]
+    (if (not (contains-value? supported-operations operation))
+      (throw
+       (ex-info "Work recipe operation is not supported"
+                {:recipe/path path
+                 :recipe/operation operation})))
+    operation))
+
+(defn required-child
+  [node key path]
+  (let [child (get node key)]
+    (if (nil? child)
+      (throw
+       (ex-info "Work recipe node requires a child"
+                {:recipe/path path
+                 :recipe/child key})))
+    child))
+
+(defn required-children
+  [node path]
+  (let [children (:children node)]
+    (if (not (vector? children))
+      (throw
+       (ex-info "Work recipe composite requires vector :children"
+                {:recipe/path path
+                 :recipe/node node})))
+    children))
+
+(defn node-children
+  [node path]
+  (case (:op node)
+    :chain
+    (required-children node path)
+
+    :all
+    (required-children node path)
+
+    :each
+    [(required-child node :work path)]
+
+    :filter
+    [(required-child node :work path)]
+
+    :fold
+    [(required-child node :work path)]
+
+    :choose
+    (let [selector (required-child node :selector path)
+          choices (:choices node)]
+      (if (not (map? choices))
+        (throw
+         (ex-info "Work recipe choose requires map :choices"
+                  {:recipe/path path})))
+      (vec
+       (concat
+        [selector]
+        (map (fn [key] (get choices key))
+             (keys choices)))))
+
+    :batch
+    (let [children
+          [(required-child node :list path)
+           (required-child node :process path)]
+          children
+          (if (:filter node)
+            (conj children (:filter node))
+            children)]
+      (if (:summarise node)
+        (conj children (:summarise node))
+        children))
+
+    :ensure
+    [(required-child node :work path)
+     (required-child node :cleanup path)]
+
+    []))
+
+(defn collect-node-identities
+  [node path]
+  (if (not (map? node))
+    (throw
+     (ex-info "Work recipe node must be a map"
+              {:recipe/path path
+               :recipe/node node})))
+  (assert-node-operation! node path)
+  (let [id (required-node-id node path)
+        children (node-children node path)]
+    (loop [index 0
+           identities [id]]
+      (if (= index (count children))
+        identities
+        (recur
+         (inc index)
+         (concat
+          identities
+          (collect-node-identities
+           (nth children index)
+           (conj path index))))))))
+
+(defn assert-distinct-node-identities!
+  [body]
+  (let [identities (vec (collect-node-identities body [:body]))]
+    (loop [index 0
+           seen []]
+      (if (= index (count identities))
+        identities
+        (let [id (nth identities index)]
+          (if (contains-value? seen id)
+            (throw
+             (ex-info "Work recipe contains a duplicate node id"
+                      {:recipe/node-id id}))
+            (recur (inc index) (conj seen id))))))))
+
+(defn normalise
+  [value]
+  (if (not (map? value))
+    (throw (ex-info "Work recipe must be a map" {:recipe value})))
+  (assert-portable! value [:recipe])
+  (let [schema (or (:schema value) schema-id)
+        id (:recipe/id value)
+        version (or (:recipe/version value) 1)
+        body (:body value)
+        metadata (or (:metadata value) {})]
+    (if (not= schema schema-id)
+      (throw
+       (ex-info "Work recipe schema is not supported"
+                {:recipe/schema schema})))
+    (if (nil? id)
+      (throw (ex-info "Work recipe requires :recipe/id" {})))
+    (if (nil? body)
+      (throw (ex-info "Work recipe requires :body" {})))
+    (assert-portable! id [:recipe/id])
+    (assert-portable! version [:recipe/version])
+    (assert-portable! metadata [:metadata])
+    (assert-distinct-node-identities! body)
+    {:schema schema
+     :recipe/id id
+     :recipe/version version
+     :body body
+     :metadata metadata}))
+
+(defn validate
+  [value]
+  (try
+    {:valid true
+     :recipe (normalise value)
+     :errors []}
+    (catch Throwable error
+      {:valid false
+       :recipe nil
+       :errors
+       [{:message (str error)
+         :data (ex-data error)}]})))
+
+(defn node-operation-ids
+  [node]
+  (let [children (node-children node [:body (:id node)])
+        own (if (contains-value? leaf-operations (:op node))
+              [(:uses node)]
+              [])]
+    (reduce
+     (fn [output child]
+       (concat output (node-operation-ids child)))
+     own
+     children)))
+
+(defn operation-versions
+  [recipe registry]
+  (reduce
+   (fn [output id]
+     (let [descriptor (registry-operation registry id)]
+       (assoc output id (:operation/version descriptor))))
+   {}
+   (distinct-values (node-operation-ids (:body recipe)))))
+
+(defn semantic-node
+  [node]
+  (let [operation (:op node)
+        base
+        (select-keys
+         node
+         [:op :id :uses :params :retry :initial :return
+          :definition-digest :input-digest])]
+    (case operation
+      :chain
+      (assoc base :children (vec (map semantic-node (:children node))))
+
+      :all
+      (assoc base :children (vec (map semantic-node (:children node))))
+
+      :each
+      (assoc base :work (semantic-node (:work node)))
+
+      :filter
+      (assoc base :work (semantic-node (:work node)))
+
+      :fold
+      (assoc base :work (semantic-node (:work node)))
+
+      :choose
+      (assoc
+       base
+       :selector (semantic-node (:selector node))
+       :choices
+       (reduce
+        (fn [output key]
+          (assoc output key (semantic-node (get (:choices node) key))))
+        {}
+        (keys (:choices node))))
+
+      :batch
+      (reduce
+       (fn [output key]
+         (let [child (get node key)]
+           (if child
+             (assoc output key (semantic-node child))
+             output)))
+       base
+       [:list :filter :process :summarise])
+
+      :ensure
+      (assoc
+       base
+       :work (semantic-node (:work node))
+       :cleanup (semantic-node (:cleanup node)))
+
+      base)))
+
+(defn definition-signature
+  [recipe registry]
+  {:schema schema-id
+   :recipe/id (:recipe/id recipe)
+   :recipe/version (:recipe/version recipe)
+   :body (semantic-node (:body recipe))
+   :operation/versions (operation-versions recipe registry)})
+
+(defn node-options
+  [node extra]
+  (merge
+   (select-keys
+    node
+    [:id
+     :retry
+     :return
+     :definition-digest
+     :input-digest])
+   (or extra {})))
+
+(defn installed-capabilities
+  [context compile-options]
+  (distinct-values
+   (concat
+    (normalise-capabilities (:capabilities compile-options))
+    (normalise-capabilities (:capabilities context))
+    (normalise-capabilities (:work/capabilities context)))))
+
+(defn assert-operation-capabilities!
+  [descriptor context compile-options]
+  (let [required (:operation/capabilities descriptor)
+        installed
+        (installed-capabilities context compile-options)
+        missing (missing-capabilities required installed)]
+    (if (not (empty? missing))
+      (throw
+       (ex-info "Work recipe operation requires unavailable capabilities"
+                {:operation/id (:operation/id descriptor)
+                 :capabilities/required required
+                 :capabilities/installed installed
+                 :capabilities/missing missing})))
+    descriptor))
+
+(defn operation-function
+  [descriptor node compile-options]
+  (let [function (:operation/function descriptor)
+        params (or (:params node) {})]
+    (assert-portable! params [:node (:id node) :params])
+    (fn [input context]
+      (assert-operation-capabilities!
+       descriptor
+       context
+       compile-options)
+      (function input context params))))
+
+(declare compile-node)
+
+(defn compile-leaf
+  [node registry compile-options]
+  (let [descriptor
+        (registry-operation registry (:uses node))
+        expected
+        (if (= :pure-ref (:op node)) :pure :step)]
+    (if (not= expected (:operation/kind descriptor))
+      (throw
+       (ex-info "Work recipe operation kind does not match the node"
+                {:node/id (:id node)
+                 :node/op (:op node)
+                 :operation/id (:operation/id descriptor)
+                 :operation/kind (:operation/kind descriptor)})))
+    (let [options
+          (node-options
+           node
+           {:operation/id (:operation/id descriptor)
+            :operation/version (:operation/version descriptor)
+            :capabilities (:operation/capabilities descriptor)
+            :definition-digest
+            {:node/id (:id node)
+             :node/op (:op node)
+             :operation/id (:operation/id descriptor)
+             :operation/version
+             (:operation/version descriptor)
+             :params (or (:params node) {})}})
+          function
+          (operation-function descriptor node compile-options)]
+      ((if (= expected :pure) work/pure work/step)
+       options
+       function))))
+
+(defn compile-children
+  [children registry compile-options]
+  (vec
+   (map
+    (fn [child]
+      (compile-node child registry compile-options))
+    children)))
+
+(defn compile-choices
+  [choices registry compile-options]
+  (reduce
+   (fn [output key]
+     (assoc output
+            key
+            (compile-node
+             (get choices key)
+             registry
+             compile-options)))
+   {}
+   (keys choices)))
+
+(defn compile-node
+  [node registry compile-options]
+  (assert-node-operation! node [:node (:id node)])
+  (required-node-id node [:node])
+  (case (:op node)
+    :pure-ref
+    (compile-leaf node registry compile-options)
+
+    :step-ref
+    (compile-leaf node registry compile-options)
+
+    :chain
+    (work/chain
+     (node-options node {})
+     (compile-children
+      (required-children node [:node (:id node)])
+      registry
+      compile-options))
+
+    :all
+    (work/all
+     (node-options node {})
+     (compile-children
+      (required-children node [:node (:id node)])
+      registry
+      compile-options))
+
+    :each
+    (work/each
+     (node-options node {})
+     (compile-node
+      (required-child node :work [:node (:id node)])
+      registry
+      compile-options))
+
+    :filter
+    (work/filter
+     (node-options node {})
+     (compile-node
+      (required-child node :work [:node (:id node)])
+      registry
+      compile-options))
+
+    :fold
+    (work/fold
+     (node-options node {})
+     (:initial node)
+     (compile-node
+      (required-child node :work [:node (:id node)])
+      registry
+      compile-options))
+
+    :choose
+    (work/choose
+     (node-options node {})
+     (compile-node
+      (required-child node :selector [:node (:id node)])
+      registry
+      compile-options)
+     (compile-choices
+      (:choices node)
+      registry
+      compile-options))
+
+    :batch
+    (work/batch
+     (node-options node {})
+     (reduce
+      (fn [output key]
+        (let [child (get node key)]
+          (if child
+            (assoc output
+                   key
+                   (compile-node child registry compile-options))
+            output)))
+      {}
+      [:list :filter :process :summarise]))
+
+    :ensure
+    (work/ensure
+     (node-options node {})
+     (compile-node
+      (required-child node :work [:node (:id node)])
+      registry
+      compile-options)
+     (compile-node
+      (required-child node :cleanup [:node (:id node)])
+      registry
+      compile-options))))
+
+(defn compile
+  ([recipe registry]
+   (compile recipe registry {}))
+  ([recipe-value registry compile-options]
+   (let [recipe (normalise recipe-value)
+         signature (definition-signature recipe registry)
+         body
+         (compile-node
+          (:body recipe)
+          registry
+          (or compile-options {}))]
+     (work/chain
+      {:id (:recipe/id recipe)
+       :root (:recipe/id recipe)
+       :version signature
+       :recipe/schema (:schema recipe)
+       :recipe/id (:recipe/id recipe)
+       :recipe/version (:recipe/version recipe)}
+      [body]))))
