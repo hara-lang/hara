@@ -139,7 +139,23 @@ jobs:
       - name: Build and test Java runtime
         if: steps.scope.outputs.run_core == 'true'
         working-directory: core
-        run: mvn -B -Ptruffle package --file java/pom.xml
+        shell: bash
+        run: |
+          set +e
+          log="$RUNNER_TEMP/hara-java-maven.log"
+          mvn -B -Ptruffle package --file java/pom.xml >"$log" 2>&1
+          status=$?
+          if [[ "$status" -ne 0 ]]; then
+            echo "::group::Java Maven failure summary"
+            grep -E '^\[(ERROR|WARNING)\]|Tests run:|Failures:|Errors:|Skipped:|<<< FAILURE!|There are test failures|BUILD FAILURE|Caused by:' "$log" \
+              | tail -n 240 || true
+            echo "::endgroup::"
+            echo "::group::Java Maven failure tail"
+            tail -n 320 "$log"
+            echo "::endgroup::"
+            exit "$status"
+          fi
+          tail -n 80 "$log"
 
       - name: Run library HAL tests
         if: steps.scope.outputs.run_core == 'true'
