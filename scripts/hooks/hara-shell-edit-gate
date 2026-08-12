@@ -1,23 +1,36 @@
 #!/usr/bin/env python3
-"""Reject shell-based writes to Hara source; use evaluated patch edits."""
+"""Reject common shell-based writes to native Hara source."""
 
 import json
+import os
 import re
 import sys
 
 
 payload = json.load(sys.stdin)
-command = (payload.get("tool_input") or {}).get("command", "")
+tool_input = payload.get("tool_input") or {}
+command = str(tool_input.get("command") or tool_input.get("cmd") or "")
+hal_target = r"(?:[^\s;&|<>]|\"[^\"]*\"|'[^']*')*\.hal"
 patterns = (
-    r"(?:>|>>)\s*[^\s;'\"]+\.hal(?:$|[\s;&|<>])",
-    r"\btee\s+[^\n]*\.hal(?:$|[\s;&|<>])",
-    r"\bsed\s+[^\n]*-i[^\n]*\.hal(?:$|[\s;&|<>])",
-    r"\b(?:cp|mv|install)\s+[^\n]*\s[^\s;'\"]+\.hal(?:$|[\s;&|<>])",
+    rf"(?:^|\s)(?:\d*>>?|&>)\s*{hal_target}",
+    rf"\btee\b[^\n|;]*{hal_target}",
+    rf"\bsed\b[^\n|;]*\s-i(?:\s|$)[^\n|;]*{hal_target}",
+    rf"\b(?:cp|mv|install|touch|truncate)\b[^\n|;]*{hal_target}",
+    rf"\bdd\b[^\n|;]*\bof=(?:[^\s;&|<>]*\.hal|\"[^\"]*\.hal\"|'[^']*\.hal')",
+    rf"\bapply_patch\b[^\n]*{hal_target}",
+    rf"\b(?:python\d*|node|ruby|perl|bash|sh)\b[^\n]*(?:-c|-e|<<)[^\n]*{hal_target}",
 )
+
 if any(re.search(pattern, command) for pattern in patterns):
-    message = ("Hara source files must be evaluated first and changed with the native patch "
-               "tool; shell writes to .hal files are blocked.")
+    message = (
+        "Hara source files must pass native candidate evaluation before being "
+        "changed with Edit, Write, or apply_patch; shell writes to .hal are blocked."
+    )
+    if os.environ.get("HARA_HOOK_MODE") == "kimi":
+        print(message, file=sys.stderr)
+        raise SystemExit(2)
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse",
         "permissionDecision": "deny",
-        "permissionDecisionReason": message}}))
+        "permissionDecisionReason": message,
+    }}))

@@ -35,4 +35,28 @@ public class HaraBytecodeToolTest {
             .matches("HBC0 conformance passed: [1-9][0-9]+ cases\\R"));
     assertEquals("", errorBytes.toString(StandardCharsets.UTF_8));
   }
+
+  @Test
+  public void disassemblesTheRustProducedAlphaBundle() throws Exception {
+    ByteArrayOutputStream outputBytes = new ByteArrayOutputStream();
+    ByteArrayOutputStream errorBytes = new ByteArrayOutputStream();
+    int status;
+    try (PrintStream output = new PrintStream(outputBytes, true, StandardCharsets.UTF_8);
+        PrintStream error = new PrintStream(errorBytes, true, StandardCharsets.UTF_8)) {
+      status =
+          HaraBytecodeTool.run(
+              new String[] {
+                "disassemble",
+                Path.of(System.getProperty("basedir"), "../rust/assets/std.foundation.hbx")
+                    .normalize()
+                    .toString()
+              },
+              output,
+              error);
+    }
+    assertEquals(errorBytes.toString(StandardCharsets.UTF_8), 0, status);
+    assertTrue(outputBytes.toString(StandardCharsets.UTF_8).contains("module std.foundation\n"));
+    assertTrue(outputBytes.toString(StandardCharsets.UTF_8).contains("module lang.core\n"));
+    assertEquals("", errorBytes.toString(StandardCharsets.UTF_8));
+  }
 }

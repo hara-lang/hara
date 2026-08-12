@@ -36,8 +36,8 @@ final class HaraBytecodeTool {
       if (artifact.length >= 4
           && artifact[0] == 'H'
           && artifact[1] == 'B'
-          && artifact[2] == 'B'
-          && artifact[3] == '2') {
+          && artifact[2] == 'X'
+          && artifact[3] == '0') {
         return runBundle(artifact, arguments[0], output);
       }
       if ("disassemble".equals(arguments[0])) {

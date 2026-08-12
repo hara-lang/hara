@@ -1326,7 +1326,15 @@ public final class HaraContext {
     }
     HaraNamespace namespace =
         namespaceName == null ? currentNamespace : namespaces.get(namespaceName);
-    return namespace == null ? null : namespace.lookup(symbol.getName());
+    HaraVar variable = namespace == null ? null : namespace.lookup(symbol.getName());
+    if (variable == null
+        && namespaceName != null
+        && (bytecodeLibrary.provides(namespaceName) || libraryLoader.provides(namespaceName))
+        && namespaceStates.get(namespaceName) != NamespaceLoadState.LOADING) {
+      namespace = requiredNamespace(namespaceName);
+      variable = namespace == null ? null : namespace.lookup(symbol.getName());
+    }
+    return variable;
   }
 
   Symbol canonicalSymbol(Symbol symbol) {

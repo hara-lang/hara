@@ -3,6 +3,18 @@
 Repo layout and per-component build/test commands. See `README.md` for the
 component map.
 
+## Native Hara source workflow
+
+Use `$hara-development` for every `.hal` change. Evaluate the complete proposed
+file with the native Hara runtime, run the focused test, write the edit, run the
+written file in a fresh Hara process, and repeat the test. Hara execution is
+fast and isolated, with no retained runtime state between validations. Correct
+parser failures in the candidate before writing it.
+
+Use `$hara-postgres` for native PostgreSQL DSL source, `$hara-xtalk` for XTalk
+or emitter work, `$hara-xtalk-compatibility` for target parity, and
+`$hara-dev-spec-writer` for language specifications.
+
 ## Layout
 
 - `core/` — language runtime source code:

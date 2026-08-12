@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Codex/Kimi source gate for alpha Hara modules.
+"""Pre/post-write gate for native Hara source."""
 
-Policy source: hara-specs-registry/01-lang/004-foundation/draft/
-conformance/source-gates.edn
-"""
+from __future__ import annotations
 
 import json
 import os
@@ -14,130 +12,249 @@ import subprocess
 import sys
 
 
-RULES = (
-    ("hara.source/no-requiring-resolve", re.compile(r"\brequiring-resolve\b"),
-     "use an explicit namespace alias or a registered loader"),
-    ("hara.source/no-clojure-namespace", re.compile(r"\bclojure\."),
-     "use Foundation APIs rather than Clojure namespaces"),
-    ("hara.source/foundation-builtin-alias",
-     re.compile(
-         r"\[\s*std\.foundation\."
-         r"(?:string|promise|bytes|socket|file|coroutine|edn|json|set|pretty|"
-         r"host|kernel|os|crypto)\s"),
-     "use the builtin str/*, co/*, json/*, bytes/*, host/*, or corresponding alias"),
-)
+TIMEOUT_SECONDS = 60
+POLICY_PATH = Path(__file__).with_name("source-gates.json")
 
 
-def response(event, message):
+class GateError(Exception):
+    pass
+
+
+def deny(event: str, message: str) -> None:
     if os.environ.get("HARA_HOOK_MODE") == "kimi":
         print(message, file=sys.stderr)
         raise SystemExit(2)
-    body = {"hookSpecificOutput": {"hookEventName": event}}
+    output = {"hookSpecificOutput": {"hookEventName": event}}
     if event == "PreToolUse":
-        body["hookSpecificOutput"].update(
-            {"permissionDecision": "deny", "permissionDecisionReason": message})
+        output["hookSpecificOutput"].update(
+            {"permissionDecision": "deny", "permissionDecisionReason": message}
+        )
     else:
-        body.update({"decision": "block", "reason": message})
-        body["hookSpecificOutput"]["additionalContext"] = message
-    print(json.dumps(body))
+        output.update({"decision": "block", "reason": message})
+        output["hookSpecificOutput"]["additionalContext"] = message
+    print(json.dumps(output))
     raise SystemExit(0)
 
 
-def violations(path, content):
-    findings = []
+def load_policy() -> dict:
+    try:
+        policy = json.loads(POLICY_PATH.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise GateError(f"hara.source/policy: cannot load {POLICY_PATH}: {error}")
+    if not isinstance(policy.get("rules"), list) or not policy.get("extensions"):
+        raise GateError("hara.source/policy: malformed source gate policy")
+    return policy
+
+
+def resolve_path(raw_path: str, cwd: Path) -> Path:
+    path = Path(raw_path)
+    return path if path.is_absolute() else cwd / path
+
+
+def patch_sections(patch: str, cwd: Path) -> list[tuple[str, Path, list[str]]]:
+    sections: list[tuple[str, Path, list[str]]] = []
+    action = ""
+    path: Path | None = None
+    lines: list[str] = []
+    for line in patch.splitlines():
+        match = re.match(r"\*\*\* (Add|Update|Delete) File: (.+)$", line)
+        if match:
+            if path is not None:
+                sections.append((action, path, lines))
+            action = match.group(1).lower()
+            path = resolve_path(match.group(2), cwd)
+            lines = []
+        elif line.startswith("*** Move to:"):
+            if path is not None and path.suffix == ".hal":
+                raise GateError("hara.source/patch: moving .hal files is not supported")
+        elif path is not None and not line.startswith("*** End Patch"):
+            lines.append(line)
+    if path is not None:
+        sections.append((action, path, lines))
+    if not sections and ".hal" in patch:
+        raise GateError("hara.source/patch: could not parse .hal patch")
+    return sections
+
+
+def apply_update(original: str, lines: list[str]) -> str:
+    current = original.splitlines()
+    trailing_newline = original.endswith("\n")
+    hunks: list[list[str]] = []
+    hunk: list[str] = []
+    for line in lines:
+        if line.startswith("@@"):
+            if hunk:
+                hunks.append(hunk)
+            hunk = []
+        elif line.startswith((" ", "+", "-")):
+            hunk.append(line)
+        elif line == "\\ No newline at end of file":
+            trailing_newline = False
+    if hunk:
+        hunks.append(hunk)
+    if not hunks:
+        raise GateError("hara.source/patch: update has no applicable hunks")
+
+    search_from = 0
+    for hunk in hunks:
+        before = [line[1:] for line in hunk if not line.startswith("+")]
+        after = [line[1:] for line in hunk if not line.startswith("-")]
+        match_at = None
+        for index in range(search_from, len(current) - len(before) + 1):
+            if current[index:index + len(before)] == before:
+                match_at = index
+                break
+        if match_at is None:
+            raise GateError("hara.source/patch: update hunk does not match the current file")
+        current[match_at:match_at + len(before)] = after
+        search_from = match_at + len(after)
+    result = "\n".join(current)
+    return result + ("\n" if trailing_newline else "")
+
+
+def candidate_from_section(action: str, path: Path, lines: list[str]) -> str | None:
+    if action == "delete":
+        return None
+    if action == "add":
+        content = [line[1:] for line in lines if line.startswith("+")]
+        return "\n".join(content) + ("\n" if content else "")
+    try:
+        original = path.read_text()
+    except OSError as error:
+        raise GateError(f"hara.source/patch: cannot read {path}: {error}")
+    return apply_update(original, lines)
+
+
+def edit_candidate(path: Path, tool_input: dict) -> str:
+    if "content" in tool_input and "old_string" not in tool_input:
+        return str(tool_input.get("content") or "")
+    try:
+        current = path.read_text()
+    except OSError as error:
+        raise GateError(f"hara.source/edit: cannot read {path}: {error}")
+    old = str(tool_input.get("old_string") or "")
+    new = str(tool_input.get("new_string") or "")
+    count = current.count(old) if old else 0
+    if not old or count == 0:
+        raise GateError("hara.source/edit: old_string does not match the current file")
+    if not tool_input.get("replace_all") and count != 1:
+        raise GateError("hara.source/edit: old_string is not unique")
+    return current.replace(old, new, -1 if tool_input.get("replace_all") else 1)
+
+
+def candidates(payload: dict, event: str, extensions: set[str]) -> list[tuple[Path, str | None]]:
+    tool = payload.get("tool_name", "")
+    tool_input = payload.get("tool_input") or {}
+    cwd = Path(payload.get("cwd") or os.getcwd()).resolve()
+    found: list[tuple[Path, str | None]] = []
+
+    if tool == "apply_patch":
+        patch = tool_input.get("command") or tool_input.get("patch") or tool_input.get("input") or ""
+        for action, path, lines in patch_sections(str(patch), cwd):
+            if path.suffix not in extensions:
+                continue
+            if event == "PostToolUse":
+                found.append((path, path.read_text() if path.exists() else None))
+            else:
+                found.append((path, candidate_from_section(action, path, lines)))
+    elif tool in {"Edit", "Write"}:
+        raw_path = tool_input.get("file_path") or tool_input.get("path")
+        if raw_path:
+            path = resolve_path(str(raw_path), cwd)
+            if path.suffix in extensions:
+                if event == "PostToolUse":
+                    found.append((path, path.read_text() if path.exists() else None))
+                else:
+                    found.append((path, edit_candidate(path, tool_input)))
+    return found
+
+
+def violations(policy: dict, path: Path, content: str) -> list[str]:
     normalized = str(path).replace("\\", "/")
-    if "/core/lib/src-lang/lang/" in normalized:
-        findings.append(
-            "hara.source/lang-canonical-root: move lang.* source to core/lib/src/lang/")
-    for rule, pattern, message in RULES:
-        if pattern.search(content or ""):
-            findings.append(f"{rule}: {message}")
+    findings = []
+    for rule in policy["rules"]:
+        matched = False
+        if rule.get("pattern"):
+            matched = re.search(rule["pattern"], content) is not None
+        if rule.get("path_pattern"):
+            matched = matched or rule["path_pattern"] in normalized
+        if matched:
+            findings.append(f"{rule['id']}: {rule['message']}")
     return findings
 
 
-def patch_additions(patch, cwd):
-    path = None
-    added = []
-    for line in patch.splitlines():
-        if line.startswith(("*** Add File: ", "*** Update File: ")):
-            if path is not None:
-                yield path, "\n".join(added)
-            path = Path(line.split(": ", 1)[1])
-            if not path.is_absolute():
-                path = cwd / path
-            added = []
-        elif line.startswith("*** Delete File: "):
-            if path is not None:
-                yield path, "\n".join(added)
-            path = None
-            added = []
-        elif path is not None and line.startswith("+") and not line.startswith("+++"):
-            added.append(line[1:])
-    if path is not None:
-        yield path, "\n".join(added)
-
-
-def hara_binary(path):
+def hara_binary(path: Path) -> str | None:
     configured = os.environ.get("HARA_BIN")
     if configured:
         return configured
     for parent in (path.parent, *path.parents):
-        for candidate in (parent / "core" / "hara",
-                          parent / "technology" / "hara" / "core" / "hara"):
+        for candidate in (
+            parent / "core" / "hara",
+            parent / "technology" / "hara" / "core" / "hara",
+        ):
             if candidate.is_file() and os.access(candidate, os.X_OK):
                 return str(candidate)
     return shutil.which("hara")
 
 
-def validate_runtime(path):
+def project_root(path: Path, cwd: Path) -> Path | None:
+    for start in (path.parent, cwd):
+        for parent in (start, *start.parents):
+            if (parent / "project.edn").is_file():
+                return parent
+    return None
+
+
+def evaluate(path: Path, content: str | None, pre_write: bool, cwd: Path) -> str | None:
+    if content is None:
+        return None
     runtime = hara_binary(path)
     if not runtime:
         return "hara.source/runtime: no Hara executable found (set HARA_BIN)"
-    result = subprocess.run(
-        [runtime, "run", str(path)], capture_output=True, text=True, timeout=60)
+    command = [runtime]
+    project = project_root(path, cwd)
+    if project:
+        command.extend(["--project", str(project)])
+    command.extend(["--offline", "--no-color"])
+    if pre_write:
+        command.append("stdin")
+    else:
+        command.extend(["run", str(path)])
+    try:
+        result = subprocess.run(
+            command,
+            input=content if pre_write else None,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS,
+            cwd=cwd,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"hara.source/evaluation: {error}"
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
         return f"hara.source/evaluation: {detail or 'Hara evaluation failed'}"
     return None
 
 
-def main():
-    payload = json.load(sys.stdin)
-    event = payload.get("hook_event_name", "PreToolUse")
-    tool = payload.get("tool_name", "")
-    tool_input = payload.get("tool_input") or {}
-    cwd = Path(payload.get("cwd") or os.getcwd()).resolve()
-    candidates = []
-
-    if tool == "apply_patch":
-        patch = tool_input.get("command") or tool_input.get("patch") or ""
-        if event == "PreToolUse":
-            candidates.extend(patch_additions(patch, cwd))
-        else:
-            candidates.extend((path, path.read_text()) for path, _ in patch_additions(patch, cwd)
-                              if path.exists())
-    elif tool in {"Edit", "Write"}:
-        raw_path = tool_input.get("file_path")
-        if raw_path:
-            path = Path(raw_path)
-            if not path.is_absolute():
-                path = cwd / path
-            if event == "PostToolUse" and path.exists():
-                candidates.append((path, path.read_text()))
-            else:
-                candidates.append((path, tool_input.get("content") or
-                                   tool_input.get("new_string") or ""))
-
-    for path, content in candidates:
-        if path.suffix != ".hal":
-            continue
-        findings = violations(path, content)
-        if findings:
-            response(event, "Hara source gate rejected the edit:\n" + "\n".join(findings))
-        if event == "PostToolUse":
-            failure = validate_runtime(path)
+def main() -> None:
+    try:
+        payload = json.load(sys.stdin)
+        event = payload.get("hook_event_name", "PreToolUse")
+        policy = load_policy()
+        extensions = set(policy["extensions"])
+        cwd = Path(payload.get("cwd") or os.getcwd()).resolve()
+        for path, content in candidates(payload, event, extensions):
+            if content is None:
+                continue
+            findings = violations(policy, path, content)
+            if findings:
+                deny(event, "Hara source gate rejected the edit:\n" + "\n".join(findings))
+            failure = evaluate(path, content, event == "PreToolUse", cwd)
             if failure:
-                response(event, failure)
+                deny(event, failure)
+    except GateError as error:
+        deny(locals().get("event", "PreToolUse"), str(error))
 
 
 if __name__ == "__main__":

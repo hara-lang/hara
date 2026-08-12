@@ -457,8 +457,9 @@ early-binding behavior:
 - Referencing the defn'd name as a value inside its own body errors with
   "defn self-reference in value position is not supported"; `#'f` remains
   "unsupported operator: var".
-- Variadic (`&`) and multi-arity `fn`/`defn` and destructuring parameters
-  are typed compile errors.
+- Variadic (`&`) and multi-arity `fn`/`defn` use explicit prototype metadata
+  and dispatch bytecodes. Parameter destructuring is lowered to binding
+  bytecodes, including nested sequential and map patterns.
 
 ### 17.5 Superseded ruling: namespace ownership
 

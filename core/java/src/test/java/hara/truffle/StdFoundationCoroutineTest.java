@@ -9,6 +9,16 @@ import org.junit.Test;
 
 public class StdFoundationCoroutineTest {
   @Test
+  public void qualifiedCallLoadsTheRegisteredNamespace() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertTrue(
+          context
+              .eval(HaraLanguage.ID, "(not (std.foundation.coroutine/coroutine? 42))")
+              .asBoolean());
+    }
+  }
+
+  @Test
   public void resumeOnDeadThrows() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       context.eval(HaraLanguage.ID, "(require 'std.foundation.coroutine)");

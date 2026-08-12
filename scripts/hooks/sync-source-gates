@@ -1,0 +1,82 @@
+#!/usr/bin/env python3
+"""Generate or verify the installable source-gate policy snapshot."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import re
+import sys
+
+
+HERE = Path(__file__).resolve().parent
+DEFAULT_SOURCE = (
+    HERE.parents[2]
+    / "hara-specs-registry/01-lang/004-foundation/draft/conformance/source-gates.edn"
+)
+DEFAULT_OUTPUT = HERE / "source-gates.json"
+
+
+def edn_string(body: str, key: str) -> str | None:
+    match = re.search(rf":{re.escape(key)}\s+\"((?:\\.|[^\"])*)\"", body)
+    return json.loads(f'"{match.group(1)}"') if match else None
+
+
+def parse_policy(source: Path) -> dict:
+    text = source.read_text()
+    document = re.search(r":document/id\s+:([^\s]+)", text)
+    extensions = re.search(r":source/extensions\s+\[([^]]*)\]", text)
+    if not document or not extensions:
+        raise ValueError("missing source-gate document fields")
+    rules = []
+    for match in re.finditer(r"\{:rule/id\s+:([^\s]+)(.*?)\}", text, re.S):
+        rule_id, body = match.groups()
+        rule = {
+            "id": rule_id,
+            "severity": (re.search(r":rule/severity\s+:([^\s]+)", body) or [None, "error"])[1],
+            "message": edn_string(body, "rule/message"),
+        }
+        pattern = edn_string(body, "rule/pattern")
+        path_pattern = edn_string(body, "rule/path-pattern")
+        if pattern is not None:
+            rule["pattern"] = pattern
+        if path_pattern is not None:
+            rule["path_pattern"] = path_pattern
+        if not rule["message"] or not (pattern or path_pattern):
+            raise ValueError(f"malformed rule {rule_id}")
+        rules.append(rule)
+    evaluation = {
+        "runtime": (re.search(r":evaluation/runtime\s+:([^\s}]+)", text) or [None, ""])[1],
+        "pre_write": ":evaluation/pre-write true" in text,
+        "post_write": ":evaluation/post-write true" in text,
+        "registry_only_loading": ":evaluation/registry-only-loading true" in text,
+    }
+    return {
+        "document_id": document.group(1),
+        "extensions": re.findall(r'"([^\"]+)"', extensions.group(1)),
+        "evaluation": evaluation,
+        "rules": rules,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    generated = parse_policy(args.source)
+    if args.check:
+        current = json.loads(args.output.read_text())
+        if current != generated:
+            print(f"source gate snapshot is stale: {args.output}", file=sys.stderr)
+            return 1
+        print("source gate snapshot matches the registry")
+        return 0
+    args.output.write_text(json.dumps(generated, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
