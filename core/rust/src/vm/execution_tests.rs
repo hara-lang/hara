@@ -136,22 +136,22 @@ fn runtime_native_array_and_object_calls_lower_to_vm_primitives() {
     let mut runtime = Runtime::core();
     let source = "(let [a (std.native.Arr/new 1 2) \
                         o (std.native.Obj/new \"count\" 3)] \
-                    (std.native.Arr/set-index a 0 7) \
-                    (std.native.Obj/set-key o \"count\" 11) \
-                    [(std.native.Arr/get-index a 0) \
-                     (std.native.Obj/get-key o \"count\") \
-                     (number? (std.native.Arr/get-index a 0))])";
+                    (std.native.Arr/set a 0 7) \
+                    (std.native.Obj/set o \"count\" 11) \
+                    [(std.native.Arr/get a 0) \
+                     (std.native.Obj/get o \"count\") \
+                     (number? (std.native.Arr/get a 0))])";
     let program = runtime
         .compile_bytecode(source)
         .expect("native calls must compile");
     let disassembly = crate::vm::disassemble(&program);
     for operator in [
         "std.native.Arr/new",
-        "std.native.Arr/get-index",
-        "std.native.Arr/set-index",
+        "std.native.Arr/get",
+        "std.native.Arr/set",
         "std.native.Obj/new",
-        "std.native.Obj/get-key",
-        "std.native.Obj/set-key",
+        "std.native.Obj/get",
+        "std.native.Obj/set",
         "number?",
     ] {
         assert!(disassembly.contains(operator), "{operator}:\n{disassembly}");

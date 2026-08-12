@@ -168,8 +168,8 @@ public final class HaraContext {
           Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close")),
           Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
           Map.entry("Coroutine", java.util.List.of("create", "yield", "await", "instance?")),
-          Map.entry("Arr", java.util.List.of("new", "instance?", "get-index", "set-index")),
-          Map.entry("Obj", java.util.List.of("new", "instance?", "get-key", "set-key", "has-key?", "delete-key")),
+          Map.entry("Arr", java.util.List.of("new", "instance?", "get", "set", "push-first", "push-last", "pop-first", "pop-last", "insert", "remove", "clone", "slice", "map", "filter", "fold-left", "fold-right")),
+          Map.entry("Obj", java.util.List.of("new", "instance?", "get", "set", "has?", "delete", "clone", "assign", "keys", "vals", "pairs")),
           Map.entry("Runtime", java.util.List.of("load-string", "macroexpand-1", "gensym", "var-sym")),
           Map.entry("Printer", java.util.List.of("p", "println")),
           Map.entry("Edn", java.util.List.of("read", "read-forms")),
@@ -2504,37 +2504,15 @@ public final class HaraContext {
     target.define("array", new VariadicBuiltin("array", HaraArray::new));
     target.define("object", new VariadicBuiltin("object", HaraObject::new));
     HaraNamespace arr = namespace("std.native.Arr");
-    arr.define(
-        "get-index",
-        new VariadicBuiltin(
-            "std.native.Arr/get-index",
-            values -> nativeMutableCall("Arr", "get", values)));
-    arr.define(
-        "set-index",
-        new VariadicBuiltin(
-            "std.native.Arr/set-index",
-            values -> nativeMutableCall("Arr", "set", values)));
+    for (String method : java.util.List.of("get", "set", "push-first", "push-last", "pop-first", "pop-last", "insert", "remove", "clone", "slice", "map", "filter", "fold-left", "fold-right")) {
+      arr.define(method, new VariadicBuiltin("std.native.Arr/" + method,
+          values -> nativeMutableCall("Arr", method, values)));
+    }
     HaraNamespace obj = namespace("std.native.Obj");
-    obj.define(
-        "get-key",
-        new VariadicBuiltin(
-            "std.native.Obj/get-key",
-            values -> nativeMutableCall("Obj", "get", values)));
-    obj.define(
-        "set-key",
-        new VariadicBuiltin(
-            "std.native.Obj/set-key",
-            values -> nativeMutableCall("Obj", "set", values)));
-    obj.define(
-        "has-key?",
-        new VariadicBuiltin(
-            "std.native.Obj/has-key?",
-            values -> nativeMutableCall("Obj", "has?", values)));
-    obj.define(
-        "delete-key",
-        new VariadicBuiltin(
-            "std.native.Obj/delete-key",
-            values -> nativeMutableCall("Obj", "delete", values)));
+    for (String method : java.util.List.of("get", "set", "has?", "delete", "clone", "assign", "keys", "vals", "pairs")) {
+      obj.define(method, new VariadicBuiltin("std.native.Obj/" + method,
+          values -> nativeMutableCall("Obj", method, values)));
+    }
     HaraNamespace bits = namespace("std.native.Bits");
     bits.define("and", new VariadicBuiltin("std.native.Bits/and", values -> bitOperation("and", values)));
     bits.define("or", new VariadicBuiltin("std.native.Bits/or", values -> bitOperation("or", values)));
@@ -3951,11 +3929,9 @@ public final class HaraContext {
   @TruffleBoundary
   public Object invokeMarkerMethod(Object receiverValue, String method, Object[] arguments) {
     Object receiver = HaraBox.unwrap(receiverValue);
-    if (receiver instanceof HaraArray) {
-      return invokeArrayMethod((HaraArray) receiver, method, arguments);
-    }
-    if (receiver instanceof HaraObject) {
-      return invokeObjectMethod((HaraObject) receiver, method, arguments);
+    if (receiver instanceof HaraArray || receiver instanceof HaraObject) {
+      throw new HaraException(
+          "Dot calls do not support arrays or objects; use Arr/ or Obj/ functions");
     }
     NativeFlavorProvider provider = nativeProvider();
     if (provider == null) {

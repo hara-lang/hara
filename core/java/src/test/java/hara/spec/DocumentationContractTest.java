@@ -65,8 +65,8 @@ public class DocumentationContractTest {
   public void publishedExamplesUseSupportedMarkerSyntaxAndExistingFiles() throws Exception {
     assumeDocsSubmodule();
     String userGuide = Files.readString(Path.of("docs/docs/user-guide.md"), StandardCharsets.UTF_8);
-    assertTrue(userGuide.contains("(. a (push-last 4))"));
-    assertTrue(userGuide.contains("(. a (get 3))"));
+    assertTrue(userGuide.contains("(Arr/push-last a 4)"));
+    assertTrue(userGuide.contains("(Arr/get a 3)"));
     assertFalse(userGuide.contains("(array:push-last"));
     assertFalse(userGuide.contains("(array:get"));
     assertTrue(Files.exists(Path.of("lib/examples/hello.hal")));

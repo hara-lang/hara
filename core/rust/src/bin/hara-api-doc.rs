@@ -1,7 +1,10 @@
 //! Emit deterministic API documentation data from native Hara source forms.
 
 use hara_wasm::kernel::{read_forms, Form};
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 #[derive(Debug)]
 struct Definition {
@@ -45,7 +48,10 @@ fn metadata_is_private(form: &Form) -> bool {
 fn definition(form: &Form, line: usize) -> Option<Definition> {
     let Form::List(items) = form else { return None };
     let kind = symbol(items.first()?)?;
-    if !matches!(kind, "def" | "defn" | "defmacro" | "defprotocol" | "deftype" | "defstruct") {
+    if !matches!(
+        kind,
+        "def" | "defn" | "defmacro" | "defprotocol" | "deftype" | "defstruct"
+    ) {
         return None;
     }
     let name_form = items.get(1)?;
@@ -55,10 +61,15 @@ fn definition(form: &Form, line: usize) -> Option<Definition> {
     }
     let mut cursor = 2;
     let doc = match items.get(cursor) {
-        Some(Form::String(value)) => { cursor += 1; value.clone() }
+        Some(Form::String(value)) => {
+            cursor += 1;
+            value.clone()
+        }
         _ => String::new(),
     };
-    while matches!(items.get(cursor), Some(Form::Map(_))) { cursor += 1; }
+    while matches!(items.get(cursor), Some(Form::Map(_))) {
+        cursor += 1;
+    }
     let signature = match items.get(cursor) {
         Some(Form::Vector(_)) => items[cursor].to_string(),
         Some(Form::List(arities)) => arities.iter()
@@ -67,28 +78,40 @@ fn definition(form: &Form, line: usize) -> Option<Definition> {
             .collect::<Vec<_>>().join(" "),
         _ => String::new(),
     };
-    Some(Definition { name, kind: kind.to_owned(), doc, signature, line })
+    Some(Definition {
+        name,
+        kind: kind.to_owned(),
+        doc,
+        signature,
+        line,
+    })
 }
 
 fn namespace_name(path: &Path, source_root: &Path) -> String {
-    path.strip_prefix(source_root).unwrap_or(path)
+    path.strip_prefix(source_root)
+        .unwrap_or(path)
         .with_extension("")
         .components()
         .map(|part| part.as_os_str().to_string_lossy().replace('_', "-"))
-        .collect::<Vec<_>>().join(".")
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn json(value: &str) -> String {
     let mut out = String::from("\"");
     for ch in value.chars() {
         match ch {
-            '\\' => out.push_str("\\\\"), '"' => out.push_str("\\\""),
-            '\n' => out.push_str("\\n"), '\r' => out.push_str("\\r"), '\t' => out.push_str("\\t"),
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
             ch if ch.is_control() => out.push_str(&format!("\\u{:04x}", ch as u32)),
             ch => out.push(ch),
         }
     }
-    out.push('"'); out
+    out.push('"');
+    out
 }
 
 fn foundation_sources(root: &Path) -> Vec<PathBuf> {
@@ -97,49 +120,91 @@ fn foundation_sources(root: &Path) -> Vec<PathBuf> {
     fn visit(path: &Path, files: &mut Vec<PathBuf>) {
         if path.is_dir() {
             if let Ok(entries) = fs::read_dir(path) {
-                for entry in entries.flatten() { visit(&entry.path(), files); }
+                for entry in entries.flatten() {
+                    visit(&entry.path(), files);
+                }
             }
-        } else if path.extension().and_then(|v| v.to_str()) == Some("hal") { files.push(path.to_owned()); }
+        } else if path.extension().and_then(|v| v.to_str()) == Some("hal") {
+            files.push(path.to_owned());
+        }
     }
     visit(&base.join("foundation"), &mut files);
     files.push(base.join("foundation.hal"));
-    files.sort(); files
+    files.sort();
+    files
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = env::args().collect::<Vec<_>>();
-    if args.len() != 3 { return Err("usage: hara-api-doc SOURCE_ROOT TEST_ROOT".into()); }
+    if args.len() != 3 {
+        return Err("usage: hara-api-doc SOURCE_ROOT TEST_ROOT".into());
+    }
     let source_root = Path::new(&args[1]);
     let test_root = Path::new(&args[2]);
     let mut namespaces = Vec::new();
     for path in foundation_sources(source_root) {
         let source = fs::read_to_string(&path)?;
         let name = namespace_name(&path, source_root);
-        let definitions = read_forms(&source)?.into_iter()
+        let definitions = read_forms(&source)?
+            .into_iter()
             .filter_map(|spanned| definition(&spanned.form, spanned.span.start.line))
             .collect::<Vec<_>>();
-        let relative = path.strip_prefix(source_root).unwrap_or(&path).to_string_lossy().to_string();
+        let relative = path
+            .strip_prefix(source_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .to_string();
         let test_path = test_root.join(relative.replace(".hal", "_test.hal"));
         let examples = if test_path.exists() {
-            read_forms(&fs::read_to_string(test_path)?)?.into_iter().filter_map(|spanned| {
-                let Form::List(items) = &spanned.form else { return None };
-                (items.first().and_then(symbol) == Some("fact")).then(|| spanned.form.to_string())
-            }).collect()
-        } else { Vec::new() };
-        namespaces.push(Namespace { name, source: relative, definitions, examples });
+            read_forms(&fs::read_to_string(test_path)?)?
+                .into_iter()
+                .filter_map(|spanned| {
+                    let Form::List(items) = &spanned.form else {
+                        return None;
+                    };
+                    (items.first().and_then(symbol) == Some("fact"))
+                        .then(|| spanned.form.to_string())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        namespaces.push(Namespace {
+            name,
+            source: relative,
+            definitions,
+            examples,
+        });
     }
     print!("{{\"schemaVersion\":1,\"namespaces\":[");
     for (ni, ns) in namespaces.iter().enumerate() {
-        if ni > 0 { print!(","); }
-        print!("{{\"name\":{},\"source\":{},\"definitions\":[", json(&ns.name), json(&ns.source));
+        if ni > 0 {
+            print!(",");
+        }
+        print!(
+            "{{\"name\":{},\"source\":{},\"definitions\":[",
+            json(&ns.name),
+            json(&ns.source)
+        );
         for (di, def) in ns.definitions.iter().enumerate() {
-            if di > 0 { print!(","); }
-            print!("{{\"name\":{},\"kind\":{},\"doc\":{},\"signature\":{},\"line\":{}}}",
-                json(&def.name), json(&def.kind), json(&def.doc), json(&def.signature), def.line);
+            if di > 0 {
+                print!(",");
+            }
+            print!(
+                "{{\"name\":{},\"kind\":{},\"doc\":{},\"signature\":{},\"line\":{}}}",
+                json(&def.name),
+                json(&def.kind),
+                json(&def.doc),
+                json(&def.signature),
+                def.line
+            );
         }
         print!("],\"examples\":[");
         for (ei, example) in ns.examples.iter().enumerate() {
-            if ei > 0 { print!(","); } print!("{}", json(example));
+            if ei > 0 {
+                print!(",");
+            }
+            print!("{}", json(example));
         }
         print!("]}}");
     }

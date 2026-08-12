@@ -538,27 +538,27 @@ public class HaraLanguageTest {
       assertEquals(
           7,
           context
-              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (. a (set 1 7)) (. a (get 1)))")
+              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (Arr/set a 1 7) (Arr/get a 1))")
               .asLong());
       assertEquals(
           1,
           context
-              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (. a (remove 0)) (count a))")
+              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (Arr/remove a 0) (count a))")
               .asLong());
       assertEquals(
           3,
           context
-              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (. a (push-last 3)) (count a))")
+              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (Arr/push-last a 3) (count a))")
               .asLong());
       assertEquals(
           7,
           context
-              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (. a (insert 1 7)) (. a (get 1)))")
+              .eval(HaraLanguage.ID, "(let [a (array 1 2)] (Arr/insert a 1 7) (Arr/get a 1))")
               .asLong());
       assertEquals(
-          2, context.eval(HaraLanguage.ID, "(count (. (array 1 2 3) (slice 1 3)))").asLong());
+          2, context.eval(HaraLanguage.ID, "(count (Arr/slice (array 1 2 3) 1 3))").asLong());
       assertEquals(
-          2, context.eval(HaraLanguage.ID, "(. (. (array 1 2) (clone)) (get 1))").asLong());
+          2, context.eval(HaraLanguage.ID, "(Arr/get (Arr/clone (array 1 2)) 1)").asLong());
     }
   }
 

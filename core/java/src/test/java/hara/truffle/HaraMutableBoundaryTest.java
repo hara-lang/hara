@@ -102,15 +102,43 @@ public class HaraMutableBoundaryTest {
               .eval(
                   HaraLanguage.ID,
                   "(let [object (object)] "
-                      + "(. object (set \"answer\" 42)) (. object (get \"answer\")))")
+                      + "(Obj/set object \"answer\" 42) (Obj/get object \"answer\"))")
               .asLong());
-      assertEquals(7, context.eval(HaraLanguage.ID, "(. (object) (get \"missing\" 7))").asLong());
+      assertEquals(7, context.eval(HaraLanguage.ID, "(Obj/get (object) \"missing\" 7)").asLong());
+
+      PolyglotException dotArray =
+          assertThrows(
+              PolyglotException.class,
+              () -> context.eval(HaraLanguage.ID, "(. (array 1) (get 0))"));
+      assertTrue(dotArray.getMessage().contains("use Arr/ or Obj/ functions"));
+
+      PolyglotException dotObject =
+          assertThrows(
+              PolyglotException.class,
+              () -> context.eval(HaraLanguage.ID, "(. (object \"a\" 1) (get \"a\"))"));
+      assertTrue(dotObject.getMessage().contains("use Arr/ or Obj/ functions"));
 
       PolyglotException invalidIndex =
           assertThrows(
               PolyglotException.class,
-              () -> context.eval(HaraLanguage.ID, "(. (array 1) (get :bad))"));
+              () -> context.eval(HaraLanguage.ID, "(Arr/get (array 1) :bad)"));
       assertTrue(invalidIndex.getMessage().contains("expects a numeric index"));
+    }
+  }
+
+  @Test
+  public void arrayAndObjectNativeTypesAreAvailableInBlankNamespaces() {
+    try (Context context = context()) {
+      assertEquals(
+          "[7 42]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (ns native-collections (:config {:blank true})) "
+                      + "(let [a (Arr/new 1 2) o (Obj/new \"answer\" 41)] "
+                      + "(Arr/set a 1 7) (Obj/set o \"answer\" 42) "
+                      + "[(Arr/get a 1) (Obj/get o \"answer\")]))")
+              .toString());
     }
   }
 
@@ -138,13 +166,13 @@ public class HaraMutableBoundaryTest {
       assertTrue(
           assertThrows(
                   PolyglotException.class,
-                  () -> context.eval(HaraLanguage.ID, "(. (array 1) (set 4 9))"))
+                  () -> context.eval(HaraLanguage.ID, "(Arr/set (array 1) 4 9)"))
               .getMessage()
               .contains("set index out of bounds"));
       assertTrue(
           assertThrows(
                   PolyglotException.class,
-                  () -> context.eval(HaraLanguage.ID, "(. (array 1) (remove 4))"))
+                  () -> context.eval(HaraLanguage.ID, "(Arr/remove (array 1) 4)"))
               .getMessage()
               .contains("remove index out of bounds"));
     }

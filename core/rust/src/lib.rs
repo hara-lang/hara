@@ -4385,11 +4385,11 @@ mod tests {
                       (= Arr std.native.Arr std.foundation/Arr) \
                       (= Obj std.native.Obj std.foundation/Obj) \
                       (let [arr (Arr/new 1 2)] \
-                        (Arr/set-index arr 1 7) \
-                        (Arr/get-index arr 1)) \
+                        (Arr/set arr 1 7) \
+                        (Arr/get arr 1)) \
                       (let [obj (Obj/new \"a\" 1)] \
-                        (Obj/set-key obj \"a\" 9) \
-                        (Obj/get-key obj \"a\")) \
+                        (Obj/set obj \"a\" 9) \
+                        (Obj/get obj \"a\")) \
                       (ICount/count [1 2 3])]"
                 )
                 .unwrap(),
@@ -5629,7 +5629,7 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(. (deref (promise/all [(promise (fn [] 1)) 2 (promise (fn [] 3))])) (get 1))"
+                    "(Arr/get (deref (promise/all [(promise (fn [] 1)) 2 (promise (fn [] 3))])) 1)"
                 )
                 .unwrap(),
             "2"
@@ -5688,31 +5688,31 @@ mod tests {
     #[test]
     fn marker_mutation_methods_cover_array_and_object_boundaries() {
         let mut runtime = Runtime::new();
-        assert_eq!(runtime.eval_text("(let (a (array 2)) (do (. a (push-first 1)) (. a (push-last 3)) (. a (insert 1 9)) (. a (get 1))))").unwrap(), "9");
+        assert_eq!(runtime.eval_text("(let (a (array 2)) (do (Arr/push-first a 1) (Arr/push-last a 3) (Arr/insert a 1 9) (Arr/get a 1)))").unwrap(), "9");
         assert_eq!(
             runtime
                 .eval_text(
-                    "(let (a (array 1 2)) (do (. a (pop-first)) (. a (pop-last)) (count a)))"
+                    "(let (a (array 1 2)) (do (Arr/pop-first a) (Arr/pop-last a) (count a)))"
                 )
                 .unwrap(),
             "0"
         );
         assert_eq!(
             runtime
-                .eval_text(r#"(. (object "a" 1 "b" 2) (keys))"#)
+                .eval_text(r#"(Obj/keys (object "a" 1 "b" 2))"#)
                 .unwrap(),
             r#"(array "a" "b")"#
         );
         assert_eq!(
             runtime
-                .eval_text(r#"(. (object "a" 1 "b" 2) (vals))"#)
+                .eval_text(r#"(Obj/vals (object "a" 1 "b" 2))"#)
                 .unwrap(),
             "(array 1 2)"
         );
         assert_eq!(
             runtime
                 .eval_text(
-                    r#"(let (o (object "a" 1)) (do (. o (assign (object "b" 2))) (. o (get "b"))))"#
+                    r#"(let (o (object "a" 1)) (do (Obj/assign o (object "b" 2)) (Obj/get o "b")))"#
                 )
                 .unwrap(),
             "2"
@@ -5720,35 +5720,35 @@ mod tests {
     }
 
     #[test]
-    fn marker_dot_contract_covers_results_identity_callbacks_and_rejections() {
+    fn marker_static_contract_covers_results_identity_callbacks_and_rejections() {
         let mut runtime = Runtime::new();
         let cases = [
-            ("(. (. (array 1 2 3) (map (fn [x] (* x 2)))) (get 2))", "6"),
+            ("(Arr/get (Arr/map (array 1 2 3) (fn [x] (* x 2))) 2)", "6"),
             (
-                "(. (. (array 1 2 3 4) (filter (fn [x] (> x 2)))) (get 0))",
+                "(Arr/get (Arr/filter (array 1 2 3 4) (fn [x] (> x 2))) 0)",
                 "3",
             ),
-            ("(. (. (array 1 2 3) (slice 1)) (get 1))", "3"),
+            ("(Arr/get (Arr/slice (array 1 2 3) 1) 1)", "3"),
             (
-                "(. (array 1 2 3) (fold-left (fn [out x] (- out x)) 0))",
+                "(Arr/fold-left (array 1 2 3) (fn [out x] (- out x)) 0)",
                 "-6",
             ),
             (
-                "(. (array 1 2 3) (fold-right (fn [x out] (- x out)) 0))",
+                "(Arr/fold-right (array 1 2 3) (fn [x out] (- x out)) 0)",
                 "2",
             ),
-            ("(let [a (array 1)] (= a (. a (push-last 2))))", "true"),
-            ("(let [a (array 1)] (= a (. a (set 0 2))))", "true"),
-            ("(let [a (array 1)] (= a (. a (insert 1 2))))", "true"),
-            ("(let [a (array 1)] (= a (. a (clone))))", "false"),
+            ("(let [a (array 1)] (= a (Arr/push-last a 2)))", "true"),
+            ("(let [a (array 1)] (= a (Arr/set a 0 2)))", "true"),
+            ("(let [a (array 1)] (= a (Arr/insert a 1 2)))", "true"),
+            ("(let [a (array 1)] (= a (Arr/clone a)))", "false"),
             (
-                r#"(let [o (object "a" 1)] (= o (. o (set "a" 2))))"#,
+                r#"(let [o (object "a" 1)] (= o (Obj/set o "a" 2)))"#,
                 "true",
             ),
-            (r#"(. (object "a" 1) (delete "a"))"#, "1"),
-            (r#"(. (object "a" 1) (delete "missing"))"#, "nil"),
-            (r#"(. (. (object "a" 1) (keys)) (get 0))"#, r#""a""#),
-            (r#"(. (. (. (object "a" 1) (pairs)) (get 0)) (get 1))"#, "1"),
+            (r#"(Obj/delete (object "a" 1) "a")"#, "1"),
+            (r#"(Obj/delete (object "a" 1) "missing")"#, "nil"),
+            (r#"(Arr/get (Obj/keys (object "a" 1)) 0)"#, r#""a""#),
+            (r#"(Arr/get (Arr/get (Obj/pairs (object "a" 1)) 0) 1)"#, "1"),
             ("(iter-next (iter (array 7 8)))", "7"),
             (r#"(second (iter-next (iter (object "a" 7))))"#, "7"),
         ];
@@ -5760,16 +5760,16 @@ mod tests {
             ("(. [1 2] (get 0))", "array or object marker"),
             ("(. {} (get \"a\"))", "array or object marker"),
             ("(. 1 (get 0))", "array or object marker"),
-            ("(. (array 1) (unknown))", "unsupported array method"),
+            ("(Arr/unknown (array 1))", "unknown std.native.Arr method"),
             (
-                r#"(. (object "a" 1) (unknown))"#,
-                "unsupported object method",
+                r#"(Obj/unknown (object "a" 1))"#,
+                "unknown std.native.Obj method",
             ),
-            ("(. (array 1) (set 0))", "expects an index and value"),
-            ("(. (array 1) (clone 1))", "expects no arguments"),
-            (r#"(. (object "a" 1) (clone 1))"#, "expects no arguments"),
+            ("(Arr/set (array 1) 0)", "expects an index and value"),
+            ("(Arr/clone (array 1) 1)", "expects no arguments"),
+            (r#"(Obj/clone (object "a" 1) 1)"#, "expects no arguments"),
             (
-                "(. (array 1) (map (fn [x y] x)))",
+                "(Arr/map (array 1) (fn [x y] x))",
                 "function expects 2 arguments",
             ),
             ("(x:array 1)", "unbound symbol: x:array"),
@@ -5791,41 +5791,61 @@ mod tests {
         }
     }
     #[test]
-    fn marker_arrays_and_objects_use_restricted_dot_calls() {
+    fn marker_arrays_and_objects_use_static_native_calls() {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.eval_text("(count (array 1 2 3))").unwrap(), "3");
-        assert_eq!(runtime.eval_text("(. (array 1 2) (get 1))").unwrap(), "2");
+        assert_eq!(runtime.eval_text("(Arr/get (array 1 2) 1)").unwrap(), "2");
         assert_eq!(
             runtime
-                .eval_text("(let (a (array 1 2)) (do (. a (set 1 7)) (. a (get 1))))")
+                .eval_text("(let (a (array 1 2)) (do (Arr/set a 1 7) (Arr/get a 1)))")
                 .unwrap(),
             "7"
         );
         assert_eq!(
             runtime
-                .eval_text("(let (a (array 1)) (do (. a (push-last 2)) (count a)))")
+                .eval_text("(let (a (array 1)) (do (Arr/push-last a 2) (count a)))")
                 .unwrap(),
             "2"
         );
         assert_eq!(
             runtime
-                .eval_text(r#"(. (object "answer" 41) (get "answer"))"#)
+                .eval_text(r#"(Obj/get (object "answer" 41) "answer")"#)
                 .unwrap(),
             "41"
         );
         assert_eq!(
             runtime
                 .eval_text(
-                    r#"(let (o (object)) (do (. o (set "answer" 42)) (. o (get "answer"))))"#
+                    r#"(let (o (object)) (do (Obj/set o "answer" 42) (Obj/get o "answer")))"#
                 )
                 .unwrap(),
             "42"
         );
         assert_eq!(
             runtime
-                .eval_text(r#"(. (object "answer" 41) (has? "answer"))"#)
+                .eval_text(r#"(Obj/has? (object "answer" 41) "answer")"#)
                 .unwrap(),
             "true"
+        );
+        assert!(runtime
+            .eval_text("(. (array 1) (get 0))")
+            .unwrap_err()
+            .contains("use Arr/ or Obj/ functions"));
+    }
+
+    #[test]
+    fn array_and_object_native_types_are_available_without_foundation_bootstrap() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [a (Arr/new 1 2) o (Obj/new \"answer\" 41)] \
+                       (Arr/set a 1 7) \
+                       (Obj/set o \"answer\" 42) \
+                       [(Arr/get a 1) (Obj/get o \"answer\")])",
+                )
+                .unwrap(),
+            "[7 42]"
         );
     }
 
@@ -8376,7 +8396,7 @@ mod tests {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
-                .eval_text("(let [a (array 1 2 3)] (. a (push-last 4)) (. a (get 3)))")
+                .eval_text("(let [a (array 1 2 3)] (Arr/push-last a 4) (Arr/get a 3))")
                 .unwrap(),
             "4"
         );
@@ -8409,7 +8429,9 @@ mod tests {
             ":suspended"
         );
         assert_eq!(
-            runtime.eval_text("(co/coroutine? (co/create (fn [] 1)))").unwrap(),
+            runtime
+                .eval_text("(co/coroutine? (co/create (fn [] 1)))")
+                .unwrap(),
             "true"
         );
     }

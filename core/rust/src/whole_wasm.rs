@@ -100,9 +100,9 @@ mod tests {
     #[test]
     fn non_escaping_mutable_arrays_use_wasm_linear_memory() {
         let source = "(let [a (std.native.Arr/new 1 2 3)]
-                        (std.native.Arr/set-index a 1 40)
-                        (+ (std.native.Arr/get-index a 0)
-                           (+ (std.native.Arr/get-index a 1) 1)))";
+                        (std.native.Arr/set a 1 40)
+                        (+ (std.native.Arr/get a 0)
+                           (+ (std.native.Arr/get a 1) 1)))";
         assert_eq!(module(source).call_entry_i64(), Ok(42));
     }
 
@@ -116,10 +116,10 @@ mod tests {
                 (if (< i n)
                   (let [subtotal (permute values (- n 1))
                         j (if (= (mod n 2) 0) i 0)
-                        left (std.native.Arr/get-index values j)
-                        right (std.native.Arr/get-index values (- n 1))]
-                    (std.native.Arr/set-index values j right)
-                    (std.native.Arr/set-index values (- n 1) left)
+                        left (std.native.Arr/get values j)
+                        right (std.native.Arr/get values (- n 1))]
+                    (std.native.Arr/set values j right)
+                    (std.native.Arr/set values (- n 1) left)
                     (recur (+ i 1) (+ count subtotal)))
                   count))))
           (permute (std.native.Arr/new 0 1 2 3 4) 5))";
@@ -129,11 +129,11 @@ mod tests {
     #[test]
     fn wasm_linear_arrays_preserve_bounds_errors() {
         assert_eq!(
-            module("(std.native.Arr/get-index (std.native.Arr/new 1 2) 2)").call_entry_i64(),
+            module("(std.native.Arr/get (std.native.Arr/new 1 2) 2)").call_entry_i64(),
             Err("array index out of bounds".into())
         );
         assert_eq!(
-            module("(std.native.Arr/get-index (std.native.Arr/new 1 2) -1)").call_entry_i64(),
+            module("(std.native.Arr/get (std.native.Arr/new 1 2) -1)").call_entry_i64(),
             Err("array index out of bounds".into())
         );
     }
@@ -141,16 +141,16 @@ mod tests {
     #[test]
     fn fixed_shape_numeric_objects_use_wasm_linear_memory() {
         let source = "(let [o (std.native.Obj/new \"a\" 19 \"b\" 2)]
-                        (std.native.Obj/set-key o \"b\" 23)
-                        (+ (std.native.Obj/get-key o \"a\")
-                           (std.native.Obj/get-key o \"b\")))";
+                        (std.native.Obj/set o \"b\" 23)
+                        (+ (std.native.Obj/get o \"a\")
+                           (std.native.Obj/get o \"b\")))";
         assert_eq!(module(source).call_entry_i64(), Ok(42));
     }
 
     #[test]
     fn wasm_linear_objects_report_missing_numeric_keys() {
         assert_eq!(
-            module("(std.native.Obj/get-key (std.native.Obj/new \"a\" 1) \"b\")").call_entry_i64(),
+            module("(std.native.Obj/get (std.native.Obj/new \"a\" 1) \"b\")").call_entry_i64(),
             Err("object key not found".into())
         );
     }

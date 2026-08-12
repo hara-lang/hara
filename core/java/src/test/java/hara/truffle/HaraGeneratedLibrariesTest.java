@@ -249,22 +249,22 @@ public class HaraGeneratedLibrariesTest {
       assertEquals(
           6,
           context
-              .eval(HaraLanguage.ID, "(. (array 1 2 3) (fold-left (fn [out x] (+ out x)) 0))")
+              .eval(HaraLanguage.ID, "(Arr/fold-left (array 1 2 3) (fn [out x] (+ out x)) 0)")
               .asLong());
       assertEquals(
           3,
           context
               .eval(
                   HaraLanguage.ID,
-                  "(let [a (array 1 2 3 4)] (. (. a (filter (fn [x] (> x 2)))) (get 0)))")
+                  "(let [a (array 1 2 3 4)] (Arr/get (Arr/filter a (fn [x] (> x 2))) 0))")
               .asLong());
       assertEquals(
           42,
           context
               .eval(
                   HaraLanguage.ID,
-                  "(let [o (object \"answer\" 41)] (. o (set \"answer\" 42)) "
-                      + "(. o (get \"answer\")))")
+                  "(let [o (object \"answer\" 41)] (Obj/set o \"answer\" 42) "
+                      + "(Obj/get o \"answer\"))")
               .asLong());
       PolyglotException denied =
           assertThrows(

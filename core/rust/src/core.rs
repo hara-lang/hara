@@ -181,16 +181,41 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &["run", "new", "from", "all", "delay", "instance?"],
     ),
     ("Coroutine", &["create", "yield", "await", "instance?"]),
-    ("Arr", &["new", "instance?", "get-index", "set-index"]),
+    (
+        "Arr",
+        &[
+            "new",
+            "instance?",
+            "get",
+            "set",
+            "push-first",
+            "push-last",
+            "pop-first",
+            "pop-last",
+            "insert",
+            "remove",
+            "clone",
+            "slice",
+            "map",
+            "filter",
+            "fold-left",
+            "fold-right",
+        ],
+    ),
     (
         "Obj",
         &[
             "new",
             "instance?",
-            "get-key",
-            "set-key",
-            "has-key?",
-            "delete-key",
+            "get",
+            "set",
+            "has?",
+            "delete",
+            "clone",
+            "assign",
+            "keys",
+            "vals",
+            "pairs",
         ],
     ),
     (
@@ -5592,11 +5617,11 @@ impl Primitive {
             "to-persistent" => Primitive::ToPersistent,
             "number?" => Primitive::NumberPredicate,
             "std.native.Arr/new" => Primitive::ArrayNew,
-            "std.native.Arr/get-index" => Primitive::ArrayGet,
-            "std.native.Arr/set-index" => Primitive::ArraySet,
+            "std.native.Arr/get" => Primitive::ArrayGet,
+            "std.native.Arr/set" => Primitive::ArraySet,
             "std.native.Obj/new" => Primitive::ObjectNew,
-            "std.native.Obj/get-key" => Primitive::ObjectGet,
-            "std.native.Obj/set-key" => Primitive::ObjectSet,
+            "std.native.Obj/get" => Primitive::ObjectGet,
+            "std.native.Obj/set" => Primitive::ObjectSet,
             _ => return None,
         })
     }
@@ -5627,11 +5652,11 @@ impl Primitive {
             Primitive::ToPersistent => "to-persistent",
             Primitive::NumberPredicate => "number?",
             Primitive::ArrayNew => "std.native.Arr/new",
-            Primitive::ArrayGet => "std.native.Arr/get-index",
-            Primitive::ArraySet => "std.native.Arr/set-index",
+            Primitive::ArrayGet => "std.native.Arr/get",
+            Primitive::ArraySet => "std.native.Arr/set",
             Primitive::ObjectNew => "std.native.Obj/new",
-            Primitive::ObjectGet => "std.native.Obj/get-key",
-            Primitive::ObjectSet => "std.native.Obj/set-key",
+            Primitive::ObjectGet => "std.native.Obj/get",
+            Primitive::ObjectSet => "std.native.Obj/set",
         }
     }
 }
@@ -5838,7 +5863,7 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
         Primitive::ArrayNew => Ok(Value::Array(Rc::new(RefCell::new(arguments.to_vec())))),
         Primitive::ArrayGet => {
             if arguments.len() != 2 {
-                return Err("std.native.Arr/get-index expects an array and index".into());
+                return Err("std.native.Arr/get expects an array and index".into());
             }
             match &arguments[0] {
                 Value::Array(values) => values
@@ -5846,12 +5871,12 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
                     .get(value_index(&arguments[1])?)
                     .cloned()
                     .ok_or_else(|| "array/get index out of bounds".into()),
-                _ => Err("std.native.Arr/get-index expects an array".into()),
+                _ => Err("std.native.Arr/get expects an array".into()),
             }
         }
         Primitive::ArraySet => {
             if arguments.len() != 3 {
-                return Err("std.native.Arr/set-index expects an array, index, and value".into());
+                return Err("std.native.Arr/set expects an array, index, and value".into());
             }
             match &arguments[0] {
                 Value::Array(values) => {
@@ -5864,7 +5889,7 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
                     drop(values);
                     Ok(arguments[0].clone())
                 }
-                _ => Err("std.native.Arr/set-index expects an array".into()),
+                _ => Err("std.native.Arr/set expects an array".into()),
             }
         }
         Primitive::ObjectNew => {
@@ -5879,7 +5904,7 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
         }
         Primitive::ObjectGet => {
             if arguments.len() != 2 {
-                return Err("std.native.Obj/get-key expects an object and key".into());
+                return Err("std.native.Obj/get expects an object and key".into());
             }
             match &arguments[0] {
                 Value::Object(entries) => {
@@ -5891,12 +5916,12 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
                         .map(|(_, value)| value.clone())
                         .unwrap_or(Value::Nil))
                 }
-                _ => Err("std.native.Obj/get-key expects an object".into()),
+                _ => Err("std.native.Obj/get expects an object".into()),
             }
         }
         Primitive::ObjectSet => {
             if arguments.len() != 3 {
-                return Err("std.native.Obj/set-key expects an object, key, and value".into());
+                return Err("std.native.Obj/set expects an object, key, and value".into());
             }
             match &arguments[0] {
                 Value::Object(entries) => {
@@ -5912,7 +5937,7 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
                     drop(entries);
                     Ok(arguments[0].clone())
                 }
-                _ => Err("std.native.Obj/set-key expects an object".into()),
+                _ => Err("std.native.Obj/set expects an object".into()),
             }
         }
     }
@@ -5999,9 +6024,9 @@ pub(crate) fn apply_binary_primitive(
                 .get(value_index(right)?)
                 .cloned()
                 .ok_or_else(|| "array/get index out of bounds".into()),
-            _ => Err("std.native.Arr/get-index expects an array".into()),
+            _ => Err("std.native.Arr/get expects an array".into()),
         },
-        Primitive::ArraySet => Err("std.native.Arr/set-index expects three arguments".into()),
+        Primitive::ArraySet => Err("std.native.Arr/set expects three arguments".into()),
         Primitive::ObjectNew => Ok(Value::Object(Rc::new(RefCell::new(vec![(
             marker_key(left, "object")?,
             right.clone(),
@@ -6016,9 +6041,9 @@ pub(crate) fn apply_binary_primitive(
                     .map(|(_, value)| value.clone())
                     .unwrap_or(Value::Nil))
             }
-            _ => Err("std.native.Obj/get-key expects an object".into()),
+            _ => Err("std.native.Obj/get expects an object".into()),
         },
-        Primitive::ObjectSet => Err("std.native.Obj/set-key expects three arguments".into()),
+        Primitive::ObjectSet => Err("std.native.Obj/set expects three arguments".into()),
     }
 }
 
@@ -7656,19 +7681,21 @@ fn native_mutable_operation(
             "std.native.{type_name}/{method} expects a receiver"
         ));
     }
-    let dot_method = match (type_name, method) {
-        ("Arr", "get-index") => "get",
-        ("Arr", "set-index") => "set",
-        ("Obj", "get-key") => "get",
-        ("Obj", "set-key") => "set",
-        ("Obj", "has-key?") => "has?",
-        ("Obj", "delete-key") => "delete",
-        _ => return Err(format!("unknown std.native.{type_name} method: {method}")),
-    };
+    let supported = NATIVE_TYPES
+        .iter()
+        .find_map(|(name, methods)| (*name == type_name).then_some(*methods))
+        .is_some_and(|methods| methods.contains(&method));
+    if !supported {
+        return Err(format!("unknown std.native.{type_name} method: {method}"));
+    }
     let receiver = eval(&forms[0], env)?;
-    let mut call = vec![Form::Symbol(dot_method.into())];
+    let mut call = vec![Form::Symbol(method.into())];
     call.extend_from_slice(&forms[1..]);
-    dot_call(receiver, &Form::List(call), env)
+    let args = call[1..]
+        .iter()
+        .map(|form| eval(form, env))
+        .collect::<Result<Vec<_>, _>>()?;
+    marker_call_values(receiver, method, args)
 }
 
 fn dot_call(
@@ -7696,6 +7723,15 @@ pub(crate) fn dot_call_values(
     name: &str,
     args: Vec<Value>,
 ) -> Result<Value, String> {
+    if matches!(receiver, Value::Array(_) | Value::Object(_)) {
+        return Err(
+            "dot calls do not support arrays or objects; use Arr/ or Obj/ functions".into(),
+        );
+    }
+    marker_call_values(receiver, name, args)
+}
+
+fn marker_call_values(receiver: Value, name: &str, args: Vec<Value>) -> Result<Value, String> {
     match receiver {
         Value::Array(array) => match name {
             "get" => {

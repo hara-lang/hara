@@ -275,15 +275,15 @@ fn destructuring_lowers_across_bindings_parameters_and_recur() {
 }
 
 #[test]
-fn dot_calls_compile_to_native_method_bytecode() {
+fn static_array_calls_compile_to_native_bytecode() {
     let mut runtime = Runtime::core();
     runtime.prepare_foundation_bytecode();
     assert_eq!(
         runtime
             .eval_bytecode_native(
                 "(defn mutate-and-clone [array value]
-                   (. array (push-last value))
-                   (vec (. array (clone))))
+                   (Arr/push-last array value)
+                   (vec (Arr/clone array)))
                  (mutate-and-clone (array 1 2) 3)"
             )
             .unwrap(),
