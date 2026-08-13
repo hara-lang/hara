@@ -1,0 +1,409 @@
+(ns code.manage.unit
+  (:require [code.framework :as framework]
+            [code.manage.unit.scaffold :as scaffold]
+            [code.manage.unit.template :as template]))
+
+(defn analyse
+  [unit]
+  (merge {:path (:path unit)}
+         (framework/analyse-source (:source unit))))
+
+(defn extract
+  [unit]
+  (:definitions (analyse unit)))
+
+(defn vars
+  [unit]
+  (vec (map (fn [entry] (:source entry)) (extract unit))))
+
+(defn docstrings
+  [unit]
+  (:docstrings (analyse unit)))
+
+(defn grep
+  [unit needle]
+  (framework/grep-source (:source unit) needle))
+
+(defn transform-code
+  [unit transform]
+  (let [before (:source unit)
+        after (transform before)]
+    {:path (:path unit)
+     :changed (not= before after)
+     :before before
+     :after after
+     :write false}))
+
+(defn grep-replace
+  [unit match replacement]
+  (transform-code unit
+                  (fn [source]
+                    (str/replace source match replacement))))
+
+(defn heal-code
+  [unit]
+  (transform-code
+   unit
+   (fn [source]
+     (str (str/trim-right source) "\n"))))
+
+(defn unclean
+  [unit]
+  (if (= (:source unit) (:after (heal-code unit)))
+    []
+    [(:path unit)]))
+
+(defn incomplete
+  [unit]
+  (grep unit "TODO"))
+
+(defn commented
+  "Returns comment-only lines so callers can decide whether to remove them."
+  [unit]
+  (vec
+   (filter
+    (fn [entry]
+      (str/starts-with? (str/trim (:text entry)) ";"))
+    (framework/grep-source (:source unit) ";"))))
+
+(defn unclean-findings
+  "Reports normalisation issues without modifying the source."
+  [unit]
+  (let [lines (str/split-lines (:source unit))
+        trailing
+        (loop [index 0 output []]
+          (if (= index (count lines))
+            output
+            (let [line (nth lines index)]
+              (recur
+               (inc index)
+               (if (not= line (str/trim-right line))
+                 (conj output
+                       {:path (:path unit)
+                        :line (inc index)
+                        :kind :trailing-whitespace})
+                 output)))))]
+    (if (str/ends-with? (:source unit) "\n")
+      trailing
+      (conj trailing
+            {:path (:path unit)
+             :kind :missing-final-newline}))))
+
+(defn definition-names
+  [unit]
+  (vec (map (fn [entry] (:name entry)) (extract unit))))
+
+(defn in-order?
+  [unit]
+  (let [names (definition-names unit)]
+    (= names (vec (sort names)))))
+
+(defn orphaned-meta
+  [unit]
+  (let [lines (str/split-lines (:source unit))]
+    (loop [index 0 output []]
+      (if (= index (count lines))
+        output
+        (let [line (str/trim (nth lines index))
+              next-line
+              (if (< (inc index) (count lines))
+                (str/trim (nth lines (inc index)))
+                "")]
+          (recur
+           (inc index)
+           (if (and (str/starts-with? line "^")
+                    (not (str/starts-with? next-line "(def")))
+             (conj output
+                   {:path (:path unit)
+                    :line (inc index)
+                    :kind :orphaned-metadata})
+             output)))))))
+
+(defn orphaned
+  [unit]
+  (orphaned-meta unit))
+
+(defn todos
+  [unit]
+  (incomplete unit))
+
+(defn unchecked
+  [unit]
+  (let [facts (grep unit "(fact")
+        checks (grep unit "=>")]
+    (if (and (not (empty? facts))
+             (empty? checks))
+      (vec
+       (map
+        (fn [entry]
+          (assoc entry :kind :unchecked-fact))
+        facts))
+      [])))
+
+(defn pedantic
+  [unit]
+  (vec
+   (concat
+    (unclean-findings unit)
+    (map (fn [entry] (assoc entry :kind :todo))
+         (incomplete unit))
+    (orphaned-meta unit)
+    (unchecked unit))))
+
+(defn missing
+  [unit options]
+  (let [available (or (:available-namespaces options) #{})]
+    (vec
+     (filter
+      (fn [namespace]
+        (nil? (get available namespace)))
+      (or (:requires unit) [])))))
+
+(defn includes-any?
+  [line patterns]
+  (loop [remaining patterns]
+    (if (empty? remaining)
+      false
+      (if (str/includes? line (first remaining))
+        true
+        (recur (rest remaining))))))
+
+(defn remove-matching-lines
+  [source patterns]
+  (str
+   (str/join
+    "\n"
+    (filter
+     (fn [line]
+       (not (includes-any? line patterns)))
+     (str/split-lines source)))
+   "\n"))
+
+(defn purge
+  [unit options]
+  (transform-code
+   unit
+   (fn [source]
+     (remove-matching-lines source
+                            (or (:patterns options) [])))))
+
+(defn replacements
+  [options]
+  (or (:replacements options)
+      (if (and (:match options)
+               (:replacement options))
+        [[(:match options) (:replacement options)]]
+        [])))
+
+(defn replace-all
+  [source pairs]
+  (reduce
+   (fn [output pair]
+     (str/replace output
+                  (str (first pair))
+                  (str (second pair))))
+   source
+   pairs))
+
+(defn refactor-code
+  [unit options]
+  (transform-code
+   unit
+   (fn [source]
+     (replace-all source (replacements options)))))
+
+(defn refactor-test
+  [unit options]
+  (refactor-code unit options))
+
+(defn refactor-swap
+  [unit pairs]
+  (refactor-code unit {:replacements pairs}))
+
+(defn arrange
+  [unit]
+  (if (in-order? unit)
+    (transform-code unit identity)
+    (assoc
+     (transform-code unit identity)
+     :finding
+     {:path (:path unit)
+      :kind :definitions-out-of-order
+      :definitions (definition-names unit)})))
+
+(defn scaffold
+  [unit options]
+  (let [source-namespace (:namespace (analyse unit))
+        test-namespace
+        (scaffold/test-namespace-for
+         unit
+         options
+         source-namespace)
+        alias (or (:alias options) "subject")]
+    {:path (scaffold/test-path-for unit options)
+     :changed true
+     :before (or (:test-source unit) "")
+     :after
+     (scaffold/scaffold-source
+      source-namespace
+      test-namespace
+      alias)
+     :write false
+     :create true}))
+
+(defn create-tests
+  [unit options]
+  (scaffold unit options))
+
+(defn locate-code
+  [unit]
+  (if (= (:type unit) :test)
+    nil
+    (:path unit)))
+
+(defn locate-test
+  [unit]
+  (if (= (:type unit) :test)
+    (:path unit)
+    (:test-path unit)))
+
+(def analyse-unit
+  (template/code-tasklet
+   :analyse
+   (fn [unit options] (analyse unit))))
+
+(def extract-unit
+  (template/code-tasklet
+   :extract
+   (fn [unit options] (extract unit))))
+
+(def vars-unit
+  (template/code-tasklet
+   :vars
+   (fn [unit options] (vars unit))))
+
+(def docstrings-unit
+  (template/code-tasklet
+   :docstrings
+   (fn [unit options] (docstrings unit))))
+
+(def transform-code-unit
+  (template/code-tasklet
+   :transform-code
+   (fn [unit options]
+     (if (:transform options)
+       (transform-code unit (:transform options))
+       (transform-code unit identity)))))
+
+(def purge-unit
+  (template/code-tasklet
+   :purge
+   (fn [unit options] (purge unit options))))
+
+(def missing-unit
+  (template/code-tasklet
+   :missing
+   (fn [unit options] (missing unit options))))
+
+(def todos-unit
+  (template/code-tasklet
+   :todos
+   (fn [unit options] (todos unit))))
+
+(def incomplete-unit
+  (template/code-tasklet
+   :incomplete
+   (fn [unit options] (incomplete unit))))
+
+(def orphaned-unit
+  (template/code-tasklet
+   :orphaned
+   (fn [unit options] (orphaned unit))))
+
+(def scaffold-unit
+  (template/code-tasklet
+   :scaffold
+   (fn [unit options] (scaffold unit options))))
+
+(def create-tests-unit
+  (template/code-tasklet
+   :create-tests
+   (fn [unit options] (create-tests unit options))))
+
+(def in-order-unit
+  (template/code-tasklet
+   :in-order
+   (fn [unit options] (in-order? unit))))
+
+(def arrange-unit
+  (template/code-tasklet
+   :arrange
+   (fn [unit options] (arrange unit))))
+
+(def locate-code-unit
+  (template/code-tasklet
+   :locate-code
+   (fn [unit options] (locate-code unit))))
+
+(def locate-test-unit
+  (template/code-tasklet
+   :locate-test
+   (fn [unit options] (locate-test unit))))
+
+(def grep-unit
+  (template/code-tasklet
+   :grep
+   (fn [unit options]
+     (if (:needle options)
+       (grep unit (:needle options))
+       []))))
+
+(def grep-replace-unit
+  (template/code-tasklet
+   :grep-replace
+   (fn [unit options]
+     (if (:match options)
+       (grep-replace unit
+                     (:match options)
+                     (or (:replacement options) ""))
+       (transform-code unit identity)))))
+
+(def unclean-unit
+  (template/code-tasklet
+   :unclean
+   (fn [unit options] (unclean unit))))
+
+(def unclean-findings-unit
+  (template/code-tasklet
+   :unclean-findings
+   (fn [unit options] (unclean-findings unit))))
+
+(def unchecked-unit
+  (template/code-tasklet
+   :unchecked
+   (fn [unit options] (unchecked unit))))
+
+(def commented-unit
+  (template/code-tasklet
+   :commented
+   (fn [unit options] (commented unit))))
+
+(def pedantic-unit
+  (template/code-tasklet
+   :pedantic
+   (fn [unit options] (pedantic unit))))
+
+(def refactor-code-unit
+  (template/code-tasklet
+   :refactor-code
+   (fn [unit options] (refactor-code unit options))))
+
+(def refactor-test-unit
+  (template/code-tasklet
+   :refactor-test
+   (fn [unit options] (refactor-test unit options))))
+
+(def heal-unit
+  (template/code-tasklet
+   :heal-code
+   (fn [unit options] (heal-code unit))))
