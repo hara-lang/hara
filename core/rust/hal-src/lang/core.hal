@@ -28,7 +28,6 @@
 (def value-standalone value/value-standalone)
 (def host-name name)
 
-(defn rt:restart [] (script/restart!))
 (defn rt:stop [] (script/stop!))
 (def script-modules script/+modules+)
 (def script-specs script/+specs+)
@@ -53,6 +52,8 @@
 (def registry-book-remove! registry/registry-book-remove!)
 (def registry-book-set-default! registry/registry-book-set-default!)
 
+(def rt-default runtime/rt-default)
+(def rt-default:create runtime/rt-default:create)
 (def rt-basic basic/rt-basic)
 (def rt-basic:create basic/rt-basic:create)
 (def rt-oneshot basic/rt-oneshot)
@@ -184,8 +185,9 @@
         current (get (deref script/+scripts+) coordinate)
         previous (:runtime current)
         _ (if previous (runtime/rt-stop previous))
-        runtime-type (or (:runtime config) :basic)
-        instance (runtime/rt-create lang runtime-type config)
+        runtime-type (or (:runtime config) :default)
+        runtime-options (assoc config :module module)
+        instance (runtime/rt-create lang runtime-type runtime-options)
         started (runtime/rt-start instance)
         started
         (if (= lang :postgres)
@@ -201,6 +203,24 @@
         record (assoc record :runtime started)]
     (swap! script/+scripts+ assoc coordinate record)
     started))
+
+(defn restart-script!
+  "Restarts every script declared by the current source namespace."
+  []
+  (let [source (symbol (str (current-namespace)))
+        entries
+        (filter (fn [entry]
+                  (= source (:source (second entry))))
+                (deref script/+scripts+))]
+    (reduce (fn [_ entry]
+              (let [record (second entry)]
+                (start-script! (:lang record)
+                               (:module record)
+                               (:config record))))
+            nil
+            entries)))
+
+(defn rt:restart [] (restart-script!))
 
 (def +script-tag-aliases+
   {:xtalk :xt

@@ -10,17 +10,17 @@
   (symbol (str (current-namespace))))
 
 (def results
-  [(fact "script returns its live runtime and restores Foundation pointer macros"
+  [(fact "script returns a runtime, installs evaluator macros, and interns pointer Vars"
      (let [module (current-module)
            modules-before (deref script/+modules+)
            scripts-before (deref script/+scripts+)
            contexts-before (deref script/+module-contexts+)]
        (try
-         (let [runtime-value (eval '(lang.core/script :xtalk))]
+         (let [default-runtime (eval '(lang.core/script :xtalk))]
            (try
              (let [short-eval-var (resolve '!.xt)
                    grammar-eval-var (resolve '!.xtalk)
-                   evaluated (eval '(!.xt (+ 1 2)))
+                   default-evaluated (eval '(!.xt (+ 1 2)))
                    _ (eval '(def.xt HEX
                               (tab ["A" 10]
                                    ["F" 15])))
@@ -30,47 +30,65 @@
                    pointer (deref code-var)
                    function-var (resolve 'ADD)
                    function-pointer (deref function-var)
-                   invoked (eval '(ADD 3 4))
-                   invoked-in (std.protocol.iinvokein/invoke-in
-                               function-pointer runtime-value 5 6)]
-               [(:lang runtime-value)
-                (component/started? runtime-value)
-                (boolean (and short-eval-var
-                              (:macro (meta short-eval-var))))
-                (boolean (and grammar-eval-var
-                              (:macro (meta grammar-eval-var))))
-                evaluated
-                (var? code-var)
-                (lang.core/code-pointer? pointer)
-                (lang.core/code-pointer-context pointer)
-                (lang.core/code-pointer-val pointer :namespace)
-                (lang.core/code-pointer-val pointer :module)
-                (lang.core/code-pointer-val pointer :id)
-                (lang.core/code-pointer-val pointer :form-input)
-                (:lang pointer)
-                (= (lang.core/code-pointer-val pointer :form-input)
-                   (:form-input (deref pointer)))
-                (= runtime-value
-                   (lang.core/code-pointer-runtime pointer))
-                (lang.core/code-pointer? function-pointer)
-                invoked
-                invoked-in
-                (= runtime-value
-                   (lang.core/code-pointer-runtime function-pointer))
-                (= runtime-value
-                   (get-in (deref script/+scripts+)
-                           [[module :xtalk] :runtime]))])
+                   default-invoked (eval '(ADD 3 4))
+                   basic-runtime
+                   (eval '(lang.core/script :xtalk {:runtime :basic}))]
+               (try
+                 (let [evaluated (eval '(!.xt (+ 1 2)))
+                       invoked (eval '(ADD 3 4))
+                       invoked-in
+                       (std.protocol.iinvokein/invoke-in
+                        function-pointer basic-runtime 5 6)]
+                   [(:lang default-runtime)
+                    (:runtime default-runtime)
+                    (:module default-runtime)
+                    (component/stopped? default-runtime)
+                    (boolean (and short-eval-var
+                                  (:macro (meta short-eval-var))))
+                    (boolean (and grammar-eval-var
+                                  (:macro (meta grammar-eval-var))))
+                    (string? default-evaluated)
+                    (var? code-var)
+                    (lang.core/code-pointer? pointer)
+                    (lang.core/code-pointer-context pointer)
+                    (lang.core/code-pointer-val pointer :namespace)
+                    (lang.core/code-pointer-val pointer :module)
+                    (lang.core/code-pointer-val pointer :id)
+                    (lang.core/code-pointer-val pointer :form-input)
+                    (:lang pointer)
+                    (= (lang.core/code-pointer-val pointer :form-input)
+                       (:form-input (deref pointer)))
+                    (string? default-invoked)
+                    (:lang basic-runtime)
+                    (:runtime basic-runtime)
+                    (component/started? basic-runtime)
+                    evaluated
+                    (lang.core/code-pointer? function-pointer)
+                    invoked
+                    invoked-in
+                    (= basic-runtime
+                       (lang.core/code-pointer-runtime pointer))
+                    (= basic-runtime
+                       (lang.core/code-pointer-runtime function-pointer))
+                    (= basic-runtime
+                       (get-in (deref script/+scripts+)
+                               [[module :xtalk] :runtime]))])
+                 (finally
+                   (runtime/rt-stop basic-runtime))))
              (finally
-               (runtime/rt-stop runtime-value))))
+               (if (not (component/stopped? default-runtime))
+                 (runtime/rt-stop default-runtime)))))
          (finally
            (reset! script/+modules+ modules-before)
            (reset! script/+scripts+ scripts-before)
            (reset! script/+module-contexts+ contexts-before))))
      => [:xtalk
+         :default
+         'lang.core.script-contract-test
          true
          true
          true
-         3
+         true
          true
          true
          :lang/xtalk
@@ -83,10 +101,39 @@
          :xtalk
          true
          true
+         :xtalk
+         :basic
+         true
+         3
          true
          7
          11
          true
-         true])])
+         true
+         true])
+
+   (fact "the default runtime is compile-only and available to every language"
+     (let [runtime-value
+           (runtime/rt-start
+            (runtime/rt-create :postgres :default
+                               {:module 'postgres.core.system}))]
+       (try
+         [(:lang runtime-value)
+          (:runtime runtime-value)
+          (:module runtime-value)
+          (component/started? runtime-value)
+          (runtime/runtime-installed? :postgres :default)
+          (boolean (get (set (runtime/available-runtimes :postgres))
+                        :default))
+          (runtime/rt-raw-eval runtime-value "SELECT 1")]
+         (finally
+           (runtime/rt-stop runtime-value))))
+     => [:postgres
+         :default
+         'postgres.core.system
+         true
+         true
+         true
+         "SELECT 1"])])
 
 (pr-str (run '[lang.core.script-contract-test]))
