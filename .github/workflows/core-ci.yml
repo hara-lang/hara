@@ -33,6 +33,22 @@ jobs:
       - name: Expose specs registry at the runtime fixture path
         run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
 
+      - name: Checkout hara-benchmarks
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+
+      - name: Expose benchmark corpus at the differential fixture path
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn \
+            "$GITHUB_WORKSPACE/hara-benchmarks" \
+            "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
       - name: Detect core changes
         id: scope
         shell: bash
@@ -123,7 +139,23 @@ jobs:
       - name: Build and test Java runtime
         if: steps.scope.outputs.run_core == 'true'
         working-directory: core
-        run: mvn -B -Ptruffle package --file java/pom.xml
+        shell: bash
+        run: |
+          set +e
+          log="$RUNNER_TEMP/hara-java-maven.log"
+          mvn -B -Ptruffle package --file java/pom.xml >"$log" 2>&1
+          status=$?
+          if [[ "$status" -ne 0 ]]; then
+            echo "::group::Java Maven failure summary"
+            grep -E '^\[(ERROR|WARNING)\]|Tests run:|Failures:|Errors:|Skipped:|<<< FAILURE!|There are test failures|BUILD FAILURE|Caused by:' "$log" \
+              | tail -n 240 || true
+            echo "::endgroup::"
+            echo "::group::Java Maven failure tail"
+            tail -n 320 "$log"
+            echo "::endgroup::"
+            exit "$status"
+          fi
+          tail -n 80 "$log"
 
       - name: Run library HAL tests
         if: steps.scope.outputs.run_core == 'true'

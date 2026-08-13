@@ -1,0 +1,348 @@
+(ns std.work-recipe-test
+  (:require [std.lib.test :as test]
+            [std.work :as work]
+            [std.work.recipe :as recipe]))
+
+(defn throws?
+  [function]
+  (try
+    (function)
+    false
+    (catch Throwable error
+      true)))
+
+(def step-count (atom 0))
+(def cleanup-count (atom 0))
+
+(def operation-registry
+  (recipe/registry
+   [(recipe/operation
+     :math/increment
+     :pure
+     (fn [value context params]
+       (+ value (:amount params))))
+
+    (recipe/operation
+     :math/multiply
+     :step
+     (fn [value context params]
+       (swap! step-count inc)
+       (* value (:factor params))))
+
+    (recipe/operation
+     :collection/list
+     :step
+     (fn [value context params]
+       [{:item/id :one
+         :item/value 1}
+        {:item/id :two
+         :item/value 2}
+        {:item/id :three
+         :item/value 3}]))
+
+    (recipe/operation
+     :collection/process
+     :step
+     (fn [value context params]
+       (* value (:factor params))))
+
+    (recipe/operation
+     :collection/summarise
+     :pure
+     (fn [value context params]
+       {:items (count (:items value))
+        :values
+        (vec
+         (map (fn [item] (:item/value item))
+              (:results value)))}))
+
+    (recipe/operation
+     :control/selector
+     :pure
+     (fn [value context params]
+       (:route value)))
+
+    (recipe/operation
+     :control/left
+     :pure
+     (fn [value context params]
+       [:left (:value value)]))
+
+    (recipe/operation
+     :control/right
+     :pure
+     (fn [value context params]
+       [:right (:value value)]))
+
+    (recipe/operation
+     :scope/fail
+     :step
+     (fn [value context params]
+       (throw (ex-info "recipe body failed" {}))))
+
+    (recipe/operation
+     :scope/cleanup
+     :step
+     (fn [value context params]
+       (swap! cleanup-count inc)
+       :cleaned))
+
+    (recipe/operation
+     :filesystem/read
+     :step
+     (fn [value context params]
+       (:path params))
+     {:capabilities [:filesystem/read]})]))
+
+(def math-recipe
+  {:schema "std.work.recipe/0-alpha"
+   :recipe/id :recipe/math
+   :recipe/version 1
+   :body
+   {:op :chain
+    :id :math/body
+    :children
+    [{:op :pure-ref
+      :id :math/increment
+      :uses :math/increment
+      :params {:amount 1}}
+     {:op :step-ref
+      :id :math/multiply
+      :uses :math/multiply
+      :params {:factor 2}}]}})
+
+(def compiled-math
+  (recipe/compile math-recipe operation-registry))
+
+(def math-runtime
+  (work/durable-runtime))
+
+(def math-reference
+  (work/start math-runtime
+              compiled-math
+              3
+              {:id "recipe-math-1"}))
+
+(def math-reference-again
+  (work/start math-runtime
+              compiled-math
+              3
+              {:id "recipe-math-1"}))
+
+(def batch-recipe
+  {:schema "std.work.recipe/0-alpha"
+   :recipe/id :recipe/batch
+   :recipe/version 1
+   :body
+   {:op :batch
+    :id :batch/body
+    :list
+    {:op :step-ref
+     :id :batch/list
+     :uses :collection/list}
+    :process
+    {:op :step-ref
+     :id :batch/process
+     :uses :collection/process
+     :params {:factor 10}}
+    :summarise
+    {:op :pure-ref
+     :id :batch/summarise
+     :uses :collection/summarise}}})
+
+(def choose-recipe
+  {:schema "std.work.recipe/0-alpha"
+   :recipe/id :recipe/choose
+   :recipe/version 1
+   :body
+   {:op :choose
+    :id :choose/body
+    :selector
+    {:op :pure-ref
+     :id :choose/selector
+     :uses :control/selector}
+    :choices
+    {:left
+     {:op :pure-ref
+      :id :choose/left
+      :uses :control/left}
+     :right
+     {:op :pure-ref
+      :id :choose/right
+      :uses :control/right}}}})
+
+(def ensure-recipe
+  {:schema "std.work.recipe/0-alpha"
+   :recipe/id :recipe/ensure
+   :recipe/version 1
+   :body
+   {:op :ensure
+    :id :ensure/body
+    :work
+    {:op :step-ref
+     :id :ensure/fail
+     :uses :scope/fail}
+    :cleanup
+    {:op :step-ref
+     :id :ensure/cleanup
+     :uses :scope/cleanup}}})
+
+(def capability-recipe
+  {:schema "std.work.recipe/0-alpha"
+   :recipe/id :recipe/capability
+   :recipe/version 1
+   :body
+   {:op :step-ref
+    :id :capability/read
+    :uses :filesystem/read
+    :params {:path "world.edn"}}})
+
+(def results
+  [(test/check
+    "portable recipes compile to ordinary work graphs"
+    (let [spec (work/work-spec compiled-math)
+          body (work/work-spec (first (:children spec)))
+          increment (work/work-spec (first (:children body)))
+          multiply (work/work-spec (nth (:children body) 1))]
+      [(:op spec)
+       (:id spec)
+       (:recipe/id spec)
+       (:recipe/version spec)
+       (:op body)
+       [(:op increment)
+        (:operation/id increment)]
+       [(:op multiply)
+        (:operation/id multiply)]
+       (map? (:version spec))])
+    [:chain
+     :recipe/math
+     :recipe/math
+     1
+     :chain
+     [:pure :math/increment]
+     [:step :math/multiply]
+     true])
+
+   (test/check
+    "compiled recipes execute and retain durable step identity"
+    [(work/status math-runtime math-reference)
+     (work/result math-runtime math-reference)
+     (= math-reference math-reference-again)
+     (deref step-count)
+     (count (work/checkpoints math-runtime math-reference))]
+    [:completed 8 true 1 1])
+
+   (test/check
+    "batch recipes preserve stable item identities and summaries"
+    (:summary
+     (work/run
+      (work/durable-runtime)
+      (recipe/compile batch-recipe operation-registry)
+      nil))
+    {:items 3
+     :values [10 20 30]})
+
+   (test/check
+    "choose recipes compile portable selectors and alternatives"
+    [(work/run
+      (work/local-runtime)
+      (recipe/compile choose-recipe operation-registry)
+      {:route :left :value 7})
+     (work/run
+      (work/local-runtime)
+      (recipe/compile choose-recipe operation-registry)
+      {:route :right :value 9})]
+    [[:left 7]
+     [:right 9]])
+
+   (test/check
+    "ensure recipes preserve cleanup after failure"
+    [(throws?
+      (fn []
+        (work/run
+         (work/local-runtime)
+         (recipe/compile ensure-recipe operation-registry)
+         nil)))
+     (deref cleanup-count)]
+    [true 1])
+
+   (test/check
+    "operation capabilities are checked from runtime context"
+    [(throws?
+      (fn []
+        (work/run
+         (work/local-runtime)
+         (recipe/compile capability-recipe operation-registry)
+         nil)))
+     (work/run
+      (work/local-runtime)
+      (recipe/compile capability-recipe operation-registry)
+      nil
+      {:context
+       {:capabilities [:filesystem/read]}})]
+    [true "world.edn"])
+
+   (test/check
+    "definition signatures ignore visual layout but include semantic changes"
+    (let [layout-a
+          (assoc-in math-recipe [:body :layout] {:x 10 :y 20})
+          layout-b
+          (assoc-in math-recipe [:body :layout] {:x 90 :y 40})
+          changed
+          (assoc-in math-recipe
+                    [:body :children 0 :params :amount]
+                    2)
+          version-a
+          (:version
+           (work/work-spec
+            (recipe/compile layout-a operation-registry)))
+          version-b
+          (:version
+           (work/work-spec
+            (recipe/compile layout-b operation-registry)))
+          version-changed
+          (:version
+           (work/work-spec
+            (recipe/compile changed operation-registry)))]
+      [(= version-a version-b)
+       (not= version-a version-changed)])
+    [true true])
+
+   (test/check
+    "structural validation returns portable diagnostics"
+    [(recipe/validate math-recipe)
+     (:valid
+      (recipe/validate
+       (assoc-in math-recipe
+                 [:body :children 1 :id]
+                 :math/increment)))]
+    [{:valid true
+      :recipe (recipe/normalise math-recipe)
+      :errors []}
+     false])
+
+   (test/check-error
+    "unknown operation references fail before execution"
+    (recipe/compile
+     (assoc-in math-recipe
+               [:body :children 0 :uses]
+               :missing/operation)
+     operation-registry))
+
+   (test/check-error
+    "pure and checkpointed registry kinds cannot be confused"
+    (recipe/compile
+     (assoc-in math-recipe
+               [:body :children 0 :uses]
+               :math/multiply)
+     operation-registry))
+
+   (test/check-error
+    "recipe parameters cannot carry executable functions"
+    (recipe/compile
+     (assoc-in math-recipe
+               [:body :children 0 :params]
+               {:function (fn [] true)})
+     operation-registry))])
+
+(test/print-results results)

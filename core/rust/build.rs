@@ -65,8 +65,10 @@ fn main() {
     // unpacked `.crate` archive exercises the same embedded library.
     let source_root = manifest.join("hal-src");
     let inventory_path = manifest.join("standard-library.namespaces");
+    let hta_path = manifest.join("src/hta.rs");
     println!("cargo:rerun-if-changed={}", source_root.display());
     println!("cargo:rerun-if-changed={}", inventory_path.display());
+    println!("cargo:rerun-if-changed={}", hta_path.display());
 
     let mut paths = Vec::new();
     collect_hal(&source_root, &mut paths);
@@ -103,8 +105,16 @@ fn main() {
         );
     }
 
-    let mut generated =
-        String::from("pub(crate) static EMBEDDED_HAL_RESOURCES: &[(&str, &str, &str)] = &[\n");
+    // Snapshot and bytecode artifacts use the pure HTA value codec in browser
+    // builds too. Native builds keep the ordinary crate-root module; the
+    // generated declaration supplies the same source only where lib.rs gates it.
+    let hta_path = hta_path
+        .canonicalize()
+        .unwrap_or_else(|error| panic!("cannot resolve {}: {error}", hta_path.display()));
+    let mut generated = format!(
+        "#[cfg(target_arch = \"wasm32\")]\n#[path = {:?}]\npub mod hta;\n\npub(crate) static EMBEDDED_HAL_RESOURCES: &[(&str, &str, &str)] = &[\n",
+        hta_path.to_string_lossy()
+    );
     for (namespace, path) in resources {
         let path = path
             .canonicalize()
