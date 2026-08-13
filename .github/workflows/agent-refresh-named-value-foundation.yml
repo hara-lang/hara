@@ -1,4 +1,4 @@
-name: Agent repair context pointer foundation bundle
+name: Agent repair portable plain-report centering
 
 on:
   push:
@@ -14,74 +14,69 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
-      - name: Check out the context pointer repair
+      - name: Check out the plain-report repair
         uses: actions/checkout@v4
         with:
-          ref: agent/fix-context-pointer-foundation-bundle
-          path: work
+          ref: agent/fix-work-report-portable-center
           fetch-depth: 0
 
-      - name: Check out specification fixtures
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: specs
-          fetch-depth: 1
-
-      - name: Expose specification fixtures
+      - name: Replace evaluator-only quotient usage
         run: |
-          ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/hara-specs-registry"
-          ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/work/hara-specs-registry"
+          python3 - <<'PY'
+          from pathlib import Path
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
+          source_path = Path("core/lib/src/std/work/report/plain.hal")
+          source = source_path.read_text(encoding="utf-8")
+          old = "(let [left (quot missing 2)\n            right (- missing left)]"
+          new = "(let [left (long (/ missing 2))\n            right (- missing left)]"
+          if source.count(old) != 1:
+              raise SystemExit(f"expected one quotient anchor, found {source.count(old)}")
+          source_path.write_text(source.replace(old, new, 1), encoding="utf-8")
 
-      - name: Generate the Rust mirror and foundation bundle
-        working-directory: work
+          test_path = Path("core/lib/test/std/work_report_renderer_test.hal")
+          test = test_path.read_text(encoding="utf-8")
+          anchor = "   (test/check\n    \"plain truncation uses the portable string slice primitive\""
+          addition = (
+              "   (test/check\n"
+              "    \"plain center alignment uses portable numeric primitives\"\n"
+              "    [(plain/pad \"x\" 4 :center)\n"
+              "     (plain/pad \"x\" 5 :center)]\n"
+              "    [\" x  \" \"  x  \"])\n\n"
+          )
+          if test.count(anchor) != 1:
+              raise SystemExit(f"expected one renderer test anchor, found {test.count(anchor)}")
+          test_path.write_text(test.replace(anchor, addition + anchor, 1), encoding="utf-8")
+          PY
+
+      - name: Generate and validate the Rust HAL mirror
         run: |
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
-          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
-          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
           git diff --check
+          ./scripts/runtime/run-lib-tests core/lib/test/std/work_report_renderer_test.hal
           python3 - <<'PY'
           import subprocess
 
           expected = {
-              "core/rust/assets/std.foundation.hbx",
-              "core/rust/hal-src/std/context/pointer.hal",
+              "core/lib/src/std/work/report/plain.hal",
+              "core/lib/test/std/work_report_renderer_test.hal",
+              "core/rust/hal-src/std/work/report/plain.hal",
           }
-          status = subprocess.check_output(
-              ["git", "status", "--short"], text=True
-          ).splitlines()
+          status = subprocess.check_output(["git", "status", "--short"], text=True).splitlines()
           changed = {line[3:] for line in status if line.strip()}
           if changed != expected:
-              raise SystemExit(
-                  f"unexpected generated file set: {sorted(changed)}; "
-                  f"expected {sorted(expected)}"
-              )
+              raise SystemExit(f"unexpected file set: {sorted(changed)}")
           PY
 
-      - name: Run focused named-value acceptance tests
-        working-directory: work
-        run: |
-          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defstruct_forms_issue_223 -- --nocapture
-          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defmutable_forms_use_reference_identity_and_settable_fields -- --nocapture
-          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_struct_protocols_dispatch_like_truffle -- --nocapture
-          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_mutables_share_storage_and_reject_persistent_updates -- --nocapture
-          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm structs_preserve_wire_shape_and_mutables_are_rejected -- --nocapture
-
-      - name: Commit generated outputs to the repair branch
-        working-directory: work
+      - name: Commit the repair
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
-            core/rust/assets/std.foundation.hbx \
-            core/rust/hal-src/std/context/pointer.hal
-          git commit -m 'Refresh the context pointer foundation bundle'
-          git push origin HEAD:refs/heads/agent/fix-context-pointer-foundation-bundle
+            core/lib/src/std/work/report/plain.hal \
+            core/lib/test/std/work_report_renderer_test.hal \
+            core/rust/hal-src/std/work/report/plain.hal
+          git commit -m 'Use portable arithmetic in plain report centering'
+          git push origin HEAD:refs/heads/agent/fix-work-report-portable-center
