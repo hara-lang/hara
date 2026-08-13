@@ -5,21 +5,12 @@
   (:require [code.test :as test]
             [std.work :as work]))
 
-(def work-event-kind test/work-event-kind)
-(def work-reporter test/work-reporter)
-
-(defn reporter-for
-  [options context]
-  (test/work-reporter context))
-
 (def +default-revision+ test/+default-work-revision+)
 (def +runner-work+ test/+runner-work+)
 (def revision test/work-revision)
 (def context-options test/work-context-options)
 (def execution-options test/work-execution-options)
 (def suite-work test/suite-work)
-
-(def +unsupported-batch-options+ [:fail-fast])
 
 (defn fact-identity
   [value]
@@ -71,6 +62,8 @@
                 {:namespace namespace
                  :name name})))))
 
+(declare fact-result-identity)
+
 (defn fact-work
   "Returns one checkpointed fact boundary. Assertion failures, skips, timeouts,
    and test errors are completed domain results returned by code.test/run-fact."
@@ -83,34 +76,13 @@
      :test/revision fact-revision}
     (fn [input context]
       (let [options (execution-options input context)
-            reporter (reporter-for options context)]
-        (test/run-fact
-         (resolve-fact namespace name)
-         reporter
-         options))))))
-
-(defn unsupported-batch-options
-  [options]
-  (reduce
-   (fn [output key]
-     (if (and (has? options key)
-              (not (nil? (get options key)))
-              (not (= false (get options key))))
-       (conj output key)
-       output))
-   []
-   +unsupported-batch-options+))
-
-(defn assert-batch-options!
-  [options]
-  (let [unsupported (unsupported-batch-options options)]
-    (if (seq unsupported)
-      (throw
-       (ex-info
-        "Fact batch execution does not support fail-fast scheduling"
-        {:unsupported unsupported
-         :options options})))
-    options))
+            fact (resolve-fact namespace name)]
+        (work/emit! context
+                    :test/fact-started
+                    (fact-result-identity fact))
+        (let [result (test/run-fact fact options)]
+          (work/emit! context :test/fact-completed result)
+          result))))))
 
 (defn selected-facts
   [options]
@@ -152,8 +124,7 @@
   [input context default-revision]
   (let [input-options (data-options input context)
         facts (selected-facts input-options)
-        options (assert-batch-options!
-                 (effective-suite-options facts input-options))
+        options (effective-suite-options facts input-options)
         items
         (vec
          (map
@@ -228,21 +199,22 @@
   [subject context]
   (let [fact (resolve-fact (:namespace subject)
                            (:name subject))
-        options (fact-options subject context)
-        reporter (reporter-for options context)]
-    (test/run-fact fact reporter options)))
+        options (fact-options subject context)]
+    (work/emit! context
+                :test/fact-started
+                (fact-result-identity fact))
+    (let [result (test/run-fact fact options)]
+      (work/emit! context :test/fact-completed result)
+      result)))
 
 (defn before-fact
   [subject context]
   (let [fact (resolve-fact (:namespace subject)
                            (:name subject))
         options (fact-options subject context)
-        reporter (reporter-for options context)
         identity (fact-result-identity fact)
-        start (test/clock-now options)
-        start-event (test/report! reporter
-                                  (merge {:event :fact/start}
-                                         identity))]
+        start (test/clock-now options)]
+    (work/emit! context :test/fact-started identity)
     (try
       (do
         (test/run-hooks [(:before-each options)
@@ -323,11 +295,8 @@
         result (if (= :error (:status cleanup))
                  (error-result fact (:error cleanup))
                  (:test/result state))
-        result (timed-result result (:test/start state) options)
-        reporter (reporter-for options context)
-        end-event (test/report! reporter
-                                (merge {:event :fact/end}
-                                       result))]
+        result (timed-result result (:test/start state) options)]
+    (work/emit! context :test/fact-completed result)
     result))
 
 (defn running-fact-work
@@ -383,12 +352,10 @@
 
 (defn suite-before
   [prepared context]
-  (let [options (execution-options (:test/options prepared) context)
-        reporter (reporter-for options context)
-        start-event
-        (test/report! reporter
-                      {:event :run/start
-                       :count (count (:test/items prepared))})]
+  (let [options (execution-options (:test/options prepared) context)]
+    (work/emit! context
+                :test/run-started
+                {:count (count (:test/items prepared))})
     (test/run-hook (:before-all options) options)
     nil))
 
@@ -396,15 +363,34 @@
   [outcome context]
   (let [prepared (:work/input outcome)
         options (execution-options (:test/options prepared) context)
-        reporter (reporter-for options context)
         body-result (:work/body-result outcome)]
     (test/run-hook (:after-all options) options)
     (if (= :completed (:work/body-status outcome))
-      (test/report! reporter
-                    (merge {:event :run/end}
-                           (:summary body-result)))
+      (work/emit! context
+                  :test/run-completed
+                  (:summary body-result))
       nil)
     {:status :completed}))
+
+(defn stop-after-fact?
+  [batch context]
+  (and (get-in batch [:input :test/options :fail-fast])
+       (test/failing-status?
+        (get-in batch [:result :item/value :status]))))
+
+(defn cancel-unclaimed-fact
+  [batch context]
+  (let [subject (get-in batch [:item :item/value])
+        fact (resolve-fact (:namespace subject)
+                           (:name subject))
+        result (merge (fact-result-identity fact)
+                      {:status :cancelled
+                       :checks []})]
+    (work/emit! context
+                :test/fact-started
+                (fact-result-identity fact))
+    (work/emit! context :test/fact-completed result)
+    result))
 
 (defn fact-batch-body
   [batch-revision]
@@ -440,6 +426,18 @@
       :process
       (fact-process-work batch-revision)
 
+      :stop
+      (work/pure
+       {:id 'code.test/fact-stop
+        :version batch-revision}
+       stop-after-fact?)
+
+      :cancel
+      (work/step
+       {:id 'code.test/fact-cancel
+        :version batch-revision}
+       cancel-unclaimed-fact)
+
       :summarise
       (work/pure
        {:id 'code.test/fact-summary
@@ -450,8 +448,9 @@
   "Returns an opt-in fact graph with independently checkpointed fact bodies.
 
    Suite and fact cleanup hooks execute through cleanup-safe work scopes.
-   Reporters are bridged into durable work history. Fail-fast scheduling remains
-   on the cleanup-safe suite runner until the runtime owns queued item claims."
+   Test events are committed directly into durable work history. Baseline
+   batch stop/cancel stages own fail-fast scheduling and preserve one terminal
+   result for every selected fact."
   ([]
    (fact-batch-work +default-revision+))
   ([batch-revision]

@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Reject private code.test reporter buses; require direct std.work events."""
+
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+CANONICAL = [
+    ROOT / "core/lib/src/code/test.hal",
+    ROOT / "core/lib/src/code/test/work.hal",
+]
+MIRRORS = [
+    ROOT / "core/rust/hal-src/code/test.hal",
+    ROOT / "core/rust/hal-src/code/test/work.hal",
+]
+FORBIDDEN = [
+    "(defn report-event",
+    "(defn report!",
+    "(defn work-reporter",
+    "(defn reporter-for",
+    "WorkReporter",
+    "ITestReporter",
+    ":run/start",
+    ":run/end",
+    ":fact/start",
+    ":fact/end",
+]
+REQUIRED = [
+    ":test/run-started",
+    ":test/fact-started",
+    ":test/fact-completed",
+    ":test/run-completed",
+]
+
+errors = []
+for path in CANONICAL:
+    source = path.read_text(encoding="utf-8")
+    for token in FORBIDDEN:
+        if token in source:
+            errors.append(f"{path.relative_to(ROOT)} retains private event token {token!r}")
+    for token in REQUIRED:
+        if token not in source:
+            errors.append(f"{path.relative_to(ROOT)} does not emit required event {token}")
+
+for canonical, mirror in zip(CANONICAL, MIRRORS):
+    if canonical.read_bytes() != mirror.read_bytes():
+        errors.append(
+            f"HAL mirror differs: {canonical.relative_to(ROOT)} != {mirror.relative_to(ROOT)}"
+        )
+
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    raise SystemExit(1)
+
+print("code.test commits lifecycle events directly through std.work")

@@ -47,6 +47,19 @@
        (* value (:factor params))))
 
     (recipe/operation
+     :collection/stop
+     :pure
+     (fn [value context params]
+       (= (:value params)
+          (get-in value [:result :item/value]))))
+
+    (recipe/operation
+     :collection/cancel
+     :step
+     (fn [value context params]
+       (- 0 (get-in value [:item :item/value]))))
+
+    (recipe/operation
      :collection/summarise
      :pure
      (fn [value context params]
@@ -145,6 +158,15 @@
      :id :batch/process
      :uses :collection/process
      :params {:factor 10}}
+    :stop
+    {:op :pure-ref
+     :id :batch/stop
+     :uses :collection/stop
+     :params {:value 20}}
+    :cancel
+    {:op :step-ref
+     :id :batch/cancel
+     :uses :collection/cancel}
     :summarise
     {:op :pure-ref
      :id :batch/summarise
@@ -233,14 +255,20 @@
     [:completed 8 true 1 1])
 
    (test/check
-    "batch recipes preserve stable item identities and summaries"
-    (:summary
-     (work/run
-      (work/durable-runtime)
-      (recipe/compile batch-recipe operation-registry)
-      nil))
-    {:items 3
-     :values [10 20 30]})
+    "batch recipes preserve stop/cancel policy, stable identities and summaries"
+    (let [compiled (recipe/compile batch-recipe operation-registry)
+          body (work/work-spec
+                (first (:children (work/work-spec compiled))))
+          result (work/run (work/durable-runtime) compiled nil)]
+      [(:op body)
+       (:id (work/work-spec (:stop body)))
+       (:id (work/work-spec (:cancel body)))
+       (:summary result)])
+    [:batch
+     :batch/stop
+     :batch/cancel
+     {:items 3
+      :values [10 20 -3]}])
 
    (test/check
     "choose recipes compile portable selectors and alternatives"
