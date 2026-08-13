@@ -891,8 +891,16 @@ fn global_forms_issue_223() {
 fn defstruct_forms_issue_223() {
     assert_eq!(eval("(do (defstruct Point [x y]) nil)"), "nil");
     assert_eq!(
-        eval("(do (defstruct Point [x y]) (field (->Point 19 23) :y))"),
+        eval("(do (defstruct Point [x y]) (:y (->Point 19 23)))"),
         "23"
+    );
+    assert_eq!(
+        eval("(do (defstruct Point [x y]) [(get (map->Point {:x 1 :extra 9}) :x) (get (map->Point {:x 1 :extra 9}) :y)])"),
+        "[1 nil]"
+    );
+    assert_eq!(
+        eval("(do (defstruct Point [x y]) (let [original (Point 1 2) updated (assoc original :x 10)] [(:x original) (:x updated) (instance? Point updated)]))"),
+        "[1 10 true]"
     );
     assert_eq!(
         eval("(do (defstruct Point [x y]) (instance? Point (->Point 1 2)))"),
@@ -904,8 +912,33 @@ fn defstruct_forms_issue_223() {
     );
     // Constructor vars are ordinary globals: late-bound and replaceable.
     assert_eq!(
-        eval("(do (defstruct Point [x y]) (def make ->Point) (field (make 1 2) :x))"),
+        eval("(do (defstruct Point [x y]) (def make ->Point) (:x (make 1 2)))"),
         "1"
+    );
+}
+
+#[test]
+fn defmutable_forms_use_reference_identity_and_settable_fields() {
+    assert_eq!(eval("(do (defmutable Cursor [x y]) nil)"), "nil");
+    assert_eq!(
+        eval("(do (defmutable Cursor [x y]) (field (->Cursor 19 23) :y))"),
+        "23"
+    );
+    assert_eq!(
+        eval("(do (defmutable Cursor [x y]) (let [cursor (map->Cursor {:x 1 :extra 9})] [(get cursor :x) (:y cursor) (count cursor)]))"),
+        "[1 nil 2]"
+    );
+    assert_eq!(
+        eval("(do (defmutable Cursor [x]) (let [cursor (Cursor 1) alias cursor result (set! (field cursor :x) 10)] [result (field alias :x) (= cursor alias) (= cursor (Cursor 10))]))"),
+        "[10 10 true false]"
+    );
+    assert_eq!(
+        eval("(do (def order []) (defmutable Cursor [x]) (def cursor (Cursor 1)) (set! (field (do (set! order (conj order :receiver)) cursor) :x) (do (set! order (conj order :replacement)) 10)) [order (field cursor :x)])"),
+        "[[:receiver :replacement] 10]"
+    );
+    assert_eq!(
+        eval("(do (defmutable Cursor [x]) (instance? Cursor (Cursor 1)))"),
+        "true"
     );
 }
 
@@ -942,18 +975,34 @@ fn global_form_errors_issue_223() {
     assert!(message.contains("unbound var: missing"), "{message}");
     let (_, message) = compile_error("(let [x 1] (set! x 2))");
     assert!(message.contains("set! targets a global var"), "{message}");
-    // Field errors surface at runtime, not compile time.
+    // Mutable-field errors surface at runtime, not compile time.
     assert_eval_error(
-        "(do (defstruct P [x]) (field (->P 1) :z))",
-        "unknown struct field: z",
+        "(do (defmutable P [x]) (field (->P 1) :z))",
+        "unknown mutable field: z",
     );
     assert_eval_error(
-        "(do (defstruct P [x]) (field 42 :x))",
-        "field expects a struct",
+        "(do (defstruct P [x]) (field (->P 1) :x))",
+        "field expects a mutable value",
+    );
+    assert_eval_error(
+        "(do (defmutable P [x]) (field 42 :x))",
+        "field expects a mutable value",
+    );
+    assert_eval_error(
+        "(do (defmutable P [x]) (set! (field (P 1) :z) 2))",
+        "unknown mutable field: z",
+    );
+    assert_eval_error(
+        "(do (defmutable P [x]) (assoc (P 1) :x 2))",
+        "assoc does not support mutable values",
+    );
+    assert_eval_error(
+        "(do (defmutable P [x]) (dissoc (P 1) :x))",
+        "dissoc does not support mutable values",
     );
     assert_eval_error(
         "(do (defstruct P [x]) (instance? 42 1))",
-        "instance? expects a struct type",
+        "instance? expects a struct or mutable type",
     );
     // Referred foundation Vars are protected; declare is forward visibility only.
     let message = Runtime::new()

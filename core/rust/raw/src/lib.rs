@@ -619,16 +619,14 @@ impl Session {
                         _ => return Err("ns expects an unqualified namespace symbol".into()),
                     };
                     let resources = self.resources.borrow();
-                    let config = kernel::GeneratedNamespaceConfig::configure_with(
-                        &values[2..],
-                        |target| {
+                    let config =
+                        kernel::GeneratedNamespaceConfig::configure_with(&values[2..], |target| {
                             self.namespaces.find(target).is_some()
                                 || resources.contains_key(target)
                                 || target == "std.foundation"
                                 || target.starts_with("std.foundation.")
                                 || target.starts_with("std.lib.")
-                        },
-                    )?;
+                        })?;
                     self.generated_configs.insert(namespace.clone(), config);
                     prepared.push(form);
                     continue;
@@ -2661,7 +2659,7 @@ mod tests {
             .start_fiber(
                 1,
                 "(defstruct Box [value]) (defprotocol ReadBox (read-box [self])) \
-                 (extend-type Box ReadBox (read-box [self] (field self :value))) :ok",
+                 (extend-type Box ReadBox (read-box [self] (:value self))) :ok",
             )
             .unwrap();
         assert!(matches!(
@@ -2956,7 +2954,10 @@ mod tests {
         runtime
             .start_fiber(2, "(ns user) (str/trim \"  hara  \" )")
             .unwrap();
-        assert_eq!(completion_value(&mut runtime, 2), Value::String("hara".into()));
+        assert_eq!(
+            completion_value(&mut runtime, 2),
+            Value::String("hara".into())
+        );
     }
 }
 

@@ -860,7 +860,7 @@ public class HaraLanguageTest {
                   "(defstruct Problem [value]) "
                       + "(try (throw (Problem 7)) "
                       + "(catch Other error 0) "
-                      + "(catch Problem error (field error :value)))")
+                      + "(catch Problem error (:value error)))")
               .asLong());
       PolyglotException unmatched =
           assertThrows(
@@ -1288,7 +1288,7 @@ public class HaraLanguageTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(defstruct Person [name]) (field (apply Person [\"Ada\"]) :name)")
+                  "(defstruct Person [name]) (:name (apply Person [\"Ada\"]))")
               .asString());
     }
   }
@@ -1494,7 +1494,7 @@ public class HaraLanguageTest {
       assertEquals(36, person.getMember("age").asLong());
       assertTrue(person.toString().contains("Person"));
       assertEquals(
-          "Ada", context.eval(HaraLanguage.ID, "(field (Person \"Ada\" 36) :name)").asString());
+          "Ada", context.eval(HaraLanguage.ID, "(:name (Person \"Ada\" 36))").asString());
       assertTrue(context.eval(HaraLanguage.ID, "Person").canExecute());
     }
   }
@@ -1525,8 +1525,8 @@ public class HaraLanguageTest {
                   "(defstruct Counter [base]) "
                       + "(defprotocol CounterOps (value [self]) (add [self amount])) "
                       + "(extend-type Counter CounterOps "
-                      + "  (value [self] (field self :base)) "
-                      + "  (add [self amount] (+ (field self :base) amount))) "
+                      + "  (value [self] (:base self)) "
+                      + "  (add [self amount] (+ (:base self) amount))) "
                       + "(add (Counter 41) 2)")
               .asLong());
 
@@ -1537,7 +1537,7 @@ public class HaraLanguageTest {
                   HaraLanguage.ID,
                   "(defstruct Incrementer [base]) "
                       + "(extend-type Incrementer IFn "
-                      + "  (invoke [self value] (+ (field self :base) value))) "
+                      + "  (invoke [self value] (+ (:base self) value))) "
                       + "((Incrementer 1) 41)")
               .asLong());
     }
@@ -1576,7 +1576,7 @@ public class HaraLanguageTest {
                   HaraLanguage.ID,
                   "(defstruct Box [value]) "
                       + "(defprotocol BoxOps (read [self])) "
-                      + "(extend-type Box BoxOps (read [self] (field self :value))) "
+                      + "(extend-type Box BoxOps (read [self] (:value self))) "
                       + "[(read (Box 41)) (user/read (Box 42))]")
               .toString());
 
@@ -1831,9 +1831,9 @@ public class HaraLanguageTest {
                       + "(defstruct Person [name]) "
                       + "(defstruct NumberValue [value]) "
                       + "(extend-type Person Describable "
-                      + "  (describe [self] (field self :name))) "
+                      + "  (describe [self] (:name self))) "
                       + "(extend-type NumberValue Describable "
-                      + "  (describe [self] (field self :value))) "
+                      + "  (describe [self] (:value self))) "
                       + "(def describe-value "
                       + "  (fn [value] (describe value))) "
                       + "(describe-value (Person \"Ada\"))")
@@ -1861,7 +1861,7 @@ public class HaraLanguageTest {
                   HaraLanguage.ID,
                   "(defstruct Box [size]) "
                       + "(extend-type Box ICount "
-                      + "  (count [self] (field self :size))) "
+                      + "  (count [self] (:size self))) "
                       + "(ICount/count (Box 41))")
               .asLong());
     }
@@ -2115,7 +2115,7 @@ public class HaraLanguageTest {
     try (Context context = context()) {
       context.eval(
           HaraLanguage.ID,
-          "(defstruct Box [m]) (extend-type Box ILookup (lookup [self k] (field self :m))) "
+          "(defstruct Box [m]) (extend-type Box ILookup (lookup [self k] (:m self))) "
               + "(defn pick [c] (get c :a))");
       assertEquals(1, context.eval(HaraLanguage.ID, "(pick {:a 1})").asLong());
       assertTrue(context.eval(HaraLanguage.ID, "(pick nil)").isNull());

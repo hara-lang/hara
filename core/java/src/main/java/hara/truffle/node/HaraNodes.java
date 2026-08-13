@@ -34,6 +34,7 @@ import hara.truffle.HaraException;
 import hara.truffle.HaraFunction;
 import hara.truffle.HaraLanguage;
 import hara.truffle.HaraMultiFunction;
+import hara.truffle.HaraMutable;
 import hara.truffle.HaraProtocol;
 import hara.truffle.HaraProtocolImplementation;
 import hara.truffle.HaraStruct;
@@ -46,6 +47,14 @@ import java.util.LinkedHashMap;
 
 public final class HaraNodes {
   private HaraNodes() {}
+
+  private static Object constructNamedValue(HaraType type, Object[] values) {
+    try {
+      return type.construct(values);
+    } catch (ArityException impossible) {
+      throw new IllegalStateException("named value arity was checked before construction", impossible);
+    }
+  }
 
   public static final class RecurTarget {
     private final int[] slots;
@@ -930,6 +939,49 @@ public final class HaraNodes {
     }
   }
 
+  public static final class SetField extends HaraExpressionNode {
+    @Child private HaraExpressionNode target;
+    @Child private HaraExpressionNode replacement;
+    private final String field;
+
+    public SetField(
+        HaraExpressionNode target, String field, HaraExpressionNode replacement) {
+      this.target = target;
+      this.field = field;
+      this.replacement = replacement;
+    }
+
+    @Override
+    public Object execute(VirtualFrame frame) {
+      Object receiver = target.execute(frame);
+      Object value = replacement.execute(frame);
+      if (!(receiver instanceof HaraMutable mutable)) {
+        throw new HaraException(
+            "set! field expects a mutable value: "
+                + field
+                + " on "
+                + (receiver == null ? "nil" : receiver.getClass().getName()),
+            this);
+      }
+      try {
+        return writeMutableField(mutable, value);
+      } catch (UnknownIdentifierException exception) {
+        throw unknownMutableFieldError();
+      }
+    }
+
+    @TruffleBoundary
+    private Object writeMutableField(HaraMutable mutable, Object value)
+        throws UnknownIdentifierException {
+      return mutable.write(field, value);
+    }
+
+    @TruffleBoundary
+    private HaraException unknownMutableFieldError() {
+      return new HaraException("Unknown mutable field: " + field, this);
+    }
+  }
+
   public static final class Do extends HaraExpressionNode {
     @Children private final HaraExpressionNode[] expressions;
 
@@ -1178,8 +1230,11 @@ public final class HaraNodes {
             || "Throwable".equals(typeName)) {
           return true;
         }
-        if (value instanceof HaraStruct) {
-          return typeName.equals(((HaraStruct) value).type().name());
+        if (value instanceof HaraStruct struct) {
+          return typeName.equals(struct.type().name());
+        }
+        if (value instanceof HaraMutable mutable) {
+          return typeName.equals(mutable.type().name());
         }
         if ("Number".equals(typeName)) return value instanceof Number;
         if ("String".equals(typeName)) return value instanceof String;
@@ -1474,7 +1529,7 @@ public final class HaraNodes {
       Object typeValue = type.execute(frame);
       Object protocolValue = protocol.execute(frame);
       if (!(typeValue instanceof HaraType)) {
-        throw new HaraException("extend-type expects a struct type", this);
+        throw new HaraException("extend-type expects a named value type", this);
       }
       if (!(protocolValue instanceof HaraProtocol)) {
         throw new HaraException("extend-type expects a protocol", this);
@@ -1507,16 +1562,16 @@ public final class HaraNodes {
     @Override
     public Object execute(VirtualFrame frame) {
       Object value = target.execute(frame);
-      if (!(value instanceof HaraStruct)) {
+      if (!(value instanceof HaraMutable mutable)) {
         throw new HaraException(
-            "field expects a struct: "
+            "field expects a mutable value: "
                 + field
                 + " on "
                 + (value == null ? "nil" : value.getClass().getName()),
             this);
       }
       try {
-        return readStructField((HaraStruct) value);
+        return readMutableField(mutable);
       } catch (com.oracle.truffle.api.interop.UnknownIdentifierException exception) {
         throw unknownFieldError();
       }
@@ -1524,13 +1579,13 @@ public final class HaraNodes {
 
     @TruffleBoundary
     private HaraException unknownFieldError() {
-      return new HaraException("Unknown struct field: " + field, this);
+      return new HaraException("Unknown mutable field: " + field, this);
     }
 
     @TruffleBoundary
-    private Object readStructField(HaraStruct struct)
+    private Object readMutableField(HaraMutable mutable)
         throws com.oracle.truffle.api.interop.UnknownIdentifierException {
-      return struct.read(field);
+      return mutable.read(field);
     }
   }
 
@@ -2071,7 +2126,7 @@ public final class HaraNodes {
       if (target instanceof HaraMultiFunction) {
         return invokeMultiFunction((HaraMultiFunction) target, evaluateArguments(frame));
       }
-      if (target instanceof HaraStruct) {
+      if (target instanceof HaraStruct || target instanceof HaraMutable) {
         return invokeViaProtocol(target, evaluateArguments(frame));
       }
       if (target instanceof HaraBuiltinFunction) {
@@ -2089,7 +2144,7 @@ public final class HaraNodes {
           throw arityError(haraType.arity(), arguments.length, false);
         }
         Object[] values = evaluateArguments(frame);
-        return new HaraStruct(haraType, values);
+        return constructNamedValue(haraType, values);
       }
       if (!(target instanceof HaraFunction)
           && HaraLanguage.currentContext(this).isFunctionValue(target)) {
@@ -2256,7 +2311,7 @@ public final class HaraNodes {
       if (target instanceof HaraMultiFunction) {
         return invokeMultiFunction((HaraMultiFunction) target, values);
       }
-      if (target instanceof HaraStruct) {
+      if (target instanceof HaraStruct || target instanceof HaraMutable) {
         return invokeViaProtocol(target, values);
       }
       if (target instanceof HaraBuiltinFunction) {
@@ -2270,7 +2325,7 @@ public final class HaraNodes {
         if (values.length != haraType.arity()) {
           throw arityError(haraType.arity(), values.length, false);
         }
-        return new HaraStruct(haraType, values);
+        return constructNamedValue(haraType, values);
       }
       if (!(target instanceof HaraFunction)) {
         throw notCallable(target);
@@ -2509,7 +2564,7 @@ public final class HaraNodes {
       if (target instanceof HaraMultiFunction) {
         return invokeMultiFunction((HaraMultiFunction) target, values);
       }
-      if (target instanceof HaraStruct) {
+      if (target instanceof HaraStruct || target instanceof HaraMutable) {
         return invokeViaProtocol(target, values);
       }
       if (target instanceof HaraBuiltinFunction) {
@@ -2523,7 +2578,7 @@ public final class HaraNodes {
         if (values.length != haraType.arity()) {
           throw arityError(haraType.arity(), values.length, false);
         }
-        return new HaraStruct(haraType, values);
+        return constructNamedValue(haraType, values);
       }
       if (!(target instanceof HaraFunction)) {
         throw notCallable(target);

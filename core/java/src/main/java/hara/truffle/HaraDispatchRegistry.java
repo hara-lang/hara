@@ -73,8 +73,9 @@ public final class HaraDispatchRegistry {
         return nil != null ? nil : defaultImplementation;
       }
 
-      if (receiver instanceof HaraStruct) {
-        HaraProtocolImplementation implementation = haraTypes.get(((HaraStruct) receiver).type());
+      HaraType namedType = HaraDispatchKey.namedType(receiver);
+      if (namedType != null) {
+        HaraProtocolImplementation implementation = haraTypes.get(namedType);
         if (implementation != null) {
           return implementation;
         }

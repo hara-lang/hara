@@ -7,7 +7,7 @@ import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 
 @ExportLibrary(InteropLibrary.class)
-public final class HaraType implements TruffleObject {
+public class HaraType implements TruffleObject {
   private final String name;
   private final String[] fields;
 
@@ -20,11 +20,15 @@ public final class HaraType implements TruffleObject {
     return fields.length;
   }
 
-  HaraStruct construct(Object[] values) throws ArityException {
-    if (values.length != fields.length) {
-      throw ArityException.create(fields.length, fields.length, values.length);
-    }
+  public Object construct(Object[] values) throws ArityException {
+    requireArity(values.length);
     return new HaraStruct(this, values);
+  }
+
+  final void requireArity(int actual) throws ArityException {
+    if (actual != fields.length) {
+      throw ArityException.create(fields.length, fields.length, actual);
+    }
   }
 
   int fieldIndex(String field) {

@@ -204,7 +204,6 @@ public record HbcProgram(
     VAR_GLOBAL(18),
     DECLARE_GLOBAL(19),
     DEF_STRUCT(20),
-    STRUCT_FIELD(21),
     INSTANCE_OF(22),
     MAKE_MULTI_ARITY(23),
     RETURN(24),
@@ -228,7 +227,10 @@ public record HbcProgram(
     DEF_MULTI(43),
     DEF_METHOD(44),
     DOT_CALL(45),
-    YIELD(46);
+    YIELD(46),
+    DEF_MUTABLE(47),
+    MUTABLE_FIELD_GET(48),
+    MUTABLE_FIELD_SET(49);
 
     private final int id;
 
@@ -241,6 +243,10 @@ public record HbcProgram(
     }
 
     public static Opcode fromId(int id) {
+      if (id == 21) {
+        throw new HbcFormatException(
+            "bytecode artifact uses retired StructField opcode 21; rebuild required");
+      }
       for (Opcode opcode : values()) if (opcode.id == id) return opcode;
       throw new HbcFormatException("bytecode artifact contains an unknown opcode");
     }

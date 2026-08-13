@@ -169,7 +169,8 @@ public final class HbcValidator {
           failAt("callstatic capture count differs from current function", ip);
         }
       }
-      case GET_GLOBAL, SET_GLOBAL, VAR_GLOBAL, DECLARE_GLOBAL, STRUCT_FIELD ->
+      case GET_GLOBAL, SET_GLOBAL, VAR_GLOBAL, DECLARE_GLOBAL, MUTABLE_FIELD_GET,
+          MUTABLE_FIELD_SET ->
           stringConstant(program, instruction.first(), ip);
       case BUILTIN_VALUE, DYNAMIC_BIND, DYNAMIC_UNBIND ->
           stringConstant(program, instruction.first(), ip);
@@ -187,16 +188,17 @@ public final class HbcValidator {
           failAt("var metadata index " + instruction.second() + " out of range", ip);
         }
       }
-      case DEF_STRUCT -> {
+      case DEF_STRUCT, DEF_MUTABLE -> {
+        String kind = opcode == Opcode.DEF_MUTABLE ? "defmutable" : "defstruct";
         stringConstant(program, instruction.first(), ip);
         Object fields = constant(program, instruction.second(), ip);
         if (!(fields instanceof ILinearType<?>)) {
-          failAt("defstruct fields constant " + instruction.second() + " is not a string vector", ip);
+          failAt(kind + " fields constant " + instruction.second() + " is not a string vector", ip);
         }
         ILinearType<?> values = (ILinearType<?>) fields;
         for (Object value : values) {
           if (!(value instanceof String)) {
-            failAt("defstruct fields constant " + instruction.second() + " is not a string vector", ip);
+            failAt(kind + " fields constant " + instruction.second() + " is not a string vector", ip);
           }
         }
       }
@@ -243,14 +245,15 @@ public final class HbcValidator {
   private static int stackEffect(Instruction instruction) {
     return switch (instruction.opcode()) {
       case CONSTANT, NIL, TRUE, FALSE, LOAD_LOCAL, DUP, PRIMITIVE_LOCAL_CONST,
-          GET_GLOBAL, VAR_GLOBAL, DECLARE_GLOBAL, DEF_STRUCT, PRIMITIVE_VALUE,
+          GET_GLOBAL, VAR_GLOBAL, DECLARE_GLOBAL, DEF_STRUCT, DEF_MUTABLE, PRIMITIVE_VALUE,
           BUILTIN_VALUE, DYNAMIC_UNBIND, DEF_PROTOCOL, EXTEND_TYPE, DEF_MULTI, DEF_METHOD -> 1;
       case STORE_LOCAL, POP, JUMP_IF_FALSE -> -1;
       case PRIMITIVE, CALL_STATIC -> 1 - Math.toIntExact(instruction.second());
       case CLOSURE -> 1 - Math.toIntExact(instruction.second());
       case CALL -> -Math.toIntExact(instruction.first());
-      case DEF_GLOBAL, SET_GLOBAL, STRUCT_FIELD, DEF_MACRO, AWAIT, YIELD, JUMP, TO_VECTOR,
+      case DEF_GLOBAL, SET_GLOBAL, MUTABLE_FIELD_GET, DEF_MACRO, AWAIT, YIELD, JUMP, TO_VECTOR,
           DYNAMIC_BIND -> 0;
+      case MUTABLE_FIELD_SET -> -1;
       case INSTANCE_OF -> -1;
       case MAKE_MULTI_ARITY -> 1 - Math.toIntExact(instruction.second());
       case BUILD_VECTOR, BUILD_SET, BUILD_LIST, CONCAT_LIST -> 1 - Math.toIntExact(instruction.first());

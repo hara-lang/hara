@@ -43,6 +43,7 @@ public final class HtaValueCodec {
   private static final int BIG_INTEGER = 20;
   private static final int DECIMAL = 21;
   private static final int REGEX = 22;
+  private static final int STRUCT = 33;
 
   private HtaValueCodec() {}
 
@@ -122,6 +123,16 @@ public final class HtaValueCodec {
       writeText(output, handle.owner());
       writeText(output, handle.type());
       writeLong(output, handle.id());
+    } else if (value instanceof HaraMutable || value instanceof HaraMutableType) {
+      throw new HaraException(
+          "hta/value-unsupported: mutable values are not serializable; use (into {} value)");
+    } else if (value instanceof HaraStruct struct) {
+      output.write(STRUCT);
+      write(output, struct.type().name(), depth + 1);
+      output.write(VECTOR);
+      writeCollection(output, java.util.Arrays.asList(struct.type().fields()), depth + 1);
+      output.write(VECTOR);
+      writeCollection(output, java.util.Arrays.asList(struct.orderedValues()), depth + 1);
     } else if (value instanceof IMapType<?, ?>) {
       writeMap(output, ((IMapType<?, ?>) value).iterator(), depth);
     } else if (value instanceof Map<?, ?>) {
@@ -295,9 +306,45 @@ public final class HtaValueCodec {
           String type = text();
           require(8);
           return new HtaHandle(owner, type, input.getLong());
+        case STRUCT:
+          return struct(depth + 1);
         default:
           throw malformed("unknown value tag");
       }
+    }
+
+    private Object struct(int depth) {
+      Object nameValue = read(depth);
+      Object fieldValue = read(depth);
+      Object valuesValue = read(depth);
+      if (!(nameValue instanceof String)) {
+        throw malformed("invalid struct type name");
+      }
+      Object[] fieldObjects = sequenceValues(fieldValue, "struct fields");
+      Object[] members = sequenceValues(valuesValue, "struct values");
+      if (fieldObjects.length != members.length) {
+        throw malformed("struct field/value arity mismatch");
+      }
+      String[] fields = new String[fieldObjects.length];
+      for (int index = 0; index < fields.length; index++) {
+        if (!(fieldObjects[index] instanceof String)) {
+          throw malformed("invalid struct field name");
+        }
+        fields[index] = (String) fieldObjects[index];
+      }
+      return new HaraStruct(new HaraType((String) nameValue, fields), members);
+    }
+
+    private Object[] sequenceValues(Object value, String kind) {
+      if (value instanceof ILinearType<?> sequence) {
+        Object[] result = new Object[(int) sequence.count()];
+        for (int index = 0; index < result.length; index++) result[index] = sequence.nth(index);
+        return result;
+      }
+      if (value instanceof List<?> sequence) {
+        return sequence.toArray();
+      }
+      throw malformed("invalid " + kind);
     }
 
     private Object sequence(int depth, boolean vector) {

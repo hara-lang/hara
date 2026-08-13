@@ -98,7 +98,8 @@ final class HaraAnalyzer {
   }
 
   private void predeclareTopLevel(Object[] forms, int start, int end) {
-    Set<String> definitionForms = Set.of("def", "defn", "defn-", "defmacro", "defstruct");
+    Set<String> definitionForms =
+        Set.of("def", "defn", "defn-", "defmacro", "defstruct", "defmutable");
     for (int index = start; index < end; index++) {
       if (!(forms[index] instanceof List<?> list)
           || list.count() < 2
@@ -280,7 +281,9 @@ final class HaraAnalyzer {
         case "set!":
           return analyzeSetVar(list);
         case "defstruct":
-          return analyzeDefStruct(list);
+          return analyzeNamedDefinition(list, false);
+        case "defmutable":
+          return analyzeNamedDefinition(list, true);
         case "defprotocol":
           return analyzeDefProtocol(list);
         case "extend-type":
@@ -1379,25 +1382,37 @@ final class HaraAnalyzer {
 
   private HaraExpressionNode analyzeSetVar(List<?> form) {
     requireCount(form, 3, "set!");
-    Object name = form.nth(1);
-    if (!(name instanceof Symbol)) {
-      throw error("set! expects a Var symbol");
+    Object place = form.nth(1);
+    if (place instanceof List<?> fieldPlace
+        && fieldPlace.count() > 0
+        && fieldPlace.nth(0) instanceof Symbol operator
+        && operator.getNamespace() == null
+        && "field".equals(operator.getName())) {
+      requireCount(fieldPlace, 3, "field");
+      return new HaraNodes.SetField(
+          analyze(fieldPlace.nth(1)),
+          fieldName(fieldPlace.nth(2)),
+          analyze(form.nth(2)));
     }
-    return new HaraNodes.SetVar((Symbol) name, analyze(form.nth(2)));
+    if (!(place instanceof Symbol)) {
+      throw error("set! expects a Var symbol or mutable field place");
+    }
+    return new HaraNodes.SetVar((Symbol) place, analyze(form.nth(2)));
   }
 
-  private HaraExpressionNode analyzeDefStruct(List<?> form) {
-    if (form.count() < 3) throw error("defstruct expects a name and field vector");
+  private HaraExpressionNode analyzeNamedDefinition(List<?> form, boolean mutable) {
+    String kind = mutable ? "defmutable" : "defstruct";
+    if (form.count() < 3) throw error(kind + " expects a name and field vector");
     Object name = form.nth(1);
     if (!(name instanceof Symbol)) {
-      throw error("defstruct name must be a symbol");
+      throw error(kind + " name must be a symbol");
     }
     Symbol symbol = (Symbol) name;
     if (symbol.getNamespace() != null) {
-      throw error("defstruct name must not be qualified");
+      throw error(kind + " name must not be qualified");
     }
     if (!isBindingVector(form.nth(2))) {
-      throw error("defstruct expects a field vector");
+      throw error(kind + " expects a field vector");
     }
 
     ILinearType<?> fields = (ILinearType<?>) form.nth(2);
@@ -1407,19 +1422,22 @@ final class HaraAnalyzer {
     for (int i = 0; i < fieldNames.length; i++) {
       Object field = fields.nth(i);
       if (!(field instanceof Symbol) || ((Symbol) field).getNamespace() != null) {
-        throw error("defstruct field names must be unqualified symbols");
+        throw error(kind + " field names must be unqualified symbols");
       }
       Symbol fieldSymbol = (Symbol) field;
       fieldNames[i] = fieldSymbol.getName();
       fieldSymbols[i] = fieldSymbol;
       if (!seen.add(fieldNames[i])) {
-        throw error("Duplicate defstruct field: " + fieldNames[i]);
+        throw error("Duplicate " + kind + " field: " + fieldNames[i]);
       }
     }
 
+    HaraType type =
+        mutable
+            ? new HaraMutableType(symbol.getName(), fieldNames)
+            : new HaraType(symbol.getName(), fieldNames);
     HaraExpressionNode typeDefinition =
-        new HaraNodes.DefineGlobal(
-            symbol, new HaraNodes.Literal(new HaraType(symbol.getName(), fieldNames)));
+        new HaraNodes.DefineGlobal(symbol, new HaraNodes.Literal(type));
 
     Object[] positionalArgs = new Object[fieldSymbols.length + 1];
     positionalArgs[0] = Symbol.create(symbol.getName());
@@ -1456,10 +1474,14 @@ final class HaraAnalyzer {
     int index = 3;
     while (index < form.count()) {
       Object protocol = form.nth(index++);
-      if (!(protocol instanceof Symbol)) throw error("defstruct protocol clause expects a protocol symbol");
+      if (!(protocol instanceof Symbol)) {
+        throw error(kind + " protocol clause expects a protocol symbol");
+      }
       int start = index;
       while (index < form.count() && form.nth(index) instanceof List<?>) index++;
-      if (start == index) throw error("defstruct protocol clause requires method implementations");
+      if (start == index) {
+        throw error(kind + " protocol clause requires method implementations");
+      }
       Object[] extension = new Object[index - start + 3];
       extension[0] = Symbol.create("extend-type");
       extension[1] = Symbol.create(symbol.getName());
@@ -1472,22 +1494,22 @@ final class HaraAnalyzer {
 
   private HaraExpressionNode analyzeField(List<?> form) {
     requireCount(form, 3, "field");
-    Object field = form.nth(2);
-    String fieldName;
+    return new HaraNodes.ReadField(analyze(form.nth(1)), fieldName(form.nth(2)));
+  }
+
+  private String fieldName(Object field) {
     if (field instanceof Keyword) {
       if (((Keyword) field).getNamespace() != null) {
         throw error("field name must not be qualified");
       }
-      fieldName = ((Keyword) field).getName();
+      return ((Keyword) field).getName();
     } else if (field instanceof Symbol) {
       if (((Symbol) field).getNamespace() != null) {
         throw error("field name must not be qualified");
       }
-      fieldName = ((Symbol) field).getName();
-    } else {
-      throw error("field name must be a keyword or symbol");
+      return ((Symbol) field).getName();
     }
-    return new HaraNodes.ReadField(analyze(form.nth(1)), fieldName);
+    throw error("field name must be a keyword or symbol");
   }
 
   private HaraExpressionNode analyzeDefProtocol(List<?> form) {

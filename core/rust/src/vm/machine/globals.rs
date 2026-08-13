@@ -194,7 +194,25 @@ impl Machine {
     }
 
     #[inline(never)]
-    pub(super) fn exec_struct_field(
+    pub(super) fn exec_def_mutable(
+        &mut self,
+        program: &Program,
+        name: u32,
+        fields: u32,
+    ) -> Result<(), String> {
+        let Some(name) = constant_string(program, name) else {
+            return Err(format!("constant index {name} out of range"));
+        };
+        let Some(field_names) = constant_string_vector(program, fields) else {
+            return Err(format!("constant index {fields} out of range"));
+        };
+        let value = crate::core::vm_defmutable(name, field_names)?;
+        self.stack.push(value.into());
+        Ok(())
+    }
+
+    #[inline(never)]
+    pub(super) fn exec_mutable_field_get(
         &mut self,
         program: &Program,
         index: u32,
@@ -206,7 +224,29 @@ impl Machine {
             return Err("stack underflow".to_string());
         };
         let value = Machine::into_value(self.program.clone(), value);
-        let value = crate::core::struct_field_value(&value, field)?;
+        let value = crate::core::mutable_field_value(&value, field)?;
+        self.stack.push(value.into());
+        Ok(())
+    }
+
+    #[inline(never)]
+    pub(super) fn exec_mutable_field_set(
+        &mut self,
+        program: &Program,
+        index: u32,
+    ) -> Result<(), String> {
+        let Some(field) = constant_string(program, index) else {
+            return Err(format!("constant index {index} out of range"));
+        };
+        let Some(replacement) = self.stack.pop() else {
+            return Err("stack underflow".to_string());
+        };
+        let Some(receiver) = self.stack.pop() else {
+            return Err("stack underflow".to_string());
+        };
+        let replacement = Machine::into_value(self.program.clone(), replacement);
+        let receiver = Machine::into_value(self.program.clone(), receiver);
+        let value = crate::core::mutable_field_set(&receiver, field, replacement)?;
         self.stack.push(value.into());
         Ok(())
     }
@@ -221,7 +261,7 @@ impl Machine {
         };
         let ty = Machine::into_value(self.program.clone(), ty);
         let value = Machine::into_value(self.program.clone(), value);
-        let value = crate::core::struct_instance_of(&ty, &value)?;
+        let value = crate::core::named_instance_of(&ty, &value)?;
         self.stack.push(value.into());
         Ok(())
     }

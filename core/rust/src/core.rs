@@ -48,9 +48,23 @@ pub struct StructType {
 }
 
 #[derive(Debug, Clone)]
+pub struct MutableType {
+    pub name: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct StructValue {
     pub ty: Rc<StructType>,
-    pub values: Vec<Value>,
+    pub values: PMap<Value, Value>,
+    pub metadata: Option<Rc<Metadata>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MutableValue {
+    pub ty: Rc<MutableType>,
+    pub values: Rc<RefCell<Vec<Value>>>,
+    pub metadata: Option<Rc<Metadata>>,
 }
 
 #[derive(Debug, Clone)]
@@ -554,6 +568,8 @@ pub enum Value {
     Extension(ExtensionValue),
     StructType(Rc<StructType>),
     Struct(Rc<StructValue>),
+    MutableType(Rc<MutableType>),
+    Mutable(Rc<MutableValue>),
     Protocol(Rc<GuestProtocol>),
     NativeType(Rc<NativeType>),
     Coroutine(Rc<Coroutine>),
@@ -573,6 +589,126 @@ pub enum MutableCollection {
     List(MutableList<Value>),
     Queue(MutableQueue<Value>),
     Vector(MutableVector<Value>),
+}
+
+fn named_field_key(field: &str) -> Value {
+    Value::Keyword(Keyword::from(field))
+}
+
+fn named_field_name(value: &Value) -> Option<&str> {
+    match value {
+        Value::String(name) => Some(name.as_str()),
+        Value::Keyword(name) if name.get_namespace().is_none() => Some(name.get_name()),
+        Value::Symbol(name) if name.get_namespace().is_none() => Some(name.get_name()),
+        _ => None,
+    }
+}
+
+impl StructValue {
+    pub(crate) fn from_values(
+        ty: Rc<StructType>,
+        values: Vec<Value>,
+        metadata: Option<Rc<Metadata>>,
+    ) -> Result<Self, String> {
+        if values.len() != ty.fields.len() {
+            return Err(format!("{} expects {} arguments", ty.name, ty.fields.len()));
+        }
+        let values = ty
+            .fields
+            .iter()
+            .zip(values)
+            .fold(PMap::new(), |values, (field, value)| {
+                values.assoc_value(named_field_key(field), value)
+            });
+        Ok(Self {
+            ty,
+            values,
+            metadata,
+        })
+    }
+
+    pub(crate) fn get(&self, field: &str) -> Option<&Value> {
+        self.values.get(&named_field_key(field))
+    }
+
+    pub(crate) fn ordered_values(&self) -> Vec<&Value> {
+        self.ty
+            .fields
+            .iter()
+            .filter_map(|field| self.get(field))
+            .collect()
+    }
+
+    pub(crate) fn ordered_entries(&self) -> Vec<(Value, Value)> {
+        self.ty
+            .fields
+            .iter()
+            .filter_map(|field| {
+                self.get(field)
+                    .cloned()
+                    .map(|value| (named_field_key(field), value))
+            })
+            .collect()
+    }
+}
+
+impl MutableValue {
+    pub(crate) fn from_values(
+        ty: Rc<MutableType>,
+        values: Vec<Value>,
+        metadata: Option<Rc<Metadata>>,
+    ) -> Result<Self, String> {
+        if values.len() != ty.fields.len() {
+            return Err(format!("{} expects {} arguments", ty.name, ty.fields.len()));
+        }
+        Ok(Self {
+            ty,
+            values: Rc::new(RefCell::new(values)),
+            metadata,
+        })
+    }
+
+    fn field_index(&self, field: &str) -> Option<usize> {
+        self.ty
+            .fields
+            .iter()
+            .position(|candidate| candidate == field)
+    }
+
+    pub(crate) fn get(&self, field: &str) -> Option<Value> {
+        let index = self.field_index(field)?;
+        self.values.borrow().get(index).cloned()
+    }
+
+    pub(crate) fn set(&self, field: &str, replacement: Value) -> Result<Value, String> {
+        let index = self
+            .field_index(field)
+            .ok_or_else(|| format!("unknown mutable field: {field}"))?;
+        self.values.borrow_mut()[index] = replacement.clone();
+        Ok(replacement)
+    }
+
+    pub(crate) fn ordered_values(&self) -> Vec<Value> {
+        self.values.borrow().clone()
+    }
+
+    pub(crate) fn ordered_entries(&self) -> Vec<(Value, Value)> {
+        self.ty
+            .fields
+            .iter()
+            .cloned()
+            .zip(self.ordered_values())
+            .map(|(field, value)| (named_field_key(&field), value))
+            .collect()
+    }
+
+    fn same_identity(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.values, &other.values)
+    }
+
+    fn identity_address(&self) -> usize {
+        Rc::as_ptr(&self.values) as usize
+    }
 }
 
 #[derive(Clone)]
@@ -1968,7 +2104,7 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         Value::Queue(values) => values.iter().all(session_transferable),
         Value::Tuple(values) => values.iter().all(session_transferable),
         Value::Vector(values) => values.iter().all(session_transferable),
-        Value::Struct(value) => value.values.iter().all(session_transferable),
+        Value::Struct(value) => value.ordered_values().into_iter().all(session_transferable),
         Value::ExceptionInfo(value) => {
             session_transferable(&value.data)
                 && value.cause.as_deref().map_or(true, session_transferable)
@@ -1986,6 +2122,8 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Namespace(_)
         | Value::Extension(_)
         | Value::StructType(_)
+        | Value::MutableType(_)
+        | Value::Mutable(_)
         | Value::Protocol(_)
         | Value::NativeType(_)
         | Value::Coroutine(_)
@@ -2178,7 +2316,11 @@ impl PartialEq for Value {
             (Value::Namespace(a), Value::Namespace(b)) => a.same_identity(b),
             (Value::Extension(a), Value::Extension(b)) => a == b,
             (Value::StructType(a), Value::StructType(b)) => Rc::ptr_eq(a, b),
-            (Value::Struct(a), Value::Struct(b)) => Rc::ptr_eq(a, b),
+            (Value::Struct(a), Value::Struct(b)) => {
+                Rc::ptr_eq(&a.ty, &b.ty) && a.values == b.values
+            }
+            (Value::MutableType(a), Value::MutableType(b)) => Rc::ptr_eq(a, b),
+            (Value::Mutable(a), Value::Mutable(b)) => a.same_identity(b),
             (Value::Protocol(a), Value::Protocol(b)) => Rc::ptr_eq(a, b),
             (Value::NativeType(a), Value::NativeType(b)) => a.name == b.name,
             (Value::Coroutine(a), Value::Coroutine(b)) => Rc::ptr_eq(a, b),
@@ -2247,11 +2389,13 @@ impl Ord for Value {
                 Value::Extension(_) => 25,
                 Value::StructType(_) => 27,
                 Value::Struct(_) => 28,
-                Value::Protocol(_) => 29,
-                Value::NativeType(_) => 30,
-                Value::Coroutine(_) => 31,
-                Value::ExceptionInfo(_) => 32,
-                Value::MutableCollection(_) => 33,
+                Value::MutableType(_) => 29,
+                Value::Mutable(_) => 30,
+                Value::Protocol(_) => 31,
+                Value::NativeType(_) => 32,
+                Value::Coroutine(_) => 33,
+                Value::ExceptionInfo(_) => 34,
+                Value::MutableCollection(_) => 35,
             }
         }
         rank(self)
@@ -2355,12 +2499,19 @@ impl crate::lang::hash::JavaHash for Value {
                 v.type_name.hash(s);
                 v.handle.hash(s);
             }),
-            Self::StructType(v) => opaque(26, |s| v.name.hash(s)),
-            Self::Struct(v) => opaque(27, |s| Rc::as_ptr(v).hash(s)),
-            Self::Protocol(v) => opaque(28, |s| v.name.hash(s)),
-            Self::NativeType(v) => opaque(29, |s| v.name.hash(s)),
-            Self::Coroutine(v) => opaque(30, |s| Rc::as_ptr(v).hash(s)),
-            Self::ExceptionInfo(v) => opaque(31, |s| Rc::as_ptr(v).hash(s)),
+            Self::StructType(v) => opaque(26, |s| Rc::as_ptr(v).hash(s)),
+            Self::Struct(v) => opaque(27, |s| {
+                Rc::as_ptr(&v.ty).hash(s);
+                for value in v.ordered_values() {
+                    value.hash(s);
+                }
+            }),
+            Self::MutableType(v) => opaque(28, |s| Rc::as_ptr(v).hash(s)),
+            Self::Mutable(v) => opaque(29, |s| v.identity_address().hash(s)),
+            Self::Protocol(v) => opaque(30, |s| v.name.hash(s)),
+            Self::NativeType(v) => opaque(31, |s| v.name.hash(s)),
+            Self::Coroutine(v) => opaque(32, |s| Rc::as_ptr(v).hash(s)),
+            Self::ExceptionInfo(v) => opaque(33, |s| Rc::as_ptr(v).hash(s)),
         }
     }
 }
@@ -2537,7 +2688,20 @@ impl Value {
                     .ty
                     .fields
                     .iter()
-                    .zip(&value.values)
+                    .filter_map(|field| value.get(field).map(|value| (field, value)))
+                    .map(|(field, value)| format!(":{field} {}", value.display()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
+            Self::MutableType(value) => value.name.clone(),
+            Self::Mutable(value) => format!(
+                "#{}{{{}}}",
+                value.ty.name,
+                value
+                    .ty
+                    .fields
+                    .iter()
+                    .zip(value.ordered_values())
                     .map(|(field, value)| format!(":{field} {}", value.display()))
                     .collect::<Vec<_>>()
                     .join(" ")
@@ -2756,15 +2920,16 @@ impl ProtocolRegistry {
             qualified = canonical_protocol_name(protocol);
             qualified.as_str()
         };
-        if let Some(Value::Struct(receiver)) = arguments.first() {
+        let named_type = match arguments.first() {
+            Some(Value::Struct(receiver)) => Some(receiver.ty.name.as_str()),
+            Some(Value::Mutable(receiver)) => Some(receiver.ty.name.as_str()),
+            _ => None,
+        };
+        if let Some(type_name) = named_type {
             let guest_function = self
                 .guest_methods
                 .borrow()
-                .get(&(
-                    protocol.to_owned(),
-                    receiver.ty.name.clone(),
-                    method.to_owned(),
-                ))
+                .get(&(protocol.to_owned(), type_name.to_owned(), method.to_owned()))
                 .cloned();
             if let Some(function) = guest_function {
                 return call_function(&function, arguments.to_vec());
@@ -3064,12 +3229,15 @@ pub(crate) fn catch_matches(error: &str, class: &str) -> bool {
     ACTIVE_THROWN_VALUE.with(|active| {
         active.borrow().as_ref().is_some_and(|(message, value)| {
             error.starts_with(message)
-                && matches!(
-                    value,
-                    Value::Struct(value)
-                        if value.ty.name == class
-                            || value.ty.name.ends_with(&format!("/{class}"))
-                )
+                && match value {
+                    Value::Struct(value) => {
+                        value.ty.name == class || value.ty.name.ends_with(&format!("/{class}"))
+                    }
+                    Value::Mutable(value) => {
+                        value.ty.name == class || value.ty.name.ends_with(&format!("/{class}"))
+                    }
+                    _ => false,
+                }
         })
     })
 }
@@ -3249,20 +3417,24 @@ pub(crate) fn vm_resolve_global(name: &str) -> Result<KernelVar<Value>, String> 
     Err(format!("unbound symbol: {name}"))
 }
 
-/// `defstruct` against the registry directly, mirroring the evaluator's
-/// defstruct arm minus protocol clauses (rejected by the VM compiler).
-/// Interns `Name`, `->Name`, and `map->Name` into the current namespace
-/// and returns nil, exactly like the special form (issue #223).
-pub(crate) fn vm_defstruct(name: &str, fields: Vec<String>) -> Result<Value, String> {
+fn validate_named_definition(kind: &str, name: &str, fields: &[String]) -> Result<(), String> {
     if name.contains('/') {
-        return Err("defstruct name must be an unqualified symbol".into());
+        return Err(format!("{kind} name must be an unqualified symbol"));
     }
     if fields.iter().any(|field| field.contains('/')) {
-        return Err("defstruct field names must be unqualified symbols".into());
+        return Err(format!("{kind} field names must be unqualified symbols"));
     }
     if fields.iter().collect::<HashSet<_>>().len() != fields.len() {
-        return Err("Duplicate defstruct field".into());
+        return Err(format!("Duplicate {kind} field"));
     }
+    Ok(())
+}
+
+/// `defstruct` against the registry directly, mirroring the evaluator's
+/// declaration arm minus inline protocol clauses. Interns `Name`, `->Name`,
+/// and `map->Name` into the current namespace and returns nil.
+pub(crate) fn vm_defstruct(name: &str, fields: Vec<String>) -> Result<Value, String> {
+    validate_named_definition("defstruct", name, &fields)?;
     let registry = namespace_registry()?;
     let namespace = registry.current().name().as_str().to_owned();
     let ty = Rc::new(StructType {
@@ -3272,21 +3444,20 @@ pub(crate) fn vm_defstruct(name: &str, fields: Vec<String>) -> Result<Value, Str
     let map_type = ty.clone();
     let map_constructor = native_function(&format!("map->{name}"), 1, move |values| {
         let source = values.first().expect("native arity is checked");
-        let fields = map_type
+        let values = map_type
             .fields
             .iter()
             .map(|field| {
-                Ok(
-                    map_value(source, &Value::Keyword(Keyword::from(field.as_str())))
-                        .cloned()
-                        .unwrap_or(Value::Nil),
-                )
+                map_value(source, &named_field_key(field))
+                    .cloned()
+                    .unwrap_or(Value::Nil)
             })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(Value::Struct(Rc::new(StructValue {
-            ty: map_type.clone(),
-            values: fields,
-        })))
+            .collect();
+        Ok(Value::Struct(Rc::new(StructValue::from_values(
+            map_type.clone(),
+            values,
+            None,
+        )?)))
     });
     let current = registry.current();
     for (binding, value) in [
@@ -3301,30 +3472,83 @@ pub(crate) fn vm_defstruct(name: &str, fields: Vec<String>) -> Result<Value, Str
     Ok(Value::Nil)
 }
 
-/// Positional field access on a struct instance, shared with the `field`
-/// special form (issue #223).
-pub(crate) fn struct_field_value(value: &Value, field: &str) -> Result<Value, String> {
-    let Value::Struct(value) = value else {
-        return Err("field expects a struct".into());
-    };
-    value
-        .ty
-        .fields
-        .iter()
-        .position(|candidate| candidate == field)
-        .map(|index| value.values[index].clone())
-        .ok_or_else(|| format!("unknown struct field: {field}"))
+/// `defmutable` against the registry directly. Mutable values use a distinct
+/// type descriptor and fixed-field storage while retaining the constructor
+/// naming conventions of `defstruct`.
+pub(crate) fn vm_defmutable(name: &str, fields: Vec<String>) -> Result<Value, String> {
+    validate_named_definition("defmutable", name, &fields)?;
+    let registry = namespace_registry()?;
+    let namespace = registry.current().name().as_str().to_owned();
+    let ty = Rc::new(MutableType {
+        name: format!("{namespace}/{name}"),
+        fields,
+    });
+    let map_type = ty.clone();
+    let map_constructor = native_function(&format!("map->{name}"), 1, move |values| {
+        let source = values.first().expect("native arity is checked");
+        let values = map_type
+            .fields
+            .iter()
+            .map(|field| {
+                map_value(source, &named_field_key(field))
+                    .cloned()
+                    .unwrap_or(Value::Nil)
+            })
+            .collect();
+        Ok(Value::Mutable(Rc::new(MutableValue::from_values(
+            map_type.clone(),
+            values,
+            None,
+        )?)))
+    });
+    let current = registry.current();
+    for (binding, value) in [
+        (name.to_owned(), Value::MutableType(ty.clone())),
+        (format!("->{name}"), Value::MutableType(ty.clone())),
+        (format!("map->{name}"), map_constructor),
+    ] {
+        let var = KernelVar::new(format!("{namespace}/{binding}"), value);
+        var.set_origin(definition_origin());
+        current.map_var(Symbol::create(None, &binding), var);
+    }
+    Ok(Value::Nil)
 }
 
-/// Struct type identity check, shared with the `instance?` special form
-/// (issue #223).
-pub(crate) fn struct_instance_of(type_value: &Value, value: &Value) -> Result<Value, String> {
-    let Value::StructType(ty) = type_value else {
-        return Err("instance? expects a struct type".into());
+/// Direct field access is reserved for mutable named values. Immutable
+/// structs use ordinary associative lookup.
+pub(crate) fn mutable_field_value(value: &Value, field: &str) -> Result<Value, String> {
+    let Value::Mutable(value) = value else {
+        return Err("field expects a mutable value".into());
     };
-    Ok(Value::Bool(
-        matches!(value, Value::Struct(value) if Rc::ptr_eq(ty, &value.ty)),
-    ))
+    value
+        .get(field)
+        .ok_or_else(|| format!("unknown mutable field: {field}"))
+}
+
+/// Replaces one declared mutable field and returns the replacement value.
+pub(crate) fn mutable_field_set(
+    value: &Value,
+    field: &str,
+    replacement: Value,
+) -> Result<Value, String> {
+    let Value::Mutable(value) = value else {
+        return Err("field expects a mutable value".into());
+    };
+    value.set(field, replacement)
+}
+
+/// Named-value type identity check shared with the `instance?` special form.
+pub(crate) fn named_instance_of(type_value: &Value, value: &Value) -> Result<Value, String> {
+    let matches = match type_value {
+        Value::StructType(ty) => {
+            matches!(value, Value::Struct(value) if Rc::ptr_eq(ty, &value.ty))
+        }
+        Value::MutableType(ty) => {
+            matches!(value, Value::Mutable(value) if Rc::ptr_eq(ty, &value.ty))
+        }
+        _ => return Err("instance? expects a struct or mutable type".into()),
+    };
+    Ok(Value::Bool(matches))
 }
 
 pub(crate) fn namespace_registry() -> Result<NamespaceRegistry<Value>, String> {
@@ -5474,6 +5698,8 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Extension(_) => "extension",
         Value::StructType(_) => "struct-type",
         Value::Struct(_) => "struct",
+        Value::MutableType(_) => "mutable-type",
+        Value::Mutable(_) => "mutable",
         Value::Protocol(_) => "protocol",
         Value::NativeType(_) => "native-type",
         Value::Coroutine(_) => "coroutine",
@@ -5514,6 +5740,8 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::Extension(_) => "extension",
         Value::StructType(_) => "struct-type",
         Value::Struct(_) => "struct",
+        Value::MutableType(_) => "mutable-type",
+        Value::Mutable(_) => "mutable",
         Value::Protocol(_) => "protocol",
         Value::NativeType(_) => "native-type",
         Value::Coroutine(_) => "coroutine",
@@ -6474,6 +6702,8 @@ fn value_metadata(value: &Value) -> Option<Rc<Metadata>> {
         Value::OrderedSet(value) => value.meta().cloned(),
         Value::SortedSet(value) => value.meta().cloned(),
         Value::Var(value) => value.hara_metadata(),
+        Value::Struct(value) => value.metadata.clone(),
+        Value::Mutable(value) => value.metadata.clone(),
         Value::NativeType(value) => value.metadata.clone(),
         _ => None,
     }
@@ -6663,6 +6893,14 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
                 })
                 .unwrap_or(Value::Nil))
         }
+        Value::Struct(value) => Ok(named_field_name(key)
+            .and_then(|name| value.get(name).cloned().map(|item| (name, item)))
+            .map(|(name, item)| Value::Vector(PVector::from_iter([named_field_key(name), item])))
+            .unwrap_or(Value::Nil)),
+        Value::Mutable(value) => Ok(named_field_name(key)
+            .and_then(|name| value.get(name).map(|item| (name, item)))
+            .map(|(name, item)| Value::Vector(PVector::from_iter([named_field_key(name), item])))
+            .unwrap_or(Value::Nil)),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             Ok(set_find(value, key).unwrap_or(Value::Nil))
         }
@@ -6693,6 +6931,8 @@ fn protocol_iter(arguments: &[Value]) -> Result<Value, String> {
                     | Value::ByteBuffer(_)
                     | Value::Array(_)
                     | Value::Object(_)
+                    | Value::Struct(_)
+                    | Value::Mutable(_)
                     | Value::Map(_)
                     | Value::OrderedMap(_)
                     | Value::SortedMap(_)
@@ -8105,6 +8345,16 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
                 ]))
             })
             .collect()),
+        Value::Struct(value) => Ok(value
+            .ordered_entries()
+            .into_iter()
+            .map(|(key, value)| Value::Vector(PVector::from_iter([key, value])))
+            .collect()),
+        Value::Mutable(value) => Ok(value
+            .ordered_entries()
+            .into_iter()
+            .map(|(key, value)| Value::Vector(PVector::from_iter([key, value])))
+            .collect()),
         value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(map_entries(&value)
                 .unwrap()
@@ -8142,6 +8392,8 @@ fn make_iterator(value: Value) -> Result<Value, String> {
         | Value::ByteBuffer(_)
         | Value::Array(_)
         | Value::Object(_)
+        | Value::Struct(_)
+        | Value::Mutable(_)
         | Value::Map(_)
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
@@ -8388,7 +8640,23 @@ fn collection_keys(value: &Value) -> Result<Value, String> {
                 .map(|(key, _)| Value::String(key.clone()))
                 .collect(),
         )),
-        _ => Err("keys expects a map or object".into()),
+        Value::Struct(value) => Ok(Value::Vector(
+            value
+                .ty
+                .fields
+                .iter()
+                .map(|field| named_field_key(field))
+                .collect(),
+        )),
+        Value::Mutable(value) => Ok(Value::Vector(
+            value
+                .ty
+                .fields
+                .iter()
+                .map(|field| named_field_key(field))
+                .collect(),
+        )),
+        _ => Err("keys expects a map, object, struct, or mutable value".into()),
     }
 }
 
@@ -8410,7 +8678,11 @@ fn collection_vals(value: &Value) -> Result<Value, String> {
                 .map(|(_, value)| value.clone())
                 .collect(),
         )),
-        _ => Err("vals expects a map or object".into()),
+        Value::Struct(value) => Ok(Value::Vector(
+            value.ordered_values().into_iter().cloned().collect(),
+        )),
+        Value::Mutable(value) => Ok(Value::Vector(value.ordered_values().into_iter().collect())),
+        _ => Err("vals expects a map, object, struct, or mutable value".into()),
     }
 }
 
@@ -8487,6 +8759,12 @@ fn collection_empty_value(value: Value) -> Result<Value, String> {
         Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => {
             Ok(Value::OrderedSet(Box::new(POrderedSet::new())))
         }
+        Value::Struct(value) => Ok(Value::Struct(Rc::new(StructValue::from_values(
+            value.ty.clone(),
+            vec![Value::Nil; value.ty.fields.len()],
+            value.metadata.clone(),
+        )?))),
+        Value::Mutable(_) => Err("empty does not support mutable values".into()),
         value => Err(format!(
             "empty expects a collection, got {}",
             portable_type_name(&value)
@@ -8521,7 +8799,8 @@ fn collection_count(value: &Value) -> Result<Value, String> {
         Value::ByteBuffer(v) => v.borrow().len(),
         Value::Array(v) => v.borrow().len(),
         Value::Object(v) => v.borrow().len(),
-        Value::Struct(v) => v.values.len(),
+        Value::Struct(v) => v.ty.fields.len(),
+        Value::Mutable(v) => v.ty.fields.len(),
         Value::MutableCollection(collection) => {
             let borrowed = collection.borrow();
             let mutable = borrowed
@@ -8636,22 +8915,13 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
                 .map(|(_, value)| value.clone())
                 .unwrap_or(default))
         }
-        Value::Struct(value) => {
-            let name = match key {
-                Value::String(name) => name.as_str(),
-                Value::Keyword(name) => name.as_str(),
-                Value::Symbol(name) if name.get_namespace().is_none() => name.get_name(),
-                _ => return Ok(default),
-            };
-            Ok(value
-                .ty
-                .fields
-                .iter()
-                .position(|candidate| candidate == name)
-                .and_then(|index| value.values.get(index))
-                .cloned()
-                .unwrap_or(default))
-        }
+        Value::Struct(value) => Ok(named_field_name(key)
+            .and_then(|name| value.get(name))
+            .cloned()
+            .unwrap_or(default)),
+        Value::Mutable(value) => Ok(named_field_name(key)
+            .and_then(|name| value.get(name))
+            .unwrap_or(default)),
         _ => Err("get expects a collection".into()),
     }
 }
@@ -8770,20 +9040,19 @@ fn collection_assoc(value: &Value, key: &Value, replacement: Value) -> Result<Va
             Ok(Value::Object(Rc::new(RefCell::new(output))))
         }
         Value::Struct(value) => {
-            let name = marker_key(key, "struct")?;
-            let index = value
-                .ty
-                .fields
-                .iter()
-                .position(|candidate| candidate == &name)
-                .ok_or_else(|| format!("unknown struct field: {name}"))?;
-            let mut values = value.values.clone();
-            values[index] = replacement;
+            let name = named_field_name(key).ok_or_else(|| {
+                "assoc struct field must be an unqualified string, keyword, or symbol".to_string()
+            })?;
+            if !value.ty.fields.iter().any(|candidate| candidate == name) {
+                return Err(format!("unknown struct field: {name}"));
+            }
             Ok(Value::Struct(Rc::new(StructValue {
                 ty: value.ty.clone(),
-                values,
+                values: value.values.assoc_value(named_field_key(name), replacement),
+                metadata: value.metadata.clone(),
             })))
         }
+        Value::Mutable(_) => Err("assoc does not support mutable values".into()),
         Value::Nil => Ok(Value::Map(
             PMap::new().assoc_value(key.clone(), replacement),
         )),
@@ -8825,6 +9094,23 @@ fn collection_dissoc(value: &Value, keys: &[Value]) -> Result<Value, String> {
                 &[current.clone(), key.clone()],
             )
         }),
+        Value::Mutable(_) => Err("dissoc does not support mutable values".into()),
+        Value::Struct(value) => {
+            let declared = keys
+                .iter()
+                .filter_map(named_field_name)
+                .any(|name| value.ty.fields.iter().any(|candidate| candidate == name));
+            if !declared {
+                return Ok(Value::Struct(value.clone()));
+            }
+            let mut values = value.values.with_meta(value.metadata.clone());
+            for key in keys {
+                if let Some(name) = named_field_name(key) {
+                    values = values.dissoc_value(&named_field_key(name));
+                }
+            }
+            Ok(Value::Map(values))
+        }
         Value::MutableCollection(collection) => {
             let mut collection_value = collection.borrow_mut();
             let mutable = collection_value
@@ -9073,6 +9359,16 @@ fn attach_optional_metadata(value: Value, metadata: Option<Rc<Metadata>>) -> Res
             value.set_hara_metadata(metadata);
             Value::Var(value)
         }
+        Value::Struct(value) => Value::Struct(Rc::new(StructValue {
+            ty: value.ty.clone(),
+            values: value.values.clone(),
+            metadata,
+        })),
+        Value::Mutable(value) => Value::Mutable(Rc::new(MutableValue {
+            ty: value.ty.clone(),
+            values: value.values.clone(),
+            metadata,
+        })),
         Value::NativeType(value) => Value::NativeType(Rc::new(NativeType {
             name: value.name.clone(),
             methods: value.methods.clone(),
@@ -9655,16 +9951,13 @@ pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value
         |target: &Value, key: &Value, fallback: Value| collection_get(target, key, fallback);
     match callable {
         Value::Function(function) => call_function(&function, arguments),
-        Value::StructType(ty) => {
-            if arguments.len() != ty.fields.len() {
-                return Err(format!("{} expects {} arguments", ty.name, ty.fields.len()));
-            }
-            Ok(Value::Struct(Rc::new(StructValue {
-                ty,
-                values: arguments,
-            })))
-        }
-        value @ Value::Struct(_) => {
+        Value::StructType(ty) => Ok(Value::Struct(Rc::new(StructValue::from_values(
+            ty, arguments, None,
+        )?))),
+        Value::MutableType(ty) => Ok(Value::Mutable(Rc::new(MutableValue::from_values(
+            ty, arguments, None,
+        )?))),
+        value @ (Value::Struct(_) | Value::Mutable(_)) => {
             let mut protocol_arguments = Vec::with_capacity(arguments.len() + 1);
             protocol_arguments.push(value);
             protocol_arguments.extend(arguments);
@@ -11174,6 +11467,31 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() != 3 {
                         return Err(format!("{n} expects a symbol and value"));
                     }
+                    if n == "set!" {
+                        if let Form::List(place) = &fs[1] {
+                            if matches!(place.first(), Some(Form::Symbol(operation)) if operation == "field")
+                            {
+                                if place.len() != 3 {
+                                    return Err(
+                                        "set! field place expects a receiver and field".into()
+                                    );
+                                }
+                                let field = match &place[2] {
+                                    Form::Keyword(field) if !field.contains('/') => field.as_str(),
+                                    Form::Symbol(field) if !field.contains('/') => field.as_str(),
+                                    _ => {
+                                        return Err(
+                                            "set! field place expects an unqualified literal field"
+                                                .into(),
+                                        )
+                                    }
+                                };
+                                let receiver = eval(&place[1], env)?;
+                                let replacement = eval(&fs[2], env)?;
+                                return mutable_field_set(&receiver, field, replacement);
+                            }
+                        }
+                    }
                     let name = match &fs[1] {
                         Form::Symbol(name) => name,
                         _ => return Err(format!("{n} expects a symbol")),
@@ -11355,58 +11673,80 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     Ok(Value::Nil)
                 }
-                Form::Symbol(n) if n == "defstruct" => {
+                Form::Symbol(n) if n == "defstruct" || n == "defmutable" => {
                     if fs.len() < 3 {
-                        return Err("defstruct expects a name and field vector".into());
+                        return Err(format!("{n} expects a name and field vector"));
                     }
                     let name = match &fs[1] {
                         Form::Symbol(name) if !name.contains('/') => name.clone(),
-                        _ => return Err("defstruct name must be an unqualified symbol".into()),
+                        _ => return Err(format!("{n} name must be an unqualified symbol")),
                     };
                     let fields = match &fs[2] {
                         Form::Vector(fields) => fields
                             .iter()
                             .map(|field| match field {
                                 Form::Symbol(field) if !field.contains('/') => Ok(field.clone()),
-                                _ => {
-                                    Err("defstruct field names must be unqualified symbols".into())
-                                }
+                                _ => Err(format!("{n} field names must be unqualified symbols")),
                             })
                             .collect::<Result<Vec<_>, String>>()?,
-                        _ => return Err("defstruct expects a field vector".into()),
+                        _ => return Err(format!("{n} expects a field vector")),
                     };
-                    if fields.iter().collect::<HashSet<_>>().len() != fields.len() {
-                        return Err("Duplicate defstruct field".into());
-                    }
+                    validate_named_definition(n, &name, &fields)?;
                     let namespace = namespace_registry()?.current().name().as_str().to_owned();
-                    let ty = Rc::new(StructType {
-                        name: format!("{namespace}/{name}"),
-                        fields,
-                    });
-                    let map_type = ty.clone();
-                    let map_constructor =
-                        native_function(&format!("map->{name}"), 1, move |values| {
-                            let source = values.first().expect("native arity is checked");
-                            let fields = map_type
-                                .fields
-                                .iter()
-                                .map(|field| {
-                                    Ok(map_value(
-                                        source,
-                                        &Value::Keyword(Keyword::from(field.as_str())),
-                                    )
-                                    .cloned()
-                                    .unwrap_or(Value::Nil))
-                                })
-                                .collect::<Result<Vec<_>, String>>()?;
-                            Ok(Value::Struct(Rc::new(StructValue {
-                                ty: map_type.clone(),
-                                values: fields,
-                            })))
+                    let (type_value, map_constructor) = if n == "defstruct" {
+                        let ty = Rc::new(StructType {
+                            name: format!("{namespace}/{name}"),
+                            fields,
                         });
+                        let map_type = ty.clone();
+                        let constructor =
+                            native_function(&format!("map->{name}"), 1, move |values| {
+                                let source = values.first().expect("native arity is checked");
+                                let values = map_type
+                                    .fields
+                                    .iter()
+                                    .map(|field| {
+                                        map_value(source, &named_field_key(field))
+                                            .cloned()
+                                            .unwrap_or(Value::Nil)
+                                    })
+                                    .collect();
+                                Ok(Value::Struct(Rc::new(StructValue::from_values(
+                                    map_type.clone(),
+                                    values,
+                                    None,
+                                )?)))
+                            });
+                        (Value::StructType(ty), constructor)
+                    } else {
+                        let ty = Rc::new(MutableType {
+                            name: format!("{namespace}/{name}"),
+                            fields,
+                        });
+                        let map_type = ty.clone();
+                        let constructor =
+                            native_function(&format!("map->{name}"), 1, move |values| {
+                                let source = values.first().expect("native arity is checked");
+                                let values = map_type
+                                    .fields
+                                    .iter()
+                                    .map(|field| {
+                                        map_value(source, &named_field_key(field))
+                                            .cloned()
+                                            .unwrap_or(Value::Nil)
+                                    })
+                                    .collect();
+                                Ok(Value::Mutable(Rc::new(MutableValue::from_values(
+                                    map_type.clone(),
+                                    values,
+                                    None,
+                                )?)))
+                            });
+                        (Value::MutableType(ty), constructor)
+                    };
                     for (binding, value) in [
-                        (name.clone(), Value::StructType(ty.clone())),
-                        (format!("->{name}"), Value::StructType(ty.clone())),
+                        (name.clone(), type_value.clone()),
+                        (format!("->{name}"), type_value),
                         (format!("map->{name}"), map_constructor),
                     ] {
                         let var = KernelVar::new(format!("{namespace}/{binding}"), value);
@@ -11416,9 +11756,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     let mut index = 3;
                     while index < fs.len() {
                         let Form::Symbol(protocol) = &fs[index] else {
-                            return Err(
-                                "defstruct protocol clause expects a protocol symbol".into()
-                            );
+                            return Err(format!("{n} protocol clause expects a protocol symbol"));
                         };
                         index += 1;
                         let start = index;
@@ -11426,9 +11764,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             index += 1;
                         }
                         if start == index {
-                            return Err(
-                                "defstruct protocol clause requires method implementations".into(),
-                            );
+                            return Err(format!(
+                                "{n} protocol clause requires method implementations"
+                            ));
                         }
                         let extension = Form::List(
                             std::iter::once(Form::Symbol("extend-type".into()))
@@ -11443,7 +11781,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 }
                 Form::Symbol(n) if n == "field" => {
                     if fs.len() != 3 {
-                        return Err("field expects a struct and field name".into());
+                        return Err("field expects a mutable value and field name".into());
                     }
                     let field = match &fs[2] {
                         Form::Keyword(field) | Form::Symbol(field) if !field.contains('/') => field,
@@ -11452,28 +11790,15 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         }
                     };
                     let value = eval(&fs[1], env)?;
-                    let Value::Struct(value) = value else {
-                        return Err("field expects a struct".into());
-                    };
-                    value
-                        .ty
-                        .fields
-                        .iter()
-                        .position(|candidate| candidate == field)
-                        .map(|index| value.values[index].clone())
-                        .ok_or_else(|| format!("unknown struct field: {field}"))
+                    mutable_field_value(&value, field)
                 }
                 Form::Symbol(n) if n == "instance?" => {
                     if fs.len() != 3 {
-                        return Err("instance? expects a struct type and value".into());
+                        return Err("instance? expects a named type and value".into());
                     }
-                    let ty = match eval(&fs[1], env)? {
-                        Value::StructType(ty) => ty,
-                        _ => return Err("instance? expects a struct type".into()),
-                    };
-                    Ok(Value::Bool(
-                        matches!(eval(&fs[2], env)?, Value::Struct(value) if Rc::ptr_eq(&ty, &value.ty)),
-                    ))
+                    let ty = eval(&fs[1], env)?;
+                    let value = eval(&fs[2], env)?;
+                    named_instance_of(&ty, &value)
                 }
                 Form::Symbol(n) if n == "defprotocol" => {
                     if fs.len() < 3 {
@@ -11614,9 +11939,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 .into(),
                         );
                     }
-                    let ty = match eval(&fs[1], env)? {
-                        Value::StructType(ty) => ty,
-                        _ => return Err("extend-type expects a struct type".into()),
+                    let type_name = match eval(&fs[1], env)? {
+                        Value::StructType(ty) => ty.name.clone(),
+                        Value::MutableType(ty) => ty.name.clone(),
+                        _ => return Err("extend-type expects a struct or mutable type".into()),
                     };
                     let protocol = match eval(&fs[2], env)? {
                         Value::Protocol(protocol) => protocol,
@@ -11666,7 +11992,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 .ok_or_else(|| "protocol registry is unavailable".to_string())?;
                             registry.register_guest(
                                 protocol.name.clone(),
-                                ty.name.clone(),
+                                type_name.clone(),
                                 method.clone(),
                                 function,
                             );

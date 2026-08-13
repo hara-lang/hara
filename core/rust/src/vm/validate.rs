@@ -379,7 +379,8 @@ pub(crate) fn stack_heights(
             Instruction::GetGlobal(index)
             | Instruction::SetGlobal(index)
             | Instruction::VarGlobal(index)
-            | Instruction::StructField(index)
+            | Instruction::MutableFieldGet(index)
+            | Instruction::MutableFieldSet(index)
             | Instruction::DeclareGlobal(index) => {
                 string_constant(program, *index, at)?;
             }
@@ -395,14 +396,14 @@ pub(crate) fn stack_heights(
                     }
                 }
             }
-            Instruction::DefStruct { name, fields } => {
+            Instruction::DefStruct { name, fields } | Instruction::DefMutable { name, fields } => {
                 string_constant(program, *name, at)?;
                 match program.constants.get(*fields as usize) {
                     Some(Value::Vector(fields))
                         if fields.iter().all(|field| matches!(field, Value::String(_))) => {}
                     Some(_) => {
                         return Err(ValidationError::new(
-                            format!("defstruct fields constant {fields} is not a string vector"),
+                            format!("named fields constant {fields} is not a string vector"),
                             at,
                         ))
                     }

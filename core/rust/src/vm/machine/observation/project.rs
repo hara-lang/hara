@@ -158,7 +158,12 @@ pub(super) fn instruction_snapshot(instruction: &Instruction) -> InstructionSnap
             "def-struct",
             vec![Unsigned(*name as u64), Unsigned(*fields as u64)],
         ),
-        Instruction::StructField(index) => ("struct-field", vec![Unsigned(*index as u64)]),
+        Instruction::DefMutable { name, fields } => (
+            "def-mutable",
+            vec![Unsigned(*name as u64), Unsigned(*fields as u64)],
+        ),
+        Instruction::MutableFieldGet(index) => ("mutable-field-get", vec![Unsigned(*index as u64)]),
+        Instruction::MutableFieldSet(index) => ("mutable-field-set", vec![Unsigned(*index as u64)]),
         Instruction::InstanceOf => ("instance-of", vec![]),
         Instruction::MakeMultiArity { name, count } => (
             "make-multi-arity",

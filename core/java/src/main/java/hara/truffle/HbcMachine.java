@@ -187,42 +187,27 @@ public final class HbcMachine {
           context.declareCurrent(Symbol.create(stringConstant(program, instruction.first())));
           stack.add(null);
         }
-        case DEF_STRUCT -> {
+        case DEF_STRUCT, DEF_MUTABLE -> {
           String name = stringConstant(program, instruction.first());
           Object fieldsValue = program.constants().get(index(instruction.second()));
           if (!(fieldsValue instanceof ILinearType<?> fields)) {
-            throw new HaraException("defstruct fields constant is not a vector");
+            throw new HaraException(
+                (instruction.opcode() == HbcProgram.Opcode.DEF_MUTABLE
+                        ? "defmutable"
+                        : "defstruct")
+                    + " fields constant is not a vector");
           }
           String[] names = new String[Math.toIntExact(fields.count())];
           for (int i = 0; i < names.length; i++) {
             Object field = fields.nth(i);
             names[i] = field instanceof Symbol symbol ? symbol.getName() : String.valueOf(field);
           }
-          HaraType type = new HaraType(name, names);
-          context.define(Symbol.create(name), type);
-          context.define(
-              Symbol.create("->" + name),
-              new HbcNativeCallable(
-                  values -> {
-                    if (values.length != names.length) {
-                      throw new HaraException("constructor has no matching arity: " + values.length);
-                    }
-                    return new HaraStruct(type, values);
-                  }));
-          context.define(
-              Symbol.create("map->" + name),
-              new HbcNativeCallable(
-                  values -> {
-                    if (values.length != 1 || !(values[0] instanceof ILookup<?, ?> lookup)) {
-                      throw new HaraException("map constructor expects one associative value");
-                    }
-                    Object[] members = new Object[names.length];
-                    for (int i = 0; i < names.length; i++) {
-                      members[i] = ((ILookup<Object, Object>) lookup).lookup(Keyword.create(names[i]));
-                    }
-                    return new HaraStruct(type, members);
-                  }));
-          stack.add(type);
+          stack.add(
+              defineNamedType(
+                  context,
+                  name,
+                  names,
+                  instruction.opcode() == HbcProgram.Opcode.DEF_MUTABLE));
         }
         case BUILD_VECTOR ->
             stack.add(hara.lang.data.Vector.Standard.from(null, popArguments(stack, index(instruction.first()))));
@@ -282,20 +267,42 @@ public final class HbcMachine {
             stack.add(
                 context.executeBytecodeDeclaration(
                     "defmethod", program.constants().get(index(instruction.first()))));
-        case STRUCT_FIELD -> {
+        case MUTABLE_FIELD_GET -> {
           Object target = pop(stack);
-          if (!(target instanceof HaraStruct struct)) throw new HaraException("field expects a struct");
+          if (!(target instanceof HaraMutable mutable)) {
+            throw new HaraException("field expects a mutable value");
+          }
           try {
-            stack.add(struct.read(stringConstant(program, instruction.first())));
+            stack.add(mutable.read(stringConstant(program, instruction.first())));
           } catch (com.oracle.truffle.api.interop.UnknownIdentifierException error) {
-            throw new HaraException("Unknown struct field: " + stringConstant(program, instruction.first()));
+            throw new HaraException(
+                "Unknown mutable field: " + stringConstant(program, instruction.first()));
+          }
+        }
+        case MUTABLE_FIELD_SET -> {
+          Object replacement = pop(stack);
+          Object target = pop(stack);
+          if (!(target instanceof HaraMutable mutable)) {
+            throw new HaraException("set! field expects a mutable value");
+          }
+          try {
+            mutable.write(stringConstant(program, instruction.first()), replacement);
+            stack.add(replacement);
+          } catch (com.oracle.truffle.api.interop.UnknownIdentifierException error) {
+            throw new HaraException(
+                "Unknown mutable field: " + stringConstant(program, instruction.first()));
           }
         }
         case INSTANCE_OF -> {
           Object value = pop(stack);
           Object type = pop(stack);
-          if (!(type instanceof HaraType)) throw new HaraException("instance? expects a struct type");
-          stack.add(value instanceof HaraStruct struct && struct.type() == type);
+          if (!(type instanceof HaraType)) {
+            throw new HaraException("instance? expects a named value type");
+          }
+          stack.add(
+              value instanceof HaraStruct struct
+                  ? struct.type() == type
+                  : value instanceof HaraMutable mutable && mutable.type() == type);
         }
         case HOST_CALL -> {
           Object argumentsValue = pop(stack);
@@ -470,11 +477,52 @@ public final class HbcMachine {
 
   private static boolean catchMatches(RuntimeException failure, String className) {
     if ("Exception".equals(className) || "Throwable".equals(className)) return true;
-    if (failure instanceof HbcThrown thrown && thrown.value instanceof HaraStruct struct) {
-      String type = struct.type().name();
-      return type.equals(className) || type.endsWith("/" + className);
+    if (failure instanceof HbcThrown thrown) {
+      String type =
+          thrown.value instanceof HaraStruct struct
+              ? struct.type().name()
+              : thrown.value instanceof HaraMutable mutable ? mutable.type().name() : null;
+      return type != null && (type.equals(className) || type.endsWith("/" + className));
     }
     return false;
+  }
+
+  private static HaraType defineNamedType(
+      HaraContext context, String name, String[] fields, boolean mutable) {
+    HaraType type = mutable ? new HaraMutableType(name, fields) : new HaraType(name, fields);
+    context.define(Symbol.create(name), type);
+    context.define(
+        Symbol.create("->" + name),
+        new HbcNativeCallable(
+            values -> {
+              if (values.length != fields.length) {
+                throw new HaraException("constructor has no matching arity: " + values.length);
+              }
+              return constructNamedValue(type, values);
+            }));
+    context.define(
+        Symbol.create("map->" + name),
+        new HbcNativeCallable(
+            values -> {
+              if (values.length != 1 || !(values[0] instanceof ILookup<?, ?> lookup)) {
+                throw new HaraException("map constructor expects one associative value");
+              }
+              Object[] members = new Object[fields.length];
+              for (int index = 0; index < fields.length; index++) {
+                members[index] =
+                    ((ILookup<Object, Object>) lookup).lookup(Keyword.create(fields[index]));
+              }
+              return constructNamedValue(type, members);
+            }));
+    return type;
+  }
+
+  private static Object constructNamedValue(HaraType type, Object[] values) {
+    try {
+      return type.construct(values);
+    } catch (com.oracle.truffle.api.interop.ArityException impossible) {
+      throw new IllegalStateException("constructor arity was checked", impossible);
+    }
   }
 
   private static Object caughtValue(RuntimeException failure) {

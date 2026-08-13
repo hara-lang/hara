@@ -282,10 +282,6 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
             out.u32(*name);
             out.u32(*fields);
         }
-        StructField(value) => {
-            out.byte(21);
-            out.u32(*value);
-        }
         InstanceOf => out.byte(22),
         MakeMultiArity { name, count } => {
             out.byte(23);
@@ -358,6 +354,19 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
             out.u32(*index);
         }
         Yield => out.byte(46),
+        DefMutable { name, fields } => {
+            out.byte(47);
+            out.u32(*name);
+            out.u32(*fields);
+        }
+        MutableFieldGet(value) => {
+            out.byte(48);
+            out.u32(*value);
+        }
+        MutableFieldSet(value) => {
+            out.byte(49);
+            out.u32(*value);
+        }
         Return => out.byte(24),
     }
 }
@@ -402,7 +411,11 @@ fn read_instruction(reader: &mut Reader<'_>) -> Result<Instruction, String> {
             name: reader.u32()?,
             fields: reader.u32()?,
         },
-        21 => Instruction::StructField(reader.u32()?),
+        21 => {
+            return Err(
+                "bytecode artifact uses retired StructField opcode 21; rebuild required".into(),
+            )
+        }
         22 => Instruction::InstanceOf,
         23 => Instruction::MakeMultiArity {
             name: reader.u32()?,
@@ -440,6 +453,12 @@ fn read_instruction(reader: &mut Reader<'_>) -> Result<Instruction, String> {
             argc: reader.byte()?,
         },
         46 => Instruction::Yield,
+        47 => Instruction::DefMutable {
+            name: reader.u32()?,
+            fields: reader.u32()?,
+        },
+        48 => Instruction::MutableFieldGet(reader.u32()?),
+        49 => Instruction::MutableFieldSet(reader.u32()?),
         _ => return Err("bytecode artifact contains an unknown opcode".into()),
     })
 }

@@ -122,7 +122,12 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
         Value::List(values) => encode_sequence(LIST, values.iter(), output, depth)?,
         Value::Tuple(values) => encode_sequence(TUPLE, values.iter(), output, depth)?,
         Value::Vector(values) => encode_sequence(VECTOR, values.iter(), output, depth)?,
-        Value::Cons(values) => encode_sequence(CONS, values.iter().collect::<Vec<_>>().iter(), output, depth)?,
+        Value::Cons(values) => encode_sequence(
+            CONS,
+            values.iter().collect::<Vec<_>>().iter(),
+            output,
+            depth,
+        )?,
         Value::Queue(values) => encode_sequence(QUEUE, values.iter(), output, depth)?,
         Value::Set(values) => {
             let mut encoded = values
@@ -149,11 +154,29 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
                 output.extend_from_slice(&value);
             }
         }
-        Value::OrderedMap(values) => encode_map(ORDERED_MAP, values.iter().map(|pair| (&pair.0, &pair.1)), output, depth)?,
+        Value::OrderedMap(values) => encode_map(
+            ORDERED_MAP,
+            values.iter().map(|pair| (&pair.0, &pair.1)),
+            output,
+            depth,
+        )?,
         Value::SortedMap(values) => encode_map(SORTED_MAP, values.iter(), output, depth)?,
         Value::Trie(values) => {
-            let entries = values.iter().map(|key| (Value::String(key.clone()), values.get(&key).unwrap().clone())).collect::<Vec<_>>();
-            encode_map(TRIE, entries.iter().map(|pair| (&pair.0, &pair.1)), output, depth)?;
+            let entries = values
+                .iter()
+                .map(|key| {
+                    (
+                        Value::String(key.clone()),
+                        values.get(&key).unwrap().clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            encode_map(
+                TRIE,
+                entries.iter().map(|pair| (&pair.0, &pair.1)),
+                output,
+                depth,
+            )?;
         }
         Value::Map(values) => {
             let mut encoded = values
@@ -208,21 +231,43 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
             output.push(EXCEPTION_INFO);
             encode_bare(&Value::String(value.message.clone()), output, depth + 1)?;
             encode_bare(&value.data, output, depth + 1)?;
-            encode_bare(value.cause.as_deref().unwrap_or(&Value::Nil), output, depth + 1)?;
+            encode_bare(
+                value.cause.as_deref().unwrap_or(&Value::Nil),
+                output,
+                depth + 1,
+            )?;
         }
         Value::Struct(value) => {
             output.push(STRUCT);
             encode_bare(&Value::String(value.ty.name.clone()), output, depth + 1)?;
-            let fields = value.ty.fields.iter().cloned().map(Value::String).collect::<Vec<_>>();
+            let fields = value
+                .ty
+                .fields
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect::<Vec<_>>();
             encode_sequence(VECTOR, fields.iter(), output, depth)?;
-            encode_sequence(VECTOR, value.values.iter(), output, depth)?;
+            let values = value.ordered_values();
+            encode_sequence(VECTOR, values.into_iter(), output, depth)?;
+        }
+        Value::Mutable(_) | Value::MutableType(_) => {
+            return Err(
+                "hta/value-unsupported: mutable values are not serializable; use (into {} value)"
+                    .into(),
+            )
         }
         _ => return Err(format!("hta/value-unsupported: {}", value.display())),
     }
     Ok(())
 }
 
-fn encode_map<'a>(tag: u8, values: impl Iterator<Item = (&'a Value, &'a Value)>, output: &mut Vec<u8>, depth: usize) -> Result<(), String> {
+fn encode_map<'a>(
+    tag: u8,
+    values: impl Iterator<Item = (&'a Value, &'a Value)>,
+    output: &mut Vec<u8>,
+    depth: usize,
+) -> Result<(), String> {
     let values = values.collect::<Vec<_>>();
     output.push(tag);
     encode_len(values.len(), output)?;
@@ -323,18 +368,31 @@ impl Reader<'_> {
                     .into(),
             )),
             LIST => Ok(Value::List(self.sequence(depth)?.into())),
-            TUPLE => Ok(Value::Tuple(Box::new(crate::lang::data::Tuple::from_values(self.sequence(depth)?)?))),
+            TUPLE => Ok(Value::Tuple(Box::new(
+                crate::lang::data::Tuple::from_values(self.sequence(depth)?)?,
+            ))),
             VECTOR => Ok(Value::Vector(self.sequence(depth)?.into())),
             CONS => {
                 let mut values = self.sequence(depth)?;
-                if values.is_empty() { return Err("hta/value-malformed: empty cons".into()); }
+                if values.is_empty() {
+                    return Err("hta/value-malformed: empty cons".into());
+                }
                 let first = values.remove(0);
-                Ok(Value::Cons(Box::new(crate::lang::data::Cons::new(first, values.into_iter().collect()))))
+                Ok(Value::Cons(Box::new(crate::lang::data::Cons::new(
+                    first,
+                    values.into_iter().collect(),
+                ))))
             }
-            QUEUE => Ok(Value::Queue(Box::new(self.sequence(depth)?.into_iter().collect()))),
+            QUEUE => Ok(Value::Queue(Box::new(
+                self.sequence(depth)?.into_iter().collect(),
+            ))),
             SET => Ok(Value::Set(self.sequence(depth)?.into())),
-            ORDERED_SET => Ok(Value::OrderedSet(Box::new(self.sequence(depth)?.into_iter().collect()))),
-            SORTED_SET => Ok(Value::SortedSet(Box::new(self.sequence(depth)?.into_iter().collect()))),
+            ORDERED_SET => Ok(Value::OrderedSet(Box::new(
+                self.sequence(depth)?.into_iter().collect(),
+            ))),
+            SORTED_SET => Ok(Value::SortedSet(Box::new(
+                self.sequence(depth)?.into_iter().collect(),
+            ))),
             MAP => {
                 let size = self.len()?;
                 if size > self.bytes.len().saturating_sub(self.cursor) / 2 {
@@ -346,12 +404,18 @@ impl Reader<'_> {
                 }
                 Ok(Value::Map(values.into_iter().collect()))
             }
-            ORDERED_MAP => Ok(Value::OrderedMap(Box::new(self.entries(depth)?.into_iter().collect()))),
-            SORTED_MAP => Ok(Value::SortedMap(Box::new(self.entries(depth)?.into_iter().collect()))),
+            ORDERED_MAP => Ok(Value::OrderedMap(Box::new(
+                self.entries(depth)?.into_iter().collect(),
+            ))),
+            SORTED_MAP => Ok(Value::SortedMap(Box::new(
+                self.entries(depth)?.into_iter().collect(),
+            ))),
             TRIE => {
                 let mut trie = crate::lang::data::Trie::new();
                 for (key, value) in self.entries(depth)? {
-                    let Value::String(key) = key else { return Err("hta/value-malformed: invalid trie key".into()); };
+                    let Value::String(key) = key else {
+                        return Err("hta/value-malformed: invalid trie key".into());
+                    };
                     trie = trie.assoc_value(key, value);
                 }
                 Ok(Value::Trie(Box::new(trie)))
@@ -407,21 +471,58 @@ impl Reader<'_> {
                 }))
             }
             TAGGED => {
-                let Value::Symbol(tag) = self.value(depth + 1)? else { return Err("hta/value-malformed: invalid tagged literal tag".into()); };
-                Ok(Value::Tagged(Box::new(crate::lang::data::TaggedLiteral::new(tag, self.value(depth + 1)?))))
+                let Value::Symbol(tag) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid tagged literal tag".into());
+                };
+                Ok(Value::Tagged(Box::new(
+                    crate::lang::data::TaggedLiteral::new(tag, self.value(depth + 1)?),
+                )))
             }
             EXCEPTION_INFO => {
-                let Value::String(message) = self.value(depth + 1)? else { return Err("hta/value-malformed: invalid exception message".into()); };
+                let Value::String(message) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid exception message".into());
+                };
                 let data = self.value(depth + 1)?;
-                let cause = match self.value(depth + 1)? { Value::Nil => None, value => Some(Box::new(value)) };
-                Ok(Value::ExceptionInfo(std::rc::Rc::new(crate::core::ExceptionInfo { message, data: Box::new(data), cause })))
+                let cause = match self.value(depth + 1)? {
+                    Value::Nil => None,
+                    value => Some(Box::new(value)),
+                };
+                Ok(Value::ExceptionInfo(std::rc::Rc::new(
+                    crate::core::ExceptionInfo {
+                        message,
+                        data: Box::new(data),
+                        cause,
+                    },
+                )))
             }
             STRUCT => {
-                let Value::String(name) = self.value(depth + 1)? else { return Err("hta/value-malformed: invalid struct name".into()); };
-                let fields = match self.value(depth + 1)? { Value::Vector(values) => values.iter().map(|value| match value { Value::String(field) => Ok(field.clone()), _ => Err("hta/value-malformed: invalid struct field".into()) }).collect::<Result<Vec<_>, String>>()?, _ => return Err("hta/value-malformed: invalid struct fields".into()) };
-                let values: Vec<Value> = match self.value(depth + 1)? { Value::Vector(values) => values.iter().cloned().collect(), _ => return Err("hta/value-malformed: invalid struct values".into()) };
-                if fields.len() != values.len() { return Err("hta/value-malformed: struct arity mismatch".into()); }
-                Ok(Value::Struct(std::rc::Rc::new(crate::core::StructValue { ty: std::rc::Rc::new(crate::core::StructType { name, fields }), values })))
+                let Value::String(name) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid struct name".into());
+                };
+                let fields = match self.value(depth + 1)? {
+                    Value::Vector(values) => values
+                        .iter()
+                        .map(|value| match value {
+                            Value::String(field) => Ok(field.clone()),
+                            _ => Err("hta/value-malformed: invalid struct field".into()),
+                        })
+                        .collect::<Result<Vec<_>, String>>()?,
+                    _ => return Err("hta/value-malformed: invalid struct fields".into()),
+                };
+                let values: Vec<Value> = match self.value(depth + 1)? {
+                    Value::Vector(values) => values.iter().cloned().collect(),
+                    _ => return Err("hta/value-malformed: invalid struct values".into()),
+                };
+                if fields.len() != values.len() {
+                    return Err("hta/value-malformed: struct arity mismatch".into());
+                }
+                Ok(Value::Struct(std::rc::Rc::new(
+                    crate::core::StructValue::from_values(
+                        std::rc::Rc::new(crate::core::StructType { name, fields }),
+                        values,
+                        None,
+                    )?,
+                )))
             }
             _ => Err("hta/value-malformed: unknown value tag".into()),
         }
@@ -435,8 +536,12 @@ impl Reader<'_> {
     }
     fn entries(&mut self, depth: usize) -> Result<Vec<(Value, Value)>, String> {
         let size = self.len()?;
-        if size > self.bytes.len().saturating_sub(self.cursor) / 2 { return Err("hta/value-malformed: impossible map length".into()); }
-        (0..size).map(|_| Ok((self.value(depth + 1)?, self.value(depth + 1)?))).collect()
+        if size > self.bytes.len().saturating_sub(self.cursor) / 2 {
+            return Err("hta/value-malformed: impossible map length".into());
+        }
+        (0..size)
+            .map(|_| Ok((self.value(depth + 1)?, self.value(depth + 1)?)))
+            .collect()
     }
     fn data(&mut self) -> Result<&[u8], String> {
         let size = self.len()?;
@@ -494,14 +599,22 @@ mod tests {
     #[test]
     fn immutable_v3_values_round_trip_without_collection_normalization() {
         let queue = Value::Queue(Box::new(
-            vec![Value::Number(1), Value::Number(2)].into_iter().collect(),
+            vec![Value::Number(1), Value::Number(2)]
+                .into_iter()
+                .collect(),
         ));
-        assert!(matches!(decode(&encode(&queue).unwrap()).unwrap(), Value::Queue(_)));
+        assert!(matches!(
+            decode(&encode(&queue).unwrap()).unwrap(),
+            Value::Queue(_)
+        ));
         let tagged = Value::Tagged(Box::new(crate::lang::data::TaggedLiteral::new(
             crate::lang::data::Symbol::parse("demo/tag"),
             Value::Number(42),
         )));
-        assert!(matches!(decode(&encode(&tagged).unwrap()).unwrap(), Value::Tagged(_)));
+        assert!(matches!(
+            decode(&encode(&tagged).unwrap()).unwrap(),
+            Value::Tagged(_)
+        ));
     }
     #[test]
     fn floats_round_trip_with_ieee_754_bits() {
@@ -584,6 +697,52 @@ mod tests {
             handle: 42,
         });
         assert_eq!(decode(&encode(&value).unwrap()).unwrap(), value);
+    }
+
+    #[test]
+    fn structs_preserve_wire_shape_and_mutables_are_rejected() {
+        let ty = std::rc::Rc::new(crate::core::StructType {
+            name: "demo/Point".into(),
+            fields: vec!["x".into(), "y".into()],
+        });
+        let value = Value::Struct(std::rc::Rc::new(
+            crate::core::StructValue::from_values(
+                ty,
+                vec![Value::Number(1), Value::Number(2)],
+                None,
+            )
+            .unwrap(),
+        ));
+        let decoded = decode(&encode(&value).unwrap()).unwrap();
+        let Value::Struct(decoded) = decoded else {
+            panic!("struct value")
+        };
+        assert_eq!(decoded.ty.name, "demo/Point");
+        assert_eq!(decoded.ty.fields, vec!["x", "y"]);
+        assert_eq!(
+            decoded
+                .ordered_values()
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![Value::Number(1), Value::Number(2)]
+        );
+
+        let mutable = Value::Mutable(std::rc::Rc::new(
+            crate::core::MutableValue::from_values(
+                std::rc::Rc::new(crate::core::MutableType {
+                    name: "demo/Cursor".into(),
+                    fields: vec!["x".into()],
+                }),
+                vec![Value::Number(1)],
+                None,
+            )
+            .unwrap(),
+        ));
+        assert_eq!(
+            encode(&mutable).unwrap_err(),
+            "hta/value-unsupported: mutable values are not serializable; use (into {} value)"
+        );
     }
 
     #[test]

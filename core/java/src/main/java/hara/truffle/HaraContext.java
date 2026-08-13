@@ -90,6 +90,7 @@ public final class HaraContext {
           "deref",
           "set!",
           "defstruct",
+          "defmutable",
           "defprotocol",
           "extend-type",
           "defmacro",
@@ -1908,7 +1909,10 @@ public final class HaraContext {
               if (!(type instanceof HaraType)) {
                 throw new HaraException("instance? expects a Hara type");
               }
-              return value instanceof HaraStruct struct && struct.type() == type;
+              if (value instanceof HaraStruct struct) {
+                return struct.type() == type;
+              }
+              return value instanceof HaraMutable mutable && mutable.type() == type;
             }));
     target.define(
         "symbol",
@@ -5564,7 +5568,7 @@ public final class HaraContext {
     if (function instanceof HaraMultiFunction) {
       return HaraBox.unwrap(((HaraMultiFunction) function).invoke(arguments));
     }
-    if (function instanceof HaraStruct || function instanceof IFn) {
+    if (function instanceof HaraStruct || function instanceof HaraMutable || function instanceof IFn) {
       return HaraBox.unwrap(ifnProtocol.invoke("invoke", function, arguments));
     }
     if (function instanceof HaraType) {
@@ -5572,7 +5576,11 @@ public final class HaraContext {
       if (arguments.length != type.arity()) {
         throw new HaraException("constructor has no matching arity: " + arguments.length);
       }
-      return new HaraStruct(type, arguments);
+      try {
+        return type.construct(arguments);
+      } catch (com.oracle.truffle.api.interop.ArityException impossible) {
+        throw new IllegalStateException("constructor arity was checked", impossible);
+      }
     }
     throw new HaraException("value is not callable: " + function);
   }
@@ -5599,6 +5607,10 @@ public final class HaraContext {
     }
     return function instanceof HaraFunction
         || function instanceof HaraMultiFunction
+        || function instanceof HaraType
+        || function instanceof HaraStruct
+        || function instanceof HaraMutable
+        || function instanceof IFn
         || function instanceof HbcMachine.HbcClosure
         || function instanceof HbcMachine.HbcMultiArity
         || function instanceof HbcMachine.HbcNativeCallable
