@@ -1,0 +1,153 @@
+name: Materialize persistent named-value PR stack
+
+on:
+  push:
+    branches:
+      - agent/persistent-defstruct-defmutable
+    paths:
+      - .github/workflows/materialize-persistent-named-value-stack.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the patch carrier
+        uses: actions/checkout@v4
+        with:
+          ref: agent/persistent-defstruct-defmutable
+          path: staging
+          fetch-depth: 1
+
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: work
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: work/core/java/pom.xml
+
+      - name: Reconstruct verified implementation patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat \
+            staging/.github/agent/full2-00 \
+            staging/.github/agent/full2-01 \
+            staging/.github/agent/full2-02a \
+            staging/.github/agent/full2-02b \
+            staging/.github/agent/full2-03 \
+            staging/.github/agent/full2-04 \
+            staging/.github/agent/full2-05a0 \
+            staging/.github/agent/full2-05a1 \
+            staging/.github/agent/full2-05a2 \
+            staging/.github/agent/full2-05b \
+            | base64 --decode | gzip --decompress > /tmp/persistent-named-values.patch
+          echo '5ae8bfe82c6bb4ea27c441aa01ffddf3c0c062e20068c3b057223f6d51ad1a49  /tmp/persistent-named-values.patch' | sha256sum --check
+
+          base64 --decode staging/.github/agent/java-fix-1.patch.gz.b64 \
+            | gzip --decompress > /tmp/truffle-member-insertion.patch
+          echo '72776a5c5349af694e9a7f770d492176756716036eec47e666fd877cdc67eff7  /tmp/truffle-member-insertion.patch' | sha256sum --check
+
+      - name: Build and validate the complete implementation
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch --detach origin/main
+          git switch -C agent/persistent-named-values-full
+
+          if ! git apply --3way --whitespace=nowarn /tmp/persistent-named-values.patch; then
+            echo 'Three-way application failed. Unmerged paths:' >&2
+            git status --short >&2
+            git diff --name-only --diff-filter=U >&2
+            grep -R -n -E '^(<<<<<<<|=======|>>>>>>>)' core 2>/dev/null | head -200 >&2 || true
+            exit 1
+          fi
+          git apply --3way --whitespace=nowarn /tmp/truffle-member-insertion.patch
+
+          cargo fmt --manifest-path core/rust/Cargo.toml --all
+          git diff --check
+          python3 scripts/runtime/sync-rust-hal-src --check
+          cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
+          mvn -B -f core/java/pom.xml -DskipTests compile
+
+          git add core
+          git commit -m 'Implement persistent structs and mutable named values'
+          git rev-parse HEAD > /tmp/full-sha
+
+      - name: Publish the runtime foundation branch
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          full_sha=$(cat /tmp/full-sha)
+          git switch -C agent/persistent-named-values-runtime origin/main
+
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              core/java/*|core/rust/src/*|core/rust/raw/*|core/rust/tests/*|core/rust/hta-codec/*|core/rust/abi/*)
+                git checkout "$full_sha" -- "$path"
+                ;;
+            esac
+          done < <(git diff --name-only -z origin/main "$full_sha" -- core)
+
+          test -n "$(git status --porcelain)"
+          ! git status --porcelain | grep -E '^.. (core/lib/|core/rust/hal-src/|core/rust/hal-test-fixtures/)'
+          git diff --check
+          python3 scripts/runtime/sync-rust-hal-src --check
+          cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
+          mvn -B -f core/java/pom.xml -DskipTests compile
+
+          git add core
+          git commit -m 'Add persistent named-value runtime semantics'
+          git rev-parse HEAD > /tmp/runtime-sha
+          git push --force origin HEAD:refs/heads/agent/persistent-named-values-runtime
+
+      - name: Publish the canonical HAL follow-up branch
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          full_sha=$(cat /tmp/full-sha)
+          runtime_sha=$(cat /tmp/runtime-sha)
+          git switch -C agent/persistent-named-values "$runtime_sha"
+          git diff --binary "$runtime_sha" "$full_sha" > /tmp/library-follow-up.patch
+          test -s /tmp/library-follow-up.patch
+          git apply --index /tmp/library-follow-up.patch
+
+          git diff --cached --check
+          python3 scripts/runtime/sync-rust-hal-src --check
+          cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
+          mvn -B -f core/java/pom.xml -DskipTests compile
+
+          git commit -m 'Migrate canonical HAL named values to the persistent runtime'
+          git push --force origin HEAD:refs/heads/agent/persistent-named-values
+
+      - name: Report published branches
+        shell: bash
+        working-directory: work
+        run: |
+          set -euo pipefail
+          git fetch origin \
+            agent/persistent-named-values-runtime \
+            agent/persistent-named-values
+          git log -1 --oneline origin/agent/persistent-named-values-runtime
+          git log -1 --oneline origin/agent/persistent-named-values
+          git diff --stat origin/main..origin/agent/persistent-named-values-runtime
+          git diff --stat origin/agent/persistent-named-values-runtime..origin/agent/persistent-named-values
