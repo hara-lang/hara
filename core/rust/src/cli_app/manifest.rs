@@ -16,13 +16,13 @@ fn map_entries_mut(form: &mut Form) -> Result<&mut Vec<(Form, Form)>, String> {
 
 fn map_value<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
     entries.iter().find_map(|(candidate, value)| {
-        matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
+        matches!(candidate, Form::Keyword(name) if name.as_str() == key).then_some(value)
     })
 }
 
 fn map_value_mut<'a>(entries: &'a mut [(Form, Form)], key: &str) -> Option<&'a mut Form> {
     entries.iter_mut().find_map(|(candidate, value)| {
-        matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
+        matches!(candidate, Form::Keyword(name) if name.as_str() == key).then_some(value)
     })
 }
 
