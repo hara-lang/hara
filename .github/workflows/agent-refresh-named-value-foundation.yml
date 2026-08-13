@@ -57,6 +57,18 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          provides_path = Path("core/rust/src/project/production/unit/provides.rs")
+          provides = provides_path.read_text(encoding="utf-8")
+          visibility_replacements = [
+              ("pub(super) fn qualify(", "pub(in super::super) fn qualify("),
+              ("pub(super) fn without_metadata(", "pub(in super::super) fn without_metadata("),
+          ]
+          for old, new in visibility_replacements:
+              if provides.count(old) != 1:
+                  raise SystemExit(f"expected one visibility anchor, found {provides.count(old)}: {old}")
+              provides = provides.replace(old, new, 1)
+          provides_path.write_text(provides, encoding="utf-8")
+
           source_path = Path("core/lib/src/std/work/report/plain.hal")
           source = source_path.read_text(encoding="utf-8")
           old = "(let [left (quot missing 2)\n            right (- missing left)]"
@@ -80,8 +92,10 @@ jobs:
           test_path.write_text(test.replace(anchor, addition + anchor, 1), encoding="utf-8")
           PY
 
+          cargo fmt --manifest-path core/rust/Cargo.toml --all
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
+          cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
           cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
           cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
           git diff --check
@@ -101,6 +115,7 @@ jobs:
               "core/lib/test/std/work_report_renderer_test.hal",
               "core/rust/assets/std.foundation.hbx",
               "core/rust/hal-src/std/work/report/plain.hal",
+              "core/rust/src/project/production/unit/provides.rs",
           }
           status = subprocess.check_output(["git", "status", "--short"], text=True).splitlines()
           changed = {line[3:] for line in status if line.strip()}
@@ -119,7 +134,8 @@ jobs:
             core/lib/src/std/work/report/plain.hal \
             core/lib/test/std/work_report_renderer_test.hal \
             core/rust/assets/std.foundation.hbx \
-            core/rust/hal-src/std/work/report/plain.hal
+            core/rust/hal-src/std/work/report/plain.hal \
+            core/rust/src/project/production/unit/provides.rs
           git commit -m 'Repair and refresh the foundation bootstrap bundle'
           git push origin HEAD:refs/heads/agent/repair-foundation-bootstrap
 
@@ -132,6 +148,6 @@ jobs:
           cd carrier
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .github/agent/foundation-bootstrap.log
+          git add -f .github/agent/foundation-bootstrap.log
           git commit -m 'Record foundation bootstrap failure' || true
           git push origin HEAD:refs/heads/agent/persistent-defstruct-defmutable
