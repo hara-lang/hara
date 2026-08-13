@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Make the fact-batch graph the sole code.test runtime on the current batch policy.
+
+The unpublished canonical-work branch contains the reviewed namespace inversion.
+This migration imports that source shape, replaces its older partial stop policy
+with the current baseline :stop/:cancel contract, updates conformance, and then
+self-deletes.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SOURCE_REF = "origin/agent/code-test-canonical-work-498"
+SELF = Path("scripts/runtime/apply-code-test-canonical-batch-owner")
+
+
+def read(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def write(relative: str, source: str) -> None:
+    path = ROOT / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source, encoding="utf-8")
+
+
+def show(relative: str) -> str:
+    result = subprocess.run(
+        ["git", "show", f"{SOURCE_REF}:{relative}"],
+        cwd=ROOT,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    return result.stdout
+
+
+def replace_once(source: str, old: str, new: str, label: str) -> str:
+    if new in source:
+        return source
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(f"expected one {label} anchor; found {count}: {old[:100]!r}")
+    return source.replace(old, new, 1)
+
+
+def replace_regex(source: str, pattern: str, replacement: str, label: str) -> str:
+    updated, count = re.subn(pattern, replacement, source, count=1, flags=re.DOTALL)
+    if count != 1:
+        raise SystemExit(f"expected one {label} regex anchor; found {count}: {pattern!r}")
+    return updated
+
+
+def mirror(relative: str) -> None:
+    source = ROOT / "core/lib/src" / relative
+    target = ROOT / "core/rust/hal-src" / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+
+
+# ---------------------------------------------------------------------------
+# Canonical graph ownership: code.test owns the graph; code.test.work aliases it.
+# ---------------------------------------------------------------------------
+owner = show("core/lib/src/code/test.hal")
+
+owner = replace_regex(
+    owner,
+    r"\n\(defn unsupported-batch-options\n.*?\n\n(?=\(defn selected-facts)",
+    "\n",
+    "retired fail-fast rejection",
+)
+owner = replace_once(
+    owner,
+    """        options (assert-batch-options!\n                 (effective-suite-options facts input-options))""",
+    """        options (effective-suite-options facts input-options)""",
+    "fact batch option preparation",
+)
+if "(declare fact-result-identity)" not in owner:
+    owner = replace_once(
+        owner,
+        "(defn fact-work\n",
+        "(declare fact-result-identity)\n\n(defn fact-work\n",
+        "fact result forward declaration",
+    )
+
+owner = replace_regex(
+    owner,
+    r"\(defn stop-after-fact\?.*?\n\n(?=\(defn suite-before)",
+    '''(defn stop-after-fact?
+  [batch context]
+  (and (get-in batch [:input :test/options :fail-fast])
+       (failing-status?
+        (get-in batch [:result :item/value :status]))))
+
+(defn cancel-unclaimed-fact
+  [batch context]
+  (let [subject (get-in batch [:item :item/value])
+        fact (resolve-subject-fact subject)
+        result (merge (fact-result-identity fact)
+                      {:status :cancelled
+                       :checks []
+                       :reason :fail-fast})]
+    (work/emit! context
+                :test/fact-started
+                (fact-result-identity fact))
+    (work/emit! context :test/fact-completed result)
+    result))
+
+(defn summarise-fact-batch
+  [batch context]
+  (summary-from-results
+   (work/manifest-values (:results batch))))
+
+''',
+    "runtime-owned test stop/cancel policy",
+)
+owner = replace_once(
+    owner,
+    '''      :stop
+      (work/pure
+       {:id 'code.test/fact-stop
+        :version batch-revision}
+       stop-after-fact?)
+
+      :summarise''',
+    '''      :stop
+      (work/pure
+       {:id 'code.test/fact-stop
+        :version batch-revision}
+       stop-after-fact?)
+
+      :cancel
+      (work/step
+       {:id 'code.test/fact-cancel
+        :version batch-revision}
+       cancel-unclaimed-fact)
+
+      :summarise''',
+    "fact batch cancel stage",
+)
+owner = owner.replace(
+    "Fail-fast is a generic batch stop policy; unstarted facts\n   are projected as cancelled test-domain results.",
+    "Baseline batch stop/cancel stages own fail-fast scheduling and preserve\n   one terminal test-domain result for every selected fact.",
+)
+
+for forbidden in [
+    "+unsupported-batch-options+",
+    "(defn unsupported-batch-options",
+    "(defn assert-batch-options!",
+    "(defn remaining-items",
+    "(defn cancelled-fact-result",
+    "(defn cancelled-fact-results",
+    "(defn run-selected",
+    "(defn run-facts",
+    "(defn run-fact-with-events",
+    "(defn suite-work",
+]:
+    if forbidden in owner:
+        raise SystemExit(f"canonical code.test retains retired token: {forbidden}")
+for required in [
+    "(def +runner-work+ (fact-batch-work))",
+    "code.test/fact-batch-items",
+    "code.test/fact-cancel",
+    "(defn resolve-subject-fact",
+    "(defn start\n",
+]:
+    if required not in owner:
+        raise SystemExit(f"canonical code.test is missing required token: {required}")
+
+write("core/lib/src/code/test.hal", owner)
+mirror("code/test.hal")
+
+facade = show("core/lib/src/code/test/work.hal")
+facade = replace_regex(
+    facade,
+    r"\(def stop-after-fact\? test/stop-after-fact\?\)\n.*?\n(?=\(def summarise-fact-batch)",
+    "(def stop-after-fact? test/stop-after-fact?)\n"
+    "(def cancel-unclaimed-fact test/cancel-unclaimed-fact)\n",
+    "code.test.work stop/cancel aliases",
+)
+for forbidden in [
+    "remaining-items",
+    "cancelled-fact-result",
+    "work/emit!",
+    "work/step",
+    "work/batch",
+]:
+    if forbidden in facade:
+        raise SystemExit(f"code.test.work duplicates canonical graph token: {forbidden}")
+for required in [
+    "(def fact-batch-work test/fact-batch-work)",
+    "(def cancel-unclaimed-fact test/cancel-unclaimed-fact)",
+    "(def run test/run)",
+    "(def start test/start)",
+]:
+    if required not in facade:
+        raise SystemExit(f"code.test.work is missing alias: {required}")
+write("core/lib/src/code/test/work.hal", facade)
+mirror("code/test/work.hal")
+
+# ---------------------------------------------------------------------------
+# Conformance: public run is canonical; fail-fast uses checkpointed cancellation.
+# ---------------------------------------------------------------------------
+write(
+    "core/lib/test/code/test_work_test.hal",
+    show("core/lib/test/code/test_work_test.hal"),
+)
+
+batch_test_path = "core/lib/test/code/test_work_batch_test.hal"
+batch_test = read(batch_test_path)
+batch_test = replace_once(
+    batch_test,
+    """(def durable-result (work/result runtime reference))\n(def durable-summary""",
+    """(def durable-result (work/result runtime reference))
+(def durable-manifest (test-work/fact-manifest options {} 11))
+(def durable-summary""",
+    "durable fact manifest",
+)
+batch_test = replace_once(
+    batch_test,
+    """               (:items durable-result))""",
+    """               durable-manifest))""",
+    "manifest assertion",
+)
+batch_test = replace_once(
+    batch_test,
+    '''     [:test/fact-started
+      :test/fact-completed
+      :test/fact-started
+      :test/fact-completed]])])''',
+    '''     [:test/fact-started
+      :test/fact-completed
+      :test/fact-started
+      :test/fact-completed]])
+
+   (test/check-error
+    "prepared fact definitions reject registry drift"
+    (test-work/resolve-subject-fact
+     {:namespace 'code.test-work-batch-test
+      :name "batch passing fact"
+      :test/revision 11
+      :test/definition "definition:wrong"}))])''',
+    "definition drift conformance",
+)
+write(batch_test_path, batch_test)
+
+cleanup_path = "core/lib/test/code/test_work_cleanup_test.hal"
+cleanup = read(cleanup_path)
+cleanup = replace_once(
+    cleanup,
+    '''(def setup-cleanup-count (atom 0))''',
+    '''(def cleanup-fail-fast-summary
+  (test-work/run-batch
+   (work/local-runtime)
+   (assoc scoped-options
+          :fail-fast true
+          :test/revision 26)))
+
+(def setup-cleanup-count (atom 0))''',
+    "cleanup fail-fast run",
+)
+cleanup = replace_regex(
+    cleanup,
+    r'''\n   \(test/check-error\n    "fact batches still reject fail-fast until scheduling owns item claims".*?\)\]\)''',
+    '''
+   (test/check
+    "runtime-owned fail-fast remains cleanup-safe for passing suites"
+    [(:status cleanup-fail-fast-summary)
+     (get-in cleanup-fail-fast-summary [:counts :passed])
+     (get-in cleanup-fail-fast-summary [:counts :cancelled])]
+    [:passed 1 0])])''',
+    "obsolete cleanup fail-fast rejection",
+)
+write(cleanup_path, cleanup)
+
+# Strong permanent guard from the reviewed canonical branch, extended for cancel.
+guard = show("scripts/runtime/check-code-test-work-events")
+guard = replace_once(
+    guard,
+    '''    "code.test/fact-stop",''',
+    '''    "code.test/fact-stop",
+    "code.test/fact-cancel",''',
+    "cancel graph requirement",
+)
+guard = replace_once(
+    guard,
+    '''    "(def fact-batch-work test/fact-batch-work)",''',
+    '''    "(def fact-batch-work test/fact-batch-work)",
+    "(def cancel-unclaimed-fact test/cancel-unclaimed-fact)",''',
+    "cancel facade requirement",
+)
+guard = replace_once(
+    guard,
+    '''    "(defn suite-work",''',
+    '''    "(defn suite-work",
+    "(defn remaining-items",
+    "(defn cancelled-fact-result",
+    "(defn cancelled-fact-results",''',
+    "manual cancellation guard",
+)
+write("scripts/runtime/check-code-test-work-events", guard)
+(ROOT / "scripts/runtime/check-code-test-work-events").chmod(0o755)
+
+# Final mirror and ownership checks.
+for relative in ["code/test.hal", "code/test/work.hal"]:
+    canonical = ROOT / "core/lib/src" / relative
+    mirrored = ROOT / "core/rust/hal-src" / relative
+    if canonical.read_bytes() != mirrored.read_bytes():
+        raise SystemExit(f"HAL mirror mismatch after canonical ownership cut: {relative}")
+
+(ROOT / SELF).unlink()
