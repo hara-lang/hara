@@ -25,7 +25,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Confirm the merged source and mirror remain clean
+      - name: Confirm the merged source, exact joins, and mirror
         shell: bash
         run: |
           set -euo pipefail
@@ -38,22 +38,25 @@ jobs:
           test "$(grep -F -c '(@! (str/join "\n"' \
             core/lib/test-lang/xt/lang/parser_xml_test.hal)" -eq 6
           python3 scripts/runtime/sync-rust-hal-src --check
+          python3 scripts/runtime/sync-rust-hal-src
+          git diff --exit-code -- core/rust/hal-src core/rust/standard-library.namespaces
+          python3 scripts/runtime/sync-rust-hal-src
+          git diff --exit-code -- core/rust/hal-src core/rust/standard-library.namespaces
           git show "$SOURCE_BASE_SHA":core/lib/src/tool/cli/handlers.hal \
             > "$RUNNER_TEMP/handlers-before.hal"
-          cmp -s "$RUNNER_TEMP/handlers-before.hal" \
-            core/lib/src/tool/cli/handlers.hal
+          cmp -s "$RUNNER_TEMP/handlers-before.hal" core/lib/src/tool/cli/handlers.hal
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build the native Hara runtime
+      - name: Build native Hara
         run: cargo build --manifest-path core/rust/Cargo.toml --bin hara
 
-      - name: Candidate and written-file evaluation in fresh native processes
+      - name: Candidate and written-file evaluation in fresh processes
         shell: bash
         run: |
           set -euo pipefail
-          evidence="$RUNNER_TEMP/native-evaluation.txt"
+          evidence="$RUNNER_TEMP/full-file-evaluation.txt"
           : > "$evidence"
 
           classify() {
@@ -62,49 +65,43 @@ jobs:
               echo "$label: passed" | tee -a "$evidence"
             elif grep -Fq 'Script module has no registered loader' "$log"; then
               echo "$label: existing XTalk loader failure recorded" | tee -a "$evidence"
-            elif grep -Fq \
-              'Namespace alias already refers to std.foundation.host: host' "$log" \
-              && cmp -s "$RUNNER_TEMP/handlers-before.hal" \
-                   core/lib/src/tool/cli/handlers.hal; then
-              echo "$label: pre-existing tool.cli.handlers alias failure recorded" \
-                | tee -a "$evidence"
+            elif grep -Fq 'Namespace alias already refers to std.foundation.host: host' "$log" \
+              && cmp -s "$RUNNER_TEMP/handlers-before.hal" core/lib/src/tool/cli/handlers.hal; then
+              echo "$label: pre-existing tool.cli.handlers alias failure recorded" | tee -a "$evidence"
             else
               cat "$log" >&2
-              echo "$label: unexpected failure ($status)" >&2
               return "$status"
             fi
           }
 
-          evaluate() {
-            local phase="$1" label="$2" path="$3"
-            local log="$RUNNER_TEMP/${label}-${phase}.log" status
-            set +e
-            if [[ "$phase" == candidate ]]; then
-              "$HARA_NATIVE" --project core --offline stdin < "$path" > "$log" 2>&1
-            else
-              "$HARA_NATIVE" --project core --offline run "$path" > "$log" 2>&1
-            fi
-            status=$?
-            set -e
-            cat "$log"
-            classify "$label/$phase" "$status" "$log"
-          }
-
           for phase in candidate written; do
-            evaluate "$phase" common-string \
-              core/lib/test-lang/xt/lang/common_string_test.hal
-            evaluate "$phase" parser-xml \
-              core/lib/test-lang/xt/lang/parser_xml_test.hal
+            for item in \
+              'common-string:core/lib/test-lang/xt/lang/common_string_test.hal' \
+              'parser-xml:core/lib/test-lang/xt/lang/parser_xml_test.hal'; do
+              label="${item%%:*}"
+              path="${item#*:}"
+              log="$RUNNER_TEMP/${label}-${phase}.log"
+              set +e
+              if [[ "$phase" == candidate ]]; then
+                "$HARA_NATIVE" --project core --offline stdin < "$path" > "$log" 2>&1
+              else
+                "$HARA_NATIVE" --project core --offline run "$path" > "$log" 2>&1
+              fi
+              status=$?
+              set -e
+              cat "$log"
+              classify "$label/$phase" "$status" "$log"
+            done
           done
 
           {
-            echo '### Native Hara evaluation'
+            echo '### Full-file native evaluation'
             echo '```text'
             cat "$evidence"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Probe padded lines and multiline XML through native Hara
+      - name: Attempt direct padded-line and XML probes
         shell: bash
         run: |
           set -euo pipefail
@@ -135,25 +132,34 @@ jobs:
              "<helo:test>\n   <ErrorCode>ESB-00-000</ErrorCode>\n   <A>\n      <A1>Hello-11-222</A1>\n      <A2>Bandung</A2>\n   </A>\n   <B/>\n   <C>\n     <C1>Satu</C1>\n     <C2>Dua</C2>\n     <C3>Tiga</C3>\n     <C4><C41>Empat-Satu</C41></C4>\n   </C>\n</helo:test>")
           HAL
 
+          evidence="$RUNNER_TEMP/direct-probes.txt"
+          : > "$evidence"
           for probe in padded xml; do
             log="$RUNNER_TEMP/${probe}.log"
-            (
-              cd "$RUNNER_TEMP"
-              "$HARA_NATIVE" --offline stdin < "${probe}.hal"
-            ) | tee "$log"
-            python3 - "$log" <<'PY'
-          import sys
-          from pathlib import Path
-          lines = [
-              line.strip()
-              for line in Path(sys.argv[1]).read_text().splitlines()
-              if line.strip()
-          ]
-          assert lines and lines[-1] == "true", lines
-          PY
+            set +e
+            (cd "$RUNNER_TEMP" && "$HARA_NATIVE" --offline stdin < "${probe}.hal") \
+              > "$log" 2>&1
+            status=$?
+            set -e
+            cat "$log"
+            if [[ "$status" -eq 0 ]] && [[ "$(awk 'NF {last=$0} END {print last}' "$log")" == true ]]; then
+              echo "$probe: passed" | tee -a "$evidence"
+            elif grep -Fq 'Namespace alias already refers to std.foundation.host: host' "$log" \
+              && cmp -s "$RUNNER_TEMP/handlers-before.hal" core/lib/src/tool/cli/handlers.hal; then
+              echo "$probe: blocked by pre-existing tool.cli.handlers alias failure" | tee -a "$evidence"
+            else
+              echo "$probe: unexpected failure ($status)" >&2
+              exit 1
+            fi
           done
+          {
+            echo '### Direct native probes'
+            echo '```text'
+            cat "$evidence"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run the two focused XTalk tests
+      - name: Run the two focused XTalk test files
         shell: bash
         run: |
           set -euo pipefail
@@ -171,8 +177,8 @@ jobs:
             result='focused XTalk tests passed'
           elif grep -Fq 'Script module has no registered loader' "$log"; then
             result='existing “Script module has no registered loader” failure recorded'
-          elif grep -Fq \
-            'Namespace alias already refers to std.foundation.host: host' "$log"; then
+          elif grep -Fq 'Namespace alias already refers to std.foundation.host: host' "$log" \
+            && cmp -s "$RUNNER_TEMP/handlers-before.hal" core/lib/src/tool/cli/handlers.hal; then
             result='pre-existing tool.cli.handlers alias failure recorded'
           else
             echo "unexpected focused-test failure ($status)" >&2
