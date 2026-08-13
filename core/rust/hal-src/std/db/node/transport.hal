@@ -10,9 +10,7 @@
 ;; Node parentPort without placing host globals in portable HAL code.
 ;; ============================================================================
 (ns std.db.node.transport
-  (:require
-            [std.lib.substrate :as substrate]
-            [std.lib.substrate.protocol :as protocol]))
+  (:require [std.substrate :as substrate]))
 
 (defn- compatible-get
   [value lookup-key]
@@ -159,23 +157,23 @@
         {"$hara" "error" "message" (str error)}))))
 
 (defn frame->wire
-  "Converts a Substrate frame to a structured-clone-friendly map."
+  "Converts a canonical Substrate frame to a structured-clone-friendly map."
   [frame]
-  {"id" (protocol/frame-id frame)
-   "kind" (wire-name (protocol/frame-kind frame))
-   "space" (protocol/frame-space frame)
-   "meta" (std.db.node.transport/value->wire (protocol/frame-meta frame))
-   "action" (field frame :action)
-   "args" (std.db.node.transport/value->wire (field frame :args))
-   "reply_to" (field frame :reply-to)
-   "status" (wire-name (field frame :status))
-   "data" (std.db.node.transport/value->wire (protocol/frame-data frame))
-   "error" (error->wire (field frame :error))
-   "signal" (std.db.node.transport/value->wire (field frame :signal))
-   "cause" (protocol/frame-cause frame)})
+  {"id" (substrate/frame-id frame)
+   "kind" (wire-name (substrate/frame-kind frame))
+   "space" (substrate/frame-space frame)
+   "meta" (std.db.node.transport/value->wire (substrate/frame-meta frame))
+   "action" (get frame "action")
+   "args" (std.db.node.transport/value->wire (get frame "args"))
+   "reply_to" (get frame "reply_to")
+   "status" (wire-name (get frame "status"))
+   "data" (std.db.node.transport/value->wire (substrate/frame-data frame))
+   "error" (error->wire (get frame "error"))
+   "signal" (std.db.node.transport/value->wire (get frame "signal"))
+   "cause" (substrate/frame-cause frame)})
 
 (defn wire->frame
-  "Reconstructs a Substrate frame from a wire map."
+  "Reconstructs a canonical Substrate frame from a wire map."
   [message]
   (substrate/node-frame
    (wire-keyword (compatible-get message :kind))
@@ -197,39 +195,9 @@
   [message]
   (= "ready" (compatible-get message :signal)))
 
-(defn- response-frame
-  [request status data error]
-  (substrate/node-frame :response
-                        (str "res-" (protocol/frame-id request))
-                        (protocol/frame-space request)
-                        {}
-                        nil
-                        []
-                        (protocol/frame-id request)
-                        status
-                        data
-                        error
-                        nil
-                        (protocol/frame-id request)))
-
 (defn- receive-endpoint-frame
-  [node transport-id send-function frame]
-  (if (= :request (protocol/frame-kind frame))
-    (try
-      (let [result (protocol/receive-frame node frame {:transport-id transport-id})]
-        (if (promise? result)
-          (promise/catch
-           (promise/then result
-                         (fn [value]
-                           (send-function
-                            (frame->wire (response-frame frame :ok value nil)))))
-           (fn [error]
-             (send-function
-              (frame->wire (response-frame frame :error nil error)))))
-          (send-function (frame->wire (response-frame frame :ok result nil)))))
-      (catch Throwable error
-        (send-function (frame->wire (response-frame frame :error nil error)))))
-    (protocol/receive-frame node frame {:transport-id transport-id})))
+  [node transport-id frame]
+  (substrate/receive-frame node frame {:transport-id transport-id}))
 
 (defn attach-endpoint
   "Attaches an endpoint as a Substrate transport.
@@ -242,7 +210,7 @@
       (throw (ex-info "Database endpoint requires :send" {:endpoint endpoint})))
     (when (nil? listen-function)
       (throw (ex-info "Database endpoint requires :listen" {:endpoint endpoint})))
-    (protocol/attach-transport
+    (substrate/attach-transport
      node
      transport-id
      (fn [frame]
@@ -252,7 +220,6 @@
        (if (compatible-get message :kind)
          (receive-endpoint-frame node
                                  transport-id
-                                 send-function
                                  (wire->frame message))
          (when control-listener
            (control-listener message)))))

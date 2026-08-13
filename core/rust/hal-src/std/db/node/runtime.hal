@@ -12,8 +12,7 @@
             [std.db.node.kernel-service :as service]
             [std.db.node.proxy-base :as proxy]
             [std.db.node.proxy-util :as proxy-util]
-            [std.lib.substrate :as substrate]
-            [std.lib.substrate.protocol :as protocol]))
+            [std.substrate :as substrate]))
 
 (def DEFAULT-TRANSPORT "xt.db.default.transport")
 (def DEFAULT-WORKER "xt.db.default.worker")
@@ -48,8 +47,10 @@
 
 (defn- cleanup-adapter
   [node transport-id adapter]
-  (protocol/detach-transport node transport-id)
-  (close-adapter adapter))
+  (promise/then
+   (substrate/detach-transport node transport-id)
+   (fn [_]
+     (close-adapter adapter))))
 
 (defn- runtime-node
   [runtime]
@@ -85,61 +86,23 @@
           (or drivers {}))
   node)
 
-(defn- response-frame
-  [request status data error]
-  (substrate/node-frame :response
-                        (str "res-" (protocol/frame-id request))
-                        (protocol/frame-space request)
-                        {}
-                        nil
-                        []
-                        (protocol/frame-id request)
-                        status
-                        data
-                        error
-                        nil
-                        (protocol/frame-id request)))
-
-(defn- deliver-response
-  [source transport-id request status data error]
-  (protocol/receive-frame source
-                          (response-frame request status data error)
-                          {:transport-id transport-id}))
-
-(defn- forward-request
-  [source target transport-id frame]
-  (try
-    (let [result (protocol/receive-frame target frame {:transport-id transport-id})]
-      (if (promise? result)
-        (promise/catch
-         (promise/then result
-                       (fn [value]
-                         (deliver-response source transport-id frame :ok value nil)))
-         (fn [error]
-           (deliver-response source transport-id frame :error nil error)))
-        (deliver-response source transport-id frame :ok result nil)))
-    (catch Throwable error
-      (deliver-response source transport-id frame :error nil error))))
-
 (defn- forward-frame
   [source target transport-id frame]
-  (if (= :request (protocol/frame-kind frame))
-    (forward-request source target transport-id frame)
-    (protocol/receive-frame target frame {:transport-id transport-id})))
+  (substrate/receive-frame target frame {:transport-id transport-id}))
 
 (defn connect-nodes
   "Attaches a bidirectional in-memory transport between two Substrate nodes."
   ([client-node server-node]
    (connect-nodes client-node server-node DEFAULT-TRANSPORT))
   ([client-node server-node transport-id]
-   (protocol/attach-transport client-node
-                              transport-id
-                              (fn [frame]
-                                (forward-frame client-node server-node transport-id frame)))
-   (protocol/attach-transport server-node
-                              transport-id
-                              (fn [frame]
-                                (forward-frame server-node client-node transport-id frame)))
+   (substrate/attach-transport client-node
+                               transport-id
+                               (fn [frame]
+                                 (forward-frame client-node server-node transport-id frame)))
+   (substrate/attach-transport server-node
+                               transport-id
+                               (fn [frame]
+                                 (forward-frame server-node client-node transport-id frame)))
    (proxy-util/set-default-transport client-node transport-id)
    {:transport-id transport-id
     :client client-node
@@ -148,8 +111,8 @@
 (defn disconnect-nodes
   "Detaches a linked runtime transport from both nodes."
   [client-node server-node transport-id]
-  (protocol/detach-transport client-node transport-id)
-  (protocol/detach-transport server-node transport-id)
+  (substrate/detach-transport client-node transport-id)
+  (substrate/detach-transport server-node transport-id)
   {:transport-id transport-id
    :detached true})
 
@@ -216,7 +179,7 @@
              :boot status
              :transport transport-id
              :transport-attached
-             (not (nil? (protocol/get-transport node transport-id)))}))
+             (not (nil? (substrate/transport-get node transport-id)))}))
          (fn [error]
            (promise/then
             (cleanup-adapter node transport-id adapter)
@@ -268,7 +231,7 @@
                 :init status
                 :transport transport-id
                 :transport-attached
-                (not (nil? (protocol/get-transport client-node transport-id)))}))))
+                (not (nil? (substrate/transport-get client-node transport-id)))}))))
          (fn [error]
            (promise/then
             (cleanup-adapter client-node transport-id adapter)

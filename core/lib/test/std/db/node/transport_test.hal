@@ -5,8 +5,7 @@
             [std.db.node.transport :as transport]
             [std.db.protocol :as db-protocol]
             [std.foundation.promise :as promise]
-            [std.lib.substrate :as substrate]
-            [std.lib.substrate.protocol :as substrate-protocol]))
+            [std.substrate :as substrate]))
 
 (defstruct MessageConnection
   [id closed])
@@ -84,7 +83,7 @@
         (get encoded "message")])
      => ["error" "database failed"])
 
-   (fact "frames round-trip through the structured message representation"
+   (fact "canonical map frames round-trip through the message representation"
      (let [frame (substrate/node-frame :request
                                        "req-1"
                                        "main"
@@ -93,14 +92,16 @@
                                        ["db/primary" "select 1" [{:mode :fast}]]
                                        nil nil nil nil nil nil)
            decoded (transport/wire->frame (transport/frame->wire frame))]
-       [(substrate-protocol/frame-id decoded)
-        (substrate-protocol/frame-kind decoded)
-        (substrate-protocol/frame-space decoded)
-        (substrate-protocol/frame-meta decoded)
-        (field decoded :action)
-        (field decoded :args)])
-     => ["req-1"
-         :request
+       [(map? decoded)
+        (substrate/frame-id decoded)
+        (substrate/frame-kind decoded)
+        (substrate/frame-space decoded)
+        (substrate/frame-meta decoded)
+        (get decoded "action")
+        (get decoded "args")])
+     => [true
+         "req-1"
+         "request"
          "main"
          {:trace :trace/one}
          "@xt.db/query"
@@ -140,10 +141,12 @@
                                  [42]
                                  {})
                    2000 :timeout)]
-       [(get booted :transport-attached)
+       [(instance? substrate/SubstrateNode client-node)
+        (instance? substrate/SubstrateNode server-node)
+        (get booted :transport-attached)
         (get connected :transport-attached)
         (get (get connected :init) :status)
         (get output :rows)])
-     => [true true :setup [[42]]])])
+     => [true true true true :setup [[42]]])])
 
 (pr-str (run '[std.db.node.transport-test]))

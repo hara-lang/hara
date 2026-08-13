@@ -7,8 +7,7 @@
             [std.db.node.runtime :as runtime]
             [std.db.protocol :as db-protocol]
             [std.foundation.promise :as promise]
-            [std.lib.substrate :as substrate]
-            [std.lib.substrate.protocol :as substrate-protocol]))
+            [std.substrate :as substrate]))
 
 (defstruct MockConnection
   [id state])
@@ -67,7 +66,17 @@
              :options {:id "cache-1"}}})
 
 (def results
-  [(fact "kernel config assigns stable service IDs"
+  [(fact "database runtimes use canonical substrate nodes and map frames"
+     (let [node (substrate/node-create "canonical")
+           frame (substrate/request-frame nil "@probe" [1] {})]
+       [(instance? substrate/SubstrateNode node)
+        (substrate/node? node)
+        (map? frame)
+        (substrate/frame-kind frame)
+        (get frame "action")])
+     => [true true true "request" "@probe"])
+
+   (fact "kernel config assigns stable service IDs"
      (kernel/kernel-create-config
       {"primary" {"type" "mock"}
        "caching" {"type" "mock"}})
@@ -78,7 +87,7 @@
    (fact "server initialization installs database handlers"
      (let [node (substrate/node-create "server")]
        (runtime/init-server node)
-       (substrate-protocol/list-handlers node))
+       (substrate/list-handlers node))
      => (contains ["@xt.db/kernel-init"
                    "@xt.db/kernel-setup"
                    "@xt.db/kernel-teardown"
@@ -171,9 +180,9 @@
                       (kernel/kernel-setup-main server failed-config {} {})
                       (fn [error] :failed)))]
          [status
-          (substrate-protocol/get-service server "db/common")
-          (substrate-protocol/get-service server "db/primary")
-          (substrate-protocol/get-service server "db/caching")]))
+          (substrate/get-service server "db/common")
+          (substrate/get-service server "db/primary")
+          (substrate/get-service server "db/caching")]))
      => [:failed nil nil nil])
 
    (fact "failed local initialization detaches the linked transport"
@@ -186,8 +195,8 @@
                       (runtime/local-connect client-node server failed-config {} {})
                       (fn [error] :failed)))]
          [status
-          (substrate-protocol/get-transport client-node runtime/DEFAULT-TRANSPORT)
-          (substrate-protocol/get-transport server runtime/DEFAULT-TRANSPORT)]))
+          (substrate/transport-get client-node runtime/DEFAULT-TRANSPORT)
+          (substrate/transport-get server runtime/DEFAULT-TRANSPORT)]))
      => [:failed nil nil])
 
    (fact "teardown closes services and removes the runtime transport"
@@ -197,9 +206,9 @@
        (let [connected (deref (runtime/local-connect client-node server config {} {}))
              runtime-value (get connected :runtime)]
          (deref (runtime/close-runtime runtime-value config))
-         [(substrate-protocol/get-service server "db/primary")
-          (substrate-protocol/get-service server "db/caching")
-          (substrate-protocol/get-transport client-node runtime/DEFAULT-TRANSPORT)]))
+         [(substrate/get-service server "db/primary")
+          (substrate/get-service server "db/caching")
+          (substrate/transport-get client-node runtime/DEFAULT-TRANSPORT)]))
      => [nil nil nil])
 
    (fact "worker adapter entry points share the same initialization contract"
