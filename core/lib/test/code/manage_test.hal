@@ -1,16 +1,24 @@
 (ns code.manage-test
   (:use code.test)
-  (:require [code.manage :as manage]))
+  (:require [code.manage :as manage]
+            [std.work.command.task :as task-command]))
 
 (def sample-unit
   {:path "sample.hal"
    :source "(ns sample.core)\n\n(defn answer [] 42)\n;; TODO document\n"})
 
-(fact "code.manage executes inspection through std.work"
-  (let [result (manage/run :analyse {:units [sample-unit]})]
-    [(:count (:summary result))
-     (:namespace (:item/value (first (:results result))))])
-  => [1 "sample.core"])
+(fact "code.manage exposes one unit command and expands that exact command in bulk"
+  (let [unit-work (manage/unit-work :analyse)
+        direct (manage/run-unit :analyse sample-unit)
+        result (manage/run :analyse {:units [sample-unit]})
+        bulk (:item/value (first (:results result)))]
+    [(task-command/task-work? unit-work)
+     (:item/id direct)
+     (:count (:summary result))
+     (:results (:summary result))
+     (get-in direct [:data :namespace])
+     (= direct bulk)])
+  => [true "sample.hal" 1 1 "sample.core" true])
 
 (fact "source edits are plans and remain dry-run by default"
   (let [plan (manage/grep-replace sample-unit "42" "43")]
@@ -19,9 +27,10 @@
 
 (fact "maintenance reports preserve source location and do not write"
   (let [unit {:path "unclean.hal" :source "(ns unclean)  \n;; note"}
-        result (manage/run :unclean-findings {:units [unit]})]
-    [(map (fn [entry] (:path entry)) (:item/value (first (:results result))))
-     (map (fn [entry] (:kind entry)) (:item/value (first (:results result))))])
+        result (manage/run :unclean-findings {:units [unit]})
+        findings (get-in result [:results 0 :item/value :data])]
+    [(map (fn [entry] (:path entry)) findings)
+     (map (fn [entry] (:kind entry)) findings)])
   => [["unclean.hal" "unclean.hal"]
       [:trailing-whitespace :missing-final-newline]])
 
