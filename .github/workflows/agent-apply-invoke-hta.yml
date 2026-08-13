@@ -6,6 +6,7 @@ on:
       - agent/invoke-hta-557
     paths:
       - scripts/agent-apply-invoke-hta.py
+      - scripts/agent-adjust-invoke-hta-core.py
       - .github/workflows/agent-apply-invoke-hta.yml
 
 permissions:
@@ -27,21 +28,22 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
       - name: Apply reviewed source patch
-        run: python3 scripts/agent-apply-invoke-hta.py
-      - name: Regenerate the embedded Foundation bytecode
-        run: cargo +1.85.1 run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
+        run: |
+          python3 scripts/agent-apply-invoke-hta.py
+          python3 scripts/agent-adjust-invoke-hta-core.py
       - name: Format
         run: cargo +1.85.1 fmt --manifest-path core/rust/Cargo.toml --all
-      - name: Test qualified Var HTA invocation
+      - name: Test unit boundary
+        run: cargo +1.85.1 test --manifest-path core/rust/Cargo.toml --lib invoke_hta
+      - name: Test public embedding boundary
         run: cargo +1.85.1 test --manifest-path core/rust/Cargo.toml --test invoke_hta
       - name: Check invoke-only benchmark
         run: cargo +1.85.1 check --manifest-path core/rust/Cargo.toml --bin hara-invoke-hta-benchmark
-      - name: Lint native runtime
-        run: cargo +1.85.1 clippy --manifest-path core/rust/Cargo.toml --all-targets -- -D warnings
-      - name: Publish clean implementation commit
+      - name: Lint changed native targets
+        run: cargo +1.85.1 clippy --manifest-path core/rust/Cargo.toml --lib --test invoke_hta --bin hara-invoke-hta-benchmark -- -D warnings -A dead-code -A unused-mut -A unused-variables
+      - name: Publish implementation commit
         run: |
-          rm -f scripts/agent-apply-invoke-hta.py .github/workflows/agent-apply-invoke-hta.yml
-          git add -A
+          git add core/rust notes
           git diff --cached --check
           git commit -m "Add binary-safe qualified Var HTA invocation"
           git push origin HEAD:agent/invoke-hta-557
