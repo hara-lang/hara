@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 
 use crate::core::Value;
+use crate::invoke_hta::InvokeHtaError;
 use crate::lang::data::Symbol;
 use crate::Runtime;
 
@@ -25,6 +26,12 @@ const RUNTIME_BROKER_STACK_SIZE: usize = if cfg!(debug_assertions) {
 } else {
     8 * 1024 * 1024
 };
+
+#[derive(Clone, Copy)]
+enum RuntimeBootstrap {
+    Full,
+    Core,
+}
 
 enum Request {
     Eval {
@@ -86,6 +93,12 @@ enum Request {
         arguments: Vec<u8>,
         reply: mpsc::Sender<Result<Vec<u8>, String>>,
     },
+    InvokeHta {
+        session: String,
+        qualified_var: String,
+        arguments: Vec<u8>,
+        reply: mpsc::Sender<Result<Vec<u8>, InvokeHtaError>>,
+    },
     Shutdown,
 }
 
@@ -106,7 +119,15 @@ pub struct RuntimeBroker {
 
 impl RuntimeBroker {
     pub fn start() -> Result<Self, String> {
-        Self::start_with(None, false, false, false)
+        Self::start_with_bootstrap(None, false, false, false, RuntimeBootstrap::Full)
+    }
+
+    /// Starts an isolated broker with the portable L0 runtime.
+    ///
+    /// This is intended for small embedding surfaces and focused tests
+    /// that do not require the language-level Foundation bundle.
+    pub fn start_core() -> Result<Self, String> {
+        Self::start_with_bootstrap(None, false, false, false, RuntimeBootstrap::Core)
     }
 
     pub fn start_with(
@@ -114,6 +135,22 @@ impl RuntimeBroker {
         native_sockets: bool,
         allow_process: bool,
         allow_postgres: bool,
+    ) -> Result<Self, String> {
+        Self::start_with_bootstrap(
+            root,
+            native_sockets,
+            allow_process,
+            allow_postgres,
+            RuntimeBootstrap::Full,
+        )
+    }
+
+    fn start_with_bootstrap(
+        root: Option<PathBuf>,
+        native_sockets: bool,
+        allow_process: bool,
+        allow_postgres: bool,
+        bootstrap: RuntimeBootstrap,
     ) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
@@ -126,6 +163,7 @@ impl RuntimeBroker {
                     native_sockets,
                     allow_process,
                     allow_postgres,
+                    bootstrap,
                 )
             })
             .map_err(|error| format!("runtime broker failed: {error}"))?;
@@ -223,6 +261,25 @@ impl RuntimeBroker {
         })
     }
 
+    pub fn invoke_hta(
+        &self,
+        session: &str,
+        qualified_var: &str,
+        arguments: &[u8],
+    ) -> Result<Vec<u8>, InvokeHtaError> {
+        let (reply, response) = mpsc::channel();
+        self.handle
+            .sender
+            .send(Request::InvokeHta {
+                session: session.into(),
+                qualified_var: qualified_var.into(),
+                arguments: arguments.into(),
+                reply,
+            })
+            .map_err(|_| InvokeHtaError::BrokerClosed)?;
+        response.recv().map_err(|_| InvokeHtaError::BrokerStopped)?
+    }
+
     pub fn invoke_module(
         &self,
         session: &str,
@@ -259,8 +316,12 @@ fn runtime(
     native_sockets: bool,
     allow_process: bool,
     allow_postgres: bool,
+    bootstrap: RuntimeBootstrap,
 ) -> Runtime {
-    let mut runtime = Runtime::new();
+    let mut runtime = match bootstrap {
+        RuntimeBootstrap::Full => Runtime::new(),
+        RuntimeBootstrap::Core => Runtime::core(),
+    };
     if let Some(root) = root {
         runtime.install_native_file_provider(root.to_string_lossy().as_ref());
     }
@@ -284,11 +345,18 @@ fn run(
     native_sockets: bool,
     allow_process: bool,
     allow_postgres: bool,
+    bootstrap: RuntimeBootstrap,
 ) {
     let mut resources = HashMap::<String, String>::new();
     let mut sessions = HashMap::from([(
         "ROOT".to_owned(),
-        runtime(root.as_ref(), native_sockets, allow_process, allow_postgres),
+        runtime(
+            root.as_ref(),
+            native_sockets,
+            allow_process,
+            allow_postgres,
+            bootstrap,
+        ),
     )]);
     while let Ok(request) = receiver.recv() {
         match request {
@@ -345,8 +413,13 @@ fn run(
                 let result = if session.is_empty() || sessions.contains_key(&session) {
                     Err(format!("Session already exists or is invalid: {session}"))
                 } else {
-                    let mut created =
-                        runtime(root.as_ref(), native_sockets, allow_process, allow_postgres);
+                    let mut created = runtime(
+                        root.as_ref(),
+                        native_sockets,
+                        allow_process,
+                        allow_postgres,
+                        bootstrap,
+                    );
                     for (name, source) in &resources {
                         created.register_resource(name, source);
                     }
@@ -446,6 +519,18 @@ fn run(
                             runtime.invoke_wasm_extension(&namespace, &export, &arguments)?;
                         crate::hta::encode(&result)
                     });
+                let _ = reply.send(result);
+            }
+            Request::InvokeHta {
+                session,
+                qualified_var,
+                arguments,
+                reply,
+            } => {
+                let result = sessions
+                    .get_mut(&session)
+                    .ok_or_else(|| InvokeHtaError::SessionMissing(session.clone()))
+                    .and_then(|runtime| runtime.invoke_hta(&qualified_var, &arguments));
                 let _ = reply.send(result);
             }
             Request::Shutdown => break,

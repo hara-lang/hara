@@ -1276,6 +1276,21 @@ fn call(f: Rc<Function>, args: Vec<Value>, k: Cont) -> Step {
     )
 }
 
+pub(crate) fn invoke_function_sync(
+    function: Rc<Function>,
+    arguments: Vec<Value>,
+) -> Result<Value, String> {
+    let env = Rc::new(RefCell::new(HashMap::new()));
+    let mut fiber = EvalFiber {
+        env,
+        pending: None,
+        resume: None,
+        state: EvalFiberState::Running,
+    };
+    fiber.accept(call(function, arguments, Box::new(Step::Done)));
+    fiber.drive_sync()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

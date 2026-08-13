@@ -1,0 +1,38 @@
+name: Merge main into invoke HTA branch
+
+on:
+  push:
+    branches:
+      - agent/invoke-hta-557
+    paths:
+      - .github/workflows/agent-merge-main-invoke-hta.yml
+
+permissions:
+  contents: write
+
+jobs:
+  merge-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/invoke-hta-557
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+      - name: Merge current main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+      - name: Enforce Rust layout
+        run: core/rust/scripts/check-layout.sh
+      - name: Check formatting
+        run: cargo +1.85.1 fmt --manifest-path core/rust/Cargo.toml --all --check
+      - name: Test the public invocation boundary
+        run: cargo +1.85.1 test --manifest-path core/rust/Cargo.toml --test invoke_hta
+      - name: Check the invoke-only benchmark
+        run: cargo +1.85.1 check --manifest-path core/rust/Cargo.toml --bin hara-invoke-hta-benchmark
+      - name: Publish the verified merge
+        run: git push origin HEAD:agent/invoke-hta-557
