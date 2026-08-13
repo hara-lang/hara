@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""Make the independently checkpointed fact graph the sole code.test runtime."""
+
+from __future__ import annotations
+
+import re
+import shutil
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def read(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+def write(path: str, content: str) -> None:
+    target = ROOT / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    source = read(path)
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(f"{path}: expected one occurrence of {old[:100]!r}, found {count}")
+    write(path, source.replace(old, new, 1))
+
+
+def mirror(relative: str) -> None:
+    source = ROOT / "core/lib/src" / relative
+    target = ROOT / "core/rust/hal-src" / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+
+
+# ---------------------------------------------------------------------------
+# Move the existing fact graph from the compatibility namespace into code.test.
+# ---------------------------------------------------------------------------
+
+work_source = read("core/lib/src/code/test/work.hal")
+graph_match = re.search(
+    r"\(defn fact-identity.*?(?=\n\(defn run-batch)",
+    work_source,
+    flags=re.DOTALL,
+)
+if graph_match is None:
+    raise SystemExit("code.test.work fact graph was not found")
+
+graph = graph_match.group(0)
+# The graph is moving into code.test, so remove its namespace alias while
+# preserving :test/* keywords and code.test/* work identifiers.
+graph = re.sub(r"(?<![A-Za-z0-9_.:-])test/", "", graph)
+graph = re.sub(r"\bexecution-options\b", "work-execution-options", graph)
+graph = graph.replace("+default-revision+", "+default-work-revision+")
+
+resolve_block = '''(defn resolve-fact
+  [namespace name]
+  (let [namespace (fact-identity namespace)
+        name (fact-identity name)
+        fact (get-fact namespace name)]
+    (if fact
+      fact
+      (throw
+       (ex-info "Registered test fact does not exist"
+                {:namespace namespace
+                 :name name})))))'''
+resolve_with_token = resolve_block + '''
+
+(defn resolve-subject-fact
+  "Resolves a prepared fact and rejects definition drift before execution."
+  [subject]
+  (let [fact (resolve-fact (:namespace subject) (:name subject))
+        expected (:test/definition subject)
+        actual (fact-definition-token fact (:test/revision subject))]
+    (if (and expected (not= expected actual))
+      (throw
+       (ex-info "Registered test fact definition changed after preparation"
+                {:namespace (:namespace subject)
+                 :name (:name subject)
+                 :expected expected
+                 :actual actual})))
+    fact))'''
+if graph.count(resolve_block) != 1:
+    raise SystemExit("prepared fact resolution anchor was not found exactly once")
+graph = graph.replace(resolve_block, resolve_with_token, 1)
+
+subject_pattern = re.compile(
+    r"\(resolve-fact \(:namespace subject\)\s+\(:name subject\)\)"
+)
+graph, replaced_subjects = subject_pattern.subn(
+    "(resolve-subject-fact subject)", graph
+)
+if replaced_subjects < 6:
+    raise SystemExit(
+        f"expected prepared fact validation at six or more graph sites, found {replaced_subjects}"
+    )
+
+# The canonical work result is the ordinary code.test summary. The internal
+# batch envelope remains visible in events/checkpoints but is not a second
+# public result shape.
+graph = re.sub(
+    r"\(defn fact-batch-work.*$",
+    r'''(defn fact-batch-work
+  "Returns the canonical suite graph with independently checkpointed facts.
+
+   Suite and fact cleanup use work/ensure. Test lifecycle events commit directly
+   through std.work. Generic batch stop/cancel stages implement fail-fast while
+   preserving one terminal result for every selected fact."
+  ([]
+   (fact-batch-work +default-work-revision+))
+  ([batch-revision]
+   (work/chain
+    {:id 'code.test/fact-batch
+     :version batch-revision
+     :test/revision batch-revision}
+    [(work/pure
+      {:id 'code.test/fact-batch-prepare
+       :version batch-revision}
+      (fn [input context]
+        (prepare-fact-batch input context batch-revision)))
+     (work/ensure
+      {:id 'code.test/suite-scope
+       :version batch-revision}
+      (fact-batch-body batch-revision)
+      (work/step
+       {:id 'code.test/suite-after
+        :version batch-revision}
+       suite-after))
+     (work/pure
+      {:id 'code.test/suite-result
+       :version batch-revision}
+      (fn [batch context]
+        (:summary batch)))])))
+
+(defn batch-summary
+  [result]
+  (if (and (map? result) (has? result :summary))
+    (:summary result)
+    result))''',
+    graph,
+    count=1,
+    flags=re.DOTALL,
+)
+
+code_test_path = "core/lib/src/code/test.hal"
+code_test = read(code_test_path)
+replacement = r'''
+(def +default-work-revision+ 1)
+
+(defn work-revision
+  [options]
+  (or (:test/revision options)
+      +default-work-revision+))
+
+(defn work-context-options
+  [context]
+  (let [base (or (:test/options context) {})
+        now (:work/now context)
+        timeout-promise (:work/timeout-promise context)
+        cancel-timeout (:work/cancel-timeout context)]
+    (merge base
+           (if now {:work/now now} {})
+           (if timeout-promise
+             {:work/timeout-promise timeout-promise}
+             {})
+           (if cancel-timeout
+             {:work/cancel-timeout cancel-timeout}
+             {}))))
+
+(defn work-execution-options
+  [input context]
+  (merge (or input {})
+         (work-context-options context)))
+
+(defn normalize-run-options
+  [selector-or-options]
+  (if (map? selector-or-options)
+    selector-or-options
+    {:namespace selector-or-options}))
+
+''' + graph + r'''
+
+(def suite-work fact-batch-work)
+(def +runner-work+ (fact-batch-work))
+'''
+
+code_test, replaced_monolith = re.subn(
+    r"\n\(defn fact-event-identity.*?(?=\n\(defn run\n)",
+    replacement,
+    code_test,
+    count=1,
+    flags=re.DOTALL,
+)
+if replaced_monolith != 1:
+    raise SystemExit("monolithic code.test suite executor was not found")
+
+run_replacement = r'''(defn run
+  "Runs selected facts through the canonical IWork fact-batch graph."
+  ([] (code.test/run {}))
+  ([selector-or-options]
+   (code.test/run (work/local-runtime) selector-or-options {}))
+  ([runtime selector-or-options]
+   (code.test/run runtime selector-or-options {}))
+  ([runtime selector-or-options work-options]
+   (let [options (normalize-run-options selector-or-options)]
+     (work/run runtime
+               (fact-batch-work (work-revision options))
+               options
+               work-options))))
+
+(defn start
+  "Starts the canonical fact-batch graph and returns a work-run reference."
+  ([runtime selector-or-options]
+   (start runtime selector-or-options {}))
+  ([runtime selector-or-options work-options]
+   (let [options (normalize-run-options selector-or-options)]
+     (work/start runtime
+                 (fact-batch-work (work-revision options))
+                 options
+                 work-options))))
+
+(defn batch-result
+  [runtime reference]
+  (batch-summary (work/result runtime reference)))
+
+(def run-batch run)
+(def start-batch start)'''
+code_test, replaced_run = re.subn(
+    r"\(defn run\n.*?(?=\n\(defn run-tests)",
+    run_replacement,
+    code_test,
+    count=1,
+    flags=re.DOTALL,
+)
+if replaced_run != 1:
+    raise SystemExit("public code.test/run block was not found")
+
+write(code_test_path, code_test)
+mirror("code/test.hal")
+
+
+# ---------------------------------------------------------------------------
+# code.test.work remains only as a source-compatibility facade.
+# ---------------------------------------------------------------------------
+
+facade = r'''(ns code.test.work
+  (:require [code.test :as test]))
+
+;; Compatibility facade over the one canonical graph owned by code.test.
+(def +default-revision+ test/+default-work-revision+)
+(def +runner-work+ test/+runner-work+)
+(def revision test/work-revision)
+(def context-options test/work-context-options)
+(def execution-options test/work-execution-options)
+(def suite-work test/fact-batch-work)
+(def fact-identity test/fact-identity)
+(def fact-coordinate test/fact-coordinate)
+(def fact-revision test/fact-revision)
+(def fact-definition-token test/fact-definition-token)
+(def fact-item-coordinate test/fact-item-coordinate)
+(def resolve-fact test/resolve-fact)
+(def resolve-subject-fact test/resolve-subject-fact)
+(def fact-work test/fact-work)
+(def selected-facts test/selected-facts)
+(def data-options test/data-options)
+(def effective-suite-options test/effective-suite-options)
+(def fact-item test/fact-item)
+(def prepare-fact-batch test/prepare-fact-batch)
+(def fact-manifest test/fact-manifest)
+(def summary-from-results test/summary-from-results)
+(def fact-options test/fact-options)
+(def fact-result-identity test/fact-result-identity)
+(def error-result test/error-result)
+(def fact-mode test/fact-mode)
+(def terminal-fact-result test/terminal-fact-result)
+(def before-fact test/before-fact)
+(def execute-fact-body test/execute-fact-body)
+(def run-fact-body test/run-fact-body)
+(def after-fact test/after-fact)
+(def timed-result test/timed-result)
+(def finalize-fact test/finalize-fact)
+(def running-fact-work test/running-fact-work)
+(def fact-process-work test/fact-process-work)
+(def summarise-fact-batch test/summarise-fact-batch)
+(def suite-before test/suite-before)
+(def suite-after test/suite-after)
+(def stop-after-fact? test/stop-after-fact?)
+(def cancel-unclaimed-fact test/cancel-unclaimed-fact)
+(def fact-batch-body test/fact-batch-body)
+(def fact-batch-work test/fact-batch-work)
+(def batch-summary test/batch-summary)
+(def run-batch test/run)
+(def start-batch test/start)
+(def batch-result test/batch-result)
+(def run test/run)
+(def start test/start)
+'''
+write("core/lib/src/code/test/work.hal", facade)
+mirror("code/test/work.hal")
+
+
+# ---------------------------------------------------------------------------
+# Focused conformance for the canonical public path and definition pinning.
+# ---------------------------------------------------------------------------
+
+work_api_test = "core/lib/test/code/test_work_test.hal"
+replace_once(
+    work_api_test,
+    """     (count (work/checkpoints suite-runtime suite-reference))]
+    [:completed true 1 1])""",
+    """     (count (work/checkpoints suite-runtime suite-reference))]
+    [:completed true 1 12])""",
+)
+replace_once(
+    work_api_test,
+    """    [:step :failed true 1 :completed])""",
+    """    [:chain :failed true 1 :completed])""",
+)
+replace_once(
+    work_api_test,
+    '"public code.test/run uses a native work value and explicit runtime"',
+    '"public code.test/run uses the canonical fact-batch work graph"',
+)
+
+batch_test_path = "core/lib/test/code/test_work_batch_test.hal"
+batch_test = read(batch_test_path)
+if batch_test.count("(def durable-result (work/result runtime reference))\n") != 1:
+    raise SystemExit("durable fact-batch result anchor was not found")
+batch_test = batch_test.replace(
+    "(def durable-result (work/result runtime reference))\n",
+    "(def durable-result (work/result runtime reference))\n"
+    "(def durable-manifest (test-work/fact-manifest options {} 11))\n",
+    1,
+)
+if batch_test.count("(:items durable-result)") != 1:
+    raise SystemExit("fact manifest assertion still depends on the batch envelope")
+batch_test = batch_test.replace("(:items durable-result)", "durable-manifest", 1)
+
+results_end = "]])\n\n(test/print-results results)"
+if batch_test.count(results_end) != 1:
+    raise SystemExit("fact-batch result vector terminator was not found")
+drift_check = r'''
+
+   (test/check-error
+    "prepared fact definitions reject registry drift"
+    (test-work/resolve-subject-fact
+     {:namespace 'code.test-work-batch-test
+      :name "batch passing fact"
+      :test/revision 11
+      :test/definition "definition:wrong"}))'''
+batch_test = batch_test.replace(results_end, drift_check + results_end, 1)
+write(batch_test_path, batch_test)
+
+
+# ---------------------------------------------------------------------------
+# Permanent gate: one graph, one event vocabulary, no ITest-shaped adapters.
+# ---------------------------------------------------------------------------
+
+audit = r'''#!/usr/bin/env python3
+"""Require one canonical code.test work graph and direct committed events."""
+
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[2]
+OWNER = ROOT / "core/lib/src/code/test.hal"
+FACADE = ROOT / "core/lib/src/code/test/work.hal"
+CANONICAL = [OWNER, FACADE]
+MIRRORS = [
+    ROOT / "core/rust/hal-src/code/test.hal",
+    ROOT / "core/rust/hal-src/code/test/work.hal",
+]
+AUDIT_ROOTS = [ROOT / "core/lib/src/code", ROOT / "core/lib/test/code"]
+AUDIT_FILES = [ROOT / "core/lib/test/std/platform_imatch_test.hal"]
+RETIRED_PATHS = [
+    ROOT / "core/lib/src/code/test/protocol.hal",
+    ROOT / "core/rust/hal-src/code/test/protocol.hal",
+]
+FORBIDDEN = [
+    "code.test.protocol",
+    "(defn report-event",
+    "(defn report!",
+    "(defn work-event-kind",
+    "(defn work-reporter",
+    "(defn reporter-for",
+    "(defn event-reporter",
+    "(defn reporter-events",
+    "(defn function-clock",
+    "(defn function-timer",
+    "(defn function-control",
+    "(defn run-selected",
+    "(defn run-facts",
+    "(defn run-fact-with-events",
+    "(defn suite-work",
+    "WorkReporter",
+    "ITestReporter",
+    ":test/reporter",
+    ":test/clock",
+    ":test/timer",
+    ":test/control",
+    ":run/start",
+    ":run/end",
+    ":fact/start",
+    ":fact/end",
+]
+REQUIRED_EVENTS = [
+    ":test/run-started",
+    ":test/fact-started",
+    ":test/fact-completed",
+    ":test/run-completed",
+]
+REQUIRED_GRAPH = [
+    "(def +runner-work+ (fact-batch-work))",
+    "code.test/fact-batch-items",
+    "code.test/suite-scope",
+    "code.test/fact-stop",
+    "code.test/fact-cancel",
+    "(defn resolve-subject-fact",
+]
+REQUIRED_FACADE = [
+    "(def fact-batch-work test/fact-batch-work)",
+    "(def run test/run)",
+    "(def start test/start)",
+]
+
+errors = []
+for path in RETIRED_PATHS:
+    if path.exists():
+        errors.append(f"retired code.test protocol facade exists: {path.relative_to(ROOT)}")
+
+paths = []
+for root in AUDIT_ROOTS:
+    if root.exists():
+        paths.extend(path for path in root.rglob("*.hal") if path.is_file())
+paths.extend(path for path in AUDIT_FILES if path.exists())
+for path in paths:
+    source = path.read_text(encoding="utf-8")
+    for token in FORBIDDEN:
+        if token in source:
+            errors.append(
+                f"{path.relative_to(ROOT)} retains private test-runtime token {token!r}"
+            )
+
+owner_source = OWNER.read_text(encoding="utf-8")
+for token in REQUIRED_EVENTS + REQUIRED_GRAPH:
+    if token not in owner_source:
+        errors.append(f"{OWNER.relative_to(ROOT)} is missing {token!r}")
+
+facade_source = FACADE.read_text(encoding="utf-8")
+for token in REQUIRED_FACADE:
+    if token not in facade_source:
+        errors.append(f"{FACADE.relative_to(ROOT)} is missing alias {token!r}")
+for token in REQUIRED_EVENTS + ["work/emit!", "work/step", "work/batch"]:
+    if token in facade_source:
+        errors.append(f"{FACADE.relative_to(ROOT)} duplicates canonical graph token {token!r}")
+
+for canonical, mirror in zip(CANONICAL, MIRRORS):
+    if canonical.read_bytes() != mirror.read_bytes():
+        errors.append(
+            f"HAL mirror differs: {canonical.relative_to(ROOT)} != {mirror.relative_to(ROOT)}"
+        )
+
+inventory = ROOT / "core/rust/standard-library.namespaces"
+if inventory.exists() and "code.test.protocol" in inventory.read_text(encoding="utf-8").splitlines():
+    errors.append("retired code.test.protocol remains in the Rust namespace inventory")
+
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    raise SystemExit(1)
+
+print("code.test has one fact-batch graph, direct std.work events, and no ITest adapter surface")
+'''
+write("scripts/runtime/check-code-test-work-events", audit)
+(ROOT / "scripts/runtime/check-code-test-work-events").chmod(0o755)
+
+# Final shape assertions before deleting this one-shot helper.
+for relative in ["code/test.hal", "code/test/work.hal"]:
+    canonical = read(f"core/lib/src/{relative}")
+    mirrored = read(f"core/rust/hal-src/{relative}")
+    if canonical != mirrored:
+        raise SystemExit(f"HAL mirror mismatch after migration: {relative}")
+
+source = read("core/lib/src/code/test.hal")
+for retired in ["run-selected", "run-facts", "run-fact-with-events", "(defn suite-work"]:
+    if retired in source:
+        raise SystemExit(f"monolithic test execution survived: {retired}")
+for required in ["resolve-subject-fact", "code.test/fact-stop", "code.test/fact-cancel"]:
+    if required not in source:
+        raise SystemExit(f"canonical graph requirement missing: {required}")
+
+Path(__file__).unlink()
