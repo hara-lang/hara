@@ -98,17 +98,17 @@ pub(super) fn merge_sources(base: &str, extension: &str) -> Result<String, Strin
 
     let manifest_entries = map_entries_mut(&mut manifest)?;
     let apps = map_value_mut(manifest_entries, "cli/apps")
-        .ok_or("CLI manifest is missing :cli/apps")
-        .and_then(vector_mut)?;
+        .ok_or_else(|| "CLI manifest is missing :cli/apps".to_owned())?;
+    let apps = vector_mut(apps)?;
     let mut app_found = false;
-    for app in apps {
+    for app in apps.iter_mut() {
         if map_keyword(app, "app/id") == Some(app_id.as_str()) {
             app_found = true;
             let app_entries = map_entries_mut(app)?;
             set_map_value(app_entries, "app/summary", app_summary.clone());
             let routes = map_value_mut(app_entries, "app/routes")
-                .ok_or("CLI app is missing :app/routes")
-                .and_then(vector_mut)?;
+                .ok_or_else(|| "CLI app is missing :app/routes".to_owned())?;
+            let routes = vector_mut(routes)?;
             if !routes
                 .iter()
                 .any(|candidate| keyword_value(candidate) == Some(route_id.as_str()))
@@ -123,14 +123,14 @@ pub(super) fn merge_sources(base: &str, extension: &str) -> Result<String, Strin
 
     let manifest_entries = map_entries_mut(&mut manifest)?;
     let routes = map_value_mut(manifest_entries, "cli/routes")
-        .ok_or("CLI manifest is missing :cli/routes")
-        .and_then(vector_mut)?;
+        .ok_or_else(|| "CLI manifest is missing :cli/routes".to_owned())?;
+    let routes = vector_mut(routes)?;
     append_unique_entry(routes, "route/id", &route_id, route);
 
     let manifest_entries = map_entries_mut(&mut manifest)?;
     let handlers = map_value_mut(manifest_entries, "cli/handlers")
-        .ok_or("CLI manifest is missing :cli/handlers")
-        .and_then(vector_mut)?;
+        .ok_or_else(|| "CLI manifest is missing :cli/handlers".to_owned())?;
+    let handlers = vector_mut(handlers)?;
     append_unique_entry(handlers, "handler/id", &handler_id, handler);
 
     Ok(manifest.to_string())
