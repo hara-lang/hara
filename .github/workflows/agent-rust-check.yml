@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 jobs:
-  compile:
+  focused-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,23 +57,18 @@ jobs:
           echo '72776a5c5349af694e9a7f770d492176756716036eec47e666fd877cdc67eff7  /tmp/java-fix-1.patch' | sha256sum --check
           git apply --check /tmp/java-fix-1.patch
           git apply /tmp/java-fix-1.patch
-      - name: Verify generated HAL mirror
-        run: python3 scripts/runtime/sync-rust-hal-src --check
-      - name: Format Rust sources
-        run: cargo fmt --manifest-path core/rust/Cargo.toml --all
-      - name: Check native and bytecode runtimes
-        run: cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
-      - name: Compile Java and Truffle runtime
-        run: mvn -B -f core/java/pom.xml -DskipTests compile
-      - name: Capture applied source patch
-        if: always()
+      - name: Verify generated HAL mirror and formatting
         run: |
-          git diff --binary -- core > /tmp/validated.patch
-          gzip -9 -c /tmp/validated.patch > /tmp/validated.patch.gz
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: persistent-validated-patch
-          path: /tmp/validated.patch.gz
-          if-no-files-found: error
-          retention-days: 1
+          python3 scripts/runtime/sync-rust-hal-src --check
+          cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
+      - name: Test Rust named-value runtime and HBC behavior
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defstruct_forms_issue_223 -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defmutable_forms_use_reference_identity_and_settable_fields -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_struct_protocols_dispatch_like_truffle -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_mutables_share_storage_and_reject_persistent_updates -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm structs_preserve_wire_shape_and_mutables_are_rejected -- --nocapture
+      - name: Test Java and Truffle named-value behavior
+        run: mvn -B -f core/java/pom.xml -Ptruffle -Dtest=HaraMutableTest,HtaValueCodecTest test
+      - name: Test canonical HAL struct and mutable contracts
+        run: scripts/runtime/run-lib-tests core/lib/test/std/struct_test.hal core/lib/test/std/mutable_test.hal
