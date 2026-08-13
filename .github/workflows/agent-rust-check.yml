@@ -1,0 +1,44 @@
+name: Agent persistent named-value check
+
+on:
+  push:
+    branches:
+      - agent/persistent-defstruct-defmutable
+    paths:
+      - .github/agent/persistent-defstruct.patch.gz.b64
+      - .github/workflows/agent-rust-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply staged implementation
+        run: |
+          base64 --decode .github/agent/persistent-defstruct.patch.gz.b64 | gzip --decompress > /tmp/persistent.patch
+          git apply --check /tmp/persistent.patch
+          git apply /tmp/persistent.patch
+      - name: Format Rust sources
+        run: cargo fmt --manifest-path core/rust/Cargo.toml --all
+      - name: Check native and bytecode runtimes
+        run: cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
+      - name: Capture formatted source patch
+        if: always()
+        run: |
+          git diff --binary -- core > /tmp/formatted.patch
+          gzip -9 -c /tmp/formatted.patch > /tmp/formatted.patch.gz
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: persistent-formatted-patch
+          path: /tmp/formatted.patch.gz
+          if-no-files-found: error
+          retention-days: 1
