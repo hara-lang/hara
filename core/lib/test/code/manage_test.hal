@@ -12,6 +12,11 @@
   {:path "sample.hal"
    :source "(ns sample.core)\n\n(defn answer [] 42)\n;; TODO document\n"})
 
+(def foundation-file-unit
+  {:path "core/lib/src/std/foundation/file.hal"
+   :source
+   "(ns std.foundation.file)\n\n(defn ^{:schema [:fn [:str] [:maybe :str]]}\n  parent\n  \"Returns the lexical parent.\"\n  [path]\n  path)\n\n(defn- hidden\n  []\n  nil)\n\n(defn ^{:schema [:fn [:str :str] :str]}\n  resolve\n  \"Returns a normalized path.\"\n  [root path]\n  path)\n"})
+
 (fact "Foundation-shaped namespaces own the functions and tasklets"
   [(task-command/tasklet? unit/analyse-unit)
    (task-command/tasklet? unit/heal-unit)
@@ -117,27 +122,42 @@
       "(ns demo.next)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
       false])
 
-(fact "scaffold and create-tests stay in code.manage.unit over scaffold helpers"
-  (let [code-unit
-        {:path "src/demo/core.hal"
-         :source "(ns demo.core)\n(defn answer [] 42)\n"}
-        edit
-        (unit/scaffold
-         code-unit
-         {:test-path "test/demo/core_test.hal"})]
-    [(scaffold/test-path-for
-      code-unit
-      {:test-path "test/demo/core_test.hal"})
-     (:path edit)
+(fact "code.manage/scaffold maps Foundation sources to executable test scaffolds"
+  (let [edit (manage/scaffold foundation-file-unit {})]
+    [(:path edit)
+     (:functions edit)
+     (:new edit)
      (:create edit)
-     (:before edit)
      (:write edit)
-     (string? (:after edit))])
-  => ["test/demo/core_test.hal"
-      "test/demo/core_test.hal"
+     (str/includes? (:after edit)
+                    "(ns std.foundation.file-test")
+     (str/includes? (:after edit)
+                    "TODO: std.foundation.file/parent")
+     (str/includes? (:after edit)
+                    "TODO: std.foundation.file/resolve")
+     (str/includes? (:after edit)
+                    "std.foundation.file/hidden")
+     (str/includes? (:after edit)
+                    "(pr-str (run {:namespace \"std.foundation.file-test\"}))")])
+  => ["core/lib/test/std/foundation/file_test.hal"
+      ["parent" "resolve"]
+      ["parent" "resolve"]
       true
-      ""
+      false
+      true
+      true
+      true
       false
       true])
+
+(fact "explicit scaffold paths still override project-root mapping"
+  [(scaffold/test-path-for
+    foundation-file-unit
+    {:test-path "custom/std/foundation/file_test.hal"})
+   (scaffold/test-path-for
+    {:path "core/lib/src-lang/xt/example.hal"}
+    {})]
+  => ["custom/std/foundation/file_test.hal"
+      "core/lib/test-lang/xt/example_test.hal"])
 
 (pr-str (run {:namespace "code.manage-test"}))

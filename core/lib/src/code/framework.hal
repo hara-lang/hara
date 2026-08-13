@@ -34,13 +34,61 @@
           (str/starts-with? trimmed "(def ") :value
           :else nil)))
 
+(defn definition-name-part?
+  [part]
+  (and part
+       (not (str/blank? part))
+       (not (str/starts-with? part "^"))
+       (not (str/starts-with? part ":"))
+       (not (str/starts-with? part "["))
+       (not (str/starts-with? part "{"))
+       (not (str/starts-with? part "}"))
+       (not (str/starts-with? part "\""))
+       (not (str/starts-with? part "("))
+       (not (= part "&"))))
+
+(defn clean-definition-name
+  [part]
+  (if part
+    (str/replace (str/replace part ")" "") "]" "")
+    nil))
+
 (defn definition-name
   [line]
   (let [trimmed (str/trim line)
         headless (str/replace-first trimmed "(" "")
-        parts (filter (fn [part] (not (str/blank? part)))
-                      (str/split headless " "))]
-    (nth parts 1)))
+        parts (vec
+               (filter
+                (fn [part] (not (str/blank? part)))
+                (str/split headless " ")))]
+    (clean-definition-name
+     (first
+      (filter definition-name-part?
+              (rest parts))))))
+
+(defn continuation-definition-name
+  [line]
+  (let [parts
+        (filter
+         (fn [part] (not (str/blank? part)))
+         (str/split (str/trim line) " "))]
+    (clean-definition-name
+     (first
+      (filter definition-name-part? parts)))))
+
+(defn definition-name-at
+  [lines index]
+  (or
+   (definition-name (nth lines index))
+   (loop [cursor (inc index)]
+     (if (= cursor (count lines))
+       nil
+       (let [candidate
+             (continuation-definition-name
+              (nth lines cursor))]
+         (if candidate
+           candidate
+           (recur (inc cursor))))))))
 
 (defn inline-docstring
   [line]
@@ -61,15 +109,20 @@
     (if (= index (count lines))
       output
       (let [line (nth lines index)
-            trimmed (str/trim line)]
-        (if (definition-kind trimmed)
-          (recur (inc index) lines
-                 (conj output {:line (inc index)
-                               :column 1
-                               :kind (definition-kind trimmed)
-                               :name (definition-name trimmed)
-                               :docstring (inline-docstring trimmed)
-                               :source line}))
+            trimmed (str/trim line)
+            kind (definition-kind trimmed)]
+        (if kind
+          (recur
+           (inc index)
+           lines
+           (conj
+            output
+            {:line (inc index)
+             :column 1
+             :kind kind
+             :name (definition-name-at lines index)
+             :docstring (inline-docstring trimmed)
+             :source line}))
           (recur (inc index) lines output))))))
 
 (defn docstrings
