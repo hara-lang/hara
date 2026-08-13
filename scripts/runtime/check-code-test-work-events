@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
-"""Reject private code.test runtime adapters; require direct std.work events."""
+"""Require one canonical code.test work graph and direct committed events."""
 
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-CANONICAL = [
-    ROOT / "core/lib/src/code/test.hal",
-    ROOT / "core/lib/src/code/test/work.hal",
-]
+EVENT_OWNER = ROOT / "core/lib/src/code/test.hal"
+FACADE = ROOT / "core/lib/src/code/test/work.hal"
+CANONICAL = [EVENT_OWNER, FACADE]
 MIRRORS = [
     ROOT / "core/rust/hal-src/code/test.hal",
     ROOT / "core/rust/hal-src/code/test/work.hal",
 ]
-AUDIT_ROOTS = [
-    ROOT / "core/lib/src/code",
-    ROOT / "core/lib/test/code",
-]
-AUDIT_FILES = [
-    ROOT / "core/lib/test/std/platform_imatch_test.hal",
-]
+AUDIT_ROOTS = [ROOT / "core/lib/src/code", ROOT / "core/lib/test/code"]
+AUDIT_FILES = [ROOT / "core/lib/test/std/platform_imatch_test.hal"]
 RETIRED_PATHS = [
     ROOT / "core/lib/src/code/test/protocol.hal",
     ROOT / "core/rust/hal-src/code/test/protocol.hal",
@@ -36,6 +30,10 @@ FORBIDDEN = [
     "(defn function-clock",
     "(defn function-timer",
     "(defn function-control",
+    "(defn run-selected",
+    "(defn run-facts",
+    "(defn run-fact-with-events",
+    "(defn suite-work",
     "WorkReporter",
     "ITestReporter",
     ":test/reporter",
@@ -47,15 +45,26 @@ FORBIDDEN = [
     ":fact/start",
     ":fact/end",
 ]
-REQUIRED = [
+REQUIRED_EVENTS = [
     ":test/run-started",
     ":test/fact-started",
     ":test/fact-completed",
     ":test/run-completed",
 ]
+REQUIRED_GRAPH = [
+    "(def +runner-work+ (fact-batch-work))",
+    "code.test/fact-batch-items",
+    "code.test/suite-scope",
+    "code.test/fact-stop",
+    "(defn resolve-subject-fact",
+]
+REQUIRED_FACADE = [
+    "(def fact-batch-work test/fact-batch-work)",
+    "(def run test/run)",
+    "(def start test/start)",
+]
 
 errors = []
-
 for path in RETIRED_PATHS:
     if path.exists():
         errors.append(f"retired code.test protocol facade exists: {path.relative_to(ROOT)}")
@@ -65,7 +74,6 @@ for root in AUDIT_ROOTS:
     if root.exists():
         paths.extend(path for path in root.rglob("*.hal") if path.is_file())
 paths.extend(path for path in AUDIT_FILES if path.exists())
-
 for path in paths:
     source = path.read_text(encoding="utf-8")
     for token in FORBIDDEN:
@@ -74,11 +82,18 @@ for path in paths:
                 f"{path.relative_to(ROOT)} retains private test-runtime token {token!r}"
             )
 
-for path in CANONICAL:
-    source = path.read_text(encoding="utf-8")
-    for token in REQUIRED:
-        if token not in source:
-            errors.append(f"{path.relative_to(ROOT)} does not emit required event {token}")
+owner_source = EVENT_OWNER.read_text(encoding="utf-8")
+for token in REQUIRED_EVENTS + REQUIRED_GRAPH:
+    if token not in owner_source:
+        errors.append(f"{EVENT_OWNER.relative_to(ROOT)} is missing {token!r}")
+
+facade_source = FACADE.read_text(encoding="utf-8")
+for token in REQUIRED_FACADE:
+    if token not in facade_source:
+        errors.append(f"{FACADE.relative_to(ROOT)} is missing alias {token!r}")
+for token in REQUIRED_EVENTS + ["work/emit!", "work/step", "work/batch"]:
+    if token in facade_source:
+        errors.append(f"{FACADE.relative_to(ROOT)} duplicates canonical graph token {token!r}")
 
 for canonical, mirror in zip(CANONICAL, MIRRORS):
     if canonical.read_bytes() != mirror.read_bytes():
@@ -94,7 +109,4 @@ if errors:
     print("\n".join(errors), file=sys.stderr)
     raise SystemExit(1)
 
-print(
-    "code.test uses direct std.work lifecycle events with no private protocol, "
-    "reporter, clock, timer, control, or session adapter surface"
-)
+print("code.test has one fact-batch graph, direct std.work events, and no ITest adapter surface")

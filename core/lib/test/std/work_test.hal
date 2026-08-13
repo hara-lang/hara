@@ -213,6 +213,34 @@
               nil
               {:id "invalid-1"}))
 
+(def batch-stop-count (atom 0))
+(def stopped-batch-work
+  (work/batch
+   {:id :stopped-batch}
+   {:list
+    (work/pure :stopped-list
+      (fn [input context]
+        [{:item/id 1 :item/value 1}
+         {:item/id 2 :item/value 2}
+         {:item/id 3 :item/value 3}]))
+    :process
+    (work/step :stopped-process
+      (fn [value context]
+        (swap! batch-stop-count inc)
+        value))
+    :stop
+    (work/pure :stopped-policy
+      (fn [state context]
+        (= 2 (:result state))))
+    :summarise
+    (work/pure :stopped-summary
+      (fn [batch context]
+        {:processed
+         (vec (map (fn [record] (:item/value record))
+                   (:results batch)))}))}))
+(def stopped-batch-result
+  (work/run (work/local-runtime) stopped-batch-work nil))
+
 (def results
   [(test/check
     "local work composes pure and checkpoint-capable leaves"
@@ -313,6 +341,14 @@
     [(work/status invalid-runtime invalid-reference)
      (count (work/checkpoints invalid-runtime invalid-reference))]
     [:failed 1])
+
+   (test/check
+    "batch stop policy prevents later items from starting"
+    [(:summary stopped-batch-result)
+     (count (:items stopped-batch-result))
+     (count (:results stopped-batch-result))
+     (deref batch-stop-count)]
+    [{:processed [1 2]} 3 2 2])
 
    (test/check
     "only three public extension protocols are required"

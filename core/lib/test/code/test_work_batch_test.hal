@@ -31,6 +31,7 @@
    options
    {:id "test-fact-batch"}))
 (def durable-result (work/result runtime reference))
+(def durable-manifest (test-work/fact-manifest options {} 11))
 (def durable-summary (test-work/batch-result runtime reference))
 (def durable-counts [(deref passing-count) (deref failing-count)])
 (def same-reference
@@ -45,6 +46,12 @@
    (work/local-runtime)
    options))
 (def final-counts [(deref passing-count) (deref failing-count)])
+(def fail-fast-before [(deref passing-count) (deref failing-count)])
+(def fail-fast-summary
+  (test-work/run-batch
+   (work/local-runtime)
+   (assoc options :fail-fast true)))
+(def fail-fast-after [(deref passing-count) (deref failing-count)])
 
 (def digest-fact
   {:namespace 'code.test-work-batch-test
@@ -56,7 +63,7 @@
     "fact batch manifests are deterministic and definition aware"
     [(:op (work/work-spec (test-work/fact-batch-work 11)))
      (vec (map (fn [item] (:item/id item))
-               (:items durable-result)))]
+               durable-manifest))]
     [:chain
      [[:test/fact
        "code.test-work-batch-test"
@@ -108,10 +115,21 @@
      final-counts]
     [:failed 1 1 2 [2 2]])
 
+   (test/check
+    "fail-fast is a generic batch stop policy with cancelled remaining facts"
+    [(:status fail-fast-summary)
+     (get-in fail-fast-summary [:counts :failed])
+     (get-in fail-fast-summary [:counts :cancelled])
+     fail-fast-before
+     fail-fast-after]
+    [:failed 1 1 [2 2] [2 3]])
+
    (test/check-error
-    "fact batches reject fail-fast until the runtime owns item claims"
-    (test-work/run-batch
-     (work/local-runtime)
-     (assoc options :fail-fast true)))])
+    "prepared fact definitions reject registry drift"
+    (test-work/resolve-subject-fact
+     {:namespace 'code.test-work-batch-test
+      :name "batch passing fact"
+      :test/revision 11
+      :test/definition "definition:wrong"}))])
 
 (test/print-results results)
