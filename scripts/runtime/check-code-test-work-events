@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject private code.test reporter buses; require direct std.work events."""
+"""Reject private code.test runtime adapters; require direct std.work events."""
 
 from pathlib import Path
 import sys
@@ -13,13 +13,35 @@ MIRRORS = [
     ROOT / "core/rust/hal-src/code/test.hal",
     ROOT / "core/rust/hal-src/code/test/work.hal",
 ]
+AUDIT_ROOTS = [
+    ROOT / "core/lib/src/code",
+    ROOT / "core/lib/test/code",
+]
+AUDIT_FILES = [
+    ROOT / "core/lib/test/std/platform_imatch_test.hal",
+]
+RETIRED_PATHS = [
+    ROOT / "core/lib/src/code/test/protocol.hal",
+    ROOT / "core/rust/hal-src/code/test/protocol.hal",
+]
 FORBIDDEN = [
+    "code.test.protocol",
     "(defn report-event",
     "(defn report!",
+    "(defn work-event-kind",
     "(defn work-reporter",
     "(defn reporter-for",
+    "(defn event-reporter",
+    "(defn reporter-events",
+    "(defn function-clock",
+    "(defn function-timer",
+    "(defn function-control",
     "WorkReporter",
     "ITestReporter",
+    ":test/reporter",
+    ":test/clock",
+    ":test/timer",
+    ":test/control",
     ":run/start",
     ":run/end",
     ":fact/start",
@@ -33,11 +55,27 @@ REQUIRED = [
 ]
 
 errors = []
-for path in CANONICAL:
+
+for path in RETIRED_PATHS:
+    if path.exists():
+        errors.append(f"retired code.test protocol facade exists: {path.relative_to(ROOT)}")
+
+paths = []
+for root in AUDIT_ROOTS:
+    if root.exists():
+        paths.extend(path for path in root.rglob("*.hal") if path.is_file())
+paths.extend(path for path in AUDIT_FILES if path.exists())
+
+for path in paths:
     source = path.read_text(encoding="utf-8")
     for token in FORBIDDEN:
         if token in source:
-            errors.append(f"{path.relative_to(ROOT)} retains private event token {token!r}")
+            errors.append(
+                f"{path.relative_to(ROOT)} retains private test-runtime token {token!r}"
+            )
+
+for path in CANONICAL:
+    source = path.read_text(encoding="utf-8")
     for token in REQUIRED:
         if token not in source:
             errors.append(f"{path.relative_to(ROOT)} does not emit required event {token}")
@@ -48,8 +86,15 @@ for canonical, mirror in zip(CANONICAL, MIRRORS):
             f"HAL mirror differs: {canonical.relative_to(ROOT)} != {mirror.relative_to(ROOT)}"
         )
 
+inventory = ROOT / "core/rust/standard-library.namespaces"
+if inventory.exists() and "code.test.protocol" in inventory.read_text(encoding="utf-8").splitlines():
+    errors.append("retired code.test.protocol remains in the Rust namespace inventory")
+
 if errors:
     print("\n".join(errors), file=sys.stderr)
     raise SystemExit(1)
 
-print("code.test commits lifecycle events directly through std.work")
+print(
+    "code.test uses direct std.work lifecycle events with no private protocol, "
+    "reporter, clock, timer, control, or session adapter surface"
+)
