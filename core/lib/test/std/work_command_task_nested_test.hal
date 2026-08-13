@@ -1,0 +1,54 @@
+(ns std.work-command-task-nested-test
+  (:require [std.lib.test :as test]
+            [std.work :as work]
+            [std.work.command :as command]
+            [std.work.command.task :as task]))
+
+(def semantic-unit
+  (task/unit
+   {:id :example/semantic-unit
+    :item-key identity
+    :run (fn [value context] value)}))
+
+(def inner-batch
+  (command/batch
+   {:id :example/inner-batch}
+   {:list
+    (work/pure
+     :example/inner-list
+     (fn [values context] values))
+    :process semantic-unit
+    :batch-options {:item-key identity}}))
+
+(def outer-batch
+  (command/batch
+   {:id :example/outer-batch}
+   {:list
+    (work/pure
+     :example/outer-list
+     (fn [input context]
+       [{:item/id :outer
+         :item/value input}]))
+    :process inner-batch}))
+
+(def nested-result
+  (work/run
+   (work/local-runtime)
+   outer-batch
+   [5]))
+
+(def nested-record
+  (get-in nested-result
+          [:results 0 :item/value
+           :results 0 :item/value]))
+
+(def results
+  [(test/check
+    "a semantic unit id remains stable inside nested batch runtime paths"
+    [(:item/id nested-record)
+     (:item/input nested-record)
+     (:status nested-record)
+     (:data nested-record)]
+    [5 5 :return 5])])
+
+(test/print-results results)

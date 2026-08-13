@@ -3,7 +3,8 @@
 (ns code.manage
   (:require [code.framework :as framework]
             [std.work :as work]
-            [std.work.command :as command]))
+            [std.work.command :as command]
+            [std.work.command.task :as task-command]))
 
 (defn analyse [unit] (merge {:path (:path unit)} (framework/analyse-source (:source unit))))
 (defn extract [unit] (:definitions (analyse unit)))
@@ -157,7 +158,6 @@
   (transform-code unit
                   (fn [source]
                     (remove-matching-lines source (or (:patterns options) [])))))
-
 (defn replacements [options]
   (or (:replacements options)
       (if (and (:match options) (:replacement options))
@@ -299,6 +299,34 @@
     :else (throw (ex-info "Unsupported code.manage workflow"
                           {:operation operation}))))
 
+(defn operation-id
+  [operation]
+  (keyword (str "code.manage/" (name operation))))
+
+(defn unit-work
+  "Returns the independently runnable command for one code unit."
+  ([operation]
+   (unit-work operation {}))
+  ([operation options]
+   (task-command/unit
+    {:id (operation-id operation)
+     :version 1
+     :item-key (fn [unit] (:path unit))
+     :run
+     (fn [unit context]
+       (operation-value operation unit options))})))
+
+(def operation-work unit-work)
+
+(defn run-unit
+  "Runs one code.manage operation without constructing a bulk manifest."
+  ([operation unit]
+   (run-unit operation unit {}))
+  ([operation unit options]
+   (work/run (work/local-runtime)
+             (unit-work operation options)
+             unit)))
+
 (defn result-edit [value]
   (if (and (map? value) (has? value :after)) value nil))
 
@@ -342,16 +370,41 @@
   ([operation] (maintenance-work operation {}))
   ([operation options]
    (command/batch
-    {:id (keyword (str "code.manage/" (name operation)))
+    {:id (operation-id operation)
      :version 1}
-    {:list (work/pure :list-units (fn [input context] (:units input)))
-     :process (work/pure :process-unit
-                         (fn [unit context]
-                           (operation-value operation unit options)))
-     :summarise (work/pure :summarise
-                           (fn [batch context]
-                             {:operation operation
-                              :count (count (:results batch))}))})))
+    {:list
+     (work/pure
+      :list-units
+      (fn [input context]
+        (or (:units input) [])))
+     :process (unit-work operation options)
+     :batch-options
+     {:item-key (fn [unit] (:path unit))}
+     :summarise
+     (work/pure
+      :summarise
+      (fn [batch context]
+        (let [records
+              (vec
+               (map (fn [item] (:item/value item))
+                    (:results batch)))]
+          {:operation operation
+           :count (count records)
+           :results
+           (count
+            (filter (fn [record] (= :return (:status record)))
+                    records))
+           :warnings
+           (count
+            (filter (fn [record] (= :warn (:status record)))
+                    records))
+           :errors
+           (count
+            (filter
+             (fn [record]
+               (or (= :error (:status record))
+                   (= :critical (:status record))))
+             records))})))})))
 
 (defn run
   [operation input]

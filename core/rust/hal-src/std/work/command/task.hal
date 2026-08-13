@@ -1,0 +1,180 @@
+(ns std.work.command.task
+  (:refer-clojure :exclude [compile])
+  (:require [std.work :as work]
+            [std.work.command.result :as result]))
+
+(def schema-id "std.work.command.task/0-alpha")
+
+(def event-types
+  [:task/item-started
+   :task/item-completed
+   :task/item-warning
+   :task/item-error])
+
+(defn assert-options!
+  [options]
+  (if (not (map? options))
+    (throw
+     (ex-info "Unit task command options must be a map"
+              {:options options})))
+  (if (nil? (:id options))
+    (throw
+     (ex-info "Unit task command requires an id" {})))
+  (if (nil? (:run options))
+    (throw
+     (ex-info "Unit task command requires a run function"
+              {:id (:id options)})))
+  options)
+
+(defn normalise-options
+  [options]
+  (merge {:version 1
+          :on-error :record}
+         (assert-options! options)))
+
+(defn input-value
+  [options subject context]
+  (let [input-function (:input options)]
+    (if input-function
+      (input-function subject context)
+      subject)))
+
+(defn item-metadata
+  [options subject context]
+  (let [metadata-function (:item/meta options)]
+    (if metadata-function
+      (or (metadata-function subject context) {})
+      {})))
+
+(defn subject-item-id
+  [subject]
+  (if (and (map? subject) (has? subject :item/id))
+    (:item/id subject)
+    nil))
+
+(defn item-id
+  [options subject value context metadata]
+  (let [item-key (:item-key options)]
+    (or (:item/id metadata)
+        (if item-key (item-key value) nil)
+        (subject-item-id subject)
+        (:item/id context)
+        (:id options))))
+
+(defn item-base
+  [options subject value context]
+  (let [metadata (item-metadata options subject context)
+        id (item-id options subject value context metadata)]
+    (assoc
+     (assoc metadata :item/id id)
+     :item/input value)))
+
+(defn prepare-value
+  [options value]
+  (let [pre (:pre options)]
+    (if pre (pre value) value)))
+
+(defn invoke-value
+  [options value subject context]
+  ((:run options)
+   value
+   (assoc context :command/subject subject)))
+
+(defn complete-value
+  [options value]
+  (let [post (:post options)]
+    (if post (post value) value)))
+
+(defn output-record
+  [options record]
+  (let [output (:output options)]
+    (if (and output (= :return (:status record)))
+      (assoc record :data (output (:data record)))
+      record)))
+
+(defn display-value
+  [options record]
+  (if (= :return (:status record))
+    (let [display (:display options)]
+      (if display
+        (display (:data record))
+        (:data record)))
+    record))
+
+(defn successful-record
+  [options base subject value context]
+  (let [prepared (prepare-value options value)
+        raw (invoke-value options prepared subject context)
+        completed (complete-value options raw)
+        normalised
+        (merge base
+               (result/normalise
+                (:item/id base)
+                completed))
+        projected (output-record options normalised)]
+    (assoc projected
+           :item/prepared prepared
+           :item/display (display-value options projected))))
+
+(defn execute-record
+  [options base subject value context]
+  (if (= :fail (:on-error options))
+    (successful-record options base subject value context)
+    (try
+      (successful-record options base subject value context)
+      (catch Throwable error
+        (merge base
+               (result/error-record
+                (:item/id base)
+                error))))))
+
+(defn status-event
+  [status]
+  (cond
+    (= :warn status) :task/item-warning
+    (or (= :error status) (= :critical status)) :task/item-error
+    :else nil))
+
+(defn run-item
+  [options subject context]
+  (let [value (input-value options subject context)
+        base (item-base options subject value context)
+        clock (:clock/now context)
+        started (if clock (clock) nil)]
+    (work/emit! context :task/item-started base)
+    (let [record (execute-record options base subject value context)
+          finished (if clock (clock) nil)
+          timed (if clock
+                  (assoc record
+                         :elapsed (- finished started)
+                         :time (- finished started))
+                  record)
+          event (status-event (:status timed))]
+      (if event
+        (work/emit! context event {:record timed})
+        nil)
+      (work/emit! context :task/item-completed {:record timed})
+      timed)))
+
+(defn compile
+  "Compiles one task item into an ordinary IWork leaf.
+
+   The command owns only atomic item preparation, execution, result
+   normalisation, timing, and events. Discovery, selection, batching,
+   aggregation, reports, and return packaging remain caller concerns."
+  [raw-options]
+  (let [options (normalise-options raw-options)]
+    (work/step
+     {:id (:id options)
+      :version (:version options)
+      :command/schema schema-id
+      :command/options options}
+     (fn [subject context]
+       (run-item options subject context)))))
+
+(def unit compile)
+
+(defn task-work?
+  [work-value]
+  (= schema-id
+     (:command/schema (work/work-spec work-value))))

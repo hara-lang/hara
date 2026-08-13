@@ -3,6 +3,7 @@
   (:require [std.work :as work]
             [std.work.command :as command]
             [std.work.command.result :as result]
+            [std.work.command.task :as task-command]
             [std.work.command.selector :as selector]
             [std.work.report :as report]))
 
@@ -445,12 +446,7 @@
                  :count (count items)})
     items))
 
-(defn status-event
-  [status]
-  (cond
-    (= :warn status) :task/item-warning
-    (or (= :error status) (= :critical status)) :task/item-error
-    :else nil))
+(def status-event task-command/status-event)
 
 (defn invoke-item
   [definition subject prepared context]
@@ -466,55 +462,50 @@
 
 (defn display-value
   [definition record]
-  (let [display (get-in definition [:item :display])]
-    (if (= :return (:status record))
-      (if display
-        (display (:data record))
-        (:data record))
-      record)))
+  (task-command/display-value
+   {:display (get-in definition [:item :display])}
+   record))
+
+(defn unit-options
+  [definition]
+  (let [item (:item definition)]
+    {:id :task/process
+     :version (:task/version definition)
+     :input
+     (fn [subject context]
+       (:task/value subject))
+     :item/meta
+     (fn [subject context]
+       {:item/id (:task/item-id subject)
+        :item/index (:task/index subject)
+        :item/source-index (:task/source-index subject)
+        :item/total (:task/total subject)})
+     :pre (:pre item)
+     :run
+     (fn [prepared context]
+       (invoke-item definition
+                    (:command/subject context)
+                    prepared
+                    context))
+     :post (:post item)
+     :display (:display item)
+     :on-error :record}))
+
+(defn unit-work
+  "Compiles the reusable one-item command for a normalised task definition."
+  [definition]
+  (task-command/unit (unit-options definition)))
 
 (defn run-item
+  "Compatibility entry point for the atomic task lifecycle.
+
+   New composition should use unit-work so direct and bulk execution share the
+   exact same ordinary IWork value."
   [definition subject context]
-  (let [item (:item definition)
-        value (:task/value subject)
-        pre (:pre item)
-        post (:post item)
-        clock (:clock/now context)
-        started (if clock (clock) nil)
-        base {:item/id (:task/item-id subject)
-              :item/index (:task/index subject)
-              :item/source-index (:task/source-index subject)
-              :item/total (:task/total subject)
-              :item/input value}]
-    (work/emit! context :task/item-started base)
-    (let [record
-          (try
-            (let [prepared (if pre (pre value) value)
-                  raw (invoke-item definition subject prepared context)
-                  completed (if post (post raw) raw)
-                  normalised
-                  (merge base
-                         (result/normalise
-                          (:task/item-id subject)
-                          completed))]
-              (assoc normalised
-                     :item/prepared prepared
-                     :item/display (display-value definition normalised)))
-            (catch Throwable error
-              (merge base
-                     (result/error-record
-                      (:task/item-id subject)
-                      error))))
-          finished (if clock (clock) nil)
-          record (if clock
-                   (assoc record
-                          :elapsed (- finished started)
-                          :time (- finished started))
-                   record)
-          event (status-event (:status record))]
-      (if event (work/emit! context event {:record record}) nil)
-      (work/emit! context :task/item-completed {:record record})
-      record)))
+  (task-command/run-item
+   (task-command/normalise-options (unit-options definition))
+   subject
+   context))
 
 (defn result-options
   [definition]
@@ -830,10 +821,7 @@
        (fn [prepared context]
          (list-items definition prepared context)))
       :process
-      (work/step
-       {:id :task/process :version version}
-       (fn [subject context]
-         (run-item definition subject context)))
+      (unit-work definition)
       :summarise
       (work/pure
        {:id :task/summarise :version version}
