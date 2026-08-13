@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 import clj_hal_corpus as corpus
+import foundation_script_inventory as script_inventory
 
 
 class CorpusParserTest(unittest.TestCase):
@@ -181,6 +182,23 @@ class CorpusValidationTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(corpus.CorpusError, "coverage is incomplete"):
             corpus.validate(fixture)
+
+
+class FoundationScriptInventoryIntegrationTest(unittest.TestCase):
+    def test_pinned_script_inventory_is_current(self):
+        reference = Path(".foundation-reference")
+        if not reference.is_dir():
+            self.skipTest("pinned Foundation checkout is not present")
+        policy = script_inventory.load(script_inventory.DEFAULT_POLICY)
+        generated = script_inventory.generate(
+            policy,
+            reference,
+            script_inventory.ROOT,
+        )
+        script_inventory.validate(generated)
+        expected = json.dumps(generated, indent=2, sort_keys=True) + "\n"
+        actual = script_inventory.DEFAULT_OUTPUT.read_text(encoding="utf-8")
+        self.assertEqual(expected, actual)
 
 
 if __name__ == "__main__":

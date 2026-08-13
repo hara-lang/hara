@@ -116,7 +116,6 @@
   (let [module (code-pointer-val pointer :module)
         lang (code-pointer-val pointer :lang)
         id (code-pointer-val pointer :id)
-        section (code-pointer-val pointer :section)
         instance (or selected-runtime (code-pointer-runtime pointer))]
     (if (nil? instance)
       (throw
@@ -125,10 +124,7 @@
                  :module module
                  :id id}))
       (let [qualified (symbol (name module) (name id))
-            form
-            (if (= :free section)
-              (code-pointer-val pointer :form-input)
-              (apply list qualified args))
+            form (apply list qualified args)
             source (script/compile-form lang module form)
             response (runtime/rt-raw-eval instance source)]
         (if (and (map? response) (has? response :value))
@@ -284,35 +280,6 @@
                 :namespace source
                 :symbol qualified-source
                 :context context-key))]
-    (intern-var (current-namespace) declaration-symbol pointer)))
-
-(defn register-free-pointer!
-  "Interns one Foundation defptr.<tag> free-form language pointer."
-  [explicit-language declaration-symbol form metadata]
-  (let [current-module (script/current-module-id)
-        module (or (:module metadata) current-module)
-        module-value
-        (or (get (deref script/+modules+) module)
-            (script-module-value explicit-language current-module))
-        language (or explicit-language (:lang module-value) :xtalk)
-        source (symbol (str (current-namespace)))
-        id (symbol (name declaration-symbol))
-        context-key (script-context language)
-        qualified (symbol (name source) (name id))
-        fields
-        (merge (or metadata {})
-               {:id id
-                :module module
-                :lang language
-                :section :free
-                :op 'defptr
-                :op-key :defptr
-                :form form
-                :form-input form
-                :namespace source
-                :symbol qualified
-                :context context-key})
-        pointer (code-pointer context-key fields)]
     (intern-var (current-namespace) declaration-symbol pointer)))
 
 (defn register-macro-fragment!
@@ -561,24 +528,6 @@
        (list 'quote 'quote)
        (list 'or (list 'meta 'symbol) {}))))))
 
-(defn script-free-macro-form
-  [lang tag]
-  (let [macro-symbol (symbol (str "defptr." (name tag)))]
-    (list
-     'defmacro
-     macro-symbol
-     (vector 'symbol 'body)
-     (list
-      'list
-      (list 'quote 'lang.core/register-free-pointer!)
-      lang
-      (list 'list (list 'quote 'quote) 'symbol)
-      (list 'list (list 'quote 'quote) 'body)
-      (list
-       'list
-       (list 'quote 'quote)
-       (list 'or (list 'meta 'symbol) {}))))))
-
 (defn script-defmacro-macro-form
   [lang tag]
   (let [macro-symbol (symbol (str "defmacro." (name tag)))]
@@ -628,8 +577,7 @@
         (mapcat
          (fn [tag]
            [(script-fragment-macro-form lang tag)
-            (script-defmacro-macro-form lang tag)
-            (script-free-macro-form lang tag)])
+            (script-defmacro-macro-form lang tag)])
          tags)
         definition-forms
         (mapcat
