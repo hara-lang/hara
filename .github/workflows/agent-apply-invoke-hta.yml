@@ -1,0 +1,42 @@
+name: Apply invoke HTA implementation
+
+on:
+  push:
+    branches:
+      - agent/invoke-hta-557
+    paths:
+      - scripts/agent-apply-invoke-hta.py
+      - .github/workflows/agent-apply-invoke-hta.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/invoke-hta-557
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal --component rustfmt,clippy
+      - name: Apply reviewed source patch
+        run: python3 scripts/agent-apply-invoke-hta.py
+      - name: Format
+        run: cargo +1.85.1 fmt --manifest-path core/rust/Cargo.toml --all -- --check
+      - name: Test qualified Var HTA invocation
+        run: cargo +1.85.1 test --manifest-path core/rust/Cargo.toml --test invoke_hta
+      - name: Check invoke-only benchmark
+        run: cargo +1.85.1 check --manifest-path core/rust/Cargo.toml --bin hara-invoke-hta-benchmark
+      - name: Lint native runtime
+        run: cargo +1.85.1 clippy --manifest-path core/rust/Cargo.toml --all-targets -- -D warnings
+      - name: Publish clean implementation commit
+        run: |
+          rm -f scripts/agent-apply-invoke-hta.py .github/workflows/agent-apply-invoke-hta.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Add binary-safe qualified Var HTA invocation"
+          git push origin HEAD:agent/invoke-hta-557
