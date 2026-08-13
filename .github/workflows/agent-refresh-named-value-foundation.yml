@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out the clean repair branch
+      - name: Check out current main
         uses: actions/checkout@v4
         with:
-          ref: agent/repair-foundation-bootstrap
+          ref: main
           path: work
           fetch-depth: 0
 
@@ -53,21 +53,10 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$GITHUB_WORKSPACE/foundation-bootstrap.log") 2>&1
+          git switch -C agent/repair-foundation-bootstrap-v2
 
           python3 - <<'PY'
           from pathlib import Path
-
-          provides_path = Path("core/rust/src/project/production/unit/provides.rs")
-          provides = provides_path.read_text(encoding="utf-8")
-          visibility_replacements = [
-              ("pub(super) fn qualify(", "pub(in super::super) fn qualify("),
-              ("pub(super) fn without_metadata(", "pub(in super::super) fn without_metadata("),
-          ]
-          for old, new in visibility_replacements:
-              if provides.count(old) != 1:
-                  raise SystemExit(f"expected one visibility anchor, found {provides.count(old)}: {old}")
-              provides = provides.replace(old, new, 1)
-          provides_path.write_text(provides, encoding="utf-8")
 
           source_path = Path("core/lib/src/std/work/report/plain.hal")
           source = source_path.read_text(encoding="utf-8")
@@ -92,7 +81,6 @@ jobs:
           test_path.write_text(test.replace(anchor, addition + anchor, 1), encoding="utf-8")
           PY
 
-          cargo fmt --manifest-path core/rust/Cargo.toml --all
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
           cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
@@ -115,7 +103,6 @@ jobs:
               "core/lib/test/std/work_report_renderer_test.hal",
               "core/rust/assets/std.foundation.hbx",
               "core/rust/hal-src/std/work/report/plain.hal",
-              "core/rust/src/project/production/unit/provides.rs",
           }
           status = subprocess.check_output(["git", "status", "--short"], text=True).splitlines()
           changed = {line[3:] for line in status if line.strip()}
@@ -134,10 +121,9 @@ jobs:
             core/lib/src/std/work/report/plain.hal \
             core/lib/test/std/work_report_renderer_test.hal \
             core/rust/assets/std.foundation.hbx \
-            core/rust/hal-src/std/work/report/plain.hal \
-            core/rust/src/project/production/unit/provides.rs
-          git commit -m 'Repair and refresh the foundation bootstrap bundle'
-          git push origin HEAD:refs/heads/agent/repair-foundation-bootstrap
+            core/rust/hal-src/std/work/report/plain.hal
+          git commit -m 'Refresh the Foundation bundle with portable report centering'
+          git push --force origin HEAD:refs/heads/agent/repair-foundation-bootstrap-v2
 
       - name: Preserve diagnostics on failure
         if: failure()
