@@ -1,0 +1,520 @@
+(ns code.translate.project
+  (:config {:blank true})
+  (:require [std.foundation :refer :all]
+            [std.work :as work]
+            [std.work.command :as command]
+            [std.work.command.selector :as selector]
+            [code.translate.clojure :as clj]
+            [code.translate.rule :as rule]))
+
+(def schema-id "code.translate.migration/0-alpha")
+(def task-id :code.translate/clojure-migration)
+(def task-version 1)
+
+(defn input-units
+  [input]
+  (cond
+    (and (map? input) (has? input :units))
+    (vec (or (:units input) []))
+
+    (and (map? input) (has? input :unit))
+    [(:unit input)]
+
+    (vector? input)
+    input
+
+    (nil? input)
+    []
+
+    :else
+    [input]))
+
+(defn input-options
+  [input defaults]
+  (merge
+   (or defaults {})
+   (if (and (map? input) (has? input :options))
+     (or (:options input) {})
+     {})))
+
+(defn unit-translation-options
+  [options]
+  (merge
+   (or (:translation/options options) {})
+   (select-keys options [:mode])))
+
+(defn unit-key
+  [unit]
+  (or (:migration/namespace unit)
+      (:namespace unit)
+      (:source/path unit)
+      (:path unit)))
+
+(defn prepare-unit
+  ([unit]
+   (prepare-unit unit {} nil))
+  ([unit options]
+   (prepare-unit unit options nil))
+  ([unit options source-index]
+   (let [unit
+         (clj/source-unit
+          unit
+          (unit-translation-options options))
+         summary (clj/source-summary (:source/text unit))
+         namespace
+         (or (:migration/namespace unit)
+             (:namespace summary))
+         dependencies
+         (or (:migration/dependencies unit)
+             (:dependencies summary))
+         matched
+         (rule/matches (:source/text unit))]
+     (merge
+      unit
+      {:namespace namespace
+       :dependencies dependencies
+       :public-symbols (:public-symbols summary)
+       :migration/namespace namespace
+       :migration/dependencies dependencies
+       :migration/source-index
+       (or (:migration/source-index unit) source-index)
+       :migration/rules
+       (vec (map :rule/id matched))}))))
+
+(defn prepare-units
+  ([units]
+   (prepare-units units {}))
+  ([units options]
+   (loop [remaining (vec units)
+          index 0
+          output []]
+     (if (empty? remaining)
+       output
+       (recur
+        (vec (rest remaining))
+        (inc index)
+        (conj output
+              (prepare-unit (first remaining)
+                            options
+                            index)))))))
+
+(defn unit-key-map
+  [units]
+  (reduce
+   (fn [output unit]
+     (assoc output (unit-key unit) true))
+   {}
+   units))
+
+(defn ready?
+  [unit selected emitted]
+  (every?
+   (fn [dependency]
+     (or (not (has? selected dependency))
+         (has? emitted dependency)))
+   (:migration/dependencies unit)))
+
+(defn remove-units
+  [units removed]
+  (vec
+   (filter
+    (fn [unit]
+      (not (has? removed (unit-key unit))))
+    units)))
+
+(defn emit-units
+  [emitted units]
+  (reduce
+   (fn [output unit]
+     (assoc output (unit-key unit) true))
+   emitted
+   units))
+
+(defn rank-unit
+  [unit rank cycle]
+  (merge
+   unit
+   {:migration/dependency-rank rank
+    :migration/cycle cycle
+    :migration/component
+    (or (:migration/component unit)
+        (if cycle
+          (str "cycle/" rank)
+          (unit-key unit)))}))
+
+(defn derive-order
+  "Derives deterministic dependency ranks for host-provided units. External
+   dependencies do not block a unit. Any unresolved remainder is retained in
+   stable order and explicitly marked as cycle-blocked."
+  [units]
+  (let [selected (unit-key-map units)]
+    (loop [pending (vec units)
+           emitted {}
+           rank 0
+           output []]
+      (if (empty? pending)
+        output
+        (let [ready
+              (vec
+               (sort-by
+                unit-key
+                (filter
+                 (fn [unit]
+                   (ready? unit selected emitted))
+                 pending)))]
+          (if (empty? ready)
+            (into
+             output
+             (map
+              (fn [unit]
+                (rank-unit unit rank true))
+              (sort-by unit-key pending)))
+            (let [removed (unit-key-map ready)]
+              (recur
+               (remove-units pending removed)
+               (emit-units emitted ready)
+               (inc rank)
+               (into
+                output
+                (map
+                 (fn [unit]
+                   (rank-unit unit rank false))
+                 ready))))))))))
+
+(defn ranked-units?
+  [units]
+  (every?
+   (fn [unit]
+     (number? (:migration/dependency-rank unit)))
+   units))
+
+(defn order-units
+  "Uses checked-in Foundation ranks when every unit carries one; otherwise
+   derives a deterministic least-dependencies-first order from source forms."
+  ([units]
+   (order-units units {}))
+  ([units options]
+   (let [prepared (prepare-units units options)]
+     (if (ranked-units? prepared)
+       (vec
+        (sort-by
+         (fn [unit]
+           [(:migration/dependency-rank unit)
+            (unit-key unit)])
+         prepared))
+       (derive-order prepared)))))
+
+(defn selector-matches?
+  [expected actual]
+  (cond
+    (nil? expected) true
+    (number? expected) (= expected actual)
+    (boolean? expected) (= expected actual)
+    :else (selector/matches? expected actual)))
+
+(defn any-selector-match?
+  [expected values]
+  (if (nil? expected)
+    true
+    (reduce
+     (fn [matched value]
+       (or matched
+           (selector-matches? expected value)))
+     false
+     values)))
+
+(defn unit-status
+  [unit]
+  (or (:migration/status unit)
+      (:corpus/status unit)))
+
+(defn unit-selected?
+  [unit options]
+  (let [selection (or (:select options) {})
+        include (or (:include selection)
+                    (:include options))
+        exclude (or (:exclude selection)
+                    (:exclude options))]
+    (and
+     (selector-matches? (:path selection)
+                        (:source/path unit))
+     (selector-matches? (:namespace selection)
+                        (:migration/namespace unit))
+     (selector-matches? (:status selection)
+                        (unit-status unit))
+     (selector-matches? (:rank selection)
+                        (:migration/dependency-rank unit))
+     (selector-matches? (:cycle selection)
+                        (:migration/cycle unit))
+     (any-selector-match? (:rule selection)
+                          (:migration/rules unit))
+     (if include (include unit) true)
+     (if exclude (not (exclude unit)) true))))
+
+(defn select-units
+  [units options]
+  (vec
+   (filter
+    (fn [unit]
+      (unit-selected? unit options))
+    units)))
+
+(defn ordered-input-units
+  [input defaults]
+  (let [options (input-options input defaults)]
+    (select-units
+     (order-units (input-units input) options)
+     options)))
+
+(defn task-work
+  "Composes dependency ordering and selection around the exact declared source
+   tasklet. The process stage is code.translate.clojure/migrate-source-unit,
+   not a reconstructed operation lookup."
+  ([]
+   (task-work {}))
+  ([defaults]
+   (command/batch
+    {:id task-id
+     :version task-version
+     :task/schema schema-id
+     :task/tasklet
+     'code.translate.clojure/migrate-source-unit}
+    {:list
+     (work/pure
+      {:id :code.translate/list-source-units
+       :version task-version}
+      (fn [input context]
+        (ordered-input-units input defaults)))
+     :process clj/migrate-source-unit
+     :batch-options {:item-key clj/source-path}})))
+
+(def migration-work task-work)
+
+(defn task-work?
+  [work-value]
+  (= schema-id
+     (:task/schema (work/work-spec work-value))))
+
+(defn batch-records
+  [batch]
+  (vec
+   (map
+    (fn [item]
+      (:item/value item))
+    (:results batch))))
+
+(defn successful-record?
+  [record]
+  (= :return (:status record)))
+
+(defn error-record?
+  [record]
+  (or (= :error (:status record))
+      (= :critical (:status record))))
+
+(defn enrich-result
+  [record]
+  (let [unit (:item/input record)
+        result (:data record)]
+    (if (and (successful-record? record)
+             (map? result))
+      (merge
+       result
+       (select-keys
+        unit
+        [:migration/namespace
+         :migration/dependencies
+         :migration/source-index
+         :migration/dependency-rank
+         :migration/component
+         :migration/cycle
+         :migration/status
+         :corpus/status]))
+      nil)))
+
+(defn successful-results
+  [records]
+  (vec
+   (keep enrich-result records)))
+
+(defn diagnostics
+  [results]
+  (reduce
+   (fn [output result]
+     (into output (:diagnostics result)))
+   []
+   results))
+
+(defn warning-diagnostic?
+  [finding]
+  (= :warning (:level finding)))
+
+(defn warnings
+  [records findings]
+  (vec
+   (concat
+    (filter
+     (fn [record]
+       (= :warn (:status record)))
+     records)
+    (filter warning-diagnostic? findings))))
+
+(defn errors
+  [records]
+  (vec (filter error-record? records)))
+
+(defn edits
+  [results]
+  (vec
+   (filter
+    (fn [result]
+      (:changed result))
+    results)))
+
+(defn count-rule-entries
+  [results field]
+  (reduce
+   (fn [output result]
+     (reduce
+      (fn [counts entry]
+        (let [identifier (:rule/id entry)]
+          (assoc counts
+                 identifier
+                 (inc (or (get counts identifier) 0)))))
+      output
+      (get result field)))
+   {}
+   results))
+
+(defn safety-counts
+  [results]
+  (reduce
+   (fn [output result]
+     (reduce
+      (fn [counts entry]
+        (let [safety (:safety entry)]
+          (assoc counts
+                 safety
+                 (inc (or (get counts safety) 0)))))
+      output
+      (:rules/matched result)))
+   {:safe 0 :review 0 :manual 0}
+   results))
+
+(defn rank-counts
+  [results]
+  (reduce
+   (fn [output result]
+     (let [rank (:migration/dependency-rank result)]
+       (assoc output
+              rank
+              (inc (or (get output rank) 0)))))
+   {}
+   results))
+
+(defn manual-diagnostic?
+  [finding]
+  (= :code.translate/manual (:type finding)))
+
+(defn candidate?
+  [result]
+  (or (:changed result)
+      (not
+       (empty?
+        (filter manual-diagnostic?
+                (:diagnostics result))))))
+
+(defn next-candidates
+  [results]
+  (let [candidates (vec (filter candidate? results))]
+    (if (empty? candidates)
+      []
+      (let [rank
+            (first
+             (sort
+              (keep :migration/dependency-rank
+                    candidates)))]
+        (vec
+         (map
+          :source/path
+          (filter
+           (fn [result]
+             (= rank
+                (:migration/dependency-rank result)))
+           candidates)))))))
+
+(defn run
+  ([input]
+   (run (work/local-runtime) {} input))
+  ([runtime input]
+   (run runtime {} input))
+  ([runtime defaults input]
+   (work/run runtime
+             (task-work defaults)
+             input)))
+
+(defn plan
+  "Runs the dependency-ordered migration graph locally and packages a dry-run
+   report. The result contains edit records only; it owns no write capability."
+  ([input]
+   (plan (work/local-runtime) {} input))
+  ([runtime input]
+   (plan runtime {} input))
+  ([runtime defaults input]
+   (let [batch (run runtime defaults input)
+         records (batch-records batch)
+         results (successful-results records)
+         findings (diagnostics results)
+         warning-values (warnings records findings)
+         error-values (errors records)
+         edit-values (edits results)
+         safety (safety-counts results)]
+     {:schema schema-id
+      :write false
+      :records records
+      :results results
+      :edits edit-values
+      :diagnostics findings
+      :warnings warning-values
+      :errors error-values
+      :reports
+      {:by-rank (rank-counts results)
+       :matched-by-rule
+       (count-rule-entries results :rules/matched)
+       :applied-by-rule
+       (count-rule-entries results :rules/applied)
+       :next-candidates (next-candidates results)}
+      :summary
+      {:selected (count records)
+       :processed (count results)
+       :changed (count edit-values)
+       :unchanged (- (count results)
+                     (count edit-values))
+       :creates
+       (count
+        (filter
+         (fn [result]
+           (:create result))
+         results))
+       :rules/matched
+       (+ (:safe safety)
+          (:review safety)
+          (:manual safety))
+       :rules/applied
+       (reduce
+        (fn [total result]
+          (+ total (count (:rules/applied result))))
+        0
+        results)
+       :safe (:safe safety)
+       :review (:review safety)
+       :manual (:manual safety)
+       :diagnostics (count findings)
+       :warnings (count warning-values)
+       :errors (count error-values)
+       :cycles
+       (count
+        (filter
+         (fn [result]
+           (:migration/cycle result))
+         results))}})))
