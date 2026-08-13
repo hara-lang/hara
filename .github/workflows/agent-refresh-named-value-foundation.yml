@@ -53,10 +53,29 @@ jobs:
         run: |
           set -euo pipefail
           exec > >(tee "$GITHUB_WORKSPACE/foundation-bootstrap.log") 2>&1
-          git switch -C agent/repair-foundation-bootstrap-v2
+          git switch -C agent/repair-foundation-bootstrap-v3
 
           python3 - <<'PY'
           from pathlib import Path
+
+          pointer_path = Path("core/lib/src/std/context/pointer.hal")
+          pointer = pointer_path.read_text(encoding="utf-8")
+          old_header = (
+              "(ns std.context.pointer\n"
+              "  (:require [std.context.registry :as registry]\n"
+              "            [std.context.space :as space]))"
+          )
+          new_header = (
+              "(ns std.context.pointer\n"
+              "  (:require [std.foundation :refer :all :exclude [pointer]]\n"
+              "            [std.context.registry :as registry]\n"
+              "            [std.context.space :as space]))"
+          )
+          if pointer.count(old_header) != 1:
+              raise SystemExit(
+                  f"expected one pointer namespace anchor, found {pointer.count(old_header)}"
+              )
+          pointer_path.write_text(pointer.replace(old_header, new_header, 1), encoding="utf-8")
 
           source_path = Path("core/lib/src/std/work/report/plain.hal")
           source = source_path.read_text(encoding="utf-8")
@@ -99,9 +118,11 @@ jobs:
           import subprocess
 
           expected = {
+              "core/lib/src/std/context/pointer.hal",
               "core/lib/src/std/work/report/plain.hal",
               "core/lib/test/std/work_report_renderer_test.hal",
               "core/rust/assets/std.foundation.hbx",
+              "core/rust/hal-src/std/context/pointer.hal",
               "core/rust/hal-src/std/work/report/plain.hal",
           }
           status = subprocess.check_output(["git", "status", "--short"], text=True).splitlines()
@@ -118,12 +139,14 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
+            core/lib/src/std/context/pointer.hal \
             core/lib/src/std/work/report/plain.hal \
             core/lib/test/std/work_report_renderer_test.hal \
             core/rust/assets/std.foundation.hbx \
+            core/rust/hal-src/std/context/pointer.hal \
             core/rust/hal-src/std/work/report/plain.hal
-          git commit -m 'Refresh the Foundation bundle with portable report centering'
-          git push --force origin HEAD:refs/heads/agent/repair-foundation-bootstrap-v2
+          git commit -m 'Repair and refresh the Foundation bootstrap bundle'
+          git push --force origin HEAD:refs/heads/agent/repair-foundation-bootstrap-v3
 
       - name: Preserve diagnostics on failure
         if: failure()
