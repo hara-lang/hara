@@ -13,38 +13,43 @@
 (def results
   [(fact "script returns its live runtime and restores Foundation pointer macros"
      (let [module (current-module)
-           _ (reset! script/+modules+ {})
-           _ (reset! script/+scripts+ {})
-           _ (reset! script/+module-contexts+ {})
-           runtime-value (eval '(lang.core/script :xtalk))]
+           modules-before (deref script/+modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)]
        (try
-         (let [short-eval-var (resolve '!.xt)
-               grammar-eval-var (resolve '!.xtalk)
-               evaluated (eval '(!.xt (+ 1 2)))
-               _ (eval '(def.xt HEX
-                          (tab ["A" 10]
-                               ["F" 15])))
-               code-var (resolve 'HEX)
-               pointer (deref code-var)]
-           [(:lang runtime-value)
-            (component/started? runtime-value)
-            (boolean (and short-eval-var
-                          (:macro (meta short-eval-var))))
-            (boolean (and grammar-eval-var
-                          (:macro (meta grammar-eval-var))))
-            evaluated
-            (var? code-var)
-            (context/pointer? pointer)
-            (context/ptr-context pointer)
-            (context/ptr-val pointer :namespace)
-            (context/ptr-val pointer :module)
-            (context/ptr-val pointer :id)
-            (context/ptr-val pointer :form-input)
-            (= runtime-value
-               (get-in (deref script/+scripts+)
-                       [[module :xtalk] :runtime]))])
+         (let [runtime-value (eval '(lang.core/script :xtalk))]
+           (try
+             (let [short-eval-var (resolve '!.xt)
+                   grammar-eval-var (resolve '!.xtalk)
+                   evaluated (eval '(!.xt (+ 1 2)))
+                   _ (eval '(def.xt HEX
+                              (tab ["A" 10]
+                                   ["F" 15])))
+                   code-var (resolve 'HEX)
+                   pointer (deref code-var)]
+               [(:lang runtime-value)
+                (component/started? runtime-value)
+                (boolean (and short-eval-var
+                              (:macro (meta short-eval-var))))
+                (boolean (and grammar-eval-var
+                              (:macro (meta grammar-eval-var))))
+                evaluated
+                (var? code-var)
+                (context/pointer? pointer)
+                (context/ptr-context pointer)
+                (context/ptr-val pointer :namespace)
+                (context/ptr-val pointer :module)
+                (context/ptr-val pointer :id)
+                (context/ptr-val pointer :form-input)
+                (= runtime-value
+                   (get-in (deref script/+scripts+)
+                           [[module :xtalk] :runtime]))])
+             (finally
+               (runtime/rt-stop runtime-value))))
          (finally
-           (runtime/rt-stop runtime-value))))
+           (reset! script/+modules+ modules-before)
+           (reset! script/+scripts+ scripts-before)
+           (reset! script/+module-contexts+ contexts-before))))
      => [:xtalk
          true
          true
