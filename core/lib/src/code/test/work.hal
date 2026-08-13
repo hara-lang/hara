@@ -12,6 +12,78 @@
 (def execution-options test/work-execution-options)
 (def suite-work test/suite-work)
 
+(defn fact-identity
+  [value]
+  (str value))
+
+(defn fact-coordinate
+  [namespace name fact-revision]
+  [:test/fact
+   (fact-identity namespace)
+   (fact-identity name)
+   fact-revision])
+
+(defn fact-revision
+  [fact default-revision]
+  (or (:test/revision (:meta fact))
+      default-revision))
+
+(defn fact-definition-token
+  "Returns the stable definition token used to invalidate a fact checkpoint.
+
+   A producer may supply a canonical source digest as `:test/digest`, or another
+   stable definition identity as `:test/definition`. The explicit fact/suite
+   revision remains the compatibility fallback until portable source hashing is
+   available in every runtime."
+  [fact default-revision]
+  (let [metadata (:meta fact)]
+    (or (:test/digest metadata)
+        (:test/definition metadata)
+        (fact-revision fact default-revision))))
+
+(defn fact-item-coordinate
+  [fact default-revision]
+  (let [fact-revision (fact-revision fact default-revision)]
+    (conj
+     (fact-coordinate (:namespace fact)
+                      (:name fact)
+                      fact-revision)
+     (fact-definition-token fact default-revision))))
+
+(defn resolve-fact
+  [namespace name]
+  (let [namespace (fact-identity namespace)
+        name (fact-identity name)
+        fact (test/get-fact namespace name)]
+    (if fact
+      fact
+      (throw
+       (ex-info "Registered test fact does not exist"
+                {:namespace namespace
+                 :name name})))))
+
+(declare fact-result-identity)
+
+(defn fact-work
+  "Returns one checkpointed fact boundary. Assertion failures, skips, timeouts,
+   and test errors are completed domain results returned by code.test/run-fact."
+  ([namespace name]
+   (fact-work namespace name +default-revision+))
+  ([namespace name fact-revision]
+   (work/step
+    {:id (fact-coordinate namespace name fact-revision)
+     :version fact-revision
+     :test/revision fact-revision}
+    (fn [input context]
+      (let [options (execution-options input context)
+            fact (resolve-fact namespace name)]
+        (work/emit! context
+                    :test/fact-started
+                    (fact-result-identity fact))
+        (let [result (test/run-fact fact options)]
+          (work/emit! context :test/fact-completed result)
+          result))))))
+
 (defn selected-facts
   [options]
   (test/order-facts
