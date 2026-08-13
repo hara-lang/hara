@@ -34,6 +34,13 @@ pub fn completion_symbols() -> &'static [&'static str] {
     fiber::completion_symbols()
 }
 
+pub(crate) fn invoke_function_sync(
+    function: Rc<Function>,
+    arguments: Vec<Value>,
+) -> Result<Value, String> {
+    fiber::invoke_function_sync(function, arguments)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtensionValue {
     pub provider: String,

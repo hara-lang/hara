@@ -10,6 +10,10 @@ pub mod extension;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod invoke_hta;
+#[cfg(not(target_arch = "wasm32"))]
+pub use invoke_hta::{InvokeHtaError, MAX_INVOKE_HTA_RESULT_BYTES};
+#[cfg(not(target_arch = "wasm32"))]
 pub mod identity_tool;
 #[cfg(feature = "evaluation-journal")]
 pub mod journal;
