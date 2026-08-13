@@ -5,14 +5,19 @@ on:
     branches:
       - agent/persistent-defstruct-defmutable
     paths:
-      - .github/agent/persistent-defstruct.patch.gz.b64
+      - .github/agent/full2-00
+      - .github/agent/full2-01
+      - .github/agent/full2-02
+      - .github/agent/full2-03
+      - .github/agent/full2-04
+      - .github/agent/full2-05
       - .github/workflows/agent-rust-check.yml
 
 permissions:
   contents: read
 
 jobs:
-  rust:
+  compile:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,24 +26,36 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Apply staged implementation
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Reconstruct and apply implementation
         run: |
-          base64 --decode .github/agent/persistent-defstruct.patch.gz.b64 | gzip --decompress > /tmp/persistent.patch
-          git apply --check /tmp/persistent.patch
-          git apply /tmp/persistent.patch
-      - name: Format Rust sources
-        run: cargo fmt --manifest-path core/rust/Cargo.toml --all
+          cat .github/agent/full2-* > /tmp/full2.patch.gz.b64
+          echo 'ad46ebb004b1d6e2696092fe81c2cabb4bef3209f966263721ec1fac5090c2bb  /tmp/full2.patch.gz.b64' | sha256sum --check
+          base64 --decode /tmp/full2.patch.gz.b64 | gzip --decompress > /tmp/full2.patch
+          echo '5ae8bfe82c6bb4ea27c441aa01ffddf3c0c062e20068c3b057223f6d51ad1a49  /tmp/full2.patch' | sha256sum --check
+          git apply --check /tmp/full2.patch
+          git apply /tmp/full2.patch
+      - name: Verify generated HAL mirror
+        run: python3 scripts/runtime/sync-rust-hal-src --check
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
       - name: Check native and bytecode runtimes
         run: cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
-      - name: Capture formatted source patch
+      - name: Compile Java and Truffle runtime
+        run: mvn -B -f core/java/pom.xml -DskipTests compile
+      - name: Capture applied source patch
         if: always()
         run: |
-          git diff --binary -- core > /tmp/formatted.patch
-          gzip -9 -c /tmp/formatted.patch > /tmp/formatted.patch.gz
+          git diff --binary -- core > /tmp/validated.patch
+          gzip -9 -c /tmp/validated.patch > /tmp/validated.patch.gz
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: persistent-formatted-patch
-          path: /tmp/formatted.patch.gz
+          name: persistent-validated-patch
+          path: /tmp/validated.patch.gz
           if-no-files-found: error
           retention-days: 1
