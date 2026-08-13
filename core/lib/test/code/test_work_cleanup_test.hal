@@ -121,6 +121,13 @@
     :after-each (fn [] (swap! cancellation-order conj :after-each))}
    {:id "runtime-cancellation"}))
 
+(def cleanup-fail-fast-summary
+  (test-work/run-batch
+   (work/local-runtime)
+   (assoc scoped-options
+          :fail-fast true
+          :test/revision 26)))
+
 (def setup-cleanup-count (atom 0))
 (def setup-failure-runtime (work/durable-runtime))
 (def setup-failure-reference
@@ -209,10 +216,11 @@
      (deref setup-cleanup-count)]
     [:failed 1])
 
-   (test/check-error
-    "fact batches still reject fail-fast until scheduling owns item claims"
-    (test-work/run-batch
-     (work/local-runtime)
-     (assoc scoped-options :fail-fast true)))])
+   (test/check
+    "runtime-owned fail-fast remains cleanup-safe for passing suites"
+    [(:status cleanup-fail-fast-summary)
+     (get-in cleanup-fail-fast-summary [:counts :passed])
+     (get-in cleanup-fail-fast-summary [:counts :cancelled])]
+    [:passed 1 0])])
 
 (test/print-results results)
