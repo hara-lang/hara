@@ -1,0 +1,65 @@
+name: Agent create immutable field migration PR
+
+on:
+  push:
+    branches: [agent/persistent-defstruct-defmutable]
+    paths:
+      - .github/agent/prepare-persistent-full.sh
+      - .github/agent/assemble-persistent-pr1.sh
+      - .github/agent/check-persistent-pr1.sh
+      - .github/agent/persistent-pr1-files.txt
+      - .github/workflows/agent-create-persistent-pr1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/persistent-defstruct-defmutable
+          path: staging
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: full
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: pr1
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: full/core/java/pom.xml
+      - name: Prepare complete implementation
+        run: staging/.github/agent/prepare-persistent-full.sh
+      - name: Assemble and validate migration
+        run: |
+          staging/.github/agent/assemble-persistent-pr1.sh
+          staging/.github/agent/check-persistent-pr1.sh
+      - name: Publish migration branch and draft PR
+        uses: peter-evans/create-pull-request@v8.1.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          path: pr1
+          branch: agent/migrate-immutable-struct-field-reads
+          base: main
+          commit-message: Migrate immutable struct field reads
+          title: Migrate immutable struct field reads to associative lookup
+          body: |
+            Mechanically replaces immutable `defstruct` reads through `field` with keyword or `get` lookup across canonical HAL, generated mirrors, embedded programs, and tests. Runtime semantics are unchanged; this prepares `field` to become mutable-only in the stacked PR.
+
+            Validated with HAL mirror checks, Rust formatting and bytecode-VM compilation, Java/Truffle compilation, and `git diff --check`.
+          draft: true
+          delete-branch: false
