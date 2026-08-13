@@ -46,17 +46,13 @@ test("canonical component and context libraries run through browser wasm", () =>
   const result = runtime.eval(
     "(ns std-context-browser-probe" +
       " (:require [std.foundation.component :as component]" +
-      "           [std.context :as context]" +
-      "           [std.lib.context :as legacy]))" +
-      " (let [runtime (context/runtime-null)" +
-      "       legacy-runtime (legacy/runtime-null)]" +
+      "           [std.context :as context]))" +
+      " (let [runtime (context/runtime-null)]" +
       " [(component/started? runtime)" +
-      "  (context/call runtime :a :b)" +
-      "  (instance? context/runtime-null-type legacy-runtime)" +
-      "  (legacy/call legacy-runtime :c)])",
+      "  (context/call runtime :a :b)])",
   );
 
-  assert.equal(result, "[true [:a :b] true [:c]]");
+  assert.equal(result, "[true [:a :b]]");
 });
 
 test("portable command templates emit structured reports through browser wasm", () => {

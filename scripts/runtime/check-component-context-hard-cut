@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+# Reject retired component/context facades and namespace references.
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+MAX_TEXT_BYTES = 2 * 1024 * 1024
+SKIP_PARTS = {
+    ".git",
+    ".next",
+    "build",
+    "dist",
+    "node_modules",
+    "target",
+}
+SKIP_ROOTS = {
+    "hara-benchmarks",
+    "hara-specs-registry",
+}
+FORBIDDEN_NAMES = (
+    "std.lib." + "component",
+    "std.lib." + "context",
+    "std.foundation." + "context",
+)
+FORBIDDEN_PATHS = (
+    Path("core/lib/src/std/lib") / "component.hal",
+    Path("core/rust/hal-src/std/lib") / "component.hal",
+    Path("core/lib/src/std/lib") / "context.hal",
+    Path("core/rust/hal-src/std/lib") / "context.hal",
+)
+
+
+def skipped(relative: Path) -> bool:
+    if relative.parts and relative.parts[0] in SKIP_ROOTS:
+        return True
+    return any(part in SKIP_PARTS for part in relative.parts)
+
+
+def main() -> int:
+    errors: list[str] = []
+
+    for relative in FORBIDDEN_PATHS:
+        if (ROOT / relative).exists():
+            errors.append(f"retired compatibility source remains: {relative}")
+
+    for path in ROOT.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(ROOT)
+        if skipped(relative):
+            continue
+        try:
+            if path.stat().st_size > MAX_TEXT_BYTES:
+                continue
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        for line_number, line in enumerate(source.splitlines(), 1):
+            for token in FORBIDDEN_NAMES:
+                if token in line:
+                    errors.append(
+                        f"{relative}:{line_number}: retired namespace "
+                        f"reference {token!r}"
+                    )
+
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+
+    print(
+        "component/context hard-cut audit passed: "
+        "only std.foundation.component and std.context remain"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

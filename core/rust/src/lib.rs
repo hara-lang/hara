@@ -5093,14 +5093,14 @@ mod tests {
     }
 
     #[test]
-    fn canonical_component_and_context_libraries_load_without_old_aliases() {
+    fn canonical_component_and_context_libraries_load_without_legacy_facades() {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
                 .eval_text(
-                    "(ns std-lib-context-rust-probe \
-                       (:require [std.lib.component :as component] \
-                                 [std.lib.context :as context])) \
+                    "(ns std-context-rust-probe \
+                       (:require [std.foundation.component :as component] \
+                                 [std.context :as context])) \
                      (let [runtime (context/runtime-null)] \
                        [(component/started? runtime) \
                         (context/call runtime :a :b)])"
@@ -5108,10 +5108,17 @@ mod tests {
                 .unwrap(),
             "[true [:a :b]]"
         );
-        assert!(runtime
-            .eval_text("(require [std.foundation.component :as old])")
-            .unwrap_err()
-            .contains("missing"));
+
+        for legacy in [
+            ["std", "lib", "component"].join("."),
+            ["std", "lib", "context"].join("."),
+        ] {
+            let mut legacy_runtime = Runtime::new();
+            let error = legacy_runtime
+                .eval_text(&format!("(require [{legacy} :as legacy])"))
+                .unwrap_err();
+            assert!(error.contains("missing"), "{legacy}: {error}");
+        }
     }
 
     #[test]
