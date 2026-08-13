@@ -1,0 +1,131 @@
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import clj_hal_corpus as corpus
+
+
+class CorpusParserTest(unittest.TestCase):
+    def test_extracts_namespace_dependencies_and_publics(self):
+        source = '''
+        ;; (ns fake.example)
+        (ns+ std.example
+          (:require [clojure.string :as str]
+                    [std.block.base :as base])
+          (:use [std.legacy.helper]))
+        (defn public-fn [x] x)
+        (defn- private-fn [] nil)
+        (def ^{:doc "value"} public-value 1)
+        (defmulti dispatch identity)
+        (defmethod dispatch :kind [_] nil)
+        '''
+        self.assertEqual(
+            {
+                "namespace": "std.example",
+                "dependencies": [
+                    "clojure.string",
+                    "std.block.base",
+                    "std.legacy.helper",
+                ],
+                "public_symbols": ["dispatch", "public-fn", "public-value"],
+            },
+            corpus.source_surface(source),
+        )
+
+    def test_scanner_ignores_comments_and_parentheses_in_strings(self):
+        surface = corpus.source_surface('''
+        ;; (def fake 1)
+        (ns std.example)
+        (def text "not a closing form )")
+        (defn actual [] "(")
+        ''')
+        self.assertEqual(["actual", "text"], surface["public_symbols"])
+
+
+class DependencyPlanTest(unittest.TestCase):
+    def test_orders_roots_before_dependants(self):
+        compiled = corpus.compile_entries([
+            {"namespace": "demo.top", "dependencies": ["demo.mid"]},
+            {"namespace": "demo.root", "dependencies": []},
+            {"namespace": "demo.mid", "dependencies": ["demo.root"]},
+        ])
+        self.assertEqual(
+            [("demo.root", 0), ("demo.mid", 1), ("demo.top", 2)],
+            [(entry["namespace"], entry["dependency_rank"]) for entry in compiled],
+        )
+
+    def test_groups_cycles_explicitly(self):
+        compiled = corpus.compile_entries([
+            {"namespace": "demo.a", "dependencies": ["demo.b"]},
+            {"namespace": "demo.b", "dependencies": ["demo.a"]},
+            {"namespace": "demo.consumer", "dependencies": ["demo.a"]},
+        ])
+        by_name = {entry["namespace"]: entry for entry in compiled}
+        self.assertEqual(["demo.a", "demo.b"], by_name["demo.a"]["dependency_component"])
+        self.assertTrue(by_name["demo.a"]["dependency_cycle"])
+        self.assertEqual(0, by_name["demo.a"]["dependency_rank"])
+        self.assertEqual(1, by_name["demo.consumer"]["dependency_rank"])
+
+
+class CorpusValidationTest(unittest.TestCase):
+    def fixture(self):
+        entries = corpus.compile_entries([
+            {
+                "namespace": "demo.root",
+                "source_path": "src/demo/root.clj",
+                "source_blob": "1" * 40,
+                "target_namespace": "demo.root",
+                "target_path": "core/lib/src/demo/root.hal",
+                "target_blob": "2" * 40,
+                "status": "ported",
+                "dependencies": [],
+            },
+            {
+                "namespace": "demo.top",
+                "source_path": "src/demo/top.clj",
+                "source_blob": "3" * 40,
+                "target_namespace": "demo.top",
+                "target_path": None,
+                "target_blob": None,
+                "status": "missing",
+                "dependencies": ["demo.root"],
+            },
+        ])
+        return {
+            "schema_version": 1,
+            "reference": {"repository": "example/foundation", "commit": "4" * 40},
+            "target": {"repository": "example/hara", "base_commit": "5" * 40},
+            "status_policy": {"allowed": ["ported", "missing"]},
+            "namespaces": entries,
+            "inventory_sha256": corpus.checksum(entries),
+        }
+
+    def test_validates_a_compiled_corpus(self):
+        fixture = self.fixture()
+        self.assertEqual(fixture["namespaces"], corpus.validate(fixture))
+
+    def test_rejects_stale_dependency_ranks(self):
+        fixture = self.fixture()
+        fixture["namespaces"][1]["dependency_rank"] = 0
+        fixture["inventory_sha256"] = corpus.checksum(fixture["namespaces"])
+        with self.assertRaisesRegex(corpus.CorpusError, "not deterministic"):
+            corpus.validate(fixture)
+
+    def test_rejects_a_stale_checksum(self):
+        fixture = self.fixture()
+        fixture["inventory_sha256"] = "0" * 64
+        with self.assertRaisesRegex(corpus.CorpusError, "checksum is stale"):
+            corpus.validate(fixture)
+
+    def test_main_summarises_a_fixture(self):
+        fixture = self.fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "corpus.json"
+            path.write_text(json.dumps(fixture), encoding="utf-8")
+            self.assertEqual(0, corpus.main(["--corpus", str(path)]))
+
+
+if __name__ == "__main__":
+    unittest.main()
