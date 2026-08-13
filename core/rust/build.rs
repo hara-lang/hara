@@ -74,6 +74,7 @@ fn main() {
     collect_hal(&source_root, &mut paths);
     let mut resources = BTreeMap::new();
     for path in paths {
+        println!("cargo:rerun-if-changed={}", path.display());
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         let namespace = declared_namespace(&source, &path);

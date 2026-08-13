@@ -257,6 +257,10 @@ def target_surface(target_root: Path, path: str) -> dict:
     return source_surface(source)
 
 
+def file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def route_for(symbol: str, declaration: dict) -> dict:
     overrides = declaration.get("symbols", {})
     route = dict(declaration.get("default", {}))
@@ -265,6 +269,8 @@ def route_for(symbol: str, declaration: dict) -> dict:
     route.setdefault("safety", "manual")
     route.setdefault("state", "deferred")
     route.setdefault("message", declaration.get("message", "Migration requires review."))
+    if route.get("target_namespace") and not route.get("target_symbol"):
+        route["target_symbol"] = symbol
     return route
 
 
@@ -321,7 +327,7 @@ def generate(routes: dict, reference: Path, target_root: Path) -> dict:
             file = target_root / target_path
             state_routes = [route for route in symbol_routes if route.get("target_path") == target_path]
             implemented = any(route.get("state") == "implemented" for route in state_routes)
-            if implemented and not file.is_file():
+            if implemented and not file.is_file() and not declaration.get("recipe"):
                 raise CorpusError(f"implemented target is missing: {target_path}")
             if file.is_file():
                 target = target_surface(target_root, target_path)
@@ -337,12 +343,56 @@ def generate(routes: dict, reference: Path, target_root: Path) -> dict:
             if route.get("state") == "implemented":
                 target_path = route.get("target_path")
                 target_symbol = route.get("target_symbol")
-                if not target_path or not target_symbol or target_symbol not in surfaces.get(target_path, set()):
+                pending_recipe_target = declaration.get("recipe") and target_path not in surfaces
+                if (not pending_recipe_target and
+                        (not target_path or not target_symbol or
+                         target_symbol not in surfaces.get(target_path, set()))):
                     raise CorpusError(
                         f"implemented route does not resolve: {name}/{route['source_symbol']}"
                     )
+        substitutions = declaration.get("dependency_substitutions", {})
+        if substitutions and set(substitutions) != set(surface["dependencies"]):
+            missing = sorted(set(surface["dependencies"]) - set(substitutions))
+            extra = sorted(set(substitutions) - set(surface["dependencies"]))
+            raise CorpusError(f"dependency substitutions drift for {name}: missing={missing}, extra={extra}")
+        generated_symbols = declaration.get("generated_symbols", [])
+        target_public = set().union(*surfaces.values()) if surfaces else set()
+        unresolved_generated = sorted(set(generated_symbols) - target_public)
+        if unresolved_generated:
+            raise CorpusError(f"generated symbols do not resolve for {name}: {unresolved_generated}")
+        canonical_paths = [target["path"] for target in targets]
+        if canonical_paths:
+            canonical = target_root / canonical_paths[0]
+            for mirror_path in declaration.get("mirrors", []):
+                mirror = target_root / mirror_path
+                if not mirror.is_file() or mirror.read_bytes() != canonical.read_bytes():
+                    raise CorpusError(f"Hara mirror drift for {name}: {mirror_path}")
+        for retired_path in declaration.get("retirements", []):
+            if (target_root / retired_path).exists():
+                raise CorpusError(f"retired Hara target remains for {name}: {retired_path}")
         counts = Counter(route["state"] for route in symbol_routes)
         migrated = counts.get("implemented", 0) + counts.get("obsolete", 0) + counts.get("host-only", 0)
+        recipe = declaration.get("recipe")
+        if recipe:
+            recipe = dict(recipe)
+            recipe_file = target_root / recipe["template_path"]
+            if not recipe_file.is_file():
+                raise CorpusError(f"missing recipe for {name}: {recipe['template_path']}")
+            recipe["sha256"] = file_sha256(recipe_file)
+        test_route = declaration.get("test_route")
+        if test_route:
+            test_route = dict(test_route)
+            test_route["source_blob"] = blob(reference, commit, test_route["source_path"])
+            recipe_file = target_root / test_route["recipe_path"]
+            if not recipe_file.is_file():
+                raise CorpusError(f"missing test recipe for {name}: {test_route['recipe_path']}")
+            test_route["recipe_sha256"] = file_sha256(recipe_file)
+            target_test = target_root / test_route["target_path"]
+            if not target_test.is_file() or target_test.read_bytes() != recipe_file.read_bytes():
+                raise CorpusError(f"generated test drift for {name}: {test_route['target_path']}")
+            test_source = target_test.read_text(encoding="utf-8")
+            if "std.lib.test" in test_source or "[std.foundation :refer :all]" in test_source:
+                raise CorpusError(f"legacy Hara test dependency remains for {name}")
         entries.append({
             "namespace": name,
             "source_path": path,
@@ -351,6 +401,12 @@ def generate(routes: dict, reference: Path, target_root: Path) -> dict:
             "public_symbols": surface["public_symbols"],
             "route_kind": declaration["route_kind"],
             "status": declaration.get("status", "reviewed"),
+            "recipe": recipe,
+            "generated_symbols": declaration.get("generated_symbols", []),
+            "dependency_substitutions": declaration.get("dependency_substitutions", {}),
+            "test_route": test_route,
+            "mirrors": declaration.get("mirrors", []),
+            "retirements": declaration.get("retirements", []),
             "targets": targets,
             "symbol_routes": symbol_routes,
             "migration": {

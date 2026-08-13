@@ -12,9 +12,9 @@
                 (every? (fn [entry] (not (empty? (:evidence entry))))
                         translate/rules)
                 (vec (map :compiled/index translate/rules))]
-               [{:total 12 :safe 2 :review 2 :manual 8}
+               [{:total 14 :safe 3 :review 2 :manual 9}
                 true
-                [0 1 2 3 4 5 6 7 8 9 10 11]])
+                [0 1 2 3 4 5 6 7 8 9 10 11 12 13]])
 
    (test/check "automatic matcher conflicts are rejected"
                (let [base (first translate/rules)
@@ -84,6 +84,17 @@
                 0
                 [:code.translate/manual :code.translate/manual]])
 
+   (test/check "legacy test helpers require a semantic code.test recipe"
+               (let [legacy
+                     "(ns demo-test (:require [std.lib.test :as test]))\n(test/check \"demo\" 1 1)\n"
+                     result (translate/translate-source legacy {:mode :review})]
+                 [(:output result)
+                  (vec (map :rule/id (:rules/matched result)))
+                  (vec (map :type (:diagnostics result)))])
+               ["(ns demo-test (:require [std.lib.test :as test]))\n(test/check \"demo\" 1 1)\n"
+                [:dependency/std-lib-test]
+                [:code.translate/manual]])
+
    (test/check "supported translations are idempotent"
                (let [first-pass (translate/translate-source source {:mode :review})
                      second-pass
@@ -105,6 +116,15 @@
                      (translate/translate-source commented {:mode :safe})]
                  (:output result))
                "(ns demo.core\n  (:require [std.block.protocol  ; keep this alias\n             :as protocol]))\n")
+
+   (test/check "native Hara output drops redundant Foundation refer-all entries"
+               (let [source
+                     "(ns demo.core\n  (:require [std.foundation :refer :all]\n            [std.block :as block]))\n"
+                     result (translate/translate-source source {:mode :safe})]
+                 [(:output result)
+                  (vec (map :rule/id (:rules/applied result)))])
+               ["(ns demo.core\n  (:require \n            [std.block :as block]))\n"
+                [:dependency/std-foundation-refer-all]])
 
    (test/check "diagnostics retain file, range, path, and rule evidence"
                (let [result

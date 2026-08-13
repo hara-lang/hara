@@ -130,6 +130,17 @@ pub fn eval_bytecode_bundle(runtime: &mut Runtime, bytes: &[u8]) -> Result<(), S
     let loaded_before = runtime.loaded_resources.clone();
     let loaded = (|| {
         for module in &modules {
+            let source_is_current = runtime
+                .resources
+                .get(&module.resource)
+                .map(|source| {
+                    let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
+                    digest == module.source_digest
+                })
+                .unwrap_or(true);
+            if !source_is_current && !module.eager {
+                continue;
+            }
             runtime.register_bytecode_resource(
                 module.resource.clone(),
                 module.namespace_form.clone(),
@@ -500,6 +511,27 @@ mod tests {
         let first = compile_bytecode_bundle(&sources).expect("first deterministic bundle");
         let second = compile_bytecode_bundle(&sources).expect("second deterministic bundle");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn stale_lazy_bytecode_yields_to_registered_source() {
+        let sources = [ModuleSource {
+            resource: "example.stale",
+            source: "(ns example.stale) (def answer 41)",
+        }];
+        let bytes = compile_bytecode_bundle(&sources).expect("compile stale fixture");
+        let mut runtime = Runtime::core();
+        runtime.register_resource("example.stale", "(ns example.stale) (def answer 42)");
+
+        eval_bytecode_bundle(&mut runtime, &bytes).expect("index bundle");
+
+        assert!(!runtime.bytecode_resources.contains_key("example.stale"));
+        assert_eq!(
+            runtime
+                .eval_native("(require [example.stale :as stale]) stale/answer")
+                .unwrap(),
+            "42"
+        );
     }
 
     #[test]

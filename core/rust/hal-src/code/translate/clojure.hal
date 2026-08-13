@@ -1,7 +1,5 @@
 (ns code.translate.clojure
-  (:config {:blank true})
-  (:require [std.foundation :refer :all]
-            [std.block :as block]
+  (:require [std.block :as block]
             [std.block.navigation :as nav]
             [std.work :as work]
             [std.work.command.task :as task]
@@ -223,6 +221,17 @@
   [entry]
   (or (catalog-field entry :migration "migration") {}))
 
+(defn catalog-target-summary
+  [entry]
+  (let [target (first (or (catalog-field entry :targets "targets") []))]
+    {:namespace (catalog-field target :namespace "namespace")
+     :dependencies []
+     :public-symbols
+     (unique-sorted
+      (keep (fn [route]
+              (catalog-field route :target_symbol "target_symbol"))
+            (catalog-symbol-routes entry)))}))
+
 (defn catalog-route-diagnostic
   [route]
   (let [state (keyword (catalog-field route :state "state"))
@@ -271,18 +280,44 @@
    (let [unit (source-unit unit options)
          source (:source/text unit)
          before (:target/text unit)
+         recipe (:translation/recipe unit)
+         recipe-output (:output recipe)
+         recipe-normalized
+         (if (string? recipe-output)
+           (rule/translate-source
+            recipe-output
+            {:mode :review :file (:target/path unit)})
+           nil)
          result
-         (rule/translate-source
-          source
-          (assoc (:translation/options unit)
-                 :file (:source/path unit)))
+         (if (string? recipe-output)
+           {:output (:output recipe-normalized)
+            :changed (not= source (:output recipe-normalized))
+            :mode :recipe
+            :rules/matched (:rules/matched recipe-normalized)
+            :rules/applied (:rules/applied recipe-normalized)
+            :diagnostics (:diagnostics recipe-normalized)}
+           (rule/translate-source
+            source
+            (assoc (:translation/options unit)
+                   :file (:source/path unit))))
          after (:output result)
-         summary (source-summary after)
          entry (:corpus/entry unit)
+         summary (if (string? recipe-output)
+                   (catalog-target-summary entry)
+                   (source-summary after))
          migration-routes (catalog-symbol-routes entry)
          diagnostics
-         (vec (concat (:diagnostics result)
-                      (catalog-diagnostics entry)))]
+         (if (string? recipe-output)
+           (vec
+            (concat
+             [{:type :code.translate/recipe-applied
+               :level :info
+               :safety :safe
+               :recipe/id (:id recipe)
+               :message "Applied reviewed semantic migration recipe."}]
+             (:diagnostics result)))
+           (vec (concat (:diagnostics result)
+                        (catalog-diagnostics entry))))]
      {:path (:target/path unit)
       :source/path (:source/path unit)
       :source/root (:source/root unit)
@@ -305,6 +340,7 @@
       :diagnostics diagnostics
       :migration/routes migration-routes
       :migration/summary (catalog-migration-summary entry)
+      :translation/recipe (if recipe (:id recipe) nil)
       :provenance (provenance unit result)})))
 
 (def analyze-source-unit translate-source-unit)
@@ -324,11 +360,14 @@
     :item-key source-path
     :run
     (fn [unit context]
-      (translate-source-unit unit))
+      {:status :return
+       :data (translate-source-unit unit)})
     :display
     (fn [result]
-      (select-keys result
-                   [:path :namespace :changed :mode]))}))
+      (if (map? result)
+        (select-keys result
+                     [:path :namespace :changed :mode])
+        result))}))
 
 (defn run-unit
   ([unit]

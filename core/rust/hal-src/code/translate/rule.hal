@@ -1,7 +1,5 @@
 (ns code.translate.rule
-  (:config {:blank true})
-  (:require [std.foundation :refer :all]
-            [std.block :as block]
+  (:require [std.block :as block]
             [std.block.navigation :as nav]
             [code.translate.rules :as declarations]))
 
@@ -25,15 +23,18 @@
   [rule]
   (if (= :manual (:safety rule))
     (nil? (:rewrite rule))
-    (and (map? (:rewrite rule))
-         (= :replace-token (:op (:rewrite rule)))
-         (string? (:text (:rewrite rule))))))
+    (let [rewrite (:rewrite rule)]
+      (and (map? rewrite)
+           (or (and (= :replace-token (:op rewrite))
+                    (string? (:text rewrite)))
+               (= :delete-parent (:op rewrite)))))))
 
 (defn rule-valid?
   [rule]
   (and (map? rule)
        (keyword? (:id rule))
        (or (= :token (:kind rule))
+           (= :dependency-entry (:kind rule))
            (= :form-head (:kind rule)))
        (map? (:match rule))
        (string? (:text (:match rule)))
@@ -143,21 +144,33 @@
       true
       (and
        (or (nil? (:second condition))
-           (= (:second condition) (nav/form-second location)))))))
+           (= (:second condition) (nav/form-second location)))
+       (or (nil? (:contains condition))
+           (str/includes? (block/string (nav/current location))
+                          (:contains condition)))
+       (or (nil? (:parent-contains condition))
+           (and (:parent location)
+                (str/includes?
+                 (block/string (nav/current (:parent location)))
+                 (:parent-contains condition))))))))
 
 (defn location-matches?
   [rule location]
   (let [value (nav/current location)
         text (:text (:match rule))]
     (and
+     value
      (match-condition? rule location)
      (if (= :token (:kind rule))
        (and (block/token? value)
             (= text (block/string value)))
+       (if (= :dependency-entry (:kind rule))
+         (and (block/token? value)
+              (= text (block/string value)))
        (if (= :form-head (:kind rule))
          (and (nav/form? location)
               (= text (nav/form-head location)))
-         false)))))
+         false))))))
 
 (defn match-record
   [rule location]
@@ -219,10 +232,16 @@
 (defn apply-match
   [root rule match]
   (let [rewrite (:rewrite rule)]
-    (if (= :replace-token (:op rewrite))
+    (cond
+      (= :replace-token (:op rewrite))
       (nav/root-block
        (nav/replace-at root (:path match) (:text rewrite)))
-      root)))
+
+      (= :delete-parent (:op rewrite))
+      (nav/root-block
+       (nav/delete-at root (vec (drop-last (:path match)))))
+
+      :else root)))
 
 (defn apply-matches
   [root matched rules mode]

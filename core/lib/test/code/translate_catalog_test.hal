@@ -65,7 +65,45 @@
       [(count (:migration/routes result))
        (:migration/summary result)
        (vec (map :migration/state (:diagnostics result)))])
-    [2
+   [2
      {:implemented 1 :missing 1 :total 2 :completion_percent 50}
-     [:implemented :missing]])])
+     [:implemented :missing]])
 
+   (test/check
+    "reviewed semantic recipes replace mechanical output and clear blockers"
+    (let [result
+          (clj/translate-source-unit
+           {:source/path "src/std/lib/component.clj"
+            :source/text "#?(:clj (ns std.lib.component))\n(defn legacy [] nil)\n"
+            :target/text nil
+            :corpus/entry keyword-entry
+            :translation/recipe
+            {:id "std.lib.component/v1"
+             :output "(ns std.lib.component)\n(defn start [component] component)\n"}})]
+      [(:translation/recipe result)
+       (:after result)
+       (select-keys (first (:diagnostics result))
+                    [:type :safety :recipe/id])])
+   ["std.lib.component/v1"
+     "(ns std.lib.component)\n(defn start [component] component)\n"
+     {:type :code.translate/recipe-applied
+      :safety :safe
+      :recipe/id "std.lib.component/v1"}])
+
+   (test/check
+    "semantic recipes pass through native Hara dependency normalization"
+    (let [result
+          (clj/translate-source-unit
+           {:source/path "src/demo.clj"
+            :source/text "(ns demo)\n"
+            :target/text nil
+            :corpus/entry keyword-entry
+            :translation/recipe
+            {:id "demo/v1"
+             :output "(ns demo (:require [std.foundation :refer :all]))\n"}})]
+      [(:after result)
+       (vec (map :rule/id (:rules/applied result)))])
+    ["(ns demo (:require ))\n"
+     [:dependency/std-foundation-refer-all]])])
+
+(test/print-results results)
