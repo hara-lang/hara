@@ -1046,8 +1046,14 @@ impl Machine {
             Instruction::DefStruct { name, fields } => {
                 guarded!(self.exec_def_struct(program, *name, *fields));
             }
-            Instruction::StructField(index) => {
-                guarded!(self.exec_struct_field(program, *index));
+            Instruction::DefMutable { name, fields } => {
+                guarded!(self.exec_def_mutable(program, *name, *fields));
+            }
+            Instruction::MutableFieldGet(index) => {
+                guarded!(self.exec_mutable_field_get(program, *index));
+            }
+            Instruction::MutableFieldSet(index) => {
+                guarded!(self.exec_mutable_field_set(program, *index));
             }
             Instruction::InstanceOf => {
                 guarded!(self.exec_instance_of());

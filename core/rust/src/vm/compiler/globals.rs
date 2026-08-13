@@ -304,10 +304,9 @@ impl Compiler {
         Ok(())
     }
 
-    /// `(set! name value)`: resets a global var's root and evaluates to
-    /// the value. A lexical name is a compile error: the VM does not
-    /// cell-wrap lexical bindings, unlike the tree evaluator (a
-    /// documented divergence). An invisible name is "unbound var".
+    /// `(set! name value)` resets a global var. `(set! (field receiver
+    /// :name) value)` evaluates receiver and replacement once, in that order,
+    /// then mutates a declared field and evaluates to the replacement.
     pub(super) fn compile_set(
         &mut self,
         children: &[Child<'_>],
@@ -316,13 +315,56 @@ impl Compiler {
         if children.len() != 3 {
             return Err(CompileError::new(
                 CompileErrorKind::Arity,
-                "set! expects a name and value",
+                "set! expects a place and value",
                 Some(span.start),
             ));
         }
+        if let Form::List(place) = children[1].form {
+            if matches!(place.first(), Some(Form::Symbol(operation)) if operation == "field") {
+                let place_children =
+                    self.list_children(place, children[1].span, children[1].children);
+                if place_children.len() != 3 {
+                    return Err(CompileError::new(
+                        CompileErrorKind::Arity,
+                        "set! field place expects a receiver and field",
+                        Some(children[1].span.start),
+                    ));
+                }
+                let field = match place_children[2].form {
+                    Form::Keyword(field) | Form::Symbol(field) if !field.contains('/') => field,
+                    _ => {
+                        return Err(unsupported(
+                            "set! field place expects an unqualified literal field",
+                            place_children[2].span.start,
+                        ))
+                    }
+                };
+                self.compile_form(
+                    place_children[1].form,
+                    place_children[1].span,
+                    place_children[1].children,
+                    false,
+                )?;
+                if !self.ctx().fallthrough {
+                    return Ok(());
+                }
+                self.compile_form(
+                    children[2].form,
+                    children[2].span,
+                    children[2].children,
+                    false,
+                )?;
+                if !self.ctx().fallthrough {
+                    return Ok(());
+                }
+                let index = self.name_constant(field, place_children[2].span)?;
+                self.emit(Instruction::MutableFieldSet(index), Some(span.start));
+                return Ok(());
+            }
+        }
         let Form::Symbol(name) = children[1].form else {
             return Err(unsupported(
-                "set! expects a name symbol",
+                "set! expects a name symbol or field place",
                 children[1].span.start,
             ));
         };
@@ -424,29 +466,31 @@ impl Compiler {
         Ok(())
     }
 
-    /// `(defstruct Name [field ...])`: interns the type and its
-    /// constructor vars and evaluates to nil, matching the evaluator.
-    pub(super) fn compile_defstruct(
+    /// Defines one immutable or mutable named-value family, its parallel
+    /// constructors, and any inline protocol clauses.
+    pub(super) fn compile_named_definition(
         &mut self,
         children: &[Child<'_>],
         span: &Span,
+        mutable: bool,
     ) -> Result<(), CompileError> {
+        let kind = if mutable { "defmutable" } else { "defstruct" };
         if children.len() < 3 {
             return Err(CompileError::new(
                 CompileErrorKind::Arity,
-                "defstruct expects a name and field vector",
+                format!("{kind} expects a name and field vector"),
                 Some(span.start),
             ));
         }
         let Form::Symbol(name) = children[1].form else {
             return Err(unsupported(
-                "defstruct name must be an unqualified symbol",
+                format!("{kind} name must be an unqualified symbol"),
                 children[1].span.start,
             ));
         };
         if name.contains('/') {
             return Err(unsupported(
-                "defstruct name must be an unqualified symbol",
+                format!("{kind} name must be an unqualified symbol"),
                 children[1].span.start,
             ));
         }
@@ -455,7 +499,7 @@ impl Compiler {
             _ => {
                 return Err(CompileError::new(
                     CompileErrorKind::Arity,
-                    "defstruct expects a field vector",
+                    format!("{kind} expects a field vector"),
                     Some(children[2].span.start),
                 ))
             }
@@ -464,13 +508,13 @@ impl Compiler {
         for field in fields {
             let Form::Symbol(field) = field else {
                 return Err(unsupported(
-                    "defstruct field names must be unqualified symbols",
+                    format!("{kind} field names must be unqualified symbols"),
                     children[2].span.start,
                 ));
             };
             if field.contains('/') {
                 return Err(unsupported(
-                    "defstruct field names must be unqualified symbols",
+                    format!("{kind} field names must be unqualified symbols"),
                     children[2].span.start,
                 ));
             }
@@ -479,7 +523,7 @@ impl Compiler {
                 .any(|candidate| matches!(candidate, crate::core::Value::String(c) if c == field))
             {
                 return Err(unsupported(
-                    "Duplicate defstruct field",
+                    format!("Duplicate {kind} field"),
                     children[2].span.start,
                 ));
             }
@@ -494,17 +538,67 @@ impl Compiler {
         self.declare_program_global(&format!("->{name}"));
         self.declare_program_global(&format!("map->{name}"));
         self.emit(
-            Instruction::DefStruct {
-                name: name_index,
-                fields: fields_index,
+            if mutable {
+                Instruction::DefMutable {
+                    name: name_index,
+                    fields: fields_index,
+                }
+            } else {
+                Instruction::DefStruct {
+                    name: name_index,
+                    fields: fields_index,
+                }
             },
             Some(span.start),
         );
+
+        if children.len() == 3 {
+            return Ok(());
+        }
+        self.emit(Instruction::Pop, Some(span.start));
+        let mut index = 3;
+        while index < children.len() {
+            let Form::Symbol(protocol) = children[index].form else {
+                return Err(unsupported(
+                    format!("{kind} protocol clause expects a protocol symbol"),
+                    children[index].span.start,
+                ));
+            };
+            index += 1;
+            let start = index;
+            while index < children.len() && matches!(children[index].form, Form::List(_)) {
+                index += 1;
+            }
+            if start == index {
+                return Err(unsupported(
+                    format!("{kind} protocol clause requires method implementations"),
+                    children[index - 1].span.start,
+                ));
+            }
+            let extension = Form::List(
+                std::iter::once(Form::Symbol("extend-type".into()))
+                    .chain(std::iter::once(Form::Symbol(name.to_owned())))
+                    .chain(std::iter::once(Form::Symbol(protocol.to_owned())))
+                    .chain(
+                        children[start..index]
+                            .iter()
+                            .map(|child| child.form.clone()),
+                    )
+                    .collect(),
+            );
+            let value = crate::core::form_to_value(&extension).map_err(|message| {
+                CompileError::new(CompileErrorKind::UnsupportedForm, message, Some(span.start))
+            })?;
+            let constant = self.constant_index_of(value, span)?;
+            self.emit(Instruction::ExtendType(constant), Some(span.start));
+            self.emit(Instruction::Pop, Some(span.start));
+        }
+        self.emit(Instruction::Nil, Some(span.start));
         Ok(())
     }
 
-    /// `(field instance :name)`: positional struct field access; the
-    /// field name is a literal keyword or symbol.
+    /// `(field instance :name)`: direct access to one declared mutable field;
+    /// the field name is a literal keyword or symbol.
     pub(super) fn compile_field(
         &mut self,
         children: &[Child<'_>],
@@ -513,7 +607,7 @@ impl Compiler {
         if children.len() != 3 {
             return Err(CompileError::new(
                 CompileErrorKind::Arity,
-                "field expects a struct and field name",
+                "field expects a mutable value and field name",
                 Some(span.start),
             ));
         }
@@ -532,11 +626,11 @@ impl Compiler {
             return Ok(());
         }
         let index = self.name_constant(field, children[2].span)?;
-        self.emit(Instruction::StructField(index), Some(span.start));
+        self.emit(Instruction::MutableFieldGet(index), Some(span.start));
         Ok(())
     }
 
-    /// `(instance? type value)`: struct type membership.
+    /// `(instance? type value)`: immutable or mutable named-type membership.
     pub(super) fn compile_instance_of(
         &mut self,
         children: &[Child<'_>],
@@ -545,7 +639,7 @@ impl Compiler {
         if children.len() != 3 {
             return Err(CompileError::new(
                 CompileErrorKind::Arity,
-                "instance? expects a struct type and value",
+                "instance? expects a struct or mutable type and value",
                 Some(span.start),
             ));
         }

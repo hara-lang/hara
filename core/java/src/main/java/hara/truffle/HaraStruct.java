@@ -7,9 +7,8 @@ import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.interop.UnknownIdentifierException;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.Map;
+import hara.lang.base.Eq;
+import hara.lang.base.G;
 import hara.lang.data.Keyword;
 import hara.lang.data.Symbol;
 import hara.lang.data.Tuple;
@@ -22,6 +21,8 @@ import hara.lang.protocol.IFind;
 import hara.lang.protocol.ILookup;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
+import java.util.Iterator;
+import java.util.Map;
 
 @ExportLibrary(InteropLibrary.class)
 public final class HaraStruct
@@ -35,17 +36,34 @@ public final class HaraStruct
         ICount,
         Iterable<Map.Entry<Object, Object>> {
   private final HaraType type;
-  private final Object[] values;
-  private final IMetadata metadata;
+  private final hara.lang.data.Map.Standard<Object, Object> values;
 
-  public HaraStruct(HaraType type, Object[] values) {
-    this(type, values, null);
+  public HaraStruct(HaraType type, Object[] orderedValues) {
+    this(type, fromOrderedValues(type, orderedValues, null));
   }
 
-  private HaraStruct(HaraType type, Object[] values, IMetadata metadata) {
+  private HaraStruct(
+      HaraType type, hara.lang.data.Map.Standard<Object, Object> values) {
     this.type = type;
-    this.values = values.clone();
-    this.metadata = metadata;
+    this.values = values;
+  }
+
+  private static hara.lang.data.Map.Standard<Object, Object> fromOrderedValues(
+      HaraType type, Object[] orderedValues, IMetadata metadata) {
+    String[] fields = type.fields();
+    if (orderedValues.length != fields.length) {
+      throw new IllegalArgumentException(
+          "struct field/value arity mismatch: expected "
+              + fields.length
+              + ", got "
+              + orderedValues.length);
+    }
+    Object[] entries = new Object[fields.length * 2];
+    for (int index = 0; index < fields.length; index++) {
+      entries[index * 2] = Keyword.create(fields[index]);
+      entries[index * 2 + 1] = orderedValues[index];
+    }
+    return hara.lang.data.Map.Standard.from(metadata, entries);
   }
 
   public Object read(String field) throws UnknownIdentifierException {
@@ -53,26 +71,44 @@ public final class HaraStruct
     if (index < 0) {
       throw UnknownIdentifierException.create(field);
     }
-    return values[index];
+    return values.lookup(Keyword.create(type.fields()[index]));
   }
 
   public HaraType type() {
     return type;
   }
 
+  Object[] orderedValues() {
+    String[] fields = type.fields();
+    Object[] ordered = new Object[fields.length];
+    for (int index = 0; index < fields.length; index++) {
+      ordered[index] = values.lookup(Keyword.create(fields[index]));
+    }
+    return ordered;
+  }
+
+  hara.lang.data.Map.Standard<Object, Object> asMap() {
+    return values;
+  }
+
   @Override
   public IMetadata meta() {
-    return metadata;
+    return values.meta();
   }
 
   @Override
   public HaraStruct withMeta(IMetadata metadata) {
-    return new HaraStruct(type, values, metadata);
+    hara.lang.data.Map.Standard<Object, Object> updated = values.withMeta(metadata);
+    return updated == values ? this : new HaraStruct(type, updated);
   }
 
   @Override
   public long hashCalc(Constant.HashType hashType) {
-    return hashCode();
+    long hash = 31L * System.identityHashCode(type);
+    for (Object value : orderedValues()) {
+      hash = 31L * hash + G.hashFn(hashType).apply(value);
+    }
+    return hash;
   }
 
   @Override
@@ -102,37 +138,53 @@ public final class HaraStruct
 
   @Override
   public boolean equals(Object other) {
-    return other instanceof HaraStruct
-        && type == ((HaraStruct) other).type
-        && Arrays.deepEquals(values, ((HaraStruct) other).values);
+    if (!(other instanceof HaraStruct struct) || type != struct.type) {
+      return false;
+    }
+    Object[] left = orderedValues();
+    Object[] right = struct.orderedValues();
+    for (int index = 0; index < left.length; index++) {
+      if (!Eq.eq(left[index], right[index])) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @Override
   public int hashCode() {
-    return 31 * System.identityHashCode(type) + Arrays.deepHashCode(values);
+    return Long.hashCode(hashCalc(Constant.HashType.RAPID));
   }
 
   @Override
   @TruffleBoundary
   public String toString() {
+    String[] fields = type.fields();
     StringBuilder result = new StringBuilder("#<").append(type.name());
-    for (int i = 0; i < values.length; i++) {
-      result.append(i == 0 ? " " : ", ").append(type.fields()[i]).append("=").append(values[i]);
+    for (int index = 0; index < fields.length; index++) {
+      result
+          .append(index == 0 ? " " : ", ")
+          .append(fields[index])
+          .append("=")
+          .append(values.lookup(Keyword.create(fields[index])));
     }
     return result.append(">").toString();
   }
 
   @Override
   public Map.Entry<Object, Object> find(Object key) {
-    int index = indexOfKey(key);
-    return index < 0 ? null : new Tuple.Tup2.L<>(null, key, values[index]);
+    Keyword canonical = canonicalKey(key);
+    if (canonical == null) {
+      return null;
+    }
+    return new Tuple.Tup2.L<>(null, canonical, values.lookup(canonical));
   }
 
   @Override
   public Iterator<Object> keys() {
     String[] fields = type.fields();
     return new Iterator<Object>() {
-      private int index = 0;
+      private int index;
 
       @Override
       public boolean hasNext() {
@@ -148,107 +200,96 @@ public final class HaraStruct
 
   @Override
   public Iterator<Object> vals() {
-    return Arrays.asList(values).iterator();
+    String[] fields = type.fields();
+    return new Iterator<Object>() {
+      private int index;
+
+      @Override
+      public boolean hasNext() {
+        return index < fields.length;
+      }
+
+      @Override
+      public Object next() {
+        return values.lookup(Keyword.create(fields[index++]));
+      }
+    };
   }
 
   @Override
   public Iterator<Map.Entry<Object, Object>> iterator() {
     String[] fields = type.fields();
     return new Iterator<Map.Entry<Object, Object>>() {
-      private int index = 0;
+      private int index;
 
       @Override
       public boolean hasNext() {
-        return index < values.length;
+        return index < fields.length;
       }
 
       @Override
       public Map.Entry<Object, Object> next() {
-        Object key = Keyword.create(fields[index]);
-        Object value = values[index];
-        index++;
-        return new Tuple.Tup2.L<>(null, key, value);
+        Keyword key = Keyword.create(fields[index++]);
+        return new Tuple.Tup2.L<>(null, key, values.lookup(key));
       }
     };
   }
 
   @Override
-  public IAssoc<Object, Object> assoc(Object key, Object value) {
-    int index = indexOfKey(key);
-    if (index < 0) {
+  public HaraStruct assoc(Object key, Object value) {
+    Keyword canonical = canonicalKey(key);
+    if (canonical == null) {
       throw new HaraException("unknown struct field: " + fieldName(key));
     }
-    Object[] newValues = values.clone();
-    newValues[index] = value;
-    return new HaraStruct(type, newValues, metadata);
+    return new HaraStruct(type, values.assoc(canonical, value));
   }
 
   @Override
   public IDissoc<Object> dissoc(Object key) {
-    int index = indexOfKey(key);
-    if (index < 0) {
-      return this;
-    }
-    Object[] elements = new Object[(values.length - 1) * 2];
-    int position = 0;
-    String[] fields = type.fields();
-    for (int i = 0; i < values.length; i++) {
-      if (i == index) {
-        continue;
-      }
-      elements[position++] = Keyword.create(fields[i]);
-      elements[position++] = values[i];
-    }
-    return hara.lang.data.Map.Standard.<Object, Object>from(metadata, elements);
+    Keyword canonical = canonicalKey(key);
+    return canonical == null ? this : values.dissoc(canonical);
   }
 
   @Override
-  public IEmpty empty() {
-    return new HaraStruct(type, new Object[values.length], metadata);
+  public HaraStruct empty() {
+    return new HaraStruct(type, new Object[type.arity()]).withMeta(meta());
   }
 
   @Override
   public long count() {
-    return values.length;
+    return type.arity();
   }
 
-  private hara.lang.data.Map.Standard<Object, Object> asMap() {
-    String[] fields = type.fields();
-    Object[] elements = new Object[values.length * 2];
-    for (int i = 0; i < values.length; i++) {
-      elements[i * 2] = Keyword.create(fields[i]);
-      elements[i * 2 + 1] = values[i];
-    }
-    return hara.lang.data.Map.Standard.from(metadata, elements);
+  private Keyword canonicalKey(Object key) {
+    int index = indexOfKey(key);
+    return index < 0 ? null : Keyword.create(type.fields()[index]);
   }
 
   private int indexOfKey(Object key) {
-    if (key instanceof Keyword) {
-      Keyword keyword = (Keyword) key;
+    if (key instanceof Keyword keyword) {
       if (keyword.getNamespace() != null) {
         return -1;
       }
       return type.fieldIndex(keyword.getName());
     }
-    if (key instanceof Symbol) {
-      Symbol symbol = (Symbol) key;
+    if (key instanceof Symbol symbol) {
       if (symbol.getNamespace() != null) {
         return -1;
       }
       return type.fieldIndex(symbol.getName());
     }
-    if (key instanceof String) {
-      return type.fieldIndex((String) key);
+    if (key instanceof String string) {
+      return type.fieldIndex(string);
     }
     return -1;
   }
 
   private static String fieldName(Object key) {
-    if (key instanceof Keyword) {
-      return ((Keyword) key).getName();
+    if (key instanceof Keyword keyword) {
+      return keyword.getName();
     }
-    if (key instanceof Symbol) {
-      return ((Symbol) key).getName();
+    if (key instanceof Symbol symbol) {
+      return symbol.getName();
     }
     return String.valueOf(key);
   }

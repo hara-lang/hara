@@ -67,4 +67,22 @@ public class HtaValueCodecTest {
     decoded.close();
     assertThrows(HaraException.class, () -> HtaValueCodec.encode(decoded));
   }
+  @Test
+  public void structsRoundTripAndMutableValuesAreRejected() throws Exception {
+    HaraType type = new HaraType("demo/Point", new String[] {"x", "y"});
+    HaraStruct struct = new HaraStruct(type, new Object[] {1L, 2L});
+    HaraStruct decoded = (HaraStruct) HtaValueCodec.decodeCanonical(HtaValueCodec.encode(struct));
+    assertEquals("demo/Point", decoded.type().name());
+    assertEquals(1L, decoded.read("x"));
+    assertEquals(2L, decoded.read("y"));
+
+    HaraMutable mutable =
+        new HaraMutable(new HaraMutableType("demo/Cursor", new String[] {"x"}), new Object[] {1L});
+    HaraException error =
+        assertThrows(HaraException.class, () -> HtaValueCodec.encode(mutable));
+    assertEquals(
+        "hta/value-unsupported: mutable values are not serializable; use (into {} value)",
+        error.getMessage());
+  }
+
 }

@@ -3403,8 +3403,8 @@ mod tests {
                     "(do (defstruct Box [value]) \
                      (defprotocol BoxOps (read [self]) (add [self amount])) \
                      (extend-type Box BoxOps \
-                       (read [self] (field self :value)) \
-                       (add [self amount] (+ (field self :value) amount))) \
+                       (read [self] (:value self)) \
+                       (add [self amount] (+ (:value self) amount))) \
                      [(read (Box 40)) \
                       (add (map->Box {:value 40}) 2) \
                       (user/read (Box 41)) \
@@ -3423,6 +3423,37 @@ mod tests {
     }
 
     #[test]
+    fn guest_mutables_share_storage_and_reject_persistent_updates() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (defmutable Cursor [x y]) \
+                     (let [cursor (Cursor 1 2) alias cursor order (atom []) \
+                           snapshot (into {} cursor) \
+                           result (set! (field (do (swap! order conj :receiver) cursor) :x) \
+                                        (do (swap! order conj :replacement) 10))] \
+                       [result @order (field alias :x) (= cursor alias) \
+                        (= cursor (Cursor 10 2)) snapshot (into {} cursor)]))",
+                )
+                .unwrap(),
+            "[10 [:receiver :replacement] 10 true false {:x 1 :y 2} {:x 10 :y 2}]"
+        );
+        assert!(runtime
+            .eval_text("(assoc (Cursor 1 2) :x 3)")
+            .unwrap_err()
+            .contains("assoc does not support mutable values"));
+        assert!(runtime
+            .eval_text("(dissoc (Cursor 1 2) :x)")
+            .unwrap_err()
+            .contains("dissoc does not support mutable values"));
+        assert!(runtime
+            .eval_text("(do (defstruct Point [x]) (field (Point 1) :x))")
+            .unwrap_err()
+            .contains("field expects a mutable value"));
+    }
+
+    #[test]
     fn guest_protocol_dispatch_can_register_protocols_during_a_method_call() {
         let mut runtime = Runtime::new();
         assert_eq!(
@@ -3435,7 +3466,7 @@ mod tests {
                          (do (defstruct Loaded [value]) \
                              (defprotocol Reading (read-loaded [self])) \
                              (extend-type Loaded Reading \
-                               (read-loaded [self] (field self :value))) \
+                               (read-loaded [self] (:value self))) \
                              (read-loaded (Loaded 42))))) \
                      (load (Loader)))",
                 )
@@ -3452,7 +3483,7 @@ mod tests {
                 .eval_text(
                     "(do (defstruct Box [value]) \
                      (defprotocol BoxOps (read [self])) \
-                     (extend-type Box BoxOps (read [self] (field self :value))) \
+                     (extend-type Box BoxOps (read [self] (:value self))) \
                      [(read (Box 41)) (user/read (Box 42))])",
                 )
                 .unwrap(),
@@ -3488,7 +3519,7 @@ mod tests {
             "(ns acme.box) \
              (defstruct Box [value]) \
              (defprotocol BoxOps (read [self])) \
-             (extend-type Box BoxOps (read [self] (field self :value)))",
+             (extend-type Box BoxOps (read [self] (:value self)))",
         );
         assert_eq!(
             runtime

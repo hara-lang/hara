@@ -5,7 +5,7 @@
 //! closures with capture-by-value upvalues (including variadic
 //! parameters), direct calls, exceptions, and the registry-direct global
 //! forms — `def`, `defn`/`defn-` (single- and multi-arity, interning real
-//! late-bound vars), `var`, `set!`, `declare`, `defstruct`, `field`, and
+//! late-bound vars), `var`, `set!`, `declare`, `defstruct`, `defmutable`, `field`, and
 //! `instance?` (issue #223; see
 //! `specs/01-lang/010-bytecode/draft/hal-bytecode-vm.edn` `:vm/namespaces`).
 //! Anything else is a typed [`CompileError`] with source context; the
@@ -295,7 +295,14 @@ impl Compiler {
             }
             if !matches!(
                 operator.as_str(),
-                "def" | "defn" | "defn-" | "defmacro" | "defstruct" | "defprotocol" | "defmulti"
+                "def"
+                    | "defn"
+                    | "defn-"
+                    | "defmacro"
+                    | "defstruct"
+                    | "defmutable"
+                    | "defprotocol"
+                    | "defmulti"
             ) {
                 continue;
             }
@@ -305,7 +312,7 @@ impl Compiler {
             if let Ok((name, _)) = crate::core::binding_symbol(name_form, "definition name") {
                 if !name.contains('/') {
                     self.declare_program_global(&name);
-                    if operator == "defstruct" {
+                    if operator == "defstruct" || operator == "defmutable" {
                         self.declare_program_global(&format!("->{name}"));
                         self.declare_program_global(&format!("map->{name}"));
                     }
@@ -801,8 +808,8 @@ impl Compiler {
                     }
                     Form::Symbol(name) if name == "var" => self.compile_var(&children, span),
                     Form::Symbol(name) if name == "set!" => self.compile_set(&children, span),
-                    Form::Symbol(name) if name == "defstruct" => {
-                        self.compile_defstruct(&children, span)
+                    Form::Symbol(name) if name == "defstruct" || name == "defmutable" => {
+                        self.compile_named_definition(&children, span, name == "defmutable")
                     }
                     Form::Symbol(name) if name == "ns+" => {
                         if children.len() > 1 {

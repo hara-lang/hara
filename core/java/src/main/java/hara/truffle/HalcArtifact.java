@@ -167,7 +167,7 @@ final class HalcArtifact {
       if (!(form instanceof hara.lang.data.List<?> list) || list.count() < 2) continue;
       if (!(list.nth(0) instanceof Symbol operator) || operator.getNamespace() != null) continue;
       if (!(list.nth(1) instanceof Symbol name) || name.getNamespace() != null) continue;
-      if (Set.of("def", "defn", "defn-", "defmacro", "defstruct", "declare")
+      if (Set.of("def", "defn", "defn-", "defmacro", "defstruct", "defmutable", "declare")
           .contains(operator.getName())) {
         definitions.add(name.getName());
       }

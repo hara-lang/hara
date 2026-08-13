@@ -43,7 +43,9 @@ pub enum Opcode {
     VarGlobal,
     DeclareGlobal,
     DefStruct,
-    StructField,
+    DefMutable,
+    MutableFieldGet,
+    MutableFieldSet,
     InstanceOf,
     MakeMultiArity,
     BuildVector,
@@ -69,7 +71,7 @@ pub enum Opcode {
 }
 
 impl Opcode {
-    pub const COUNT: usize = 46;
+    pub const COUNT: usize = 48;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Constant,
         Self::Nil,
@@ -94,7 +96,9 @@ impl Opcode {
         Self::VarGlobal,
         Self::DeclareGlobal,
         Self::DefStruct,
-        Self::StructField,
+        Self::DefMutable,
+        Self::MutableFieldGet,
+        Self::MutableFieldSet,
         Self::InstanceOf,
         Self::MakeMultiArity,
         Self::BuildVector,
@@ -148,7 +152,9 @@ impl Opcode {
             Self::VarGlobal => "var-global",
             Self::DeclareGlobal => "declare-global",
             Self::DefStruct => "def-struct",
-            Self::StructField => "struct-field",
+            Self::DefMutable => "def-mutable",
+            Self::MutableFieldGet => "mutable-field-get",
+            Self::MutableFieldSet => "mutable-field-set",
             Self::InstanceOf => "instance-of",
             Self::MakeMultiArity => "make-multi-arity",
             Self::BuildVector => "build-vector",
@@ -199,7 +205,9 @@ impl Opcode {
             Instruction::VarGlobal(_) => Self::VarGlobal,
             Instruction::DeclareGlobal(_) => Self::DeclareGlobal,
             Instruction::DefStruct { .. } => Self::DefStruct,
-            Instruction::StructField(_) => Self::StructField,
+            Instruction::DefMutable { .. } => Self::DefMutable,
+            Instruction::MutableFieldGet(_) => Self::MutableFieldGet,
+            Instruction::MutableFieldSet(_) => Self::MutableFieldSet,
             Instruction::InstanceOf => Self::InstanceOf,
             Instruction::MakeMultiArity { .. } => Self::MakeMultiArity,
             Instruction::BuildVector(_) => Self::BuildVector,

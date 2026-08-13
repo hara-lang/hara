@@ -18,8 +18,9 @@ use crate::core::Primitive;
 /// - `CallStatic`: pops `argc`, pushes 1 (net `1 - argc`).
 /// - `Jump`: no change.
 /// - `Throw`, `Rethrow`: pop 1; terminal (unwind).
-/// - `GetGlobal`, `VarGlobal`, `DefStruct`, `DeclareGlobal`: push 1.
-/// - `DefGlobal`, `SetGlobal`, `StructField`: pop 1, push 1 (net 0).
+/// - `GetGlobal`, `VarGlobal`, `DefStruct`, `DefMutable`, `DeclareGlobal`: push 1.
+/// - `DefGlobal`, `SetGlobal`, `MutableFieldGet`: pop 1, push 1 (net 0).
+/// - `MutableFieldSet`: pops receiver and replacement, pushes replacement (net -1).
 /// - `InstanceOf`: pops 2, pushes 1 (net -1).
 /// - `MakeMultiArity`: pops `count`, pushes 1 (net `1 - count`).
 /// - `Return`: terminal; requires stack height exactly 1.
@@ -115,10 +116,19 @@ pub enum Instruction {
         name: u32,
         fields: u32,
     },
-    /// Pops a struct instance and pushes the positional field value
-    /// named by the keyword constant at `constants[index]` (`field`).
-    StructField(u32),
-    /// Pops the value and then the struct type, and pushes whether the
+    /// Creates the mutable named type at `name`, interns its constructors,
+    /// and pushes nil. Appended after the original HBC0 opcode set.
+    DefMutable {
+        name: u32,
+        fields: u32,
+    },
+    /// Pops a mutable instance and pushes the declared field value named by
+    /// the string constant at `constants[index]` (`field`).
+    MutableFieldGet(u32),
+    /// Pops the replacement and mutable receiver, performs one direct field
+    /// mutation, and pushes the replacement value (`set!` field place).
+    MutableFieldSet(u32),
+    /// Pops the value and then a named type, and pushes whether the
     /// value is an instance (`instance?`).
     InstanceOf,
     /// Pops `count` function values and pushes the arity dispatcher
@@ -216,6 +226,7 @@ impl Instruction {
             Instruction::GetGlobal(_)
             | Instruction::VarGlobal(_)
             | Instruction::DefStruct { .. }
+            | Instruction::DefMutable { .. }
             | Instruction::DeclareGlobal(_) => 1,
             Instruction::DefProtocol(_)
             | Instruction::ExtendType(_)
@@ -228,7 +239,8 @@ impl Instruction {
             Instruction::Yield => 0,
             Instruction::DefGlobal { .. }
             | Instruction::SetGlobal(_)
-            | Instruction::StructField(_) => 0,
+            | Instruction::MutableFieldGet(_) => 0,
+            Instruction::MutableFieldSet(_) => -1,
             Instruction::InstanceOf => -1,
             Instruction::MakeMultiArity { count, .. } => 1 - i32::from(*count),
             Instruction::BuildVector(count)
@@ -297,7 +309,15 @@ impl std::fmt::Display for Instruction {
             Instruction::DefStruct { name, fields } => {
                 write!(formatter, "DefStruct {name} fields {fields}")
             }
-            Instruction::StructField(index) => write!(formatter, "StructField {index}"),
+            Instruction::DefMutable { name, fields } => {
+                write!(formatter, "DefMutable {name} fields {fields}")
+            }
+            Instruction::MutableFieldGet(index) => {
+                write!(formatter, "MutableFieldGet {index}")
+            }
+            Instruction::MutableFieldSet(index) => {
+                write!(formatter, "MutableFieldSet {index}")
+            }
             Instruction::InstanceOf => formatter.write_str("InstanceOf"),
             Instruction::MakeMultiArity { name, count } => {
                 write!(formatter, "MakeMultiArity {name} count {count}")

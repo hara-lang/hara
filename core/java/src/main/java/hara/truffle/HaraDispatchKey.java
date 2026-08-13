@@ -93,6 +93,7 @@ public final class HaraDispatchKey {
   static boolean isForeign(Object value) {
     return value instanceof TruffleObject
         && !(value instanceof HaraStruct)
+        && !(value instanceof HaraMutable)
         && !(value instanceof HaraFunction)
         && !(value instanceof HaraProtocol)
         && !(value instanceof HaraType)
@@ -104,8 +105,9 @@ public final class HaraDispatchKey {
     if (value == null) {
       return "category=nil, dispatch=nil -> default";
     }
-    if (value instanceof HaraStruct) {
-      HaraType type = ((HaraStruct) value).type();
+    HaraType namedType = namedType(value);
+    if (namedType != null) {
+      HaraType type = namedType;
       return "category=hara-type, type=" + type.name()
           + ", class=" + value.getClass().getName()
           + ", dispatch=hara-type -> java-class -> default";
@@ -123,6 +125,16 @@ public final class HaraDispatchKey {
     }
     return "category=java-class, class=" + value.getClass().getName()
         + ", dispatch=java-class -> default";
+  }
+
+  static HaraType namedType(Object value) {
+    if (value instanceof HaraStruct struct) {
+      return struct.type();
+    }
+    if (value instanceof HaraMutable mutable) {
+      return mutable.type();
+    }
+    return null;
   }
 
   @Override

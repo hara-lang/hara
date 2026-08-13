@@ -22,7 +22,7 @@ public class LanguageAgnosticProtocolAcceptanceTest {
               HaraLanguage.ID,
               "(do "
                   + "  (defstruct Box [size]) "
-                  + "  (extend-type Box ICount (count [self] (field self :size))) "
+                  + "  (extend-type Box ICount (count [self] (:size self))) "
                   + "  (fn [value] (ICount/count value)))");
 
       assertEquals(3L, measure.execute(Vector.Standard.from(null, "a", "b", "c")).asLong());
@@ -78,9 +78,9 @@ public class LanguageAgnosticProtocolAcceptanceTest {
               "(do "
                   + "  (defstruct Bucket [items]) "
                   + "  (extend-type Bucket IConj "
-                  + "    (conj [self item] (Bucket (conj (field self :items) item)))) "
+                  + "    (conj [self item] (Bucket (conj (:items self) item)))) "
                   + "  (extend-type Bucket ICount "
-                  + "    (count [self] (count (field self :items)))) "
+                  + "    (count [self] (count (:items self)))) "
                   + "  (fn [value] "
                   + "    (let [updated (conj value 42)] (count updated))))");
 

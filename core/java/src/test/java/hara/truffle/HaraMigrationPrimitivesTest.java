@@ -23,8 +23,8 @@ public class HaraMigrationPrimitivesTest {
               .eval(
                   HaraLanguage.ID,
                   "(defstruct Point [x y]) "
-                      + "(+ (field (->Point 1 2) :x) "
-                      + "   (field (map->Point {:x 2 :y 4}) :x))")
+                      + "(+ (:x (->Point 1 2)) "
+                      + "   (:x (map->Point {:x 2 :y 4})))")
               .asInt());
     }
   }

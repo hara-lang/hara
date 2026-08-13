@@ -184,7 +184,8 @@ public final class HbcCodec {
     Opcode opcode = Opcode.fromId(in.u8());
     return switch (opcode) {
       case CONSTANT, JUMP, JUMP_IF_FALSE, GET_GLOBAL, SET_GLOBAL, VAR_GLOBAL,
-          DECLARE_GLOBAL, STRUCT_FIELD, BUILTIN_VALUE, DYNAMIC_BIND, DYNAMIC_UNBIND,
+          DECLARE_GLOBAL, MUTABLE_FIELD_GET, MUTABLE_FIELD_SET, BUILTIN_VALUE,
+          DYNAMIC_BIND, DYNAMIC_UNBIND,
           DEF_PROTOCOL, EXTEND_TYPE, DEF_MULTI, DEF_METHOD ->
           new Instruction(opcode, in.u32(), 0, 0);
       case LOAD_LOCAL, STORE_LOCAL, BUILD_VECTOR, BUILD_MAP, BUILD_SET, BUILD_LIST,
@@ -196,7 +197,7 @@ public final class HbcCodec {
       case CALL -> new Instruction(opcode, in.u8(), 0, 0);
       case DEF_GLOBAL, DEF_MACRO ->
           new Instruction(opcode, in.u32(), optionalSentinel(in.optionalU16()), 0);
-      case DEF_STRUCT -> new Instruction(opcode, in.u32(), in.u32(), 0);
+      case DEF_STRUCT, DEF_MUTABLE -> new Instruction(opcode, in.u32(), in.u32(), 0);
       case MAKE_MULTI_ARITY -> new Instruction(opcode, in.u32(), in.u8(), 0);
       case PRIMITIVE_VALUE -> new Instruction(opcode, Primitive.fromId(in.u8()).id(), 0, 0);
       case DOT_CALL -> new Instruction(opcode, in.u32(), in.u8(), 0);
@@ -209,7 +210,8 @@ public final class HbcCodec {
     out.u8(opcode.id());
     switch (opcode) {
       case CONSTANT, JUMP, JUMP_IF_FALSE, GET_GLOBAL, SET_GLOBAL, VAR_GLOBAL,
-          DECLARE_GLOBAL, STRUCT_FIELD, BUILTIN_VALUE, DYNAMIC_BIND, DYNAMIC_UNBIND,
+          DECLARE_GLOBAL, MUTABLE_FIELD_GET, MUTABLE_FIELD_SET, BUILTIN_VALUE,
+          DYNAMIC_BIND, DYNAMIC_UNBIND,
           DEF_PROTOCOL, EXTEND_TYPE, DEF_MULTI, DEF_METHOD -> out.u32(instruction.first());
       case LOAD_LOCAL, STORE_LOCAL, BUILD_VECTOR, BUILD_MAP, BUILD_SET, BUILD_LIST,
           CONCAT_LIST -> out.u16(instruction.first());
@@ -231,7 +233,7 @@ public final class HbcCodec {
         out.u32(instruction.first());
         out.optionalU16(fromOptionalSentinel(instruction.second()));
       }
-      case DEF_STRUCT -> {
+      case DEF_STRUCT, DEF_MUTABLE -> {
         out.u32(instruction.first());
         out.u32(instruction.second());
       }

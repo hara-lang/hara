@@ -21,17 +21,17 @@
                         :transports {}
                         :meta {}})))
 
-(defn node-state [node] @(field node :state))
+(defn node-state [node] @(:state node))
 (defn node-section [node section] (get (node-state node) section {}))
 
 (defn section-put [node section id value]
-  (swap! (field node :state)
+  (swap! (:state node)
          (fn [state] (assoc state section (assoc (get state section {}) id value))))
   value)
 
 (defn section-remove [node section id]
   (let [previous (get (node-section node section) id)]
-    (do (swap! (field node :state)
+    (do (swap! (:state node)
                (fn [state] (assoc state section (dissoc (get state section {}) id))))
         previous)))
 
@@ -57,24 +57,24 @@
           (reject-pending-loop pending request-ids reason (+ index 1))))))
 
 (defn router-add [node transport-id frame]
-  (let [key [(protocol/frame-space frame) (field frame :signal)]]
+  (let [key [(protocol/frame-space frame) (:signal frame)]]
     (section-put node :router key
                  (assoc (get (node-section node :router) key {}) transport-id
                         {:id (protocol/frame-id frame)
                          :meta (protocol/frame-meta frame)}))))
 
 (defn router-remove [node transport-id frame]
-  (let [key [(protocol/frame-space frame) (field frame :signal)]]
+  (let [key [(protocol/frame-space frame) (:signal frame)]]
     (section-put node :router key
                  (dissoc (get (node-section node :router) key {}) transport-id))))
 
 (extend-type std.lib.substrate/SubstrateFrame protocol/IFrame
-  (frame-id [frame] (field frame :id))
-  (frame-kind [frame] (field frame :kind))
-  (frame-space [frame] (field frame :space))
-  (frame-meta [frame] (field frame :meta))
-  (frame-cause [frame] (field frame :cause))
-  (frame-data [frame] (field frame :data)))
+  (frame-id [frame] (:id frame))
+  (frame-kind [frame] (:kind frame))
+  (frame-space [frame] (:space frame))
+  (frame-meta [frame] (:meta frame))
+  (frame-cause [frame] (:cause frame))
+  (frame-data [frame] (:data frame)))
 
 (extend-type std.lib.substrate/SubstrateNode protocol/ISubstrateSpace
   (get-space [node space-id] (get (node-section node :spaces) (node-space-id space-id)))
@@ -151,22 +151,22 @@
                    (protocol/send-transport node transport-id frame))))
             (protocol/receive-request node frame {:local true}))))))
   (receive-request [node frame context]
-    (let [entry (protocol/get-handler node (field frame :action))]
+    (let [entry (protocol/get-handler node (:action frame))]
       (if entry
         ((get entry :fn)
          (protocol/ensure-space node (protocol/frame-space frame) {})
-         (field frame :args)
+         (:args frame)
          frame
          node)
-        (throw (str "handler not found - " (field frame :action))))))
+        (throw (str "handler not found - " (:action frame))))))
   (receive-response [node frame]
-    (let [pending (section-remove node :pending (field frame :reply-to))]
+    (let [pending (section-remove node :pending (:reply-to frame))]
       (if pending
-        (if (= (field frame :status) :ok)
-          (do ((get pending :resolve) (field frame :data))
-              (field frame :data))
-          (do ((get pending :reject) (field frame :error))
-              (field frame :error)))
+        (if (= (:status frame) :ok)
+          (do ((get pending :resolve) (:data frame))
+              (:data frame))
+          (do ((get pending :reject) (:error frame))
+              (:error frame)))
         nil)))
   (cancel-request [node request-id reason]
     (let [pending (section-remove node :pending request-id)]
@@ -177,7 +177,7 @@
   (reject-pending [node reason]
     (let [pending (node-section node :pending)]
       (do (reject-pending-loop pending (vec (keys pending)) reason 0)
-          (swap! (field node :state) (fn [state] (assoc state :pending {})))
+          (swap! (:state node) (fn [state] (assoc state :pending {})))
           {:pending pending :reason reason}))))
 
 (extend-type std.lib.substrate/SubstrateNode protocol/IStream
@@ -192,7 +192,7 @@
                              0)
           frame)))))
   (receive-publish [node frame context]
-    (let [entry (protocol/get-trigger node (field frame :signal))]
+    (let [entry (protocol/get-trigger node (:signal frame))]
       (if entry ((get entry :fn) (protocol/ensure-space node (protocol/frame-space frame) {}) frame node) frame)))
   (subscribe [node space-id signal subscription-id meta]
     (node-frame :subscribe (if subscription-id subscription-id (node-id "sub-"))
