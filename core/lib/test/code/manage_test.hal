@@ -1,24 +1,50 @@
 (ns code.manage-test
   (:use code.test)
   (:require [code.manage :as manage]
+            [std.work :as work]
             [std.work.command.task :as task-command]))
 
 (def sample-unit
   {:path "sample.hal"
    :source "(ns sample.core)\n\n(defn answer [] 42)\n;; TODO document\n"})
 
-(fact "code.manage exposes one unit command and expands that exact command in bulk"
-  (let [unit-work (manage/unit-work :analyse)
-        direct (manage/run-unit :analyse sample-unit)
-        result (manage/run :analyse {:units [sample-unit]})
+(fact "code.manage operations are independent named tasklets before bulk composition"
+  (let [direct (manage/run-unit manage/analyse-unit sample-unit)
+        result (work/run (work/local-runtime)
+                         (manage/task-work manage/analyse-unit)
+                         {:units [sample-unit]})
         bulk (:item/value (first (:results result)))]
-    [(task-command/task-work? unit-work)
+    [(task-command/tasklet? manage/analyse-unit)
+     (task-command/tasklet? manage/heal-unit)
+     (:id (work/work-spec manage/heal-unit))
      (:item/id direct)
      (:count (:summary result))
      (:results (:summary result))
      (get-in direct [:data :namespace])
      (= direct bulk)])
-  => [true "sample.hal" 1 1 "sample.core" true])
+  => [true true :code.manage/heal-code "sample.hal" 1 1 "sample.core" true])
+
+(fact "a tasklet remains an ordinary work value that can be composed"
+  (let [heal-then-analyse
+        (work/chain
+         {:id :code.manage/heal-then-analyse}
+         [manage/heal-unit
+          (work/pure
+           :code.manage/use-healed-source
+           (fn [record context]
+             {:path (get-in record [:data :path])
+              :source (get-in record [:data :after])}))
+          manage/analyse-unit])
+        result
+        (work/run
+         (work/local-runtime)
+         heal-then-analyse
+         {:path "composed.hal"
+          :source "(ns composed.core)  "})]
+    [(:item/id result)
+     (get-in result [:data :namespace])
+     (str/ends-with? (get-in result [:data :source]) "\n")])
+  => ["composed.hal" "composed.core" true])
 
 (fact "source edits are plans and remain dry-run by default"
   (let [plan (manage/grep-replace sample-unit "42" "43")]
@@ -41,17 +67,23 @@
    (get-in manage/parity-inventory [:find-usages :boundary])]
   => [35 35 :pure-edit-plan :portable-inspection])
 
-(fact "project transformations compose into compare-before-write plans"
+(fact "project transformations compose the named tasklet into compare-before-write plans"
   (let [unit {:path "src/demo/core.hal"
               :source "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"}
+        direct (manage/run-unit
+                manage/ns-rename-unit
+                unit
+                {:from 'demo.core :to 'demo.next})
         plan (manage/plan :ns-rename
                           {:units [unit]
                            :options {:from 'demo.core :to 'demo.next}})]
-    [(get-in plan [:summary :changed])
+    [(= (:data direct) (get-in plan [:results 0 :item/value]))
+     (get-in plan [:summary :changed])
      (get-in plan [:edits 0 :before])
      (get-in plan [:edits 0 :after])
      (get-in plan [:edits 0 :write])])
-  => [1
+  => [true
+      1
       "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
       "(ns demo.next)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
       false])
