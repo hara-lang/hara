@@ -1,109 +1,205 @@
 (ns code.manage.unit.template
+  (:refer-clojure :exclude [task])
   (:require [std.work :as work]
             [std.work.command :as command]
             [std.work.command.task :as task-command]))
+
+(def schema-id "code.manage.task/0-alpha")
 
 (defn operation-id
   [operation]
   (keyword (str "code.manage/" (name operation))))
 
-(defn tasklet-request
-  "Wraps one code unit with operation parameters for direct or composed use."
-  ([unit]
-   (tasklet-request unit {}))
-  ([unit options]
+(defn tasklet-id
+  [operation]
+  (keyword (str "code.manage.tasklet/" (name operation))))
+
+(defn code-unit?
+  [value]
+  (and (map? value)
+       (has? value :path)
+       (has? value :source)))
+
+(defn task-input-units
+  [input]
+  (cond
+    (and (map? input) (has? input :units))
+    (vec (or (:units input) []))
+
+    (and (map? input) (has? input :unit))
+    [(:unit input)]
+
+    (code-unit? input)
+    [input]
+
+    (vector? input)
+    input
+
+    (nil? input)
+    []
+
+    :else
+    [input]))
+
+(defn task-input-options
+  [input defaults]
+  (merge
+   (or defaults {})
+   (if (and (map? input) (has? input :options))
+     (or (:options input) {})
+     {})))
+
+(defn task-item
+  [unit options]
+  {:item/id (or (:path unit)
+                (:namespace unit)
+                (:name unit))
+   :item/value
    {:code.manage/unit unit
-    :code.manage/options (or options {})}))
+    :code.manage/options options}})
 
 (defn tasklet-subject-unit
   [subject]
-  (if (and (map? subject) (has? subject :code.manage/unit))
-    (:code.manage/unit subject)
-    subject))
+  (:code.manage/unit subject))
 
 (defn tasklet-subject-options
   [subject]
-  (if (and (map? subject) (has? subject :code.manage/options))
-    (or (:code.manage/options subject) {})
-    {}))
+  (or (:code.manage/options subject) {}))
 
-(defn code-tasklet
-  "Declares one independent code.manage tasklet around an atomic operation."
-  [operation function]
-  (task-command/tasklet
-   {:id (operation-id operation)
-    :version 1
-    :input
-    (fn [subject context]
-      (tasklet-subject-unit subject))
-    :item-key (fn [unit] (:path unit))
-    :run
-    (fn [unit context]
-      (function
-       unit
-       (tasklet-subject-options (:command/subject context))))}))
-
-(def tasklet code-tasklet)
-
-(defn tasklet-operation
-  [tasklet]
-  (keyword (name (:id (work/work-spec tasklet)))))
-
-(defn run-unit
-  "Runs one independently declared code.manage tasklet."
-  ([tasklet unit]
-   (run-unit tasklet unit {}))
-  ([tasklet unit options]
-   (work/run (work/local-runtime)
-             tasklet
-             (tasklet-request unit options))))
+(defn invoke-tasklet
+  [tasklet argcount unit options]
+  (case argcount
+    1 (tasklet unit)
+    2 (tasklet unit options)
+    (throw
+     (ex-info
+      "code.manage tasklets support one or two arguments"
+      {:argcount argcount}))))
 
 (defn batch-records
   [batch]
   (vec
-   (map (fn [item] (:item/value item))
-        (:results batch))))
+   (map
+    (fn [item]
+      (:item/value item))
+    (:results batch))))
 
-(defn task-work
-  "Composes bulk discovery and summaries around an existing tasklet."
-  ([tasklet]
-   (task-work tasklet {}))
-  ([tasklet options]
-   (let [operation (tasklet-operation tasklet)
-         spec (work/work-spec tasklet)]
-     (command/batch
-      {:id (:id spec)
-       :version (or (:version spec) 1)}
-      {:list
-       (work/pure
-        :list-units
-        (fn [input context]
-          (vec
-           (map
-            (fn [unit]
-              {:item/id (:path unit)
-               :item/value (tasklet-request unit options)})
-            (or (:units input) [])))))
-       :process tasklet
-       :summarise
-       (work/pure
-        :summarise
-        (fn [batch context]
-          (let [records (batch-records batch)]
-            {:operation operation
-             :count (count records)
-             :results
-             (count
-              (filter (fn [record] (= :return (:status record)))
-                      records))
-             :warnings
-             (count
-              (filter (fn [record] (= :warn (:status record)))
-                      records))
-             :errors
-             (count
-              (filter
-               (fn [record]
-                 (or (= :error (:status record))
-                     (= :critical (:status record))))
-               records))})))}))))
+(defn summarise
+  [operation batch]
+  (let [records (batch-records batch)]
+    {:operation operation
+     :count (count records)
+     :results
+     (count
+      (filter
+       (fn [record]
+         (= :return (:status record)))
+       records))
+     :warnings
+     (count
+      (filter
+       (fn [record]
+         (= :warn (:status record)))
+       records))
+     :errors
+     (count
+      (filter
+       (fn [record]
+         (or (= :error (:status record))
+             (= :critical (:status record))))
+       records))}))
+
+(defn assert-task!
+  [config]
+  (if (not (map? config))
+    (throw
+     (ex-info "code.manage task configuration must be a map"
+              {:config config})))
+  (if (nil? (:operation config))
+    (throw
+     (ex-info "code.manage task requires :operation" {})))
+  (if (nil? (get-in config [:main :fn]))
+    (throw
+     (ex-info "code.manage task requires :main :fn"
+              {:operation (:operation config)})))
+  (if (nil? (get-in config [:main :symbol]))
+    (throw
+     (ex-info "code.manage task requires :main :symbol"
+              {:operation (:operation config)})))
+  config)
+
+(defn task
+  "Composes one public code.manage task around its atomic tasklet function."
+  [raw-config]
+  (let [config (assert-task! raw-config)
+        operation (:operation config)
+        id (or (:id config) (operation-id operation))
+        version (or (:version config) 1)
+        tasklet (get-in config [:main :fn])
+        tasklet-symbol (get-in config [:main :symbol])
+        argcount (or (get-in config [:main :argcount]) 2)
+        defaults (or (:params config) {})
+        process
+        (task-command/tasklet
+         {:id (tasklet-id operation)
+          :version version
+          :input
+          (fn [subject context]
+            (tasklet-subject-unit subject))
+          :item-key
+          (fn [unit]
+            (or (:path unit)
+                (:namespace unit)
+                (:name unit)))
+          :run
+          (fn [unit context]
+            (invoke-tasklet
+             tasklet
+             argcount
+             unit
+             (tasklet-subject-options
+              (:command/subject context))))})]
+    (command/batch
+     {:id id
+      :version version
+      :task/schema schema-id
+      :task/operation operation
+      :task/tasklet tasklet-symbol}
+     {:list
+      (work/pure
+       {:id :code.manage/list-units
+        :version version}
+       (fn [input context]
+         (let [options
+               (task-input-options input defaults)]
+           (vec
+            (map
+             (fn [unit]
+               (task-item unit options))
+             (task-input-units input))))))
+      :process process
+      :summarise
+      (work/pure
+       {:id :code.manage/summarise
+        :version version}
+       (fn [batch context]
+         (summarise operation batch)))})))
+
+(defn task?
+  [work-value]
+  (= schema-id
+     (:task/schema (work/work-spec work-value))))
+
+(defn task-operation
+  [work-value]
+  (:task/operation (work/work-spec work-value)))
+
+(defn tasklet-reference
+  [work-value]
+  (:task/tasklet (work/work-spec work-value)))
+
+(defn run-task
+  ([task-value input]
+   (run-task (work/local-runtime) task-value input))
+  ([runtime task-value input]
+   (work/run runtime task-value input)))
