@@ -24,6 +24,7 @@ public final class HaraJavaAdapters {
   public static void install(HaraContext context) {
     installIFn(context.ifnProtocol());
     installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));
+    context.defineProtocol("IMatch", Map.of("match-value", 2));
     installAssoc(context.defineProtocol("IAssoc", Map.of("assoc", 3)));
     installCount(context.defineProtocol("ICount", Map.of("count", 1)));
     installConj(context.defineProtocol("IConj", Map.of("conj", 2)));

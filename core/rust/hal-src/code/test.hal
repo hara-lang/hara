@@ -32,52 +32,138 @@
                (rest remaining)))
       output)))
 
-(extend-type TestRegistry protocol/ITestRegistry
-  (registry-register [registry fact]
-    (do
-      (swap! (field registry :state)
-             (fn [state]
-               (assoc state [(:namespace fact) (:name fact)] fact)))
-      fact))
-  (registry-remove [registry namespace name]
-    (let [key [namespace name]
-          found (get (deref (field registry :state)) key)]
-      (swap! (field registry :state)
-             (fn [state] (dissoc state key)))
-      found))
-  (registry-clear [registry namespace]
-    (if namespace
-      (swap! (field registry :state) clear-namespace-state namespace)
-      (reset! (field registry :state) {})))
-  (registry-facts [registry]
-    (vec (vals (deref (field registry :state)))))
-  (registry-find [registry namespace name]
-    (get (deref (field registry :state)) [namespace name])))
+(defn registry-register
+  [registry fact]
+  (do
+    (swap! (field registry :state)
+           (fn [state]
+             (assoc state [(:namespace fact) (:name fact)] fact)))
+    fact))
 
-(extend-type NullReporter protocol/ITestReporter
-  (report-event [reporter event]
-    event))
+(defn registry-remove
+  [registry namespace name]
+  (let [key [namespace name]
+        found (get (deref (field registry :state)) key)]
+    (swap! (field registry :state)
+           (fn [state] (dissoc state key)))
+    found))
 
-(extend-type EventReporter protocol/ITestReporter
-  (report-event [reporter event]
+(defn registry-clear
+  [registry namespace]
+  (if namespace
+    (swap! (field registry :state) clear-namespace-state namespace)
+    (reset! (field registry :state) {})))
+
+(defn registry-facts
+  [registry]
+  (vec (vals (deref (field registry :state)))))
+
+(defn registry-find
+  [registry namespace name]
+  (get (deref (field registry :state)) [namespace name]))
+
+(defn report-event
+  "Delivers one test-domain event through ordinary data/function adapters."
+  [reporter event]
+  (cond
+    (or (nil? reporter)
+        (instance? code.test/NullReporter reporter))
+    event
+
+    (instance? code.test/EventReporter reporter)
     (do
       (swap! (field reporter :events)
              (fn [events] (conj events event)))
-      event)))
+      event)
 
-(extend-type FunctionClock protocol/ITestClock
-  (now-ms [clock]
-    ((field clock :function))))
+    (fn? reporter)
+    (let [result (reporter event)]
+      (if (nil? result) event result))
 
-(extend-type FunctionTimer protocol/ITestTimer
-  (timeout-promise [timer promise milliseconds]
-    ((field timer :timeout-function) promise milliseconds))
-  (cancel-timeout [timer timeout]
-    ((field timer :cancel-function) timeout)))
+    (and (map? reporter) (fn? (:report-event reporter)))
+    (let [result ((:report-event reporter) event)]
+      (if (nil? result) event result))
 
-(extend-type FunctionControl protocol/ITestControl
-  (cancelled? [control fact]
-    ((field control :function) fact)))
+    :else
+    (throw
+     (ex-info "Unsupported test reporter"
+              {:reporter reporter}))))
+
+(defn now-ms
+  "Reads an ordinary host clock function or compatibility clock value."
+  [clock]
+  (cond
+    (nil? clock)
+    nil
+
+    (instance? code.test/FunctionClock clock)
+    ((field clock :function))
+
+    (fn? clock)
+    (clock)
+
+    (and (map? clock) (fn? (:now-ms clock)))
+    ((:now-ms clock))
+
+    :else
+    (throw
+     (ex-info "Unsupported test clock"
+              {:clock clock}))))
+
+(defn timeout-promise
+  "Applies an ordinary timeout function to a promise."
+  [timer promise milliseconds]
+  (cond
+    (instance? code.test/FunctionTimer timer)
+    ((field timer :timeout-function) promise milliseconds)
+
+    (fn? timer)
+    (timer promise milliseconds)
+
+    (and (map? timer) (fn? (:timeout-promise timer)))
+    ((:timeout-promise timer) promise milliseconds)
+
+    :else
+    (throw
+     (ex-info "Unsupported test timer"
+              {:timer timer}))))
+
+(defn cancel-timeout
+  "Cancels an ordinary timeout handle when one exists."
+  [timer timeout]
+  (cond
+    (or (nil? timer) (nil? timeout))
+    nil
+
+    (instance? code.test/FunctionTimer timer)
+    ((field timer :cancel-function) timeout)
+
+    (and (map? timer) (fn? (:cancel-timeout timer)))
+    ((:cancel-timeout timer) timeout)
+
+    :else
+    nil))
+
+(defn cancelled?
+  "Evaluates an ordinary cancellation predicate for a fact."
+  [control fact]
+  (cond
+    (nil? control)
+    false
+
+    (instance? code.test/FunctionControl control)
+    ((field control :function) fact)
+
+    (fn? control)
+    (control fact)
+
+    (and (map? control) (fn? (:cancelled? control)))
+    ((:cancelled? control) fact)
+
+    :else
+    (throw
+     (ex-info "Unsupported test cancellation control"
+              {:control control}))))
 
 (extend-type Matcher protocol/IMatcher
   (match-value [matcher actual]
@@ -398,14 +484,14 @@
 
 (defn timed-settle
   [timer promise milliseconds]
-  (let [binding (protocol/timeout-promise timer promise milliseconds)
+  (let [binding (timeout-promise timer promise milliseconds)
         wrapped (if (map? binding) (:promise binding) binding)
         timeout (if (map? binding) (:timeout binding) nil)
         outcome (try
                   (deref wrapped)
                   (finally
                     (if timeout
-                      (protocol/cancel-timeout timer timeout)
+                      (cancel-timeout timer timeout)
                       nil)))]
     (if (and (map? outcome) (= :timeout (:test/status outcome)))
       (code.test/TimeoutValue milliseconds)
@@ -462,7 +548,7 @@
   ([name function]
    (register! name function {}))
   ([name function metadata]
-   (protocol/registry-register +registry+
+   (registry-register +registry+
     {:namespace (current-namespace)
      :name name
      :function function
@@ -473,7 +559,7 @@
   ([name]
    (remove-fact (current-namespace) name))
   ([namespace name]
-   (protocol/registry-remove +registry+
+   (registry-remove +registry+
     namespace
     name)))
 
@@ -481,18 +567,18 @@
   "Clears facts from namespace, defaulting to the current namespace."
   ([] (purge-facts (current-namespace)))
   ([namespace]
-   (protocol/registry-clear +registry+
+   (registry-clear +registry+
     namespace)))
 
 (defn purge-all
   "Clears the complete test registry."
   []
-  (protocol/registry-clear +registry+ nil))
+  (registry-clear +registry+ nil))
 
 (defn tests
   "Returns all registered fact records."
   []
-  (protocol/registry-facts +registry+))
+  (registry-facts +registry+))
 
 (defn registry
   "Returns the registry snapshot keyed by [namespace fact-name]."
@@ -503,7 +589,7 @@
   "Returns a fact by namespace and name."
   ([name] (get-fact (current-namespace) name))
   ([namespace name]
-   (protocol/registry-find +registry+
+   (registry-find +registry+
     namespace
     name)))
 
@@ -626,7 +712,7 @@
 (defn report!
   "Sends event to reporter and returns event."
   [reporter event]
-  (protocol/report-event reporter event))
+  (report-event reporter event))
 
 (defn checks-pass?
   [checks]
@@ -660,7 +746,7 @@
 (defn clock-now
   [options]
   (if (:clock options)
-    (protocol/now-ms (:clock options))
+    (now-ms (:clock options))
     nil))
 
 (defn run-hook
@@ -680,7 +766,7 @@
   [fact options]
   (or (:cancelled options)
       (if (:control options)
-        (protocol/cancelled? (:control options) fact)
+        (cancelled? (:control options) fact)
         false)))
 
 (defn run-fact

@@ -3,10 +3,7 @@
 ;; std.work owns execution, lifecycle, replay, and checkpoints.
 (ns code.test.work
   (:require [code.test :as test]
-            [code.test.protocol :as protocol]
             [std.work :as work]))
-
-(defstruct WorkReporter [context reporter])
 
 (defn work-event-kind
   [event]
@@ -17,23 +14,19 @@
     (= event :fact/end) :test/fact-completed
     :else :test/event))
 
-(extend-type WorkReporter protocol/ITestReporter
-  (report-event [reporter event]
-    (let [context (field reporter :context)
-          delegate (field reporter :reporter)
-          event-kind (work-event-kind (:event event))
+(defn work-reporter
+  "Creates an ordinary event function that commits test events to std.work."
+  [context reporter]
+  (fn [event]
+    (let [event-kind (work-event-kind (:event event))
           data (assoc (dissoc event :event)
                       :test/event (:event event))]
       (work/emit! context event-kind data)
-      (if delegate
+      (if reporter
         (try
-          (test/report! delegate event)
+          (test/report! reporter event)
           (catch Throwable error event))
         event))))
-
-(defn work-reporter
-  [context reporter]
-  (code.test.work/WorkReporter context reporter))
 
 (defn reporter-for
   [options context]
