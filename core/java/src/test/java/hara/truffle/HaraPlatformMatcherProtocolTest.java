@@ -18,7 +18,7 @@ public final class HaraPlatformMatcherProtocolTest {
                       + "(defstruct PlatformMatcher [expected]) "
                       + "(extend-type PlatformMatcher match/IMatch "
                       + "  (match-value [matcher actual] "
-                      + "    (= (field matcher :expected) actual))) "
+                      + "    (= (:expected matcher) actual))) "
                       + "[(= match/IMatch std.protocol.imatch/IMatch) "
                       + " (match/match-value (PlatformMatcher 42) 42)]")
               .toString());

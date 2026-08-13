@@ -80,7 +80,7 @@ public final class ProtocolDispatchBenchmark {
   private static final String COMMON_PROGRAM =
       "(defprotocol Value (value [self])) "
           + "(defstruct Cell [value]) "
-          + "(extend-type Cell Value (value [self] (field self :value))) ";
+          + "(extend-type Cell Value (value [self] (:value self))) ";
 
   private static final String MONOMORPHIC_PROGRAM =
       COMMON_PROGRAM + "(fn [receiver] (value receiver))";
@@ -89,8 +89,8 @@ public final class ProtocolDispatchBenchmark {
       "(defprotocol Value (value [self])) "
           + "(defstruct CellA [value]) "
           + "(defstruct CellB [value]) "
-          + "(extend-type CellA Value (value [self] (field self :value))) "
-          + "(extend-type CellB Value (value [self] (field self :value))) "
+          + "(extend-type CellA Value (value [self] (:value self))) "
+          + "(extend-type CellB Value (value [self] (:value self))) "
           + "(fn [receiver] (value receiver))";
 
   private static final String MULTIMETHOD_PROGRAM =

@@ -106,7 +106,7 @@ public class HaraGeneratedLibrariesTest {
                   HaraLanguage.ID,
                   "(ns app.runtime (:refer-clojure :exclude [Runtime])) "
                       + "(defstruct Runtime [value]) "
-                      + "(field (app.runtime/Runtime 42) :value)")
+                      + "(:value (app.runtime/Runtime 42))")
               .asLong());
     }
   }

@@ -22,7 +22,7 @@ public class HaraSubstrateProtocolTest {
                   "(require 'std.lib.substrate.protocol) "
                       + "(defstruct Fixture [id]) "
                       + "(extend-type Fixture std.lib.substrate.protocol/IFrame "
-                      + "  (frame-id [frame] (field frame :id)) "
+                      + "  (frame-id [frame] (:id frame)) "
                       + "  (frame-kind [frame] :request) "
                       + "  (frame-space [frame] \"space/test\") "
                       + "  (frame-meta [frame] {}) "

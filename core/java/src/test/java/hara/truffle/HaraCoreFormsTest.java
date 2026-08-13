@@ -104,7 +104,7 @@ public class HaraCoreFormsTest {
               .eval(
                   HaraLanguage.ID,
                   "(defstruct Box [value]) "
-                      + "(extend-type Box IDeref (deref [self] (field self :value))) "
+                      + "(extend-type Box IDeref (deref [self] (:value self))) "
                       + "@(Box 42)")
               .asLong());
     }

@@ -891,7 +891,7 @@ fn global_forms_issue_223() {
 fn defstruct_forms_issue_223() {
     assert_eq!(eval("(do (defstruct Point [x y]) nil)"), "nil");
     assert_eq!(
-        eval("(do (defstruct Point [x y]) (field (->Point 19 23) :y))"),
+        eval("(do (defstruct Point [x y]) (:y (->Point 19 23)))"),
         "23"
     );
     assert_eq!(
@@ -904,7 +904,7 @@ fn defstruct_forms_issue_223() {
     );
     // Constructor vars are ordinary globals: late-bound and replaceable.
     assert_eq!(
-        eval("(do (defstruct Point [x y]) (def make ->Point) (field (make 1 2) :x))"),
+        eval("(do (defstruct Point [x y]) (def make ->Point) (:x (make 1 2)))"),
         "1"
     );
 }
