@@ -1,4 +1,4 @@
-use super::super::super::source::{Diagnostic, SourceLocation};
+use super::super::source::{Diagnostic, SourceLocation};
 use super::{Effect, UnitKind};
 use std::collections::BTreeSet;
 
