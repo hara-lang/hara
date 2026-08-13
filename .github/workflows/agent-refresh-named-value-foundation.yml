@@ -1,0 +1,68 @@
+name: Agent refresh named-value foundation bundle
+
+on:
+  push:
+    branches:
+      - agent/persistent-defstruct-defmutable
+    paths:
+      - .github/workflows/agent-refresh-named-value-foundation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: work
+          fetch-depth: 0
+
+      - name: Check out specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: specs
+          fetch-depth: 1
+
+      - name: Expose specification fixtures
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/hara-specs-registry"
+          ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/work/hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Regenerate and verify the foundation bundle
+        working-directory: work
+        run: |
+          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
+          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
+          git diff --check
+          test -n "$(git status --short -- core/rust/assets/std.foundation.hbx)"
+
+      - name: Run focused named-value acceptance tests
+        working-directory: work
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defstruct_forms_issue_223 -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defmutable_forms_use_reference_identity_and_settable_fields -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_struct_protocols_dispatch_like_truffle -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_mutables_share_storage_and_reject_persistent_updates -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm structs_preserve_wire_shape_and_mutables_are_rejected -- --nocapture
+
+      - name: Commit and publish the generated bundle
+        working-directory: work
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C agent/refresh-named-value-foundation-bundle
+          git add core/rust/assets/std.foundation.hbx
+          git commit -m 'Refresh the embedded foundation bundle'
+          git push --force origin HEAD:refs/heads/agent/refresh-named-value-foundation-bundle
