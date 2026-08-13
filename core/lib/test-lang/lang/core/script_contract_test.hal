@@ -147,7 +147,6 @@
              '[!.xt !.xtalk
                def$.xt def$.xtalk
                defmacro.xt defmacro.xtalk
-               defptr.xt defptr.xtalk
                def.xt defn.xt defn-.xt defabstract.xt
                defrun.xt defglobal.xt deftemp.xt
                defclass.xt defgen.xt defspec.xt
@@ -157,7 +156,6 @@
              '[!.pg !.postgres
                def$.pg def$.postgres
                defmacro.pg defmacro.postgres
-               defptr.pg defptr.postgres
                def.pg defn.pg deftype.pg deftrigger.pg
                defenum.pg defconst.pg])])
          (finally
@@ -166,7 +164,7 @@
            (reset! script/+module-contexts+ contexts-before))))
      => [true true true])
 
-   (fact "imported fragment macro and free-pointer families preserve language"
+   (fact "imported fragment and definition families preserve language"
      (let [module (current-module)
            modules-before (deref script/+modules+)
            scripts-before (deref script/+scripts+)
@@ -177,7 +175,6 @@
              (let [_ (eval '(def$.lua LUA-CONST 7))
                    _ (eval '(defmacro.lua import-plus-one [x]
                               (list '+ x 1)))
-                   _ (eval '(defptr.lua LUA-FREE (+ 1 2)))
                    _ (eval '(defn-.lua PRIVATE [x]
                               (return x)))
                    value-fragment
@@ -188,8 +185,6 @@
                            [module :fragment 'import-plus-one])
                    value-var (resolve 'LUA-CONST)
                    value-pointer (deref value-var)
-                   free-var (resolve 'LUA-FREE)
-                   free-pointer (deref free-var)
                    private-var (resolve 'PRIVATE)
                    private-pointer (deref private-var)]
                [(:lang value-fragment)
@@ -199,13 +194,10 @@
                 (lang.core/code-pointer-val value-pointer :section)
                 (:lang value-pointer)
                 (macroexpand-1 '(import-plus-one value))
-                (var? free-var)
-                (lang.core/code-pointer? free-pointer)
-                (:lang free-pointer)
-                (lang.core/code-pointer-val free-pointer :section)
+                (var? private-var)
+                (lang.core/code-pointer? private-pointer)
                 (lang.core/code-pointer-val private-pointer :op)
-                (:lang private-pointer)
-                (string? (eval '(LUA-FREE)))])
+                (:lang private-pointer)])
              (finally
                (if (not (component/stopped? default-runtime))
                  (runtime/rt-stop default-runtime)))))
@@ -222,11 +214,8 @@
          '(quote (+ value 1))
          true
          true
-         :lua
-         :free
          'defn-
-         :lua
-         true])
+         :lua])
 
    (fact "the default runtime is compile-only and available to every language"
      (let [runtime-value
