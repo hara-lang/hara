@@ -1,0 +1,107 @@
+(ns std.work.report)
+
+;; A report is portable data. Renderers and sinks are capabilities layered on
+;; top of this document rather than alternate execution or result paths.
+
+(def schema-id "std.work.report/0-alpha")
+
+(def section-kinds
+  #{:progress :diagnostics :table :summary :text})
+
+(def style-roles
+  #{:default :muted :index :success :warning :error :critical :highlight})
+
+(def default-sections
+  [:items :warnings :errors :results :summary])
+
+(def default-labels
+  {:items "ITEMS"
+   :warnings "WARNINGS"
+   :errors "ERRORS"
+   :results "RESULTS"
+   :summary "SUMMARY"})
+
+(def default-profile
+  {:sections default-sections
+   :labels default-labels
+   :order :input
+   :style true})
+
+(defn contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= candidate value)))
+   false
+   (or values [])))
+
+(defn distinct-values
+  [values]
+  (reduce
+   (fn [output value]
+     (if (contains-value? output value)
+       output
+       (conj output value)))
+   []
+   (or values [])))
+
+(defn normalise-profile
+  [profile]
+  (let [profile (merge default-profile (or profile {}))
+        sections (distinct-values (:sections profile))
+        labels (merge default-labels (or (:labels profile) {}))]
+    (assoc profile :sections sections :labels labels)))
+
+(defn section-enabled?
+  [profile id]
+  (contains-value? (:sections (normalise-profile profile)) id))
+
+(defn section
+  ([id kind entries]
+   (section id kind entries {}))
+  ([id kind entries options]
+   (if (not (contains-value? section-kinds kind))
+     (throw
+      (ex-info "Work report section kind is not supported"
+               {:section/id id
+                :section/kind kind})))
+   (merge
+    {:section/id id
+     :section/kind kind
+     :section/entries (vec (or entries []))}
+    (or options {}))))
+
+(defn document
+  ([id]
+   (document id {}))
+  ([id options]
+   (let [profile (normalise-profile (:profile options))]
+     {:report/schema schema-id
+      :report/id id
+      :report/title (or (:title options) (:title profile))
+      :report/status (or (:status options) :pending)
+      :report/profile profile
+      :report/sections []
+      :report/exit-code (:exit-code options)})))
+
+(defn add-section
+  [document section]
+  (update document :report/sections
+          (fn [sections] (conj (vec sections) section))))
+
+(defn section-by-id
+  [document id]
+  (first
+   (filter
+    (fn [section] (= id (:section/id section)))
+    (:report/sections document))))
+
+(defn complete
+  [document status]
+  (assoc document :report/status status))
+
+(defn report?
+  [value]
+  (and (map? value)
+       (= schema-id (:report/schema value))
+       (vector? (:report/sections value))))

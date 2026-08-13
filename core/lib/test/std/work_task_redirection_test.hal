@@ -1,0 +1,117 @@
+(ns std.work-task-redirection-test
+  (:require [std.lib.test :as test]
+            [std.work :as work]
+            [std.work.provider.inline :as inline]
+            [std.work.provider.memory :as memory]
+            [std.work.provider.profile :as profile]
+            [std.work.report :as report]
+            [std.work.template.task :as task]))
+
+(def task-work
+  (task/template
+   {:id :example/task
+    :version 1
+    :item
+    {:list (fn [input context] (:values input))
+     :pre (fn [value] (+ value 1))
+     :run (fn [value context]
+            (if (= value 3)
+              {:status :warn :data value}
+              (* value 2)))}
+    :summary
+    {:aggregate
+     {:sum {:select (fn [record]
+                      (if (= :return (:status record))
+                        (:data record)
+                        nil))
+            :reduce +
+            :initial 0}}}
+    :report {:title "EXAMPLE TASK"}
+    :return {:select :all :package :map}}))
+
+(def observer (work/recording-observer))
+(def runtime (work/local-runtime {:observer observer}))
+(def output
+  (work/run runtime task-work {:values [1 2 3] :selector :all}))
+
+(def provider-profiles
+  [(profile/profile (inline/inline-executor))
+   (profile/profile (memory/memory-store))
+   (profile/profile
+    {:provider/role :work/store
+     :provider/id :postgres
+     :provider/capabilities #{:runs :transactions}})])
+
+(def report-document
+  (report/add-section
+   (report/document :example/report
+                    {:profile {:title "EXAMPLE" :sections [:summary]}})
+   (report/section :summary :summary [{:items 3}])))
+
+(def task-events
+  (vec (map (fn [event] (:event event))
+            (work/observer-events observer))))
+
+(def results
+  [(test/check
+    "provider descriptors expose explicit baseline and extension tiers"
+    (vec
+     (map
+      (fn [provider]
+        [(:provider/api provider)
+         (:provider/tier provider)
+         (:provider/id provider)])
+      provider-profiles))
+    [[:std.work.executor/v1 :baseline :inline]
+     [:std.work.store/v1 :baseline :memory]
+     [:std.work.store/v1 :extension :postgres]])
+
+   (test/check
+    "report documents remain structured portable data"
+    [(report/report? report-document)
+     (:report/title report-document)
+     (:section/entries (report/section-by-id report-document :summary))]
+    [true "EXAMPLE" [{:items 3}]])
+
+   (test/check
+    "the task template compiles to an ordinary work graph"
+    [(task/task-work? task-work)
+     (:op (work/work-spec task-work))
+     (:id (work/work-spec task-work))]
+    [true :chain :example/task])
+
+   (test/check
+    "the first task-template slice lists, selects, runs, groups, aggregates, reports and packages"
+    [(:items output)
+     (vec (map (fn [record] (:data record)) (:results output)))
+     (vec (map (fn [record] (:data record)) (:warnings output)))
+     (:summary output)
+     (:report/status (:report output))
+     (count (:report/sections (:report output)))]
+    [[1 2 3]
+     [4 8]
+     [3]
+     {:items 3 :results 2 :warnings 1 :errors 0 :cumulative 0 :sum 12}
+     :warning
+     5])
+
+   (test/check
+    "task stage events are committed through the ordinary observer path"
+    [(not (nil? (first (filter (fn [event] (= :task/run-started event)) task-events)))
+     (not (nil? (first (filter (fn [event] (= :task/item-completed event)) task-events)))
+     (not (nil? (first (filter (fn [event] (= :task/summary-ready event)) task-events)))
+     (not (nil? (first (filter (fn [event] (= :task/run-completed event)) task-events)))]
+    [true true true true])
+
+   (test/check
+    "the Foundation task parity ledger is explicit about incomplete work"
+    [(task/feature-status :item/list)
+     (task/feature-status :report/plain-terminal-renderers)
+     (< 0 (count (task/incomplete-features)))]
+    [:implemented :missing true])
+
+   (test/check-error
+    "task definitions cannot omit their executable item stage"
+    (task/template {:id :invalid/task}))])
+
+(test/print-results results)
