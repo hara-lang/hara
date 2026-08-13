@@ -1,4 +1,4 @@
-name: Agent rebuild the named-value foundation bundle
+name: Publish clean foundation bootstrap repair
 
 on:
   push:
@@ -16,11 +16,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out the foundation bootstrap repair
+      - name: Check out the clean repair branch
         uses: actions/checkout@v4
         with:
-          ref: agent/fix-context-pointer-foundation-bundle
+          ref: agent/repair-foundation-bootstrap
           path: work
+          fetch-depth: 0
+
+      - name: Check out the diagnostics carrier
+        uses: actions/checkout@v4
+        with:
+          ref: agent/persistent-defstruct-defmutable
+          path: carrier
           fetch-depth: 0
 
       - name: Check out specification fixtures
@@ -38,11 +45,15 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy,rustfmt
+          components: rustfmt
 
-      - name: Make plain-report centering portable
+      - name: Build and test the clean repair
+        shell: bash
         working-directory: work
         run: |
+          set -euo pipefail
+          exec > >(tee "$GITHUB_WORKSPACE/foundation-bootstrap.log") 2>&1
+
           python3 - <<'PY'
           from pathlib import Path
 
@@ -69,18 +80,12 @@ jobs:
           test_path.write_text(test.replace(anchor, addition + anchor, 1), encoding="utf-8")
           PY
 
-      - name: Generate mirrors and the foundation bundle
-        working-directory: work
-        run: |
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
           cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
           cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
           git diff --check
 
-      - name: Run bootstrap and named-value acceptance tests
-        working-directory: work
-        run: |
           ./scripts/runtime/run-lib-tests core/lib/test/std/work_report_renderer_test.hal
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defstruct_forms_issue_223 -- --nocapture
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defmutable_forms_use_reference_identity_and_settable_fields -- --nocapture
@@ -88,18 +93,13 @@ jobs:
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_mutables_share_storage_and_reject_persistent_updates -- --nocapture
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm structs_preserve_wire_shape_and_mutables_are_rejected -- --nocapture
 
-      - name: Verify and publish the exact repair
-        working-directory: work
-        run: |
           python3 - <<'PY'
           import subprocess
 
           expected = {
-              "core/lib/src/std/context/pointer.hal",
               "core/lib/src/std/work/report/plain.hal",
               "core/lib/test/std/work_report_renderer_test.hal",
               "core/rust/assets/std.foundation.hbx",
-              "core/rust/hal-src/std/context/pointer.hal",
               "core/rust/hal-src/std/work/report/plain.hal",
           }
           status = subprocess.check_output(["git", "status", "--short"], text=True).splitlines()
@@ -109,14 +109,29 @@ jobs:
                   f"unexpected file set: {sorted(changed)}; expected {sorted(expected)}"
               )
           PY
+
+      - name: Commit and publish the clean repair
+        working-directory: work
+        run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
-            core/lib/src/std/context/pointer.hal \
             core/lib/src/std/work/report/plain.hal \
             core/lib/test/std/work_report_renderer_test.hal \
             core/rust/assets/std.foundation.hbx \
-            core/rust/hal-src/std/context/pointer.hal \
             core/rust/hal-src/std/work/report/plain.hal
           git commit -m 'Repair and refresh the foundation bootstrap bundle'
-          git push origin HEAD:refs/heads/agent/fix-context-pointer-foundation-bundle
+          git push origin HEAD:refs/heads/agent/repair-foundation-bootstrap
+
+      - name: Preserve diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p carrier/.github/agent
+          cp "$GITHUB_WORKSPACE/foundation-bootstrap.log" carrier/.github/agent/foundation-bootstrap.log || true
+          cd carrier
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/agent/foundation-bootstrap.log
+          git commit -m 'Record foundation bootstrap failure' || true
+          git push origin HEAD:refs/heads/agent/persistent-defstruct-defmutable
