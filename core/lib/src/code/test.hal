@@ -618,6 +618,39 @@
           nil
           hooks))
 
+(def +retired-runtime-option-keys+
+  [:reporter :clock :timer :control :session :cancelled])
+
+(defn retired-runtime-options
+  [options]
+  (reduce
+   (fn [output key]
+     (if (has? options key)
+       (conj output key)
+       output))
+   []
+   +retired-runtime-option-keys+))
+
+(defn assert-work-runtime-options!
+  "Rejects the removed parallel test-runtime option family.
+
+   Observation, time, deadlines and cancellation are supplied by std.work
+   runtime construction, work context capabilities and runtime commands."
+  [options]
+  (let [options (or options {})
+        retired (retired-runtime-options options)]
+    (if (seq retired)
+      (throw
+       (ex-info "Test runtime options were removed; use std.work runtime facilities"
+                {:retired retired
+                 :work/options
+                 [:observer
+                  :context
+                  :work/now
+                  :work/timeout-promise
+                  :work/cancel-timeout]})))
+    options))
+
 
 (defn run-fact
   "Runs one fact and returns a structured test-domain result.
@@ -627,7 +660,8 @@
   ([fact]
    (run-fact fact {}))
   ([fact options]
-   (let [identity {:namespace (:namespace fact)
+   (let [options (assert-work-runtime-options! options)
+         identity {:namespace (:namespace fact)
                    :name (:name fact)
                    :meta (:meta fact)}
          start (clock-now options)
@@ -891,7 +925,9 @@
 
 (defn prepare-fact-batch
   [input context default-revision]
-  (let [input-options (data-options input context)
+  (let [input-options
+        (assert-work-runtime-options!
+         (data-options input context))
         facts (selected-facts input-options)
         options (effective-suite-options facts input-options)
         items
