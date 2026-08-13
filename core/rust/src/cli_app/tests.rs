@@ -1,0 +1,38 @@
+use super::manifest::merge_sources;
+use super::{
+    merged_manifest_source, BASE_MANIFEST_SOURCE, PROJECT_BUILD_MANIFEST_SOURCE,
+};
+use crate::kernel::parse;
+
+fn repo_text(relative: &str) -> Option<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("hara-specs-registry")
+        .join(relative);
+    std::fs::read_to_string(path).ok()
+}
+
+#[test]
+fn vendored_manifest_matches_specs_submodule_when_present() {
+    let Some(submodule) = repo_text("00-unsorted/cli/draft/hara-cli.edn") else {
+        return;
+    };
+    assert_eq!(submodule, BASE_MANIFEST_SOURCE);
+}
+
+#[test]
+fn project_build_extension_is_valid_and_idempotent() {
+    parse(BASE_MANIFEST_SOURCE).expect("base CLI manifest must be valid EDN");
+    parse(PROJECT_BUILD_MANIFEST_SOURCE).expect("CLI extension must be valid EDN");
+    parse(merged_manifest_source()).expect("merged CLI manifest must be valid EDN");
+    assert_eq!(
+        merge_sources(
+            merged_manifest_source(),
+            PROJECT_BUILD_MANIFEST_SOURCE,
+        )
+        .unwrap(),
+        merged_manifest_source()
+    );
+}

@@ -1,0 +1,63 @@
+(ns tool.cli.project-build-manifest-test
+  (:require [std.lib.test :as test]
+            [tool.cli.project-build-manifest :as manifest]))
+
+(def base-manifest
+  {:cli/apps
+   [{:app/id :tool.cli/project
+     :app/summary "Create and run Hara projects."
+     :app/routes [:tool.cli.route/project-check]}]
+   :cli/routes
+   [{:route/id :tool.cli.route/project-check
+     :route/path ["project" "check"]}]
+   :cli/handlers
+   [{:handler/id :tool.cli.handler/project-check}]})
+
+(def build-extension
+  {:extension/id :tool.cli.extension/project-build
+   :extension/version "0.1.0"
+   :app/id :tool.cli/project
+   :app/summary "Create, validate, build, execute, test and resolve Hara projects."
+   :route
+   {:route/id :tool.cli.route/project-build
+    :route/path ["project" "build"]
+    :route/handler :tool.cli.handler/project-build
+    :route/options [:tool.cli.option/project :tool.cli.option/profile
+                    :tool.cli.option/format]}
+   :handler
+   {:handler/id :tool.cli.handler/project-build}})
+
+(def extended-manifest
+  (manifest/extend base-manifest build-extension))
+
+(test/print-results
+ [(test/check
+   "the project build extension adds one public route and closed handler"
+   [(count
+     (filter (fn [route]
+               (= :tool.cli.route/project-build (:route/id route)))
+             (:cli/routes extended-manifest)))
+    (count
+     (filter (fn [handler]
+               (= :tool.cli.handler/project-build (:handler/id handler)))
+             (:cli/handlers extended-manifest)))
+    (:route/options
+     (manifest/entry-by (:cli/routes extended-manifest)
+                        :route/id
+                        :tool.cli.route/project-build))]
+   [1 1
+    [:tool.cli.option/project :tool.cli.option/profile
+     :tool.cli.option/format]])
+  (test/check
+   "the extension preserves project-app ordering and installs the route once"
+   (let [project-app
+         (manifest/entry-by (:cli/apps extended-manifest)
+                            :app/id
+                            :tool.cli/project)]
+     [(:app/summary project-app)
+      (:app/routes project-app)
+      (= extended-manifest
+         (manifest/extend extended-manifest build-extension))])
+   ["Create, validate, build, execute, test and resolve Hara projects."
+    [:tool.cli.route/project-check :tool.cli.route/project-build]
+    true])])

@@ -1,6 +1,7 @@
 (ns tool.cli.project-command
   (:require [tool.cli.model :as model]
             [tool.project :as project]
+            [tool.project.production :as production]
             [std.work :as work]))
 
 (def +name-characters+
@@ -191,6 +192,27 @@
     (model/success {:project/lock lock :project/mode mode}
                    [(model/message (str "project sync: " lock "\n"))])))
 
+(defn build-unavailable-result [plan]
+  (let [report (production/shake-report plan)]
+    (model/failure
+     :tool.cli.outcome/unavailable
+     :tool.cli/tree-shake-stage-unavailable
+     (str "production tree-shaking requires the canonical reachability "
+          "analyzer and pruned HBX emitter\n")
+     {:build/plan plan
+      :build/report report
+      :build/report-source (production/shake-report-source report)})))
+
+(defn build! [request]
+  (let [arguments (:request/arguments request)]
+    (if (not (empty? arguments))
+      (throw (ex-info "project build accepts no positional arguments"
+                      {:arguments arguments}))
+      (let [current-project (project/discover (start request))
+            profile (:profile (:request/options request))
+            plan (production/build-plan current-project profile)]
+        (build-unavailable-result plan)))))
+
 (defn update! [request]
   (throw (ex-info "project update requires the reviewed registry client" {})))
 
@@ -199,6 +221,7 @@
     (cond
       (= route :tool.cli.route/project-new) (scaffold! request)
       (= route :tool.cli.route/project-check) (check! request)
+      (= route :tool.cli.route/project-build) (build! request)
       (= route :tool.cli.route/project-add) (edit-dependency! request true)
       (= route :tool.cli.route/project-remove) (edit-dependency! request false)
       (= route :tool.cli.route/project-sync) (sync! request)
@@ -206,7 +229,7 @@
       :else (throw (ex-info (str "unsupported project route " route) {})))))
 
 (def +command-work+
-  (work/step {:id 'tool.cli/project :version 1}
+  (work/step {:id 'tool.cli/project :version 2}
              (fn [request context] (execute request))))
 
 (defn handler [request]
