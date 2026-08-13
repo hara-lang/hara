@@ -140,6 +140,9 @@ pub(super) fn map_entries_for_test(form: &Form) -> Result<&[(Form, Form)], Strin
     map_entries(form)
 }
 
-pub(super) fn map_value_for_test<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
+pub(super) fn map_value_for_test<'a>(
+    entries: &'a [(Form, Form)],
+    key: &str,
+) -> Option<&'a Form> {
     map_value(entries, key)
 }
