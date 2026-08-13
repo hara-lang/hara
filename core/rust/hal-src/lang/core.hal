@@ -116,6 +116,7 @@
   (let [module (code-pointer-val pointer :module)
         lang (code-pointer-val pointer :lang)
         id (code-pointer-val pointer :id)
+        section (code-pointer-val pointer :section)
         instance (or selected-runtime (code-pointer-runtime pointer))]
     (if (nil? instance)
       (throw
@@ -124,7 +125,10 @@
                  :module module
                  :id id}))
       (let [qualified (symbol (name module) (name id))
-            form (apply list qualified args)
+            form
+            (if (= :free section)
+              (code-pointer-val pointer :form-input)
+              (apply list qualified args))
             source (script/compile-form lang module form)
             response (runtime/rt-raw-eval instance source)]
         (if (and (map? response) (has? response :value))
@@ -150,33 +154,247 @@
   [lang]
   (keyword "lang" (name lang)))
 
+(defn script-definition-symbol
+  "Returns the declaration symbol accepted by Foundation top-level macros."
+  [value]
+  (cond (symbol? value) value
+        (vector? value) (first (filter symbol? value))
+        :else nil))
+
+(defn script-module-default
+  "Creates the minimal module shell retained by Foundation macro registration."
+  [lang module]
+  {:id module
+   :lang (or lang :xtalk)
+   :require []
+   :link {'- module}
+   :code {}
+   :fragment {}})
+
+(defn script-module-value
+  [lang module]
+  (or (get (deref script/+modules+) module)
+      (script-module-default lang module)))
+
+(defn register-module-entry!
+  [lang module section id entry]
+  (swap! script/+modules+
+         (fn [modules]
+           (let [current
+                 (or (get modules module)
+                     (script-module-default lang module))]
+             (assoc modules module
+                    (assoc-in current [section id] entry)))))
+  entry)
+
+(defn register-language-code!
+  "Registers one grammar-derived top-level definition in the active module."
+  [explicit-language form]
+  (let [module (script/current-module-id)
+        module-value (script-module-value explicit-language module)
+        raw-symbol (second form)
+        declaration-symbol (script-definition-symbol raw-symbol)
+        _
+        (if (nil? declaration-symbol)
+          (throw
+           (ex-info "Script definition requires a declaration symbol"
+                    {:module module
+                     :declaration raw-symbol
+                     :form form})))
+        id (symbol (name declaration-symbol))
+        op (first form)
+        metadata (merge (or (meta raw-symbol) {})
+                        (or (meta declaration-symbol) {}))
+        language (or explicit-language (:lang module-value) :xtalk)
+        schema (or (:static/schema metadata)
+                   (:schema module-value)
+                   (first (get-in module-value [:static :all :schema])))
+        entry
+        (merge metadata
+               {:id id
+                :module module
+                :lang language
+                :section :code
+                :op op
+                :op-key (keyword (name op))
+                :form form
+                :form-input form})
+        entry (if schema (assoc entry :static/schema schema) entry)
+        entry (if (has? metadata :public)
+                (assoc entry :static/public (:public metadata))
+                entry)]
+    (register-module-entry! language module :code id entry)))
+
 (defn register-code-pointer!
   "Registers one code entry and interns its source symbol as a language pointer."
   ([form]
    (register-code-pointer! nil form))
   ([explicit-language form]
-   (script/register-code! explicit-language form)
-   (let [module (script/current-module-id)
+   (let [entry (register-language-code! explicit-language form)
+         module (:module entry)
          source (symbol (str (current-namespace)))
-         symbol (second form)
-         id (symbol (name symbol))
-         entry (get-in (deref script/+modules+) [module :code id])]
-     (if (nil? entry)
-       (throw
-        (ex-info "Script code entry was not registered"
-                 {:module module
-                  :symbol symbol
-                  :form form}))
-       (let [context-key (script-context (:lang entry))
-             qualified (symbol (name source) (name id))
-             pointer
-             (code-pointer
-              context-key
-              (assoc entry
-                     :namespace source
-                     :symbol qualified
-                     :context context-key))]
-         (intern-var (current-namespace) symbol pointer))))))
+         declaration-symbol (script-definition-symbol (second form))
+         id (:id entry)
+         context-key (script-context (:lang entry))
+         qualified (symbol (name source) (name id))
+         pointer
+         (code-pointer
+          context-key
+          (assoc entry
+                 :namespace source
+                 :symbol qualified
+                 :context context-key))]
+     (intern-var (current-namespace) declaration-symbol pointer))))
+
+(defn register-fragment-pointer!
+  "Registers one def$.<tag> fragment and interns its language pointer Var."
+  [explicit-language declaration-symbol value metadata]
+  (let [module (script/current-module-id)
+        module-value (script-module-value explicit-language module)
+        source (symbol (str (current-namespace)))
+        id (symbol (name declaration-symbol))
+        qualified-module (symbol (name module) (name id))
+        return-value
+        (or (:static/return metadata)
+            (get metadata :-))
+        language (or explicit-language (:lang module-value) :xtalk)
+        entry
+        (merge (or metadata {})
+               {:id id
+                :symbol qualified-module
+                :module module
+                :lang language
+                :section :fragment
+                :op 'def$
+                :op-key :def$
+                :form value
+                :form-input value
+                :template nil}
+               (if (nil? return-value)
+                 {}
+                 {:static/return return-value}))
+        _ (register-module-entry!
+           language module :fragment id entry)
+        context-key (script-context language)
+        qualified-source (symbol (name source) (name id))
+        pointer
+        (code-pointer
+         context-key
+         (assoc entry
+                :namespace source
+                :symbol qualified-source
+                :context context-key))]
+    (intern-var (current-namespace) declaration-symbol pointer)))
+
+(defn register-free-pointer!
+  "Interns one Foundation defptr.<tag> free-form language pointer."
+  [explicit-language declaration-symbol form metadata]
+  (let [current-module (script/current-module-id)
+        module (or (:module metadata) current-module)
+        module-value
+        (or (get (deref script/+modules+) module)
+            (script-module-value explicit-language current-module))
+        language (or explicit-language (:lang module-value) :xtalk)
+        source (symbol (str (current-namespace)))
+        id (symbol (name declaration-symbol))
+        context-key (script-context language)
+        qualified (symbol (name source) (name id))
+        fields
+        (merge (or metadata {})
+               {:id id
+                :module module
+                :lang language
+                :section :free
+                :op 'defptr
+                :op-key :defptr
+                :form form
+                :form-input form
+                :namespace source
+                :symbol qualified
+                :context context-key})
+        pointer (code-pointer context-key fields)]
+    (intern-var (current-namespace) declaration-symbol pointer)))
+
+(defn register-macro-fragment!
+  "Registers one Foundation defmacro.<tag> fragment for its exact language."
+  [explicit-language form template]
+  (let [module (script/current-module-id)
+        module-value (script-module-value explicit-language module)
+        raw-symbol (second form)
+        declaration-symbol (script-definition-symbol raw-symbol)
+        _
+        (if (nil? declaration-symbol)
+          (throw
+           (ex-info "Script macro requires a declaration symbol"
+                    {:module module
+                     :declaration raw-symbol
+                     :form form})))
+        id (symbol (name declaration-symbol))
+        metadata (merge (or (meta raw-symbol) {})
+                        (or (meta declaration-symbol) {}))
+        language (or explicit-language (:lang module-value) :xtalk)
+        entry
+        (merge metadata
+               {:id id
+                :module module
+                :lang language
+                :section :fragment
+                :op 'defmacro
+                :op-key :defmacro
+                :form form
+                :form-input form
+                :template template
+                :standalone (:standalone metadata)})]
+    (register-module-entry! language module :fragment id entry)
+    nil))
+
+(defn script-quote-macro-expansion
+  [forms]
+  (list 'list
+        (list 'quote 'quote)
+        (apply list 'do forms)))
+
+(defn script-runtime-macro-body
+  [body]
+  (let [[prefix declarations]
+        (loop [prefix [] declarations (vec body)]
+          (if (or (string? (first declarations))
+                  (map? (first declarations)))
+            (recur (conj prefix (first declarations))
+                   (vec (rest declarations)))
+            [prefix declarations]))
+        transformed
+        (if (vector? (first declarations))
+          [(first declarations)
+           (script-quote-macro-expansion (vec (rest declarations)))]
+          (map (fn [clause]
+                 (list (first clause)
+                       (script-quote-macro-expansion
+                        (vec (rest clause)))))
+               declarations))]
+    (vec (concat prefix transformed))))
+
+(defn script-defmacro-expansion
+  "Defines a namespace macro and registers its target-language fragment."
+  [lang declaration-symbol body namespace-symbol]
+  (let [form (apply list 'defmacro declaration-symbol body)
+        runtime-form
+        (apply list 'defmacro declaration-symbol
+               (script-runtime-macro-body body))
+        qualified
+        (symbol (str namespace-symbol) (name declaration-symbol))]
+    `(do
+       ~runtime-form
+       (lang.core/register-macro-fragment!
+        ~lang
+        '~form
+        (fn [& args]
+          (let [expanded (macroexpand-1
+                          (apply list '~qualified args))]
+            (if (and (list? expanded)
+                     (= 'quote (first expanded)))
+              (second expanded)
+              expanded)))))))
 
 (defn start-script!
   "Creates, starts, records, and returns the runtime for one script coordinate."
@@ -272,61 +490,180 @@
                 (list 'quote 'do)
                 'body))))))))
 
+(defn script-definition-symbols
+  "Lists every Foundation top-level definition symbol in a language grammar."
+  [lang]
+  (let [reserved (get-in (registry/registry-book lang)
+                         [:grammar :reserved])]
+    (vec
+     (sort-by
+      str
+      (reduce
+       (fn [symbols pair]
+         (let [candidate (first pair)
+               operation (second pair)]
+           (if (and (symbol? candidate)
+                    (= :def (:type operation)))
+             (conj symbols candidate)
+             symbols)))
+       []
+       reserved)))))
+
+(defn script-highlight-symbols
+  "Lists the grammar highlight macros imported by Foundation scripts."
+  [lang]
+  (vec
+   (sort-by
+    str
+    (filter
+     symbol?
+     (or (get-in (registry/registry-book lang)
+                 [:grammar :highlight])
+         #{})))))
+
+(defn script-definition-macro-form
+  [lang tag operation]
+  (let [macro-symbol
+        (symbol (str (name operation) "." (name tag)))]
+    (list
+     'defmacro
+     macro-symbol
+     (vector 'symbol '& 'body)
+     (list
+      'list
+      (list 'quote 'lang.core/register-code-pointer!)
+      lang
+      (list
+       'list
+       (list 'quote 'quote)
+       (list
+        'apply
+        'list
+        (list 'quote operation)
+        'symbol
+        'body))))))
+
+(defn script-fragment-macro-form
+  [lang tag]
+  (let [macro-symbol (symbol (str "def$." (name tag)))]
+    (list
+     'defmacro
+     macro-symbol
+     (vector 'symbol 'value)
+     (list
+      'list
+      (list 'quote 'lang.core/register-fragment-pointer!)
+      lang
+      (list 'list (list 'quote 'quote) 'symbol)
+      (list 'list (list 'quote 'quote) 'value)
+      (list
+       'list
+       (list 'quote 'quote)
+       (list 'or (list 'meta 'symbol) {}))))))
+
+(defn script-free-macro-form
+  [lang tag]
+  (let [macro-symbol (symbol (str "defptr." (name tag)))]
+    (list
+     'defmacro
+     macro-symbol
+     (vector 'symbol 'body)
+     (list
+      'list
+      (list 'quote 'lang.core/register-free-pointer!)
+      lang
+      (list 'list (list 'quote 'quote) 'symbol)
+      (list 'list (list 'quote 'quote) 'body)
+      (list
+       'list
+       (list 'quote 'quote)
+       (list 'or (list 'meta 'symbol) {}))))))
+
+(defn script-defmacro-macro-form
+  [lang tag]
+  (let [macro-symbol (symbol (str "defmacro." (name tag)))]
+    (list
+     'defmacro
+     macro-symbol
+     (vector 'symbol '& 'body)
+     (list 'lang.core/script-defmacro-expansion
+           lang
+           'symbol
+           'body
+           (list :ns '&env)))))
+
+(defn script-highlight-macro-form
+  [lang highlight-symbol]
+  (let [operation
+        (get-in (registry/registry-book lang)
+                [:grammar :reserved highlight-symbol])
+        macro-symbol
+        (with-meta (symbol (name highlight-symbol))
+          (select-keys (or operation {})
+                       [:arglists :style/indent]))]
+    (list 'defmacro
+          macro-symbol
+          (vector '& 'body)
+          nil)))
+
+(defn script-compatibility-macro-forms
+  [lang]
+  (if (= :xtalk lang)
+    ['(defmacro defspec.xt [symbol & body]
+        (macroexpand-1
+         (apply list 'lang.core/defspec.xt symbol body)))]
+    []))
+
 (defn script-macro-forms
-  "Returns the retained Foundation top-level script macro surface."
-  []
-  ['(defmacro def.xt [symbol value]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (list 'def symbol value))))
-   '(defmacro def.js [symbol value]
-      (list 'lang.core/register-code-pointer! :js
-            (list 'quote (list 'def symbol value))))
-   '(defmacro def.lua [symbol value]
-      (list 'lang.core/register-code-pointer! :lua
-            (list 'quote (list 'def symbol value))))
-   '(defmacro def.py [symbol value]
-      (list 'lang.core/register-code-pointer! :python
-            (list 'quote (list 'def symbol value))))
-   '(defmacro defglobal.xt [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'defglobal symbol body))))
-   '(defmacro defn.xt [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'defn symbol body))))
-   '(defmacro defn.pg [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'defn symbol body))))
-   '(defmacro deftype.pg [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'deftype symbol body))))
-   '(defmacro deftrigger.pg [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'deftrigger symbol body))))
-   '(defmacro def$.pg [symbol value]
-      (list 'lang.core.script-fragment/register-value!
-            (list 'quote symbol)
-            (list 'quote value)
-            (list 'quote (or (meta symbol) {}))))
-   '(defmacro def$.xt [symbol value]
-      (list 'lang.core.script-fragment/register-value!
-            (list 'quote symbol)
-            (list 'quote value)
-            (list 'quote (or (meta symbol) {}))))
-   '(defmacro defenum.pg [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'defenum symbol body))))
-   '(defmacro defconst.pg [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'defconst symbol body))))
-   '(defmacro defgen.xt [symbol & body]
-      (list 'lang.core/register-code-pointer!
-            (list 'quote (apply list 'defgen symbol body))))
-   '(defmacro defspec.xt [symbol & body]
-      (macroexpand-1
-       (apply list 'lang.core/defspec.xt symbol body)))
-   '(defmacro defmacro.xt [id & body]
-      (macroexpand-1
-       (apply list 'lang.core.script/defmacro.xt id body)))])
+  "Builds the complete Foundation grammar macro import surface for a language."
+  [lang]
+  (let [tags (script-tags lang)
+        definitions (script-definition-symbols lang)
+        highlights (script-highlight-symbols lang)
+        evaluator-forms
+        (map (fn [tag]
+               (script-eval-macro-form lang tag))
+             tags)
+        special-forms
+        (mapcat
+         (fn [tag]
+           [(script-fragment-macro-form lang tag)
+            (script-defmacro-macro-form lang tag)
+            (script-free-macro-form lang tag)])
+         tags)
+        definition-forms
+        (mapcat
+         (fn [tag]
+           (map (fn [operation]
+                  (script-definition-macro-form
+                   lang tag operation))
+                definitions))
+         tags)
+        highlight-forms
+        (map (fn [symbol]
+               (script-highlight-macro-form lang symbol))
+             highlights)]
+    (vec
+     (concat evaluator-forms
+             special-forms
+             definition-forms
+             highlight-forms
+             (script-compatibility-macro-forms lang)))))
+
+(defn script-import-symbols
+  "Lists every namespace-local macro installed by a script declaration."
+  [lang]
+  (vec (map second (script-macro-forms lang))))
+
+(defn script-install-macro-form
+  "Imports one generated macro unless the caller already owns that symbol."
+  [form]
+  (let [macro-symbol (second form)]
+    (list 'if
+          (list 'resolve
+                (list 'quote macro-symbol))
+          nil
+          form)))
 
 (defn script-expansion
   "Builds normal or deferred script expansion with its correct final value."
@@ -340,10 +677,6 @@
               (list 'quote module)
               (list 'quote config)
               test?)
-        eval-forms
-        (map (fn [tag]
-               (script-eval-macro-form lang tag))
-             (script-tags lang))
         final-form
         (if test?
           nil
@@ -354,8 +687,8 @@
     (apply list
            'do
            (concat [setup-form]
-                   (script-macro-forms)
-                   eval-forms
+                   (map script-install-macro-form
+                        (script-macro-forms lang))
                    [final-form]))))
 
 (defmacro script
