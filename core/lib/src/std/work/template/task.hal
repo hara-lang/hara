@@ -7,6 +7,7 @@
             [std.work.report :as report]))
 
 (def schema-id "std.work.template.task/0-alpha")
+(def request-id "std.work.template.task.request/0-alpha")
 
 (def parity-statuses
   #{:implemented :partial :host-adapted :intentional-change :obsolete :missing})
@@ -26,21 +27,19 @@
    :task/summary-ready
    :task/run-completed])
 
-;; This is intentionally honest. It is the executable checklist that will move
-;; from partial/missing to implemented as Foundation behavior is restored.
 (def feature-contract
   [{:feature :definition/id-version :status :implemented}
-   {:feature :definition/defaults-by-type :status :missing}
-   {:feature :main/arity-adapter-1-4 :status :missing}
-   {:feature :main/additional-arguments :status :missing}
-   {:feature :construct/input :status :partial}
-   {:feature :construct/environment :status :missing}
-   {:feature :construct/lookup :status :missing}
+   {:feature :definition/defaults-by-type :status :implemented}
+   {:feature :main/arity-adapter-1-4 :status :implemented}
+   {:feature :main/additional-arguments :status :implemented}
+   {:feature :construct/input :status :implemented}
+   {:feature :construct/environment :status :implemented}
+   {:feature :construct/lookup :status :implemented}
    {:feature :item/list :status :implemented}
    {:feature :item/select :status :implemented}
    {:feature :item/pre-run-post :status :implemented}
    {:feature :item/output :status :partial}
-   {:feature :item/display :status :partial}
+   {:feature :item/display :status :implemented}
    {:feature :execution/random :status :missing}
    {:feature :execution/parallel :status :host-adapted}
    {:feature :execution/deterministic-report-order :status :partial}
@@ -69,6 +68,61 @@
   {:select :results
    :package :map})
 
+(def default-task-options
+  {:main {:argcount 4
+          :args-required? false}
+   :params {}
+   :execution default-execution
+   :return default-return})
+
+(def ^:dynamic *task-defaults*
+  (atom {:default default-task-options}))
+
+(defn merge-nested
+  "Recursively merges task option maps. Non-map values replace earlier values."
+  [left right]
+  (reduce
+   (fn [output entry]
+     (let [key (nth entry 0)
+           value (nth entry 1)
+           current (get output key)]
+       (assoc output
+              key
+              (if (and (map? current) (map? value))
+                (merge-nested current value)
+                value))))
+   (or left {})
+   (or right {})))
+
+(defn task-defaults
+  "Returns the default task options for type, including :default options."
+  [type]
+  (let [registry (deref *task-defaults*)
+        base (or (get registry :default) {})
+        selected (if (= :default type)
+                   {}
+                   (or (get registry type) {}))]
+    (merge-nested base selected)))
+
+(defn install-defaults!
+  "Installs or extends defaults for one local task type."
+  [type options]
+  (swap! *task-defaults*
+         (fn [registry]
+           (assoc registry
+                  type
+                  (merge-nested (or (get registry type) {}) options))))
+  (task-defaults type))
+
+(defn uninstall-defaults!
+  "Removes local defaults for type. The :default profile cannot be removed."
+  [type]
+  (if (= :default type)
+    (throw
+     (ex-info "The default task profile cannot be removed"
+              {:task/type type}))
+    (swap! *task-defaults* dissoc type)))
+
 (defn feature-status
   [feature]
   (:status
@@ -86,6 +140,83 @@
           (= :missing (:status entry))))
     feature-contract)))
 
+(defn request
+  "Creates an explicit task invocation request.
+
+   Recognised keys are :input, :params, :environment (or :env), :lookup,
+   :args, :selector, and :mode. A request without :input asks the template to
+   call :construct/input. Raw values passed to work/run remain ordinary input."
+  ([]
+   {:task/request request-id})
+  ([options]
+   (if (not (map? options))
+     (throw
+      (ex-info "Task request options must be a map"
+               {:options options}))
+     (assoc options :task/request request-id))))
+
+(defn invocation
+  "Convenience constructor for explicit task input, parameters, and arguments."
+  ([input]
+   (request {:input input}))
+  ([input params]
+   (request {:input input :params params}))
+  ([input params arguments]
+   (request {:input input :params params :args arguments})))
+
+(defn request?
+  [value]
+  (and (map? value)
+       (= request-id (:task/request value))))
+
+(defn normalise-request
+  [input]
+  (if (request? input)
+    {:task/input (:input input)
+     :task/input? (has? input :input)
+     :task/params (or (:params input) {})
+     :task/environment
+     (if (has? input :environment)
+       (:environment input)
+       (:env input))
+     :task/environment?
+     (or (has? input :environment)
+         (has? input :env))
+     :task/lookup (:lookup input)
+     :task/lookup? (has? input :lookup)
+     :task/args (vec (or (:args input) []))
+     :task/selector (:selector input)
+     :task/mode (or (:mode input) :run)}
+    {:task/input input
+     :task/input? true
+     :task/params {}
+     :task/environment nil
+     :task/environment? false
+     :task/lookup nil
+     :task/lookup? false
+     :task/args []
+     :task/selector (if (map? input) (:selector input) nil)
+     :task/mode :run}))
+
+(defn main-function
+  "Adapts a Foundation-style main function with an explicit argument count.
+
+   The returned function always accepts input, params, lookup, environment,
+   and a vector of additional arguments."
+  [function count]
+  (case count
+    4 (fn [input params lookup environment arguments]
+        (apply function input params lookup environment arguments))
+    3 (fn [input params lookup environment arguments]
+        (apply function input params environment arguments))
+    2 (fn [input params lookup environment arguments]
+        (apply function input params arguments))
+    1 (fn [input params lookup environment arguments]
+        (apply function input arguments))
+    (throw
+     (ex-info "Task main argcount must be between 1 and 4"
+              {:argcount count}))))
+
 (defn assert-definition!
   [definition]
   (if (not (map? definition))
@@ -101,29 +232,61 @@
   definition)
 
 (defn normalise-definition
-  [definition]
-  (let [definition (assert-definition! definition)
+  [raw-definition]
+  (let [type (or (:task/type raw-definition)
+                 (:type raw-definition)
+                 :default)
+        defaults (merge-nested
+                  (task-defaults type)
+                  (or (:defaults raw-definition) {}))
+        definition (assert-definition!
+                    (merge-nested defaults raw-definition))
         schema (or (:schema definition) schema-id)
         id (or (:task/id definition) (:id definition))
         version (or (:task/version definition) (:version definition) 1)
         item (or (:item definition) {})
-        run (or (:run item)
-                (get-in definition [:main :fn])
-                (:run definition))]
+        main (or (:main definition) {})
+        item-run (or (:run item) (:run definition))
+        main-run (:fn main)
+        run-mode (if item-run :work :task)
+        run (or item-run main-run)
+        argcount (or (:argcount main) 4)
+        list-mode
+        (or (:list-mode item)
+            (if (= :task run-mode)
+              :lookup-environment
+              :input-context))]
     (if (not= schema schema-id)
       (throw
        (ex-info "Task template schema is not supported"
                 {:schema schema})))
+    (if (or (< argcount 1) (> argcount 4))
+      (throw
+       (ex-info "Task main argcount must be between 1 and 4"
+                {:argcount argcount})))
     {:schema schema-id
      :task/id id
+     :task/type type
      :task/version version
      :construct (or (:construct definition) {})
-     :item (assoc item :run run)
-     :execution (merge default-execution (or (:execution definition) {}))
+     :params (or (:params definition) {})
+     :main (assoc main
+                  :fn run
+                  :argcount argcount
+                  :invoke (if (= :task run-mode)
+                            (main-function run argcount)
+                            nil))
+     :item (assoc item
+                  :run run
+                  :run-mode run-mode
+                  :list-mode list-mode)
+     :execution (merge-nested default-execution
+                              (or (:execution definition) {}))
      :result (or (:result definition) {})
      :summary (or (:summary definition) {})
      :report (report/normalise-profile (:report definition))
-     :return (merge default-return (or (:return definition) {}))
+     :return (merge-nested default-return
+                           (or (:return definition) {}))
      :metadata (or (:metadata definition) {})}))
 
 (defn task-item-id
@@ -140,59 +303,135 @@
     (:item/value value)
     value))
 
-(defn manifest
+(defn selected-values
   [values selector-value]
+  (loop [source-index 0
+         output []]
+    (if (= source-index (count values))
+      output
+      (let [value (nth values source-index)
+            id (task-item-id value source-index)]
+        (recur
+         (inc source-index)
+         (if (selector/matches? selector-value id)
+           (conj output
+                 {:task/source-index source-index
+                  :task/item-id id
+                  :task/value (task-item-value value)})
+           output))))))
+
+(defn manifest
+  [values selector-value prepared]
   (let [values (vec (or values []))
-        selected
-        (vec
-         (filter
-          (fn [value]
-            (selector/matches?
-             selector-value
-             (task-item-id value 0)))
-          values))
+        selected (selected-values values selector-value)
         total (count selected)]
     (loop [index 0
            output []]
       (if (= index total)
         output
-        (let [value (nth selected index)
-              id (task-item-id value index)]
+        (let [selected-value (nth selected index)
+              id (:task/item-id selected-value)]
           (recur
            (inc index)
            (conj output
                  {:item/id id
                   :item/value
-                  {:task/item-id id
-                   :task/index index
-                   :task/total total
-                   :task/value (task-item-value value)}})))))))
+                  (merge prepared
+                         selected-value
+                         {:task/index index
+                          :task/total total})})))))))
+
+(defn construct-input
+  [definition invocation]
+  (if (:task/input? invocation)
+    (:task/input invocation)
+    (let [construct (get-in definition [:construct :input])]
+      (if construct
+        (construct definition)
+        nil))))
+
+(defn construct-environment
+  [definition invocation params]
+  (if (:task/environment? invocation)
+    (:task/environment invocation)
+    (let [construct
+          (or (get-in definition [:construct :environment])
+              (get-in definition [:construct :env]))]
+      (if construct
+        (construct (merge-nested definition params))
+        {}))))
+
+(defn construct-lookup
+  [definition invocation params environment]
+  (if (:task/lookup? invocation)
+    (:task/lookup invocation)
+    (let [construct (get-in definition [:construct :lookup])]
+      (if construct
+        (construct definition (merge-nested environment params))
+        {}))))
 
 (defn prepare-input
   [definition input context]
-  (let [construct (get-in definition [:construct :input])
-        prepared (if construct (construct input context) input)
+  (let [invocation (normalise-request input)
+        params (merge-nested (:params definition)
+                             (:task/params invocation))
+        prepared-input (construct-input definition invocation)
+        environment (construct-environment definition invocation params)
+        lookup (construct-lookup definition invocation params environment)
+        arguments (:task/args invocation)
+        required?
+        (or (get-in definition [:main :args-required?])
+            (get-in definition [:main :args?]))
         selector-value
-        (or (if (map? input) (:selector input) nil)
+        (or (:task/selector invocation)
             (get-in definition [:item :selector])
             :all)]
+    (if (and required? (empty? arguments))
+      (throw
+       (ex-info "Task invocation requires additional arguments"
+                {:task/id (:task/id definition)
+                 :task/type (:task/type definition)})))
     (work/emit! context :task/run-started
                 {:task/id (:task/id definition)
+                 :task/type (:task/type definition)
                  :task/version (:task/version definition)})
     (work/emit! context :task/input-prepared
-                {:task/id (:task/id definition)})
-    {:task/input prepared
-     :task/selector selector-value}))
+                {:task/id (:task/id definition)
+                 :selector selector-value
+                 :argument-count (count arguments)})
+    {:task/input prepared-input
+     :task/params params
+     :task/environment environment
+     :task/lookup lookup
+     :task/args arguments
+     :task/selector selector-value
+     :task/mode (:task/mode invocation)}))
+
+(defn list-values
+  [definition prepared context]
+  (let [item (:item definition)
+        list-function (:list item)
+        list-mode (:list-mode item)]
+    (if list-function
+      (case list-mode
+        :lookup-environment
+        (list-function
+         (:task/lookup prepared)
+         (:task/environment prepared))
+
+        :input-context
+        (list-function (:task/input prepared) context)
+
+        (throw
+         (ex-info "Task item list mode is not supported"
+                  {:task/id (:task/id definition)
+                   :list-mode list-mode})))
+      [(:task/input prepared)])))
 
 (defn list-items
   [definition prepared context]
-  (let [list-function (get-in definition [:item :list])
-        input (:task/input prepared)
-        values (if list-function
-                 (list-function input context)
-                 [input])
-        listed (vec (or values []))
-        items (manifest listed (:task/selector prepared))]
+  (let [listed (vec (or (list-values definition prepared context) []))
+        items (manifest listed (:task/selector prepared) prepared)]
     (work/emit! context :task/items-listed
                 {:task/id (:task/id definition)
                  :count (count listed)})
@@ -208,30 +447,59 @@
     (or (= :error status) (= :critical status)) :task/item-error
     :else nil))
 
+(defn invoke-item
+  [definition subject prepared context]
+  (let [item (:item definition)]
+    (if (= :task (:run-mode item))
+      ((get-in definition [:main :invoke])
+       prepared
+       (:task/params subject)
+       (:task/lookup subject)
+       (:task/environment subject)
+       (:task/args subject))
+      ((:run item) prepared context))))
+
+(defn display-value
+  [definition record]
+  (let [display (get-in definition [:item :display])]
+    (if (= :return (:status record))
+      (if display
+        (display (:data record))
+        (:data record))
+      record)))
+
 (defn run-item
   [definition subject context]
   (let [item (:item definition)
         value (:task/value subject)
         pre (:pre item)
         post (:post item)
-        run (:run item)
         clock (:clock/now context)
         started (if clock (clock) nil)
         base {:item/id (:task/item-id subject)
               :item/index (:task/index subject)
+              :item/source-index (:task/source-index subject)
               :item/total (:task/total subject)
               :item/input value}]
     (work/emit! context :task/item-started base)
     (let [record
           (try
             (let [prepared (if pre (pre value) value)
-                  raw (run prepared context)
-                  completed (if post (post raw) raw)]
-              (merge base
-                     (result/normalise (:task/item-id subject) completed)))
+                  raw (invoke-item definition subject prepared context)
+                  completed (if post (post raw) raw)
+                  normalised
+                  (merge base
+                         (result/normalise
+                          (:task/item-id subject)
+                          completed))]
+              (assoc normalised
+                     :item/prepared prepared
+                     :item/display (display-value definition normalised)))
             (catch Throwable error
               (merge base
-                     (result/error-record (:task/item-id subject) error))))
+                     (result/error-record
+                      (:task/item-id subject)
+                      error))))
           finished (if clock (clock) nil)
           record (if clock
                    (assoc record
@@ -331,8 +599,10 @@
     (package-value output package)))
 
 (defn compile
-  "Compiles the first local task-template profile into an ordinary std.work
-   graph. Remaining Foundation parity is tracked explicitly in feature-contract."
+  "Compiles a local task definition into an ordinary std.work graph.
+
+   The template owns task construction and presentation data; scheduling,
+   cancellation, timeout, durability, and parallelism remain runtime policies."
   [definition]
   (let [definition (normalise-definition definition)
         id (:task/id definition)

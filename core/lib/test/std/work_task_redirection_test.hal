@@ -52,6 +52,107 @@
   (vec (map (fn [event] (:event event))
             (work/observer-events observer))))
 
+(def main-arity-results
+  [((task/main-function
+     (fn [input & arguments]
+       (+ input (reduce + 0 arguments)))
+     1)
+    1 {:p 2} {:l 3} {:e 4} [5])
+   ((task/main-function
+     (fn [input params & arguments]
+       (+ input (:p params) (reduce + 0 arguments)))
+     2)
+    1 {:p 2} {:l 3} {:e 4} [5])
+   ((task/main-function
+     (fn [input params environment & arguments]
+       (+ input
+          (:p params)
+          (:e environment)
+          (reduce + 0 arguments)))
+     3)
+    1 {:p 2} {:l 3} {:e 4} [5])
+   ((task/main-function
+     (fn [input params lookup environment & arguments]
+       (+ input
+          (:p params)
+          (:l lookup)
+          (:e environment)
+          (reduce + 0 arguments)))
+     4)
+    1 {:p 2} {:l 3} {:e 4} [5])])
+
+(def installed-defaults
+  (task/install-defaults!
+   :example/legacy
+   {:params {:scale 2
+             :nested {:left 1}}
+    :main {:argcount 4}
+    :report {:title "LEGACY TASK"}}))
+
+(def legacy-definition
+  {:type :example/legacy
+   :id :example/legacy-task
+   :params {:nested {:right 2}}
+   :construct
+   {:input (fn [definition] 5)
+    :environment
+    (fn [configuration]
+      {:offset (:offset configuration)})
+    :lookup
+    (fn [definition configuration]
+      {:bias (:bias configuration)})}
+   :main
+   {:args-required? true
+    :fn
+    (fn [input params lookup environment & arguments]
+      (+ (* input (:scale params))
+         (:bias lookup)
+         (:offset environment)
+         (reduce + 0 arguments)))}
+   :item
+   {:display (fn [value] (str "value=" value))}
+   :return {:select :results :package :vector}})
+
+(def normalised-legacy
+  (task/normalise-definition legacy-definition))
+
+(def legacy-work
+  (task/template legacy-definition))
+
+(def legacy-output
+  (work/run
+   (work/local-runtime)
+   legacy-work
+   (task/request
+    {:params {:scale 3
+              :offset 2
+              :bias 4}
+     :args [7]})))
+
+(def selector-work
+  (task/template
+   {:id :example/foundation-selector
+    :construct
+    {:environment (fn [configuration] {})
+     :lookup
+     (fn [definition configuration]
+       {:items ["code.test" "spirit.common"]})}
+    :main {:argcount 1 :fn identity}
+    :item
+    {:list
+     (fn [lookup environment]
+       (:items lookup))}
+    :return {:select :results :package :vector}}))
+
+(def selector-output
+  (work/run
+   (work/local-runtime)
+   selector-work
+   (task/request {:selector "code"})))
+
+(def _removed-defaults
+  (task/uninstall-defaults! :example/legacy))
+
 (def results
   [(test/check
     "provider descriptors expose explicit baseline and extension tiers"
@@ -97,18 +198,66 @@
 
    (test/check
     "task stage events are committed through the ordinary observer path"
-    [(not (nil? (first (filter (fn [event] (= :task/run-started event)) task-events)))
-     (not (nil? (first (filter (fn [event] (= :task/item-completed event)) task-events)))
-     (not (nil? (first (filter (fn [event] (= :task/summary-ready event)) task-events)))
-     (not (nil? (first (filter (fn [event] (= :task/run-completed event)) task-events)))]
+    [(not (nil? (first (filter (fn [event] (= :task/run-started event)) task-events))))
+     (not (nil? (first (filter (fn [event] (= :task/item-completed event)) task-events))))
+     (not (nil? (first (filter (fn [event] (= :task/summary-ready event)) task-events))))
+     (not (nil? (first (filter (fn [event] (= :task/run-completed event)) task-events))))]
     [true true true true])
 
    (test/check
-    "the Foundation task parity ledger is explicit about incomplete work"
-    [(task/feature-status :item/list)
+    "Foundation-style main functions adapt explicit arities one through four"
+    main-arity-results
+    [6 8 12 15])
+
+   (test/check
+    "typed defaults merge recursively before a task definition is compiled"
+    [(:task/type normalised-legacy)
+     (:params normalised-legacy)
+     (get-in normalised-legacy [:main :argcount])
+     (get-in normalised-legacy [:report :title])]
+    [:example/legacy
+     {:scale 2 :nested {:left 1 :right 2}}
+     4
+     "LEGACY TASK"])
+
+   (test/check
+    "task requests restore input, environment, lookup, params and additional arguments"
+    [(count legacy-output)
+     (:data (first legacy-output))
+     (:item/display (first legacy-output))]
+    [1 28 "value=28"])
+
+   (test/check
+    "Foundation-style item lists receive lookup and environment before selection"
+    (vec (map (fn [record] (:data record)) selector-output))
+    ["code.test"])
+
+   (test/check
+    "the parity ledger advances the invocation contract without hiding remaining work"
+    [(task/feature-status :definition/defaults-by-type)
+     (task/feature-status :main/arity-adapter-1-4)
+     (task/feature-status :main/additional-arguments)
+     (task/feature-status :construct/environment)
      (task/feature-status :report/plain-terminal-renderers)
      (< 0 (count (task/incomplete-features)))]
-    [:implemented :missing true])
+    [:implemented :implemented :implemented :implemented :missing true])
+
+   (test/check-error
+    "required additional arguments fail before item execution"
+    (work/run
+     (work/local-runtime)
+     legacy-work
+     (task/request
+      {:params {:scale 3
+                :offset 2
+                :bias 4}})))
+
+   (test/check-error
+    "task definitions reject main argcounts outside one through four"
+    (task/template
+     {:id :invalid/argcount
+      :main {:argcount 5
+             :fn identity}}))
 
    (test/check-error
     "task definitions cannot omit their executable item stage"
