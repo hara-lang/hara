@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Expose batch stop/cancel stages through recipes and command templates."""
+
+from __future__ import annotations
+
+import shutil
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+SELF = Path("scripts/runtime/apply-batch-stop-policy-surfaces")
+
+
+def read(relative: str) -> str:
+    return (ROOT / relative).read_text(encoding="utf-8")
+
+
+def write(relative: str, content: str) -> None:
+    path = ROOT / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def replace_once(relative: str, old: str, new: str) -> None:
+    source = read(relative)
+    if new in source:
+        return
+    count = source.count(old)
+    if count != 1:
+        raise SystemExit(
+            f"expected exactly one anchor in {relative}: {old[:100]!r}; found {count}"
+        )
+    write(relative, source.replace(old, new, 1))
+
+
+def mirror(relative: str) -> None:
+    source = ROOT / "core/lib/src" / relative
+    target = ROOT / "core/rust/hal-src" / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, target)
+
+
+RECIPE = "core/lib/src/std/work/recipe.hal"
+COMMAND = "core/lib/src/std/work/command.hal"
+RECIPE_TEST = "core/lib/test/std/work_recipe_test.hal"
+WORK_TEST = "core/lib/test/std/work_test.hal"
+
+replace_once(
+    RECIPE,
+    '''    :batch
+    (let [children
+          [(required-child node :list path)
+           (required-child node :process path)]
+          children
+          (if (:filter node)
+            (conj children (:filter node))
+            children)]
+      (if (:summarise node)
+        (conj children (:summarise node))
+        children))''',
+    '''    :batch
+    (let [children
+          [(required-child node :list path)
+           (required-child node :process path)]
+          children
+          (if (:filter node)
+            (conj children (:filter node))
+            children)
+          children
+          (if (:stop node)
+            (conj children (:stop node))
+            children)
+          children
+          (if (:cancel node)
+            (conj children (:cancel node))
+            children)]
+      (if (:summarise node)
+        (conj children (:summarise node))
+        children))''',
+)
+
+for old in [
+    "       [:list :filter :process :summarise])",
+    "      [:list :filter :process :summarise]))",
+]:
+    replacement = old.replace(
+        ":process :summarise", ":process :stop :cancel :summarise"
+    )
+    replace_once(RECIPE, old, replacement)
+
+replace_once(
+    COMMAND,
+    '''        batch-stages (select-keys stages [:list :filter :process :summarise])''',
+    '''        batch-stages
+        (select-keys stages
+                     [:list :filter :process :stop :cancel :summarise])''',
+)
+
+# Portable recipe operations and a batch using every policy stage.
+replace_once(
+    RECIPE_TEST,
+    '''    (recipe/operation
+     :collection/summarise
+     :pure
+     (fn [value context params]
+       {:items (count (:items value))
+        :values
+        (vec
+         (map (fn [item] (:item/value item))
+              (:results value)))}))''',
+    '''    (recipe/operation
+     :collection/stop
+     :pure
+     (fn [value context params]
+       (= (:value params)
+          (get-in value [:result :item/value]))))
+
+    (recipe/operation
+     :collection/cancel
+     :step
+     (fn [value context params]
+       (- 0 (get-in value [:item :item/value]))))
+
+    (recipe/operation
+     :collection/summarise
+     :pure
+     (fn [value context params]
+       {:items (count (:items value))
+        :values
+        (vec
+         (map (fn [item] (:item/value item))
+              (:results value)))}))''',
+)
+
+replace_once(
+    RECIPE_TEST,
+    '''    :process
+    {:op :step-ref
+     :id :batch/process
+     :uses :collection/process
+     :params {:factor 10}}
+    :summarise''',
+    '''    :process
+    {:op :step-ref
+     :id :batch/process
+     :uses :collection/process
+     :params {:factor 10}}
+    :stop
+    {:op :pure-ref
+     :id :batch/stop
+     :uses :collection/stop
+     :params {:value 20}}
+    :cancel
+    {:op :step-ref
+     :id :batch/cancel
+     :uses :collection/cancel}
+    :summarise''',
+)
+
+replace_once(
+    RECIPE_TEST,
+    '''   (test/check
+    "batch recipes preserve stable item identities and summaries"
+    (:summary
+     (work/run
+      (work/durable-runtime)
+      (recipe/compile batch-recipe operation-registry)
+      nil))
+    {:items 3
+     :values [10 20 30]})''',
+    '''   (test/check
+    "batch recipes preserve stop/cancel policy, stable identities and summaries"
+    (let [compiled (recipe/compile batch-recipe operation-registry)
+          body (work/work-spec
+                (first (:children (work/work-spec compiled))))
+          result (work/run (work/durable-runtime) compiled nil)]
+      [(:op body)
+       (:id (work/work-spec (:stop body)))
+       (:id (work/work-spec (:cancel body)))
+       (:summary result)])
+    [:batch
+     :batch/stop
+     :batch/cancel
+     {:items 3
+      :values [10 20 -3]}])''',
+)
+
+# Command templates must not erase runtime policy stages.
+anchor = '''   (test/check
+    "durable recovery replays checkpoints and reruns pure work"'''
+check = '''   (test/check
+    "command batches forward runtime stop and cancel stages"
+    (let [processed (atom 0)
+          cancelled (atom 0)
+          result
+          (work/run
+           (work/local-runtime)
+           (command/batch
+            {:id :command-stop-policy}
+            {:list
+             (work/pure
+              :command-stop-list
+              (fn [input context]
+                [{:item/id :one :item/value 1}
+                 {:item/id :two :item/value 2}
+                 {:item/id :three :item/value 3}]))
+             :process
+             (work/step
+              :command-stop-process
+              (fn [value context]
+                (swap! processed inc)
+                value))
+             :stop
+             (work/pure
+              :command-stop-check
+              (fn [batch context]
+                (= 2 (get-in batch [:result :item/value]))))
+             :cancel
+             (work/step
+              :command-stop-cancel
+              (fn [batch context]
+                (swap! cancelled inc)
+                (- 0 (get-in batch [:item :item/value]))))})
+           nil)]
+      [(work/manifest-values (:results result))
+       [(deref processed) (deref cancelled)]])
+    [[1 2 -3] [2 1]])
+
+'''
+replace_once(WORK_TEST, anchor, check + anchor)
+
+mirror("std/work/recipe.hal")
+mirror("std/work/command.hal")
+(ROOT / SELF).unlink()
