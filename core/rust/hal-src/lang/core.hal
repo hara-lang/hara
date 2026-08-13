@@ -76,15 +76,21 @@
 
 (extend-type code-pointer-type std.protocol.ipointer/IPointer
   (ptr-context [pointer]
-    (:context pointer))
+    (field pointer :context))
   (ptr-keys [pointer]
-    (keys (:fields pointer)))
+    (keys (field pointer :fields)))
   (ptr-val [pointer key]
-    (get (:fields pointer) key)))
+    (get (field pointer :fields) key)))
 
 (extend-type code-pointer-type std.protocol.ideref/IDeref
   (deref [pointer]
-    (:fields pointer)))
+    (field pointer :fields)))
+
+(extend-type code-pointer-type std.protocol.ilookup/ILookup
+  (lookup [pointer key]
+    (cond (= key :context) (field pointer :context)
+          (= key :fields) (field pointer :fields)
+          :else (get (field pointer :fields) key))))
 
 (defn code-pointer-context
   "Returns the language context carried by pointer."
@@ -102,6 +108,37 @@
   (let [module (code-pointer-val pointer :module)
         lang (code-pointer-val pointer :lang)]
     (get-in (deref script/+scripts+) [[module lang] :runtime])))
+
+(defn code-pointer-invoke-in
+  "Compiles and invokes pointer through an explicit or currently live runtime."
+  [pointer selected-runtime args]
+  (let [module (code-pointer-val pointer :module)
+        lang (code-pointer-val pointer :lang)
+        id (code-pointer-val pointer :id)
+        instance (or selected-runtime (code-pointer-runtime pointer))]
+    (if (nil? instance)
+      (throw
+       (ex-info "Script pointer runtime is not started"
+                {:lang lang
+                 :module module
+                 :id id}))
+      (let [qualified (symbol (name module) (name id))
+            form (apply list qualified args)
+            source (script/compile-form lang module form)
+            response (runtime/rt-raw-eval instance source)]
+        (if (and (map? response) (has? response :value))
+          (:value response)
+          response)))))
+
+(extend-type code-pointer-type std.protocol.iapplicable/IApplicable
+  (apply-default [pointer]
+    (code-pointer-runtime pointer))
+  (apply-in [pointer selected-runtime args]
+    (code-pointer-invoke-in pointer selected-runtime args))
+  (transform-in [pointer selected-runtime args]
+    args)
+  (transform-out [pointer selected-runtime args value]
+    value))
 
 (defn script-context
   "Returns the Foundation language-context key used by script pointers."
