@@ -330,7 +330,7 @@ fn async_metadata_and_await_lowering_are_explicit() {
         .find(|function| function.name.as_deref() == Some("delayed"))
         .expect("named async prototype");
     assert!(async_proto.async_function);
-    assert!(async_proto.code.contains(&super::Instruction::Await));
+    assert!(async_proto.code.contains(&crate::vm::Instruction::Await));
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn await_infers_a_suspending_synchronous_function() {
         !prototype.async_function,
         "inferred await must not force a promise wrapper"
     );
-    assert!(prototype.code.contains(&super::Instruction::Await));
+    assert!(prototype.code.contains(&crate::vm::Instruction::Await));
 
     compile_source("(defn outer [p] (fn [] (std.foundation.coroutine/await p)))")
         .expect("nested functions infer their own suspension support");
@@ -365,12 +365,12 @@ fn inferred_await_returns_directly_until_it_really_suspends() {
     )
     .unwrap();
     let mut fiber =
-        crate::core::with_namespace_registry(&registry, || super::VmFiber::start(Rc::new(program)));
-    assert!(matches!(fiber.state(), super::VmFiberState::Suspended));
+        crate::core::with_namespace_registry(&registry, || crate::vm::VmFiber::start(Rc::new(program)));
+    assert!(matches!(fiber.state(), crate::vm::VmFiberState::Suspended));
     source.resolve(Value::Number(9));
     assert!(matches!(
         fiber.poll(),
-        super::VmFiberState::Completed(Value::Number(9))
+        crate::vm::VmFiberState::Completed(Value::Number(9))
     ));
 
     let registry = NamespaceRegistry::new("user");
