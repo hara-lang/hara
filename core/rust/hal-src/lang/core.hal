@@ -11,7 +11,8 @@
             [lang.core.script-fragment]
             [lang.core.runtime :as runtime]
             [lang.model.spec-postgres]
-            [lang.runtime.basic :as basic]))
+            [lang.runtime.basic :as basic]
+            [std.context :as context]))
 
 (def book-entry entry/book-entry)
 (def book-entry? entry/book-entry?)
@@ -61,69 +62,205 @@
 ;; Loading lang.core installs each language's configured default book and the
 ;; first local runtimes. No target process is started during bootstrap.
 (def +bootstrap+ (bootstrap!))
-(defmacro script [lang & options]
+
+(defn script-context
+  "Returns the Foundation language-context key used by script pointers."
+  [lang]
+  (keyword "lang" (name lang)))
+
+(defn register-code-pointer!
+  "Registers one code entry and interns its source symbol as a language pointer."
+  ([form]
+   (register-code-pointer! nil form))
+  ([explicit-language form]
+   (script/register-code! explicit-language form)
+   (let [module (script/current-module-id)
+         source (symbol (str (current-namespace)))
+         symbol (second form)
+         id (symbol (name symbol))
+         entry (get-in (deref script/+modules+) [module :code id])]
+     (if (nil? entry)
+       (throw
+        (ex-info "Script code entry was not registered"
+                 {:module module
+                  :symbol symbol
+                  :form form}))
+       (let [context-key (script-context (:lang entry))
+             qualified (symbol (name source) (name id))
+             pointer
+             (context/pointer
+              context-key
+              (assoc entry
+                     :namespace source
+                     :symbol qualified
+                     :context context-key))]
+         (intern-var (current-namespace) symbol pointer))))))
+
+(defn start-script!
+  "Creates, starts, records, and returns the runtime for one script coordinate."
+  [lang module config]
+  (let [coordinate [module lang]
+        current (get (deref script/+scripts+) coordinate)
+        previous (:runtime current)
+        _ (if previous (runtime/rt-stop previous))
+        runtime-type (or (:runtime config) :basic)
+        instance (runtime/rt-create lang runtime-type config)
+        started (runtime/rt-start instance)
+        started
+        (if (= lang :postgres)
+          (reduce
+           (fn [current spec]
+             (if (script/require-primary? spec)
+               (IContextLifeCycle/setup-module current (first spec))
+               current))
+           started
+           (or (:require config) []))
+          started)
+        record (script/register-script! lang module config)
+        record (assoc record :runtime started)]
+    (swap! script/+scripts+ assoc coordinate record)
+    started))
+
+(def +script-tag-aliases+
+  {:xtalk :xt
+   :postgres :pg})
+
+(defn script-tags
+  "Returns the selected grammar tag and any Foundation compatibility tag."
+  [lang]
+  (let [book (registry/registry-book lang)
+        tag (or (get-in book [:grammar :tag]) lang)
+        alias (or (get +script-tag-aliases+ lang) tag)]
+    (if (= alias tag)
+      [tag]
+      [alias tag])))
+
+(defn script-eval-macro-form
+  "Builds the namespace-local !.<tag> macro for one script language."
+  [lang tag]
+  (let [macro-symbol (symbol (str "!." (name tag)))]
+    (if (= lang :postgres)
+      (list
+       'defmacro
+       macro-symbol
+       (vector '& 'body)
+       (list
+        'list
+        (list 'quote 'lang.core.script/eval-forms!)
+        lang
+        (list 'list
+              (list 'quote 'quote)
+              'body)))
+      (list
+       'defmacro
+       macro-symbol
+       (vector '& 'body)
+       (list
+        'list
+        (list 'quote 'lang.core.script/eval-form!)
+        lang
+        (list
+         'list
+         (list 'quote 'quote)
+         (list
+          'if
+          (list '= 1 (list 'count 'body))
+          (list 'first 'body)
+          (list 'apply
+                'list
+                (list 'quote 'do)
+                'body))))))))
+
+(defn script-macro-forms
+  "Returns the retained Foundation top-level script macro surface."
+  []
+  ['(defmacro def.xt [symbol value]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (list 'def symbol value))))
+   '(defmacro def.js [symbol value]
+      (list 'lang.core/register-code-pointer! :js
+            (list 'quote (list 'def symbol value))))
+   '(defmacro def.lua [symbol value]
+      (list 'lang.core/register-code-pointer! :lua
+            (list 'quote (list 'def symbol value))))
+   '(defmacro def.py [symbol value]
+      (list 'lang.core/register-code-pointer! :python
+            (list 'quote (list 'def symbol value))))
+   '(defmacro defglobal.xt [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'defglobal symbol body))))
+   '(defmacro defn.xt [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'defn symbol body))))
+   '(defmacro defn.pg [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'defn symbol body))))
+   '(defmacro deftype.pg [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'deftype symbol body))))
+   '(defmacro deftrigger.pg [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'deftrigger symbol body))))
+   '(defmacro def$.pg [symbol value]
+      (list 'lang.core.script-fragment/register-value!
+            (list 'quote symbol)
+            (list 'quote value)
+            (list 'quote (or (meta symbol) {}))))
+   '(defmacro def$.xt [symbol value]
+      (list 'lang.core.script-fragment/register-value!
+            (list 'quote symbol)
+            (list 'quote value)
+            (list 'quote (or (meta symbol) {}))))
+   '(defmacro defenum.pg [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'defenum symbol body))))
+   '(defmacro defconst.pg [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'defconst symbol body))))
+   '(defmacro defgen.xt [symbol & body]
+      (list 'lang.core/register-code-pointer!
+            (list 'quote (apply list 'defgen symbol body))))
+   '(defmacro defspec.xt [symbol & body]
+      (macroexpand-1
+       (apply list 'lang.core/defspec.xt symbol body)))
+   '(defmacro defmacro.xt [id & body]
+      (macroexpand-1
+       (apply list 'lang.core.script/defmacro.xt id body)))])
+
+(defn script-expansion
+  "Builds script/script- expansion with runtime return as the final value."
+  [lang options test?]
   (let [parsed (script/script-options options)
         module (first parsed)
-        config (second parsed)]
-    (list
-     'do
-     (list 'lang.core.script/setup!
-           (list 'quote lang)
-           (list 'quote module)
-           (list 'quote config)
-           false)
-     '(defmacro def.xt [symbol value]
-        (list 'lang.core.script/register-code!
-              (list 'quote (list 'def symbol value))))
-     '(defmacro def.js [symbol value]
-        (list 'lang.core.script/register-code! :js
-              (list 'quote (list 'def symbol value))))
-     '(defmacro def.lua [symbol value]
-        (list 'lang.core.script/register-code! :lua
-              (list 'quote (list 'def symbol value))))
-     '(defmacro def.py [symbol value]
-        (list 'lang.core.script/register-code! :python
-              (list 'quote (list 'def symbol value))))
-     '(defmacro defglobal.xt [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defglobal symbol body))))
-     '(defmacro defn.xt [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defn symbol body))))
-     '(defmacro defn.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defn symbol body))))
-     '(defmacro deftype.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'deftype symbol body))))
-     '(defmacro deftrigger.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'deftrigger symbol body))))
-     '(defmacro def$.pg [symbol value]
-        (list 'lang.core.script-fragment/register-value!
-              (list 'quote symbol)
-              (list 'quote value)
-              (list 'quote (or (meta symbol) {}))))
-     '(defmacro def$.xt [symbol value]
-        (list 'lang.core.script-fragment/register-value!
-              (list 'quote symbol)
-              (list 'quote value)
-              (list 'quote (or (meta symbol) {}))))
-     '(defmacro defenum.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defenum symbol body))))
-     '(defmacro defconst.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defconst symbol body))))
-     '(defmacro defgen.xt [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defgen symbol body))))
-     '(defmacro defspec.xt [symbol & body]
-        (macroexpand-1
-         (apply list 'lang.core/defspec.xt symbol body)))
-     '(defmacro defmacro.xt [id & body]
-        (macroexpand-1
-         (apply list 'lang.core.script/defmacro.xt id body))))))
+        config (second parsed)
+        setup-form
+        (list 'lang.core.script/setup!
+              (list 'quote lang)
+              (list 'quote module)
+              (list 'quote config)
+              test?)
+        eval-forms
+        (map (fn [tag]
+               (script-eval-macro-form lang tag))
+             (script-tags lang))
+        final-form
+        (if test?
+          nil
+          (list 'lang.core/start-script!
+                (list 'quote lang)
+                (list 'quote module)
+                (list 'quote config)))]
+    (apply list
+           'do
+           (concat [setup-form]
+                   (script-macro-forms)
+                   eval-forms
+                   [final-form]))))
+
+(defmacro script
+  [lang & options]
+  (lang.core/script-expansion lang options false))
+
 (defmacro defspec.xt [symbol & body]
   (let [docstring (if (string? (first body)) (first body) nil)
         remaining (if docstring (rest body) body)
@@ -137,91 +274,7 @@
           (list 'quote symbol)
           (list 'quote type-form)
           (list 'quote metadata))))
-(defmacro script- [lang & options]
-  (let [parsed (script/script-options options)
-        module (first parsed)
-        config (second parsed)]
-    (list
-     'do
-     (list 'lang.core.script/setup!
-           (list 'quote lang)
-           (list 'quote module)
-           (list 'quote config)
-           true)
-     '(defmacro def.xt [symbol value]
-        (list 'lang.core.script/register-code!
-              (list 'quote (list 'def symbol value))))
-     '(defmacro def.js [symbol value]
-        (list 'lang.core.script/register-code! :js
-              (list 'quote (list 'def symbol value))))
-     '(defmacro def.lua [symbol value]
-        (list 'lang.core.script/register-code! :lua
-              (list 'quote (list 'def symbol value))))
-     '(defmacro def.py [symbol value]
-        (list 'lang.core.script/register-code! :python
-              (list 'quote (list 'def symbol value))))
-     '(defmacro defglobal.xt [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defglobal symbol body))))
-     '(defmacro defn.xt [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defn symbol body))))
-     '(defmacro defn.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defn symbol body))))
-     '(defmacro deftype.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'deftype symbol body))))
-     '(defmacro deftrigger.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'deftrigger symbol body))))
-     '(defmacro def$.pg [symbol value]
-        (list 'lang.core.script-fragment/register-value!
-              (list 'quote symbol)
-              (list 'quote value)
-              (list 'quote (or (meta symbol) {}))))
-     '(defmacro def$.xt [symbol value]
-        (list 'lang.core.script-fragment/register-value!
-              (list 'quote symbol)
-              (list 'quote value)
-              (list 'quote (or (meta symbol) {}))))
-     '(defmacro defenum.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defenum symbol body))))
-     '(defmacro defconst.pg [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defconst symbol body))))
-     '(defmacro defgen.xt [symbol & body]
-        (list 'lang.core.script/register-code!
-              (list 'quote (apply list 'defgen symbol body))))
-     '(defmacro defspec.xt [symbol & body]
-        (macroexpand-1
-         (apply list 'lang.core/defspec.xt symbol body)))
-     '(defmacro defmacro.xt [id & body]
-        (macroexpand-1
-         (apply list 'lang.core.script/defmacro.xt id body)))
-     '(defmacro !.js [& body]
-        (list 'lang.core.script/eval-form!
-              :js
-              (list 'quote
-                    (if (= 1 (count body))
-                      (first body)
-                      (apply list 'do body)))))
-     '(defmacro !.lua [& body]
-        (list 'lang.core.script/eval-form!
-              :lua
-              (list 'quote
-                    (if (= 1 (count body))
-                      (first body)
-                      (apply list 'do body)))))
-     '(defmacro !.py [& body]
-        (list 'lang.core.script/eval-form!
-              :python
-              (list 'quote
-                    (if (= 1 (count body))
-                      (first body)
-                      (apply list 'do body)))))
-     '(defmacro !.pg [& body]
-        (list 'lang.core.script/eval-forms!
-              :postgres
-              (list 'quote body))))))
+
+(defmacro script-
+  [lang & options]
+  (lang.core/script-expansion lang options true))
