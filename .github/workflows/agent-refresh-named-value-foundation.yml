@@ -1,4 +1,4 @@
-name: Agent repair portable plain-report centering
+name: Agent rebuild the named-value foundation bundle
 
 on:
   push:
@@ -14,15 +14,34 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
-      - name: Check out the plain-report repair
+      - name: Check out the foundation bootstrap repair
         uses: actions/checkout@v4
         with:
-          ref: agent/fix-work-report-portable-center
+          ref: agent/fix-context-pointer-foundation-bundle
+          path: work
           fetch-depth: 0
 
-      - name: Replace evaluator-only quotient usage
+      - name: Check out specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: specs
+          fetch-depth: 1
+
+      - name: Expose specification fixtures
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/hara-specs-registry"
+          ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/work/hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Make plain-report centering portable
+        working-directory: work
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -50,33 +69,54 @@ jobs:
           test_path.write_text(test.replace(anchor, addition + anchor, 1), encoding="utf-8")
           PY
 
-      - name: Generate and validate the Rust HAL mirror
+      - name: Generate mirrors and the foundation bundle
+        working-directory: work
         run: |
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
+          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
+          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
           git diff --check
+
+      - name: Run bootstrap and named-value acceptance tests
+        working-directory: work
+        run: |
           ./scripts/runtime/run-lib-tests core/lib/test/std/work_report_renderer_test.hal
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defstruct_forms_issue_223 -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defmutable_forms_use_reference_identity_and_settable_fields -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_struct_protocols_dispatch_like_truffle -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_mutables_share_storage_and_reject_persistent_updates -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm structs_preserve_wire_shape_and_mutables_are_rejected -- --nocapture
+
+      - name: Verify and publish the exact repair
+        working-directory: work
+        run: |
           python3 - <<'PY'
           import subprocess
 
           expected = {
+              "core/lib/src/std/context/pointer.hal",
               "core/lib/src/std/work/report/plain.hal",
               "core/lib/test/std/work_report_renderer_test.hal",
+              "core/rust/assets/std.foundation.hbx",
+              "core/rust/hal-src/std/context/pointer.hal",
               "core/rust/hal-src/std/work/report/plain.hal",
           }
           status = subprocess.check_output(["git", "status", "--short"], text=True).splitlines()
           changed = {line[3:] for line in status if line.strip()}
           if changed != expected:
-              raise SystemExit(f"unexpected file set: {sorted(changed)}")
+              raise SystemExit(
+                  f"unexpected file set: {sorted(changed)}; expected {sorted(expected)}"
+              )
           PY
-
-      - name: Commit the repair
-        run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add \
+            core/lib/src/std/context/pointer.hal \
             core/lib/src/std/work/report/plain.hal \
             core/lib/test/std/work_report_renderer_test.hal \
+            core/rust/assets/std.foundation.hbx \
+            core/rust/hal-src/std/context/pointer.hal \
             core/rust/hal-src/std/work/report/plain.hal
-          git commit -m 'Use portable arithmetic in plain report centering'
-          git push origin HEAD:refs/heads/agent/fix-work-report-portable-center
+          git commit -m 'Repair and refresh the foundation bootstrap bundle'
+          git push origin HEAD:refs/heads/agent/fix-context-pointer-foundation-bundle
