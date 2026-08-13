@@ -11,8 +11,7 @@
             [lang.core.script-fragment]
             [lang.core.runtime :as runtime]
             [lang.model.spec-postgres]
-            [lang.runtime.basic :as basic]
-            [std.context :as context]))
+            [lang.runtime.basic :as basic]))
 
 (def book-entry entry/book-entry)
 (def book-entry? entry/book-entry?)
@@ -63,6 +62,47 @@
 ;; first local runtimes. No target process is started during bootstrap.
 (def +bootstrap+ (bootstrap!))
 
+(defstruct code-pointer-type [context fields])
+
+(defn code-pointer
+  "Creates the portable language pointer rooted in a script definition Var."
+  [context fields]
+  (lang.core/code-pointer-type context fields))
+
+(defn code-pointer?
+  "Returns true when value is a lang.core code pointer."
+  [value]
+  (instance? code-pointer-type value))
+
+(extend-type code-pointer-type std.protocol.ipointer/IPointer
+  (ptr-context [pointer]
+    (:context pointer))
+  (ptr-keys [pointer]
+    (keys (:fields pointer)))
+  (ptr-val [pointer key]
+    (get (:fields pointer) key)))
+
+(extend-type code-pointer-type std.protocol.ideref/IDeref
+  (deref [pointer]
+    (:fields pointer)))
+
+(defn code-pointer-context
+  "Returns the language context carried by pointer."
+  [pointer]
+  (std.protocol.ipointer/ptr-context pointer))
+
+(defn code-pointer-val
+  "Returns one coordinate or source field carried by pointer."
+  [pointer key]
+  (std.protocol.ipointer/ptr-val pointer key))
+
+(defn code-pointer-runtime
+  "Resolves pointer against the latest live runtime for its script coordinate."
+  [pointer]
+  (let [module (code-pointer-val pointer :module)
+        lang (code-pointer-val pointer :lang)]
+    (get-in (deref script/+scripts+) [[module lang] :runtime])))
+
 (defn script-context
   "Returns the Foundation language-context key used by script pointers."
   [lang]
@@ -88,7 +128,7 @@
        (let [context-key (script-context (:lang entry))
              qualified (symbol (name source) (name id))
              pointer
-             (context/pointer
+             (code-pointer
               context-key
               (assoc entry
                      :namespace source
@@ -228,7 +268,7 @@
        (apply list 'lang.core.script/defmacro.xt id body)))])
 
 (defn script-expansion
-  "Builds script/script- expansion with runtime return as the final value."
+  "Builds normal or deferred script expansion with its correct final value."
   [lang options test?]
   (let [parsed (script/script-options options)
         module (first parsed)
