@@ -1,0 +1,318 @@
+name: Validate removal of std.string.prose
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-remove-std-string-prose-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HARA_RUNTIME: rust
+      HARA_NATIVE: ${{ github.workspace }}/core/rust/target/debug/hara
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the exact prose-only source transformation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from __future__ import annotations
+
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          base_sha = os.environ["BASE_SHA"]
+          string_literal = re.compile(r'"(?:\\.|[^"\\])*"')
+
+          def base_text(path: str) -> str:
+              return subprocess.check_output(
+                  ["git", "show", f"{base_sha}:{path}"], text=True
+              )
+
+          def matching_paren(source: str, start: int) -> int:
+              depth = 0
+              in_string = False
+              escaped = False
+              for index in range(start, len(source)):
+                  char = source[index]
+                  if in_string:
+                      if escaped:
+                          escaped = False
+                      elif char == "\\":
+                          escaped = True
+                      elif char == '"':
+                          in_string = False
+                      continue
+                  if char == '"':
+                      in_string = True
+                  elif char == '(':
+                      depth += 1
+                  elif char == ')':
+                      depth -= 1
+                      if depth == 0:
+                          return index
+              raise RuntimeError(f"unclosed prose form at offset {start}")
+
+          def render_join(body: str) -> str:
+              payload = body.strip()
+              if "\n" not in payload:
+                  return f'(str/join "\\n" [{payload}])'
+              source_lines = [line for line in body.splitlines() if line.strip()]
+              indent = re.match(r"[ \t]*", source_lines[0]).group(0)
+              arguments = [line.strip() for line in source_lines]
+              rendered = ['(str/join "\\n"', f"{indent}[{arguments[0]}"]
+              rendered.extend(f"{indent} {argument}" for argument in arguments[1:])
+              rendered[-1] += "])"
+              return "\n".join(rendered)
+
+          def replace_forms(source: str) -> tuple[str, int]:
+              marker = "(prose/|"
+              cursor = 0
+              output: list[str] = []
+              count = 0
+              while True:
+                  start = source.find(marker, cursor)
+                  if start < 0:
+                      output.append(source[cursor:])
+                      break
+                  end = matching_paren(source, start)
+                  body = source[start + len(marker):end]
+                  replacement = render_join(body)
+                  before_literals = string_literal.findall(body)
+                  after_literals = string_literal.findall(replacement)[1:]
+                  if before_literals != after_literals:
+                      raise RuntimeError("replacement changed an argument string")
+                  output.extend((source[cursor:start], replacement))
+                  cursor = end + 1
+                  count += 1
+              return "".join(output), count
+
+          specifications = [
+              (
+                  "core/lib/test-lang/xt/lang/common_string_test.hal",
+                  "  (:require [lang.core :as l]\n"
+                  "            [std.string.prose :as prose]))",
+                  "  (:require [lang.core :as l]))",
+                  3,
+              ),
+              (
+                  "core/lib/test-lang/xt/lang/parser_xml_test.hal",
+                  "  (:require [lang.core :as l]\n"
+                  "            [std.string.prose :as prose])\n"
+                  "  (:use code.test))",
+                  "  (:require [lang.core :as l])\n"
+                  "  (:use code.test))",
+                  6,
+              ),
+          ]
+
+          for path, old_require, new_require, expected_count in specifications:
+              original = base_text(path)
+              current = Path(path).read_text()
+              if original.count(old_require) != 1:
+                  raise RuntimeError(f"unexpected base require in {path}")
+              expected, count = replace_forms(original.replace(old_require, new_require, 1))
+              if count != expected_count:
+                  raise RuntimeError(
+                      f"{path}: expected {expected_count} prose forms, found {count}"
+                  )
+              if current != expected:
+                  raise RuntimeError(f"{path}: current file is not the exact transformation")
+              if original.count("@!") != current.count("@!"):
+                  raise RuntimeError(f"{path}: @! boundary count changed")
+              print(f"{path}: exact ({count} joins; @! boundaries preserved)")
+
+          assert not Path("core/lib/src/std/string/prose.hal").exists()
+          assert not Path("core/rust/hal-src/std/string/prose.hal").exists()
+          inventory = Path("core/rust/standard-library.namespaces").read_text().splitlines()
+          assert "std.string.prose" not in inventory
+
+          for root in (Path("core/lib"), Path("core/rust")):
+              for path in root.rglob("*"):
+                  if not path.is_file() or path.suffix not in {".hal", ".namespaces"}:
+                      continue
+                  text = path.read_text(errors="replace")
+                  if "std.string.prose" in text or "prose/|" in text:
+                      raise RuntimeError(f"prose reference remains in {path}")
+
+          padded = "\n".join(["  hello", "  world"])
+          assert padded == "  hello\n  world"
+          xml = "\n".join([
+              "<helo:test>",
+              "   <ErrorCode>ESB-00-000</ErrorCode>",
+              "   <A>",
+              "      <A1>Hello-11-222</A1>",
+              "      <A2>Bandung</A2>",
+              "   </A>",
+              "   <B/>",
+              "   <C>",
+              "     <C1>Satu</C1>",
+              "     <C2>Dua</C2>",
+              "     <C3>Tiga</C3>",
+              "     <C4><C41>Empat-Satu</C41></C4>",
+              "   </C>",
+              "</helo:test>",
+          ])
+          assert xml.endswith("\n   </C>\n</helo:test>")
+          print("direct host newline semantics: exact")
+          PY
+          git diff --check "$BASE_SHA"...HEAD -- \
+            core/lib/src/std/string/prose.hal \
+            core/lib/test-lang/xt/lang/common_string_test.hal \
+            core/lib/test-lang/xt/lang/parser_xml_test.hal \
+            core/rust/hal-src/std/string/prose.hal \
+            core/rust/standard-library.namespaces
+
+      - name: Verify mirror generation is clean and idempotent
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/runtime/sync-rust-hal-src --check
+          python3 scripts/runtime/sync-rust-hal-src
+          git diff --exit-code -- core/rust/hal-src core/rust/standard-library.namespaces
+          python3 scripts/runtime/sync-rust-hal-src
+          git diff --exit-code -- core/rust/hal-src core/rust/standard-library.namespaces
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the native Hara runtime
+        run: cargo build --manifest-path core/rust/Cargo.toml --bin hara
+
+      - name: Candidate-evaluate and fresh-process evaluate both complete files
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/prose-native-evaluation.txt"
+          : > "$evidence"
+
+          classify() {
+            local label="$1"
+            local status="$2"
+            local log="$3"
+            if [[ "$status" -eq 0 ]]; then
+              echo "$label: passed" | tee -a "$evidence"
+            elif grep -Fq 'Script module has no registered loader' "$log"; then
+              echo "$label: existing XTalk loader failure recorded" | tee -a "$evidence"
+            else
+              echo "$label: unexpected failure ($status)" >&2
+              cat "$log" >&2
+              return "$status"
+            fi
+          }
+
+          evaluate() {
+            local phase="$1"
+            local label="$2"
+            local path="$3"
+            local log="$RUNNER_TEMP/${label}-${phase}.log"
+            local status
+            set +e
+            if [[ "$phase" == candidate ]]; then
+              ./core/hara --project core --offline stdin < "$path" > "$log" 2>&1
+            else
+              ./core/hara --project core --offline run "$path" > "$log" 2>&1
+            fi
+            status=$?
+            set -e
+            cat "$log"
+            classify "$label/$phase" "$status" "$log"
+          }
+
+          for phase in candidate written; do
+            evaluate "$phase" common-string \
+              core/lib/test-lang/xt/lang/common_string_test.hal
+            evaluate "$phase" parser-xml \
+              core/lib/test-lang/xt/lang/parser_xml_test.hal
+          done
+
+          {
+            echo '### Native Hara evaluation'
+            echo '```text'
+            cat "$evidence"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Probe padded lines and the multiline XML fixture through Hara
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/padded-probe.hal" <<'HAL'
+          (= (str/join "\n" ["  hello" "  world"])
+             "  hello\n  world")
+          HAL
+          cat > "$RUNNER_TEMP/xml-probe.hal" <<'HAL'
+          (= (str/join "\n"
+                       ["<helo:test>"
+                        "   <ErrorCode>ESB-00-000</ErrorCode>"
+                        "   <A>"
+                        "      <A1>Hello-11-222</A1>"
+                        "      <A2>Bandung</A2>"
+                        "   </A>"
+                        "   <B/>"
+                        "   <C>"
+                        "     <C1>Satu</C1>"
+                        "     <C2>Dua</C2>"
+                        "     <C3>Tiga</C3>"
+                        "     <C4><C41>Empat-Satu</C41></C4>"
+                        "   </C>"
+                        "</helo:test>"])
+             "<helo:test>\n   <ErrorCode>ESB-00-000</ErrorCode>\n   <A>\n      <A1>Hello-11-222</A1>\n      <A2>Bandung</A2>\n   </A>\n   <B/>\n   <C>\n     <C1>Satu</C1>\n     <C2>Dua</C2>\n     <C3>Tiga</C3>\n     <C4><C41>Empat-Satu</C41></C4>\n   </C>\n</helo:test>")
+          HAL
+
+          for probe in padded xml; do
+            log="$RUNNER_TEMP/${probe}-probe.log"
+            ./core/hara --project core --offline stdin \
+              < "$RUNNER_TEMP/${probe}-probe.hal" | tee "$log"
+            python3 - "$log" <<'PY'
+          import sys
+          from pathlib import Path
+          lines = [line.strip() for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
+          if not lines or lines[-1] != "true":
+              raise SystemExit(f"probe did not return true: {lines!r}")
+          PY
+          done
+
+      - name: Run the two focused XTalk test files
+        shell: bash
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/focused-xtalk.log"
+          set +e
+          HARA_ALLOW_STDLIB_MIRROR_DRIFT=1 \
+            ./scripts/runtime/run-lib-tests \
+              core/lib/test-lang/xt/lang/common_string_test.hal \
+              core/lib/test-lang/xt/lang/parser_xml_test.hal \
+              > "$log" 2>&1
+          status=$?
+          set -e
+          cat "$log"
+          if [[ "$status" -eq 0 ]]; then
+            result='focused XTalk tests passed'
+          elif grep -Fq 'Script module has no registered loader' "$log"; then
+            result='existing “Script module has no registered loader” failure recorded'
+          else
+            echo "unexpected focused-test failure ($status)" >&2
+            exit "$status"
+          fi
+          echo "$result"
+          {
+            echo '### Focused XTalk result'
+            echo "$result"
+          } >> "$GITHUB_STEP_SUMMARY"
