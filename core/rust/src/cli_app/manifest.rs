@@ -71,44 +71,44 @@ pub(super) fn merge_sources(base: &str, extension: &str) -> Result<String, Strin
 
     let app_id = map_value(extension_entries, "app/id")
         .and_then(keyword_value)
-        .ok_or("CLI manifest extension is missing keyword :app/id")?
+        .ok_or_else(|| "CLI manifest extension is missing keyword :app/id".to_owned())?
         .to_owned();
     let app_summary = map_value(extension_entries, "app/summary")
         .cloned()
-        .ok_or("CLI manifest extension is missing :app/summary")?;
+        .ok_or_else(|| "CLI manifest extension is missing :app/summary".to_owned())?;
     let route = map_value(extension_entries, "route")
         .cloned()
-        .ok_or("CLI manifest extension is missing :route")?;
+        .ok_or_else(|| "CLI manifest extension is missing :route".to_owned())?;
     let handler = map_value(extension_entries, "handler")
         .cloned()
-        .ok_or("CLI manifest extension is missing :handler")?;
+        .ok_or_else(|| "CLI manifest extension is missing :handler".to_owned())?;
 
     let route_id = map_keyword(&route, "route/id")
-        .ok_or("CLI route is missing keyword :route/id")?
+        .ok_or_else(|| "CLI route is missing keyword :route/id".to_owned())?
         .to_owned();
     let route_handler = map_keyword(&route, "route/handler")
-        .ok_or("CLI route is missing keyword :route/handler")?
+        .ok_or_else(|| "CLI route is missing keyword :route/handler".to_owned())?
         .to_owned();
     let handler_id = map_keyword(&handler, "handler/id")
-        .ok_or("CLI handler is missing keyword :handler/id")?
+        .ok_or_else(|| "CLI handler is missing keyword :handler/id".to_owned())?
         .to_owned();
     if route_handler != handler_id {
         return Err("CLI route and handler ids do not match".into());
     }
 
     let manifest_entries = map_entries_mut(&mut manifest)?;
-    let apps = map_value_mut(manifest_entries, "cli/apps")
-        .ok_or("CLI manifest is missing :cli/apps")
-        .and_then(vector_mut)?;
+    let apps_value = map_value_mut(manifest_entries, "cli/apps")
+        .ok_or_else(|| "CLI manifest is missing :cli/apps".to_owned())?;
+    let apps = vector_mut(apps_value)?;
     let mut app_found = false;
-    for app in apps {
-        if map_keyword(app, "app/id") == Some(app_id.as_str()) {
+    for app in apps.iter_mut() {
+        if map_keyword(&*app, "app/id") == Some(app_id.as_str()) {
             app_found = true;
             let app_entries = map_entries_mut(app)?;
             set_map_value(app_entries, "app/summary", app_summary.clone());
-            let routes = map_value_mut(app_entries, "app/routes")
-                .ok_or("CLI app is missing :app/routes")
-                .and_then(vector_mut)?;
+            let routes_value = map_value_mut(app_entries, "app/routes")
+                .ok_or_else(|| "CLI app is missing :app/routes".to_owned())?;
+            let routes = vector_mut(routes_value)?;
             if !routes
                 .iter()
                 .any(|candidate| keyword_value(candidate) == Some(route_id.as_str()))
@@ -122,15 +122,15 @@ pub(super) fn merge_sources(base: &str, extension: &str) -> Result<String, Strin
     }
 
     let manifest_entries = map_entries_mut(&mut manifest)?;
-    let routes = map_value_mut(manifest_entries, "cli/routes")
-        .ok_or("CLI manifest is missing :cli/routes")
-        .and_then(vector_mut)?;
+    let routes_value = map_value_mut(manifest_entries, "cli/routes")
+        .ok_or_else(|| "CLI manifest is missing :cli/routes".to_owned())?;
+    let routes = vector_mut(routes_value)?;
     append_unique_entry(routes, "route/id", &route_id, route);
 
     let manifest_entries = map_entries_mut(&mut manifest)?;
-    let handlers = map_value_mut(manifest_entries, "cli/handlers")
-        .ok_or("CLI manifest is missing :cli/handlers")
-        .and_then(vector_mut)?;
+    let handlers_value = map_value_mut(manifest_entries, "cli/handlers")
+        .ok_or_else(|| "CLI manifest is missing :cli/handlers".to_owned())?;
+    let handlers = vector_mut(handlers_value)?;
     append_unique_entry(handlers, "handler/id", &handler_id, handler);
 
     Ok(manifest.to_string())
@@ -140,9 +140,6 @@ pub(super) fn map_entries_for_test(form: &Form) -> Result<&[(Form, Form)], Strin
     map_entries(form)
 }
 
-pub(super) fn map_value_for_test<'a>(
-    entries: &'a [(Form, Form)],
-    key: &str,
-) -> Option<&'a Form> {
+pub(super) fn map_value_for_test<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
     map_value(entries, key)
 }
