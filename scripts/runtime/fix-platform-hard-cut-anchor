@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Repair the one-shot migration anchors and remove workflow-only output."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+TARGET = ROOT / "scripts/runtime/apply-platform-imatch-itest-hard-cut"
+source = TARGET.read_text(encoding="utf-8")
+
+protocol_pattern = re.compile(
+    r'''replace_once\(\n    "core/java/src/main/java/hara/truffle/HaraJavaAdapters\.java",.*?\n\)\n\nreplace_once\(\n    "core/rust/src/core\.rs",.*?\n\)\n\n# IContextEval''',
+    re.DOTALL,
+)
+
+protocol_replacement = r'''replace_once(
+    "core/java/src/main/java/hara/truffle/HaraJavaAdapters.java",
+    '    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));',
+    '    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));\n'
+    '    context.defineProtocol("IMatch", Map.of("match-value", 2));',
+)
+
+rust_lookup = '    ("ILookup", &[("lookup", usize::MAX)]),'
+rust_replacement = (
+    rust_lookup
+    + '\n'
+    + '    ("IMatch", &[("match-value", 2)]),'
+)
+rust_protocol_file = None
+for candidate in ["core/rust/src/core.rs", "core/rust/src/lib.rs"]:
+    if rust_lookup in read(candidate):
+        rust_protocol_file = candidate
+        break
+if rust_protocol_file is None:
+    raise SystemExit("Rust platform protocol catalog does not contain ILookup")
+replace_once(rust_protocol_file, rust_lookup, rust_replacement)
+
+# IContextEval'''
+
+updated, count = protocol_pattern.subn(
+    lambda match: protocol_replacement,
+    source,
+    count=1,
+)
+if count != 1:
+    raise SystemExit("platform protocol migration block was not found exactly once")
+
+workflow_pattern = re.compile(
+    r'''\nwrite\(\n    "\.github/workflows/reserved-platform-namespaces\.yml",.*?\n\)\n\n# Final migration assertions''',
+    re.DOTALL,
+)
+updated, count = workflow_pattern.subn(
+    "\n# Final migration assertions",
+    updated,
+    count=1,
+)
+if count != 1:
+    raise SystemExit("generated reserved-namespace workflow block was not found")
+
+updated = updated.replace(
+    'delete(".github/workflows/_apply-platform-imatch-itest.yml")\n',
+    "",
+)
+
+TARGET.write_text(updated, encoding="utf-8")
+Path(__file__).unlink()
