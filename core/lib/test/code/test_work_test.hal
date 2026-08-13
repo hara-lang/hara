@@ -42,16 +42,23 @@
 (def fact-result
   (work/result fact-runtime fact-reference))
 
-(def reporter (fact/event-reporter))
+(def observer (work/recording-observer))
+(def reported-runtime (work/local-runtime {:observer observer}))
 (def reported-result
   (work/run
-   (work/local-runtime)
+   reported-runtime
    (test-work/fact-work
     'code.test-work-test
     "work-driven failing fact"
     7)
-   {}
-   {:context {:test/reporter reporter}}))
+   {}))
+(def reported-events
+  (vec
+   (filter
+    (fn [event]
+      (or (= :test/fact-started (:event event))
+          (= :test/fact-completed (:event event))))
+    (work/observer-events observer))))
 
 (def public-runtime (work/durable-runtime))
 (def public-result
@@ -98,11 +105,10 @@
     [:completed :failed 1 1])
 
    (test/check
-    "test reporters are supplied as runtime context capabilities"
+    "test events are delivered by IWorkObserver after durable append"
     [(:status reported-result)
-     (vec (map (fn [event] (:event event))
-               (fact/reporter-events reporter)))]
-    [:failed [:fact/start :fact/end]])
+     (vec (map (fn [event] (:event event)) reported-events))]
+    [:failed [:test/fact-started :test/fact-completed]])
 
    (test/check
     "public code.test/run uses a native work value and explicit runtime"

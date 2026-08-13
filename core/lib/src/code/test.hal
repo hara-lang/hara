@@ -9,15 +9,12 @@
             [code.test.selector :as selector]
             [std.work :as work]))
 
-(defstruct TestRegistry [state])
-(defstruct NullReporter [value])
-(defstruct EventReporter [events])
-(defstruct FunctionClock [function])
-(defstruct FunctionTimer [timeout-function cancel-function])
-(defstruct FunctionControl [function])
 (defstruct Matcher [predicate expected])
 (defstruct ThrownValue [error])
 (defstruct TimeoutValue [milliseconds])
+
+;; Fact registration is evaluator-local domain state, not a provider protocol.
+(def +registry+ (atom {}))
 
 (defn clear-namespace-state
   [state namespace]
@@ -34,7 +31,7 @@
 (defn registry-register
   [registry fact]
   (do
-    (swap! (field registry :state)
+    (swap! registry
            (fn [state]
              (assoc state [(:namespace fact) (:name fact)] fact)))
     fact))
@@ -42,127 +39,34 @@
 (defn registry-remove
   [registry namespace name]
   (let [key [namespace name]
-        found (get (deref (field registry :state)) key)]
-    (swap! (field registry :state)
-           (fn [state] (dissoc state key)))
+        found (get (deref registry) key)]
+    (swap! registry (fn [state] (dissoc state key)))
     found))
 
 (defn registry-clear
   [registry namespace]
   (if namespace
-    (swap! (field registry :state) clear-namespace-state namespace)
-    (reset! (field registry :state) {})))
+    (swap! registry clear-namespace-state namespace)
+    (reset! registry {})))
 
 (defn registry-facts
   [registry]
-  (vec (vals (deref (field registry :state)))))
+  (vec (vals (deref registry))))
 
 (defn registry-find
   [registry namespace name]
-  (get (deref (field registry :state)) [namespace name]))
+  (get (deref registry) [namespace name]))
 
 (defn report-event
-  "Delivers one test-domain event through ordinary data/function adapters."
+  "Compatibility delivery for direct run-fact callers.
+
+   Canonical suite execution emits durable :test/* events through std.work and
+   uses IWorkObserver. This local adapter accepts only an ordinary function."
   [reporter event]
-  (cond
-    (or (nil? reporter)
-        (instance? code.test/NullReporter reporter))
-    event
-
-    (instance? code.test/EventReporter reporter)
-    (do
-      (swap! (field reporter :events)
-             (fn [events] (conj events event)))
-      event)
-
-    (fn? reporter)
+  (if reporter
     (let [result (reporter event)]
       (if (nil? result) event result))
-
-    (and (map? reporter) (fn? (:report-event reporter)))
-    (let [result ((:report-event reporter) event)]
-      (if (nil? result) event result))
-
-    :else
-    (throw
-     (ex-info "Unsupported test reporter"
-              {:reporter reporter}))))
-
-(defn now-ms
-  "Reads an ordinary host clock function or compatibility clock value."
-  [clock]
-  (cond
-    (nil? clock)
-    nil
-
-    (instance? code.test/FunctionClock clock)
-    ((field clock :function))
-
-    (fn? clock)
-    (clock)
-
-    (and (map? clock) (fn? (:now-ms clock)))
-    ((:now-ms clock))
-
-    :else
-    (throw
-     (ex-info "Unsupported test clock"
-              {:clock clock}))))
-
-(defn timeout-promise
-  "Applies an ordinary timeout function to a promise."
-  [timer promise milliseconds]
-  (cond
-    (instance? code.test/FunctionTimer timer)
-    ((field timer :timeout-function) promise milliseconds)
-
-    (fn? timer)
-    (timer promise milliseconds)
-
-    (and (map? timer) (fn? (:timeout-promise timer)))
-    ((:timeout-promise timer) promise milliseconds)
-
-    :else
-    (throw
-     (ex-info "Unsupported test timer"
-              {:timer timer}))))
-
-(defn cancel-timeout
-  "Cancels an ordinary timeout handle when one exists."
-  [timer timeout]
-  (cond
-    (or (nil? timer) (nil? timeout))
-    nil
-
-    (instance? code.test/FunctionTimer timer)
-    ((field timer :cancel-function) timeout)
-
-    (and (map? timer) (fn? (:cancel-timeout timer)))
-    ((:cancel-timeout timer) timeout)
-
-    :else
-    nil))
-
-(defn cancelled?
-  "Evaluates an ordinary cancellation predicate for a fact."
-  [control fact]
-  (cond
-    (nil? control)
-    false
-
-    (instance? code.test/FunctionControl control)
-    ((field control :function) fact)
-
-    (fn? control)
-    (control fact)
-
-    (and (map? control) (fn? (:cancelled? control)))
-    ((:cancelled? control) fact)
-
-    :else
-    (throw
-     (ex-info "Unsupported test cancellation control"
-              {:control control}))))
+    event))
 
 (extend-type Matcher std.protocol.imatch/IMatch
   (match-value [matcher actual]
@@ -170,8 +74,6 @@
      :actual actual
      :expected (field matcher :expected)}))
 
-(def +registry+ (code.test/TestRegistry (atom {})))
-(def +null-reporter+ (code.test/NullReporter nil))
 (def => '=>)
 (def +listeners+ {})
 (def +global-settings+ (atom {}))
@@ -179,36 +81,6 @@
 (defn anything
   [value]
   true)
-
-(defn event-reporter
-  "Creates a reporter that records structured events in an atom."
-  ([] (code.test/EventReporter (atom [])))
-  ([events] (code.test/EventReporter events)))
-
-(defn reporter-events
-  "Returns events recorded by an event reporter."
-  [reporter]
-  (deref (field reporter :events)))
-
-(defn function-clock
-  "Adapts a host-provided zero-argument clock function."
-  [function]
-  (code.test/FunctionClock function))
-
-(defn function-timer
-  "Adapts host timeout and cancellation functions.
-
-   timeout-function receives [promise milliseconds] and returns either a
-   promise or {:promise promise :timeout handle}. A timed-out promise resolves
-   to {:test/status :timeout}; successful envelopes may use
-   {:test/status :value :value value}."
-  [timeout-function cancel-function]
-  (code.test/FunctionTimer timeout-function cancel-function))
-
-(defn function-control
-  "Adapts a host cancellation predicate receiving a fact record."
-  [function]
-  (code.test/FunctionControl function))
 
 (defn exactly
   "Matches a value using HAL equality."
@@ -482,15 +354,17 @@
    :throws))
 
 (defn timed-settle
-  [timer promise milliseconds]
-  (let [binding (timeout-promise timer promise milliseconds)
+  [options promise milliseconds]
+  (let [timeout-function (:work/timeout-promise options)
+        cancel-function (:work/cancel-timeout options)
+        binding (timeout-function promise milliseconds)
         wrapped (if (map? binding) (:promise binding) binding)
         timeout (if (map? binding) (:timeout binding) nil)
         outcome (try
                   (deref wrapped)
                   (finally
-                    (if timeout
-                      (cancel-timeout timer timeout)
+                    (if (and timeout cancel-function)
+                      (cancel-function timeout)
                       nil)))]
     (if (and (map? outcome) (= :timeout (:test/status outcome)))
       (code.test/TimeoutValue milliseconds)
@@ -499,14 +373,14 @@
         outcome))))
 
 (defn settle
-  "Returns an ordinary value, awaiting a promise through the optional host
-   timer capability."
+  "Returns an ordinary value, awaiting a Promise through generic std.work
+   context capabilities when a timeout is requested."
   ([value]
    (settle value {}))
   ([value options]
    (if (promise? value)
-     (if (and (:timer options) (:timeout options))
-       (timed-settle (:timer options) value (:timeout options))
+     (if (and (:work/timeout-promise options) (:timeout options))
+       (timed-settle options value (:timeout options))
        (deref value))
      value)))
 
@@ -582,7 +456,7 @@
 (defn registry
   "Returns the registry snapshot keyed by [namespace fact-name]."
   []
-  (deref (field +registry+ :state)))
+  (deref +registry+))
 
 (defn get-fact
   "Returns a fact by namespace and name."
@@ -744,9 +618,8 @@
 
 (defn clock-now
   [options]
-  (if (:clock options)
-    (now-ms (:clock options))
-    nil))
+  (let [now (:work/now options)]
+    (if now (now) nil)))
 
 (defn run-hook
   [hook options]
@@ -763,10 +636,7 @@
 
 (defn fact-cancelled?
   [fact options]
-  (or (:cancelled options)
-      (if (:control options)
-        (cancelled? (:control options) fact)
-        false)))
+  (if (:cancelled options) true false))
 
 (defn run-fact
   "Runs one fact and emits start/end events."
@@ -893,7 +763,7 @@
 
 (defn run-selected
   [input options]
-  (let [reporter (or (:reporter options) +null-reporter+)
+  (let [reporter (:reporter options)
         selected (vec
                   (filter (fn [fact] (matches-selection? fact options))
                           (tests)))
@@ -943,20 +813,41 @@
 (defn work-context-options
   [context]
   (let [base (or (:test/options context) {})
-        reporter (:test/reporter context)
-        clock (:test/clock context)
-        timer (:test/timer context)
-        control (:test/control context)]
+        now (:work/now context)
+        timeout-promise (:work/timeout-promise context)
+        cancel-timeout (:work/cancel-timeout context)]
     (merge base
-           (if reporter {:reporter reporter} {})
-           (if clock {:clock clock} {})
-           (if timer {:timer timer} {})
-           (if control {:control control} {}))))
+           (if now {:work/now now} {})
+           (if timeout-promise
+             {:work/timeout-promise timeout-promise}
+             {})
+           (if cancel-timeout
+             {:work/cancel-timeout cancel-timeout}
+             {}))))
 
 (defn work-execution-options
   [input context]
   (merge (or input {})
          (work-context-options context)))
+
+(defn work-event-kind
+  [event]
+  (cond
+    (= event :run/start) :test/run-started
+    (= event :run/end) :test/run-completed
+    (= event :fact/start) :test/fact-started
+    (= event :fact/end) :test/fact-completed
+    :else :test/event))
+
+(defn work-reporter
+  "Returns a local event function that commits through the active work frame."
+  [context]
+  (fn [event]
+    (let [event-kind (work-event-kind (:event event))
+          data (assoc (dissoc event :event)
+                      :test/event (:event event))]
+      (work/emit! context event-kind data)
+      event)))
 
 (defn suite-work
   "Returns one checkpointed suite boundary preserving code.test's existing
@@ -970,7 +861,9 @@
      :test/revision suite-revision}
     (fn [input context]
       (run-selected nil
-                    (work-execution-options input context))))))
+                    (assoc (work-execution-options input context)
+                           :reporter
+                           (work-reporter context)))))))
 
 (def +runner-work+ (suite-work))
 

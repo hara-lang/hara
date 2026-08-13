@@ -18,8 +18,15 @@
   [events]
   (vec (map (fn [event] (:event event)) events)))
 
+(defn test-event?
+  [event]
+  (or (= :test/run-started (:event event))
+      (= :test/fact-started (:event event))
+      (= :test/fact-completed (:event event))
+      (= :test/run-completed (:event event))))
+
 (def lifecycle (atom []))
-(def reporter (fact/event-reporter))
+(def observer (work/recording-observer))
 
 (fact/register!
  "scoped passing fact"
@@ -43,13 +50,12 @@
    :before-each (fn [] (swap! lifecycle conj :before-each))
    :after-each (fn [] (swap! lifecycle conj :after-each))})
 
-(def scoped-runtime (work/durable-runtime))
+(def scoped-runtime (work/durable-runtime {:observer observer}))
 (def scoped-reference
   (test-work/start-batch
    scoped-runtime
    scoped-options
-   {:id "cleanup-scoped-fact"
-    :context {:test/reporter reporter}}))
+   {:id "cleanup-scoped-fact"}))
 (def scoped-summary
   (test-work/batch-result scoped-runtime scoped-reference))
 (def scoped-history
@@ -57,15 +63,16 @@
 (def scoped-checkpoints
   (work/checkpoints scoped-runtime scoped-reference))
 (def scoped-order (deref lifecycle))
-(def scoped-events (fact/reporter-events reporter))
+(def scoped-events
+  (vec (filter test-event? (work/observer-events observer))))
 (def same-scoped-reference
   (test-work/start-batch
    scoped-runtime
    scoped-options
-   {:id "cleanup-scoped-fact"
-    :context {:test/reporter reporter}}))
+   {:id "cleanup-scoped-fact"}))
 (def replay-order (deref lifecycle))
-(def replay-events (fact/reporter-events reporter))
+(def replay-events
+  (vec (filter test-event? (work/observer-events observer))))
 
 (def after-error-count (atom 0))
 (fact/register!
@@ -87,31 +94,6 @@
    {:id "cleanup-after-error"}))
 (def after-error-summary
   (test-work/batch-result after-error-runtime after-error-reference))
-
-(def cancelled-body-count (atom 0))
-(def cancelled-hook-count (atom 0))
-(fact/register!
- "controlled cancellation"
- (fn [options]
-   (swap! cancelled-body-count inc)
-   [(fact/check (fn [] 1) 1 options)])
- {:test/definition "definition:controlled-cancellation-v1"
-  :before (fn [] (swap! cancelled-hook-count inc))
-  :after (fn [] (swap! cancelled-hook-count inc))})
-
-(def controlled-runtime (work/durable-runtime))
-(def controlled-reference
-  (test-work/start-batch
-   controlled-runtime
-   {:namespace 'code.test-work-cleanup-test
-    :name "controlled cancellation"
-    :test/revision 23}
-   {:id "controlled-cancellation"
-    :context
-    {:test/control
-     (fact/function-control (fn [subject] true))}}))
-(def controlled-summary
-  (test-work/batch-result controlled-runtime controlled-reference))
 
 (def cancellation-order (atom []))
 (def cancellation-runtime (work/durable-runtime))
@@ -172,11 +154,14 @@
       :after-each
       :after-all]
      7
-     [:run/start :fact/start :fact/end :run/end]
+     [:test/run-started
+      :test/fact-started
+      :test/fact-completed
+      :test/run-completed]
      1 1 1 1])
 
    (test/check
-    "idempotent starts do not rerun hooks or duplicate reporter events"
+    "idempotent starts do not rerun hooks or duplicate observer events"
     [(= (:run/id (work/run-record scoped-runtime scoped-reference))
         (:run/id (work/run-record scoped-runtime same-scoped-reference)))
      replay-order
@@ -189,7 +174,10 @@
       :fact-after
       :after-each
       :after-all]
-     [:run/start :fact/start :fact/end :run/end]])
+     [:test/run-started
+      :test/fact-started
+      :test/fact-completed
+      :test/run-completed]])
 
    (test/check
     "after-hook failures remain completed test-domain errors"
@@ -198,15 +186,6 @@
      (get-in after-error-summary [:counts :error])
      (deref after-error-count)]
     [:completed :failed 1 1])
-
-   (test/check
-    "test controls cancel facts before their hooks and body"
-    [(work/status controlled-runtime controlled-reference)
-     (:status controlled-summary)
-     (get-in controlled-summary [:counts :cancelled])
-     (deref cancelled-body-count)
-     (deref cancelled-hook-count)]
-    [:completed :passed 1 0 0])
 
    (test/check
     "runtime cancellation still executes fact and suite cleanup"
