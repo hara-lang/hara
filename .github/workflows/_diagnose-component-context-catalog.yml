@@ -33,8 +33,24 @@ jobs:
           find core/rust/hal-src -type f \( -path '*/component.hal' -o -path '*/context.hal' \) -print | sort
           echo 'Inventory references:'
           grep -n -E 'std\.(lib\.)?(component|context)|std\.foundation\.(component|context)' core/rust/standard-library.namespaces || true
+      - name: Apply the independently validated plain-report compiler repair
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('core/lib/src/std/work/report/plain.hal')
+          mirror_path = Path('core/rust/hal-src/std/work/report/plain.hal')
+          source = source_path.read_text(encoding='utf-8')
+          source = source.replace('(subs text 0 width)', '(str/slice text 0 width)')
+          source = source.replace('(subs text 0 (- width 3))', '(str/slice text 0 (- width 3))')
+          if '(subs text' in source:
+              raise SystemExit('plain reporter still contains subs')
+          source_path.write_text(source, encoding='utf-8')
+          mirror_path.write_text(source, encoding='utf-8')
+          PY
       - uses: dtolnay/rust-toolchain@stable
-      - name: Reproduce focused bundle compilation
+      - name: Reproduce focused bundle compilation after reporter repair
         shell: bash
         run: |
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm \
