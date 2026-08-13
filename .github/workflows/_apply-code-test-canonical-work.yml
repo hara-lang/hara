@@ -1,0 +1,49 @@
+name: Apply canonical code.test work graph
+
+on:
+  push:
+    branches:
+      - agent/code-test-canonical-work-498
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply the canonical code.test graph migration
+        run: |
+          if [[ -f scripts/runtime/apply-code-test-canonical-work ]]; then
+            python3 scripts/runtime/apply-code-test-canonical-work
+          else
+            echo "Canonical code.test graph migration already applied."
+          fi
+
+      - name: Validate the generated source shape
+        run: |
+          git diff --check
+          python3 scripts/runtime/check-code-test-work-events
+          python3 scripts/runtime/sync-rust-hal-src --check
+          diff -u core/lib/src/code/test.hal core/rust/hal-src/code/test.hal
+          diff -u core/lib/src/code/test/work.hal core/rust/hal-src/code/test/work.hal
+          diff -u \
+            core/lib/src/std/work/runtime/execution/batch.hal \
+            core/rust/hal-src/std/work/runtime/execution/batch.hal
+
+      - name: Commit the canonical runtime cut
+        run: |
+          if git diff --quiet; then
+            echo "No migration changes remain to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Make the fact-batch graph the sole code.test runtime"
+          git push
