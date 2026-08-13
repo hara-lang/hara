@@ -1,0 +1,45 @@
+name: Apply std.work batch stop policy
+
+on:
+  push:
+    branches:
+      - agent/std-work-batch-stop-policy-498
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply batch stop-policy migration
+        run: |
+          if [[ -f scripts/runtime/apply-std-work-batch-stop-policy ]]; then
+            python3 -m py_compile scripts/runtime/apply-std-work-batch-stop-policy
+            python3 scripts/runtime/apply-std-work-batch-stop-policy
+          else
+            echo "Batch stop-policy migration is already applied."
+          fi
+      - name: Validate generated source shape
+        run: |
+          git diff --check
+          diff -u core/lib/src/std/work/runtime/execution/batch.hal core/rust/hal-src/std/work/runtime/execution/batch.hal
+          diff -u core/lib/src/code/test/work.hal core/rust/hal-src/code/test/work.hal
+          grep -q ':stop' core/lib/src/std/work/runtime/execution/batch.hal
+          grep -q ':cancel' core/lib/src/std/work/runtime/execution/batch.hal
+          grep -q 'cancel-unclaimed-fact' core/lib/src/code/test/work.hal
+      - name: Commit the reviewable runtime slice
+        run: |
+          if git diff --quiet; then
+            echo "No source changes remain to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Add runtime-owned batch stop and cancel policy"
+          git push
