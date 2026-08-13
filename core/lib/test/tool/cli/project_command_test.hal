@@ -22,22 +22,24 @@
                 {:request/arguments ["--locked"] :request/options {}})]
               [:offline :locked])
   (test/check
-   "project builds fail closed until the analyzer and pruned emitter exist"
+   "project builds hand the normalized plan to the native analyzer"
    (let [result
-         (command/build-unavailable-result
+         (command/build-analysis-result
           {:project/id 'demo-app
            :project/version "0.1.0"
            :profile/name :production
            :profile/language :hara
            :profile/main 'app.main
+           :build/tree-shake true
            :build/entrypoints ['app.main/start]
            :build/keep-vars []
            :build/keep-namespaces []
            :build/output-bundle "target/demo-app-production.hbx"
-           :build/output-report "target/demo-app-production.shake.edn"})]
+           :build/output-report "target/demo-app-production.shake.edn"})
+         argument (first (get-in result [:result/data :host/arguments]))]
      [(:result/outcome result)
       (:result/exit result)
-      (get-in result [:result/data :build/report :shake/status])
-      (str/includes? (get-in result [:result/data :build/report-source])
-                     ":pending-analysis")])
-   [:tool.cli.outcome/unavailable 2 :pending-analysis true])])
+      (get-in result [:result/data :host/action])
+      (count (get-in result [:result/data :host/arguments]))
+      (str/includes? argument ":build/entrypoints [app.main/start]")])
+   [:tool.cli.outcome/success 0 :production-analyze 1 true])])
