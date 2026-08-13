@@ -40,7 +40,19 @@ LEGACY_ROOTS = (
     Path("core/lib/test/postgres"),
 )
 
+PUBLIC_MODEL_NAMESPACES = (
+    "lang.model.v1.spec-xtalk",
+    "lang.model.v1.spec-hara",
+    "lang.model.v1.spec-js",
+    "lang.model.v1.spec-python",
+    "lang.model.v1.spec-lua",
+    "lang.model.v1.spec-postgres",
+)
+
+LANG_PORT = Path("core/lib/lang-port.edn")
+LANG_REGISTRY = Path("core/lib/src/lang/core/registry.hal")
 NAMESPACE_PATTERN = re.compile(r"^\s*\(ns\+?\s+([^\s\)]+)", re.MULTILINE)
+UNVERSIONED_BOOK_PATTERN = re.compile(r":ns\s+'lang\.model\.spec-")
 
 
 def editor_artifact(path: Path) -> bool:
@@ -75,6 +87,43 @@ def collect_namespaces(roots: tuple[Path, ...]) -> dict[str, list[Path]]:
             if namespace:
                 namespaces[namespace].append(path.relative_to(REPOSITORY))
     return namespaces
+
+
+def check_v1_model_contract(errors: list[str]) -> None:
+    manifest_path = REPOSITORY / LANG_PORT
+    registry_path = REPOSITORY / LANG_REGISTRY
+
+    if not manifest_path.is_file():
+        errors.append(f"language migration manifest is missing: {LANG_PORT}")
+        return
+    if not registry_path.is_file():
+        errors.append(f"language registry is missing: {LANG_REGISTRY}")
+        return
+
+    manifest = manifest_path.read_text(encoding="utf-8")
+    registry = registry_path.read_text(encoding="utf-8")
+
+    if ":version-model-namespaces true" not in manifest:
+        errors.append(
+            "language migration manifest must preserve versioned model namespaces"
+        )
+    if ":public-model-version 1" not in manifest:
+        errors.append("language migration manifest must declare public model version 1")
+
+    for namespace in PUBLIC_MODEL_NAMESPACES:
+        if f'"{namespace}"' not in manifest:
+            errors.append(f"language migration manifest omits public model {namespace}")
+        if f":ns '{namespace}" not in registry:
+            errors.append(f"language registry does not own V1 book coordinate {namespace}")
+
+    if UNVERSIONED_BOOK_PATTERN.search(registry):
+        errors.append(
+            "language registry exposes an unversioned lang.model.spec-* book coordinate"
+        )
+    if ':default-version "alpha"' in registry:
+        errors.append(
+            "language registry uses alpha as a public book version; expected numeric V1"
+        )
 
 
 def main() -> int:
@@ -119,6 +168,8 @@ def main() -> int:
                     + ", ".join(str(path) for path in paths)
                 )
 
+    check_v1_model_contract(errors)
+
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
@@ -128,7 +179,8 @@ def main() -> int:
     test_count = len(collect_namespaces(TEST_ROOTS))
     print(
         "language source layout is consistent: "
-        f"{production_count} production namespaces and {test_count} test namespaces"
+        f"{production_count} production namespaces and {test_count} test namespaces; "
+        "lang.model.v1 is the public model epoch"
     )
     return 0
 
