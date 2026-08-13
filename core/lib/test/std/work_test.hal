@@ -196,6 +196,50 @@
               {:project "hara"}
               {:id "batch-1"}))
 
+(def stop-process-count (atom 0))
+(def stop-cancel-count (atom 0))
+(def stop-runtime (work/durable-runtime))
+(def stop-work
+  (work/batch
+   {:id :stop-aware-batch
+    :version 1}
+   {:list
+    (work/step :stop-list
+      (fn [input context]
+        [{:item/id :a :item/value :a}
+         {:item/id :b :item/value :b}
+         {:item/id :c :item/value :c}]))
+
+    :process
+    (work/step :stop-process
+      (fn [value context]
+        (swap! stop-process-count inc)
+        {:value value
+         :status (if (= value :b) :failed :passed)}))
+
+    :stop
+    (work/pure :stop-after-failure
+      (fn [batch context]
+        (= :failed
+           (get-in batch [:result :item/value :status]))))
+
+    :cancel
+    (work/step :cancel-unclaimed
+      (fn [batch context]
+        (swap! stop-cancel-count inc)
+        {:value (get-in batch [:item :item/value])
+         :status :cancelled}))
+
+    :summarise
+    (work/pure :stop-summary
+      (fn [batch context]
+        (work/manifest-values (:results batch))))}))
+(def stop-reference
+  (work/start stop-runtime stop-work nil {:id "stop-aware-1"}))
+(def stop-result (work/result stop-runtime stop-reference))
+(def same-stop-reference
+  (work/start stop-runtime stop-work nil {:id "stop-aware-1"}))
+
 (def invalid-runtime (work/durable-runtime))
 (def invalid-work
   (work/batch
@@ -238,6 +282,44 @@
        (get (work/work-spec (nth (:children spec) 2)) :op)
        (work/run (work/local-runtime) double-command 4)])
     [:chain 'double-command :step 8])
+
+   (test/check
+    "command batches forward runtime stop and cancel stages"
+    (let [processed (atom 0)
+          cancelled (atom 0)
+          result
+          (work/run
+           (work/local-runtime)
+           (command/batch
+            {:id :command-stop-policy}
+            {:list
+             (work/pure
+              :command-stop-list
+              (fn [input context]
+                [{:item/id :one :item/value 1}
+                 {:item/id :two :item/value 2}
+                 {:item/id :three :item/value 3}]))
+             :process
+             (work/step
+              :command-stop-process
+              (fn [value context]
+                (swap! processed inc)
+                value))
+             :stop
+             (work/pure
+              :command-stop-check
+              (fn [batch context]
+                (= 2 (get-in batch [:result :item/value]))))
+             :cancel
+             (work/step
+              :command-stop-cancel
+              (fn [batch context]
+                (swap! cancelled inc)
+                (- 0 (get-in batch [:item :item/value]))))})
+           nil)]
+      [(work/manifest-values (:results result))
+       [(deref processed) (deref cancelled)]])
+    [[1 2 -3] [2 1]])
 
    (test/check
     "durable recovery replays checkpoints and reruns pure work"
@@ -292,6 +374,18 @@
      [1 4 1 2 1]
      3
      2])
+
+   (test/check
+    "batch stop policy cancels unclaimed items and replays their checkpoints"
+    [(:summary stop-result)
+     [(deref stop-process-count) (deref stop-cancel-count)]
+     (= (:run/id (work/run-record stop-runtime stop-reference))
+        (:run/id (work/run-record stop-runtime same-stop-reference)))]
+    [[{:value :a :status :passed}
+      {:value :b :status :failed}
+      {:value :c :status :cancelled}]
+     [2 1]
+     true])
 
    (test/check
     "idempotent starts return the existing run"

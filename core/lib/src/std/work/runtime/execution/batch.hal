@@ -47,8 +47,158 @@
                              0
                              []))))
 
+(defn batch-result
+  [item value]
+  {:item/id (:item/id item)
+   :item/value value})
+
+(defn batch-stop-input
+  [input manifest processed item result]
+  {:input input
+   :items manifest
+   :results processed
+   :item item
+   :result result})
+
+(defn batch-cancel-input
+  [input manifest processed halt item]
+  {:input input
+   :items manifest
+   :results processed
+   :halt halt
+   :item item})
+
+(defn run-batch-stop
+  [execute runtime frame spec input manifest processed item result]
+  (let [stop-work (:stop spec)]
+    (if (nil? stop-work)
+      false
+      (let [stop-spec (base/work-spec-map stop-work)
+            base-frame (frame/child-frame frame :batch :stop stop-spec)]
+        (execute runtime
+                 (frame/item-frame base-frame (:item/id item))
+                 stop-work
+                 (batch-stop-input input
+                                   manifest
+                                   processed
+                                   item
+                                   result))))))
+
+(defn run-batch-cancel-loop
+  [execute runtime base-frame cancel-work input manifest halt index output]
+  (loop [index index
+         output output]
+    (if (= index (count manifest))
+      output
+      (let [item (nth manifest index)
+            value
+            (execute runtime
+                     (frame/item-frame base-frame (:item/id item))
+                     cancel-work
+                     (batch-cancel-input input
+                                         manifest
+                                         output
+                                         halt
+                                         item))]
+        (if (result/asynchronous? value)
+          (result/then
+           value
+           (fn [resolved]
+             (run-batch-cancel-loop execute
+                                    runtime
+                                    base-frame
+                                    cancel-work
+                                    input
+                                    manifest
+                                    halt
+                                    (inc index)
+                                    (conj output
+                                          (batch-result item resolved)))))
+          (recur (inc index)
+                 (conj output
+                       (batch-result item value))))))))
+
+(defn run-batch-cancel
+  [execute runtime frame spec input manifest halt index output]
+  (let [cancel-work (:cancel spec)]
+    (if (nil? cancel-work)
+      output
+      (let [cancel-spec (base/work-spec-map cancel-work)
+            base-frame
+            (frame/child-frame frame :batch :cancel cancel-spec)]
+        (run-batch-cancel-loop execute
+                               runtime
+                               base-frame
+                               cancel-work
+                               input
+                               manifest
+                               halt
+                               index
+                               output)))))
+
+(declare run-batch-process-loop)
+
+(defn continue-batch-process
+  [execute runtime frame spec input base-frame process-work manifest index output item resolved]
+  (let [entry (batch-result item resolved)
+        processed (conj output entry)
+        stopped
+        (run-batch-stop execute
+                        runtime
+                        frame
+                        spec
+                        input
+                        manifest
+                        processed
+                        item
+                        entry)]
+    (if (result/asynchronous? stopped)
+      (result/then
+       stopped
+       (fn [resolved-stop]
+         (if resolved-stop
+           (run-batch-cancel execute
+                             runtime
+                             frame
+                             spec
+                             input
+                             manifest
+                             entry
+                             (inc index)
+                             processed)
+           (run-batch-process-loop execute
+                                   runtime
+                                   frame
+                                   spec
+                                   input
+                                   base-frame
+                                   process-work
+                                   manifest
+                                   (inc index)
+                                   processed))))
+      (if stopped
+        (run-batch-cancel execute
+                          runtime
+                          frame
+                          spec
+                          input
+                          manifest
+                          entry
+                          (inc index)
+                          processed)
+        (run-batch-process-loop execute
+                                runtime
+                                frame
+                                spec
+                                input
+                                base-frame
+                                process-work
+                                manifest
+                                (inc index)
+                                processed)))))
+
 (defn run-batch-process-loop
-  [execute runtime base-frame process-work manifest index output]
+  [execute runtime frame spec input base-frame process-work manifest index output]
   (loop [index index
          output output]
     (if (= index (count manifest))
@@ -63,26 +213,75 @@
           (result/then
            value
            (fn [resolved]
-             (run-batch-process-loop execute
+             (continue-batch-process execute
                                      runtime
+                                     frame
+                                     spec
+                                     input
                                      base-frame
                                      process-work
                                      manifest
+                                     index
+                                     output
+                                     item
+                                     resolved)))
+          (let [entry (batch-result item value)
+                processed (conj output entry)
+                stopped
+                (run-batch-stop execute
+                                runtime
+                                frame
+                                spec
+                                input
+                                manifest
+                                processed
+                                item
+                                entry)]
+            (if (result/asynchronous? stopped)
+              (result/then
+               stopped
+               (fn [resolved-stop]
+                 (if resolved-stop
+                   (run-batch-cancel execute
+                                     runtime
+                                     frame
+                                     spec
+                                     input
+                                     manifest
+                                     entry
                                      (inc index)
-                                     (conj output
-                                           {:item/id (:item/id item)
-                                            :item/value resolved}))))
-          (recur (inc index)
-                 (conj output
-                       {:item/id (:item/id item)
-                        :item/value value})))))))
+                                     processed)
+                   (run-batch-process-loop execute
+                                           runtime
+                                           frame
+                                           spec
+                                           input
+                                           base-frame
+                                           process-work
+                                           manifest
+                                           (inc index)
+                                           processed))))
+              (if stopped
+                (run-batch-cancel execute
+                                  runtime
+                                  frame
+                                  spec
+                                  input
+                                  manifest
+                                  entry
+                                  (inc index)
+                                  processed)
+                (recur (inc index) processed)))))))))
 
 (defn run-batch-process
-  [execute runtime frame process-work manifest]
+  [execute runtime frame spec input process-work manifest]
   (let [process-spec (base/work-spec-map process-work)
         base-frame (frame/child-frame frame :batch :process process-spec)]
     (run-batch-process-loop execute
                             runtime
+                            frame
+                            spec
+                            input
                             base-frame
                             process-work
                             manifest
@@ -137,7 +336,13 @@
           (run-batch-filter execute runtime frame (:filter spec) manifest)
           (fn [selected]
             (result/then
-             (run-batch-process execute runtime frame process-work selected)
+             (run-batch-process execute
+                                runtime
+                                frame
+                                spec
+                                input
+                                process-work
+                                selected)
              (fn [processed]
                (finish-batch execute
                              runtime

@@ -57,17 +57,6 @@
   [registry namespace name]
   (get (deref registry) [namespace name]))
 
-(defn report-event
-  "Compatibility delivery for direct run-fact callers.
-
-   Canonical suite execution emits durable :test/* events through std.work and
-   uses IWorkObserver. This local adapter accepts only an ordinary function."
-  [reporter event]
-  (if reporter
-    (let [result (reporter event)]
-      (if (nil? result) event result))
-    event))
-
 (extend-type Matcher std.protocol.imatch/IMatch
   (match-value [matcher actual]
     {:pass ((field matcher :predicate) actual)
@@ -582,11 +571,6 @@
   (and (matches-selection? fact options)
        (not (:skip (:meta fact)))))
 
-(defn report!
-  "Sends event to reporter and returns event."
-  [reporter event]
-  (report-event reporter event))
-
 (defn checks-pass?
   [checks]
   (reduce (fn [passing check-result]
@@ -639,19 +623,21 @@
   (if (:cancelled options) true false))
 
 (defn run-fact
-  "Runs one fact and emits start/end events."
-  ([fact reporter]
-   (run-fact fact reporter {}))
-  ([fact reporter options]
+  "Runs one fact and returns a structured test-domain result.
+
+   Work graph stages own lifecycle event emission. This function owns only fact
+   semantics, hooks, assertion classification and optional elapsed projection."
+  ([fact]
+   (run-fact fact {}))
+  ([fact options]
    (let [identity {:namespace (:namespace fact)
                    :name (:name fact)
                    :meta (:meta fact)}
-         start (clock-now options)]
-     (report! reporter (merge {:event :fact/start} identity))
-     (let [result
-           (if (:skip (:meta fact))
-             (merge identity {:status :skipped :checks []})
-             (if (fact-cancelled? fact options)
+         start (clock-now options)
+         result
+         (if (:skip (:meta fact))
+           (merge identity {:status :skipped :checks []})
+           (if (fact-cancelled? fact options)
              (merge identity {:status :cancelled :checks []})
              (try
                (let [checks
@@ -679,12 +665,11 @@
                         {:status :error
                          :checks []
                          :error (str error)})))))
-           end (clock-now options)
-           timed-result (if (and start end)
-                          (assoc result :elapsed (- end start))
-                          result)]
-       (report! reporter (merge {:event :fact/end} timed-result))
-       timed-result))))
+         end (clock-now options)
+         timed-result (if (and start end)
+                        (assoc result :elapsed (- end start))
+                        result)]
+     timed-result)))
 
 (defn result-counts
   [results]
@@ -746,62 +731,75 @@
   [facts]
   (reduce insert-fact [] facts))
 
+(defn fact-event-identity
+  [fact]
+  {:namespace (:namespace fact)
+   :name (:name fact)
+   :meta (:meta fact)})
+
+(defn run-fact-with-events
+  [fact options context]
+  (work/emit! context :test/fact-started (fact-event-identity fact))
+  (let [result (run-fact fact options)]
+    (work/emit! context :test/fact-completed result)
+    result))
+
 (defn run-facts
-  [facts reporter options]
+  [facts options context]
   (loop [index 0
          results []
          cancelled false]
     (if (= index (count facts))
       results
-      (let [result (run-fact (nth facts index)
-                             reporter
-                             (assoc options :cancelled cancelled))
+      (let [result (run-fact-with-events
+                    (nth facts index)
+                    (assoc options :cancelled cancelled)
+                    context)
             stop (or cancelled
                      (and (:fail-fast options)
                           (failing-status? (:status result))))]
         (recur (inc index) (conj results result) stop)))))
 
 (defn run-selected
-  [input options]
-  (let [reporter (:reporter options)
-        selected (vec
+  [options context]
+  (let [selected (vec
                   (filter (fn [fact] (matches-selection? fact options))
                           (tests)))
         namespace (if (seq selected) (:namespace (first selected)) nil)
         suite-options (or (get (deref +global-settings+) namespace) {})
-        options (merge suite-options options)
-        start-report (report! reporter {:event :run/start :count (count selected)})
-        results (try
-                  (do
-                    (run-hook (:before-all options) options)
-                    (run-facts selected reporter options))
-                  (finally
-                    (run-hook (:after-all options) options)))
-        counts (result-counts results)
-        checks (attach-check-total (check-counts results))
-        status (if (and (= 0 (:failed counts))
-                        (= 0 (:error counts))
-                        (= 0 (:timeout counts)))
-                 :passed
-                 :failed)
-        namespaces
-        (reduce (fn [output result]
-                  (conj output (:namespace result)))
-                #{}
-                results)
-        summary {:status status
-                 :counts counts
-                 :check-counts checks
-                 :files (count namespaces)
-                 :facts (count results)
-                 :checks (:total checks)
-                 :passed (:passed checks)
-                 :failed (:failed checks)
-                 :throw (:error counts)
-                 :timeout (:timeout counts)
-                 :results results}
-        end-report (report! reporter (merge {:event :run/end} summary))]
-    summary))
+        options (merge suite-options options)]
+    (work/emit! context :test/run-started {:count (count selected)})
+    (let [results (try
+                    (do
+                      (run-hook (:before-all options) options)
+                      (run-facts selected options context))
+                    (finally
+                      (run-hook (:after-all options) options)))
+          counts (result-counts results)
+          checks (attach-check-total (check-counts results))
+          status (if (and (= 0 (:failed counts))
+                          (= 0 (:error counts))
+                          (= 0 (:timeout counts)))
+                   :passed
+                   :failed)
+          namespaces
+          (reduce (fn [output result]
+                    (conj output (:namespace result)))
+                  #{}
+                  results)
+          summary {:status status
+                   :counts counts
+                   :check-counts checks
+                   :files (count namespaces)
+                   :facts (count results)
+                   :checks (:total checks)
+                   :passed (:passed checks)
+                   :failed (:failed checks)
+                   :throw (:error counts)
+                   :timeout (:timeout counts)
+                   :results results}]
+      (work/emit! context :test/run-completed summary)
+      summary)))
 
 (def +default-work-revision+ 1)
 
@@ -830,25 +828,6 @@
   (merge (or input {})
          (work-context-options context)))
 
-(defn work-event-kind
-  [event]
-  (cond
-    (= event :run/start) :test/run-started
-    (= event :run/end) :test/run-completed
-    (= event :fact/start) :test/fact-started
-    (= event :fact/end) :test/fact-completed
-    :else :test/event))
-
-(defn work-reporter
-  "Returns a local event function that commits through the active work frame."
-  [context]
-  (fn [event]
-    (let [event-kind (work-event-kind (:event event))
-          data (assoc (dissoc event :event)
-                      :test/event (:event event))]
-      (work/emit! context event-kind data)
-      event)))
-
 (defn suite-work
   "Returns one checkpointed suite boundary preserving code.test's existing
    before-all/after-all, fail-fast, cancellation, timeout, and reporting rules."
@@ -860,10 +839,8 @@
      :version suite-revision
      :test/revision suite-revision}
     (fn [input context]
-      (run-selected nil
-                    (assoc (work-execution-options input context)
-                           :reporter
-                           (work-reporter context)))))))
+      (run-selected (work-execution-options input context)
+                    context)))))
 
 (def +runner-work+ (suite-work))
 
