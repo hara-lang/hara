@@ -1,4 +1,4 @@
-name: Agent refresh named-value foundation bundle
+name: Agent repair context pointer foundation bundle
 
 on:
   push:
@@ -16,10 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - name: Check out current main
+      - name: Check out the context pointer repair
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: agent/fix-context-pointer-foundation-bundle
           path: work
           fetch-depth: 0
 
@@ -40,13 +40,31 @@ jobs:
         with:
           components: clippy,rustfmt
 
-      - name: Regenerate and verify the foundation bundle
+      - name: Generate the Rust mirror and foundation bundle
         working-directory: work
         run: |
+          scripts/runtime/sync-rust-hal-src
+          scripts/runtime/sync-rust-hal-src --check
           cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
           cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
           git diff --check
-          test -n "$(git status --short -- core/rust/assets/std.foundation.hbx)"
+          python3 - <<'PY'
+          import subprocess
+
+          expected = {
+              "core/rust/assets/std.foundation.hbx",
+              "core/rust/hal-src/std/context/pointer.hal",
+          }
+          status = subprocess.check_output(
+              ["git", "status", "--short"], text=True
+          ).splitlines()
+          changed = {line[3:] for line in status if line.strip()}
+          if changed != expected:
+              raise SystemExit(
+                  f"unexpected generated file set: {sorted(changed)}; "
+                  f"expected {sorted(expected)}"
+              )
+          PY
 
       - name: Run focused named-value acceptance tests
         working-directory: work
@@ -57,12 +75,13 @@ jobs:
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_mutables_share_storage_and_reject_persistent_updates -- --nocapture
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm structs_preserve_wire_shape_and_mutables_are_rejected -- --nocapture
 
-      - name: Commit and publish the generated bundle
+      - name: Commit generated outputs to the repair branch
         working-directory: work
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git switch -C agent/refresh-named-value-foundation-bundle
-          git add core/rust/assets/std.foundation.hbx
-          git commit -m 'Refresh the embedded foundation bundle'
-          git push --force origin HEAD:refs/heads/agent/refresh-named-value-foundation-bundle
+          git add \
+            core/rust/assets/std.foundation.hbx \
+            core/rust/hal-src/std/context/pointer.hal
+          git commit -m 'Refresh the context pointer foundation bundle'
+          git push origin HEAD:refs/heads/agent/fix-context-pointer-foundation-bundle
