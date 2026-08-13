@@ -1,0 +1,127 @@
+(ns code.translate-rules-test
+  (:require [code.translate :as translate]
+            [code.translate.rule :as rule]
+            [std.lib.test :as test]))
+
+(def source
+  "(ns demo.core\n  (:require [std.protocol.block :as protocol]\n            [std.block.navigate :as nav]\n            [std.lib.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n")
+
+(def results
+  [(test/check "compiled rules retain safety and evidence totals"
+               [(translate/rules-summary)
+                (every? (fn [entry] (not (empty? (:evidence entry))))
+                        translate/rules)
+                (vec (map :compiled/index translate/rules))]
+               [{:total 12 :safe 2 :review 2 :manual 8}
+                true
+                [0 1 2 3 4 5 6 7 8 9 10 11]])
+
+   (test/check "automatic matcher conflicts are rejected"
+               (let [base (first translate/rules)
+                     conflicting
+                     (assoc
+                      (assoc base :id :namespace/conflicting-rule)
+                      :priority 101)]
+                 (try
+                   (do
+                     (rule/compile-rules [base conflicting])
+                     nil)
+                   (catch Throwable error
+                     (ex-message error))))
+               "Conflicting automatic Clojure to HAL rules")
+
+   (test/check "lint mode reports matches without rewriting"
+               (let [result (translate/lint-source source)]
+                 [(:output result)
+                  (:changed result)
+                  (vec (map :rule/id (:rules/matched result)))
+                  (count (:rules/applied result))
+                  (vec (map :type (:diagnostics result)))])
+               [source
+                false
+                [:namespace/std-protocol-block
+                 :namespace/std-block-navigation
+                 :namespace/std-lib-foundation
+                 :host/clojure-tools-reader
+                 :form/definterface
+                 :form/defmulti]
+                0
+                [:code.translate/match
+                 :code.translate/match
+                 :code.translate/match
+                 :code.translate/manual
+                 :code.translate/manual
+                 :code.translate/manual]])
+
+   (test/check "safe mode applies only proven mechanical namespace moves"
+               (let [result (translate/translate-source source {:mode :safe})]
+                 [(:output result)
+                  (:changed result)
+                  (vec (map :rule/id (:rules/applied result)))])
+               ["(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.lib.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+                true
+                [:namespace/std-protocol-block
+                 :namespace/std-block-navigation]])
+
+   (test/check "review mode applies reviewed consolidation rules"
+               (let [result (translate/translate-source source {:mode :review})]
+                 [(:output result)
+                  (vec (map :rule/id (:rules/applied result)))])
+               ["(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+                [:namespace/std-protocol-block
+                 :namespace/std-block-navigation
+                 :namespace/std-lib-foundation]])
+
+   (test/check "manual constructs are never changed"
+               (let [manual "(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+                     result (translate/translate-source manual {:mode :review})]
+                 [(:output result)
+                  (:changed result)
+                  (count (:rules/applied result))
+                  (vec (map :type (:diagnostics result)))])
+               ["(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+                false
+                0
+                [:code.translate/manual :code.translate/manual]])
+
+   (test/check "supported translations are idempotent"
+               (let [first-pass (translate/translate-source source {:mode :review})
+                     second-pass
+                     (translate/translate-source (:output first-pass)
+                                                 {:mode :review})]
+                 [(:output first-pass)
+                  (:output second-pass)
+                  (:changed second-pass)
+                  (count (:rules/applied second-pass))])
+               ["(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+                "(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+                false
+                0])
+
+   (test/check "rewrites preserve unrelated comments and whitespace"
+               (let [commented
+                     "(ns demo.core\n  (:require [std.protocol.block  ; keep this alias\n             :as protocol]))\n"
+                     result
+                     (translate/translate-source commented {:mode :safe})]
+                 (:output result))
+               "(ns demo.core\n  (:require [std.block.protocol  ; keep this alias\n             :as protocol]))\n")
+
+   (test/check "diagnostics retain file, range, path, and rule evidence"
+               (let [result
+                     (translate/lint-source
+                      "(ns demo (:require [std.protocol.block :as protocol]))"
+                      {:file "demo.clj"})
+                     finding (first (:diagnostics result))]
+                 [(select-keys finding
+                               [:type :rule/id :file
+                                :start-offset :end-offset :source])
+                  (not (empty? (:evidence finding)))])
+               [{:type :code.translate/match
+                 :rule/id :namespace/std-protocol-block
+                 :file "demo.clj"
+                 :start-offset 20
+                 :end-offset 38
+                 :source "std.protocol.block"}
+                true])])
+
+(test/print-results results)
