@@ -1,7 +1,5 @@
 use super::manifest::merge_sources;
-use super::{
-    merged_manifest_source, BASE_MANIFEST_SOURCE, PROJECT_BUILD_MANIFEST_SOURCE,
-};
+use super::{merged_manifest_source, BASE_MANIFEST_SOURCE, PROJECT_BUILD_MANIFEST_SOURCE};
 use crate::kernel::parse;
 
 fn repo_text(relative: &str) -> Option<String> {
@@ -28,11 +26,7 @@ fn project_build_extension_is_valid_and_idempotent() {
     parse(PROJECT_BUILD_MANIFEST_SOURCE).expect("CLI extension must be valid EDN");
     parse(merged_manifest_source()).expect("merged CLI manifest must be valid EDN");
     assert_eq!(
-        merge_sources(
-            merged_manifest_source(),
-            PROJECT_BUILD_MANIFEST_SOURCE,
-        )
-        .unwrap(),
+        merge_sources(merged_manifest_source(), PROJECT_BUILD_MANIFEST_SOURCE,).unwrap(),
         merged_manifest_source()
     );
 }
