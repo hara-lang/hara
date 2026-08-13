@@ -47,13 +47,18 @@ jobs:
         with:
           components: rustfmt
 
+      - name: Reuse the Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: work/core/rust -> target
+
       - name: Build and test the clean repair
         shell: bash
         working-directory: work
         run: |
           set -euo pipefail
           exec > >(tee "$GITHUB_WORKSPACE/foundation-bootstrap.log") 2>&1
-          git switch -C agent/repair-foundation-bootstrap-v3
+          git switch -C agent/repair-foundation-bootstrap-v4
 
           python3 - <<'PY'
           from pathlib import Path
@@ -98,8 +103,29 @@ jobs:
           if test.count(anchor) != 1:
               raise SystemExit(f"expected one renderer test anchor, found {test.count(anchor)}")
           test_path.write_text(test.replace(anchor, addition + anchor, 1), encoding="utf-8")
+
+          rust_test_path = Path("core/rust/src/lib.rs")
+          rust_test = rust_test_path.read_text(encoding="utf-8")
+          replacements = [
+              (
+                  '.eval_text("(assoc (Cursor 1 2) :x 3)")',
+                  '.eval_text("(do (defmutable Cursor [x y]) (assoc (Cursor 1 2) :x 3))")',
+              ),
+              (
+                  '.eval_text("(dissoc (Cursor 1 2) :x)")',
+                  '.eval_text("(do (defmutable Cursor [x y]) (dissoc (Cursor 1 2) :x))")',
+              ),
+          ]
+          for old_probe, new_probe in replacements:
+              if rust_test.count(old_probe) != 1:
+                  raise SystemExit(
+                      f"expected one mutable probe anchor, found {rust_test.count(old_probe)}: {old_probe}"
+                  )
+              rust_test = rust_test.replace(old_probe, new_probe, 1)
+          rust_test_path.write_text(rust_test, encoding="utf-8")
           PY
 
+          cargo fmt --manifest-path core/rust/Cargo.toml --all
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
           cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
@@ -124,6 +150,7 @@ jobs:
               "core/rust/assets/std.foundation.hbx",
               "core/rust/hal-src/std/context/pointer.hal",
               "core/rust/hal-src/std/work/report/plain.hal",
+              "core/rust/src/lib.rs",
           }
           status = subprocess.check_output(["git", "status", "--short"], text=True).splitlines()
           changed = {line[3:] for line in status if line.strip()}
@@ -144,9 +171,10 @@ jobs:
             core/lib/test/std/work_report_renderer_test.hal \
             core/rust/assets/std.foundation.hbx \
             core/rust/hal-src/std/context/pointer.hal \
-            core/rust/hal-src/std/work/report/plain.hal
+            core/rust/hal-src/std/work/report/plain.hal \
+            core/rust/src/lib.rs
           git commit -m 'Repair and refresh the Foundation bootstrap bundle'
-          git push --force origin HEAD:refs/heads/agent/repair-foundation-bootstrap-v3
+          git push --force origin HEAD:refs/heads/agent/repair-foundation-bootstrap-v4
 
       - name: Preserve diagnostics on failure
         if: failure()
