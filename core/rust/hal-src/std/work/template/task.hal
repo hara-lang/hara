@@ -1,0 +1,375 @@
+(ns std.work.template.task
+  (:refer-clojure :exclude [compile])
+  (:require [std.work :as work]
+            [std.work.command :as command]
+            [std.work.command.result :as result]
+            [std.work.command.selector :as selector]
+            [std.work.report :as report]))
+
+(def schema-id "std.work.template.task/0-alpha")
+
+(def parity-statuses
+  #{:implemented :partial :host-adapted :intentional-change :obsolete :missing})
+
+(def event-types
+  [:task/run-started
+   :task/input-prepared
+   :task/items-listed
+   :task/items-selected
+   :task/item-started
+   :task/item-completed
+   :task/item-warning
+   :task/item-error
+   :task/results-ready
+   :task/warnings-ready
+   :task/errors-ready
+   :task/summary-ready
+   :task/run-completed])
+
+;; This is intentionally honest. It is the executable checklist that will move
+;; from partial/missing to implemented as Foundation behavior is restored.
+(def feature-contract
+  [{:feature :definition/id-version :status :implemented}
+   {:feature :definition/defaults-by-type :status :missing}
+   {:feature :main/arity-adapter-1-4 :status :missing}
+   {:feature :main/additional-arguments :status :missing}
+   {:feature :construct/input :status :partial}
+   {:feature :construct/environment :status :missing}
+   {:feature :construct/lookup :status :missing}
+   {:feature :item/list :status :implemented}
+   {:feature :item/select :status :implemented}
+   {:feature :item/pre-run-post :status :implemented}
+   {:feature :item/output :status :partial}
+   {:feature :item/display :status :partial}
+   {:feature :execution/random :status :missing}
+   {:feature :execution/parallel :status :host-adapted}
+   {:feature :execution/deterministic-report-order :status :partial}
+   {:feature :execution/cancellation :status :host-adapted}
+   {:feature :execution/timeout :status :host-adapted}
+   {:feature :result/warnings-errors-results :status :implemented}
+   {:feature :result/ignore-derived-format-order :status :partial}
+   {:feature :result/columns :status :partial}
+   {:feature :summary/aggregate :status :implemented}
+   {:feature :summary/finalise :status :partial}
+   {:feature :summary/elapsed-cumulative :status :partial}
+   {:feature :summary/annotations :status :missing}
+   {:feature :report/title-sections-labels :status :implemented}
+   {:feature :report/live-stage-events :status :partial}
+   {:feature :report/plain-terminal-renderers :status :missing}
+   {:feature :return/selection :status :implemented}
+   {:feature :return/map-vector-packaging :status :partial}])
+
+(def default-execution
+  {:order :input
+   :parallel false
+   :random false
+   :fail-fast false})
+
+(def default-return
+  {:select :results
+   :package :map})
+
+(defn feature-status
+  [feature]
+  (:status
+   (first
+    (filter
+     (fn [entry] (= feature (:feature entry)))
+     feature-contract))))
+
+(defn incomplete-features
+  []
+  (vec
+   (filter
+    (fn [entry]
+      (or (= :partial (:status entry))
+          (= :missing (:status entry))))
+    feature-contract)))
+
+(defn assert-definition!
+  [definition]
+  (if (not (map? definition))
+    (throw
+     (ex-info "Task template definition must be a map"
+              {:definition definition})))
+  (if (nil? (or (:task/id definition) (:id definition)))
+    (throw (ex-info "Task template requires an id" {})))
+  (if (nil? (or (get-in definition [:item :run])
+                (get-in definition [:main :fn])
+                (:run definition)))
+    (throw (ex-info "Task template requires an item run function" {})))
+  definition)
+
+(defn normalise-definition
+  [definition]
+  (let [definition (assert-definition! definition)
+        schema (or (:schema definition) schema-id)
+        id (or (:task/id definition) (:id definition))
+        version (or (:task/version definition) (:version definition) 1)
+        item (or (:item definition) {})
+        run (or (:run item)
+                (get-in definition [:main :fn])
+                (:run definition))]
+    (if (not= schema schema-id)
+      (throw
+       (ex-info "Task template schema is not supported"
+                {:schema schema})))
+    {:schema schema-id
+     :task/id id
+     :task/version version
+     :construct (or (:construct definition) {})
+     :item (assoc item :run run)
+     :execution (merge default-execution (or (:execution definition) {}))
+     :result (or (:result definition) {})
+     :summary (or (:summary definition) {})
+     :report (report/normalise-profile (:report definition))
+     :return (merge default-return (or (:return definition) {}))
+     :metadata (or (:metadata definition) {})}))
+
+(defn task-item-id
+  [value index]
+  (if (and (map? value) (has? value :item/id))
+    (:item/id value)
+    (if (or (string? value) (number? value) (keyword? value) (symbol? value))
+      value
+      index)))
+
+(defn task-item-value
+  [value]
+  (if (and (map? value) (has? value :item/value))
+    (:item/value value)
+    value))
+
+(defn manifest
+  [values selector-value]
+  (let [values (vec (or values []))
+        selected
+        (vec
+         (filter
+          (fn [value]
+            (selector/matches?
+             selector-value
+             (task-item-id value 0)))
+          values))
+        total (count selected)]
+    (loop [index 0
+           output []]
+      (if (= index total)
+        output
+        (let [value (nth selected index)
+              id (task-item-id value index)]
+          (recur
+           (inc index)
+           (conj output
+                 {:item/id id
+                  :item/value
+                  {:task/item-id id
+                   :task/index index
+                   :task/total total
+                   :task/value (task-item-value value)}})))))))
+
+(defn prepare-input
+  [definition input context]
+  (let [construct (get-in definition [:construct :input])
+        prepared (if construct (construct input context) input)
+        selector-value
+        (or (if (map? input) (:selector input) nil)
+            (get-in definition [:item :selector])
+            :all)]
+    (work/emit! context :task/run-started
+                {:task/id (:task/id definition)
+                 :task/version (:task/version definition)})
+    (work/emit! context :task/input-prepared
+                {:task/id (:task/id definition)})
+    {:task/input prepared
+     :task/selector selector-value}))
+
+(defn list-items
+  [definition prepared context]
+  (let [list-function (get-in definition [:item :list])
+        input (:task/input prepared)
+        values (if list-function
+                 (list-function input context)
+                 [input])
+        listed (vec (or values []))
+        items (manifest listed (:task/selector prepared))]
+    (work/emit! context :task/items-listed
+                {:task/id (:task/id definition)
+                 :count (count listed)})
+    (work/emit! context :task/items-selected
+                {:task/id (:task/id definition)
+                 :count (count items)})
+    items))
+
+(defn status-event
+  [status]
+  (cond
+    (= :warn status) :task/item-warning
+    (or (= :error status) (= :critical status)) :task/item-error
+    :else nil))
+
+(defn run-item
+  [definition subject context]
+  (let [item (:item definition)
+        value (:task/value subject)
+        pre (:pre item)
+        post (:post item)
+        run (:run item)
+        clock (:clock/now context)
+        started (if clock (clock) nil)
+        base {:item/id (:task/item-id subject)
+              :item/index (:task/index subject)
+              :item/total (:task/total subject)
+              :item/input value}]
+    (work/emit! context :task/item-started base)
+    (let [record
+          (try
+            (let [prepared (if pre (pre value) value)
+                  raw (run prepared context)
+                  completed (if post (post raw) raw)]
+              (merge base
+                     (result/normalise (:task/item-id subject) completed)))
+            (catch Throwable error
+              (merge base
+                     (result/error-record (:task/item-id subject) error))))
+          finished (if clock (clock) nil)
+          record (if clock
+                   (assoc record
+                          :elapsed (- finished started)
+                          :time (- finished started))
+                   record)
+          event (status-event (:status record))]
+      (if event (work/emit! context event {:record record}) nil)
+      (work/emit! context :task/item-completed {:record record})
+      record)))
+
+(defn result-options
+  [definition]
+  {:ignore (get-in definition [:result :ignore])
+   :output (or (get-in definition [:result :output])
+               (get-in definition [:item :output]))
+   :aggregate (get-in definition [:summary :aggregate])
+   :finalise (get-in definition [:summary :finalise])})
+
+(defn report-status
+  [bundle]
+  (cond
+    (< 0 (count (:errors bundle))) :failed
+    (< 0 (count (:warnings bundle))) :warning
+    :else :completed))
+
+(defn report-section
+  [definition bundle id]
+  (let [labels (get-in definition [:report :labels])
+        title (get labels id)]
+    (case id
+      :items
+      (report/section id :progress (:records bundle) {:section/title title})
+      :warnings
+      (report/section id :diagnostics (:warnings bundle) {:section/title title})
+      :errors
+      (report/section id :diagnostics (:errors bundle) {:section/title title})
+      :results
+      (report/section id :table (:results bundle)
+                      {:section/title title
+                       :section/columns (get-in definition [:result :columns])})
+      :summary
+      (report/section id :summary [(:summary bundle)] {:section/title title})
+      (report/section id :text [] {:section/title title}))))
+
+(defn task-report
+  [definition bundle]
+  (let [profile (:report definition)
+        initial
+        (report/document
+         (:task/id definition)
+         {:profile profile
+          :title (:title profile)
+          :status (report-status bundle)})]
+    (loop [sections (:sections profile)
+           document initial]
+      (if (empty? sections)
+        (report/complete document (report-status bundle))
+        (recur (vec (rest sections))
+               (report/add-section
+                document
+                (report-section definition bundle (first sections))))))))
+
+(defn summarise
+  [definition batch context]
+  (let [bundle (result/summarise batch (result-options definition))
+        bundle (assoc bundle :report (task-report definition bundle))]
+    (work/emit! context :task/warnings-ready
+                {:count (count (:warnings bundle))})
+    (work/emit! context :task/errors-ready
+                {:count (count (:errors bundle))})
+    (work/emit! context :task/results-ready
+                {:count (count (:results bundle))})
+    (work/emit! context :task/summary-ready
+                {:summary (:summary bundle)})
+    bundle))
+
+(defn package-value
+  [value package]
+  (if (= :vector package)
+    (cond
+      (vector? value) value
+      (map? value) (vec (vals value))
+      :else [value])
+    value))
+
+(defn finish
+  [definition batch context]
+  (let [bundle (or (:summary batch) batch)
+        selection (get-in definition [:return :select])
+        package (get-in definition [:return :package])
+        output (result/package bundle selection)]
+    (work/emit! context :task/run-completed
+                {:task/id (:task/id definition)
+                 :status (report-status bundle)
+                 :summary (:summary bundle)})
+    (package-value output package)))
+
+(defn compile
+  "Compiles the first local task-template profile into an ordinary std.work
+   graph. Remaining Foundation parity is tracked explicitly in feature-contract."
+  [definition]
+  (let [definition (normalise-definition definition)
+        id (:task/id definition)
+        version (:task/version definition)]
+    (command/batch
+     {:id id
+      :version version
+      :template/schema schema-id
+      :template/definition definition}
+     {:prepare
+      (work/pure
+       {:id :task/prepare :version version}
+       (fn [input context]
+         (prepare-input definition input context)))
+      :list
+      (work/pure
+       {:id :task/list :version version}
+       (fn [prepared context]
+         (list-items definition prepared context)))
+      :process
+      (work/step
+       {:id :task/process :version version}
+       (fn [subject context]
+         (run-item definition subject context)))
+      :summarise
+      (work/pure
+       {:id :task/summarise :version version}
+       (fn [batch context]
+         (summarise definition batch context)))
+      :finish
+      (work/pure
+       {:id :task/finish :version version}
+       (fn [batch context]
+         (finish definition batch context)))})))
+
+(def template compile)
+
+(defn task-work?
+  [work-value]
+  (= schema-id (:template/schema (work/work-spec work-value))))
