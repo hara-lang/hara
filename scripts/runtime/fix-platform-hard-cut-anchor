@@ -15,36 +15,31 @@ pattern = re.compile(
     re.DOTALL,
 )
 
-replacement = '''replace_once(
+replacement = r'''replace_once(
     "core/java/src/main/java/hara/truffle/HaraJavaAdapters.java",
     '    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));',
-    '    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));\\n'
+    '    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));\n'
     '    context.defineProtocol("IMatch", Map.of("match-value", 2));',
 )
 
 rust_lookup = '    ("ILookup", &[("lookup", usize::MAX)]),'
 rust_replacement = (
     rust_lookup
-    + '\\n'
+    + '\n'
     + '    ("IMatch", &[("match-value", 2)]),'
 )
-rust_protocol_file = nil
+rust_protocol_file = None
 for candidate in ["core/rust/src/core.rs", "core/rust/src/lib.rs"]:
     if rust_lookup in read(candidate):
         rust_protocol_file = candidate
         break
-if (nil? rust_protocol_file):
+if rust_protocol_file is None:
     raise SystemExit("Rust platform protocol catalog does not contain ILookup")
 replace_once(rust_protocol_file, rust_lookup, rust_replacement)
 
 # IContextEval'''
 
-# The generated Hara source uses Python here, so use Python values rather than
-# HAL spellings in the injected migration block.
-replacement = replacement.replace("rust_protocol_file = nil", "rust_protocol_file = None")
-replacement = replacement.replace("if (nil? rust_protocol_file):", "if rust_protocol_file is None:")
-
-updated, count = pattern.subn(replacement, source, count=1)
+updated, count = pattern.subn(lambda match: replacement, source, count=1)
 if count != 1:
     raise SystemExit("platform protocol migration block was not found exactly once")
 TARGET.write_text(updated, encoding="utf-8")
