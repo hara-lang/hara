@@ -2,7 +2,8 @@
   (:require [std.lib.test :as test]
             [std.work :as work]
             [std.work.command :as command]
-            [std.work.command.task :as task]))
+            [std.work.command.task :as task]
+            [std.work.template.task :as task-template]))
 
 (def unit-work
   (task/unit
@@ -41,6 +42,39 @@
 
 (def batch-item-result
   (:item/value (first (:results batch-result))))
+
+(def template-definition
+  {:id :example/template-unit
+   :version 1
+   :item
+   {:list (fn [values context] values)
+    :pre (fn [value] (+ value 1))
+    :run (fn [value context] (* value 2))
+    :post (fn [value] (+ value 3))
+    :display (fn [value] (str "value=" value))}
+   :return {:select :results :package :vector}})
+
+(def normalised-template
+  (task-template/normalise-definition template-definition))
+
+(def template-unit-work
+  (task-template/unit-work normalised-template))
+
+(def template-direct-result
+  (work/run
+   (work/local-runtime)
+   template-unit-work
+   {:task/value 1
+    :task/item-id 1
+    :task/index 0
+    :task/source-index 0
+    :task/total 1}))
+
+(def template-bulk-result
+  (work/run
+   (work/local-runtime)
+   (task-template/template template-definition)
+   [1]))
 
 (def subject-work
   (task/unit
@@ -115,6 +149,13 @@
     "command.batch expands the exact unit without changing its item result"
     batch-item-result
     direct-result)
+
+   (test/check
+    "the task template delegates its process stage to the reusable unit command"
+    [(task/task-work? template-unit-work)
+     (:command/schema (work/work-spec template-unit-work))
+     (first template-bulk-result)]
+    [true "std.work.command.task/0-alpha" template-direct-result])
 
    (test/check
     "prepared subjects can project input and metadata while remaining available to the run function"
