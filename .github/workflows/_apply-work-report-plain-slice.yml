@@ -1,0 +1,75 @@
+name: Apply work report plain slice repair
+
+on:
+  push:
+    branches:
+      - agent/fix-work-report-plain-slice
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace evaluator-only substring calls
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('core/lib/src/std/work/report/plain.hal')
+          mirror_path = Path('core/rust/hal-src/std/work/report/plain.hal')
+          test_path = Path('core/lib/test/std/work_report_renderer_test.hal')
+
+          source = source_path.read_text(encoding='utf-8')
+          old = '(subs text 0 width)'
+          if source.count(old) != 1:
+              raise SystemExit(f'expected one short-width subs call, found {source.count(old)}')
+          source = source.replace(old, '(str/slice text 0 width)', 1)
+          old = '(subs text 0 (- width 3))'
+          if source.count(old) != 1:
+              raise SystemExit(f'expected one ellipsis subs call, found {source.count(old)}')
+          source = source.replace(old, '(str/slice text 0 (- width 3))', 1)
+          source_path.write_text(source, encoding='utf-8')
+          mirror_path.write_text(source, encoding='utf-8')
+
+          test = test_path.read_text(encoding='utf-8')
+          anchor = '''   (test/check
+    "empty sections are hidden unless explicitly requested"'''
+          addition = '''   (test/check
+    "plain truncation uses the portable string slice primitive"
+    [(plain/truncate "abcdef" 3)
+     (plain/truncate "abcdefgh" 6)]
+    ["abc" "abc..."])
+
+'''
+          if test.count(anchor) != 1:
+              raise SystemExit(f'expected one renderer test anchor, found {test.count(anchor)}')
+          test_path.write_text(test.replace(anchor, addition + anchor, 1), encoding='utf-8')
+          PY
+
+      - name: Validate source, mirror, and full HAL library
+        shell: bash
+        run: |
+          git diff --check
+          diff -u core/lib/src/std/work/report/plain.hal core/rust/hal-src/std/work/report/plain.hal
+          python3 scripts/runtime/sync-rust-hal-src --check
+          ./scripts/runtime/run-lib-tests core/lib
+
+      - name: Commit repair
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            core/lib/src/std/work/report/plain.hal \
+            core/rust/hal-src/std/work/report/plain.hal \
+            core/lib/test/std/work_report_renderer_test.hal
+          git diff --cached --check
+          git commit -m "Use portable string slicing in plain work reports"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
