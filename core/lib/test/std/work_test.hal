@@ -284,6 +284,44 @@
     [:chain 'double-command :step 8])
 
    (test/check
+    "command batches forward runtime stop and cancel stages"
+    (let [processed (atom 0)
+          cancelled (atom 0)
+          result
+          (work/run
+           (work/local-runtime)
+           (command/batch
+            {:id :command-stop-policy}
+            {:list
+             (work/pure
+              :command-stop-list
+              (fn [input context]
+                [{:item/id :one :item/value 1}
+                 {:item/id :two :item/value 2}
+                 {:item/id :three :item/value 3}]))
+             :process
+             (work/step
+              :command-stop-process
+              (fn [value context]
+                (swap! processed inc)
+                value))
+             :stop
+             (work/pure
+              :command-stop-check
+              (fn [batch context]
+                (= 2 (get-in batch [:result :item/value]))))
+             :cancel
+             (work/step
+              :command-stop-cancel
+              (fn [batch context]
+                (swap! cancelled inc)
+                (- 0 (get-in batch [:item :item/value]))))})
+           nil)]
+      [(work/manifest-values (:results result))
+       [(deref processed) (deref cancelled)]])
+    [[1 2 -3] [2 1]])
+
+   (test/check
     "durable recovery replays checkpoints and reruns pure work"
     [recovery-status-before
      (work/status recovery-runtime-after recovery-reference-after)
