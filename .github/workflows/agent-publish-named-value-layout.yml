@@ -1,0 +1,91 @@
+name: Agent publish named-value module layout
+
+on:
+  push:
+    branches:
+      - agent/persistent-defstruct-defmutable
+    paths:
+      - .github/agent/split-named-value-modules.py
+      - .github/workflows/agent-publish-named-value-layout.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the materializer
+        uses: actions/checkout@v4
+        with:
+          ref: agent/persistent-defstruct-defmutable
+          path: staging
+          fetch-depth: 1
+
+      - name: Check out the compiling baseline
+        uses: actions/checkout@v4
+        with:
+          ref: agent/fix-production-manifest-mutability
+          path: work
+          fetch-depth: 0
+
+      - name: Check out specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: specs
+          fetch-depth: 1
+
+      - name: Expose specification fixtures
+        run: ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Split named-value modules
+        run: python3 staging/.github/agent/split-named-value-modules.py work
+
+      - name: Format and validate module layout
+        working-directory: work
+        run: |
+          cargo fmt --manifest-path core/rust/Cargo.toml --all
+          bash core/rust/scripts/check-layout.test.sh
+          bash core/rust/scripts/check-layout.sh
+          git diff --check
+
+      - name: Compile the bytecode runtime
+        working-directory: work
+        run: cargo check --manifest-path core/rust/Cargo.toml --features bytecode-vm
+
+      - name: Run focused named-value tests
+        working-directory: work
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defstruct_forms_issue_223 -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm defmutable_forms_use_reference_identity_and_settable_fields -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_struct_protocols_dispatch_like_truffle -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm guest_mutables_share_storage_and_reject_persistent_updates -- --nocapture
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm structs_preserve_wire_shape_and_mutables_are_rejected -- --nocapture
+
+      - name: Commit and publish the clean branch
+        working-directory: work
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C agent/split-named-value-runtime-modules
+          git add \
+            core/rust/scripts/layout-baseline.txt \
+            core/rust/src/hta.rs \
+            core/rust/src/hta/tests.rs \
+            core/rust/src/vm/compiler.rs \
+            core/rust/src/vm/compiler/globals.rs \
+            core/rust/src/vm/compiler/named_values.rs \
+            core/rust/src/vm/execution_tests.rs \
+            core/rust/src/vm/execution_tests/named_values.rs \
+            core/rust/src/vm/machine.rs \
+            core/rust/src/vm/machine/named_values.rs
+          git commit -m 'Split persistent named-value runtime modules'
+          git push --force origin HEAD:refs/heads/agent/split-named-value-runtime-modules
