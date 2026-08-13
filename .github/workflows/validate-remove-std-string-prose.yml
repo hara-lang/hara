@@ -16,11 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
+      SOURCE_BASE_SHA: 0a1b82a0618f7e83e60f5ad119999e83743ed05d
       HARA_RUNTIME: rust
       HARA_NATIVE: ${{ github.workspace }}/core/rust/target/debug/hara
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Confirm the merged source and mirror remain clean
         shell: bash
@@ -35,6 +38,10 @@ jobs:
           test "$(grep -F -c '(@! (str/join "\n"' \
             core/lib/test-lang/xt/lang/parser_xml_test.hal)" -eq 6
           python3 scripts/runtime/sync-rust-hal-src --check
+          git show "$SOURCE_BASE_SHA":core/lib/src/tool/cli/handlers.hal \
+            > "$RUNNER_TEMP/handlers-before.hal"
+          cmp -s "$RUNNER_TEMP/handlers-before.hal" \
+            core/lib/src/tool/cli/handlers.hal
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -55,6 +62,12 @@ jobs:
               echo "$label: passed" | tee -a "$evidence"
             elif grep -Fq 'Script module has no registered loader' "$log"; then
               echo "$label: existing XTalk loader failure recorded" | tee -a "$evidence"
+            elif grep -Fq \
+              'Namespace alias already refers to std.foundation.host: host' "$log" \
+              && cmp -s "$RUNNER_TEMP/handlers-before.hal" \
+                   core/lib/src/tool/cli/handlers.hal; then
+              echo "$label: pre-existing tool.cli.handlers alias failure recorded" \
+                | tee -a "$evidence"
             else
               cat "$log" >&2
               echo "$label: unexpected failure ($status)" >&2
@@ -120,7 +133,7 @@ jobs:
 
           for probe in padded xml; do
             log="$RUNNER_TEMP/${probe}.log"
-            "$HARA_NATIVE" --project core --offline stdin \
+            "$HARA_NATIVE" --offline stdin \
               < "$RUNNER_TEMP/${probe}.hal" | tee "$log"
             python3 - "$log" <<'PY'
           import sys
@@ -152,6 +165,9 @@ jobs:
             result='focused XTalk tests passed'
           elif grep -Fq 'Script module has no registered loader' "$log"; then
             result='existing “Script module has no registered loader” failure recorded'
+          elif grep -Fq \
+            'Namespace alias already refers to std.foundation.host: host' "$log"; then
+            result='pre-existing tool.cli.handlers alias failure recorded'
           else
             echo "unexpected focused-test failure ($status)" >&2
             exit "$status"
