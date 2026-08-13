@@ -9,6 +9,17 @@
   []
   (symbol (str (current-namespace))))
 
+(defn macro-var?
+  [symbol]
+  (let [value (resolve symbol)]
+    (boolean (and value (:macro (meta value))))))
+
+(defn symbols-present?
+  [available required]
+  (every? (fn [symbol]
+            (not (nil? (get available symbol))))
+          required))
+
 (def results
   [(fact "script returns a runtime, installs evaluator macros, and interns pointer Vars"
      (let [module (current-module)
@@ -110,6 +121,111 @@
          11
          true
          true
+         true])
+
+   (fact "script imports every Foundation grammar macro and highlight"
+     (let [languages [:xtalk :hara :js :python :lua :postgres]
+           modules-before (deref script/+modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)]
+       (try
+         (let [installed
+               (every?
+                (fn [lang]
+                  (eval (list 'lang.core/script- lang))
+                  (let [symbols (lang.core/script-import-symbols lang)]
+                    (and (> (count symbols) 0)
+                         (every? macro-var? symbols))))
+                languages)
+               xtalk-imports
+               (set (lang.core/script-import-symbols :xtalk))
+               postgres-imports
+               (set (lang.core/script-import-symbols :postgres))]
+           [installed
+            (symbols-present?
+             xtalk-imports
+             '[!.xt !.xtalk
+               def$.xt def$.xtalk
+               defmacro.xt defmacro.xtalk
+               defptr.xt defptr.xtalk
+               def.xt defn.xt defn-.xt defabstract.xt
+               defrun.xt defglobal.xt deftemp.xt
+               defclass.xt defgen.xt defspec.xt
+               return break set= br])
+            (symbols-present?
+             postgres-imports
+             '[!.pg !.postgres
+               def$.pg def$.postgres
+               defmacro.pg defmacro.postgres
+               defptr.pg defptr.postgres
+               def.pg defn.pg deftype.pg deftrigger.pg
+               defenum.pg defconst.pg])])
+         (finally
+           (reset! script/+modules+ modules-before)
+           (reset! script/+scripts+ scripts-before)
+           (reset! script/+module-contexts+ contexts-before))))
+     => [true true true])
+
+   (fact "imported fragment macro and free-pointer families preserve language"
+     (let [module (current-module)
+           modules-before (deref script/+modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)]
+       (try
+         (let [default-runtime (eval '(lang.core/script :lua))]
+           (try
+             (let [_ (eval '(def$.lua LUA-CONST 7))
+                   _ (eval '(defmacro.lua import-plus-one [x]
+                              (list '+ x 1)))
+                   _ (eval '(defptr.lua LUA-FREE (+ 1 2)))
+                   _ (eval '(defn-.lua PRIVATE [x]
+                              (return x)))
+                   value-fragment
+                   (get-in (deref script/+modules+)
+                           [module :fragment 'LUA-CONST])
+                   macro-fragment
+                   (get-in (deref script/+modules+)
+                           [module :fragment 'import-plus-one])
+                   value-var (resolve 'LUA-CONST)
+                   value-pointer (deref value-var)
+                   free-var (resolve 'LUA-FREE)
+                   free-pointer (deref free-var)
+                   private-var (resolve 'PRIVATE)
+                   private-pointer (deref private-var)]
+               [(:lang value-fragment)
+                (:lang macro-fragment)
+                (var? value-var)
+                (lang.core/code-pointer? value-pointer)
+                (lang.core/code-pointer-val value-pointer :section)
+                (:lang value-pointer)
+                (macroexpand-1 '(import-plus-one value))
+                (var? free-var)
+                (lang.core/code-pointer? free-pointer)
+                (:lang free-pointer)
+                (lang.core/code-pointer-val free-pointer :section)
+                (lang.core/code-pointer-val private-pointer :op)
+                (:lang private-pointer)
+                (string? (eval '(LUA-FREE)))])
+             (finally
+               (if (not (component/stopped? default-runtime))
+                 (runtime/rt-stop default-runtime)))))
+         (finally
+           (reset! script/+modules+ modules-before)
+           (reset! script/+scripts+ scripts-before)
+           (reset! script/+module-contexts+ contexts-before))))
+     => [:lua
+         :lua
+         true
+         true
+         :fragment
+         :lua
+         '(quote (+ value 1))
+         true
+         true
+         :lua
+         :free
+         'defn-
+         :lua
          true])
 
    (fact "the default runtime is compile-only and available to every language"
