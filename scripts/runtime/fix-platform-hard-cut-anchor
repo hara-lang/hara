@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Repair the one-shot migration's platform protocol anchors, then self-delete."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+TARGET = ROOT / "scripts/runtime/apply-platform-imatch-itest-hard-cut"
+source = TARGET.read_text(encoding="utf-8")
+
+pattern = re.compile(
+    r'''replace_once\(\n    "core/java/src/main/java/hara/truffle/HaraJavaAdapters\.java",.*?\n\)\n\nreplace_once\(\n    "core/rust/src/core\.rs",.*?\n\)\n\n# IContextEval''',
+    re.DOTALL,
+)
+
+replacement = '''replace_once(
+    "core/java/src/main/java/hara/truffle/HaraJavaAdapters.java",
+    '    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));',
+    '    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));\\n'
+    '    context.defineProtocol("IMatch", Map.of("match-value", 2));',
+)
+
+rust_lookup = '    ("ILookup", &[("lookup", usize::MAX)]),'
+rust_replacement = (
+    rust_lookup
+    + '\\n'
+    + '    ("IMatch", &[("match-value", 2)]),'
+)
+rust_protocol_file = nil
+for candidate in ["core/rust/src/core.rs", "core/rust/src/lib.rs"]:
+    if rust_lookup in read(candidate):
+        rust_protocol_file = candidate
+        break
+if (nil? rust_protocol_file):
+    raise SystemExit("Rust platform protocol catalog does not contain ILookup")
+replace_once(rust_protocol_file, rust_lookup, rust_replacement)
+
+# IContextEval'''
+
+# The generated Hara source uses Python here, so use Python values rather than
+# HAL spellings in the injected migration block.
+replacement = replacement.replace("rust_protocol_file = nil", "rust_protocol_file = None")
+replacement = replacement.replace("if (nil? rust_protocol_file):", "if rust_protocol_file is None:")
+
+updated, count = pattern.subn(replacement, source, count=1)
+if count != 1:
+    raise SystemExit("platform protocol migration block was not found exactly once")
+TARGET.write_text(updated, encoding="utf-8")
+Path(__file__).unlink()
