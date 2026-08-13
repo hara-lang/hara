@@ -1,0 +1,283 @@
+(ns code.translate.rule
+  (:config {:blank true})
+  (:require [std.foundation :refer :all]
+            [std.block :as block]
+            [std.block.navigation :as nav]
+            [code.translate.rules :as declarations]))
+
+(def +safety-rank+
+  {:safe 0
+   :review 1
+   :manual 2})
+
+(def +modes+
+  #{:lint :safe :review})
+
+(defn evidence-valid?
+  [entry]
+  (and (map? entry)
+       (string? (:foundation/repository entry))
+       (string? (:foundation/revision entry))
+       (string? (:foundation/path entry))
+       (string? (:hara/path entry))))
+
+(defn rewrite-valid?
+  [rule]
+  (if (= :manual (:safety rule))
+    (nil? (:rewrite rule))
+    (and (map? (:rewrite rule))
+         (= :replace-token (:op (:rewrite rule)))
+         (string? (:text (:rewrite rule))))))
+
+(defn rule-valid?
+  [rule]
+  (and (map? rule)
+       (keyword? (:id rule))
+       (or (= :token (:kind rule))
+           (= :form-head (:kind rule)))
+       (map? (:match rule))
+       (string? (:text (:match rule)))
+       (keyword? (:safety rule))
+       (not (nil? (get +safety-rank+ (:safety rule))))
+       (number? (:priority rule))
+       (string? (:message rule))
+       (not (empty? (:evidence rule)))
+       (every? evidence-valid? (:evidence rule))
+       (rewrite-valid? rule)))
+
+(defn automatic?
+  [rule]
+  (not (= :manual (:safety rule))))
+
+(defn matcher-key
+  [rule]
+  [(:kind rule)
+   (:text (:match rule))
+   (:match/when rule)])
+
+(defn compile-rules
+  "Validates and indexes deterministic, evidence-backed translation rules."
+  [rules]
+  (loop [index 0
+         previous-priority -1
+         identifiers {}
+         automatic-matchers {}
+         output []]
+    (if (= index (count rules))
+      output
+      (let [rule (nth rules index)
+            identifier (:id rule)
+            priority (:priority rule)
+            match-key (matcher-key rule)]
+        (if (not (rule-valid? rule))
+          (throw (ex-info "Invalid Clojure to HAL rule"
+                          {:rule rule
+                           :index index})))
+        (if (< priority previous-priority)
+          (throw (ex-info "Clojure to HAL rules are not priority ordered"
+                          {:previous previous-priority
+                           :rule rule})))
+        (if (has? identifiers identifier)
+          (throw (ex-info "Duplicate Clojure to HAL rule identifier"
+                          {:id identifier})))
+        (if (and (automatic? rule)
+                 (has? automatic-matchers match-key))
+          (throw (ex-info "Conflicting automatic Clojure to HAL rules"
+                          {:matcher match-key
+                           :left (get automatic-matchers match-key)
+                           :right identifier})))
+        (recur
+         (inc index)
+         priority
+         (assoc identifiers identifier true)
+         (if (automatic? rule)
+           (assoc automatic-matchers match-key identifier)
+           automatic-matchers)
+         (conj output (assoc rule :compiled/index index)))))))
+
+(def +ruleset+
+  (compile-rules declarations/+rules+))
+
+(defn selected-mode
+  [options]
+  (let [mode (or (:mode options) :review)]
+    (if (not (has? +modes+ mode))
+      (throw (ex-info "Unsupported Clojure to HAL translation mode"
+                      {:mode mode
+                       :supported +modes+})))
+    mode))
+
+(defn active?
+  [rule mode]
+  (and
+   (automatic? rule)
+   (or (and (= mode :safe)
+            (= :safe (:safety rule)))
+       (and (= mode :review)
+            (or (= :safe (:safety rule))
+                (= :review (:safety rule)))))))
+
+(defn rule-by-id
+  ([identifier]
+   (rule-by-id +ruleset+ identifier))
+  ([rules identifier]
+   (first (filter (fn [rule] (= identifier (:id rule))) rules))))
+
+(defn rules-summary
+  ([] (rules-summary +ruleset+))
+  ([rules]
+   (reduce
+    (fn [output rule]
+      (let [safety (:safety rule)]
+        (assoc
+         (assoc output :total (inc (:total output)))
+         safety
+         (inc (or (get output safety) 0)))))
+    {:total 0 :safe 0 :review 0 :manual 0}
+    rules)))
+
+(defn match-condition?
+  [rule location]
+  (let [condition (:match/when rule)]
+    (if (nil? condition)
+      true
+      (and
+       (or (nil? (:second condition))
+           (= (:second condition) (nav/form-second location)))))))
+
+(defn location-matches?
+  [rule location]
+  (let [value (nav/current location)
+        text (:text (:match rule))]
+    (and
+     (match-condition? rule location)
+     (if (= :token (:kind rule))
+       (and (block/token? value)
+            (= text (block/string value)))
+       (if (= :form-head (:kind rule))
+         (and (nav/form? location)
+              (= text (nav/form-head location)))
+         false)))))
+
+(defn match-record
+  [rule location]
+  (merge
+   {:rule/id (:id rule)
+    :rule/index (:compiled/index rule)
+    :kind (:kind rule)
+    :safety (:safety rule)
+    :priority (:priority rule)
+    :message (:message rule)
+    :evidence (:evidence rule)}
+   (nav/evidence location)))
+
+(defn matches
+  ([input]
+   (matches input +ruleset+))
+  ([input rules]
+   (let [locations (nav/walk-locations input)]
+     (reduce
+      (fn [output rule]
+        (into
+         output
+         (keep
+          (fn [location]
+            (if (location-matches? rule location)
+              (match-record rule location)
+              nil))
+          locations)))
+      []
+      rules))))
+
+(defn diagnostic-type
+  [rule mode]
+  (if (= :manual (:safety rule))
+    :code.translate/manual
+    (if (active? rule mode)
+      :code.translate/rewrite
+      :code.translate/match)))
+
+(defn diagnostic-level
+  [rule mode]
+  (if (= :manual (:safety rule))
+    :warning
+    (if (active? rule mode) :info :notice)))
+
+(defn diagnostic
+  [rule match mode]
+  (merge
+   {:type (diagnostic-type rule mode)
+    :level (diagnostic-level rule mode)
+    :rule/id (:id rule)
+    :safety (:safety rule)
+    :message (:message rule)
+    :evidence (:evidence rule)}
+   (select-keys match
+                [:path :file :start-offset :end-offset
+                 :row :col :end-row :end-col :source])))
+
+(defn apply-match
+  [root rule match]
+  (let [rewrite (:rewrite rule)]
+    (if (= :replace-token (:op rewrite))
+      (nav/root-block
+       (nav/replace-at root (:path match) (:text rewrite)))
+      root)))
+
+(defn apply-matches
+  [root matched rules mode]
+  (loop [current root
+         remaining matched
+         applied []]
+    (if (empty? remaining)
+      {:root current
+       :applied applied}
+      (let [match (first remaining)
+            rule (rule-by-id rules (:rule/id match))]
+        (if (active? rule mode)
+          (recur
+           (apply-match current rule match)
+           (vec (rest remaining))
+           (conj applied match))
+          (recur current (vec (rest remaining)) applied))))))
+
+(defn analyze-source
+  ([source]
+   (analyze-source source {}))
+  ([source options]
+   (let [mode (selected-mode options)
+         input (if (:file options)
+                 (block/parse-source source {:file (:file options)})
+                 source)
+         root (nav/block-input input)
+         matched (matches root +ruleset+)
+         applied-result (apply-matches root matched +ruleset+ mode)
+         output (nav/render (:root applied-result))
+         diagnostics
+         (vec
+          (map
+           (fn [match]
+             (diagnostic
+              (rule-by-id +ruleset+ (:rule/id match))
+              match
+              mode))
+           matched))]
+     {:mode mode
+      :source source
+      :output output
+      :changed (not (= source output))
+      :rules/matched matched
+      :rules/applied (:applied applied-result)
+      :diagnostics diagnostics})))
+
+(defn lint-source
+  ([source]
+   (lint-source source {}))
+  ([source options]
+   (analyze-source source (assoc options :mode :lint))))
+
+(defn translate-source
+  ([source]
+   (translate-source source {}))
+  ([source options]
+   (analyze-source source options)))
