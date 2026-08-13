@@ -1,5 +1,6 @@
 (ns code.manage.unit
   (:require [code.framework :as framework]
+            [code.manage.unit.scaffold :as scaffold]
             [code.manage.unit.template :as template]))
 
 (defn analyse
@@ -230,6 +231,30 @@
       :kind :definitions-out-of-order
       :definitions (definition-names unit)})))
 
+(defn scaffold
+  [unit options]
+  (let [source-namespace (:namespace (analyse unit))
+        test-namespace
+        (scaffold/test-namespace-for
+         unit
+         options
+         source-namespace)
+        alias (or (:alias options) "subject")]
+    {:path (scaffold/test-path-for unit options)
+     :changed true
+     :before (or (:test-source unit) "")
+     :after
+     (scaffold/scaffold-source
+      source-namespace
+      test-namespace
+      alias)
+     :write false
+     :create true}))
+
+(defn create-tests
+  [unit options]
+  (scaffold unit options))
+
 (defn locate-code
   [unit]
   (if (= (:type unit) :test)
@@ -294,6 +319,16 @@
   (template/code-tasklet
    :orphaned
    (fn [unit options] (orphaned unit))))
+
+(def scaffold-unit
+  (template/code-tasklet
+   :scaffold
+   (fn [unit options] (scaffold unit options))))
+
+(def create-tests-unit
+  (template/code-tasklet
+   :create-tests
+   (fn [unit options] (create-tests unit options))))
 
 (def in-order-unit
   (template/code-tasklet
