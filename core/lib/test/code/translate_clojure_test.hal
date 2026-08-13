@@ -30,6 +30,24 @@
    clj/migrate-source-unit
    unit))
 
+(def chain-observer
+  (work/recording-observer))
+
+(def chain-work
+  (work/chain
+   {:id :code.translate/clojure-fixture-chain
+    :version 1}
+   [(work/pure
+     :code.translate/identity-source-unit
+     (fn [value context] value))
+    clj/migrate-source-unit]))
+
+(def chain-result
+  (work/run
+   (work/local-runtime {:observer chain-observer})
+   chain-work
+   unit))
+
 (def batch-observer
   (work/recording-observer))
 
@@ -164,23 +182,27 @@
      :code.translate/clojure-to-hal])
 
    (test/check
-    "direct and batch execution use the exact tasklet result"
+    "direct, chained, and batch execution use the exact tasklet result"
     [(:item/id direct-result)
      (:status direct-result)
      (:data direct-result)
+     chain-result
      batch-item-result]
     ["src/demo/core.clj"
      :return
      translated
+     direct-result
      direct-result])
 
    (test/check
-    "direct and batch task lifecycle events are emitted exactly once"
+    "each composition emits the task lifecycle exactly once"
     [(event-count direct-observer :task/item-started)
      (event-count direct-observer :task/item-completed)
+     (event-count chain-observer :task/item-started)
+     (event-count chain-observer :task/item-completed)
      (event-count batch-observer :task/item-started)
      (event-count batch-observer :task/item-completed)]
-    [1 1 1 1])
+    [1 1 1 1 1 1])
 
    (test/check
     "invalid source suffixes remain command errors instead of writes"
