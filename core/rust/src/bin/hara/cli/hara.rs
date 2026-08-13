@@ -2,6 +2,10 @@ use super::Options;
 use hara_wasm::cli_app;
 use hara_wasm::kernel::{parse, Form};
 use hara_wasm::native_cli::{install_native_kernel, RuntimeBroker};
+#[cfg(feature = "bytecode-vm")]
+use hara_wasm::project;
+#[cfg(feature = "bytecode-vm")]
+use hara_wasm::task::production;
 use hara_wasm::Runtime;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -194,7 +198,44 @@ fn execute_host_action(
                 Err("compile-halc requires the halc-encoder feature".into())
             }
         }
+        "production-analyze" => {
+            #[cfg(feature = "bytecode-vm")]
+            {
+                analyze_production(options, arguments)
+            }
+            #[cfg(not(feature = "bytecode-vm"))]
+            {
+                let _ = (options, arguments);
+                Err("production analysis requires the bytecode-vm feature".into())
+            }
+        }
         value => Err(format!("unknown Hara host action: {value}")),
+    }
+}
+
+#[cfg(feature = "bytecode-vm")]
+fn analyze_production(options: &Options, arguments: &[String]) -> Result<(), String> {
+    if arguments.len() != 1 {
+        return Err("project production analysis requires one serialized build plan".into());
+    }
+    let start = options
+        .project
+        .clone()
+        .or_else(|| options.root.clone())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let project = project::discover(&start)?;
+    let output = production::analyze_and_write(&project, &arguments[0])?;
+    if output.analysis.succeeded() {
+        Err(format!(
+            "unavailable: production reachability analysis completed; pruned HBX emission is tracked by #552; report: {}",
+            output.report_path.display()
+        ))
+    } else {
+        Err(format!(
+            "production reachability analysis failed with {} diagnostic(s); report: {}",
+            output.analysis.diagnostics.len(),
+            output.report_path.display()
+        ))
     }
 }
 

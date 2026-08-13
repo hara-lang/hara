@@ -192,16 +192,10 @@
     (model/success {:project/lock lock :project/mode mode}
                    [(model/message (str "project sync: " lock "\n"))])))
 
-(defn build-unavailable-result [plan]
-  (let [report (production/shake-report plan)]
-    (model/failure
-     :tool.cli.outcome/unavailable
-     :tool.cli/tree-shake-stage-unavailable
-     (str "production tree-shaking requires the canonical reachability "
-          "analyzer and pruned HBX emitter\n")
-     {:build/plan plan
-      :build/report report
-      :build/report-source (production/shake-report-source report)})))
+(defn build-analysis-result [plan]
+  (model/success
+   {:host/action :production-analyze
+    :host/arguments [(pr-str plan)]}))
 
 (defn build! [request]
   (let [arguments (:request/arguments request)]
@@ -211,7 +205,7 @@
       (let [current-project (project/discover (start request))
             profile (:profile (:request/options request))
             plan (production/build-plan current-project profile)]
-        (build-unavailable-result plan)))))
+        (build-analysis-result plan)))))
 
 (defn update! [request]
   (throw (ex-info "project update requires the reviewed registry client" {})))
@@ -229,7 +223,7 @@
       :else (throw (ex-info (str "unsupported project route " route) {})))))
 
 (def +command-work+
-  (work/step {:id 'tool.cli/project :version 2}
+  (work/step {:id 'tool.cli/project :version 3}
              (fn [request context] (execute request))))
 
 (defn handler [request]
