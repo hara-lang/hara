@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the pinned, Foundation-led Clojure -> HAL migration corpus."""
+"""Generate and validate the pinned Foundation -> Hara migration corpus."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from typing import Iterable, Iterator
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS = ROOT / "core/spec/clj-hal-corpus.json"
+DEFAULT_ROUTES = ROOT / "core/spec/clj-hal-routes.json"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 TOKEN = re.compile(r"[^\s\[\](){}\";,]+")
 NS = re.compile(r"^\(\s*ns\+?\s+([^\s\[\](){}\";,]+)")
@@ -108,6 +109,19 @@ def skip_meta(text: str, offset: int) -> int:
         if offset >= len(text) or text[offset] != "^":
             return offset
         offset += 1
+        if offset < len(text) and text[offset] == '"':
+            offset += 1
+            escaped = False
+            while offset < len(text):
+                char = text[offset]
+                offset += 1
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    break
+            continue
         if offset < len(text) and text[offset] in "[{":
             opening = text[offset]
             closing = "]" if opening == "[" else "}"
@@ -234,6 +248,133 @@ def checksum(entries: list[dict]) -> str:
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
+def blob(repo: Path, revision: str, path: str) -> str:
+    return git(repo, "rev-parse", f"{revision}:{path}").strip()
+
+
+def target_surface(target_root: Path, path: str) -> dict:
+    source = (target_root / path).read_text(encoding="utf-8")
+    return source_surface(source)
+
+
+def route_for(symbol: str, declaration: dict) -> dict:
+    overrides = declaration.get("symbols", {})
+    route = dict(declaration.get("default", {}))
+    route.update(overrides.get(symbol, {}))
+    route["source_symbol"] = symbol
+    route.setdefault("safety", "manual")
+    route.setdefault("state", "deferred")
+    route.setdefault("message", declaration.get("message", "Migration requires review."))
+    return route
+
+
+def route_declarations(routes: dict, reference: Path, commit: str) -> list[dict]:
+    declarations = list(routes.get("namespaces", []))
+    source_paths = git(reference, "ls-tree", "-r", "--name-only", commit, "src/std/lib").splitlines()
+    existing = {entry["namespace"] for entry in declarations}
+    for family in routes.get("families", []):
+        prefix = family["source_prefix"]
+        for path in source_paths:
+            if not path.endswith(".clj") or not path.startswith(prefix):
+                continue
+            surface = source_surface(git(reference, "show", f"{commit}:{path}"))
+            name = surface["namespace"]
+            if not name or name in existing:
+                continue
+            suffix = name[len(family["namespace_prefix"]):].lstrip(".")
+            target_namespace = family["target_prefix"] + (f".{suffix}" if suffix else "")
+            declaration = {
+                "namespace": name,
+                "source_path": path,
+                "route_kind": family["route_kind"],
+                "default": {
+                    **family["default"],
+                    "target_namespace": target_namespace,
+                    "target_path": (
+                        "core/lib/src/"
+                        + target_namespace.replace(".", "/").replace("-", "_")
+                        + ".hal"
+                    ),
+                },
+            }
+            declarations.append(declaration)
+            existing.add(name)
+    return declarations
+
+
+def generate(routes: dict, reference: Path, target_root: Path) -> dict:
+    commit = routes["reference"]["commit"]
+    target_commit = routes["target"]["base_commit"]
+    entries = []
+    for declaration in route_declarations(routes, reference, commit):
+        path = declaration["source_path"]
+        source = git(reference, "show", f"{commit}:{path}")
+        surface = source_surface(source)
+        name = surface["namespace"]
+        if name != declaration["namespace"]:
+            raise CorpusError(f"route namespace mismatch for {path}: {name}")
+        symbol_routes = [route_for(symbol, declaration) for symbol in surface["public_symbols"]]
+        target_paths = sorted({route["target_path"] for route in symbol_routes if route.get("target_path")})
+        targets = []
+        surfaces = {}
+        for target_path in target_paths:
+            file = target_root / target_path
+            state_routes = [route for route in symbol_routes if route.get("target_path") == target_path]
+            implemented = any(route.get("state") == "implemented" for route in state_routes)
+            if implemented and not file.is_file():
+                raise CorpusError(f"implemented target is missing: {target_path}")
+            if file.is_file():
+                target = target_surface(target_root, target_path)
+                surfaces[target_path] = set(target["public_symbols"])
+                targets.append({
+                    "namespace": target["namespace"],
+                    "path": target_path,
+                    "blob": git(target_root, "hash-object", target_path).strip(),
+                })
+            else:
+                targets.append({"namespace": state_routes[0].get("target_namespace"), "path": target_path})
+        for route in symbol_routes:
+            if route.get("state") == "implemented":
+                target_path = route.get("target_path")
+                target_symbol = route.get("target_symbol")
+                if not target_path or not target_symbol or target_symbol not in surfaces.get(target_path, set()):
+                    raise CorpusError(
+                        f"implemented route does not resolve: {name}/{route['source_symbol']}"
+                    )
+        counts = Counter(route["state"] for route in symbol_routes)
+        migrated = counts.get("implemented", 0) + counts.get("obsolete", 0) + counts.get("host-only", 0)
+        entries.append({
+            "namespace": name,
+            "source_path": path,
+            "source_blob": blob(reference, commit, path),
+            "dependencies": surface["dependencies"],
+            "public_symbols": surface["public_symbols"],
+            "route_kind": declaration["route_kind"],
+            "status": declaration.get("status", "reviewed"),
+            "targets": targets,
+            "symbol_routes": symbol_routes,
+            "migration": {
+                "implemented": counts.get("implemented", 0),
+                "missing": counts.get("missing", 0),
+                "deferred": counts.get("deferred", 0),
+                "obsolete": counts.get("obsolete", 0),
+                "host_only": counts.get("host-only", 0),
+                "total": len(symbol_routes),
+                "completion_percent": 100 if not symbol_routes else (100 * migrated) // len(symbol_routes),
+            },
+        })
+    entries = compile_entries(entries)
+    return {
+        "schema_version": 2,
+        "reference": routes["reference"],
+        "target": {"repository": "hara-lang/hara", "base_commit": target_commit},
+        "scope": routes["scope"],
+        "route_policy": routes["route_policy"],
+        "namespaces": entries,
+        "inventory_sha256": checksum(entries),
+    }
+
+
 def load(path: Path) -> dict:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -242,7 +383,7 @@ def load(path: Path) -> dict:
 
 
 def validate(corpus: dict) -> list[dict]:
-    if corpus.get("schema_version") != 1:
+    if corpus.get("schema_version") not in {1, 2}:
         raise CorpusError("unsupported corpus schema")
     if not SHA.fullmatch(corpus.get("reference", {}).get("commit", "")):
         raise CorpusError("Foundation reference is not pinned")
@@ -259,13 +400,26 @@ def validate(corpus: dict) -> list[dict]:
         name = entry.get("namespace")
         if not name or name in names:
             raise CorpusError(f"duplicate namespace: {name}")
-        if entry.get("status") not in allowed:
+        if allowed and entry.get("status") not in allowed:
             raise CorpusError(f"invalid status for {name}")
         if not SHA.fullmatch(entry.get("source_blob", "")):
             raise CorpusError(f"invalid Foundation blob for {name}")
         source_path = entry.get("source_path")
         if not source_path or source_path in source_paths or not source_path.endswith(".clj"):
             raise CorpusError(f"invalid Foundation path for {name}")
+        if corpus.get("schema_version") == 2:
+            public = entry.get("public_symbols", [])
+            routes = entry.get("symbol_routes", [])
+            if [route.get("source_symbol") for route in routes] != public:
+                raise CorpusError(f"symbol route coverage is incomplete for {name}")
+            for route in routes:
+                if route.get("state") not in corpus.get("route_policy", {}).get("states", []):
+                    raise CorpusError(f"invalid route state for {name}/{route.get('source_symbol')}")
+                if route.get("safety") not in corpus.get("route_policy", {}).get("safety", []):
+                    raise CorpusError(f"invalid route safety for {name}/{route.get('source_symbol')}")
+            names.add(name)
+            source_paths.add(source_path)
+            continue
         target_path = entry.get("target_path")
         if target_path:
             if target_path in target_paths or not target_path.endswith(".hal"):
@@ -296,6 +450,19 @@ def verify(corpus: dict, reference: Path, target_root: Path) -> None:
         surface = source_surface(source)
         if surface["namespace"] != name or surface["dependencies"] != entry["dependencies"]:
             raise CorpusError(f"Foundation surface drift for {name}")
+        if corpus.get("schema_version") == 2:
+            if surface["public_symbols"] != entry.get("public_symbols"):
+                raise CorpusError(f"Foundation public surface drift for {name}")
+            for target in entry.get("targets", []):
+                target_path = target.get("path")
+                if not target.get("blob"):
+                    continue
+                file = target_root / target_path
+                if not file.is_file():
+                    raise CorpusError(f"missing Hara target for {name}: {target_path}")
+                if git(target_root, "hash-object", target_path).strip() != target["blob"]:
+                    raise CorpusError(f"Hara blob drift for {name}: {target_path}")
+            continue
         target_path = entry.get("target_path")
         if not target_path:
             continue
@@ -322,11 +489,24 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--reference", type=Path)
+    parser.add_argument("--routes", type=Path, default=DEFAULT_ROUTES)
     parser.add_argument("--target-root", type=Path, default=ROOT)
     parser.add_argument("--verify-reference", action="store_true")
+    parser.add_argument("--generate", action="store_true")
+    parser.add_argument("--check-generated", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        if args.generate or args.check_generated:
+            if args.reference is None:
+                raise CorpusError("generation requires --reference")
+            generated = generate(load(args.routes), args.reference, args.target_root)
+            encoded = json.dumps(generated, indent=2, sort_keys=True) + "\n"
+            if args.check_generated:
+                if not args.corpus.is_file() or args.corpus.read_text(encoding="utf-8") != encoded:
+                    raise CorpusError("generated corpus is stale")
+            else:
+                args.corpus.write_text(encoded, encoding="utf-8")
         corpus = load(args.corpus)
         entries = validate(corpus)
         if args.verify_reference:

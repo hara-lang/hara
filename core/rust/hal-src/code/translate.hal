@@ -25,6 +25,10 @@
     (:namespace (clj/source-summary input))))
 (def dependencies clj/dependencies)
 (def public-symbols clj/public-symbols)
+(def catalog-symbol-routes clj/catalog-symbol-routes)
+(def catalog-symbol-route clj/catalog-symbol-route)
+(def catalog-migration-summary clj/catalog-migration-summary)
+(def catalog-diagnostics clj/catalog-diagnostics)
 (def analyze-source-unit clj/analyze-source-unit)
 (def lint-source-unit clj/lint-source-unit)
 (def translate-source-unit clj/translate-source-unit)
@@ -42,7 +46,7 @@
     :code.translate/conflict
     :code.translate/unsupported})
 
-(defn field
+(defn corpus-field
   [value keys]
   (loop [remaining keys]
     (if (empty? remaining)
@@ -99,7 +103,7 @@
     (let [corpus (:corpus input)]
       (cond
         (vector? corpus) corpus
-        (map? corpus) (vec (or (field corpus
+        (map? corpus) (vec (or (corpus-field corpus
                                       [:namespaces "namespaces"])
                                 []))
         (has? input :corpus/namespaces)
@@ -109,31 +113,31 @@
 
 (defn entry-source-path
   [entry]
-  (field entry
+  (corpus-field entry
          [:source/path :source_path
           "source/path" "source_path"]))
 
 (defn entry-target-path
   [entry]
-  (field entry
+  (corpus-field entry
          [:target/path :target_path
           "target/path" "target_path"]))
 
 (defn entry-namespace
   [entry]
-  (field entry
+  (corpus-field entry
          [:source/namespace :corpus/namespace :namespace
           "source/namespace" "corpus/namespace" "namespace"]))
 
 (defn entry-target-namespace
   [entry]
-  (field entry
+  (corpus-field entry
          [:target/namespace :target_namespace
           "target/namespace" "target_namespace"]))
 
 (defn unit-namespace
   [unit]
-  (field unit
+  (corpus-field unit
          [:source/namespace :corpus/namespace :namespace
           "source/namespace" "corpus/namespace" "namespace"]))
 
@@ -154,10 +158,10 @@
   [unit entry namespace]
   (vec
    (or
-    (field unit
+    (corpus-field unit
            [:dependency/component :dependency_component
             "dependency/component" "dependency_component"])
-    (field entry
+    (corpus-field entry
            [:dependency/component :dependency_component
             "dependency/component" "dependency_component"])
     (if namespace [namespace] []))))
@@ -175,33 +179,33 @@
         (or (unit-namespace unit)
             (entry-namespace entry))
         target-namespace
-        (or (field unit
+        (or (corpus-field unit
                    [:target/namespace :target_namespace
                     "target/namespace" "target_namespace"])
             (entry-target-namespace entry))
         status
         (keyword-value
          (or
-          (field unit
+          (corpus-field unit
                  [:corpus/status :status
                   "corpus/status" "status"])
-          (field entry
+          (corpus-field entry
                  [:corpus/status :status
                   "corpus/status" "status"])))
         rank
         (or
-         (field unit
+         (corpus-field unit
                 [:dependency/rank :dependency_rank
                  "dependency/rank" "dependency_rank"])
-         (field entry
+         (corpus-field entry
                 [:dependency/rank :dependency_rank
                  "dependency/rank" "dependency_rank"]))
         cycle
         (or
-         (field unit
+         (corpus-field unit
                 [:dependency/cycle :dependency_cycle
                  "dependency/cycle" "dependency_cycle"])
-         (field entry
+         (corpus-field entry
                 [:dependency/cycle :dependency_cycle
                  "dependency/cycle" "dependency_cycle"])
          false)
@@ -216,12 +220,15 @@
       :corpus/status status
       :corpus/match
       (or
-       (field unit
+       (corpus-field unit
               [:corpus/match :match
                "corpus/match" "match"])
-       (field entry
+       (corpus-field entry
               [:corpus/match :match
                "corpus/match" "match"]))
+      :corpus/entry entry
+      :migration/summary
+      (clj/catalog-migration-summary entry)
       :dependency/rank rank
       :dependency/component component
       :dependency/cycle (= true cycle)
@@ -247,7 +254,7 @@
 
 (defn criterion
   [selection keys]
-  (field selection keys))
+  (corpus-field selection keys))
 
 (defn criterion-match?
   [expected actual]
@@ -285,7 +292,7 @@
             matched (rule-identifiers unit)
             mode
             (or
-             (field selection
+             (corpus-field selection
                     [:rule-match "rule-match"])
              :any)]
         (if (= mode :all)
@@ -313,9 +320,9 @@
 (defn selected-unit?
   [selection unit]
   (let [include?
-        (field selection [:include? "include?"])
+        (corpus-field selection [:include? "include?"])
         exclude?
-        (field selection [:exclude? "exclude?"])]
+        (corpus-field selection [:exclude? "exclude?"])]
     (and
      (criterion-match?
       (criterion selection
@@ -447,6 +454,7 @@
            (or (:namespace result)
                (:source/namespace unit))
            :corpus/status (:corpus/status unit)
+           :migration/summary (:migration/summary unit)
            :dependency/rank (:dependency/rank unit)
            :dependency/component
            (:dependency/component unit)
@@ -495,7 +503,7 @@
      :source/sha256 (:source/sha256 result)
      :target/root (:target/root result)
      :target/sha256
-     (field unit
+     (corpus-field unit
             [:target/sha256 :target_sha256
              "target/sha256" "target_sha256"])
      :before (:before result)
@@ -739,6 +747,7 @@
         :target/path
         (:target/path (:result item))
         :corpus/status (:corpus/status item)
+        :migration/summary (:migration/summary item)
         :dependency/rank (:dependency/rank item)
         :dependency/component
         (:dependency/component item)

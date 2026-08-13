@@ -200,6 +200,56 @@
      :dependencies (dependencies root)
      :public-symbols (public-symbols root)}))
 
+(defn catalog-field
+  [value keyword-key string-key]
+  (if (and (map? value) (has? value keyword-key))
+    (get value keyword-key)
+    (if (map? value) (get value string-key) nil)))
+
+(defn catalog-symbol-routes
+  [entry]
+  (vec (or (catalog-field entry :symbol_routes "symbol_routes") [])))
+
+(defn catalog-symbol-route
+  [entry symbol]
+  (first
+   (filter
+    (fn [route]
+      (= symbol
+         (catalog-field route :source_symbol "source_symbol")))
+    (catalog-symbol-routes entry))))
+
+(defn catalog-migration-summary
+  [entry]
+  (or (catalog-field entry :migration "migration") {}))
+
+(defn catalog-route-diagnostic
+  [route]
+  (let [state (keyword (catalog-field route :state "state"))
+        safety (keyword (catalog-field route :safety "safety"))
+        source-symbol (catalog-field route :source_symbol "source_symbol")
+        target-namespace (catalog-field route :target_namespace "target_namespace")
+        target-symbol (catalog-field route :target_symbol "target_symbol")]
+    {:type (cond
+             (= state :implemented) :code.translate/migration-implemented
+             (= state :obsolete) :code.translate/migration-obsolete
+             (= state :host-only) :code.translate/unsupported
+             :else :code.translate/migration-pending)
+     :level (cond
+              (= state :implemented) :info
+              (or (= state :obsolete) (= state :host-only)) :warning
+              :else :notice)
+     :safety safety
+     :migration/state state
+     :source/symbol source-symbol
+     :target/namespace target-namespace
+     :target/symbol target-symbol
+     :message (catalog-field route :message "message")}))
+
+(defn catalog-diagnostics
+  [entry]
+  (vec (map catalog-route-diagnostic (catalog-symbol-routes entry))))
+
 (defn provenance
   [unit translation]
   {:source/path (:source/path unit)
@@ -227,7 +277,12 @@
           (assoc (:translation/options unit)
                  :file (:source/path unit)))
          after (:output result)
-         summary (source-summary after)]
+         summary (source-summary after)
+         entry (:corpus/entry unit)
+         migration-routes (catalog-symbol-routes entry)
+         diagnostics
+         (vec (concat (:diagnostics result)
+                      (catalog-diagnostics entry)))]
      {:path (:target/path unit)
       :source/path (:source/path unit)
       :source/root (:source/root unit)
@@ -247,7 +302,9 @@
       :public-symbols (:public-symbols summary)
       :rules/matched (:rules/matched result)
       :rules/applied (:rules/applied result)
-      :diagnostics (:diagnostics result)
+      :diagnostics diagnostics
+      :migration/routes migration-routes
+      :migration/summary (catalog-migration-summary entry)
       :provenance (provenance unit result)})))
 
 (def analyze-source-unit translate-source-unit)

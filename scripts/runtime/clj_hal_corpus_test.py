@@ -43,6 +43,41 @@ class CorpusParserTest(unittest.TestCase):
         ''')
         self.assertEqual(["actual", "text"], surface["public_symbols"])
 
+    def test_scanner_accepts_quoted_jvm_type_hints(self):
+        surface = corpus.source_surface('''
+        (ns std.example)
+        (defn ^"[B" decode [value] value)
+        ''')
+        self.assertEqual(["decode"], surface["public_symbols"])
+
+
+class SymbolRouteTest(unittest.TestCase):
+    def test_override_inherits_reviewed_namespace_defaults(self):
+        declaration = {
+            "default": {
+                "state": "missing",
+                "safety": "review",
+                "message": "Port the codec.",
+            },
+            "symbols": {
+                "encode": {
+                    "target_namespace": "std.codec.base64",
+                    "target_symbol": "encode",
+                },
+            },
+        }
+        self.assertEqual(
+            {
+                "state": "missing",
+                "safety": "review",
+                "message": "Port the codec.",
+                "target_namespace": "std.codec.base64",
+                "target_symbol": "encode",
+                "source_symbol": "encode",
+            },
+            corpus.route_for("encode", declaration),
+        )
+
 
 class DependencyPlanTest(unittest.TestCase):
     def test_orders_roots_before_dependants(self):
@@ -125,6 +160,27 @@ class CorpusValidationTest(unittest.TestCase):
             path = Path(directory) / "corpus.json"
             path.write_text(json.dumps(fixture), encoding="utf-8")
             self.assertEqual(0, corpus.main(["--corpus", str(path)]))
+
+    def test_v2_requires_one_valid_route_per_public_symbol(self):
+        entry = corpus.compile_entries([{
+            "namespace": "demo.root",
+            "source_path": "src/demo/root.clj",
+            "source_blob": "1" * 40,
+            "status": "reviewed",
+            "dependencies": [],
+            "public_symbols": ["run"],
+            "symbol_routes": [],
+        }])[0]
+        fixture = {
+            "schema_version": 2,
+            "reference": {"repository": "example/foundation", "commit": "4" * 40},
+            "target": {"repository": "example/hara", "base_commit": "5" * 40},
+            "route_policy": {"states": ["missing"], "safety": ["review"]},
+            "namespaces": [entry],
+            "inventory_sha256": corpus.checksum([entry]),
+        }
+        with self.assertRaisesRegex(corpus.CorpusError, "coverage is incomplete"):
+            corpus.validate(fixture)
 
 
 if __name__ == "__main__":
