@@ -54,7 +54,7 @@ async function instantiate(message) {
   for (const name of ["memory", "hta_abi_version", "hta_alloc", "hta_dealloc", "hta_start", "hta_next_event", "hta_deliver", "hta_cancel", "hta_drop_task", "hta_release"]) {
     if (!(name in instance.exports)) throw new Error(`hta/export-missing: ${name}`);
   }
-  if (instance.exports.hta_abi_version() !== 2) throw new Error("hta/version-unsupported");
+  if (![1, 2, 3].includes(instance.exports.hta_abi_version())) throw new Error("hta/version-unsupported");
 }
 
 function callFrame(fn, frame) {

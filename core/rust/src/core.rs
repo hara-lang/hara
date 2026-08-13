@@ -3419,11 +3419,12 @@ pub(crate) fn refer_startup_defaults(registry: &NamespaceRegistry<Value>, namesp
             target.alias(*native_type, source);
         }
     }
-    if let Some(edn) = registry.find("std.foundation.edn") {
-        target.alias("edn", edn);
-    }
-    if let Some(json) = registry.find("std.foundation.json") {
-        target.alias("json", json);
+    for (library, alias) in crate::kernel::generated::foundation_library_aliases() {
+        if let Some(source) = registry.find(library) {
+            target.alias(alias, source);
+        } else {
+            target.lazy_alias(alias, library);
+        }
     }
 }
 
@@ -10314,7 +10315,15 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
         };
         (name, &fs[2..])
     };
-    refer_startup_defaults(&registry, &name);
+    // Namespace configuration is normally consumed by the generated-runtime
+    // orchestration layer.  The raw HTA evaluator executes forms directly in
+    // an EvalFiber, so the core special form must still honor the one setting
+    // that changes namespace construction itself.
+    let blank = crate::kernel::GeneratedNamespaceConfig::configure_with(clauses, |_| true)
+        .map(|config| config.blank())?;
+    if !blank {
+        refer_startup_defaults(&registry, &name);
+    }
     select_namespace_environment(&registry, env, &name);
     for clause in clauses {
         match clause {

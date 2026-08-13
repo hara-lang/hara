@@ -26,6 +26,53 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
+const FOUNDATION_RESOURCES: &[(&str, &str)] = &[
+    (
+        "std.foundation.promise",
+        include_str!("../../../lib/src/std/foundation/promise.hal"),
+    ),
+    (
+        "std.foundation.bytes",
+        include_str!("../../../lib/src/std/foundation/bytes.hal"),
+    ),
+    (
+        "std.foundation.crypto",
+        include_str!("../../../lib/src/std/foundation/crypto.hal"),
+    ),
+    (
+        "std.foundation.coroutine",
+        include_str!("../../../lib/src/std/foundation/coroutine.hal"),
+    ),
+    (
+        "std.foundation.file",
+        include_str!("../../../lib/src/std/foundation/file.hal"),
+    ),
+    (
+        "std.foundation.host",
+        include_str!("../../../lib/src/std/foundation/host.hal"),
+    ),
+    (
+        "std.foundation.socket",
+        include_str!("../../../lib/src/std/foundation/socket.hal"),
+    ),
+    (
+        "std.foundation.set",
+        include_str!("../../../lib/src/std/foundation/set.hal"),
+    ),
+    (
+        "std.foundation.pretty.engine",
+        include_str!("../../../lib/src/std/foundation/pretty/engine.hal"),
+    ),
+    (
+        "std.foundation.pretty",
+        include_str!("../../../lib/src/std/foundation/pretty.hal"),
+    ),
+    (
+        "std.foundation.kernel",
+        include_str!("../../../lib/src/std/foundation/kernel.hal"),
+    ),
+];
+
 #[no_mangle]
 pub extern "C" fn version() -> i32 {
     1
@@ -55,7 +102,7 @@ pub extern "C" fn hta_dealloc(pointer: *mut u8, size: usize) {
 }
 #[no_mangle]
 pub extern "C" fn hta_abi_version() -> i32 {
-    2
+    3
 }
 
 struct Session {
@@ -67,6 +114,8 @@ struct Session {
     /// same registry; without this raw WASM kernels could load frame helpers
     /// but not the concrete `std.lib.substrate` node.
     protocols: core::ProtocolRegistry,
+    macros: Rc<RefCell<HashMap<(String, String), Rc<core::Function>>>>,
+    generated_configs: HashMap<String, kernel::GeneratedNamespaceConfig>,
     next_call: u64,
     events: Rc<RefCell<VecDeque<Vec<u8>>>>,
     ready: Rc<RefCell<VecDeque<(u64, PromiseState)>>>,
@@ -170,6 +219,46 @@ impl Session {
                 namespace.intern(*method, core::structural_function_value(dispatch_name));
             }
         }
+        let native_string = namespaces.find_or_create("std.native.String");
+        let string = namespaces.find_or_create("std.foundation.string");
+        for (name, var) in native_string.mappings() {
+            string.map_var(name, var);
+        }
+        let os = namespaces.find_or_create("std.foundation.os");
+        for (native_type, methods) in [
+            (
+                "OS",
+                &[
+                    ("platform", "platform"),
+                    ("arch", "arch"),
+                    ("cwd", "cwd"),
+                    ("env", "env"),
+                    ("getenv", "getenv"),
+                ][..],
+            ),
+            (
+                "Process",
+                &[
+                    ("spawn", "spawn"),
+                    ("instance?", "process?"),
+                    ("alive?", "process-alive?"),
+                    ("write", "process-write"),
+                    ("close-input", "process-close-input"),
+                    ("stdout", "process-stdout"),
+                    ("stderr", "process-stderr"),
+                    ("wait", "process-wait"),
+                    ("kill", "process-kill"),
+                ][..],
+            ),
+        ] {
+            let native = namespaces.find_or_create(format!("std.native.{native_type}"));
+            for &(method, facade) in methods {
+                let var = native
+                    .resolve(&lang::data::Symbol::parse(method))
+                    .expect("native OS facade method");
+                os.map_var(lang::data::Symbol::parse(facade), var);
+            }
+        }
         let native_json = namespaces.find_or_create("std.native.Json");
         let json_read = native_json.intern(
             "read",
@@ -251,6 +340,11 @@ impl Session {
             env,
             namespaces,
             protocols: core::ProtocolRegistry::core(),
+            macros: Rc::new(RefCell::new(HashMap::new())),
+            generated_configs: HashMap::from([(
+                "user".into(),
+                kernel::GeneratedNamespaceConfig::defaults(),
+            )]),
             next_call: 1,
             events,
             ready: Rc::new(RefCell::new(VecDeque::new())),
@@ -278,6 +372,7 @@ impl Session {
         self.next_journal_id += 1;
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
+        let macros = self.macros.clone();
         let resources = self.resources.clone();
         let provider = Rc::new(move |name: &str| {
             resources
@@ -512,6 +607,59 @@ impl Session {
         let current = self.namespaces.current().name().as_str().to_owned();
         core::select_namespace_environment(&self.namespaces, &mut self.env, &current);
     }
+
+    fn prepare_forms(&mut self, forms: Vec<kernel::Form>) -> Result<Vec<kernel::Form>, String> {
+        let mut namespace = self.namespaces.current().name().as_str().to_owned();
+        let mut prepared = Vec::with_capacity(forms.len());
+        for form in forms {
+            if let kernel::Form::List(values) = &form {
+                if matches!(values.first(), Some(kernel::Form::Symbol(head)) if head == "ns") {
+                    namespace = match values.get(1) {
+                        Some(kernel::Form::Symbol(name)) if !name.contains('/') => name.clone(),
+                        _ => return Err("ns expects an unqualified namespace symbol".into()),
+                    };
+                    let resources = self.resources.borrow();
+                    let config = kernel::GeneratedNamespaceConfig::configure_with(
+                        &values[2..],
+                        |target| {
+                            self.namespaces.find(target).is_some()
+                                || resources.contains_key(target)
+                                || target == "std.foundation"
+                                || target.starts_with("std.foundation.")
+                                || target.starts_with("std.lib.")
+                        },
+                    )?;
+                    self.generated_configs.insert(namespace.clone(), config);
+                    prepared.push(form);
+                    continue;
+                }
+                if matches!(values.first(), Some(kernel::Form::Symbol(head)) if head == "require") {
+                    let mut config = self
+                        .generated_configs
+                        .get(&namespace)
+                        .cloned()
+                        .unwrap_or_else(kernel::GeneratedNamespaceConfig::defaults);
+                    for spec in &values[1..] {
+                        // Preserve the evaluator's asynchronous error contract:
+                        // missing standalone requires become task failures, not
+                        // synchronous request-dispatch failures.
+                        config.apply_require(spec, &|_| true)?;
+                    }
+                    self.generated_configs.insert(namespace.clone(), config);
+                    prepared.push(form);
+                    continue;
+                }
+            }
+            let config = self
+                .generated_configs
+                .get(&namespace)
+                .cloned()
+                .unwrap_or_else(kernel::GeneratedNamespaceConfig::defaults);
+            prepared.push(config.rewrite(form));
+        }
+        Ok(prepared)
+    }
+
     fn start_fiber_with_bindings(
         &mut self,
         task: u64,
@@ -526,6 +674,7 @@ impl Session {
         });
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
+        let macros = self.macros.clone();
         let resources = self.resources.clone();
         let provider = Rc::new(move |name: &str| {
             resources
@@ -538,11 +687,16 @@ impl Session {
         for (index, value) in bindings.into_iter().enumerate() {
             environment.insert(format!("__hta_arg_{index}"), value);
         }
+        let forms = self.prepare_forms(kernel::parse_forms(source)?)?;
         let fiber = core::with_capability_providers(file_provider, None, false, None, || {
-            core::with_namespace_registry(&namespaces, || {
-                core::with_namespace_source(provider, || {
-                    core::with_protocols(&protocols, || {
-                        core::with_host_calls(handler, || EvalFiber::start(source, environment))
+            core::with_macros(macros, || {
+                core::with_namespace_registry(&namespaces, || {
+                    core::with_namespace_source(provider, || {
+                        core::with_protocols(&protocols, || {
+                            core::with_host_calls(handler, || {
+                                EvalFiber::start_forms(forms, environment)
+                            })
+                        })
                     })
                 })
             })
@@ -559,6 +713,7 @@ impl Session {
         for bytes in modules {
             forms.extend(kernel::halc::decode_halc(bytes)?.forms);
         }
+        let mut forms = self.prepare_forms(forms)?;
         forms.push(kernel::Form::Bool(true));
         let environment = self.env.clone();
         let (handler, pending, next) = self.host_handler(task);
@@ -569,6 +724,7 @@ impl Session {
         });
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
+        let macros = self.macros.clone();
         let resources = self.resources.clone();
         let provider = Rc::new(move |name: &str| {
             resources
@@ -578,11 +734,13 @@ impl Session {
                 .map(core::NamespaceResource::Source)
         });
         let fiber = core::with_capability_providers(file_provider, None, false, None, || {
-            core::with_namespace_registry(&namespaces, || {
-                core::with_namespace_source(provider, || {
-                    core::with_protocols(&protocols, || {
-                        core::with_host_calls(handler, || {
-                            EvalFiber::start_forms(forms, environment)
+            core::with_macros(macros, || {
+                core::with_namespace_registry(&namespaces, || {
+                    core::with_namespace_source(provider, || {
+                        core::with_protocols(&protocols, || {
+                            core::with_host_calls(handler, || {
+                                EvalFiber::start_forms(forms, environment)
+                            })
                         })
                     })
                 })
@@ -713,6 +871,7 @@ impl Session {
         });
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
+        let macros = self.macros.clone();
         let resources = self.resources.clone();
         let provider = Rc::new(move |name: &str| {
             resources
@@ -722,11 +881,13 @@ impl Session {
                 .map(core::NamespaceResource::Source)
         });
         core::with_capability_providers(file_provider, None, false, None, || {
-            core::with_namespace_registry(&namespaces, || {
-                core::with_namespace_source(provider, || {
-                    core::with_protocols(&protocols, || {
-                        core::with_host_calls(handler, || {
-                            fiber.resume(state);
+            core::with_macros(macros, || {
+                core::with_namespace_registry(&namespaces, || {
+                    core::with_namespace_source(provider, || {
+                        core::with_protocols(&protocols, || {
+                            core::with_host_calls(handler, || {
+                                fiber.resume(state);
+                            });
                         });
                     });
                 });
@@ -885,13 +1046,10 @@ struct SessionKernel {
 impl SessionKernel {
     fn new() -> Self {
         let resources = Rc::new(RefCell::new(HashMap::new()));
-        resources.borrow_mut().insert(
-            "std.foundation.file".into(),
-            include_str!("../../../lib/src/std/foundation/file.hal").into(),
-        );
-        resources.borrow_mut().insert(
-            "std.foundation.host".into(),
-            include_str!("../../../lib/src/std/foundation/host.hal").into(),
+        resources.borrow_mut().extend(
+            FOUNDATION_RESOURCES
+                .iter()
+                .map(|(name, source)| ((*name).into(), (*source).into())),
         );
         let events = Rc::new(RefCell::new(VecDeque::new()));
         let mut sessions = HashMap::new();
@@ -2400,6 +2558,79 @@ mod tests {
     }
 
     #[test]
+    fn foundation_aliases_load_without_require_in_fresh_sessions() {
+        let probes = [
+            "str/trim",
+            "promise/from",
+            "bytes/count",
+            "socket/connect",
+            "file/resolve",
+            "co/create",
+            "edn/read",
+            "json/read",
+            "set/union",
+            "pretty/render",
+            "host/call",
+            "kernel/session-list",
+            "os/platform",
+            "crypto/sha256",
+        ];
+        for (index, probe) in probes.into_iter().enumerate() {
+            let mut kernel = SessionKernel::new();
+            let task = index as u64 + 1;
+            dispatch(
+                &mut kernel,
+                task,
+                "eval",
+                vec![Value::String(format!("(nil? (resolve '{probe}))"))],
+            )
+            .unwrap();
+            assert!(
+                matches!(
+                    result(&mut kernel).as_slice(),
+                    [Value::Number(0), Value::Number(found_task), Value::Bool(false)] if *found_task == task as i64
+                ),
+                "{probe} should resolve through its built-in alias"
+            );
+        }
+    }
+
+    #[test]
+    fn string_alias_evaluates_in_root_named_and_declared_namespaces() {
+        for source in [
+            "(str/trim \"  Hara  \")",
+            "(ns docs.example) (str/trim \"  Hara  \")",
+        ] {
+            let mut kernel = SessionKernel::new();
+            dispatch(&mut kernel, 1, "eval", vec![Value::String(source.into())]).unwrap();
+            assert!(
+                matches!(
+                    result(&mut kernel).as_slice(),
+                    [Value::Number(0), Value::Number(1), Value::String(value)] if value == "Hara"
+                ),
+                "{source}"
+            );
+        }
+
+        let mut kernel = SessionKernel::new();
+        kernel.create_session("lesson").unwrap();
+        dispatch(
+            &mut kernel,
+            1,
+            "session/eval",
+            vec![
+                Value::String("lesson".into()),
+                Value::String("(str/trim \"  Hara  \")".into()),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            result(&mut kernel).as_slice(),
+            [Value::Number(0), Value::Number(1), Value::String(value)] if value == "Hara"
+        ));
+    }
+
+    #[test]
     fn require_supports_ns_form_clauses_and_qualified_access() {
         let mut runtime = Session::new();
         runtime.resources.borrow_mut().insert(
@@ -2467,7 +2698,7 @@ mod tests {
                 .iter()
                 .map(|(_, methods)| methods.len())
                 .sum::<usize>(),
-            181
+            198
         );
         let mut runtime = Session::new();
         assert!(runtime.env.contains_key("edn/write"));
@@ -2710,6 +2941,22 @@ mod tests {
             .resolve(&Symbol::parse("answer"))
             .unwrap()
             .same_identity(&answer));
+    }
+
+    #[test]
+    fn production_foundation_halc_bootstraps_macros_and_builtin_aliases_when_available() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../java/target/classes/std/foundation.halc");
+        let Ok(bytes) = std::fs::read(path) else {
+            return;
+        };
+        let mut runtime = Session::new();
+        runtime.start_halc_fiber(1, &bytes).unwrap();
+        assert_eq!(completion_value(&mut runtime, 1), Value::Bool(true));
+        runtime
+            .start_fiber(2, "(ns user) (str/trim \"  hara  \" )")
+            .unwrap();
+        assert_eq!(completion_value(&mut runtime, 2), Value::String("hara".into()));
     }
 }
 

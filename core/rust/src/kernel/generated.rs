@@ -18,6 +18,12 @@ const LIBRARIES: &[(&str, &str, &str)] = &[
     ("os", "std.foundation.os", "os"),
     ("crypto", "std.foundation.crypto", "crypto"),
 ];
+
+pub(crate) fn foundation_library_aliases() -> impl Iterator<Item = (&'static str, &'static str)> {
+    LIBRARIES
+        .iter()
+        .map(|(_, namespace, alias)| (*namespace, *alias))
+}
 const NATIVE_TYPES: &[&str] = &[
     "Maths",
     "Numbers",

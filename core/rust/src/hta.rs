@@ -28,6 +28,17 @@ const CHARACTER: u8 = 19;
 const BIG_INTEGER: u8 = 20;
 const DECIMAL: u8 = 21;
 const REGEX: u8 = 22;
+const TUPLE: u8 = 23;
+const CONS: u8 = 24;
+const QUEUE: u8 = 25;
+const ORDERED_MAP: u8 = 26;
+const SORTED_MAP: u8 = 27;
+const TRIE: u8 = 28;
+const ORDERED_SET: u8 = 29;
+const SORTED_SET: u8 = 30;
+const TAGGED: u8 = 31;
+const EXCEPTION_INFO: u8 = 32;
+const STRUCT: u8 = 33;
 
 pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = MAGIC.to_vec();
@@ -109,8 +120,10 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
             encode_bytes(value.as_str().as_bytes(), output)?;
         }
         Value::List(values) => encode_sequence(LIST, values.iter(), output, depth)?,
-        Value::Tuple(values) => encode_sequence(VECTOR, values.iter(), output, depth)?,
+        Value::Tuple(values) => encode_sequence(TUPLE, values.iter(), output, depth)?,
         Value::Vector(values) => encode_sequence(VECTOR, values.iter(), output, depth)?,
+        Value::Cons(values) => encode_sequence(CONS, values.iter().collect::<Vec<_>>().iter(), output, depth)?,
+        Value::Queue(values) => encode_sequence(QUEUE, values.iter(), output, depth)?,
         Value::Set(values) => {
             let mut encoded = values
                 .iter()
@@ -123,42 +136,24 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
                 output.extend_from_slice(&value);
             }
         }
-        Value::OrderedSet(values) => {
-            let mut encoded = values
-                .iter()
-                .map(|value| bare(value, depth + 1))
-                .collect::<Result<Vec<_>, _>>()?;
-            encoded.sort();
-            output.push(SET);
-            encode_len(encoded.len(), output)?;
-            for value in encoded {
-                output.extend_from_slice(&value);
-            }
-        }
+        Value::OrderedSet(values) => encode_sequence(ORDERED_SET, values.iter(), output, depth)?,
         Value::SortedSet(values) => {
             let mut encoded = values
                 .iter()
                 .map(|value| bare(value, depth + 1))
                 .collect::<Result<Vec<_>, _>>()?;
             encoded.sort();
-            output.push(SET);
+            output.push(SORTED_SET);
             encode_len(encoded.len(), output)?;
             for value in encoded {
                 output.extend_from_slice(&value);
             }
         }
-        Value::OrderedMap(values) => {
-            let mut encoded = values
-                .iter()
-                .map(|(key, value)| Ok((bare(key, depth + 1)?, bare(value, depth + 1)?)))
-                .collect::<Result<Vec<_>, String>>()?;
-            encoded.sort_by(|left, right| left.0.cmp(&right.0));
-            output.push(MAP);
-            encode_len(encoded.len(), output)?;
-            for (key, value) in encoded {
-                output.extend_from_slice(&key);
-                output.extend_from_slice(&value);
-            }
+        Value::OrderedMap(values) => encode_map(ORDERED_MAP, values.iter().map(|pair| (&pair.0, &pair.1)), output, depth)?,
+        Value::SortedMap(values) => encode_map(SORTED_MAP, values.iter(), output, depth)?,
+        Value::Trie(values) => {
+            let entries = values.iter().map(|key| (Value::String(key.clone()), values.get(&key).unwrap().clone())).collect::<Vec<_>>();
+            encode_map(TRIE, entries.iter().map(|pair| (&pair.0, &pair.1)), output, depth)?;
         }
         Value::Map(values) => {
             let mut encoded = values
@@ -204,7 +199,36 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
             encode_bytes(value.type_name.as_bytes(), output)?;
             output.extend_from_slice(&value.handle.to_be_bytes());
         }
+        Value::Tagged(value) => {
+            output.push(TAGGED);
+            encode_bare(&Value::Symbol(value.tag().clone()), output, depth + 1)?;
+            encode_bare(value.form(), output, depth + 1)?;
+        }
+        Value::ExceptionInfo(value) => {
+            output.push(EXCEPTION_INFO);
+            encode_bare(&Value::String(value.message.clone()), output, depth + 1)?;
+            encode_bare(&value.data, output, depth + 1)?;
+            encode_bare(value.cause.as_deref().unwrap_or(&Value::Nil), output, depth + 1)?;
+        }
+        Value::Struct(value) => {
+            output.push(STRUCT);
+            encode_bare(&Value::String(value.ty.name.clone()), output, depth + 1)?;
+            let fields = value.ty.fields.iter().cloned().map(Value::String).collect::<Vec<_>>();
+            encode_sequence(VECTOR, fields.iter(), output, depth)?;
+            encode_sequence(VECTOR, value.values.iter(), output, depth)?;
+        }
         _ => return Err(format!("hta/value-unsupported: {}", value.display())),
+    }
+    Ok(())
+}
+
+fn encode_map<'a>(tag: u8, values: impl Iterator<Item = (&'a Value, &'a Value)>, output: &mut Vec<u8>, depth: usize) -> Result<(), String> {
+    let values = values.collect::<Vec<_>>();
+    output.push(tag);
+    encode_len(values.len(), output)?;
+    for (key, value) in values {
+        encode_bare(key, output, depth + 1)?;
+        encode_bare(value, output, depth + 1)?;
     }
     Ok(())
 }
@@ -299,8 +323,18 @@ impl Reader<'_> {
                     .into(),
             )),
             LIST => Ok(Value::List(self.sequence(depth)?.into())),
+            TUPLE => Ok(Value::Tuple(Box::new(crate::lang::data::Tuple::from_values(self.sequence(depth)?)?))),
             VECTOR => Ok(Value::Vector(self.sequence(depth)?.into())),
+            CONS => {
+                let mut values = self.sequence(depth)?;
+                if values.is_empty() { return Err("hta/value-malformed: empty cons".into()); }
+                let first = values.remove(0);
+                Ok(Value::Cons(Box::new(crate::lang::data::Cons::new(first, values.into_iter().collect()))))
+            }
+            QUEUE => Ok(Value::Queue(Box::new(self.sequence(depth)?.into_iter().collect()))),
             SET => Ok(Value::Set(self.sequence(depth)?.into())),
+            ORDERED_SET => Ok(Value::OrderedSet(Box::new(self.sequence(depth)?.into_iter().collect()))),
+            SORTED_SET => Ok(Value::SortedSet(Box::new(self.sequence(depth)?.into_iter().collect()))),
             MAP => {
                 let size = self.len()?;
                 if size > self.bytes.len().saturating_sub(self.cursor) / 2 {
@@ -311,6 +345,16 @@ impl Reader<'_> {
                     values.push((self.value(depth + 1)?, self.value(depth + 1)?));
                 }
                 Ok(Value::Map(values.into_iter().collect()))
+            }
+            ORDERED_MAP => Ok(Value::OrderedMap(Box::new(self.entries(depth)?.into_iter().collect()))),
+            SORTED_MAP => Ok(Value::SortedMap(Box::new(self.entries(depth)?.into_iter().collect()))),
+            TRIE => {
+                let mut trie = crate::lang::data::Trie::new();
+                for (key, value) in self.entries(depth)? {
+                    let Value::String(key) = key else { return Err("hta/value-malformed: invalid trie key".into()); };
+                    trie = trie.assoc_value(key, value);
+                }
+                Ok(Value::Trie(Box::new(trie)))
             }
             NAMESPACE => {
                 let name = String::from_utf8(self.data()?.to_vec())
@@ -362,6 +406,23 @@ impl Reader<'_> {
                     handle: u64::from_be_bytes(bytes.try_into().unwrap()),
                 }))
             }
+            TAGGED => {
+                let Value::Symbol(tag) = self.value(depth + 1)? else { return Err("hta/value-malformed: invalid tagged literal tag".into()); };
+                Ok(Value::Tagged(Box::new(crate::lang::data::TaggedLiteral::new(tag, self.value(depth + 1)?))))
+            }
+            EXCEPTION_INFO => {
+                let Value::String(message) = self.value(depth + 1)? else { return Err("hta/value-malformed: invalid exception message".into()); };
+                let data = self.value(depth + 1)?;
+                let cause = match self.value(depth + 1)? { Value::Nil => None, value => Some(Box::new(value)) };
+                Ok(Value::ExceptionInfo(std::rc::Rc::new(crate::core::ExceptionInfo { message, data: Box::new(data), cause })))
+            }
+            STRUCT => {
+                let Value::String(name) = self.value(depth + 1)? else { return Err("hta/value-malformed: invalid struct name".into()); };
+                let fields = match self.value(depth + 1)? { Value::Vector(values) => values.iter().map(|value| match value { Value::String(field) => Ok(field.clone()), _ => Err("hta/value-malformed: invalid struct field".into()) }).collect::<Result<Vec<_>, String>>()?, _ => return Err("hta/value-malformed: invalid struct fields".into()) };
+                let values: Vec<Value> = match self.value(depth + 1)? { Value::Vector(values) => values.iter().cloned().collect(), _ => return Err("hta/value-malformed: invalid struct values".into()) };
+                if fields.len() != values.len() { return Err("hta/value-malformed: struct arity mismatch".into()); }
+                Ok(Value::Struct(std::rc::Rc::new(crate::core::StructValue { ty: std::rc::Rc::new(crate::core::StructType { name, fields }), values })))
+            }
             _ => Err("hta/value-malformed: unknown value tag".into()),
         }
     }
@@ -371,6 +432,11 @@ impl Reader<'_> {
             return Err("hta/value-malformed: impossible sequence length".into());
         }
         (0..size).map(|_| self.value(depth + 1)).collect()
+    }
+    fn entries(&mut self, depth: usize) -> Result<Vec<(Value, Value)>, String> {
+        let size = self.len()?;
+        if size > self.bytes.len().saturating_sub(self.cursor) / 2 { return Err("hta/value-malformed: impossible map length".into()); }
+        (0..size).map(|_| Ok((self.value(depth + 1)?, self.value(depth + 1)?))).collect()
     }
     fn data(&mut self) -> Result<&[u8], String> {
         let size = self.len()?;
@@ -417,15 +483,25 @@ mod tests {
         assert_eq!(encode(&decode(&encoded).unwrap()).unwrap(), encoded);
     }
     #[test]
-    fn compact_tuple_uses_the_portable_vector_wire_type() {
+    fn compact_tuple_preserves_its_portable_identity() {
         let tuple = Value::Tuple(Box::new(
             PTuple::from_values(vec![Value::Number(1), Value::Number(2)]).unwrap(),
         ));
         let decoded = decode(&encode(&tuple).unwrap()).unwrap();
-        assert_eq!(
-            decoded,
-            Value::Vector(PVector::from(vec![Value::Number(1), Value::Number(2)]))
-        );
+        assert!(matches!(decoded, Value::Tuple(_)));
+    }
+
+    #[test]
+    fn immutable_v3_values_round_trip_without_collection_normalization() {
+        let queue = Value::Queue(Box::new(
+            vec![Value::Number(1), Value::Number(2)].into_iter().collect(),
+        ));
+        assert!(matches!(decode(&encode(&queue).unwrap()).unwrap(), Value::Queue(_)));
+        let tagged = Value::Tagged(Box::new(crate::lang::data::TaggedLiteral::new(
+            crate::lang::data::Symbol::parse("demo/tag"),
+            Value::Number(42),
+        )));
+        assert!(matches!(decode(&encode(&tagged).unwrap()).unwrap(), Value::Tagged(_)));
     }
     #[test]
     fn floats_round_trip_with_ieee_754_bits() {
