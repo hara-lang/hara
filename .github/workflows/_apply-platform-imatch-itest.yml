@@ -1,0 +1,43 @@
+name: Apply platform protocol hard cut
+
+on:
+  push:
+    branches:
+      - agent/platform-imatch-itest-hard-cut-497-498
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Repair exact platform protocol anchors
+        run: |
+          if [[ -f scripts/runtime/fix-platform-hard-cut-anchor ]]; then
+            python3 scripts/runtime/fix-platform-hard-cut-anchor
+          else
+            echo "Platform protocol anchors already repaired."
+          fi
+      - name: Apply bounded source migration
+        run: |
+          if [[ -f scripts/runtime/apply-platform-imatch-itest-hard-cut ]]; then
+            python3 scripts/runtime/apply-platform-imatch-itest-hard-cut
+          else
+            echo "Platform protocol hard cut already applied."
+          fi
+      - name: Commit the reviewable hard cut
+        run: |
+          if git diff --quiet; then
+            echo "No migration changes remain to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Make IMatch platform-owned and remove ITest runtime family"
+          git push
