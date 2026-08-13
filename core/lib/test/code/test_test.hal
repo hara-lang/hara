@@ -1,6 +1,7 @@
 (ns code.test-test
   (:use code.test)
-  (:require [std.lib.test :as legacy]))
+  (:require [std.lib.test :as legacy]
+            [std.work :as work]))
 
 (fact "evaluates ordinary equality"
   (+ 20 22) => 42
@@ -33,27 +34,22 @@
             (swap! lifecycle (fn [events] (conj events :after))))}
   (promise/from :ready) => :ready)
 
-(def reporter (event-reporter))
-(def summary (run {:namespace "code.test-test"
-                   :reporter reporter}))
+(def observer (work/recording-observer))
+(def summary
+  (run (work/local-runtime {:observer observer})
+       {:namespace "code.test-test"}))
 (def positional-summary (run '[missing]))
 
-(def timeout-timer
-  (function-timer
-   (fn [promise milliseconds]
-     {:promise (promise/from {:test/status :timeout})
-      :timeout milliseconds})
-   (fn [timeout] timeout)))
-
 (def timeout-result
-  (check (fn [] (promise/from 42))
-         42
-         {:timer timeout-timer
-          :timeout 25}))
-
-(def cancelled-summary
-  (run {:namespace "code.test-test"
-        :control (function-control (fn [fact] true))}))
+  (check
+   (fn [] (promise/from 42))
+   42
+   {:work/timeout-promise
+    (fn [promise milliseconds]
+      {:promise (promise/from {:test/status :timeout})
+       :timeout milliseconds})
+    :work/cancel-timeout (fn [timeout] timeout)
+    :timeout 25}))
 
 (def fixture-events (atom []))
 (def fixture-summary
@@ -96,13 +92,26 @@
 (def timed-result
   (run-fact
    (get-fact "code.test-test" "evaluates ordinary equality")
-   +null-reporter+
-   {:clock
-    (function-clock
-     (fn []
-       (let [value (first (deref clock-values))]
-         (swap! clock-values rest)
-         value)))}))
+   nil
+   {:work/now
+    (fn []
+      (let [value (first (deref clock-values))]
+        (swap! clock-values rest)
+        value))}))
+
+(defn test-event?
+  [event]
+  (let [kind (:event event)]
+    (or (= kind :test/run-started)
+        (= kind :test/fact-started)
+        (= kind :test/fact-completed)
+        (= kind :test/run-completed))))
+
+(def test-events
+  (vec
+   (map (fn [event] (:event event))
+        (filter test-event?
+                (work/observer-events observer)))))
 
 (def results
   [(legacy/check "archived positional namespace selectors are supported"
@@ -117,28 +126,22 @@
                   (count (get (first (get summary :results)) :checks))
                   (deref lifecycle)]
                  [:passed 5 6 2 [:before :after]])
-   (legacy/check "runner emits structured events without printing"
-                 (vec (map (fn [report] (get report :event))
-                           (reporter-events reporter)))
-                 [:run/start
-                  :fact/start :fact/end
-                  :fact/start :fact/end
-                  :fact/start :fact/end
-                  :fact/start :fact/end
-                  :fact/start :fact/end
-                  :fact/start :fact/end
-                  :run/end])
-   (legacy/check "host timers classify timeout diagnostics"
+   (legacy/check "IWorkObserver receives durable test-domain events"
+                 test-events
+                 [:test/run-started
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/run-completed])
+   (legacy/check "generic work timeout capabilities classify diagnostics"
                  [(get timeout-result :status)
                   (get timeout-result :pass)
                   (get timeout-result :timeout)]
                  [:timeout false 25])
-   (legacy/check "host control cancels facts without invoking them"
-                 [(get cancelled-summary :status)
-                  (get (get cancelled-summary :counts) :cancelled)
-                  (deref lifecycle)]
-                 [:passed 5 [:before :after]])
-   (legacy/check "host clocks attach deterministic elapsed time"
+   (legacy/check "generic work clocks attach deterministic elapsed time"
                  [(get timed-result :status) (get timed-result :elapsed)]
                  [:passed 8])
    (legacy/check "runner supports suite fixtures, selectors, tags, and skips"

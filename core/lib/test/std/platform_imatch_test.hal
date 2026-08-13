@@ -1,0 +1,51 @@
+(ns std.platform-imatch-test
+  (:require [code.test :as code-test]
+            [code.test.protocol :as protocol]
+            [std.foundation.promise :as promise]
+            [std.lib.test :as test]
+            [std.protocol.imatch :as match]))
+
+(defstruct EqualMatcher [expected])
+
+(extend-type EqualMatcher match/IMatch
+  (match-value [matcher actual]
+    {:pass (= (field matcher :expected) actual)
+     :actual actual
+     :expected (field matcher :expected)}))
+
+(def reporter (code-test/event-reporter))
+(def reported (code-test/report! reporter {:event :probe :value 42}))
+(def clock (code-test/function-clock (fn [] 17)))
+(def control (code-test/function-control (fn [fact] (= :cancel (:name fact)))))
+(def timer
+  (code-test/function-timer
+   (fn [value milliseconds] value)
+   (fn [handle] nil)))
+
+(def results
+  [(test/check
+    "IMatch resolves from the platform namespace and retains compatibility identity"
+    [(= match/IMatch protocol/IMatch)
+     (match/match-value (std.platform-imatch-test/EqualMatcher 42) 42)]
+    [true {:pass true :actual 42 :expected 42}])
+
+   (test/check
+    "test reporting is ordinary data/function dispatch"
+    [(code-test/reporter-events reporter) reported]
+    [[{:event :probe :value 42}] {:event :probe :value 42}])
+
+   (test/check
+    "clock and cancellation adapters no longer require lifecycle protocols"
+    [(code-test/clock-now {:clock clock})
+     (code-test/fact-cancelled? {:name :cancel} {:control control})
+     (code-test/fact-cancelled? {:name :run} {:control (fn [fact] false)})]
+    [17 true false])
+
+   (test/check
+    "timer adapters remain ordinary host capabilities"
+    (code-test/settle
+     (promise/from 42)
+     {:timer timer :timeout 10})
+    42)])
+
+(test/print-results results)

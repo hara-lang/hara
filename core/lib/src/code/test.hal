@@ -6,19 +6,15 @@
 ;; ============================================================================
 (ns code.test
   (:require [code.test.cli :as cli]
-            [code.test.protocol :as protocol]
             [code.test.selector :as selector]
             [std.work :as work]))
 
-(defstruct TestRegistry [state])
-(defstruct NullReporter [value])
-(defstruct EventReporter [events])
-(defstruct FunctionClock [function])
-(defstruct FunctionTimer [timeout-function cancel-function])
-(defstruct FunctionControl [function])
 (defstruct Matcher [predicate expected])
 (defstruct ThrownValue [error])
 (defstruct TimeoutValue [milliseconds])
+
+;; Fact registration is evaluator-local domain state, not a provider protocol.
+(def +registry+ (atom {}))
 
 (defn clear-namespace-state
   [state namespace]
@@ -32,61 +28,52 @@
                (rest remaining)))
       output)))
 
-(extend-type TestRegistry protocol/ITestRegistry
-  (registry-register [registry fact]
-    (do
-      (swap! (field registry :state)
-             (fn [state]
-               (assoc state [(:namespace fact) (:name fact)] fact)))
-      fact))
-  (registry-remove [registry namespace name]
-    (let [key [namespace name]
-          found (get (deref (field registry :state)) key)]
-      (swap! (field registry :state)
-             (fn [state] (dissoc state key)))
-      found))
-  (registry-clear [registry namespace]
-    (if namespace
-      (swap! (field registry :state) clear-namespace-state namespace)
-      (reset! (field registry :state) {})))
-  (registry-facts [registry]
-    (vec (vals (deref (field registry :state)))))
-  (registry-find [registry namespace name]
-    (get (deref (field registry :state)) [namespace name])))
+(defn registry-register
+  [registry fact]
+  (do
+    (swap! registry
+           (fn [state]
+             (assoc state [(:namespace fact) (:name fact)] fact)))
+    fact))
 
-(extend-type NullReporter protocol/ITestReporter
-  (report-event [reporter event]
+(defn registry-remove
+  [registry namespace name]
+  (let [key [namespace name]
+        found (get (deref registry) key)]
+    (swap! registry (fn [state] (dissoc state key)))
+    found))
+
+(defn registry-clear
+  [registry namespace]
+  (if namespace
+    (swap! registry clear-namespace-state namespace)
+    (reset! registry {})))
+
+(defn registry-facts
+  [registry]
+  (vec (vals (deref registry))))
+
+(defn registry-find
+  [registry namespace name]
+  (get (deref registry) [namespace name]))
+
+(defn report-event
+  "Compatibility delivery for direct run-fact callers.
+
+   Canonical suite execution emits durable :test/* events through std.work and
+   uses IWorkObserver. This local adapter accepts only an ordinary function."
+  [reporter event]
+  (if reporter
+    (let [result (reporter event)]
+      (if (nil? result) event result))
     event))
 
-(extend-type EventReporter protocol/ITestReporter
-  (report-event [reporter event]
-    (do
-      (swap! (field reporter :events)
-             (fn [events] (conj events event)))
-      event)))
-
-(extend-type FunctionClock protocol/ITestClock
-  (now-ms [clock]
-    ((field clock :function))))
-
-(extend-type FunctionTimer protocol/ITestTimer
-  (timeout-promise [timer promise milliseconds]
-    ((field timer :timeout-function) promise milliseconds))
-  (cancel-timeout [timer timeout]
-    ((field timer :cancel-function) timeout)))
-
-(extend-type FunctionControl protocol/ITestControl
-  (cancelled? [control fact]
-    ((field control :function) fact)))
-
-(extend-type Matcher protocol/IMatcher
+(extend-type Matcher std.protocol.imatch/IMatch
   (match-value [matcher actual]
     {:pass ((field matcher :predicate) actual)
      :actual actual
      :expected (field matcher :expected)}))
 
-(def +registry+ (code.test/TestRegistry (atom {})))
-(def +null-reporter+ (code.test/NullReporter nil))
 (def => '=>)
 (def +listeners+ {})
 (def +global-settings+ (atom {}))
@@ -94,36 +81,6 @@
 (defn anything
   [value]
   true)
-
-(defn event-reporter
-  "Creates a reporter that records structured events in an atom."
-  ([] (code.test/EventReporter (atom [])))
-  ([events] (code.test/EventReporter events)))
-
-(defn reporter-events
-  "Returns events recorded by an event reporter."
-  [reporter]
-  (deref (field reporter :events)))
-
-(defn function-clock
-  "Adapts a host-provided zero-argument clock function."
-  [function]
-  (code.test/FunctionClock function))
-
-(defn function-timer
-  "Adapts host timeout and cancellation functions.
-
-   timeout-function receives [promise milliseconds] and returns either a
-   promise or {:promise promise :timeout handle}. A timed-out promise resolves
-   to {:test/status :timeout}; successful envelopes may use
-   {:test/status :value :value value}."
-  [timeout-function cancel-function]
-  (code.test/FunctionTimer timeout-function cancel-function))
-
-(defn function-control
-  "Adapts a host cancellation predicate receiving a fact record."
-  [function]
-  (code.test/FunctionControl function))
 
 (defn exactly
   "Matches a value using HAL equality."
@@ -197,7 +154,7 @@
        (reduce (fn [passing entry]
                  (and passing
                       (:pass
-                       (protocol/match-value (matcher-for (nth expected (nth entry 0)))
+                       (std.protocol.imatch/match-value (matcher-for (nth expected (nth entry 0)))
                         (nth actual (nth entry 0))))))
                true
                (loop [index 0 output []]
@@ -232,7 +189,7 @@
       (loop [index 0]
         (if (= index (count actual))
           false
-          (if (and (:pass (protocol/match-value matcher (nth actual index)))
+          (if (and (:pass (std.protocol.imatch/match-value matcher (nth actual index)))
                    (sequence-any-order? (vec (rest expected))
                                         (vector-without actual index)))
             true
@@ -256,7 +213,7 @@
     (fn [passing entry]
       (and passing
            (:pass
-            (protocol/match-value (matcher-for (nth entry 1))
+            (std.protocol.imatch/match-value (matcher-for (nth entry 1))
                            (get actual (nth entry 0))))))
     true
     expected)))
@@ -274,7 +231,7 @@
                 (sequence-any-order? (vec expected) (vec actual)))
            (sequence-prefix? (vec expected) (vec actual)))
          (:pass
-          (protocol/match-value (matcher-for expected) actual)))))
+          (std.protocol.imatch/match-value (matcher-for expected) actual)))))
    expected))
 
 (defn just
@@ -348,7 +305,7 @@
     (code.test/Matcher
      (fn [actual]
        (not (:pass
-             (protocol/match-value matcher actual))))
+             (std.protocol.imatch/match-value matcher actual))))
      expected)))
 
 (defn any
@@ -366,7 +323,7 @@
         (fn [passing matcher]
           (or passing
               (:pass
-               (protocol/match-value matcher actual))))
+               (std.protocol.imatch/match-value matcher actual))))
         false matchers))
      expected)))
 
@@ -385,7 +342,7 @@
         (fn [passing matcher]
           (and passing
                (:pass
-                (protocol/match-value matcher actual))))
+                (std.protocol.imatch/match-value matcher actual))))
         true matchers))
      expected)))
 
@@ -397,15 +354,17 @@
    :throws))
 
 (defn timed-settle
-  [timer promise milliseconds]
-  (let [binding (protocol/timeout-promise timer promise milliseconds)
+  [options promise milliseconds]
+  (let [timeout-function (:work/timeout-promise options)
+        cancel-function (:work/cancel-timeout options)
+        binding (timeout-function promise milliseconds)
         wrapped (if (map? binding) (:promise binding) binding)
         timeout (if (map? binding) (:timeout binding) nil)
         outcome (try
                   (deref wrapped)
                   (finally
-                    (if timeout
-                      (protocol/cancel-timeout timer timeout)
+                    (if (and timeout cancel-function)
+                      (cancel-function timeout)
                       nil)))]
     (if (and (map? outcome) (= :timeout (:test/status outcome)))
       (code.test/TimeoutValue milliseconds)
@@ -414,14 +373,14 @@
         outcome))))
 
 (defn settle
-  "Returns an ordinary value, awaiting a promise through the optional host
-   timer capability."
+  "Returns an ordinary value, awaiting a Promise through generic std.work
+   context capabilities when a timeout is requested."
   ([value]
    (settle value {}))
   ([value options]
    (if (promise? value)
-     (if (and (:timer options) (:timeout options))
-       (timed-settle (:timer options) value (:timeout options))
+     (if (and (:work/timeout-promise options) (:timeout options))
+       (timed-settle options value (:timeout options))
        (deref value))
      value)))
 
@@ -439,7 +398,7 @@
           :expected expected
           :timeout (field actual :milliseconds)}
          (if (instance? code.test/Matcher expected)
-           (protocol/match-value expected actual)
+           (std.protocol.imatch/match-value expected actual)
            (if (fn? expected)
              {:pass (if (expected actual) true false)
               :actual actual
@@ -450,7 +409,7 @@
      (catch Throwable error
        (let [actual (code.test/ThrownValue error)]
          (if (instance? code.test/Matcher expected)
-           (protocol/match-value expected actual)
+           (std.protocol.imatch/match-value expected actual)
            {:pass false
             :status :error
             :actual nil
@@ -462,7 +421,7 @@
   ([name function]
    (register! name function {}))
   ([name function metadata]
-   (protocol/registry-register +registry+
+   (registry-register +registry+
     {:namespace (current-namespace)
      :name name
      :function function
@@ -473,7 +432,7 @@
   ([name]
    (remove-fact (current-namespace) name))
   ([namespace name]
-   (protocol/registry-remove +registry+
+   (registry-remove +registry+
     namespace
     name)))
 
@@ -481,29 +440,29 @@
   "Clears facts from namespace, defaulting to the current namespace."
   ([] (purge-facts (current-namespace)))
   ([namespace]
-   (protocol/registry-clear +registry+
+   (registry-clear +registry+
     namespace)))
 
 (defn purge-all
   "Clears the complete test registry."
   []
-  (protocol/registry-clear +registry+ nil))
+  (registry-clear +registry+ nil))
 
 (defn tests
   "Returns all registered fact records."
   []
-  (protocol/registry-facts +registry+))
+  (registry-facts +registry+))
 
 (defn registry
   "Returns the registry snapshot keyed by [namespace fact-name]."
   []
-  (deref (field +registry+ :state)))
+  (deref +registry+))
 
 (defn get-fact
   "Returns a fact by namespace and name."
   ([name] (get-fact (current-namespace) name))
   ([namespace name]
-   (protocol/registry-find +registry+
+   (registry-find +registry+
     namespace
     name)))
 
@@ -626,7 +585,7 @@
 (defn report!
   "Sends event to reporter and returns event."
   [reporter event]
-  (protocol/report-event reporter event))
+  (report-event reporter event))
 
 (defn checks-pass?
   [checks]
@@ -659,9 +618,8 @@
 
 (defn clock-now
   [options]
-  (if (:clock options)
-    (protocol/now-ms (:clock options))
-    nil))
+  (let [now (:work/now options)]
+    (if now (now) nil)))
 
 (defn run-hook
   [hook options]
@@ -678,10 +636,7 @@
 
 (defn fact-cancelled?
   [fact options]
-  (or (:cancelled options)
-      (if (:control options)
-        (protocol/cancelled? (:control options) fact)
-        false)))
+  (if (:cancelled options) true false))
 
 (defn run-fact
   "Runs one fact and emits start/end events."
@@ -808,7 +763,7 @@
 
 (defn run-selected
   [input options]
-  (let [reporter (or (:reporter options) +null-reporter+)
+  (let [reporter (:reporter options)
         selected (vec
                   (filter (fn [fact] (matches-selection? fact options))
                           (tests)))
@@ -858,20 +813,41 @@
 (defn work-context-options
   [context]
   (let [base (or (:test/options context) {})
-        reporter (:test/reporter context)
-        clock (:test/clock context)
-        timer (:test/timer context)
-        control (:test/control context)]
+        now (:work/now context)
+        timeout-promise (:work/timeout-promise context)
+        cancel-timeout (:work/cancel-timeout context)]
     (merge base
-           (if reporter {:reporter reporter} {})
-           (if clock {:clock clock} {})
-           (if timer {:timer timer} {})
-           (if control {:control control} {}))))
+           (if now {:work/now now} {})
+           (if timeout-promise
+             {:work/timeout-promise timeout-promise}
+             {})
+           (if cancel-timeout
+             {:work/cancel-timeout cancel-timeout}
+             {}))))
 
 (defn work-execution-options
   [input context]
   (merge (or input {})
          (work-context-options context)))
+
+(defn work-event-kind
+  [event]
+  (cond
+    (= event :run/start) :test/run-started
+    (= event :run/end) :test/run-completed
+    (= event :fact/start) :test/fact-started
+    (= event :fact/end) :test/fact-completed
+    :else :test/event))
+
+(defn work-reporter
+  "Returns a local event function that commits through the active work frame."
+  [context]
+  (fn [event]
+    (let [event-kind (work-event-kind (:event event))
+          data (assoc (dissoc event :event)
+                      :test/event (:event event))]
+      (work/emit! context event-kind data)
+      event)))
 
 (defn suite-work
   "Returns one checkpointed suite boundary preserving code.test's existing
@@ -885,7 +861,9 @@
      :test/revision suite-revision}
     (fn [input context]
       (run-selected nil
-                    (work-execution-options input context))))))
+                    (assoc (work-execution-options input context)
+                           :reporter
+                           (work-reporter context)))))))
 
 (def +runner-work+ (suite-work))
 

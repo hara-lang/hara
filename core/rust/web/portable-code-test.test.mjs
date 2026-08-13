@@ -24,25 +24,21 @@ test("portable code.test runs through the browser wasm runtime", () => {
       "   (promise/from 42) => 42" +
       "   (+ 1 1) => 2)" +
       ' (let [summary (run {:namespace "code.test-browser-probe"})' +
-      "       timer (function-timer" +
-      "              (fn [promise milliseconds]" +
-      "                {:promise (promise/from {:test/status :timeout})" +
-      "                 :timeout milliseconds})" +
-      "              (fn [timeout] timeout))" +
       "       timed (check (fn [] (promise/from 42)) 42" +
-      "                    {:timer timer :timeout 25})" +
-      "       cancelled" +
-      '       (run {:namespace "code.test-browser-probe"' +
-      "             :control (function-control (fn [fact] true))})]" +
+      "                    {:work/timeout-promise" +
+      "                     (fn [promise milliseconds]" +
+      "                       {:promise (promise/from {:test/status :timeout})" +
+      "                        :timeout milliseconds})" +
+      "                     :work/cancel-timeout (fn [timeout] timeout)" +
+      "                     :timeout 25})]" +
       " [(:status summary)" +
       "  (:passed (:counts summary))" +
       "  (count (:checks (first (:results summary))))" +
       "  (:status timed)" +
-      "  (:timeout timed)" +
-      "  (:cancelled (:counts cancelled))])",
+      "  (:timeout timed)])",
   );
 
-  assert.equal(result, "[:passed 1 2 :timeout 25 1]");
+  assert.equal(result, "[:passed 1 2 :timeout 25]");
 });
 
 test("canonical component and context libraries run through browser wasm", () => {
