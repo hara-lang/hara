@@ -1,0 +1,436 @@
+(ns std.work.report.plain
+  (:require [std.work.report :as report]))
+
+(def default-options
+  {:include-title true
+   :include-annotations true
+   :include-empty false
+   :exclude-sections []})
+
+(def status-labels
+  {:return "ok"
+   :warn "warn"
+   :error "error"
+   :critical "critical"})
+
+(def summary-labels
+  {:items "Items"
+   :results "Results"
+   :warnings "Warnings"
+   :errors "Errors"
+   :cumulative "Cumulative"
+   :elapsed "Elapsed"})
+
+(def default-summary-fields
+  [:items :results :warnings :errors :cumulative :elapsed])
+
+(defn line
+  ([text] (line text :default))
+  ([text role]
+   {:line/text text
+    :line/role role}))
+
+(def blank-line (line ""))
+
+(defn value-text
+  [value]
+  (cond
+    (nil? value) ""
+    (string? value) value
+    :else (pr-str value)))
+
+(defn repeat-string
+  [text count]
+  (loop [index 0
+         output ""]
+    (if (= index count)
+      output
+      (recur (inc index) (str output text)))))
+
+(defn truncate
+  [text width]
+  (let [text (value-text text)]
+    (if (or (nil? width)
+            (<= (count text) width))
+      text
+      (if (< width 4)
+        (subs text 0 width)
+        (str (subs text 0 (- width 3)) "...")))))
+
+(defn pad
+  [text width align]
+  (let [text (truncate text width)
+        missing (max 0 (- width (count text)))]
+    (case align
+      :right
+      (str (repeat-string " " missing) text)
+
+      :center
+      (let [left (quot missing 2)
+            right (- missing left)]
+        (str (repeat-string " " left)
+             text
+             (repeat-string " " right)))
+
+      (str text (repeat-string " " missing)))))
+
+(defn record-role
+  [record]
+  (case (:status record)
+    :return :success
+    :warn :warning
+    :error :error
+    :critical :critical
+    :default))
+
+(defn status-text
+  [status]
+  (or (get status-labels status)
+      (name (or status :return))))
+
+(defn time-text
+  [value]
+  (if (nil? value)
+    ""
+    (str value "ms")))
+
+(defn progress-line
+  [record]
+  (let [index (or (:item/index record) 0)
+        total (or (:item/total record) "?")
+        id (value-text (:item/id record))
+        status (status-text (:status record))
+        display
+        (if (and (= :return (:status record))
+                 (has? record :item/display))
+          (:item/display record)
+          (if (has? record :data)
+            (:data record)
+            (:error record)))
+        elapsed
+        (if (has? record :elapsed)
+          (str "  " (time-text (:elapsed record)))
+          "")]
+    (line
+     (str (inc index) "/" total
+          "  " id
+          "  " status
+          (if (nil? display) "" (str "  " (value-text display)))
+          elapsed)
+     (record-role record))))
+
+(defn diagnostic-line
+  [record]
+  (let [id (value-text (:item/id record))
+        status (status-text (:status record))
+        value (if (has? record :data)
+                (:data record)
+                (:error record))]
+    (line
+     (str id "  " status
+          (if (nil? value) "" (str "  " (value-text value))))
+     (record-role record))))
+
+(defn column-label
+  [key]
+  (cond
+    (keyword? key) (name key)
+    (symbol? key) (name key)
+    (string? key) key
+    :else ""))
+
+(defn normalise-column
+  [column]
+  (if (map? column)
+    (let [key (:key column)]
+      (merge
+       {:key key
+        :label (column-label key)
+        :align :left}
+       column))
+    {:key column
+     :label (column-label column)
+     :align :left}))
+
+(defn column-value
+  [column row]
+  (let [key (:key column)]
+    (if (fn? key)
+      (key row)
+      (get row key))))
+
+(defn column-width
+  [column rows]
+  (or (:width column)
+      (reduce
+       (fn [width row]
+         (max width
+              (count (value-text (column-value column row)))))
+       (count (value-text (:label column)))
+       rows)))
+
+(defn realised-columns
+  [columns rows]
+  (vec
+   (map
+    (fn [column]
+      (let [column (normalise-column column)]
+        (assoc column :width (column-width column rows))))
+    columns)))
+
+(defn table-text
+  [columns row]
+  (str/join
+   "  "
+   (map
+    (fn [column]
+      (pad (column-value column row)
+           (:width column)
+           (:align column)))
+    columns)))
+
+(defn table-lines
+  [section]
+  (let [rows (:section/entries section)
+        supplied (:section/columns section)]
+    (if (empty? supplied)
+      (vec
+       (map
+        (fn [row] (line (value-text row) (record-role row)))
+        rows))
+      (let [columns (realised-columns supplied rows)
+            header
+            (line
+             (str/join
+              "  "
+              (map
+               (fn [column]
+                 (pad (:label column)
+                      (:width column)
+                      (:align column)))
+               columns))
+             :highlight)
+            separator
+            (line
+             (str/join
+              "  "
+              (map
+               (fn [column]
+                 (repeat-string "-" (:width column)))
+               columns))
+             :muted)]
+        (vec
+         (concat
+          [header separator]
+          (map
+           (fn [row]
+             (line (table-text columns row)
+                   (record-role row)))
+           rows)))))))
+
+(defn summary-field-label
+  [field]
+  (or (get summary-labels field)
+      (name field)))
+
+(defn summary-value-text
+  [field value]
+  (if (or (= :cumulative field)
+          (= :elapsed field))
+    (time-text value)
+    (value-text value)))
+
+(defn summary-fields
+  [section summary]
+  (let [configured (:section/fields section)
+        base (if (empty? configured)
+               default-summary-fields
+               configured)
+        extras
+        (sort-by
+         (fn [field] (name field))
+         (filter
+          (fn [field]
+            (not (report/contains-value? base field)))
+          (keys summary)))]
+    (report/distinct-values (concat base extras))))
+
+(defn summary-lines
+  [section]
+  (let [summary (first (:section/entries section))]
+    (vec
+     (map
+      (fn [field]
+        (line
+         (str (summary-field-label field)
+              ": "
+              (summary-value-text field (get summary field)))))
+      (summary-fields section summary)))))
+
+(defn section-role
+  [section]
+  (case (:section/id section)
+    :warnings :warning
+    :errors :error
+    :summary :highlight
+    :results :highlight
+    :items :highlight
+    :highlight))
+
+(defn section-content-lines
+  [section]
+  (case (:section/kind section)
+    :progress
+    (vec (map progress-line (:section/entries section)))
+
+    :diagnostics
+    (vec (map diagnostic-line (:section/entries section)))
+
+    :table
+    (table-lines section)
+
+    :summary
+    (summary-lines section)
+
+    :text
+    (vec
+     (map
+      (fn [entry] (line (value-text entry)))
+      (:section/entries section)))
+
+    []))
+
+(defn section-selected?
+  [section options]
+  (let [id (:section/id section)
+        include (:include-sections options)
+        exclude (:exclude-sections options)]
+    (and
+     (or (empty? include)
+         (report/contains-value? include id))
+     (not (report/contains-value? exclude id)))))
+
+(defn render-section
+  [section options]
+  (let [content (section-content-lines section)
+        entries (:section/entries section)
+        include-empty (:include-empty options)]
+    (if (or (not (section-selected? section options))
+            (and (empty? entries) (not include-empty)))
+      []
+      (vec
+       (concat
+        [(line (or (:section/title section)
+                   (name (:section/id section)))
+               (section-role section))]
+        content)))))
+
+(defn add-group
+  [output group]
+  (if (empty? group)
+    output
+    (vec
+     (concat
+      output
+      (if (empty? output) [] [blank-line])
+      group))))
+
+(defn render-lines
+  ([document]
+   (render-lines document {}))
+  ([document options]
+   (let [options (merge default-options options)
+         title
+         (if (and (:include-title options)
+                  (:report/title document))
+           [(line (:report/title document) :highlight)]
+           [])
+         section-groups
+         (vec
+          (map
+           (fn [section] (render-section section options))
+           (:report/sections document)))
+         output
+         (reduce add-group title section-groups)
+         annotations
+         (if (:include-annotations options)
+           (vec
+            (map
+             (fn [annotation]
+               (line (value-text annotation) :highlight))
+             (:report/annotations document)))
+           [])]
+     (add-group output annotations))))
+
+(defn text-lines
+  ([document]
+   (text-lines document {}))
+  ([document options]
+   (vec
+    (map
+     (fn [entry] (:line/text entry))
+     (render-lines document options)))))
+
+(defn render
+  ([document]
+   (render document {}))
+  ([document options]
+   (str/join "\n" (text-lines document options))))
+
+(defn event-lines
+  ([event]
+   (event-lines event {}))
+  ([event options]
+   (case (:event event)
+     :task/run-started
+     (let [profile (report/normalise-profile (:report/profile event))
+           title
+           (if (:report/title event)
+             [(line (:report/title event) :highlight)]
+             [])
+           items
+           (if (report/section-enabled? profile :items)
+             [(line (get-in profile [:labels :items]) :highlight)]
+             [])]
+       (add-group title items))
+
+     :task/item-completed
+     [(progress-line (:record event))]
+
+     :task/run-completed
+     (if (:report event)
+       (let [group
+             (render-lines
+              (:report event)
+              (merge options
+                     {:include-title false
+                      :exclude-sections
+                      (report/distinct-values
+                       (conj (vec (or (:exclude-sections options) []))
+                             :items))}))]
+         (if (empty? group)
+           []
+           (vec (concat [blank-line] group))))
+       [])
+
+     [])))
+
+(defn render-event-lines
+  ([events]
+   (render-event-lines events {}))
+  ([events options]
+   (reduce
+    (fn [output event]
+      (vec (concat output (event-lines event options))))
+    []
+    events)))
+
+(defn render-events
+  ([events]
+   (render-events events {}))
+  ([events options]
+   (str/join
+    "\n"
+    (map
+     (fn [entry] (:line/text entry))
+     (render-event-lines events options)))))
