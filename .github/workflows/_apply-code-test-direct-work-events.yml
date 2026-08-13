@@ -15,8 +15,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Keep workflow mutations outside the source commit
+        run: |
+          if [[ -f scripts/runtime/fix-code-test-direct-work-event-push ]]; then
+            python3 scripts/runtime/fix-code-test-direct-work-event-push
+          fi
       - name: Apply direct work-event migration
-        run: python3 scripts/runtime/apply-code-test-direct-work-events
+        run: |
+          if [[ -f scripts/runtime/apply-code-test-direct-work-events ]]; then
+            python3 scripts/runtime/apply-code-test-direct-work-events
+          else
+            echo "Direct work-event migration is already applied."
+          fi
       - name: Validate generated source shape
         run: |
           git diff --check
@@ -25,6 +35,10 @@ jobs:
           diff -u core/lib/src/code/test/work.hal core/rust/hal-src/code/test/work.hal
       - name: Commit the reviewable refactor
         run: |
+          if git diff --quiet; then
+            echo "No source changes remain to commit."
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
