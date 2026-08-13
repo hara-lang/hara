@@ -72,13 +72,72 @@ jobs:
           git switch --detach origin/main
           git switch -C agent/persistent-named-values-full
 
-          if ! git apply --3way --whitespace=nowarn /tmp/persistent-named-values.patch; then
-            echo 'Three-way application failed. Unmerged paths:' >&2
-            git status --short >&2
-            git diff --name-only --diff-filter=U >&2
-            grep -R -n -E '^(<<<<<<<|=======|>>>>>>>)' core 2>/dev/null | head -200 >&2 || true
-            exit 1
+          set +e
+          git apply --3way --whitespace=nowarn /tmp/persistent-named-values.patch
+          apply_status=$?
+          set -e
+
+          if [[ "$apply_status" -ne 0 ]]; then
+            mapfile -t unmerged < <(git diff --name-only --diff-filter=U)
+            printf 'Three-way application produced %s unmerged path(s):\n' "${#unmerged[@]}"
+            printf '  %s\n' "${unmerged[@]}"
+            test "${#unmerged[@]}" -eq 2
+            for path in "${unmerged[@]}"; do
+              case "$path" in
+                core/lib/src/code/translate.hal|core/rust/hal-src/code/translate.hal) ;;
+                *) echo "Unexpected merge conflict: $path" >&2; exit 1 ;;
+              esac
+            done
+
+            # Current main renamed the local compatibility reader from `field`
+            # to `corpus-field` and added migration-catalog metadata. Keep those
+            # current-main sections while retaining every non-conflicting named-
+            # value change from the implementation patch.
+            python3 - <<'PY'
+          from pathlib import Path
+
+          def keep_ours(path: str) -> None:
+              lines = Path(path).read_text().splitlines(keepends=True)
+              output = []
+              index = 0
+              conflicts = 0
+              while index < len(lines):
+                  line = lines[index]
+                  if not line.startswith('<<<<<<< '):
+                      output.append(line)
+                      index += 1
+                      continue
+                  conflicts += 1
+                  index += 1
+                  ours = []
+                  while index < len(lines) and not lines[index].startswith('======='):
+                      ours.append(lines[index])
+                      index += 1
+                  if index >= len(lines):
+                      raise RuntimeError(f'unclosed conflict in {path}')
+                  index += 1
+                  while index < len(lines) and not lines[index].startswith('>>>>>>> '):
+                      index += 1
+                  if index >= len(lines):
+                      raise RuntimeError(f'unclosed conflict in {path}')
+                  index += 1
+                  output.extend(ours)
+              if conflicts == 0:
+                  raise RuntimeError(f'expected conflicts in {path}')
+              Path(path).write_text(''.join(output))
+              print(f'resolved {conflicts} current-main compatibility conflicts in {path}')
+
+          keep_ours('core/lib/src/code/translate.hal')
+          Path('core/rust/hal-src/code/translate.hal').write_text(
+              Path('core/lib/src/code/translate.hal').read_text()
+          )
+          PY
+            git add \
+              core/lib/src/code/translate.hal \
+              core/rust/hal-src/code/translate.hal
+            test -z "$(git diff --name-only --diff-filter=U)"
           fi
+
           git apply --3way --whitespace=nowarn /tmp/truffle-member-insertion.patch
 
           cargo fmt --manifest-path core/rust/Cargo.toml --all
