@@ -12,101 +12,6 @@
 (def execution-options test/work-execution-options)
 (def suite-work test/suite-work)
 
-(def +unsupported-batch-options+ [:fail-fast])
-
-(defn fact-identity
-  [value]
-  (str value))
-
-(defn fact-coordinate
-  [namespace name fact-revision]
-  [:test/fact
-   (fact-identity namespace)
-   (fact-identity name)
-   fact-revision])
-
-(defn fact-revision
-  [fact default-revision]
-  (or (:test/revision (:meta fact))
-      default-revision))
-
-(defn fact-definition-token
-  "Returns the stable definition token used to invalidate a fact checkpoint.
-
-   A producer may supply a canonical source digest as `:test/digest`, or another
-   stable definition identity as `:test/definition`. The explicit fact/suite
-   revision remains the compatibility fallback until portable source hashing is
-   available in every runtime."
-  [fact default-revision]
-  (let [metadata (:meta fact)]
-    (or (:test/digest metadata)
-        (:test/definition metadata)
-        (fact-revision fact default-revision))))
-
-(defn fact-item-coordinate
-  [fact default-revision]
-  (let [fact-revision (fact-revision fact default-revision)]
-    (conj
-     (fact-coordinate (:namespace fact)
-                      (:name fact)
-                      fact-revision)
-     (fact-definition-token fact default-revision))))
-
-(defn resolve-fact
-  [namespace name]
-  (let [namespace (fact-identity namespace)
-        name (fact-identity name)
-        fact (test/get-fact namespace name)]
-    (if fact
-      fact
-      (throw
-       (ex-info "Registered test fact does not exist"
-                {:namespace namespace
-                 :name name})))))
-
-(defn fact-work
-  "Returns one checkpointed fact boundary. Assertion failures, skips, timeouts,
-   and test errors are completed domain results returned by code.test/run-fact."
-  ([namespace name]
-   (fact-work namespace name +default-revision+))
-  ([namespace name fact-revision]
-   (work/step
-    {:id (fact-coordinate namespace name fact-revision)
-     :version fact-revision
-     :test/revision fact-revision}
-    (fn [input context]
-      (let [options (execution-options input context)
-            fact (resolve-fact namespace name)]
-        (work/emit! context
-                    :test/fact-started
-                    (fact-result-identity fact))
-        (let [result (test/run-fact fact options)]
-          (work/emit! context :test/fact-completed result)
-          result))))))
-
-(defn unsupported-batch-options
-  [options]
-  (reduce
-   (fn [output key]
-     (if (and (has? options key)
-              (not (nil? (get options key)))
-              (not (= false (get options key))))
-       (conj output key)
-       output))
-   []
-   +unsupported-batch-options+))
-
-(defn assert-batch-options!
-  [options]
-  (let [unsupported (unsupported-batch-options options)]
-    (if (seq unsupported)
-      (throw
-       (ex-info
-        "Fact batch execution does not support fail-fast scheduling"
-        {:unsupported unsupported
-         :options options})))
-    options))
-
 (defn selected-facts
   [options]
   (test/order-facts
@@ -147,8 +52,7 @@
   [input context default-revision]
   (let [input-options (data-options input context)
         facts (selected-facts input-options)
-        options (assert-batch-options!
-                 (effective-suite-options facts input-options))
+        options (effective-suite-options facts input-options)
         items
         (vec
          (map
@@ -396,6 +300,26 @@
       nil)
     {:status :completed}))
 
+(defn stop-after-fact?
+  [batch context]
+  (and (get-in batch [:input :test/options :fail-fast])
+       (test/failing-status?
+        (get-in batch [:result :item/value :status]))))
+
+(defn cancel-unclaimed-fact
+  [batch context]
+  (let [subject (get-in batch [:item :item/value])
+        fact (resolve-fact (:namespace subject)
+                           (:name subject))
+        result (merge (fact-result-identity fact)
+                      {:status :cancelled
+                       :checks []})]
+    (work/emit! context
+                :test/fact-started
+                (fact-result-identity fact))
+    (work/emit! context :test/fact-completed result)
+    result))
+
 (defn fact-batch-body
   [batch-revision]
   (work/chain
@@ -430,6 +354,18 @@
       :process
       (fact-process-work batch-revision)
 
+      :stop
+      (work/pure
+       {:id 'code.test/fact-stop
+        :version batch-revision}
+       stop-after-fact?)
+
+      :cancel
+      (work/step
+       {:id 'code.test/fact-cancel
+        :version batch-revision}
+       cancel-unclaimed-fact)
+
       :summarise
       (work/pure
        {:id 'code.test/fact-summary
@@ -440,9 +376,9 @@
   "Returns an opt-in fact graph with independently checkpointed fact bodies.
 
    Suite and fact cleanup hooks execute through cleanup-safe work scopes.
-   Test events are committed directly into durable work history. Fail-fast
-   scheduling remains on the cleanup-safe suite runner until runtime item claims
-   own the stop policy."
+   Test events are committed directly into durable work history. Baseline
+   batch stop/cancel stages own fail-fast scheduling and preserve one terminal
+   result for every selected fact."
   ([]
    (fact-batch-work +default-revision+))
   ([batch-revision]

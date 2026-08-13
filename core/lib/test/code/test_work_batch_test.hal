@@ -6,6 +6,8 @@
 
 (def passing-count (atom 0))
 (def failing-count (atom 0))
+(def fail-fast-failing-count (atom 0))
+(def fail-fast-untouched-count (atom 0))
 
 (fact/fact "batch passing fact"
   {:test/definition "definition:batch-passing-v1"}
@@ -20,8 +22,23 @@
     1)
   => 2)
 
+(fact/fact "fail-fast 01 failing fact"
+  {:tags #{:fail-fast}}
+  (do
+    (swap! fail-fast-failing-count inc)
+    1)
+  => 2)
+
+(fact/fact "fail-fast 02 untouched fact"
+  {:tags #{:fail-fast}}
+  (do
+    (swap! fail-fast-untouched-count inc)
+    1)
+  => 1)
+
 (def options
   {:namespace 'code.test-work-batch-test
+   :exclude-tags :fail-fast
    :test/revision 11})
 
 (def runtime (work/durable-runtime))
@@ -45,6 +62,18 @@
    (work/local-runtime)
    options))
 (def final-counts [(deref passing-count) (deref failing-count)])
+
+(def fail-fast-observer (work/recording-observer))
+(def fail-fast-summary
+  (test-work/run-batch
+   (work/local-runtime {:observer fail-fast-observer})
+   {:namespace 'code.test-work-batch-test
+    :include-tags :fail-fast
+    :fail-fast true
+    :test/revision 12}))
+(def fail-fast-counts
+  [(deref fail-fast-failing-count)
+   (deref fail-fast-untouched-count)])
 
 (def digest-fact
   {:namespace 'code.test-work-batch-test
@@ -108,10 +137,26 @@
      final-counts]
     [:failed 1 1 2 [2 2]])
 
-   (test/check-error
-    "fact batches reject fail-fast until the runtime owns item claims"
-    (test-work/run-batch
-     (work/local-runtime)
-     (assoc options :fail-fast true)))])
+   (test/check
+    "runtime-owned fail-fast completes the trigger and cancels unclaimed facts"
+    [(vec (map :status (:results fail-fast-summary)))
+     (get-in fail-fast-summary [:counts :failed])
+     (get-in fail-fast-summary [:counts :cancelled])
+     fail-fast-counts
+     (vec
+      (map :event
+           (filter
+            (fn [event]
+              (or (= :test/fact-started (:event event))
+                  (= :test/fact-completed (:event event))))
+            (work/observer-events fail-fast-observer))))]
+    [[:failed :cancelled]
+     1
+     1
+     [1 0]
+     [:test/fact-started
+      :test/fact-completed
+      :test/fact-started
+      :test/fact-completed]])])
 
 (test/print-results results)
