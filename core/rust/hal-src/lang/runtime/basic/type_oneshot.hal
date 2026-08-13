@@ -1,7 +1,5 @@
 (ns lang.runtime.basic.type-oneshot
-  (:require
-            [lang.runtime.basic.type-common :as common]
-            [tool.runtime :as tool-runtime :lazy true]))
+  (:require [lang.runtime.basic.type-common :as common]))
 
 (defstruct RuntimeOneshot [id lang runtime program exec process])
 
@@ -44,19 +42,79 @@
   [options]
   (rt-oneshot:create options))
 
+(defn- process-options
+  [runtime]
+  (let [cwd (get-in runtime [:process :cwd])
+        env (get-in runtime [:process :env])
+        selected (if cwd {:cwd cwd} {})]
+    (if env
+      (assoc selected :env env)
+      selected)))
+
+(defn- start-evaluator
+  [runtime source]
+  (let [argv (vec (concat (get runtime :exec) [source]))
+        selected (process-options runtime)
+        process (if (empty? selected)
+                  (os/spawn argv)
+                  (os/spawn argv selected))]
+    [argv process]))
+
+(defn- kill-quietly
+  [process]
+  (try
+    (os/process-kill process)
+    (catch Throwable _ nil)))
+
+(defn oneshot-result
+  "Builds the structured result returned by a one-shot target process."
+  [runtime argv values]
+  {:phase :eval
+   :runtime/id (get runtime :id)
+   :runtime/language (get runtime :lang)
+   :lang (get runtime :lang)
+   :runtime (get runtime :runtime)
+   :program (get runtime :program)
+   :command argv
+   :exit (nth values 2)
+   :stdout (str/decode-utf8 (nth values 0))
+   :stderr (str/decode-utf8 (nth values 1))})
+
+(defn execute-oneshot
+  "Executes emitted target source without depending on the tool.runtime layer."
+  [runtime source]
+  (let [[argv process] (start-evaluator runtime source)]
+    (try
+      (let [values
+            (deref
+             (promise/all
+              [(os/process-stdout process)
+               (os/process-stderr process)
+               (os/process-wait process)]))]
+        (oneshot-result runtime argv values))
+      (catch Throwable error
+        (kill-quietly process)
+        (throw
+         (ex-info
+          "Target runtime process could not complete"
+          {:phase :eval
+           :lang (get runtime :lang)
+           :runtime (get runtime :runtime)
+           :program (get runtime :program)
+           :command argv
+           :generated-fragment source
+           :cause-data (ex-data error)}
+          error))))))
+
 (defn raw-eval-oneshot
   "Evaluates emitted target source using the selected local program."
   [runtime source]
-  (let [exec (get runtime :exec)
+  (let [result (execute-oneshot runtime source)]
+    (if (= 0 (get result :exit))
+      (if (get-in runtime [:process :raw])
         result
-        (deref
-         (tool-runtime/run
-          (get runtime :lang)
-          source
-          {:executable (first exec)
-           :arguments (vec (rest exec))
-           :cwd (get-in runtime [:process :cwd])
-           :env (get-in runtime [:process :env])}))]
-    (if (get-in runtime [:process :raw])
-      result
-      (str/trim-right (get result :stdout)))))
+        (str/trim-right (get result :stdout)))
+      (throw
+       (ex-info
+        "Target runtime execution failed"
+        (assoc result :generated-fragment source))))))
