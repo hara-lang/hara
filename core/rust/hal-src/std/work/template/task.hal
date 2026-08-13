@@ -38,7 +38,7 @@
    {:feature :item/list :status :implemented}
    {:feature :item/select :status :implemented}
    {:feature :item/pre-run-post :status :implemented}
-   {:feature :item/output :status :partial}
+   {:feature :item/output :status :implemented}
    {:feature :item/display :status :implemented}
    {:feature :execution/random :status :missing}
    {:feature :execution/parallel :status :host-adapted}
@@ -46,17 +46,17 @@
    {:feature :execution/cancellation :status :host-adapted}
    {:feature :execution/timeout :status :host-adapted}
    {:feature :result/warnings-errors-results :status :implemented}
-   {:feature :result/ignore-derived-format-order :status :partial}
+   {:feature :result/ignore-derived-format-order :status :implemented}
    {:feature :result/columns :status :partial}
    {:feature :summary/aggregate :status :implemented}
-   {:feature :summary/finalise :status :partial}
-   {:feature :summary/elapsed-cumulative :status :partial}
-   {:feature :summary/annotations :status :missing}
+   {:feature :summary/finalise :status :implemented}
+   {:feature :summary/elapsed-cumulative :status :implemented}
+   {:feature :summary/annotations :status :implemented}
    {:feature :report/title-sections-labels :status :implemented}
    {:feature :report/live-stage-events :status :partial}
    {:feature :report/plain-terminal-renderers :status :missing}
    {:feature :return/selection :status :implemented}
-   {:feature :return/map-vector-packaging :status :partial}])
+   {:feature :return/map-vector-packaging :status :implemented}])
 
 (def default-execution
   {:order :input
@@ -280,6 +280,8 @@
                   :run run
                   :run-mode run-mode
                   :list-mode list-mode)
+     :warning (or (:warning definition) {})
+     :error (or (:error definition) {})
      :execution (merge-nested default-execution
                               (or (:execution definition) {}))
      :result (or (:result definition) {})
@@ -385,7 +387,9 @@
         selector-value
         (or (:task/selector invocation)
             (get-in definition [:item :selector])
-            :all)]
+            :all)
+        clock (:clock/now context)
+        started-at (if clock (clock) nil)]
     (if (and required? (empty? arguments))
       (throw
        (ex-info "Task invocation requires additional arguments"
@@ -405,7 +409,8 @@
      :task/lookup lookup
      :task/args arguments
      :task/selector selector-value
-     :task/mode (:task/mode invocation)}))
+     :task/mode (:task/mode invocation)
+     :task/started-at started-at}))
 
 (defn list-values
   [definition prepared context]
@@ -513,11 +518,154 @@
 
 (defn result-options
   [definition]
-  {:ignore (get-in definition [:result :ignore])
-   :output (or (get-in definition [:result :output])
-               (get-in definition [:item :output]))
-   :aggregate (get-in definition [:summary :aggregate])
-   :finalise (get-in definition [:summary :finalise])})
+  {:ignore (get-in definition [:result :ignore])})
+
+(defn derived-key-specs
+  [definition]
+  (or (get-in definition [:result :keys]) []))
+
+(defn derive-result
+  [definition record]
+  (reduce
+   (fn [output entry]
+     (let [key (nth entry 0)
+           function (nth entry 1)]
+       (assoc output key (function (:data record)))))
+   (assoc record :key (:item/id record))
+   (derived-key-specs definition)))
+
+(defn result-order
+  [definition params]
+  (or (:order-by params)
+      (get-in definition [:result :order])
+      (get-in definition [:result :sort-by])))
+
+(defn order-function
+  [order]
+  (cond
+    (nil? order) nil
+    (fn? order) order
+    (keyword? order) (fn [record] (get record order))
+    (vector? order)
+    (fn [record]
+      (vec
+       (map
+        (fn [key] (get record key))
+        order)))
+    :else
+    (throw
+     (ex-info "Task result order must be a function, keyword, or key vector"
+              {:order order}))))
+
+(defn order-results
+  [definition params records]
+  (let [function (order-function (result-order definition params))]
+    (if function
+      (vec (sort-by function records))
+      (vec records))))
+
+(defn format-result
+  [definition params record]
+  (reduce
+   (fn [output entry]
+     (let [key (nth entry 0)
+           formatter (nth entry 1)]
+       (if (has? output key)
+         (assoc output key (formatter (get output key) params))
+         output)))
+   record
+   (or (get-in definition [:result :format]) {})))
+
+(defn project-diagnostic
+  [definition kind record]
+  (let [output (get-in definition [kind :output])]
+    (if output
+      (assoc record :data (output (:data record)))
+      record)))
+
+(defn elapsed-time
+  [prepared context]
+  (let [clock (:clock/now context)
+        started-at (:task/started-at prepared)]
+    (if (and clock (not (nil? started-at)))
+      (- (clock) started-at)
+      0)))
+
+(defn normalise-annotations
+  [value]
+  (cond
+    (nil? value) []
+    (vector? value) value
+    (list? value) (vec value)
+    :else [value]))
+
+(defn finalise-summary
+  [definition base records results]
+  (let [aggregated
+        (result/aggregate
+         base
+         (get-in definition [:summary :aggregate])
+         results)
+        finalise (get-in definition [:summary :finalise])]
+    (if finalise
+      (finalise aggregated records results)
+      aggregated)))
+
+(defn summary-annotations
+  [definition summary records results]
+  (let [annotations (get-in definition [:summary :annotations])
+        value (if (fn? annotations)
+                (annotations summary records results)
+                annotations)]
+    (normalise-annotations value)))
+
+(defn prepare-bundle
+  [definition batch context]
+  (let [prepared (:input batch)
+        params (or (:task/params prepared) {})
+        initial (result/summarise batch (result-options definition))
+        records (:records initial)
+        derived
+        (vec
+         (map
+          (fn [record] (derive-result definition record))
+          (:results initial)))
+        ordered (order-results definition params derived)
+        result-rows
+        (vec
+         (map
+          (fn [record] (format-result definition params record))
+          ordered))
+        warning-rows
+        (vec
+         (map
+          (fn [record] (project-diagnostic definition :warning record))
+          (:warnings initial)))
+        error-rows
+        (vec
+         (map
+          (fn [record] (project-diagnostic definition :error record))
+          (:errors initial)))
+        base-summary
+        {:items (count (:items initial))
+         :results (count ordered)
+         :warnings (count (:warnings initial))
+         :errors (count (:errors initial))}
+        summary
+        (finalise-summary definition base-summary records ordered)
+        summary
+        (assoc summary
+               :cumulative (get-in initial [:summary :cumulative])
+               :elapsed (elapsed-time prepared context))
+        annotations
+        (summary-annotations definition summary records ordered)]
+    (assoc initial
+           :results ordered
+           :result-rows result-rows
+           :warning-rows warning-rows
+           :error-rows error-rows
+           :summary summary
+           :annotations annotations)))
 
 (defn report-status
   [bundle]
@@ -534,11 +682,13 @@
       :items
       (report/section id :progress (:records bundle) {:section/title title})
       :warnings
-      (report/section id :diagnostics (:warnings bundle) {:section/title title})
+      (report/section id :diagnostics (:warning-rows bundle)
+                      {:section/title title})
       :errors
-      (report/section id :diagnostics (:errors bundle) {:section/title title})
+      (report/section id :diagnostics (:error-rows bundle)
+                      {:section/title title})
       :results
-      (report/section id :table (:results bundle)
+      (report/section id :table (:result-rows bundle)
                       {:section/title title
                        :section/columns (get-in definition [:result :columns])})
       :summary
@@ -553,7 +703,8 @@
          (:task/id definition)
          {:profile profile
           :title (:title profile)
-          :status (report-status bundle)})]
+          :status (report-status bundle)
+          :annotations (:annotations bundle)})]
     (loop [sections (:sections profile)
            document initial]
       (if (empty? sections)
@@ -565,7 +716,7 @@
 
 (defn summarise
   [definition batch context]
-  (let [bundle (result/summarise batch (result-options definition))
+  (let [bundle (prepare-bundle definition batch context)
         bundle (assoc bundle :report (task-report definition bundle))]
     (work/emit! context :task/warnings-ready
                 {:count (count (:warnings bundle))})
@@ -574,35 +725,91 @@
     (work/emit! context :task/results-ready
                 {:count (count (:results bundle))})
     (work/emit! context :task/summary-ready
-                {:summary (:summary bundle)})
+                {:summary (:summary bundle)
+                 :annotations (:annotations bundle)})
     bundle))
 
-(defn package-value
-  [value package]
-  (if (= :vector package)
-    (cond
-      (vector? value) value
-      (map? value) (vec (vals value))
-      :else [value])
-    value))
+(defn project-output
+  [function value]
+  (if function (function value) value))
+
+(defn record-pairs
+  [records output]
+  (vec
+   (map
+    (fn [record]
+      [(:item/id record)
+       (project-output output (:data record))])
+    records)))
+
+(defn package-records
+  [records output package]
+  (cond
+    (= :records package) (vec records)
+    (= :vector package) (record-pairs records output)
+    (= :map package) (into {} (record-pairs records output))
+    :else
+    (throw
+     (ex-info "Task return package is not supported"
+              {:package package}))))
+
+(defn package-section
+  [definition bundle id package]
+  (case id
+    :items
+    (package-records
+     (:records bundle)
+     (get-in definition [:item :output])
+     package)
+
+    :results
+    (package-records
+     (:results bundle)
+     (get-in definition [:result :output])
+     package)
+
+    :warnings (:warnings bundle)
+    :errors (:errors bundle)
+    :summary (:summary bundle)
+    :annotations (:annotations bundle)
+    :report (:report bundle)
+    :records (:records bundle)
+    (get bundle id)))
+
+(defn package-selection
+  [definition bundle selection package]
+  (cond
+    (= :all selection) bundle
+    (keyword? selection)
+    (package-section definition bundle selection package)
+    :else
+    (reduce
+     (fn [output id]
+       (assoc output
+              id
+              (package-section definition bundle id package)))
+     {}
+     selection)))
 
 (defn finish
   [definition batch context]
   (let [bundle (or (:summary batch) batch)
         selection (get-in definition [:return :select])
         package (get-in definition [:return :package])
-        output (result/package bundle selection)]
+        output (package-selection definition bundle selection package)]
     (work/emit! context :task/run-completed
                 {:task/id (:task/id definition)
                  :status (report-status bundle)
-                 :summary (:summary bundle)})
-    (package-value output package)))
+                 :summary (:summary bundle)
+                 :annotations (:annotations bundle)})
+    output))
 
 (defn compile
   "Compiles a local task definition into an ordinary std.work graph.
 
-   The template owns task construction and presentation data; scheduling,
-   cancellation, timeout, durability, and parallelism remain runtime policies."
+   The template owns task construction, result shaping, summaries, and report
+   data; scheduling, cancellation, timeout, durability, and parallelism remain
+   runtime policies."
   [definition]
   (let [definition (normalise-definition definition)
         id (:task/id definition)

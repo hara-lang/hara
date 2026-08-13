@@ -20,10 +20,7 @@
               (* value 2)))}
     :summary
     {:aggregate
-     {:sum {:select (fn [record]
-                      (if (= :return (:status record))
-                        (:data record)
-                        nil))
+     {:sum {:select (fn [record] (:data record))
             :reduce +
             :initial 0}}}
     :report {:title "EXAMPLE TASK"}
@@ -111,7 +108,7 @@
          (reduce + 0 arguments)))}
    :item
    {:display (fn [value] (str "value=" value))}
-   :return {:select :results :package :vector}})
+   :return {:select :all :package :map}})
 
 (def normalised-legacy
   (task/normalise-definition legacy-definition))
@@ -150,6 +147,110 @@
    selector-work
    (task/request {:selector "code"})))
 
+(def summary-clock-value (atom 0))
+(defn summary-clock
+  []
+  (swap! summary-clock-value inc))
+
+(def result-summary-work
+  (task/template
+   {:id :example/result-summary
+    :item
+    {:list (fn [input context] (:values input))
+     :run
+     (fn [value context]
+       (if (= 0 value)
+         {:status :warn :data value}
+         {:status :return
+          :data {:name (str "v" value)
+                 :score value}}))
+     :output
+     (fn [data]
+       (str "item/" (:score data)))}
+    :warning
+    {:output (fn [data] (str "warning/" data))}
+    :result
+    {:keys
+     [[:name (fn [data] (:name data))]
+      [:score (fn [data] (:score data))]]
+     :format
+     {:score
+      (fn [value params]
+        (str value (:suffix params)))}
+     :sort-by :score
+     :output (fn [data] (* 10 (:score data)))
+     :columns [{:key :name :label "NAME"}
+               {:key :score :label "SCORE"}]}
+    :summary
+    {:aggregate
+     {:score-total
+      {:select (fn [record] (:score record))
+       :reduce +
+       :initial 0}}
+     :finalise
+     (fn [summary records results]
+       (assoc summary
+              :record-count (count records)
+              :first-score (:score (first results))))
+     :annotations
+     (fn [summary records results]
+       [(str "Processed " (:record-count summary) " records")])}
+    :report {:title "RESULT SUMMARY"}
+    :return {:select :all :package :map}}))
+
+(def result-summary-output
+  (work/run
+   (work/local-runtime)
+   result-summary-work
+   (task/request
+    {:input {:values [3 0 1 2]}
+     :params {:suffix " pts"}})
+   {:context {:clock/now summary-clock}}))
+
+(def package-definition
+  {:item
+   {:list (fn [input context] (:values input))
+    :run (fn [value context] (* 2 value))
+    :output (fn [data] (str "item-" data))}
+   :result
+   {:output (fn [data] (+ data 100))}})
+
+(def map-package-work
+  (task/template
+   (merge package-definition
+          {:id :example/map-package
+           :return {:select [:items :results]
+                    :package :map}})))
+
+(def vector-package-work
+  (task/template
+   (merge package-definition
+          {:id :example/vector-package
+           :return {:select :results
+                    :package :vector}})))
+
+(def records-package-work
+  (task/template
+   (merge package-definition
+          {:id :example/records-package
+           :return {:select :results
+                    :package :records}})))
+
+(def map-package-output
+  (work/run (work/local-runtime)
+            map-package-work
+            {:values [3 1]}))
+
+(def vector-package-output
+  (work/run (work/local-runtime)
+            vector-package-work
+            {:values [3 1]}))
+
+(def records-package-output
+  (work/run (work/local-runtime)
+            records-package-work
+            {:values [3 1]}))
+
 (def _removed-defaults
   (task/uninstall-defaults! :example/legacy))
 
@@ -171,8 +272,9 @@
     "report documents remain structured portable data"
     [(report/report? report-document)
      (:report/title report-document)
+     (:report/annotations report-document)
      (:section/entries (report/section-by-id report-document :summary))]
-    [true "EXAMPLE" [{:items 3}]])
+    [true "EXAMPLE" [] [{:items 3}]])
 
    (test/check
     "the task template compiles to an ordinary work graph"
@@ -182,7 +284,7 @@
     [true :chain :example/task])
 
    (test/check
-    "the first task-template slice lists, selects, runs, groups, aggregates, reports and packages"
+    "the task template lists, selects, runs, groups, aggregates, reports and packages"
     [(:items output)
      (vec (map (fn [record] (:data record)) (:results output)))
      (vec (map (fn [record] (:data record)) (:warnings output)))
@@ -192,7 +294,8 @@
     [[1 2 3]
      [4 8]
      [3]
-     {:items 3 :results 2 :warnings 1 :errors 0 :cumulative 0 :sum 12}
+     {:items 3 :results 2 :warnings 1 :errors 0
+      :sum 12 :cumulative 0 :elapsed 0}
      :warning
      5])
 
@@ -222,25 +325,76 @@
 
    (test/check
     "task requests restore input, environment, lookup, params and additional arguments"
-    [(count legacy-output)
-     (:data (first legacy-output))
-     (:item/display (first legacy-output))]
-    [1 28 "value=28"])
+    [(:data (first (:results legacy-output)))
+     (:item/display (first (:results legacy-output)))]
+    [28 "value=28"])
 
    (test/check
     "Foundation-style item lists receive lookup and environment before selection"
-    (vec (map (fn [record] (:data record)) selector-output))
-    ["code.test"])
+    selector-output
+    [["code.test" "code.test"]])
 
    (test/check
-    "the parity ledger advances the invocation contract without hiding remaining work"
-    [(task/feature-status :definition/defaults-by-type)
-     (task/feature-status :main/arity-adapter-1-4)
-     (task/feature-status :main/additional-arguments)
-     (task/feature-status :construct/environment)
+    "derived results are ordered canonically while report rows apply formatters"
+    [(vec (map (fn [record] (:score record))
+               (:results result-summary-output)))
+     (vec
+      (map
+       (fn [record] [(:name record) (:score record)])
+       (:result-rows result-summary-output)))
+     (:data (first (:warning-rows result-summary-output)))]
+    [[1 2 3]
+     [["v1" "1 pts"]
+      ["v2" "2 pts"]
+      ["v3" "3 pts"]]
+     "warning/0"])
+
+   (test/check
+    "summary finalisation, timings, and annotations are stable report data"
+    [(:summary result-summary-output)
+     (:annotations result-summary-output)
+     (:report/annotations (:report result-summary-output))
+     (:report/status (:report result-summary-output))
+     (vec
+      (map
+       (fn [record] [(:name record) (:score record)])
+       (:section/entries
+        (report/section-by-id
+         (:report result-summary-output)
+         :results))))]
+    [{:items 4 :results 3 :warnings 1 :errors 0
+      :score-total 6 :record-count 4 :first-score 1
+      :cumulative 4 :elapsed 9}
+     ["Processed 4 records"]
+     ["Processed 4 records"]
+     :warning
+     [["v1" "1 pts"]
+      ["v2" "2 pts"]
+      ["v3" "3 pts"]]])
+
+   (test/check
+    "item and result output projections package map and vector returns faithfully"
+    [map-package-output
+     vector-package-output
+     (vec (map (fn [record] (:item/id record))
+               records-package-output))]
+    [{:items {3 "item-6" 1 "item-2"}
+      :results {3 106 1 102}}
+     [[3 106] [1 102]]
+     [3 1]])
+
+   (test/check
+    "the parity ledger advances result and summary behavior without hiding render work"
+    [(task/feature-status :item/output)
+     (task/feature-status :result/ignore-derived-format-order)
+     (task/feature-status :summary/finalise)
+     (task/feature-status :summary/elapsed-cumulative)
+     (task/feature-status :summary/annotations)
+     (task/feature-status :return/map-vector-packaging)
      (task/feature-status :report/plain-terminal-renderers)
      (< 0 (count (task/incomplete-features)))]
-    [:implemented :implemented :implemented :implemented :missing true])
+    [:implemented :implemented :implemented :implemented
+     :implemented :implemented :missing true])
 
    (test/check-error
     "required additional arguments fail before item execution"
