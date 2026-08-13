@@ -5,6 +5,24 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceLocation {
+    pub path: String,
+    pub line: usize,
+    pub column: usize,
+    pub end_line: usize,
+    pub end_column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub code: String,
+    pub operation: String,
+    pub module: String,
+    pub location: SourceLocation,
+    pub message: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct SourceModule {
     pub name: String,
@@ -136,8 +154,6 @@ pub fn deterministic_module_order(modules: &[SourceModule]) -> Vec<usize> {
             output.push(index);
         }
     }
-    // Cycles are coherent analysis components. Their stable lexical order is
-    // sufficient because every provided Var is predeclared before expansion.
     output.extend(remaining);
     output
 }
