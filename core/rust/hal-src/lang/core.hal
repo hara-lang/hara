@@ -11,8 +11,7 @@
             [lang.core.script-fragment]
             [lang.core.runtime :as runtime]
             [lang.model.spec-postgres]
-            [lang.runtime.basic :as basic]
-            [std.context :as context]))
+            [lang.runtime.basic :as basic]))
 
 (def book-entry entry/book-entry)
 (def book-entry? entry/book-entry?)
@@ -29,7 +28,6 @@
 (def value-standalone value/value-standalone)
 (def host-name name)
 
-(defn rt:restart [] (script/restart!))
 (defn rt:stop [] (script/stop!))
 (def script-modules script/+modules+)
 (def script-specs script/+specs+)
@@ -54,6 +52,8 @@
 (def registry-book-remove! registry/registry-book-remove!)
 (def registry-book-set-default! registry/registry-book-set-default!)
 
+(def rt-default runtime/rt-default)
+(def rt-default:create runtime/rt-default:create)
 (def rt-basic basic/rt-basic)
 (def rt-basic:create basic/rt-basic:create)
 (def rt-oneshot basic/rt-oneshot)
@@ -62,6 +62,88 @@
 ;; Loading lang.core installs each language's configured default book and the
 ;; first local runtimes. No target process is started during bootstrap.
 (def +bootstrap+ (bootstrap!))
+
+(defstruct code-pointer-type [context fields])
+
+(defn code-pointer
+  "Creates the portable language pointer rooted in a script definition Var."
+  [context fields]
+  (lang.core/code-pointer-type context fields))
+
+(defn code-pointer?
+  "Returns true when value is a lang.core code pointer."
+  [value]
+  (instance? code-pointer-type value))
+
+(extend-type code-pointer-type std.protocol.ipointer/IPointer
+  (ptr-context [pointer]
+    (field pointer :context))
+  (ptr-keys [pointer]
+    (keys (field pointer :fields)))
+  (ptr-val [pointer key]
+    (get (field pointer :fields) key)))
+
+(extend-type code-pointer-type std.protocol.ideref/IDeref
+  (deref [pointer]
+    (field pointer :fields)))
+
+(extend-type code-pointer-type std.protocol.ilookup/ILookup
+  (lookup [pointer key]
+    (cond (= key :context) (field pointer :context)
+          (= key :fields) (field pointer :fields)
+          :else (get (field pointer :fields) key))))
+
+(defn code-pointer-context
+  "Returns the language context carried by pointer."
+  [pointer]
+  (std.protocol.ipointer/ptr-context pointer))
+
+(defn code-pointer-val
+  "Returns one coordinate or source field carried by pointer."
+  [pointer key]
+  (std.protocol.ipointer/ptr-val pointer key))
+
+(defn code-pointer-runtime
+  "Resolves pointer against the latest live runtime for its script coordinate."
+  [pointer]
+  (let [module (code-pointer-val pointer :module)
+        lang (code-pointer-val pointer :lang)]
+    (get-in (deref script/+scripts+) [[module lang] :runtime])))
+
+(defn code-pointer-invoke-in
+  "Compiles and invokes pointer through an explicit or currently live runtime."
+  [pointer selected-runtime args]
+  (let [module (code-pointer-val pointer :module)
+        lang (code-pointer-val pointer :lang)
+        id (code-pointer-val pointer :id)
+        instance (or selected-runtime (code-pointer-runtime pointer))]
+    (if (nil? instance)
+      (throw
+       (ex-info "Script pointer runtime is not started"
+                {:lang lang
+                 :module module
+                 :id id}))
+      (let [qualified (symbol (name module) (name id))
+            form (apply list qualified args)
+            source (script/compile-form lang module form)
+            response (runtime/rt-raw-eval instance source)]
+        (if (and (map? response) (has? response :value))
+          (:value response)
+          response)))))
+
+(extend-type code-pointer-type std.protocol.iapplicable/IApplicable
+  (apply-default [pointer]
+    (code-pointer-runtime pointer))
+  (apply-in [pointer selected-runtime args]
+    (code-pointer-invoke-in pointer selected-runtime args))
+  (transform-in [pointer selected-runtime args]
+    args)
+  (transform-out [pointer selected-runtime args value]
+    value))
+
+(extend-type code-pointer-type std.protocol.iinvokein/IInvokeIn
+  (invoke-in [pointer selected-runtime & args]
+    (code-pointer-invoke-in pointer selected-runtime args)))
 
 (defn script-context
   "Returns the Foundation language-context key used by script pointers."
@@ -88,7 +170,7 @@
        (let [context-key (script-context (:lang entry))
              qualified (symbol (name source) (name id))
              pointer
-             (context/pointer
+             (code-pointer
               context-key
               (assoc entry
                      :namespace source
@@ -103,8 +185,9 @@
         current (get (deref script/+scripts+) coordinate)
         previous (:runtime current)
         _ (if previous (runtime/rt-stop previous))
-        runtime-type (or (:runtime config) :basic)
-        instance (runtime/rt-create lang runtime-type config)
+        runtime-type (or (:runtime config) :default)
+        runtime-options (assoc config :module module)
+        instance (runtime/rt-create lang runtime-type runtime-options)
         started (runtime/rt-start instance)
         started
         (if (= lang :postgres)
@@ -120,6 +203,24 @@
         record (assoc record :runtime started)]
     (swap! script/+scripts+ assoc coordinate record)
     started))
+
+(defn restart-script!
+  "Restarts every script declared by the current source namespace."
+  []
+  (let [source (symbol (str (current-namespace)))
+        entries
+        (filter (fn [entry]
+                  (= source (:source (second entry))))
+                (deref script/+scripts+))]
+    (reduce (fn [_ entry]
+              (let [record (second entry)]
+                (start-script! (:lang record)
+                               (:module record)
+                               (:config record))))
+            nil
+            entries)))
+
+(defn rt:restart [] (restart-script!))
 
 (def +script-tag-aliases+
   {:xtalk :xt
@@ -228,7 +329,7 @@
        (apply list 'lang.core.script/defmacro.xt id body)))])
 
 (defn script-expansion
-  "Builds script/script- expansion with runtime return as the final value."
+  "Builds normal or deferred script expansion with its correct final value."
   [lang options test?]
   (let [parsed (script/script-options options)
         module (first parsed)

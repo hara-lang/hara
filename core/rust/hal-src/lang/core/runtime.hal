@@ -8,8 +8,110 @@
 (def +language-registry+ (atom {}))
 (def +type-registry+ (atom {}))
 
+(defstruct RuntimeDefault
+  [id lang runtime module options state modules pointers profile timeout])
+
 (defn- atom-value [reference]
   (deref (identity reference)))
+
+(defn rt-default:create
+  "Creates the lightweight Foundation-compatible language runtime."
+  [options]
+  (let [lang (get options :lang)
+        module (get options :module)]
+    (lang.core.runtime/RuntimeDefault
+     (or (get options :id)
+         (keyword (str (name lang) ".default")))
+     lang
+     :default
+     module
+     options
+     (atom {:status :created})
+     (atom #{})
+     (atom #{})
+     {:input [] :source [] :response []}
+     (or (get options :timeout) 2000))))
+
+(defn- default-state
+  [runtime]
+  (deref (get runtime :state)))
+
+(defn- start-default
+  [runtime]
+  (reset! (get runtime :state) {:status :started})
+  runtime)
+
+(defn- stop-default
+  [runtime]
+  (reset! (get runtime :state) {:status :stopped})
+  runtime)
+
+(defn rt-default
+  "Creates and starts the lightweight default language runtime."
+  [options]
+  (start-default (rt-default:create options)))
+
+(defn- raw-eval-default
+  [runtime source]
+  source)
+
+(defn default-runtime-spec
+  "Returns the portable compile-only runtime spec available to every language."
+  [language]
+  {:lang language
+   :runtime :default
+   :type :lang/rt.default
+   :component true
+   :config {}
+   :instance {:create rt-default:create
+              :raw-eval raw-eval-default}})
+
+(extend-type RuntimeDefault context-eval/IContextEval
+  (evaluate [runtime request options]
+    (promise/from request))
+  (evaluate-raw [runtime request options]
+    (promise/from request)))
+
+(extend-type RuntimeDefault IContext
+  (call [runtime source]
+    source))
+
+(extend-type RuntimeDefault IComponent
+  (props [runtime]
+    {:state {:get (fn [] (default-state runtime))}
+     :module {:get (fn [] (get runtime :module))}})
+  (status [runtime]
+    (get (default-state runtime) :status))
+  (started? [runtime]
+    (= :started (get (default-state runtime) :status)))
+  (stopped? [runtime]
+    (= :stopped (get (default-state runtime) :status)))
+  (start [runtime]
+    (start-default runtime))
+  (stop [runtime]
+    (stop-default runtime))
+  (kill [runtime]
+    (stop-default runtime))
+  (remote? [runtime]
+    false))
+
+(extend-type RuntimeDefault IContextLifeCycle
+  (has-module? [runtime module]
+    (boolean (get (deref (get runtime :modules)) module)))
+  (setup-module [runtime module]
+    (swap! (get runtime :modules) conj module)
+    runtime)
+  (teardown-module [runtime module]
+    (swap! (get runtime :modules) disj module)
+    runtime)
+  (has-pointer? [runtime pointer]
+    (boolean (get (deref (get runtime :pointers)) pointer)))
+  (setup-pointer [runtime pointer]
+    (swap! (get runtime :pointers) conj pointer)
+    runtime)
+  (teardown-pointer [runtime pointer]
+    (swap! (get runtime :pointers) disj pointer)
+    runtime))
 
 (defn install-lang!
   "Installs a selected version of a language into the runtime registry.
@@ -70,16 +172,22 @@
 
 (defn runtime-installed?
   [language runtime]
-  (boolean (get (atom-value +type-registry+) [language runtime])))
+  (if (= runtime :default)
+    true
+    (boolean (get (atom-value +type-registry+) [language runtime]))))
 
 (defn available-runtimes
   [language]
-  (reduce (fn [out coordinate]
-            (if (= language (first coordinate))
-              (conj out (second coordinate))
-              out))
-          []
-          (keys (atom-value +type-registry+))))
+  (let [installed
+        (reduce (fn [out coordinate]
+                  (if (= language (first coordinate))
+                    (conj out (second coordinate))
+                    out))
+                []
+                (keys (atom-value +type-registry+)))]
+    (if (get (set installed) :default)
+      installed
+      (conj installed :default))))
 
 (defn require-runtime!
   "Loads the implementation registered for [language runtime]."
@@ -94,13 +202,16 @@
 (defn runtime-spec
   "Returns an installed runtime type, loading its implementation lazily."
   [language runtime]
-  (require-runtime! language runtime)
-  (or (get (atom-value +type-registry+) [language runtime])
-      (throw
-       (ex-info "Runtime implementation did not install its type"
-                {:lang language
-                 :runtime runtime
-                 :namespace (registry/registry-runtime-ns language runtime)}))))
+  (if (= runtime :default)
+    (default-runtime-spec language)
+    (do
+      (require-runtime! language runtime)
+      (or (get (atom-value +type-registry+) [language runtime])
+          (throw
+           (ex-info "Runtime implementation did not install its type"
+                    {:lang language
+                     :runtime runtime
+                     :namespace (registry/registry-runtime-ns language runtime)}))))))
 
 (defn rt-create
   "Creates a runtime from its Foundation [language runtime] coordinate."
