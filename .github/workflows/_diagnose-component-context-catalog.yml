@@ -1,0 +1,35 @@
+name: Diagnose component/context catalog
+
+on:
+  push:
+    branches:
+      - agent/diagnose-component-context-catalog
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect embedded HAL namespace declarations
+        shell: bash
+        run: |
+          set -euxo pipefail
+          echo 'Legacy namespace declarations:'
+          grep -R -n -E '^\(ns\+? std\.lib\.(component|context)([[:space:])]|$)' core/rust/hal-src || true
+          echo 'All component/context declarations:'
+          grep -R -n -E '^\(ns\+? .*\.(component|context)([[:space:])]|$)' core/rust/hal-src || true
+          echo 'Legacy files in tree:'
+          find core/rust/hal-src -type f \( -path '*/component.hal' -o -path '*/context.hal' \) -print | sort
+          echo 'Inventory references:'
+          grep -n -E 'std\.(lib\.)?(component|context)|std\.foundation\.(component|context)' core/rust/standard-library.namespaces || true
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Reproduce focused bundle compilation
+        shell: bash
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm \
+            vm::bundle::tests::embedded_bundle_indexes_every_standard_library_namespace \
+            -- --exact --nocapture
