@@ -93,6 +93,16 @@
   [unit]
   (vec (map (fn [entry] (:name entry)) (extract unit))))
 
+(defn public-definition-names
+  [unit]
+  (vec
+   (map
+    (fn [entry] (:name entry))
+    (filter
+     (fn [entry]
+       (not= :private-function (:kind entry)))
+     (extract unit)))))
+
 (defn in-order?
   [unit]
   (let [names (definition-names unit)]
@@ -239,17 +249,23 @@
          unit
          options
          source-namespace)
-        alias (or (:alias options) "subject")]
+        alias (or (:alias options) "subject")
+        definitions (public-definition-names unit)
+        before (or (:test-source unit) "")
+        after
+        (scaffold/scaffold-source
+         source-namespace
+         test-namespace
+         alias
+         definitions)]
     {:path (scaffold/test-path-for unit options)
-     :changed true
-     :before (or (:test-source unit) "")
-     :after
-     (scaffold/scaffold-source
-      source-namespace
-      test-namespace
-      alias)
+     :changed (not= before after)
+     :before before
+     :after after
+     :functions definitions
+     :new definitions
      :write false
-     :create true}))
+     :create (empty? before)}))
 
 (defn create-tests
   [unit options]

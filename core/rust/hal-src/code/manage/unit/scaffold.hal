@@ -1,21 +1,81 @@
 (ns code.manage.unit.scaffold)
 
+(defn mapped-test-path
+  [path options]
+  (let [source-root (:source-root options)
+        test-root (:test-root options)]
+    (cond
+      (and source-root
+           test-root
+           (str/includes? path source-root))
+      (str/replace-first path source-root test-root)
+
+      (str/includes? path "/src-lang/")
+      (str/replace-first path "/src-lang/" "/test-lang/")
+
+      (str/includes? path "/src/")
+      (str/replace-first path "/src/" "/test/")
+
+      (str/starts-with? path "src-lang/")
+      (str/replace-first path "src-lang/" "test-lang/")
+
+      (str/starts-with? path "src/")
+      (str/replace-first path "src/" "test/")
+
+      :else path)))
+
+(defn test-file-path
+  [path]
+  (if (str/ends-with? path ".hal")
+    (str (str/slice path 0 (- (str/length path) 4))
+         "_test.hal")
+    (str path "_test.hal")))
+
 (defn test-path-for
   [code-unit options]
   (or (:test-path options)
       (:test-path code-unit)
-      (str/replace (:path code-unit)
-                   ".hal"
-                   "_test.hal")))
+      (test-file-path
+       (mapped-test-path (:path code-unit)
+                         (or options {})))))
 
 (defn test-namespace-for
   [code-unit options source-namespace]
   (or (:test-namespace options)
       (symbol (str source-namespace "-test"))))
 
+(defn scaffold-fact
+  [source-namespace definition]
+  (str "(fact \"TODO: "
+       source-namespace
+       "/"
+       definition
+       "\"\n"
+       "  true => true)"))
+
 (defn scaffold-source
-  [source-namespace test-namespace alias]
-  (str "(ns " test-namespace "\n"
-       "  (:use code.test)\n"
-       "  (:require [" source-namespace " :as " alias "]))\n\n"
-       "(fact \"scaffolded test\" true => true)\n"))
+  ([source-namespace test-namespace alias]
+   (scaffold-source source-namespace
+                    test-namespace
+                    alias
+                    []))
+  ([source-namespace test-namespace alias definitions]
+   (let [definitions
+         (if (empty? definitions)
+           ["scaffold"]
+           definitions)
+         facts
+         (str/join
+          "\n\n"
+          (map
+           (fn [definition]
+             (scaffold-fact source-namespace definition))
+           definitions))]
+     (str "(ns " test-namespace "\n"
+          "  (:use code.test)\n"
+          "  (:require [" source-namespace
+          " :as " alias "]))\n\n"
+          facts
+          "\n\n(pr-str (run {:namespace \""
+          test-namespace
+          "\"}))\n"))))
