@@ -1,64 +1,113 @@
-;; Hara host-side successor to Foundation code.manage.  Workflows are pure
-;; until a host explicitly applies their returned edits with :write true.
 (ns code.manage
-  (:require [code.framework :as framework]
-            [std.work :as work]
-            [std.work.command :as command]
-            [std.work.command.task :as task-command]))
+  (:refer-clojure :exclude [import])
+  (:require [code.manage.automation :as automation]
+            [code.manage.ns-format :as manage-format]
+            [code.manage.ns-rename :as manage-rename]
+            [code.manage.unit :as unit]
+            [code.manage.unit.factcheck :as factcheck]
+            [code.manage.unit.import :as unit-import]
+            [code.manage.unit.isolate :as unit-isolate]
+            [code.manage.unit.require :as unit-require]
+            [code.manage.unit.scaffold :as unit-scaffold]
+            [code.manage.unit.snapto :as unit-snapto]
+            [code.manage.unit.template :as template]
+            [code.manage.var :as var]
+            [std.work :as work]))
 
-(defn analyse [unit] (merge {:path (:path unit)} (framework/analyse-source (:source unit))))
-(defn extract [unit] (:definitions (analyse unit)))
-(defn vars [unit] (vec (map (fn [entry] (:source entry)) (extract unit))))
-(defn docstrings [unit] (:docstrings (analyse unit)))
-(defn grep [unit needle] (framework/grep-source (:source unit) needle))
+;; Public facade over the Foundation-shaped implementation namespaces.
 
-(defn transform-code
-  [unit transform]
-  (let [before (:source unit)
-        after (transform before)]
-    {:path (:path unit)
-     :changed (not= before after)
-     :before before
-     :after after
-     :write false}))
+(def analyse unit/analyse)
+(def extract unit/extract)
+(def vars unit/vars)
+(def docstrings unit/docstrings)
+(def grep unit/grep)
+(def transform-code unit/transform-code)
+(def grep-replace unit/grep-replace)
+(def heal-code unit/heal-code)
+(def unclean unit/unclean)
+(def incomplete unit/incomplete)
+(def commented unit/commented)
+(def unclean-findings unit/unclean-findings)
+(def definition-names unit/definition-names)
+(def in-order? unit/in-order?)
+(def orphaned-meta unit/orphaned-meta)
+(def orphaned unit/orphaned)
+(def todos unit/todos)
+(def unchecked unit/unchecked)
+(def pedantic unit/pedantic)
+(def missing unit/missing)
+(def includes-any? unit/includes-any?)
+(def remove-matching-lines unit/remove-matching-lines)
+(def purge unit/purge)
+(def replacements unit/replacements)
+(def replace-all unit/replace-all)
+(def refactor-code unit/refactor-code)
+(def refactor-test unit/refactor-test)
+(def refactor-swap unit/refactor-swap)
+(def arrange unit/arrange)
+(def locate-code unit/locate-code)
+(def locate-test unit/locate-test)
 
-(defn grep-replace
-  [unit match replacement]
-  (transform-code unit (fn [source] (str/replace source match replacement))))
+(def import-unit unit-import/import-unit)
+(def import unit-import/import)
+(def scaffold unit-scaffold/scaffold)
+(def create-tests unit-scaffold/create-tests)
+(def test-path-for unit-scaffold/test-path-for)
+(def test-namespace-for unit-scaffold/test-namespace-for)
+(def factcheck-remove factcheck/factcheck-remove)
+(def factcheck-generate factcheck/factcheck-generate)
+(def isolate unit-isolate/isolate)
+(def snapto unit-snapto/snapto)
+(def require-file unit-require/require-file)
+(def ns-format manage-format/ns-format)
+(def ns-rename manage-rename/ns-rename)
+(def find-usages var/find-usages)
+(def incomplete-report automation/incomplete-report)
 
-(defn heal-code [unit]
-  (transform-code unit (fn [source] (str (str/trim-right source) "\n"))))
+(def operation-id template/operation-id)
+(def tasklet-request template/tasklet-request)
+(def code-tasklet template/code-tasklet)
+(def tasklet-operation template/tasklet-operation)
+(def run-unit template/run-unit)
+(def batch-records template/batch-records)
+(def task-work template/task-work)
 
-(defn unclean [unit]
-  (if (= (:source unit) (:after (heal-code unit))) [] [(:path unit)]))
+(def analyse-unit unit/analyse-unit)
+(def extract-unit unit/extract-unit)
+(def vars-unit unit/vars-unit)
+(def docstrings-unit unit/docstrings-unit)
+(def transform-code-unit unit/transform-code-unit)
+(def purge-unit unit/purge-unit)
+(def missing-unit unit/missing-unit)
+(def todos-unit unit/todos-unit)
+(def incomplete-unit unit/incomplete-unit)
+(def orphaned-unit unit/orphaned-unit)
+(def in-order-unit unit/in-order-unit)
+(def arrange-unit unit/arrange-unit)
+(def locate-code-unit unit/locate-code-unit)
+(def locate-test-unit unit/locate-test-unit)
+(def grep-unit unit/grep-unit)
+(def grep-replace-unit unit/grep-replace-unit)
+(def unclean-unit unit/unclean-unit)
+(def unclean-findings-unit unit/unclean-findings-unit)
+(def unchecked-unit unit/unchecked-unit)
+(def commented-unit unit/commented-unit)
+(def pedantic-unit unit/pedantic-unit)
+(def refactor-code-unit unit/refactor-code-unit)
+(def refactor-test-unit unit/refactor-test-unit)
+(def heal-unit unit/heal-unit)
 
-(defn incomplete [unit]
-  (grep unit "TODO"))
-
-(defn commented
-  "Returns comment-only lines so callers can decide whether to remove them."
-  [unit]
-  (vec (filter (fn [entry]
-                 (str/starts-with? (str/trim (:text entry)) ";"))
-               (framework/grep-source (:source unit) ";"))))
-
-(defn unclean-findings
-  "Reports normalisation issues without modifying the source."
-  [unit]
-  (let [lines (str/split-lines (:source unit))
-        trailing (loop [index 0 output []]
-                   (if (= index (count lines))
-                     output
-                     (let [line (nth lines index)]
-                       (recur (inc index)
-                              (if (not= line (str/trim-right line))
-                                (conj output {:path (:path unit)
-                                              :line (inc index)
-                                              :kind :trailing-whitespace})
-                                output)))))]
-    (if (str/ends-with? (:source unit) "\n")
-      trailing
-      (conj trailing {:path (:path unit) :kind :missing-final-newline}))))
+(def import-tasklet unit-import/import-tasklet)
+(def scaffold-unit unit-scaffold/scaffold-unit)
+(def create-tests-unit unit-scaffold/create-tests-unit)
+(def factcheck-remove-unit factcheck/factcheck-remove-unit)
+(def factcheck-generate-unit factcheck/factcheck-generate-unit)
+(def isolate-unit unit-isolate/isolate-unit)
+(def snapto-unit unit-snapto/snapto-unit)
+(def require-file-unit unit-require/require-file-unit)
+(def ns-format-unit manage-format/ns-format-unit)
+(def ns-rename-unit manage-rename/ns-rename-unit)
+(def find-usages-unit var/find-usages-unit)
 
 (def legacy-operations
   [:analyse :extract :vars :docstrings :transform-code :import :purge
@@ -74,321 +123,18 @@
     :refactor-code :refactor-test :ns-format :ns-rename :heal-code})
 
 (def parity-inventory
-  (reduce (fn [out operation]
-            (assoc out operation
-                   {:status :supported
-                    :boundary (if (get editing-operations operation)
-                                :pure-edit-plan
-                                :portable-inspection)}))
-          {}
-          legacy-operations))
-
-(defn definition-names [unit]
-  (vec (map (fn [entry] (:name entry)) (extract unit))))
-
-(defn in-order? [unit]
-  (let [names (definition-names unit)]
-    (= names (vec (sort names)))))
-
-(defn orphaned-meta [unit]
-  (let [lines (str/split-lines (:source unit))]
-    (loop [index 0 output []]
-      (if (= index (count lines))
-        output
-        (let [line (str/trim (nth lines index))
-              next-line (if (< (inc index) (count lines))
-                          (str/trim (nth lines (inc index)))
-                          "")]
-          (recur (inc index)
-                 (if (and (str/starts-with? line "^")
-                          (not (str/starts-with? next-line "(def")))
-                   (conj output {:path (:path unit)
-                                 :line (inc index)
-                                 :kind :orphaned-metadata})
-                   output)))))))
-
-(defn orphaned [unit] (orphaned-meta unit))
-(defn todos [unit] (incomplete unit))
-
-(defn unchecked [unit]
-  (let [facts (grep unit "(fact")
-        checks (grep unit "=>")]
-    (if (and (not (empty? facts)) (empty? checks))
-      (vec (map (fn [entry] (assoc entry :kind :unchecked-fact)) facts))
-      [])))
-
-(defn pedantic [unit]
-  (vec (concat (unclean-findings unit)
-               (map (fn [entry] (assoc entry :kind :todo)) (incomplete unit))
-               (orphaned-meta unit)
-               (unchecked unit))))
-
-(defn missing [unit options]
-  (let [available (or (:available-namespaces options) #{})]
-    (vec (filter (fn [namespace] (nil? (get available namespace)))
-                 (or (:requires unit) [])))))
-
-(defn includes-any? [line patterns]
-  (loop [remaining patterns]
-    (if (empty? remaining)
-      false
-      (if (str/includes? line (first remaining))
-        true
-        (recur (rest remaining))))))
-
-(defn remove-matching-lines [source patterns]
-  (str (str/join
-        "\n"
-        (filter (fn [line]
-                  (not (includes-any? line patterns)))
-                (str/split-lines source)))
-       "\n"))
-
-(defn import-unit [unit options]
-  (let [form (:form options)]
-    (if (or (nil? form) (str/blank? (str form)))
-      (transform-code unit identity)
-      (transform-code unit
-                      (fn [source]
-                        (str (str/trim-right source) "\n" form "\n"))))))
-
-(def import import-unit)
-
-(defn purge [unit options]
-  (transform-code unit
-                  (fn [source]
-                    (remove-matching-lines source (or (:patterns options) [])))))
-
-(defn replacements [options]
-  (or (:replacements options)
-      (if (and (:match options) (:replacement options))
-        [[(:match options) (:replacement options)]]
-        [])))
-
-(defn replace-all [source pairs]
-  (reduce (fn [output pair]
-            (str/replace output (str (first pair)) (str (second pair))))
-          source
-          pairs))
-
-(defn refactor-code [unit options]
-  (transform-code unit (fn [source] (replace-all source (replacements options)))))
-
-(defn refactor-test [unit options] (refactor-code unit options))
-
-(defn refactor-swap [unit pairs]
-  (refactor-code unit {:replacements pairs}))
-
-(defn ns-rename [unit options]
-  (let [old (:from options)
-        new (:to options)]
-    (if (or (nil? old) (nil? new))
-      (transform-code unit identity)
-      (grep-replace unit (str old) (str new)))))
-
-(defn ns-format [unit] (heal-code unit))
-
-(defn arrange [unit]
-  (if (in-order? unit)
-    (transform-code unit identity)
-    (assoc (transform-code unit identity)
-           :finding {:path (:path unit)
-                     :kind :definitions-out-of-order
-                     :definitions (definition-names unit)})))
-
-(defn test-path-for [unit options]
-  (or (:test-path options)
-      (:test-path unit)
-      (str/replace (:path unit) ".hal" "_test.hal")))
-
-(defn test-namespace-for [unit options]
-  (or (:test-namespace options)
-      (symbol (str (:namespace (analyse unit)) "-test"))))
-
-(defn scaffold [unit options]
-  (let [source-ns (:namespace (analyse unit))
-        test-ns (test-namespace-for unit options)
-        alias (or (:alias options) "subject")]
-    {:path (test-path-for unit options)
-     :changed true
-     :before (or (:test-source unit) "")
-     :after (str "(ns " test-ns "\n"
-                 "  (:use code.test)\n"
-                 "  (:require [" source-ns " :as " alias "]))\n\n"
-                 "(fact \"scaffolded test\" true => true)\n")
-     :write false
-     :create true}))
-
-(defn create-tests [unit options] (scaffold unit options))
-
-(defn isolate [unit options]
-  (let [needle (or (:needle options) "(fact")
-        selected (filter (fn [line]
-                           (or (str/starts-with? (str/trim line) "(ns ")
-                               (str/includes? line needle)))
-                         (str/split-lines (:source unit)))]
-    (transform-code unit
-                    (fn [source]
-                      (str (str/join "\n" selected) "\n")))))
-
-(defn factcheck-remove [unit options]
-  (purge unit {:patterns [(or (:marker options) "#fact")]}))
-
-(defn factcheck-generate [unit options]
-  (import-unit unit {:form (or (:form options) "#fact {:type :core}")}))
-
-(defn snapto [unit options] (refactor-code unit options))
-
-(defn locate-code [unit]
-  (if (= (:type unit) :test) nil (:path unit)))
-
-(defn locate-test [unit]
-  (if (= (:type unit) :test) (:path unit) (:test-path unit)))
-
-(defn find-usages [unit options]
-  (if (:var options) (grep unit (str (:var options))) []))
-
-(defn require-file [unit]
-  (vec (map (fn [entry] (symbol (:name entry)))
-            (filter (fn [entry]
-                      (not= (:kind entry) :private-function))
-                    (extract unit)))))
-
-(defn operation-id
-  [operation]
-  (keyword (str "code.manage/" (name operation))))
-
-(defn tasklet-request
-  "Wraps one code unit with operation parameters for direct or composed use."
-  ([unit]
-   (tasklet-request unit {}))
-  ([unit options]
-   {:code.manage/unit unit
-    :code.manage/options (or options {})}))
-
-(defn tasklet-subject-unit
-  [subject]
-  (if (and (map? subject) (has? subject :code.manage/unit))
-    (:code.manage/unit subject)
-    subject))
-
-(defn tasklet-subject-options
-  [subject]
-  (if (and (map? subject) (has? subject :code.manage/options))
-    (or (:code.manage/options subject) {})
-    {}))
-
-(defn code-tasklet
-  "Declares one independent code.manage tasklet around an atomic operation."
-  [operation function]
-  (task-command/tasklet
-   {:id (operation-id operation)
-    :version 1
-    :input
-    (fn [subject context]
-      (tasklet-subject-unit subject))
-    :item-key (fn [unit] (:path unit))
-    :run
-    (fn [unit context]
-      (function
-       unit
-       (tasklet-subject-options (:command/subject context))))}))
-
-(def analyse-unit
-  (code-tasklet :analyse (fn [unit options] (analyse unit))))
-(def extract-unit
-  (code-tasklet :extract (fn [unit options] (extract unit))))
-(def vars-unit
-  (code-tasklet :vars (fn [unit options] (vars unit))))
-(def docstrings-unit
-  (code-tasklet :docstrings (fn [unit options] (docstrings unit))))
-(def transform-code-unit
-  (code-tasklet
-   :transform-code
-   (fn [unit options]
-     (if (:transform options)
-       (transform-code unit (:transform options))
-       (transform-code unit identity)))))
-(def import-tasklet
-  (code-tasklet :import (fn [unit options] (import-unit unit options))))
-(def purge-unit
-  (code-tasklet :purge (fn [unit options] (purge unit options))))
-(def missing-unit
-  (code-tasklet :missing (fn [unit options] (missing unit options))))
-(def todos-unit
-  (code-tasklet :todos (fn [unit options] (todos unit))))
-(def incomplete-unit
-  (code-tasklet :incomplete (fn [unit options] (incomplete unit))))
-(def orphaned-unit
-  (code-tasklet :orphaned (fn [unit options] (orphaned unit))))
-(def scaffold-unit
-  (code-tasklet :scaffold (fn [unit options] (scaffold unit options))))
-(def create-tests-unit
-  (code-tasklet :create-tests (fn [unit options] (create-tests unit options))))
-(def in-order-unit
-  (code-tasklet :in-order (fn [unit options] (in-order? unit))))
-(def arrange-unit
-  (code-tasklet :arrange (fn [unit options] (arrange unit))))
-(def factcheck-remove-unit
-  (code-tasklet
-   :factcheck-remove
-   (fn [unit options] (factcheck-remove unit options))))
-(def factcheck-generate-unit
-  (code-tasklet
-   :factcheck-generate
-   (fn [unit options] (factcheck-generate unit options))))
-(def snapto-unit
-  (code-tasklet :snapto (fn [unit options] (snapto unit options))))
-(def isolate-unit
-  (code-tasklet :isolate (fn [unit options] (isolate unit options))))
-(def locate-code-unit
-  (code-tasklet :locate-code (fn [unit options] (locate-code unit))))
-(def locate-test-unit
-  (code-tasklet :locate-test (fn [unit options] (locate-test unit))))
-(def grep-unit
-  (code-tasklet
-   :grep
-   (fn [unit options]
-     (if (:needle options) (grep unit (:needle options)) []))))
-(def grep-replace-unit
-  (code-tasklet
-   :grep-replace
-   (fn [unit options]
-     (if (:match options)
-       (grep-replace unit (:match options) (or (:replacement options) ""))
-       (transform-code unit identity)))))
-(def unclean-unit
-  (code-tasklet :unclean (fn [unit options] (unclean unit))))
-(def unclean-findings-unit
-  (code-tasklet
-   :unclean-findings
-   (fn [unit options] (unclean-findings unit))))
-(def unchecked-unit
-  (code-tasklet :unchecked (fn [unit options] (unchecked unit))))
-(def commented-unit
-  (code-tasklet :commented (fn [unit options] (commented unit))))
-(def pedantic-unit
-  (code-tasklet :pedantic (fn [unit options] (pedantic unit))))
-(def refactor-code-unit
-  (code-tasklet
-   :refactor-code
-   (fn [unit options] (refactor-code unit options))))
-(def refactor-test-unit
-  (code-tasklet
-   :refactor-test
-   (fn [unit options] (refactor-test unit options))))
-(def ns-format-unit
-  (code-tasklet :ns-format (fn [unit options] (ns-format unit))))
-(def ns-rename-unit
-  (code-tasklet :ns-rename (fn [unit options] (ns-rename unit options))))
-(def find-usages-unit
-  (code-tasklet
-   :find-usages
-   (fn [unit options] (find-usages unit options))))
-(def require-file-unit
-  (code-tasklet :require-file (fn [unit options] (require-file unit))))
-(def heal-unit
-  (code-tasklet :heal-code (fn [unit options] (heal-code unit))))
+  (reduce
+   (fn [output operation]
+     (assoc
+      output
+      operation
+      {:status :supported
+       :boundary
+       (if (get editing-operations operation)
+         :pure-edit-plan
+         :portable-inspection)}))
+   {}
+   legacy-operations))
 
 (def operation-tasklets
   {:analyse analyse-unit
@@ -430,106 +176,70 @@
 (defn command-tasklet
   "Resolves a CLI operation to an already-declared tasklet.
 
-   This is a compatibility router. It never constructs or owns the tasklet."
+   This compatibility router never constructs or owns the tasklet."
   [operation]
   (or (get operation-tasklets operation)
       (throw
        (ex-info "Unsupported code.manage workflow"
                 {:operation operation}))))
 
-(defn tasklet-operation
-  [tasklet]
-  (keyword (name (:id (work/work-spec tasklet)))))
+(defn result-edit
+  [value]
+  (if (and (map? value)
+           (has? value :after))
+    value
+    nil))
 
-(defn run-unit
-  "Runs one independently declared code.manage tasklet."
-  ([tasklet unit]
-   (run-unit tasklet unit {}))
-  ([tasklet unit options]
-   (work/run (work/local-runtime)
-             tasklet
-             (tasklet-request unit options))))
-
-(defn result-edit [value]
-  (if (and (map? value) (has? value :after)) value nil))
-
-(defn result-findings [value]
+(defn result-findings
+  [value]
   (cond
-    (and (map? value) (:finding value)) [(:finding value)]
+    (and (map? value) (:finding value))
+    [(:finding value)]
+
     (vector? value)
-    (vec (filter (fn [entry]
-                   (and (map? entry) (:kind entry)))
-                 value))
-    :else []))
+    (vec
+     (filter
+      (fn [entry]
+        (and (map? entry)
+             (:kind entry)))
+      value))
 
-(defn batch-records
-  [batch]
-  (vec
-   (map (fn [item] (:item/value item))
-        (:results batch))))
-
-(defn task-work
-  "Composes bulk discovery and summaries around an existing tasklet."
-  ([tasklet]
-   (task-work tasklet {}))
-  ([tasklet options]
-   (let [operation (tasklet-operation tasklet)
-         spec (work/work-spec tasklet)]
-     (command/batch
-      {:id (:id spec)
-       :version (or (:version spec) 1)}
-      {:list
-       (work/pure
-        :list-units
-        (fn [input context]
-          (vec
-           (map
-            (fn [unit]
-              {:item/id (:path unit)
-               :item/value (tasklet-request unit options)})
-            (or (:units input) [])))))
-       :process tasklet
-       :summarise
-       (work/pure
-        :summarise
-        (fn [batch context]
-          (let [records (batch-records batch)]
-            {:operation operation
-             :count (count records)
-             :results
-             (count
-              (filter (fn [record] (= :return (:status record)))
-                      records))
-             :warnings
-             (count
-              (filter (fn [record] (= :warn (:status record)))
-                      records))
-             :errors
-             (count
-              (filter
-               (fn [record]
-                 (or (= :error (:status record))
-                     (= :critical (:status record))))
-               records))})))}))))
+    :else
+    []))
 
 (defn plan
   [operation input]
   (let [units (or (:units input) [])
         options (or (:options input) {})
         tasklet (command-tasklet operation)
-        batch (work/run (work/local-runtime)
-                        (task-work tasklet options)
-                        {:units units})
+        batch
+        (work/run
+         (work/local-runtime)
+         (task-work tasklet options)
+         {:units units})
         records (batch-records batch)
-        values (vec (map (fn [record] (:data record)) records))
-        edits (vec (filter identity (map result-edit values)))
-        findings (reduce (fn [out value]
-                           (into out (result-findings value)))
-                         []
-                         values)
+        values
+        (vec
+         (map
+          (fn [record]
+            (:data record))
+          records))
+        edits
+        (vec
+         (filter identity
+                 (map result-edit values)))
+        findings
+        (reduce
+         (fn [output value]
+           (into output (result-findings value)))
+         []
+         values)
         warnings
         (vec
-         (filter (fn [record] (= :warn (:status record))) records))
+         (filter
+          (fn [record]
+            (= :warn (:status record)))
+          records))
         errors
         (vec
          (filter
@@ -541,24 +251,26 @@
      :records records
      :results
      (vec
-      (map (fn [record]
-             {:item/id (:item/id record)
-              :item/value (:data record)})
-           records))
+      (map
+       (fn [record]
+         {:item/id (:item/id record)
+          :item/value (:data record)})
+       records))
      :edits edits
      :findings findings
      :warnings warnings
      :errors errors
-     :summary {:operation operation
-               :count (count records)
-               :changed (count (filter (fn [edit] (:changed edit)) edits))
-               :findings (count findings)
-               :warnings (count warnings)
-               :errors (count errors)}}))
-
-(defn incomplete-report [units]
-  (into {}
-        (map (fn [unit] [(:path unit) (incomplete unit)]) units)))
+     :summary
+     {:operation operation
+      :count (count records)
+      :changed
+      (count
+       (filter
+        (fn [edit] (:changed edit))
+        edits))
+      :findings (count findings)
+      :warnings (count warnings)
+      :errors (count errors)}}))
 
 (defn maintenance-work
   "Compatibility entry point for operation-keyword callers such as the CLI."
@@ -571,6 +283,8 @@
   [operation input]
   (if (= operation :incomplete-report)
     (incomplete-report (:units input))
-    (work/run (work/local-runtime)
-              (maintenance-work operation (or (:options input) {}))
-              input)))
+    (work/run
+     (work/local-runtime)
+     (maintenance-work operation
+                       (or (:options input) {}))
+     input)))

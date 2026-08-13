@@ -1,0 +1,50 @@
+(ns code.manage.unit.scaffold
+  (:require [code.manage.unit :as unit]
+            [code.manage.unit.template :as template]))
+
+(defn test-path-for
+  [code-unit options]
+  (or (:test-path options)
+      (:test-path code-unit)
+      (str/replace (:path code-unit)
+                   ".hal"
+                   "_test.hal")))
+
+(defn test-namespace-for
+  [code-unit options]
+  (or (:test-namespace options)
+      (symbol
+       (str (:namespace (unit/analyse code-unit))
+            "-test"))))
+
+(defn scaffold
+  [code-unit options]
+  (let [source-ns (:namespace (unit/analyse code-unit))
+        test-ns (test-namespace-for code-unit options)
+        alias (or (:alias options) "subject")]
+    {:path (test-path-for code-unit options)
+     :changed true
+     :before (or (:test-source code-unit) "")
+     :after
+     (str "(ns " test-ns "\n"
+          "  (:use code.test)\n"
+          "  (:require [" source-ns " :as " alias "]))\n\n"
+          "(fact \"scaffolded test\" true => true)\n")
+     :write false
+     :create true}))
+
+(defn create-tests
+  [code-unit options]
+  (scaffold code-unit options))
+
+(def scaffold-unit
+  (template/code-tasklet
+   :scaffold
+   (fn [code-unit options]
+     (scaffold code-unit options))))
+
+(def create-tests-unit
+  (template/code-tasklet
+   :create-tests
+   (fn [code-unit options]
+     (create-tests code-unit options))))

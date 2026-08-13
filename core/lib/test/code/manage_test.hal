@@ -1,6 +1,10 @@
 (ns code.manage-test
   (:use code.test)
   (:require [code.manage :as manage]
+            [code.manage.ns-rename :as ns-rename]
+            [code.manage.unit :as unit]
+            [code.manage.unit.scaffold :as scaffold]
+            [code.manage.unit.template :as template]
             [std.work :as work]
             [std.work.command.task :as task-command]))
 
@@ -8,33 +12,43 @@
   {:path "sample.hal"
    :source "(ns sample.core)\n\n(defn answer [] 42)\n;; TODO document\n"})
 
-(fact "code.manage operations are independent named tasklets before bulk composition"
-  (let [direct (manage/run-unit manage/analyse-unit sample-unit)
-        result (work/run (work/local-runtime)
-                         (manage/task-work manage/analyse-unit)
-                         {:units [sample-unit]})
+(fact "Foundation-shaped namespaces own the functions and tasklets"
+  [(task-command/tasklet? unit/analyse-unit)
+   (task-command/tasklet? unit/heal-unit)
+   (task-command/tasklet? ns-rename/ns-rename-unit)
+   (:id (work/work-spec unit/heal-unit))
+   (= (work/work-spec manage/heal-unit)
+      (work/work-spec unit/heal-unit))
+   (= (work/work-spec manage/ns-rename-unit)
+      (work/work-spec ns-rename/ns-rename-unit))]
+  => [true true true :code.manage/heal-code true true])
+
+(fact "code.manage remains a public facade over independently declared tasklets"
+  (let [direct (template/run-unit unit/analyse-unit sample-unit)
+        result
+        (work/run
+         (work/local-runtime)
+         (template/task-work unit/analyse-unit)
+         {:units [sample-unit]})
         bulk (:item/value (first (:results result)))]
-    [(task-command/tasklet? manage/analyse-unit)
-     (task-command/tasklet? manage/heal-unit)
-     (:id (work/work-spec manage/heal-unit))
-     (:item/id direct)
+    [(:item/id direct)
      (:count (:summary result))
      (:results (:summary result))
      (get-in direct [:data :namespace])
      (= direct bulk)])
-  => [true true :code.manage/heal-code "sample.hal" 1 1 "sample.core" true])
+  => ["sample.hal" 1 1 "sample.core" true])
 
-(fact "a tasklet remains an ordinary work value that can be composed"
+(fact "a namespace-owned tasklet remains an ordinary composable work value"
   (let [heal-then-analyse
         (work/chain
          {:id :code.manage/heal-then-analyse}
-         [manage/heal-unit
+         [unit/heal-unit
           (work/pure
            :code.manage/use-healed-source
            (fn [record context]
              {:path (get-in record [:data :path])
               :source (get-in record [:data :after])}))
-          manage/analyse-unit])
+          unit/analyse-unit])
         result
         (work/run
          (work/local-runtime)
@@ -46,38 +60,50 @@
      (str/ends-with? (get-in result [:data :source]) "\n")])
   => ["composed.hal" "composed.core" true])
 
-(fact "source edits are plans and remain dry-run by default"
-  (let [plan (manage/grep-replace sample-unit "42" "43")]
-    [(:changed plan) (:write plan) (:after plan)])
+(fact "source edits are owned by code.manage.unit and remain dry-run"
+  (let [edit (unit/grep-replace sample-unit "42" "43")]
+    [(:changed edit) (:write edit) (:after edit)])
   => [true false "(ns sample.core)\n\n(defn answer [] 43)\n;; TODO document\n"])
 
 (fact "maintenance reports preserve source location and do not write"
-  (let [unit {:path "unclean.hal" :source "(ns unclean)  \n;; note"}
-        result (manage/run :unclean-findings {:units [unit]})
-        findings (get-in result [:results 0 :item/value :data])]
+  (let [code-unit
+        {:path "unclean.hal"
+         :source "(ns unclean)  \n;; note"}
+        result
+        (manage/run :unclean-findings
+                    {:units [code-unit]})
+        findings
+        (get-in result [:results 0 :item/value :data])]
     [(map (fn [entry] (:path entry)) findings)
      (map (fn [entry] (:kind entry)) findings)])
   => [["unclean.hal" "unclean.hal"]
       [:trailing-whitespace :missing-final-newline]])
 
-(fact "the Foundation task inventory has a portable implementation boundary"
+(fact "the Foundation task inventory keeps the facade compatibility boundary"
   [(count manage/legacy-operations)
    (count manage/parity-inventory)
    (get-in manage/parity-inventory [:ns-rename :boundary])
    (get-in manage/parity-inventory [:find-usages :boundary])]
   => [35 35 :pure-edit-plan :portable-inspection])
 
-(fact "project transformations compose the named tasklet into compare-before-write plans"
-  (let [unit {:path "src/demo/core.hal"
-              :source "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"}
-        direct (manage/run-unit
-                manage/ns-rename-unit
-                unit
-                {:from 'demo.core :to 'demo.next})
-        plan (manage/plan :ns-rename
-                          {:units [unit]
-                           :options {:from 'demo.core :to 'demo.next}})]
-    [(= (:data direct) (get-in plan [:results 0 :item/value]))
+(fact "plan and direct execution use the same namespace-owned tasklet"
+  (let [code-unit
+        {:path "src/demo/core.hal"
+         :source
+         "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"}
+        options {:from 'demo.core :to 'demo.next}
+        direct
+        (template/run-unit
+         ns-rename/ns-rename-unit
+         code-unit
+         options)
+        plan
+        (manage/plan
+         :ns-rename
+         {:units [code-unit]
+          :options options})]
+    [(= (:data direct)
+        (get-in plan [:results 0 :item/value]))
      (get-in plan [:summary :changed])
      (get-in plan [:edits 0 :before])
      (get-in plan [:edits 0 :after])
@@ -88,11 +114,12 @@
       "(ns demo.next)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
       false])
 
-(fact "scaffolding produces a new dry-run test artifact"
-  (let [edit (manage/scaffold
-              {:path "src/demo/core.hal"
-               :source "(ns demo.core)\n(defn answer [] 42)\n"}
-              {:test-path "test/demo/core_test.hal"})]
+(fact "scaffolding is owned by code.manage.unit.scaffold"
+  (let [edit
+        (scaffold/scaffold
+         {:path "src/demo/core.hal"
+          :source "(ns demo.core)\n(defn answer [] 42)\n"}
+         {:test-path "test/demo/core_test.hal"})]
     [(:path edit)
      (:create edit)
      (:before edit)
