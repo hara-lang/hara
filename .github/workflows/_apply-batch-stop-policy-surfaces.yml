@@ -1,0 +1,46 @@
+name: Apply batch stop-policy surfaces
+
+on:
+  push:
+    branches:
+      - agent/std-work-batch-stop-policy-498
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply portable and command surfaces
+        run: |
+          if [[ -f scripts/runtime/apply-batch-stop-policy-surfaces ]]; then
+            python3 -m py_compile scripts/runtime/apply-batch-stop-policy-surfaces
+            python3 scripts/runtime/apply-batch-stop-policy-surfaces
+          else
+            echo "Batch stop-policy surfaces are already applied."
+          fi
+      - name: Validate generated source shape
+        run: |
+          git diff --check
+          diff -u core/lib/src/std/work/recipe.hal core/rust/hal-src/std/work/recipe.hal
+          diff -u core/lib/src/std/work/command.hal core/rust/hal-src/std/work/command.hal
+          grep -q ':stop :cancel :summarise' core/lib/src/std/work/recipe.hal
+          grep -q ':stop :cancel :summarise' core/lib/src/std/work/command.hal
+          grep -q ':batch/stop' core/lib/test/std/work_recipe_test.hal
+          grep -q 'command batches forward runtime stop and cancel stages' core/lib/test/std/work_test.hal
+      - name: Commit the reviewable surface slice
+        run: |
+          if git diff --quiet; then
+            echo "No source changes remain to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Expose batch stop and cancel through recipes and commands"
+          git push
