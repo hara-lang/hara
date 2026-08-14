@@ -248,7 +248,10 @@ public final class Main {
             + "\n :project/version \"0.1.0\"\n :project/source-paths [\"src\"]\n"
             + " :project/test-paths [\"test\"]\n :project/extension-paths [\"extensions\"]\n"
             + " :project/main " + namespace + ".main\n :project/capabilities #{}\n :project/dependencies {}\n"
-            + " :jvm/dependencies []\n :jvm/source-paths [\"src-java\"]\n :jvm/target-path \"target/classes\"}\n");
+            + " :project/runtime-profiles\n"
+            + " {:jvm {:runtime/native-source-paths [\"src-java\"]\n"
+            + "        :runtime/target-path \"target/jvm/classes\"\n"
+            + "        :runtime/dependencies {:maven {}}}}}\n");
     Files.writeString(root.resolve("workspace.edn"), "{:hara/type :workspace :hara/version \"1.0.0\"}\n");
     Files.writeString(root.resolve("src").resolve(namespace).resolve("main.hal"),
         "(ns " + namespace + ".main)\n\n(defn main []\n  \"Hello from " + name + "\")\n\n(main)\n");
@@ -329,19 +332,11 @@ public final class Main {
     if (args.length > 2 || (args.length == 2 && !java.util.Set.of("--offline", "--locked", "--frozen").contains(args[1])))
       throw new HaraException("sync accepts at most one of --offline, --locked, or --frozen");
     HaraProject project = cliProject(new String[] {"sync"}, capabilities);
-    String manifest = Files.readString(project.descriptor());
-    int dependencyKey = manifest.indexOf(":project/dependencies");
-    int dependencyOpen = dependencyKey < 0 ? -1 : manifest.indexOf('{', dependencyKey);
-    int dependencyClose = dependencyOpen < 0 ? -1 : matchingBrace(manifest, dependencyOpen);
-    if (dependencyOpen < 0 || dependencyClose < 0)
-      throw new HaraException("project.edn :project/dependencies must be an EDN map");
-    String dependencies = manifest.substring(dependencyOpen + 1, dependencyClose).trim();
-    if (!dependencies.isEmpty()) {
-      java.util.regex.Matcher coordinates =
-          java.util.regex.Pattern.compile("\\\"[^\\\"]+\\\"\\s*\\{").matcher(dependencies);
-      int count = 0;
-      while (coordinates.find()) count++;
-      throw new HaraException("project sync requires the reviewed registry client to resolve " + count + " declared dependencies");
+    if (!project.haraDependencies().isEmpty()) {
+      throw new HaraException(
+          "project sync requires the reviewed registry client to resolve "
+              + project.haraDependencies().size()
+              + " active Hara dependencies");
     }
     Path lock = project.root().resolve("project.lock.edn");
     boolean locked = args.length == 2 && ("--locked".equals(args[1]) || "--frozen".equals(args[1]));
@@ -407,7 +402,10 @@ public final class Main {
       for (Path file : files) {
         try (Context context = context(capabilities, project)) {
           Value value = context.eval(HaraLanguage.ID, Files.readString(file));
-          Object results = Parser.LispReader.readString(value.asString(), null);
+          Object results =
+              value.isString()
+                  ? Parser.LispReader.readString(value.asString(), null)
+                  : SessionKernel.Session.transferValue(value);
           int filePassed = 0;
           int fileFailed = 0;
           if (results instanceof IMapType summary) {

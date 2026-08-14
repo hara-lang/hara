@@ -15,6 +15,74 @@ import org.junit.Test;
 
 public class MainTest {
   @Test
+  public void newProjectScaffoldsJvmRuntimeProfile() throws Exception {
+    String name = "runtime-profile-app-" + Long.toUnsignedString(System.nanoTime());
+    Path root = Path.of(name);
+    ByteArrayOutputStream output = new ByteArrayOutputStream();
+    ByteArrayOutputStream error = new ByteArrayOutputStream();
+    try {
+      assertEquals(
+          0,
+          Main.run(
+              new String[] {"new", name},
+              new PrintStream(output, true, StandardCharsets.UTF_8),
+              new PrintStream(error, true, StandardCharsets.UTF_8)));
+      String manifest = Files.readString(root.resolve("project.edn"));
+      assertTrue(manifest.contains(":project/runtime-profiles"));
+      assertTrue(manifest.contains(":runtime/native-source-paths [\"src-java\"]"));
+      assertTrue(manifest.contains(":runtime/target-path \"target/jvm/classes\""));
+      assertTrue(!manifest.contains(":jvm/source-paths"));
+      HaraProject project = HaraProject.read(root.resolve("project.edn"));
+      assertEquals(root.toAbsolutePath().normalize().resolve("src-java"), project.jvmSourcePaths().get(0));
+    } finally {
+      if (Files.exists(root)) {
+        Files.walk(root)
+            .sorted(Comparator.reverseOrder())
+            .forEach(
+                path -> {
+                  try {
+                    Files.deleteIfExists(path);
+                  } catch (Exception ignored) {
+                  }
+                });
+      }
+    }
+  }
+
+  @Test
+  public void projectSyncUsesEffectiveHaraDependencies() throws Exception {
+    Path root = Files.createTempDirectory("hara-cli-runtime-dependencies-");
+    try {
+      Files.writeString(
+          root.resolve("project.edn"),
+          "{:hara/type :project :hara/version \"1.0.0\" :project/id demo-app "
+              + ":project/version \"0.1.0\" :project/source-paths [] :project/test-paths [] "
+              + ":project/extension-paths [] :project/capabilities #{} :project/dependencies {} "
+              + ":project/runtime-profiles {:jvm {:runtime/dependencies {:hara "
+              + "{\"hara:hara/remote\" {:version \"^1.0.0\"}}}}}}}");
+      ByteArrayOutputStream output = new ByteArrayOutputStream();
+      ByteArrayOutputStream error = new ByteArrayOutputStream();
+      int status =
+          Main.run(
+              new String[] {"--project", root.toString(), "sync"},
+              new PrintStream(output, true, StandardCharsets.UTF_8),
+              new PrintStream(error, true, StandardCharsets.UTF_8));
+      assertEquals(1, status);
+      assertTrue(error.toString(StandardCharsets.UTF_8).contains("1 active Hara dependencies"));
+    } finally {
+      Files.walk(root)
+          .sorted(Comparator.reverseOrder())
+          .forEach(
+              path -> {
+                try {
+                  Files.deleteIfExists(path);
+                } catch (Exception ignored) {
+                }
+              });
+    }
+  }
+
+  @Test
   public void projectCommandsRunAndReportStandardTestResults() throws Exception {
     Path root = Files.createTempDirectory("hara-cli-project-");
     try {
@@ -28,8 +96,11 @@ public class MainTest {
               + ":project/test-paths [\"test\"] :project/extension-paths [\"extensions\"] "
               + ":project/main demo_app.main :project/capabilities #{:jvm/reflection} "
               + ":project/dependencies {} "
-              + ":jvm/dependencies [[org.apache.commons/commons-lang3 \"3.12.0\"]] "
-              + ":jvm/source-paths [\"src-java\"] :jvm/target-path \"target/classes\"}");
+              + ":project/runtime-profiles {:jvm {"
+              + ":runtime/native-source-paths [\"src-java\"] "
+              + ":runtime/target-path \"target/jvm/classes\" "
+              + ":runtime/dependencies {:maven {org.apache.commons/commons-lang3 "
+              + "{:version \"3.12.0\"}}}}}}}");
       Files.writeString(
           root.resolve("src-java/demo_app/Bridge.java"),
           "package demo_app;\n"
@@ -84,7 +155,7 @@ public class MainTest {
       assertTrue(output.toString(StandardCharsets.UTF_8).contains("jvm dependencies: 1 direct"));
       assertTrue(output.toString(StandardCharsets.UTF_8).contains("Hello from demo-app"));
       assertTrue(output.toString(StandardCharsets.UTF_8).contains("test result: 1 passed, 0 failed"));
-      assertTrue(Files.isRegularFile(root.resolve("target/classes/demo_app/Bridge.class")));
+      assertTrue(Files.isRegularFile(root.resolve("target/jvm/classes/demo_app/Bridge.class")));
     } finally {
       Files.walk(root).sorted(Comparator.reverseOrder()).forEach(path -> { try { Files.deleteIfExists(path); } catch (Exception ignored) {} });
     }

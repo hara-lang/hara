@@ -198,7 +198,7 @@ final class SessionKernel implements AutoCloseable {
       return transferValue(eval(source));
     }
 
-    private static Object transferValue(Value value) {
+    static Object transferValue(Value value) {
       if (value.isNull()) return null;
       if (value.isBoolean()) return value.asBoolean();
       if (value.isString()) return value.asString();
