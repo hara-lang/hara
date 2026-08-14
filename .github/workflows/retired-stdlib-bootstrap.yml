@@ -62,6 +62,100 @@ jobs:
           for path, payload in outputs.items():
               path.parent.mkdir(parents=True, exist_ok=True)
               path.write_bytes(gzip.decompress(base64.b64decode(payload)))
+
+          script_path = Path("scripts/runtime/retired_stdlib_hard_cut.py")
+          script_source = script_path.read_text()
+          script_start = script_source.index("def update_run_lib_tests")
+          script_end = script_source.index("\n\ndef tracked_files", script_start)
+          runner_rewrite = '''def update_run_lib_tests(source: str) -> str:
+              retired_path = "core/lib/test/std/lib/test.hal"
+              lines = source.splitlines(keepends=True)
+              exclusion_count = sum(
+                  1 for line in lines if "! -path" in line and retired_path in line
+              )
+              if exclusion_count != 2:
+                  raise MigrationError(
+                      f"{RUN_LIB_TESTS}: expected two retired path exclusions, "
+                      f"found {exclusion_count}"
+                  )
+              lines = [
+                  line
+                  for line in lines
+                  if not ("! -path" in line and retired_path in line)
+              ]
+
+              condition = f"if [ \\"$target\\" != '{retired_path}' ]; then"
+              rewritten: list[str] = []
+              condition_count = 0
+              index = 0
+              while index < len(lines):
+                  if lines[index].strip() != condition:
+                      rewritten.append(lines[index])
+                      index += 1
+                      continue
+                  condition_count += 1
+                  indent = lines[index][: len(lines[index]) - len(lines[index].lstrip())]
+                  if index + 2 >= len(lines):
+                      raise MigrationError(f"{RUN_LIB_TESTS}: truncated retired file guard")
+                  body = lines[index + 1]
+                  closing = lines[index + 2]
+                  if not body.strip().startswith("printf '%s\\\\n' \\"$target\\""):
+                      raise MigrationError(f"{RUN_LIB_TESTS}: unexpected retired file guard body")
+                  if closing.strip() != "fi" or not closing.startswith(indent):
+                      raise MigrationError(f"{RUN_LIB_TESTS}: unexpected retired file guard close")
+                  rewritten.append(body)
+                  index += 3
+
+              if condition_count != 1:
+                  raise MigrationError(
+                      f"{RUN_LIB_TESTS}: expected one retired file guard, found {condition_count}"
+                  )
+              source = "".join(rewritten)
+              if retired_path in source:
+                  raise MigrationError(f"{RUN_LIB_TESTS}: retired exclusion remains")
+              return source
+          '''
+          runner_rewrite = "\n".join(
+              line[14:] if line.startswith("              ") else line
+              for line in runner_rewrite.splitlines()
+          )
+          script_path.write_text(
+              script_source[:script_start] + runner_rewrite + script_source[script_end:]
+          )
+
+          test_path = Path("scripts/runtime/retired_stdlib_hard_cut_test.py")
+          test_source = test_path.read_text()
+          test_marker = '\n\nif __name__ == "__main__":\n'
+          runner_test = r'''
+              def test_removes_all_runner_exclusions(self) -> None:
+                  source = """collect_root() {
+              find "$1" -name '*.hal' \\
+                      ! -path 'core/lib/test/std/lib/test.hal' \\
+                      -print
+          }
+          collect_files() {
+              find "$1" -name '*.hal' \\
+                          ! -path 'core/lib/test/std/lib/test.hal' \\
+                          -print
+              elif [ -f "$target" ]; then
+                  if [ "$target" != 'core/lib/test/std/lib/test.hal' ]; then
+                      printf '%s\\n' "$target"
+                  fi
+              fi
+          }
+          """
+                  migrated = MODULE.update_run_lib_tests(source)
+                  self.assertNotIn("std/lib/test.hal", migrated)
+                  self.assertEqual(migrated.count("-print"), 2)
+                  self.assertIn("printf '%s\\n' \"$target\"", migrated)
+          '''
+          runner_test = "\n".join(
+              line[14:] if line.startswith("              ") else line
+              for line in runner_test.splitlines()
+          )
+          if "def test_removes_all_runner_exclusions" not in test_source:
+              test_source = test_source.replace(test_marker, runner_test + test_marker, 1)
+          test_path.write_text(test_source)
           PYCODE
           chmod +x scripts/runtime/retired_stdlib_hard_cut.py
           chmod +x scripts/runtime/retired_stdlib_hard_cut_test.py
