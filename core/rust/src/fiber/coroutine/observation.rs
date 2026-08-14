@@ -53,6 +53,11 @@ impl EvalFiber {
             && self.resume.is_some()
     }
 
+    /// Returns the number of semantic boundaries retained for host publication.
+    pub fn observed_pending_boundaries(&self) -> usize {
+        semantic::pending_count(&self.env)
+    }
+
     /// Executes at most one retained production continuation boundary.
     pub fn step_observed(&mut self) -> EvalFiberState {
         if semantic::advance_pending(&self.env) {
