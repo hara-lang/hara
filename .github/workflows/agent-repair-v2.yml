@@ -1,6 +1,6 @@
 name: Verify live interpreter observation session
 
-# Standalone raw-module formatting verification trigger.
+# Runtime-owned interpreter session refactor verification trigger.
 on:
   pull_request:
     branches: [main]
@@ -29,8 +29,11 @@ jobs:
           git fetch origin main
           git rebase origin/main
 
-      - name: Restore shared repair workflow before the verified commit
-        run: git checkout origin/main -- .github/workflows/agent-repair-v2.yml
+      - name: Move session ownership into hara-wasm
+        run: |
+          python3 scripts/runtime/refactor-interpreter-observation-session.py
+          rm scripts/runtime/refactor-interpreter-observation-session.py
+          git checkout origin/main -- .github/workflows/agent-repair-v2.yml
 
       - name: Checkout hara-specs-registry
         uses: actions/checkout@v4
@@ -51,7 +54,8 @@ jobs:
       - name: Format interpreter observation sources
         run: |
           rustfmt --edition 2021 \
-            core/rust/src/fiber/coroutine/observation.rs
+            core/rust/src/fiber/coroutine/observation.rs \
+            core/rust/src/interpreter_observation.rs
           rustfmt --edition 2021 --config skip_children=true \
             core/rust/interpreter-observation-raw/src/lib.rs
 
@@ -59,8 +63,10 @@ jobs:
         run: |
           cargo test --manifest-path core/rust/Cargo.toml \
             core::fiber::coroutine --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            interpreter_observation --lib
 
-      - name: Test the native raw interpreter session ABI
+      - name: Test the thin native raw ABI
         run: |
           cargo test --manifest-path \
             core/rust/interpreter-observation-raw/Cargo.toml
