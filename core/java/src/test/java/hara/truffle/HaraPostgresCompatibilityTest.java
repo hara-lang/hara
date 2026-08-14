@@ -23,12 +23,12 @@ public final class HaraPostgresCompatibilityTest {
   }
 
   @Test
-  public void runsFoundationPostgresConnectionFacade() throws Exception {
-    assertSuite("lib/test/lib/postgres/connection_test.hal", 5, 5);
+  public void runsMergedPostgresConnectionProviderSuite() throws Exception {
+    assertSuite("lib/test/lib/postgres/connection_test.hal", 11, 11);
   }
 
   @Test
-  public void runsFoundationPostgresLifecycleFacade() throws Exception {
-    assertSuite("lib/test/lib/postgres_test.hal", 4, 4);
+  public void runsManagedDbPostgresLifecycleFacade() throws Exception {
+    assertSuite("lib/test/db/postgres_test.hal", 8, 8);
   }
 }

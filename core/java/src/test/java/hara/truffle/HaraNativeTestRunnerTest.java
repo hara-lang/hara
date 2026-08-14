@@ -173,14 +173,15 @@ public final class HaraNativeTestRunnerTest {
   }
 
   @Test
-  public void runsPortablePostgresConnectorFacade() throws Exception {
+  public void runsPortablePostgresConnectionProvider() throws Exception {
     HaraNativeTestRunner.Result result =
-        HaraNativeTestRunner.runFile(ROOT, ROOT.resolve("lib/test/std/db/postgres_test.hal"));
+        HaraNativeTestRunner.runFile(
+            ROOT, ROOT.resolve("lib/test/lib/postgres/connection_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
-    assertEquals(5, result.facts());
-    assertEquals(5, result.checks());
-    assertEquals(5, result.passedChecks());
+    assertEquals(11, result.facts());
+    assertEquals(11, result.checks());
+    assertEquals(11, result.passedChecks());
     assertEquals(0, result.failedChecks());
     assertEquals(0, result.errors());
     assertEquals(0, result.timeouts());

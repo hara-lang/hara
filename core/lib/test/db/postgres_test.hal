@@ -1,7 +1,7 @@
-(ns lib.postgres-test
+(ns db.postgres-test
   (:use code.test)
-  (:require [lib.postgres :as postgres]
-            [std.db.protocol :as protocol]))
+  (:require [db.postgres :as postgres]
+            [db.protocol :as protocol]))
 
 (defstruct FakeDatabase [events])
 
@@ -61,6 +61,42 @@
      => {"$postgres" "array"
          "element" "uuid"
          "dimensions" [[1 2] [1 2]]
-         "value" [["a" "b"] ["c" "d"]]})])
+         "value" [["a" "b"] ["c" "d"]]})
 
-(pr-str (run '[lib.postgres-test]))
+   (fact "connection options merge container endpoints and environment credentials"
+     (postgres/connection-options
+      {:options
+       {:config
+        {:dbname "app"
+         :temp true
+         :startup (fn [runtime] runtime)
+         :shutdown (fn [runtime] runtime)
+         :container
+         {:environment
+          {"POSTGRES_USER" "hara"
+           "POSTGRES_PASSWORD" "secret"}}}}
+       :container {:host "127.0.0.1" :port 55432}})
+     => {:dbname "app"
+         :host "127.0.0.1"
+         :port 55432
+         :user "hara"
+         :password "secret"})
+
+   (fact "admin options always target the postgres maintenance database"
+     (postgres/admin-options {:dbname "app" :database "legacy" :user "hara"})
+     => {:dbname "postgres" :user "hara"})
+
+   (fact "lifecycle hooks are optional functions over the runtime"
+     [(postgres/run-lifecycle {:id :runtime} nil)
+      (postgres/run-lifecycle
+       {:id :runtime}
+       (fn [runtime] (assoc runtime :hooked true)))]
+     => [{:id :runtime}
+         {:id :runtime :hooked true}])
+
+   (fact "managed PostgreSQL start and stop remain component lifecycle functions"
+     [(fn? postgres/start-pg)
+      (fn? postgres/stop-pg)]
+     => [true true])])
+
+(pr-str (run '[db.postgres-test]))
