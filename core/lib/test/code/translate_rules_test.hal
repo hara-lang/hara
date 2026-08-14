@@ -1,10 +1,13 @@
 (ns code.translate-rules-test
   (:require [code.translate :as translate]
-            [code.translate.rule :as rule]
-            ))
+            [code.translate.rule :as rule]))
+
+(def reader-namespace (str "clojure" ".tools.reader"))
 
 (def source
-  "(ns demo.core\n  (:require [std.protocol.block :as protocol]\n            [std.block.navigate :as nav]\n            [std.lib.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n")
+  (str "(ns demo.core\n  (:require [std.protocol.block :as protocol]\n            [std.block.navigate :as nav]\n            [std.lib.foundation :as foundation]\n            ["
+       reader-namespace
+       " :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"))
 
 (def results
   [(test-check "compiled rules retain safety and evidence totals"
@@ -12,7 +15,7 @@
                 (every? (fn [entry] (not (empty? (:evidence entry))))
                         translate/rules)
                 (vec (map :compiled/index translate/rules))]
-               [{:total 99 :safe 77 :review 8 :manual 14}
+               [{:total 104 :safe 83 :review 8 :manual 13}
                 true
                 [0 1 2 3 4 5 6 7 8 9
                  10 11 12 13 14 15 16 17 18 19
@@ -23,7 +26,8 @@
                  60 61 62 63 64 65 66 67 68 69
                  70 71 72 73 74 75 76 77 78 79
                  80 81 82 83 84 85 86 87 88 89
-                 90 91 92 93 94 95 96 97 98]])
+                 90 91 92 93 94 95 96 97 98 99
+                 100 101 102 103]])
 
    (test-check "automatic matcher conflicts are rejected"
                (let [base (first translate/rules)
@@ -67,7 +71,9 @@
                  [(:output result)
                   (:changed result)
                   (vec (map :rule/id (:rules/applied result)))])
-               ["(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.lib.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+               [(str "(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.lib.foundation :as foundation]\n            ["
+                     reader-namespace
+                     " :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n")
                 true
                 [:namespace/std-protocol-block
                  :namespace/std-block-navigation]])
@@ -76,7 +82,9 @@
                (let [result (translate/translate-source source {:mode :review})]
                  [(:output result)
                   (vec (map :rule/id (:rules/applied result)))])
-               ["(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+               [(str "(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            ["
+                     reader-namespace
+                     " :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n")
                 [:namespace/std-protocol-block
                  :namespace/std-block-navigation
                  :namespace/std-lib-foundation]])
@@ -93,16 +101,16 @@
                 0
                 [:code.translate/manual :code.translate/manual]])
 
-   (test-check "legacy test helpers require a semantic code.test recipe"
+   (test-check "legacy test helpers migrate to Foundation assertions"
                (let [legacy
                      "(ns demo-test (:require [std.lib.test :as test]))\n(test/check \"demo\" 1 1)\n"
                      result (translate/translate-source legacy {:mode :review})]
                  [(:output result)
                   (vec (map :rule/id (:rules/matched result)))
                   (vec (map :type (:diagnostics result)))])
-               ["(ns demo-test (:require [std.lib.test :as test]))\n(test/check \"demo\" 1 1)\n"
-                [:dependency/std-lib-test]
-                [:code.translate/manual]])
+               ["(ns demo-test )\n(test-check \"demo\" 1 1)\n"
+                [:dependency/std-lib-test :test/std-lib-check]
+                [:code.translate/rewrite :code.translate/rewrite]])
 
    (test-check "collection and walk idioms resolve to their classified destinations"
                (let [source
@@ -170,8 +178,12 @@
                   (:output second-pass)
                   (:changed second-pass)
                   (count (:rules/applied second-pass))])
-               ["(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
-                "(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n"
+               [(str "(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            ["
+                     reader-namespace
+                     " :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n")
+                (str "(ns demo.core\n  (:require [std.block.protocol :as protocol]\n            [std.block.navigation :as nav]\n            [std.foundation :as foundation]\n            ["
+                     reader-namespace
+                     " :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n")
                 false
                 0])
 
@@ -183,13 +195,13 @@
                  (:output result))
                "(ns demo.core\n  (:require [std.block.protocol  ; keep this alias\n             :as protocol]))\n")
 
-   (test-check "native Hara output drops redundant Foundation refer-all entries"
+   (test-check "native Hara output converts Foundation refer-all exclusions into config"
                (let [source
                      "(ns demo.core\n  (:require [std.foundation :refer :all]\n            [std.block :as block]))\n"
                      result (translate/translate-source source {:mode :safe})]
                  [(:output result)
                   (vec (map :rule/id (:rules/applied result)))])
-               ["(ns demo.core\n  (:require \n            [std.block :as block]))\n"
+               ["(ns demo.core\n  (:config {})\n  (:require \n            [std.block :as block]))\n"
                 [:dependency/std-foundation-refer-all]])
 
    (test-check "diagnostics retain file, range, path, and rule evidence"

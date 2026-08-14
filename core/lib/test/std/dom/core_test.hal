@@ -1,0 +1,73 @@
+(ns std.dom-core-test
+  (:require [std.dom.type :as type]
+            [std.dom.common :as dom]
+            [std.dom.diff :as diff]
+            [std.dom.find :as find]
+            [std.dom.impl :as impl]
+            [std.dom.item :as item]
+            [std.dom.mock :as mock]
+            [std.dom.update :as update]))
+
+(type/metaclass-add :test/element {:metatype :dom/element})
+(type/metaprops-add :test/element {:tag :test/label
+                                   :children {:key :text :single true}})
+(type/metaprops-add :test/element {:tag :test/pane})
+
+(def results
+  [(test-check "DOM type metadata is registered"
+               (select-keys (type/metaprops :test/label)
+                            [:tag :metaclass :metatype])
+               {:tag :test/label
+                :metaclass :test/element
+                :metatype :dom/element})
+   (test-check "DOM vectors compile and format portably"
+               (dom/dom-format
+                (dom/dom-compile [:test/pane
+                                  [:test/label "hello"]
+                                  [:test/label "world"]]))
+               [:- :test/pane [:- :test/label "hello"] [:- :test/label "world"]])
+   (test-check "explicit DOM field writes preserve identity"
+               (let [node (dom/dom-create :test/label {} ["before"])
+                     alias node]
+                 (dom/dom-field-set! node :props {:text "after"})
+                 [(= node alias) (:props alias)])
+               [true {:text "after"}])
+   (test-check "DOM cloning is shallow and independent"
+               (let [node (dom/dom-create :test/label {} ["before"])
+                     clone (dom/dom-clone node)]
+                 (dom/dom-field-set! clone :props {:text "after"})
+                 [(dom/dom-format node) (dom/dom-format clone)])
+               [[:- :test/label "before"] [:- :test/label "after"]])
+   (test-check "mock items construct and format explicitly"
+               (mock/mock-format
+                (item/item-create :mock/pane {:children ["a" "b"]}))
+               [:mock/pane "a" "b"])
+   (test-check "rendering recursively replaces DOM values with items"
+               (let [node (impl/dom-render
+                           (dom/dom-compile [:mock/pane
+                                             [:mock/label "hello"]]))]
+                 [(dom/dom-format node)
+                  (mock/mock-format (dom/dom-item node))])
+               [[:+ :mock/pane [:+ :mock/label "hello"]]
+                [:mock/pane [:mock/label "hello"]]])
+   (test-check "diff and apply update rendered values in place"
+               (let [node (impl/dom-render
+                           (dom/dom-compile [:mock/pane {:a 1} "before"]))
+                     replacement (dom/dom-compile [:mock/pane {:a 2} "after"])
+                     ops (diff/dom-diff node replacement)]
+                 (update/dom-apply node ops)
+                 [ops (mock/mock-format (dom/dom-item node))])
+               [[[:set :a 2 1]
+                 [:update :children [[:list-remove 0 1]
+                                     [:list-insert 0 ["after"]]]]]
+                [:mock/pane {:a 2} "after"]])
+   (test-check "find traverses compiled child DOMs"
+               (let [tree (dom/dom-compile
+                           [:mock/pane
+                            [:mock/pane {:name "first"}]
+                            [:mock/pane {:name "second"}]])]
+                 [(:name (:props (find/dom-find tree :name "second")))
+                  (count (find/dom-find-all tree :name string?))])
+               ["second" 2])])
+
+results
