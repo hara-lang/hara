@@ -1,7 +1,6 @@
 (ns code.test-work-batch-test
   (:require [code.test :as fact]
             [code.test.work :as test-work]
-            [std.lib.test :as test]
             [std.work :as work]))
 
 (def passing-count (atom 0))
@@ -82,7 +81,7 @@
    :meta {:test/digest "sha256:synthetic-v2"}})
 
 (def results
-  [(test/check
+  [(test-check
     "fact batch manifests are deterministic and definition aware"
     [(:op (work/work-spec (test-work/fact-batch-work 11)))
      (vec (map (fn [item] (:item/id item))
@@ -101,7 +100,7 @@
             :revision 11
             :definition "definition:batch-passing-v1"}]])
 
-   (test/check
+   (test-check
     "explicit source digests invalidate checkpoint identity"
     [(test-work/fact-definition-token digest-fact 11)
      (test-work/fact-item-coordinate digest-fact 11)]
@@ -113,7 +112,7 @@
            :revision 11
            :definition "sha256:synthetic-v2"}])
 
-   (test/check
+   (test-check
     "durable batches checkpoint each fact and preserve test-domain results"
     [(work/status runtime reference)
      (:status durable-summary)
@@ -125,14 +124,14 @@
      durable-counts]
     [:completed :failed 1 1 2 2 14 [1 1]])
 
-   (test/check
+   (test-check
     "idempotent starts reuse completed fact checkpoints"
     [(= (:run/id (work/run-record runtime reference))
         (:run/id (work/run-record runtime same-reference)))
      replay-counts]
     [true [1 1]])
 
-   (test/check
+   (test-check
     "local and durable fact batches return the ordinary code.test summary"
     [(:status local-summary)
      (get-in local-summary [:counts :passed])
@@ -141,7 +140,7 @@
      final-counts]
     [:failed 1 1 2 [2 2]])
 
-   (test/check
+   (test-check
     "runtime-owned fail-fast completes the trigger and cancels unclaimed facts"
     [(vec (map :status (:results fail-fast-summary)))
      (get-in fail-fast-summary [:counts :failed])
@@ -163,12 +162,10 @@
       :test/fact-started
       :test/fact-completed]])
 
-   (test/check-error
-    "prepared fact definitions reject registry drift"
-    (test-work/resolve-subject-fact
+   (test-check "prepared fact definitions reject registry drift" (try (do (test-work/resolve-subject-fact
      {:namespace 'code.test-work-batch-test
       :name "batch passing fact"
       :test/revision 11
-      :test/definition "definition:wrong"}))])
+      :test/definition "definition:wrong"}) false) (catch Throwable test_error__ true)) true)])
 
-(test/print-results results)
+results
