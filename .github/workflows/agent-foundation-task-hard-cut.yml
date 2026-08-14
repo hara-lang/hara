@@ -61,7 +61,7 @@ jobs:
           python3 scripts/runtime/check-code-test-work-events
           git diff --check
 
-      - name: Build fresh JVM and Truffle runner
+      - name: Build bootstrap JVM and Truffle runner
         run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
 
       - name: Probe data-only CLI handler metadata in native Hara
@@ -93,6 +93,14 @@ jobs:
           printf 'handler metadata probe: %s\n' "$actual"
           test "$actual" = '"[true true true]"'
 
+      - name: Regenerate and verify Foundation HBX
+        run: |
+          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
+          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
+
+      - name: Rebuild JVM and Truffle runner with regenerated Foundation HBX
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
       - name: Prove canonical code.test owners load without cycles
         run: |
           cat > /tmp/code-test-owner-probe.hal <<'HAL'
@@ -122,11 +130,6 @@ jobs:
             core/lib/test/code/test_compatibility_test.hal \
             core/lib/test/code/test_facade_test.hal \
             core/lib/test/code/deploy/cli_test.hal
-
-      - name: Regenerate and verify Foundation HBX
-        run: |
-          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
-          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
 
       - name: Disassemble Foundation HBX and inspect code.test
         run: |
