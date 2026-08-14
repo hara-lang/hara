@@ -1,73 +1,37 @@
-use hara_wasm::SessionKernel;
-use std::fs;
-use std::path::{Path, PathBuf};
+use hara_wasm::Runtime;
 
-type Resource = (&'static str, &'static str);
-
-const STRING: Resource = (
-    "std.foundation.string",
-    "lib/src/std/foundation/string.hal",
-);
-const COMMON: Resource = ("std.format.common", "lib/src/std/format/common.hal");
-const TABLE: Resource = ("std.format.table", "lib/src/std/format/table.hal");
-const REPORT: Resource = ("std.format.report", "lib/src/std/format/report.hal");
-const TERMINAL: Resource = (
-    "std.format.terminal",
-    "lib/src/std/format/terminal.hal",
-);
-const FORMAT: Resource = ("std.format", "lib/src/std/format.hal");
-const WORK_REPORT: Resource = ("std.work.report", "lib/src/std/work/report.hal");
-
-fn core_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("core/rust has a core parent")
-        .to_path_buf()
+fn evaluate(prelude: &str, tail: &str) -> Result<String, String> {
+    let mut runtime = Runtime::new();
+    runtime.eval_native(&format!("{prelude}\n{tail}"))
 }
 
-fn read_source(path: &str) -> String {
-    fs::read_to_string(core_root().join(path))
-        .unwrap_or_else(|error| panic!("failed to read {path}: {error}"))
-}
-
-fn evaluate(resources: &[Resource], prelude: &str, tail: &str) -> Result<String, String> {
-    let mut kernel = SessionKernel::new();
-    for &(namespace, path) in resources {
-        kernel.register_resource(namespace, &read_source(path));
-    }
-    kernel.eval("ROOT", &format!("{prelude}\n{tail}"))
-}
-
-fn assert_source(resources: &[Resource], namespace: &str) {
+fn assert_source(namespace: &str) {
     eprintln!("=== source-candidate:{namespace} ===");
     let prelude = format!("(require [{namespace} :as candidate])");
-    evaluate(resources, &prelude, "nil")
+    evaluate(&prelude, "nil")
         .unwrap_or_else(|error| panic!("candidate {namespace} failed: {error}"));
 }
 
 fn assert_string_case(name: &str, tail: &str, expected: &str) {
     eprintln!("=== string-case:{name} ===");
-    let output = evaluate(
-        &[STRING],
-        "(require [std.foundation.string :as str])",
-        tail,
-    )
-    .unwrap_or_else(|error| panic!("string case {name} failed: {error}"));
+    let output = evaluate("(require [std.foundation.string :as str])", tail)
+        .unwrap_or_else(|error| panic!("string case {name} failed: {error}"));
     assert_eq!(output, expected, "string case {name}");
 }
 
 #[test]
 fn every_changed_hal_source_evaluates_in_a_fresh_native_runtime() {
-    assert_source(&[STRING], STRING.0);
-    assert_source(&[COMMON], COMMON.0);
-    assert_source(&[COMMON, TABLE], TABLE.0);
-    assert_source(&[COMMON, TABLE, REPORT], REPORT.0);
-    assert_source(&[TERMINAL], TERMINAL.0);
-    assert_source(&[COMMON, TABLE, REPORT, TERMINAL, FORMAT], FORMAT.0);
-    assert_source(
-        &[COMMON, TABLE, REPORT, TERMINAL, WORK_REPORT],
-        WORK_REPORT.0,
-    );
+    for namespace in [
+        "std.foundation.string",
+        "std.format.common",
+        "std.format.table",
+        "std.format.report",
+        "std.format.terminal",
+        "std.format",
+        "std.work.report",
+    ] {
+        assert_source(namespace);
+    }
 }
 
 #[test]
@@ -172,7 +136,6 @@ fn portable_string_contract_is_exercised_inside_hal() {
 #[test]
 fn layered_formatting_and_work_event_projection_are_exact() {
     let output = evaluate(
-        &[STRING, COMMON, TABLE, REPORT, TERMINAL, FORMAT, WORK_REPORT],
         r#"
 (require [std.foundation.string :as str])
 (require [std.format :as format])
