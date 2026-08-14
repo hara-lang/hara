@@ -1,0 +1,82 @@
+name: Inspect named-value runtime gaps
+
+on:
+  push:
+    branches:
+      - agent/named-value-runtime-followup
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Print focused Rust and Java source contexts
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          ROOT = Path('.')
+
+          def contexts(label, roots, needles, before=24, after=70):
+              print(f"\n===== {label} =====")
+              seen = 0
+              for root in roots:
+                  paths = [root] if root.is_file() else sorted(root.rglob('*'))
+                  for path in paths:
+                      if not path.is_file() or path.suffix not in {'.rs', '.java'}:
+                          continue
+                      try:
+                          lines = path.read_text().splitlines()
+                      except UnicodeDecodeError:
+                          continue
+                      for index, line in enumerate(lines):
+                          if any(needle in line for needle in needles):
+                              seen += 1
+                              start = max(0, index - before)
+                              end = min(len(lines), index + after + 1)
+                              print(f"\n--- {path}:{index + 1} ---")
+                              for number in range(start, end):
+                                  print(f"{number + 1:6}: {lines[number]}")
+              if seen == 0:
+                  print('(no matches)')
+
+          contexts(
+              'Rust tree evaluator set! path',
+              [ROOT / 'core/rust/src'],
+              ['set! name must be a symbol', '"set!" =>', 'n == "set!"', 'MutableFieldSet'],
+          )
+          contexts(
+              'Rust mutable storage helpers',
+              [ROOT / 'core/rust/src'],
+              ['mutable_field_get', 'mutable_field_set', 'Value::Mutable', 'MutableValue'],
+              before=16,
+              after=50,
+          )
+          contexts(
+              'Rust struct assoc/dissoc paths',
+              [ROOT / 'core/rust/src'],
+              ['Value::Struct', 'struct_assoc', 'assoc expects a map', 'dissoc expects'],
+              before=18,
+              after=55,
+          )
+          contexts(
+              'Java assoc/dissoc paths',
+              [ROOT / 'core/java/src/main/java'],
+              ['assoc expects a map', 'class Assoc', 'instanceof HaraStruct', 'HaraStructValue'],
+              before=24,
+              after=80,
+          )
+          contexts(
+              'Java named-value implementations',
+              [ROOT / 'core/java/src/main/java'],
+              ['class HaraStruct', 'class HaraMutable', 'record HaraStruct', 'record HaraMutable'],
+              before=12,
+              after=110,
+          )
+          PY
