@@ -10,7 +10,7 @@ use super::super::*;
 use crate::kernel::SpannedForm;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum EvalSemanticRule {
+pub(in crate::core::fiber) enum EvalSemanticRule {
     FormReturn,
     ValueReturn,
 }
@@ -105,7 +105,7 @@ pub(super) fn with_active_context<T>(
     operation()
 }
 
-pub(super) fn record_boundary(
+pub(in crate::core::fiber) fn record_boundary(
     rule: EvalSemanticRule,
     form: &Form,
     result: &Value,
