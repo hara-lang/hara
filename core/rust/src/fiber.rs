@@ -517,7 +517,16 @@ fn forms_cps(
                 );
                 Step::Continue(Box::new(move || forms_cps(next, i + 1, v, e, k)))
             }
-            Err(x) => k(Err(x)),
+            Err(x) => {
+                coroutine::semantic::record_error(
+                    coroutine::semantic::EvalSemanticRule::ErrorRaise,
+                    &boundary_form,
+                    &x,
+                    false,
+                    &boundary_env,
+                );
+                k(Err(x))
+            }
         }),
     )
 }
@@ -551,7 +560,16 @@ fn values_cps(
                 values.push(v);
                 Step::Continue(Box::new(move || values_cps(next, i + 1, values, e, k)))
             }
-            Err(x) => k(Err(x)),
+            Err(x) => {
+                coroutine::semantic::record_error(
+                    coroutine::semantic::EvalSemanticRule::ErrorRaise,
+                    &boundary_form,
+                    &x,
+                    false,
+                    &boundary_env,
+                );
+                k(Err(x))
+            }
         }),
     )
 }
@@ -954,6 +972,7 @@ fn loop_body(
 }
 
 fn set_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step {
+    let effect_form = Form::List(v.clone());
     if v.len() != 3 {
         return k(Err("set! expects a place and value".into()));
     }
@@ -980,6 +999,7 @@ fn set_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> 
     let receiver = place[1].clone();
     let replacement = v[2].clone();
     let replacement_env = env.clone();
+    let effect_env = replacement_env.clone();
     one(
         receiver,
         env,
@@ -988,11 +1008,23 @@ fn set_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> 
                 replacement,
                 replacement_env,
                 Box::new(move |replacement_result| match replacement_result {
-                    Ok(replacement) => k(crate::core::mutable_field_set(
-                        &receiver,
-                        &field,
-                        replacement,
-                    )),
+                    Ok(replacement) => {
+                        let after = replacement.clone();
+                        match crate::core::mutable_field_set(&receiver, &field, replacement) {
+                            Ok(result) => {
+                                coroutine::semantic::record_effect(
+                                    coroutine::semantic::EvalSemanticRule::FieldSet,
+                                    &effect_form,
+                                    field,
+                                    None,
+                                    after,
+                                    &effect_env,
+                                );
+                                k(Ok(result))
+                            }
+                            Err(error) => k(Err(error)),
+                        }
+                    }
                     Err(error) => k(Err(error)),
                 }),
             ),
@@ -1002,6 +1034,7 @@ fn set_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> 
 }
 
 fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step {
+    let effect_form = Form::List(v.clone());
     if v.len() != 3 {
         return k(Err("binding form expects symbol and value".into()));
     }
@@ -1026,6 +1059,9 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
         env,
         Box::new(move |r| match r {
             Ok(x) => {
+                let effect_after = x.clone();
+                let mut effect_before = None;
+                let effect_target;
                 let mut env = e.borrow_mut();
                 let result = if op == "def" {
                     if crate::core::protected_fallback_binding(&env, &name, metadata.clone())
@@ -1040,6 +1076,7 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
                     }
                     let origin = crate::core::definition_origin();
                     let var = if let Some(Value::Var(var)) = env.get(&name) {
+                        effect_before = Some(var.deref_value());
                         if crate::core::binding_is_local(var) {
                             var.reset_value(x.clone());
                             var.set_origin(origin);
@@ -1069,11 +1106,14 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
                         env.insert(name.clone(), Value::Var(var.clone()));
                         var
                     };
+                    effect_target = var.display();
                     Value::Var(var)
                 } else {
                     let Some(c) = binding_var(&mut env, &name) else {
                         return k(Err(format!("unbound var: {name}")));
                     };
+                    effect_before = Some(c.deref_value());
+                    effect_target = c.display();
                     c.reset_value(x.clone());
                     if let Some(meta) = metadata {
                         c.set_hara_metadata(Some(meta));
@@ -1081,6 +1121,18 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
                     x
                 };
                 drop(env);
+                coroutine::semantic::record_effect(
+                    if op == "def" {
+                        coroutine::semantic::EvalSemanticRule::VarDefine
+                    } else {
+                        coroutine::semantic::EvalSemanticRule::VarSet
+                    },
+                    &effect_form,
+                    effect_target,
+                    effect_before,
+                    effect_after,
+                    &e,
+                );
                 k(Ok(result))
             }
             Err(x) => k(Err(x)),
@@ -1134,6 +1186,7 @@ fn finish_try(
             }) else {
                 return finally(Err(x), finals, env, k);
             };
+            let catch_form = Form::List(p.clone());
             let (binding_index, body_index) = match p.len() {
                 3 => (1, 2),
                 length if length >= 4 => {
@@ -1149,6 +1202,13 @@ fn finish_try(
                 _ => return k(Err("catch name must be symbol".into())),
             };
             let old = env.borrow_mut().insert(n.clone(), caught_error(&x));
+            coroutine::semantic::record_error(
+                coroutine::semantic::EvalSemanticRule::ErrorCatch,
+                &catch_form,
+                &x,
+                true,
+                &env,
+            );
             let e = env.clone();
             forms_cps(
                 Rc::new(p[body_index..].to_vec()),
@@ -1211,13 +1271,19 @@ fn application(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) 
     }
     let f = head_symbol.and_then(|n| binding_value(&env.borrow(), n));
     if let Some(Value::Function(f)) = f {
+        let call_form = Form::List(v.clone());
+        let call_name = f.name.clone().unwrap_or_else(|| "<anonymous>".into());
+        let call_env = env.clone();
         return values_cps(
             Rc::new(v[1..].to_vec()),
             0,
             Vec::new(),
             env,
             Box::new(move |r| match r {
-                Ok(a) => call(f, a, k),
+                Ok(a) => {
+                    coroutine::semantic::record_call(&call_form, call_name, &a, &call_env);
+                    call(f, a, k)
+                }
                 Err(x) => k(Err(x)),
             }),
         );
@@ -1225,30 +1291,59 @@ fn application(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) 
     if head_symbol.is_none() {
         let forms = Rc::new(v[1..].to_vec());
         let arguments_env = env.clone();
+        let call_form = Form::List(v.clone());
+        let function_call_form = call_form.clone();
+        let function_call_env = arguments_env.clone();
+        let value_call_env = arguments_env.clone();
         return one(
             v[0].clone(),
             env,
             Box::new(move |result| match result {
-                Ok(Value::Function(function)) => values_cps(
-                    forms,
-                    0,
-                    Vec::new(),
-                    arguments_env,
-                    Box::new(move |arguments| match arguments {
-                        Ok(arguments) => call(function, arguments, k),
-                        Err(error) => k(Err(error)),
-                    }),
-                ),
-                Ok(value) => values_cps(
-                    forms,
-                    0,
-                    Vec::new(),
-                    arguments_env,
-                    Box::new(move |arguments| match arguments {
-                        Ok(arguments) => k(crate::core::call_value(value, arguments)),
-                        Err(error) => k(Err(error)),
-                    }),
-                ),
+                Ok(Value::Function(function)) => {
+                    let call_name = function
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| "<anonymous>".into());
+                    values_cps(
+                        forms,
+                        0,
+                        Vec::new(),
+                        arguments_env,
+                        Box::new(move |arguments| match arguments {
+                            Ok(arguments) => {
+                                coroutine::semantic::record_call(
+                                    &function_call_form,
+                                    call_name,
+                                    &arguments,
+                                    &function_call_env,
+                                );
+                                call(function, arguments, k)
+                            }
+                            Err(error) => k(Err(error)),
+                        }),
+                    )
+                }
+                Ok(value) => {
+                    let call_name = crate::core::portable_type_name(&value).to_owned();
+                    values_cps(
+                        forms,
+                        0,
+                        Vec::new(),
+                        arguments_env,
+                        Box::new(move |arguments| match arguments {
+                            Ok(arguments) => {
+                                coroutine::semantic::record_call(
+                                    &call_form,
+                                    call_name,
+                                    &arguments,
+                                    &value_call_env,
+                                );
+                                k(crate::core::call_value(value, arguments))
+                            }
+                            Err(error) => k(Err(error)),
+                        }),
+                    )
+                }
                 Err(error) => k(Err(error)),
             }),
         );
@@ -1256,7 +1351,12 @@ fn application(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) 
     eval_special_form(v, env, k)
 }
 fn eval_special_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step {
+    let call_form = Form::List(v.clone());
     let op = v[0].clone();
+    let call_name = match &op {
+        Form::Symbol(name) => name.clone(),
+        _ => "<callable>".into(),
+    };
     let e = env.clone();
     values_cps(
         Rc::new(v[1..].to_vec()),
@@ -1265,6 +1365,7 @@ fn eval_special_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: 
         env,
         Box::new(move |r| match r {
             Ok(values) => {
+                coroutine::semantic::record_call(&call_form, call_name, &values, &e);
                 let mut env = e.borrow_mut();
                 let mut old = Vec::new();
                 let mut list = vec![op];
