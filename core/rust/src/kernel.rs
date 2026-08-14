@@ -6,6 +6,8 @@ pub mod generated;
 pub mod halc;
 #[path = "kernel/halc_trace.rs"]
 pub mod halc_trace;
+#[cfg(any(test, feature = "halc-encoder"))]
+pub mod halc_source_trace;
 #[path = "kernel/namespace.rs"]
 pub mod namespace;
 #[path = "kernel/parser.rs"]
