@@ -1,26 +1,146 @@
 (ns code.test.checker.collection
-  (:require [code.test :as test]))
+  (:require [code.test.checker.common :as common]
+            [code.test.checker.util :as util]))
 
-(def contains test/contains)
-(def just test/just)
-(def throws-info test/throws-info)
+(defn map-checkers [values]
+  (reduce-kv (fn [output key value]
+               (assoc output key (common/->checker value)))
+             {}
+             values))
 
 (defn verify-map [checkers data]
-  (:pass (test/check (fn [] data) (test/contains checkers))))
+  (reduce-kv (fn [passing key check]
+               (and passing
+                    (common/succeeded? (common/verify check (get data key)))))
+             true
+             checkers))
+
 (defn verify-seq [checkers data modifiers]
-  (:pass (test/check (fn [] data)
-                     (apply test/contains checkers modifiers))))
+  (cond
+    (= #{} modifiers) (util/contains-exact data checkers)
+    (= #{:in-any-order} modifiers) (util/contains-any-order data checkers)
+    (= #{:gaps-ok} modifiers) (util/contains-with-gaps data checkers)
+    (= #{:in-any-order :gaps-ok} modifiers) (util/contains-all data checkers)
+    :else (throw (ex-info "modifiers can only be :gaps-ok and :in-any-order"
+                          {:modifiers modifiers}))))
 
-(defn contains-map [value] (test/contains value))
+(defn contains-map [value]
+  (let [checkers (map-checkers value)]
+    (common/checker
+     {:tag :contains
+      :doc "Checks that a map contains matching entries."
+      :fn (fn [result]
+            (let [data (common/result-data result)]
+              (and (map? data) (verify-map checkers data))))
+      :expect checkers})))
+
 (defn contains-vector
-  ([value] (test/contains value))
-  ([value modifiers] (apply test/contains value modifiers)))
-(defn contains-set [value] (test/contains value))
-(defn just-map [value] (test/just value))
-(defn just-vector
-  ([value] (test/just value))
-  ([value modifiers] (apply test/just value modifiers)))
-(defn just-set [value] (test/just value))
+  ([value] (contains-vector value #{}))
+  ([value modifiers]
+   (let [checkers (mapv common/->checker value)]
+     (common/checker
+      {:tag :contains
+       :doc "Checks that a sequence contains a matching pattern."
+       :fn (fn [result]
+             (let [data (common/result-data result)]
+               (cond
+                 (set? data) (verify-seq checkers data (conj modifiers :in-any-order))
+                 (or (vector? data) (list? data)) (verify-seq checkers data modifiers)
+                 :else false)))
+       :expect checkers}))))
 
-(defmacro contains-in [value] `(code.test/contains ~value))
-(defmacro just-in [value] `(code.test/just ~value))
+(defn contains-set [value]
+  (contains-vector value #{:in-any-order}))
+
+(defn contains [value & modifiers]
+  (cond
+    (map? value) (contains-map value)
+    (set? value) (contains-set value)
+    (or (vector? value) (list? value))
+    (contains-vector value (set modifiers))
+    :else
+    (throw (ex-info "Cannot create contains checker"
+                    {:input (vec (cons value modifiers))}))))
+
+(defn just-map [value]
+  (let [checkers (map-checkers value)]
+    (common/checker
+     {:tag :just
+      :doc "Checks that a map has exactly the matching entries."
+      :fn (fn [result]
+            (let [data (common/result-data result)]
+              (and (map? data)
+                   (= (set (keys data)) (set (keys checkers)))
+                   (verify-map checkers data))))
+      :expect checkers})))
+
+(defn just-vector
+  ([value] (just-vector value #{}))
+  ([value modifiers]
+   (let [checkers (mapv common/->checker value)]
+     (common/checker
+      {:tag :just
+       :doc "Checks that a sequence exactly matches a pattern."
+       :fn (fn [result]
+             (let [data (common/result-data result)]
+               (and (or (set? data) (vector? data) (list? data))
+                    (= (count data) (count checkers))
+                    (if (set? data)
+                      (verify-seq checkers data (conj modifiers :in-any-order))
+                      (verify-seq checkers data modifiers)))))
+       :expect checkers}))))
+
+(defn just-set [value]
+  (just-vector value #{:in-any-order}))
+
+(defn just [value & modifiers]
+  (cond
+    (map? value) (just-map value)
+    (set? value) (just-set value)
+    (or (vector? value) (list? value))
+    (just-vector value (set modifiers))
+    :else
+    (throw (ex-info "Cannot create just checker"
+                    {:input (vec (cons value modifiers))}))))
+
+(defn nested-form [checker-symbol value]
+  (cond
+    (map? value)
+    (list checker-symbol
+          (reduce-kv (fn [output key nested]
+                       (assoc output key (nested-form checker-symbol nested)))
+                     {}
+                     value))
+    (set? value)
+    (list checker-symbol
+          (mapv (fn [nested] (nested-form checker-symbol nested)) value)
+          :in-any-order)
+    (vector? value)
+    (list checker-symbol
+          (mapv (fn [nested] (nested-form checker-symbol nested)) value))
+    :else value))
+
+(defn contains-in-form [value]
+  (nested-form (quote code.test.checker.collection/contains) value))
+
+(defn just-in-form [value]
+  (nested-form (quote code.test.checker.collection/just) value))
+
+(defmacro contains-in [value]
+  (contains-in-form value))
+
+(defmacro just-in [value]
+  (just-in-form value))
+
+(defn throws-info
+  ([] (throws-info {}))
+  ([expected]
+   (common/checker
+    {:tag :raises
+     :doc "Checks an exception's data."
+     :fn (fn [result]
+           (and (map? result)
+                (= :exception (:status result))
+                (map? (ex-data (:data result)))
+                ((contains expected) (ex-data (:data result)))))
+     :expect {:exception :hara/Error :data expected}})))

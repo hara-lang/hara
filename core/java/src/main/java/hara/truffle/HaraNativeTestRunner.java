@@ -55,6 +55,7 @@ public final class HaraNativeTestRunner {
             .currentWorkingDirectory(root)
             .allowIO(IOAccess.ALL)
             .allowCreateProcess(true)
+            .option("hara.TestRunner", "native")
             .build()) {
       Value value;
       try {
@@ -85,9 +86,9 @@ public final class HaraNativeTestRunner {
   private static String testRunSource(String namespace) {
     String fact = System.getProperty("hara.xt.fact");
     String selection = fact == null || fact.isBlank() ? "" : " :name \"" + fact + "\"";
-    return "(let [config (Test/config :native {:namespace \""
+    return "(let [summary (code.test/run {:namespace \""
         + namespace
-        + "\"" + selection + "}) summary (code.test/run (assoc (:options config) :test/config config)) failures (filter (fn [result] (not= :passed (:status result))) (:results summary)) diagnostic (map (fn [result] (let [check (first (filter (fn [item] (not (:pass item))) (:checks result))) error (or (:error result) (:error check))] {:name (:name result) :status (:status result) :error (if error (apply str (take 2000 error)) nil) :actual (:actual check) :expected (:expected check)})) failures)] (assoc (dissoc summary :results) :results (str diagnostic)))";
+        + "\"" + selection + "}) failures (filter (fn [result] (not= :passed (:status result))) (:results summary)) diagnostic (map (fn [result] (let [check (first (filter (fn [item] (not (:pass item))) (:checks result))) error (or (:error result) (:error check))] {:name (:name result) :status (:status result) :error (if error (apply str (take 2000 error)) nil) :actual (:actual check) :expected (:expected check)})) failures)] (assoc (dissoc summary :results :report) :results (str diagnostic)))";
   }
 
   /** Discovers .hal test files from a project descriptor or explicit path. */
@@ -202,7 +203,7 @@ public final class HaraNativeTestRunner {
     }
 
     throw new HaraException(
-        "test file must return code.test/run summary or test/print-results vector");
+        "test file must return a code.test/run summary or test result vector");
   }
 
   private static final Pattern PRINTED_SUMMARY =

@@ -1,0 +1,55 @@
+(ns code.test-artifact-test
+  (:require [code.test.artifact :as artifact]
+            [code.test.base.context :as context]
+            [std.lib.test :as test]))
+
+(def sample-summary
+  {:status :failed
+   :results
+   [{:namespace "sample.test" :name "passes" :status :passed}
+    {:namespace "sample.test" :name "fails" :status :failed
+     :checks [{:pass false :actual 1 :expected 2}]}
+    {:namespace "sample.test" :name "throws" :status :error
+     :error "boom"}
+    {:namespace "other.test" :name "waits" :status :timeout
+     :error "timeout"}]})
+
+(def failures (artifact/failure-report sample-summary))
+(def failed-facts (artifact/report-failed-facts failures))
+
+(def results
+  [(test/check
+    "failure artifacts preserve Foundation report categories"
+    [(count (:failed failures))
+     (count (:throw failures))
+     (count (:timeout failures))
+     (artifact/failure-count failures)]
+    [1 1 1 3])
+
+   (test/check
+    "saved reports recreate namespace and fact selection"
+    failed-facts
+    {"sample.test" #{"fails" "throws"}
+     "other.test" #{"waits"}})
+
+   (test/check
+    "report and rerun paths retain the Foundation layout"
+    [(artifact/report-file-path {:test/config {:started-at 9}})
+     (artifact/report->run-path ".tahto/runs/run-9.edn")
+     (artifact/run-file-form
+      {:namespace "sample.test"
+       :test/config {:runner :code.test}
+       :test/context :internal
+       :save-run true})]
+    ["./.tahto/runs/run-9.edn"
+     ".tahto/runs/run-9.run.edn"
+     '(code.test/run (quote {:namespace "sample.test"}))])
+
+   (test/check
+    "legacy dynamic test context is scoped and restored"
+    (context/with-new-context
+     {:root "/tmp/code-test" :timeout 25}
+     [context/*root* context/*timeout* context/*eval-mode*])
+    ["/tmp/code-test" 25 true])])
+
+(test/print-results results)

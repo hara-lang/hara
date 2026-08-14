@@ -97,6 +97,15 @@ public class HtaValueCodecTest {
     Object decodedSet = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(orderedSet));
     assertTrue(decodedSet instanceof hara.lang.data.OrderedSet<?>);
 
+    Object deque = hara.lang.data.Deque.Standard.from(null, 1L, 2L);
+    Object decodedDeque = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(deque));
+    assertTrue(decodedDeque instanceof hara.lang.data.Deque<?>);
+
+    Object priorityMap = hara.lang.data.PriorityMap.Standard.from(null, "a", 2L, "b", 1L);
+    Object decodedPriorityMap = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(priorityMap));
+    assertTrue(decodedPriorityMap instanceof hara.lang.data.PriorityMap<?, ?>);
+    assertEquals("b", ((hara.lang.data.PriorityMap<?, ?>) decodedPriorityMap).peekFirst().getKey());
+
     java.util.Map<Object, Object> fields = new LinkedHashMap<>();
     fields.put(Keyword.create("id"), "ROOT");
     Object pointer = new hara.lang.data.Pointer(Keyword.create("kernel"), fields);

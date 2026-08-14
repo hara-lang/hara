@@ -154,6 +154,7 @@ fn only_portable_foundation_shorthands_are_automatic() {
             ("bytes".into(), "std.foundation.bytes".into()),
             ("co".into(), "std.foundation.coroutine".into()),
             ("promise".into(), "std.foundation.promise".into()),
+            ("pretty".into(), "std.foundation.pretty".into()),
             ("str".into(), "std.foundation.string".into()),
         ]
     );

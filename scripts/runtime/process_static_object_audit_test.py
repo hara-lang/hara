@@ -42,6 +42,33 @@ class ProcessStaticObjectAuditTest(unittest.TestCase):
         self.assertEqual("Process/spawn", findings[0].replacement)
         self.assertEqual("Process/wait", findings[1].replacement)
 
+    def test_reports_qualified_native_calls_and_dependencies(self) -> None:
+        path = self.write(
+            "native.hal",
+            "(ns demo (:require [std.native.Test :as test]))\n"
+            "(std.native.Json/read input)\n",
+        )
+        findings = audit.audit([self.root])
+        self.assertEqual(
+            [
+                (path, 1, "std.native.Test", "Test"),
+                (path, 2, "std.native.Json/read", "Json/read"),
+            ],
+            [
+                (item.path, item.line, item.legacy, item.replacement)
+                for item in findings
+            ],
+        )
+
+    def test_ignores_native_names_in_strings_and_comments(self) -> None:
+        self.write(
+            "quoted.hal",
+            '(def example "std.native.Json/read")\n'
+            "; std.native.Test/context\n"
+            "(Json/read input)\n",
+        )
+        self.assertEqual([], audit.audit([self.root]))
+
     def test_scans_only_hal_files(self) -> None:
         self.write("notes.txt", "os/process-kill\n")
         self.write("clean.hal", "(Process/kill child)\n")

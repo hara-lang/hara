@@ -41,7 +41,7 @@ public class StdJsonTest {
           () -> context.eval(HaraLanguage.ID, "(std.native.Json/write {:a 1})"));
       assertEquals(
           "{:a [1 2]}",
-          context.eval(HaraLanguage.ID, "(do (require 'std.pretty) (std.pretty/pprint-str {:a [1 2]}))").asString());
+          context.eval(HaraLanguage.ID, "(pretty/pprint-str {:a [1 2]})").asString());
     }
   }
 }

@@ -6,9 +6,9 @@ pub use crate::kernel::Form;
 use crate::kernel::{NamespaceLoadState, NamespaceRegistry, Var as KernelVar, VarOrigin};
 use crate::lang::data::List as PList;
 use crate::lang::data::{
-    Atom as PAtom, Cons as PCons, Keyword, Map as PMap, OrderedMap as POrderedMap,
+    Atom as PAtom, Cons as PCons, Deque as PDeque, Keyword, Map as PMap, OrderedMap as POrderedMap,
     OrderedSet as POrderedSet, Pointer as PPointer, Queue as PQueue, Set as PSet,
-    SortedMap as PSortedMap, SortedSet as PSortedSet, Symbol, TaggedLiteral as PTaggedLiteral,
+    PriorityMap as PPriorityMap, SortedMap as PSortedMap, SortedSet as PSortedSet, Symbol, TaggedLiteral as PTaggedLiteral,
     Trie as PTrie, Tuple as PTuple, Vector as PVector,
 };
 use crate::lang::data::{Metadata, MetadataValue};
@@ -17,7 +17,9 @@ use crate::lang::data::{
     MutableSortedMap, MutableSortedSet, MutableTrie, MutableVector,
 };
 use crate::lang::hash::JavaHash;
-use crate::lang::protocol::{IDisplay, IMetadata, INamespaced, IToMutable, IToPersistent};
+use crate::lang::protocol::{
+    IDisplay, IMetadata, INamespaced, IPopFirst, IPopLast, IToMutable, IToPersistent,
+};
 use crate::numeric::{self, ArithmeticOp};
 pub use crate::task::{
     LocalPromiseProvider, Promise, PromiseProvider, PromiseRejection, PromiseState,
@@ -268,11 +270,33 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &["load-string", "macroexpand-1", "gensym", "var-sym"],
     ),
     ("Printer", &["p", "println"]),
+    (
+        "Document",
+        &[
+            "element",
+            "text",
+            "fragment",
+            "annotate",
+            "pass",
+            "escaped",
+            "group",
+            "line",
+            "break",
+            "nest",
+            "align",
+            "normalize",
+            "valid?",
+            "render",
+        ],
+    ),
     ("Edn", &["read", "read-forms", "write", "pretty"]),
     ("Json", &["read", "write", "pretty"]),
     ("Host", &["call", "describe", "capabilities", "capability?"]),
-    ("Test", &["catalog", "config", "context", "events"]),
-    ("Regex", &["instance?"]),
+    (
+        "Test",
+        &["catalog", "config", "context", "events", "result", "passed?"],
+    ),
+    ("Regex", &["instance?", "pattern", "find?"]),
     ("UUID", &["instance?"]),
     ("Error", &["new", "message", "class"]),
     (
@@ -584,7 +608,9 @@ pub enum Value {
     SortedSet(Box<PSortedSet<Value>>),
     List(PList<Value>),
     Cons(Box<PCons<Value>>),
+    Deque(Box<PDeque<Value>>),
     Queue(Box<PQueue<Value>>),
+    PriorityMap(Box<PPriorityMap<Value, Value>>),
     Symbol(Symbol),
     Pointer(PPointer),
     Function(Rc<Function>),
@@ -1259,8 +1285,10 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
 
 const COLLECTION_NAMESPACE: &str = "std.lib.collection";
 const COLLECTION_BUILTINS: &[&str] = &[
+    "deque",
     "ordered-map",
     "ordered-set",
+    "priority-map",
     "queue",
     "sorted-map",
     "sorted-set",
@@ -1520,6 +1548,12 @@ pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
                 .map(|v| value_to_form(v))
                 .collect::<Result<_, _>>()?,
         )),
+        Value::Deque(values) => Ok(Form::List(
+            values
+                .iter()
+                .map(|v| value_to_form(v))
+                .collect::<Result<_, _>>()?,
+        )),
         Value::Cons(values) => Ok(Form::List(
             values
                 .iter()
@@ -1546,7 +1580,11 @@ pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
                 .map(value_to_form)
                 .collect::<Result<_, _>>()?,
         )),
-        Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) => {
+        Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_) => {
             Ok(Form::Map(
                 map_entries(value)
                     .unwrap()
@@ -2184,7 +2222,8 @@ fn sequential_equality(left: &Value, right: &Value) -> Option<bool> {
         match value {
             Value::List(values) => Some(values.iter().cloned().collect()),
             Value::Cons(values) => Some(values.iter().collect()),
-            Value::Queue(values) => Some(values.iter().cloned().collect()),
+        Value::Queue(values) => Some(values.iter().cloned().collect()),
+            Value::Deque(values) => Some(values.iter().cloned().collect()),
             Value::Tuple(values) => Some(values.iter().cloned().collect()),
             Value::Vector(values) => Some(values.iter().cloned().collect()),
             _ => None,
@@ -2205,6 +2244,7 @@ pub fn map_entries(value: &Value) -> Option<Vec<(Value, Value)>> {
         Value::SortedMap(values) => {
             Some(values.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         }
+        Value::PriorityMap(values) => Some(values.iter().collect()),
         Value::Trie(values) => Some(
             values
                 .entries()
@@ -2266,7 +2306,11 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Bytes(_)
         | Value::Symbol(_)
         | Value::Nil => true,
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             map_entries(value).is_some_and(|entries| {
                 entries
                     .iter()
@@ -2278,6 +2322,7 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         Value::List(values) => values.iter().all(session_transferable),
         Value::Cons(values) => values.iter().all(|value| session_transferable(&value)),
         Value::Queue(values) => values.iter().all(session_transferable),
+        Value::Deque(values) => values.iter().all(session_transferable),
         Value::Tuple(values) => values.iter().all(session_transferable),
         Value::Vector(values) => values.iter().all(session_transferable),
         Value::Struct(value) => value.ordered_values().into_iter().all(session_transferable),
@@ -2315,6 +2360,7 @@ fn map_value<'a>(value: &'a Value, key: &Value) -> Option<&'a Value> {
         Value::Map(values) => values.get(key),
         Value::OrderedMap(values) => values.get(key),
         Value::SortedMap(values) => values.get(key),
+        Value::PriorityMap(values) => values.get(key),
         Value::Trie(values) => match key {
             Value::String(key) => values.get(key),
             _ => None,
@@ -2357,6 +2403,7 @@ fn map_assoc_value(collection: &Value, key: Value, value: Value) -> Result<Value
         Value::Map(values) => Value::Map(values.assoc_value(key, value)),
         Value::OrderedMap(values) => Value::OrderedMap(Box::new(values.assoc_value(key, value))),
         Value::SortedMap(values) => Value::SortedMap(Box::new(values.assoc_value(key, value))),
+        Value::PriorityMap(values) => Value::PriorityMap(Box::new(values.assoc_value(key, value))),
         Value::Trie(values) => match key {
             Value::String(key) => Value::Trie(Box::new(values.assoc_value(key, value))),
             _ => return Err("trie expects string keys".into()),
@@ -2370,6 +2417,7 @@ fn map_dissoc_value(collection: &Value, key: &Value) -> Result<Value, String> {
         Value::Map(values) => Value::Map(values.dissoc_value(key)),
         Value::OrderedMap(values) => Value::OrderedMap(Box::new(values.dissoc_value(key))),
         Value::SortedMap(values) => Value::SortedMap(Box::new(values.dissoc_value(key))),
+        Value::PriorityMap(values) => Value::PriorityMap(Box::new(values.dissoc_value(key))),
         Value::Trie(values) => match key {
             Value::String(key) => Value::Trie(Box::new(values.dissoc_value(key))),
             _ => return Err("trie expects string keys".into()),
@@ -2554,9 +2602,14 @@ impl Ord for Value {
                 Value::List(_)
                 | Value::Cons(_)
                 | Value::Queue(_)
+                | Value::Deque(_)
                 | Value::Tuple(_)
                 | Value::Vector(_) => 10,
-                Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) => 11,
+                Value::Map(_)
+                | Value::OrderedMap(_)
+                | Value::SortedMap(_)
+                | Value::Trie(_)
+                | Value::PriorityMap(_) => 11,
                 Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => 12,
                 Value::Bytes(_) => 13,
                 Value::ByteBuffer(_) => 14,
@@ -2662,12 +2715,14 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Map(v) => v.hash_calc(hash_type) as i64,
             Self::OrderedMap(v) => v.hash_calc(hash_type) as i64,
             Self::SortedMap(v) => v.hash_calc(hash_type) as i64,
+            Self::PriorityMap(v) => v.hash_calc(hash_type) as i64,
             Self::Trie(v) => v.hash_calc(hash_type) as i64,
             Self::Set(v) => v.hash_calc(hash_type) as i64,
             Self::OrderedSet(v) => v.hash_calc(hash_type) as i64,
             Self::SortedSet(v) => v.hash_calc(hash_type) as i64,
             Self::List(v) => v.hash_calc(hash_type) as i64,
             Self::Cons(v) => v.hash_calc(hash_type) as i64,
+            Self::Deque(v) => v.hash_calc(hash_type) as i64,
             Self::Queue(v) => v.hash_calc(hash_type) as i64,
             Self::Tuple(v) => v.hash_calc(hash_type) as i64,
             Self::Vector(v) => v.hash_calc(hash_type) as i64,
@@ -2772,7 +2827,7 @@ impl Value {
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            value @ (Self::Map(_) | Self::OrderedMap(_) | Self::SortedMap(_) | Self::Trie(_)) => {
+            value @ (Self::Map(_) | Self::OrderedMap(_) | Self::SortedMap(_) | Self::PriorityMap(_) | Self::Trie(_)) => {
                 format!(
                     "{{{}}}",
                     map_entries(value)
@@ -2799,6 +2854,10 @@ impl Value {
                     .map(Value::display)
                     .collect::<Vec<_>>()
                     .join(" ")
+            ),
+            Self::Deque(values) => format!(
+                "#deque[{}]",
+                values.iter().map(Value::display).collect::<Vec<_>>().join(" ")
             ),
             Self::Cons(values) => format!(
                 "({})",
@@ -3169,12 +3228,14 @@ impl ProtocolRegistry {
                         | Value::OrderedMap(_)
                         | Value::SortedMap(_)
                         | Value::Trie(_)
+                        | Value::PriorityMap(_)
                         | Value::Set(_)
                         | Value::OrderedSet(_)
                         | Value::SortedSet(_)
                         | Value::List(_)
                         | Value::Cons(_)
                         | Value::Queue(_)
+                        | Value::Deque(_)
                         | Value::Tuple(_)
                         | Value::Vector(_)
                         | Value::Struct(_)
@@ -3272,6 +3333,26 @@ impl ProtocolRegistry {
             "std.protocol.ipeeklast/IPeekLast",
             "peek-last",
             protocol_peek_last,
+        );
+        registry.register(
+            "std.protocol.ipopfirst/IPopFirst",
+            "pop-first",
+            protocol_pop_first,
+        );
+        registry.register(
+            "std.protocol.ipoplast/IPopLast",
+            "pop-last",
+            protocol_pop_last,
+        );
+        registry.register(
+            "std.protocol.ipushfirst/IPushFirst",
+            "push-first",
+            protocol_push_first,
+        );
+        registry.register(
+            "std.protocol.ipushlast/IPushLast",
+            "push-last",
+            protocol_push_last,
         );
         registry.register("std.protocol.iiter/IIter", "iter", protocol_iter);
         registry.register(
@@ -3418,10 +3499,20 @@ thread_local! {
     static ACTIVE_SOCKET_PROVIDER: RefCell<Option<Rc<dyn SocketProvider>>> = const { RefCell::new(None) };
     static ACTIVE_KERNEL_PROVIDER: RefCell<Option<Rc<KernelProvider>>> = const { RefCell::new(None) };
     static ACTIVE_PROCESS_ALLOWED: Cell<bool> = const { Cell::new(false) };
+    static ACTIVE_TEST_RUNNER: RefCell<String> = RefCell::new("code.test".into());
     static HOST_CALL_HANDLER: RefCell<Option<Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>>> = const { RefCell::new(None) };
     static NAMESPACE_SOURCE_PROVIDER: RefCell<Option<Rc<dyn Fn(&str) -> Option<NamespaceResource>>>> = const { RefCell::new(None) };
     static ACTIVE_THROWN_VALUE: RefCell<Option<(String, Value)>> = const { RefCell::new(None) };
     static ACTIVE_MULTIMETHODS: RefCell<HashMap<String, Rc<RefCell<MultiMethod>>>> = RefCell::new(HashMap::new());
+}
+
+pub(crate) fn with_test_runner<R>(runner: &str, f: impl FnOnce() -> R) -> R {
+    ACTIVE_TEST_RUNNER.with(|active| {
+        let previous = active.replace(runner.into());
+        let result = f();
+        active.replace(previous);
+        result
+    })
 }
 
 pub(crate) fn snapshot_multimethods() -> HashMap<String, MultiMethod> {
@@ -4195,14 +4286,25 @@ fn native_test_runner(value: Value) -> Result<Value, String> {
         Value::Keyword(runner) if matches!(runner.as_str(), "code.test" | "native") => {
             Ok(Value::Keyword(runner))
         }
-        _ => Err("std.native.Test/config runner must be :code.test or :native".into()),
+        _ => Err("runtime test runner must be :code.test or :native".into()),
     }
 }
 
-fn native_test_config(runner: Value, options: Value) -> Result<Value, String> {
-    let runner = native_test_runner(runner)?;
+fn native_test_active_runner() -> Result<Value, String> {
+    ACTIVE_TEST_RUNNER.with(|runner| {
+        native_test_runner(Value::Keyword(runner.borrow().clone().into()))
+    })
+}
+
+fn native_test_config(
+    runner: Value,
+    options: Value,
+) -> Result<Value, String> {
     if map_entries(&options).is_none() {
         return Err("std.native.Test/config options must be a map".into());
+    }
+    if map_value(&options, &Value::Keyword("runner".into())).is_some() {
+        return Err("std.native.Test/config runner is owned by the runtime".into());
     }
     Ok(Value::Map(PMap::from_iter([
         (Value::Keyword("runner".into()), runner),
@@ -4210,8 +4312,14 @@ fn native_test_config(runner: Value, options: Value) -> Result<Value, String> {
     ])))
 }
 
-fn native_test_default_config() -> Result<Value, String> {
-    native_test_config(Value::Keyword("code.test".into()), Value::Map(PMap::new()))
+fn native_test_result(name: Value, actual: Value, expected: Value) -> Value {
+    let pass = actual == expected;
+    Value::Map(PMap::from_iter([
+        (Value::Keyword("name".into()), name),
+        (Value::Keyword("pass".into()), Value::Bool(pass)),
+        (Value::Keyword("actual".into()), actual),
+        (Value::Keyword("expected".into()), expected),
+    ]))
 }
 
 fn native_test_operation(
@@ -4246,52 +4354,117 @@ fn native_test_operation(
                     Value::Keyword("code.test".into()),
                 ),
                 (
+                    Value::Keyword("runner".into()),
+                    native_test_active_runner()?,
+                ),
+                (
                     Value::Keyword("context".into()),
-                    Value::Keyword("kernel".into()),
+                    Value::Keyword("test".into()),
                 ),
                 (Value::Keyword("events".into()), native_test_events()),
             ])))
         }
         "config" => {
-            if forms.len() > 2 {
-                return Err("std.native.Test/config expects an optional runner and options".into());
+            if forms.len() > 1 {
+                return Err("std.native.Test/config expects optional options".into());
             }
-            let runner = if forms.is_empty() {
-                Value::Keyword("code.test".into())
+            let options = if forms.is_empty() {
+                Value::Map(PMap::new())
             } else {
                 eval(&forms[0], env)?
             };
-            let options = if forms.len() < 2 {
-                Value::Map(PMap::new())
-            } else {
-                eval(&forms[1], env)?
-            };
-            native_test_config(runner, options)
+            native_test_config(native_test_active_runner()?, options)
         }
         "context" => {
             if forms.len() > 1 {
                 return Err("std.native.Test/context expects an optional config".into());
             }
             let config = if forms.is_empty() {
-                native_test_default_config()?
+                native_test_config(native_test_active_runner()?, Value::Map(PMap::new()))?
             } else {
                 let value = eval(&forms[0], env)?;
                 let Some(runner) = map_value(&value, &Value::Keyword("runner".into())).cloned()
                 else {
                     return Err("std.native.Test/context expects a Test/config map".into());
                 };
-                native_test_runner(runner)?;
+                let runner = native_test_runner(runner)?;
+                if runner != native_test_active_runner()? {
+                    return Err("std.native.Test/context config runner does not match the runtime".into());
+                }
                 value
             };
             Ok(Value::Pointer(PPointer::new(
-                "kernel".into(),
+                "test".into(),
                 PMap::from_iter([
                     (Value::Keyword("id".into()), Value::Keyword("test".into())),
                     (Value::Keyword("config".into()), config),
                 ]),
             )))
         }
+        "result" => {
+            if forms.len() != 3 {
+                return Err("std.native.Test/result expects name, actual, and expected".into());
+            }
+            let name = eval(&forms[0], env)?;
+            let actual = eval(&forms[1], env)?;
+            let expected = eval(&forms[2], env)?;
+            Ok(native_test_result(name, actual, expected))
+        }
+        "passed?" => {
+            if forms.len() != 1 {
+                return Err("std.native.Test/passed? expects one result".into());
+            }
+            let result = eval(&forms[0], env)?;
+            match map_value(&result, &Value::Keyword("pass".into())) {
+                Some(Value::Bool(pass)) => Ok(Value::Bool(*pass)),
+                _ => Err("std.native.Test/passed? expects a test result map".into()),
+            }
+        }
         _ => Err(format!("unknown std.native.Test operation: {operation}")),
+    }
+}
+
+fn native_regex_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let operation = operation
+        .strip_prefix("std.native.Regex/")
+        .unwrap_or(operation);
+    match operation {
+        "instance?" => {
+            if forms.len() != 1 {
+                return Err("std.native.Regex/instance? expects one value".into());
+            }
+            Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Regex(_))))
+        }
+        "pattern" => {
+            if forms.len() != 1 {
+                return Err("std.native.Regex/pattern expects one regexp".into());
+            }
+            match eval(&forms[0], env)? {
+                Value::Regex(pattern) => Ok(Value::String(pattern)),
+                _ => Err("std.native.Regex/pattern expects one regexp".into()),
+            }
+        }
+        "find?" => {
+            if forms.len() != 2 {
+                return Err("std.native.Regex/find? expects a regexp and string".into());
+            }
+            let pattern = match eval(&forms[0], env)? {
+                Value::Regex(pattern) => pattern,
+                _ => return Err("std.native.Regex/find? expects a regexp and string".into()),
+            };
+            let input = match eval(&forms[1], env)? {
+                Value::String(input) => input,
+                _ => return Err("std.native.Regex/find? expects a regexp and string".into()),
+            };
+            let regexp = regex::Regex::new(&pattern)
+                .map_err(|error| format!("invalid regexp: {error}"))?;
+            Ok(Value::Bool(regexp.is_match(&input)))
+        }
+        _ => Err(format!("unknown std.native.Regex operation: {operation}")),
     }
 }
 
@@ -6048,6 +6221,7 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::List(_) => "list",
         Value::Cons(_) => "cons",
         Value::Queue(_) => "queue",
+        Value::Deque(_) => "deque",
         Value::Tuple(_) => "tuple",
         Value::Vector(_) => "vector",
         Value::MutableCollection(_) => "mutable-collection",
@@ -6055,6 +6229,7 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::OrderedMap(_) => "ordered-map",
         Value::SortedMap(_) => "sorted-map",
         Value::Trie(_) => "trie",
+        Value::PriorityMap(_) => "priority-map",
         Value::Set(_) => "hash-set",
         Value::OrderedSet(_) => "ordered-set",
         Value::SortedSet(_) => "sorted-set",
@@ -6099,6 +6274,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::List(_) => "List",
         Value::Cons(_) => "Cons",
         Value::Queue(_) => "Queue",
+        Value::Deque(_) => "Deque",
         Value::Tuple(_) => "Vector",
         Value::Vector(_) => "Vector",
         Value::MutableCollection(_) => "MutableCollection",
@@ -6106,6 +6282,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::OrderedMap(_) => "OrderedMap",
         Value::SortedMap(_) => "SortedMap",
         Value::Trie(_) => "Trie",
+        Value::PriorityMap(_) => "PriorityMap",
         Value::Set(_) => "HashSet",
         Value::OrderedSet(_) => "OrderedSet",
         Value::SortedSet(_) => "SortedSet",
@@ -6147,10 +6324,15 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::List(_) => "list",
         Value::Cons(_) => "cons",
         Value::Queue(_) => "queue",
+        Value::Deque(_) => "deque",
         Value::Tuple(_) => "tuple",
         Value::Vector(_) => "vector",
         Value::MutableCollection(_) => "mutable",
-        Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) => "map",
+        Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_) => "map",
         Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => "set",
         Value::Iterator(_) => "iterator",
         Value::Var(_) => "var",
@@ -6630,6 +6812,18 @@ pub(crate) fn apply_binary_primitive(
             _ => Err("std.native.Obj/get expects an object".into()),
         },
         Primitive::ObjectSet => Err("std.native.Obj/set expects three arguments".into()),
+        Primitive::Add
+        | Primitive::Subtract
+        | Primitive::Multiply
+        | Primitive::Divide
+        | Primitive::Remainder
+        | Primitive::Equal
+        | Primitive::Less
+        | Primitive::LessOrEqual
+        | Primitive::Greater
+        | Primitive::GreaterOrEqual => {
+            unreachable!("numeric primitives return before collection dispatch")
+        }
     }
 }
 
@@ -6866,6 +7060,376 @@ fn math_operation(
     Ok(Value::Float(result))
 }
 
+#[derive(Clone, Debug)]
+enum DocumentOp {
+    Text(String, usize),
+    Pass(String),
+    Escaped(String),
+    Line(String, String),
+    Break,
+    Begin(usize),
+    End,
+    Nest(i64),
+    Align(i64),
+    Outdent,
+}
+
+#[derive(Clone)]
+enum DocumentTask {
+    Visit(Value),
+    Emit(DocumentOp),
+}
+
+fn document_tag(name: &str, children: Vec<Value>) -> Result<Value, String> {
+    let mut values = Vec::with_capacity(children.len() + 1);
+    values.push(Value::Keyword(Keyword::parse(name)?));
+    values.extend(children);
+    Ok(Value::Vector(values.into()))
+}
+
+fn document_values(value: &Value) -> Option<Vec<Value>> {
+    match value {
+        Value::Vector(values) => Some(values.iter().cloned().collect()),
+        Value::Tuple(values) => Some(values.iter().cloned().collect()),
+        Value::List(values) => Some(values.iter().cloned().collect()),
+        Value::Cons(values) => Some(values.iter().collect()),
+        _ => None,
+    }
+}
+
+fn document_text(values: &[Value], operation: &str) -> Result<String, String> {
+    let mut output = String::new();
+    for value in values {
+        match value {
+            Value::String(text) => output.push_str(text),
+            Value::Character(character) => output.push(*character),
+            _ => {
+                return Err(format!(
+                    "std.native.Document/{operation} expects text values"
+                ))
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn document_offset(values: &[Value], fallback: i64) -> (i64, &[Value]) {
+    match values.first() {
+        Some(Value::Number(offset)) => (*offset, &values[1..]),
+        _ => (fallback, values),
+    }
+}
+
+fn push_document_children(stack: &mut Vec<DocumentTask>, values: &[Value]) {
+    for child in values.iter().rev() {
+        stack.push(DocumentTask::Visit(child.clone()));
+    }
+}
+
+fn serialize_document(document: &Value) -> Result<Vec<DocumentOp>, String> {
+    let mut stack = vec![DocumentTask::Visit(document.clone())];
+    let mut operations = Vec::new();
+    while let Some(task) = stack.pop() {
+        match task {
+            DocumentTask::Emit(operation) => operations.push(operation),
+            DocumentTask::Visit(Value::Nil) => {}
+            DocumentTask::Visit(Value::String(text)) => {
+                let width = text.chars().count();
+                operations.push(DocumentOp::Text(text, width));
+            }
+            DocumentTask::Visit(Value::Keyword(tag))
+                if matches!(tag.as_str(), "line" | "document/line") =>
+            {
+                operations.push(DocumentOp::Line(" ".into(), "".into()));
+            }
+            DocumentTask::Visit(value) => {
+                let values = document_values(&value)
+                    .ok_or_else(|| "Document expects strings or element vectors".to_string())?;
+                if values.is_empty() {
+                    continue;
+                }
+                let tag = match &values[0] {
+                    Value::Keyword(tag) => tag.as_str(),
+                    _ => {
+                        push_document_children(&mut stack, &values);
+                        continue;
+                    }
+                };
+                let body = &values[1..];
+                match tag {
+                    "text" | "document/text" => {
+                        let text = document_text(body, "text")?;
+                        let width = text.chars().count();
+                        operations.push(DocumentOp::Text(text, width));
+                    }
+                    "pass" | "document/pass" => {
+                        operations.push(DocumentOp::Pass(document_text(body, "pass")?));
+                    }
+                    "escaped" | "document/escaped" => {
+                        if body.len() != 1 {
+                            return Err("std.native.Document/escaped expects one string".into());
+                        }
+                        operations.push(DocumentOp::Escaped(document_text(body, "escaped")?));
+                    }
+                    "span" | "document/span" | "document/fragment" => {
+                        push_document_children(&mut stack, body);
+                    }
+                    "annotate" | "document/annotate" => {
+                        if body.is_empty() {
+                            return Err("std.native.Document/annotate expects an annotation".into());
+                        }
+                        push_document_children(&mut stack, &body[1..]);
+                    }
+                    "line" | "document/line" => {
+                        if body.len() > 2 {
+                            return Err(
+                                "std.native.Document/line expects optional inline and terminate text"
+                                    .into(),
+                            );
+                        }
+                        let inline = if body.is_empty() {
+                            " ".into()
+                        } else {
+                            document_text(&body[..1], "line")?
+                        };
+                        let terminate = if body.len() < 2 {
+                            "".into()
+                        } else {
+                            document_text(&body[1..2], "line")?
+                        };
+                        operations.push(DocumentOp::Line(inline, terminate));
+                    }
+                    "break" | "document/break" => {
+                        if !body.is_empty() {
+                            return Err("std.native.Document/break expects no arguments".into());
+                        }
+                        operations.push(DocumentOp::Break);
+                    }
+                    "group" | "document/group" => {
+                        stack.push(DocumentTask::Emit(DocumentOp::End));
+                        push_document_children(&mut stack, body);
+                        stack.push(DocumentTask::Emit(DocumentOp::Begin(0)));
+                    }
+                    "nest" | "document/nest" => {
+                        let (offset, children) = document_offset(body, 2);
+                        stack.push(DocumentTask::Emit(DocumentOp::Outdent));
+                        push_document_children(&mut stack, children);
+                        stack.push(DocumentTask::Emit(DocumentOp::Nest(offset)));
+                    }
+                    "align" | "document/align" => {
+                        let (offset, children) = document_offset(body, 0);
+                        stack.push(DocumentTask::Emit(DocumentOp::Outdent));
+                        push_document_children(&mut stack, children);
+                        stack.push(DocumentTask::Emit(DocumentOp::Align(offset)));
+                    }
+                    _ => {
+                        return Err(format!(
+                            "Document text renderer does not support element tag :{tag}"
+                        ))
+                    }
+                }
+            }
+        }
+    }
+    Ok(operations)
+}
+
+fn annotate_document_groups(operations: &mut [DocumentOp]) -> Result<Vec<usize>, String> {
+    let mut right = 0usize;
+    let mut rights = Vec::with_capacity(operations.len());
+    let mut groups = Vec::new();
+    for index in 0..operations.len() {
+        let operation = operations[index].clone();
+        match operation {
+            DocumentOp::Text(_, width) => right = right.saturating_add(width),
+            DocumentOp::Escaped(_) => right = right.saturating_add(1),
+            DocumentOp::Line(inline, _) => right = right.saturating_add(inline.chars().count()),
+            DocumentOp::Begin(_) => groups.push(index),
+            DocumentOp::End => {
+                let begin = groups
+                    .pop()
+                    .ok_or_else(|| "Document contains an unmatched group end".to_string())?;
+                operations[begin] = DocumentOp::Begin(right);
+            }
+            _ => {}
+        }
+        rights.push(right);
+    }
+    if !groups.is_empty() {
+        return Err("Document contains an unmatched group begin".into());
+    }
+    Ok(rights)
+}
+
+fn render_document_text(document: &Value, width: usize) -> Result<String, String> {
+    let mut operations = serialize_document(document)?;
+    let rights = annotate_document_groups(&mut operations)?;
+    let mut output = String::new();
+    let mut fits = 0usize;
+    let mut length = width;
+    let mut tabs = vec![0i64];
+    let mut column = 0i64;
+    for (index, operation) in operations.into_iter().enumerate() {
+        let indent = *tabs.last().unwrap_or(&0);
+        match operation {
+            DocumentOp::Text(text, visible) => {
+                if column == 0 && indent > 0 {
+                    output.push_str(&" ".repeat(indent as usize));
+                    column += indent;
+                }
+                output.push_str(&text);
+                column += visible as i64;
+            }
+            DocumentOp::Escaped(text) => {
+                if column == 0 && indent > 0 {
+                    output.push_str(&" ".repeat(indent as usize));
+                    column += indent;
+                }
+                output.push_str(&text);
+                column += 1;
+            }
+            DocumentOp::Pass(text) => output.push_str(&text),
+            DocumentOp::Line(inline, terminate) => {
+                if fits == 0 {
+                    output.push_str(&terminate);
+                    output.push('\n');
+                    column = 0;
+                    length = rights[index]
+                        .saturating_add(width)
+                        .saturating_sub(indent.max(0) as usize);
+                } else {
+                    column += inline.chars().count() as i64;
+                    output.push_str(&inline);
+                }
+            }
+            DocumentOp::Break => {
+                output.push('\n');
+                column = 0;
+                length = rights[index]
+                    .saturating_add(width)
+                    .saturating_sub(indent.max(0) as usize);
+            }
+            DocumentOp::Nest(offset) => tabs.push(indent + offset),
+            DocumentOp::Align(offset) => tabs.push(column + offset),
+            DocumentOp::Outdent => {
+                if tabs.len() == 1 {
+                    return Err("Document contains an unmatched outdent".into());
+                }
+                tabs.pop();
+            }
+            DocumentOp::Begin(end) => {
+                fits = if fits > 0 {
+                    fits + 1
+                } else if end <= length {
+                    1
+                } else {
+                    0
+                };
+            }
+            DocumentOp::End => fits = fits.saturating_sub(1),
+        }
+    }
+    if tabs.len() != 1 {
+        return Err("Document contains an unmatched indentation scope".into());
+    }
+    Ok(output)
+}
+
+fn document_map_option(options: &Value, name: &str) -> Option<Value> {
+    let key = Value::Keyword(Keyword::parse(name).ok()?);
+    map_entries(options)?
+        .into_iter()
+        .find_map(|(candidate, value)| (candidate == key).then_some(value))
+}
+
+fn document_operation(operation: &str, values: Vec<Value>) -> Result<Value, String> {
+    let operation = operation
+        .strip_prefix("std.native.Document/")
+        .unwrap_or(operation);
+    match operation {
+        "element" => {
+            if values.is_empty() || !matches!(values[0], Value::Keyword(_)) {
+                return Err("std.native.Document/element expects a keyword tag".into());
+            }
+            Ok(Value::Vector(values.into()))
+        }
+        "text" => Ok(Value::String(document_text(&values, "text")?)),
+        "fragment" | "group" | "pass" => document_tag(&format!("document/{operation}"), values),
+        "annotate" => {
+            if values.is_empty() {
+                return Err("std.native.Document/annotate expects an annotation".into());
+            }
+            document_tag("document/annotate", values)
+        }
+        "escaped" => {
+            if values.len() != 1 || !matches!(values[0], Value::String(_)) {
+                return Err("std.native.Document/escaped expects one string".into());
+            }
+            document_tag("document/escaped", values)
+        }
+        "line" => {
+            if values.len() > 2
+                || values
+                    .iter()
+                    .any(|value| !matches!(value, Value::String(_)))
+            {
+                return Err(
+                    "std.native.Document/line expects optional inline and terminate strings".into(),
+                );
+            }
+            document_tag("document/line", values)
+        }
+        "break" => {
+            if !values.is_empty() {
+                return Err("std.native.Document/break expects no arguments".into());
+            }
+            document_tag("document/break", values)
+        }
+        "nest" | "align" => document_tag(&format!("document/{operation}"), values),
+        "normalize" => {
+            if values.len() != 1 {
+                return Err("std.native.Document/normalize expects one document".into());
+            }
+            serialize_document(&values[0])?;
+            Ok(values[0].clone())
+        }
+        "valid?" => {
+            if values.len() != 1 {
+                return Err("std.native.Document/valid? expects one value".into());
+            }
+            Ok(Value::Bool(serialize_document(&values[0]).is_ok()))
+        }
+        "render" => {
+            if !(1..=2).contains(&values.len()) {
+                return Err(
+                    "std.native.Document/render expects a document and optional options map".into(),
+                );
+            }
+            let default_options = Value::Map(PMap::new());
+            let options = values.get(1).unwrap_or(&default_options);
+            if map_entries(options).is_none() {
+                return Err("std.native.Document/render expects an options map".into());
+            }
+            match document_map_option(options, "format") {
+                None => {}
+                Some(Value::Keyword(value)) if value.as_str() == "text" => {}
+                _ => return Err("std.native.Document/render currently supports only :text".into()),
+            }
+            let width = match document_map_option(options, "width") {
+                None => 80usize,
+                Some(Value::Number(value)) if value >= 0 => value as usize,
+                Some(_) => {
+                    return Err(
+                        "std.native.Document/render width must be a non-negative integer".into(),
+                    )
+                }
+            };
+            Ok(Value::String(render_document_text(&values[0], width)?))
+        }
+        _ => Err(format!("unknown Document operation: {operation}")),
+    }
+}
+
 fn native_error_operation(
     operation: &str,
     args: &[Form],
@@ -6983,6 +7547,12 @@ fn value_to_metadata(value: &Value) -> Result<MetadataValue, String> {
                 .map(value_to_metadata)
                 .collect::<Result<_, _>>()?,
         )),
+        Value::Deque(values) => Ok(MetadataValue::List(
+            values
+                .iter()
+                .map(value_to_metadata)
+                .collect::<Result<_, _>>()?,
+        )),
         Value::List(values) => Ok(MetadataValue::List(
             values
                 .iter()
@@ -6998,7 +7568,10 @@ fn value_to_metadata(value: &Value) -> Result<MetadataValue, String> {
                     .collect::<Result<_, _>>()?,
             ))
         }
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)) => {
             Ok(MetadataValue::Map(
                 map_entries(value)
                     .unwrap()
@@ -7067,10 +7640,12 @@ fn value_metadata(value: &Value) -> Option<Rc<Metadata>> {
         Value::List(value) => value.meta().cloned(),
         Value::Cons(value) => value.meta().cloned(),
         Value::Queue(value) => value.meta().cloned(),
+        Value::Deque(value) => value.meta().cloned(),
         Value::Map(value) => value.meta().cloned(),
         Value::OrderedMap(value) => value.meta().cloned(),
         Value::SortedMap(value) => value.meta().cloned(),
         Value::Trie(value) => value.meta().cloned(),
+        Value::PriorityMap(value) => value.meta().cloned(),
         Value::Set(value) => value.meta().cloned(),
         Value::OrderedSet(value) => value.meta().cloned(),
         Value::SortedSet(value) => value.meta().cloned(),
@@ -7318,7 +7893,11 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
         Value::Extension(receiver) => {
             extension_protocol_call(receiver, "std.protocol.ifind/IFind", "find", arguments)
         }
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             Ok(map_entries(value)
                 .unwrap()
                 .into_iter()
@@ -7366,6 +7945,7 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
             indexed_find(values.iter().nth(index).as_ref(), index)
         }
         Value::Queue(values) => indexed_find(values.get(value_index(key)?), value_index(key)?),
+        Value::Deque(values) => indexed_find(values.get(value_index(key)?), value_index(key)?),
         _ => Err("IFind/find has no implementation for this value".into()),
     }
 }
@@ -7391,6 +7971,7 @@ fn protocol_iter(arguments: &[Value]) -> Result<Value, String> {
                     | Value::OrderedMap(_)
                     | Value::SortedMap(_)
                     | Value::Trie(_)
+                    | Value::PriorityMap(_)
                     | Value::Pointer(_)
                     | Value::Set(_)
                     | Value::OrderedSet(_)
@@ -7398,6 +7979,7 @@ fn protocol_iter(arguments: &[Value]) -> Result<Value, String> {
                     | Value::List(_)
                     | Value::Cons(_)
                     | Value::Queue(_)
+                    | Value::Deque(_)
                     | Value::Tuple(_)
                     | Value::Vector(_)
             ) =>
@@ -7592,13 +8174,17 @@ fn protocol_encode_with(arguments: &[Value]) -> Result<Value, String> {
         Value::String(_) => ("visit-string", vec![visitor.clone(), value.clone()]),
         Value::Keyword(_) => ("visit-keyword", vec![visitor.clone(), value.clone()]),
         Value::Symbol(_) => ("visit-symbol", vec![visitor.clone(), value.clone()]),
-        Value::List(_) | Value::Cons(_) | Value::Queue(_) => {
+        Value::List(_) | Value::Cons(_) | Value::Queue(_) | Value::Deque(_) => {
             ("visit-seq", vec![visitor.clone(), value.clone()])
         }
         Value::Vector(_) | Value::Tuple(_) => {
             ("visit-vector", vec![visitor.clone(), value.clone()])
         }
-        Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) => {
+        Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_) => {
             ("visit-map", vec![visitor.clone(), value.clone()])
         }
         Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => {
@@ -7667,6 +8253,55 @@ fn protocol_peek_last(arguments: &[Value]) -> Result<Value, String> {
     }
 }
 
+fn protocol_pop_first(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::List(values)] => Ok(Value::List(values.pop_first())),
+        [Value::Cons(values)] => Ok(Value::List(values.clone().pop_first())),
+        [Value::Tuple(values)] => Ok(Value::Tuple(Box::new(values.pop_first()))),
+        [Value::Queue(values)] => Ok(Value::Queue(Box::new(values.pop_first()))),
+        [Value::Deque(values)] => Ok(Value::Deque(Box::new(values.pop_first()))),
+        [Value::PriorityMap(values)] => Ok(Value::PriorityMap(Box::new(values.pop_first()))),
+        [_] => Err("protocol/unsupported-receiver: IPopFirst/pop-first".into()),
+        _ => Err("IPopFirst/pop-first expects one collection".into()),
+    }
+}
+
+fn protocol_pop_last(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::List(values)] => Ok(Value::List(values.pop_last())),
+        [Value::Tuple(values)] => Ok(Value::Tuple(Box::new(values.pop_last()))),
+        [Value::Vector(values)] => Ok(Value::Vector(values.pop_last())),
+        [Value::Queue(values)] => Ok(Value::Queue(Box::new(values.pop_last()))),
+        [Value::Deque(values)] => Ok(Value::Deque(Box::new(values.pop_last()))),
+        [Value::PriorityMap(values)] => Ok(Value::PriorityMap(Box::new(values.pop_last()))),
+        [_] => Err("protocol/unsupported-receiver: IPopLast/pop-last".into()),
+        _ => Err("IPopLast/pop-last expects one collection".into()),
+    }
+}
+
+fn protocol_push_first(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::List(values), value] => Ok(Value::List(values.push_first(value.clone()))),
+        [Value::Cons(values), value] => Ok(Value::Cons(Box::new(PCons::new(value.clone(), values.to_list()).with_meta(values.meta().cloned())))),
+        [Value::Tuple(values), value] => tuple_push_first(values, value.clone()),
+        [Value::Deque(values), value] => Ok(Value::Deque(Box::new(values.push_first(value.clone())))),
+        [_, _] => Err("protocol/unsupported-receiver: IPushFirst/push-first".into()),
+        _ => Err("IPushFirst/push-first expects a collection and value".into()),
+    }
+}
+
+fn protocol_push_last(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::List(values), value] => Ok(Value::List(values.push_last(value.clone()))),
+        [Value::Tuple(values), value] => tuple_push_last(values, value.clone()),
+        [Value::Vector(values), value] => Ok(Value::Vector(values.push_last(value.clone()))),
+        [Value::Queue(values), value] => Ok(Value::Queue(Box::new(values.push_last(value.clone())))),
+        [Value::Deque(values), value] => Ok(Value::Deque(Box::new(values.push_last(value.clone())))),
+        [_, _] => Err("protocol/unsupported-receiver: IPushLast/push-last".into()),
+        _ => Err("IPushLast/push-last expects a collection and value".into()),
+    }
+}
+
 fn protocol_cons(arguments: &[Value]) -> Result<Value, String> {
     let [collection, item] = arguments else {
         return Err("ICons/cons expects a collection and value".into());
@@ -7687,6 +8322,7 @@ fn protocol_cons(arguments: &[Value]) -> Result<Value, String> {
             item.clone(),
             values.clone(),
         )))),
+        Value::Deque(values) => Ok(Value::Deque(Box::new(values.push_first(item.clone())))),
         Value::Nil => Ok(Value::Cons(Box::new(PCons::new(
             item.clone(),
             PList::new(),
@@ -7778,6 +8414,7 @@ fn protocol_conj(arguments: &[Value]) -> Result<Value, String> {
             Ok(Value::Vector(output))
         }
         Value::Queue(values) => Ok(Value::Queue(Box::new(values.push_last(item.clone())))),
+        Value::Deque(values) => Ok(Value::Deque(Box::new(values.push_last(item.clone())))),
         Value::Cons(values) => Ok(Value::Cons(Box::new(
             PCons::new(item.clone(), values.iter().collect()).with_meta(values.meta().cloned()),
         ))),
@@ -7790,7 +8427,11 @@ fn protocol_conj(arguments: &[Value]) -> Result<Value, String> {
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             set_conj_value(value, item.clone())
         }
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             let (entry_key, entry_value) = pair_parts(item)
                 .ok_or_else(|| "IConj/conj map expects a two-element entry".to_string())?;
             map_assoc_value(value, entry_key, entry_value)
@@ -7843,22 +8484,33 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
             | Value::OrderedMap(_)
             | Value::SortedMap(_)
             | Value::Trie(_)
+            | Value::PriorityMap(_)
             | Value::Set(_)
             | Value::OrderedSet(_)
             | Value::SortedSet(_)
             | Value::List(_)
             | Value::Cons(_)
             | Value::Queue(_)
+            | Value::Deque(_)
             | Value::Tuple(_)
             | Value::Vector(_)
     );
     let map_like = matches!(
         value,
-        Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)
+        Value::Map(_)
+            | Value::OrderedMap(_)
+            | Value::SortedMap(_)
+            | Value::Trie(_)
+            | Value::PriorityMap(_)
     );
     let sequential = matches!(
         value,
-        Value::List(_) | Value::Cons(_) | Value::Queue(_) | Value::Tuple(_) | Value::Vector(_)
+        Value::List(_)
+            | Value::Cons(_)
+            | Value::Queue(_)
+            | Value::Deque(_)
+            | Value::Tuple(_)
+            | Value::Vector(_)
     );
     match name {
         "IColl" | "IConj" | "IEmpty" => persistent_collection,
@@ -8936,7 +9588,12 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
         Value::Vector(values) => Ok(values.iter().cloned().collect()),
         Value::List(values) => Ok(values.iter().cloned().collect()),
         Value::Cons(values) => Ok(values.iter().collect()),
+        Value::Deque(values) => Ok(values.iter().cloned().collect()),
         Value::Queue(values) => Ok(values.iter().cloned().collect()),
+        Value::PriorityMap(values) => Ok(values
+            .iter()
+            .map(|(key, value)| Value::Tuple(Box::new(PTuple::from_values(vec![key, value]).unwrap())))
+            .collect()),
         Value::String(text) => Ok(text.chars().map(|c| Value::String(c.to_string())).collect()),
         Value::Bytes(bytes) => Ok(bytes
             .into_iter()
@@ -8968,7 +9625,10 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
             .iter()
             .map(|(key, value)| pair_value(key.clone(), value.clone()))
             .collect()),
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)) => {
             Ok(map_entries(&value)
                 .unwrap()
                 .into_iter()
@@ -9011,6 +9671,7 @@ fn make_iterator(value: Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
+        | Value::PriorityMap(_)
         | Value::Pointer(_)
         | Value::Set(_)
         | Value::OrderedSet(_)
@@ -9018,6 +9679,7 @@ fn make_iterator(value: Value) -> Result<Value, String> {
         | Value::List(_)
         | Value::Cons(_)
         | Value::Queue(_)
+        | Value::Deque(_)
         | Value::Tuple(_)
         | Value::Vector(_) => Ok(Value::Iterator(Rc::new(RefCell::new(IteratorState::new(
             iterator_values(value)?,
@@ -9238,7 +9900,11 @@ fn iterator_close(value: &Value) -> Result<Value, String> {
 
 fn collection_keys(value: &Value) -> Result<Value, String> {
     match value {
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             Ok(Value::Vector(
                 map_entries(value)
                     .unwrap()
@@ -9283,7 +9949,11 @@ fn collection_keys(value: &Value) -> Result<Value, String> {
 
 fn collection_vals(value: &Value) -> Result<Value, String> {
     match value {
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             Ok(Value::Vector(
                 map_entries(value)
                     .unwrap()
@@ -9380,10 +10050,12 @@ fn collection_empty_value(value: Value) -> Result<Value, String> {
         Value::Nil => Ok(Value::Nil),
         Value::List(_) => Ok(Value::List(PList::new())),
         Value::Cons(_) | Value::Queue(_) => Ok(Value::List(PList::new())),
+        Value::Deque(_) => Ok(Value::Deque(Box::new(PDeque::new()))),
         Value::Vector(_) | Value::Tuple(_) => Ok(Value::Vector(PVector::new())),
         Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) => {
             Ok(Value::OrderedMap(Box::new(POrderedMap::new())))
         }
+        Value::PriorityMap(_) => Ok(Value::PriorityMap(Box::new(PPriorityMap::new()))),
         Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => {
             Ok(Value::OrderedSet(Box::new(POrderedSet::new())))
         }
@@ -9417,7 +10089,12 @@ fn collection_count(value: &Value) -> Result<Value, String> {
         Value::List(v) => v.len(),
         Value::Cons(v) => v.iter().count(),
         Value::Queue(v) => v.len(),
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        Value::Deque(v) => v.len(),
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             map_entries(value).unwrap().len()
         }
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
@@ -9497,6 +10174,10 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
             let index = value_index(key)?;
             Ok(values.get(index).cloned().unwrap_or(default))
         }
+        Value::Deque(values) => {
+            let index = value_index(key)?;
+            Ok(values.get(index).cloned().unwrap_or(default))
+        }
         Value::MutableCollection(collection) => {
             let borrowed = collection.borrow();
             let mutable = borrowed
@@ -9525,7 +10206,11 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
                 .map(|c| Value::String(c.to_string()))
                 .unwrap_or(default))
         }
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             Ok(map_value(value, key).cloned().unwrap_or(default))
         }
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
@@ -9576,6 +10261,7 @@ fn collection_nth(value: &Value, key: &Value) -> Result<Value, String> {
         Value::Cons(values) => values.iter().nth(index),
         Value::List(values) => values.get(index).cloned(),
         Value::Queue(values) => values.get(index).cloned(),
+        Value::Deque(values) => values.get(index).cloned(),
         Value::MutableCollection(collection) => {
             let borrowed = collection.borrow();
             let mutable = borrowed
@@ -9656,7 +10342,15 @@ fn collection_assoc(value: &Value, key: &Value, replacement: Value) -> Result<Va
                 .map(Value::Vector)
                 .ok_or_else(|| "assoc index out of bounds".into())
         }
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        Value::Deque(values) => values
+            .assoc_value(value_index(key)?, replacement)
+            .map(|values| Value::Deque(Box::new(values)))
+            .ok_or_else(|| "assoc index out of bounds".to_string()),
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             map_assoc_value(value, key.clone(), replacement)
         }
         Value::Object(entries) => {
@@ -9775,7 +10469,11 @@ fn collection_dissoc(value: &Value, keys: &[Value]) -> Result<Value, String> {
             drop(collection_value);
             Ok(Value::MutableCollection(collection.clone()))
         }
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             keys.iter()
                 .try_fold(value.clone(), |map, key| map_dissoc_value(&map, key))
         }
@@ -9978,10 +10676,14 @@ fn attach_optional_metadata(value: Value, metadata: Option<Rc<Metadata>>) -> Res
         Value::List(value) => Value::List(value.with_meta(metadata.clone())),
         Value::Cons(value) => Value::Cons(Box::new(value.with_meta(metadata.clone()))),
         Value::Queue(value) => Value::Queue(Box::new(value.with_meta(metadata.clone()))),
+        Value::Deque(value) => Value::Deque(Box::new(value.with_meta(metadata.clone()))),
         Value::Map(value) => Value::Map(value.with_meta(metadata.clone())),
         Value::OrderedMap(value) => Value::OrderedMap(Box::new(value.with_meta(metadata.clone()))),
         Value::SortedMap(value) => Value::SortedMap(Box::new(value.with_meta(metadata.clone()))),
         Value::Trie(value) => Value::Trie(Box::new(value.with_meta(metadata.clone()))),
+        Value::PriorityMap(value) => {
+            Value::PriorityMap(Box::new(value.with_meta(metadata.clone())))
+        }
         Value::Set(value) => Value::Set(value.with_meta(metadata.clone())),
         Value::OrderedSet(value) => Value::OrderedSet(Box::new(value.with_meta(metadata.clone()))),
         Value::SortedSet(value) => Value::SortedSet(Box::new(value.with_meta(metadata.clone()))),
@@ -10059,7 +10761,7 @@ fn eval_collection_constructor(
         .map(|form| eval(form, env))
         .collect::<Result<Vec<_>, _>>()?;
     match name {
-        "hash-map" | "ordered-map" | "sorted-map" | "trie" => {
+        "hash-map" | "ordered-map" | "priority-map" | "sorted-map" | "trie" => {
             if values.len() % 2 != 0 {
                 return Err(format!(
                     "{name} expects an even number of key/value arguments"
@@ -10071,6 +10773,7 @@ fn eval_collection_constructor(
             Ok(match name {
                 "hash-map" => Value::Map(PMap::from_iter(entries)),
                 "ordered-map" => Value::OrderedMap(Box::new(POrderedMap::from_iter(entries))),
+                "priority-map" => Value::PriorityMap(Box::new(PPriorityMap::from_iter(entries))),
                 "sorted-map" => Value::SortedMap(Box::new(PSortedMap::from_iter(entries))),
                 "trie" => {
                     let mut trie = PTrie::new();
@@ -10088,6 +10791,7 @@ fn eval_collection_constructor(
         "hash-set" => Ok(Value::Set(values.into_iter().collect())),
         "ordered-set" => Ok(Value::OrderedSet(Box::new(values.into_iter().collect()))),
         "sorted-set" => Ok(Value::SortedSet(Box::new(values.into_iter().collect()))),
+        "deque" => Ok(Value::Deque(Box::new(values.into_iter().collect()))),
         "queue" => Ok(Value::Queue(Box::new(values.into_iter().collect()))),
         _ => unreachable!("guarded collection constructor"),
     }
@@ -10623,7 +11327,11 @@ pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value
             [target, fallback] => lookup(target, &Value::Keyword(keyword), fallback.clone()),
             _ => Err("keyword invocation expects one or two arguments".into()),
         },
-        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
+        value @ (Value::Map(_)
+        | Value::OrderedMap(_)
+        | Value::SortedMap(_)
+        | Value::Trie(_)
+        | Value::PriorityMap(_)) => {
             match arguments.as_slice() {
                 [key] => Ok(map_value(&value, key).cloned().unwrap_or(Value::Nil)),
                 [key, fallback] => Ok(map_value(&value, key)
@@ -13076,6 +13784,16 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n) if n.starts_with("std.native.Test/") => {
                     native_test_operation(n, &fs[1..], env)
                 }
+                Form::Symbol(n) if n.starts_with("std.native.Regex/") => {
+                    native_regex_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Document/") => {
+                    let arguments = fs[1..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    document_operation(n, arguments)
+                }
                 Form::Symbol(n) if n.starts_with("std.native.Crypto/") => {
                     let arguments = fs[1..]
                         .iter()
@@ -13288,8 +14006,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if [
                         "hash-map",
                         "hash-set",
+                        "deque",
                         "ordered-map",
                         "ordered-set",
+                        "priority-map",
                         "queue",
                         "sorted-map",
                         "sorted-set",
@@ -14631,6 +15351,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             Value::List(_)
                                 | Value::Cons(_)
                                 | Value::Queue(_)
+                                | Value::Deque(_)
                                 | Value::Vector(_)
                                 | Value::Tuple(_)
                         ),
@@ -14638,7 +15359,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             Value::Map(_)
                             | Value::OrderedMap(_)
                             | Value::SortedMap(_)
-                            | Value::Trie(_) => true,
+                            | Value::Trie(_)
+                            | Value::PriorityMap(_) => true,
                             Value::Extension(receiver) => extension_has_category(receiver, "map"),
                             _ => false,
                         },

@@ -4,6 +4,8 @@ pub mod adapters;
 pub mod atom;
 #[path = "data/cons.rs"]
 pub mod cons;
+#[path = "data/deque.rs"]
+pub mod deque;
 #[path = "data/keyword.rs"]
 pub mod keyword;
 #[path = "data/list.rs"]
@@ -18,6 +20,8 @@ pub mod ordered_map;
 pub mod ordered_set;
 #[path = "data/pointer.rs"]
 pub mod pointer;
+#[path = "data/priority_map.rs"]
+pub mod priority_map;
 #[path = "data/queue.rs"]
 pub mod queue;
 #[path = "data/seq.rs"]
@@ -41,6 +45,7 @@ pub mod vector;
 pub use adapters::{AsList, AsMap, AsSet};
 pub use atom::{Atom, WatchEntry};
 pub use cons::Cons;
+pub use deque::Standard as Deque;
 pub use keyword::Keyword;
 pub use list::{Mutable as MutableList, Standard as List};
 pub use map::{Mutable as MutableMap, Standard as Map};
@@ -48,6 +53,7 @@ pub use metadata::{Metadata, MetadataValue};
 pub use ordered_map::{Mutable as MutableOrderedMap, Standard as OrderedMap};
 pub use ordered_set::{Mutable as MutableOrderedSet, Standard as OrderedSet};
 pub use pointer::Pointer;
+pub use priority_map::Standard as PriorityMap;
 pub use queue::{Mutable as MutableQueue, Standard as Queue};
 pub use seq::Seq;
 pub use set::{Mutable as MutableSet, Standard as Set};

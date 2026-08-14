@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import com.oracle.truffle.api.CallTarget;
+import com.oracle.truffle.api.Option;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.Source;
@@ -15,6 +16,10 @@ import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
 import java.util.ArrayList;
 import java.util.List;
+import org.graalvm.options.OptionCategory;
+import org.graalvm.options.OptionDescriptors;
+import org.graalvm.options.OptionKey;
+import org.graalvm.options.OptionStability;
 
 @TruffleLanguage.Registration(
     id = HaraLanguage.ID,
@@ -29,12 +34,24 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
   public static final String MIME_TYPE = "application/x-hara";
   public static final String BYTECODE_MIME_TYPE = "application/x-hara-bytecode";
 
+  @Option(
+      name = "TestRunner",
+      help = "Select the runtime-owned test runner: code.test or native.",
+      category = OptionCategory.USER,
+      stability = OptionStability.STABLE)
+  static final OptionKey<String> TEST_RUNNER = new OptionKey<>("code.test");
+
   private static final ContextReference<HaraContext> CONTEXT_REFERENCE =
       ContextReference.create(HaraLanguage.class);
 
   @Override
   protected HaraContext createContext(Env environment) {
     return new HaraContext(environment);
+  }
+
+  @Override
+  protected OptionDescriptors getOptionDescriptors() {
+    return new HaraLanguageOptionDescriptors();
   }
 
   @Override

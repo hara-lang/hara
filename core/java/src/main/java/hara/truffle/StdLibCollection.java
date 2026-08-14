@@ -10,6 +10,11 @@ import java.util.Map.Entry;
 public final class StdLibCollection {
   private StdLibCollection() {}
 
+  @HaraExport(name = "deque", doc = "Creates a persistent finger-tree deque.", arglists = {"[& values]"})
+  public static Object deque(HaraContext context, Object[] values) {
+    return BuiltinStruct.deque(values);
+  }
+
   @HaraExport(name = "ordered-map", doc = "Creates an insertion-ordered persistent map.", arglists = {"[& entries]"})
   public static Object orderedMap(HaraContext context, Object[] values) {
     return BuiltinStruct.orderedMap(values);
@@ -18,6 +23,11 @@ public final class StdLibCollection {
   @HaraExport(name = "ordered-set", doc = "Creates an insertion-ordered persistent set.", arglists = {"[& values]"})
   public static Object orderedSet(HaraContext context, Object[] values) {
     return BuiltinStruct.orderedSet(values);
+  }
+
+  @HaraExport(name = "priority-map", doc = "Creates a stable persistent priority map.", arglists = {"[& entries]"})
+  public static Object priorityMap(HaraContext context, Object[] values) {
+    return BuiltinStruct.priorityMap(values);
   }
 
   @HaraExport(name = "queue", doc = "Creates a persistent queue.", arglists = {"[& values]"})

@@ -661,11 +661,14 @@
            :annotations annotations)))
 
 (defn report-status
-  [bundle]
-  (cond
-    (< 0 (count (:errors bundle))) :failed
-    (< 0 (count (:warnings bundle))) :warning
-    :else :completed))
+  [definition bundle]
+  (let [status-function (get-in definition [:report :status])]
+    (if (fn? status-function)
+      (status-function (:summary bundle) bundle)
+      (cond
+        (< 0 (count (:errors bundle))) :failed
+        (< 0 (count (:warnings bundle))) :warning
+        :else :completed))))
 
 (defn report-section
   [definition bundle id]
@@ -697,18 +700,18 @@
 
 (defn task-report
   [definition bundle]
-  (let [profile (:report definition)
+  (let [profile (dissoc (:report definition) :status)
         initial
         (report/document
          (:task/id definition)
          {:profile profile
           :title (:title profile)
-          :status (report-status bundle)
+          :status (report-status definition bundle)
           :annotations (:annotations bundle)})]
     (loop [sections (:sections profile)
            document initial]
       (if (empty? sections)
-        (report/complete document (report-status bundle))
+        (report/complete document (report-status definition bundle))
         (recur (vec (rest sections))
                (report/add-section
                 document
@@ -799,7 +802,7 @@
         output (package-selection definition bundle selection package)]
     (work/emit! context :task/run-completed
                 {:task/id (:task/id definition)
-                 :status (report-status bundle)
+                 :status (report-status definition bundle)
                  :summary (:summary bundle)
                  :annotations (:annotations bundle)
                  :report (:report bundle)})

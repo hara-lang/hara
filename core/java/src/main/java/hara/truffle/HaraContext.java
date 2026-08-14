@@ -106,13 +106,15 @@ public final class HaraContext {
           Map.entry("string", "std.foundation.string"),
           Map.entry("coroutine", "std.foundation.coroutine"),
           Map.entry("promise", "std.foundation.promise"),
-          Map.entry("bytes", "std.foundation.bytes"));
+          Map.entry("bytes", "std.foundation.bytes"),
+          Map.entry("pretty", "std.foundation.pretty"));
   private static final Map<String, String> DEFAULT_LIBRARY_ALIASES =
       Map.ofEntries(
           Map.entry("string", "str"),
           Map.entry("coroutine", "co"),
           Map.entry("promise", "promise"),
-          Map.entry("bytes", "bytes"));
+          Map.entry("bytes", "bytes"),
+          Map.entry("pretty", "pretty"));
   private static final Set<String> MARKER_METHOD_NAMES =
       Set.of(
           "get",
@@ -160,11 +162,14 @@ public final class HaraContext {
           Map.entry("Obj", java.util.List.of("new", "instance?", "get", "set", "has?", "delete", "clone", "assign", "keys", "vals", "pairs")),
           Map.entry("Runtime", java.util.List.of("load-string", "macroexpand-1", "gensym", "var-sym")),
           Map.entry("Printer", java.util.List.of("p", "println")),
+          Map.entry("Document", java.util.List.of("element", "text", "fragment", "annotate", "pass", "escaped", "group", "line", "break", "nest", "align", "normalize", "valid?", "render")),
           Map.entry("Edn", java.util.List.of("read", "read-forms", "write", "pretty")),
           Map.entry("Json", java.util.List.of("read", "write", "pretty")),
           Map.entry("Host", java.util.List.of("call", "describe", "capabilities", "capability?")),
-          Map.entry("Test", java.util.List.of("catalog", "config", "context", "events")),
-          Map.entry("Regex", java.util.List.of("instance?")),
+          Map.entry(
+              "Test",
+              java.util.List.of("catalog", "config", "context", "events", "result", "passed?")),
+          Map.entry("Regex", java.util.List.of("instance?", "pattern", "find?")),
           Map.entry("UUID", java.util.List.of("instance?")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
@@ -185,6 +190,7 @@ public final class HaraContext {
           Map.entry("std.native.Promise", "std.foundation.promise"),
           Map.entry("std.native.Coroutine", "std.foundation.coroutine"));
   private final TruffleLanguage.Env environment;
+  private final Keyword testRunner;
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
   private final Map<String, Map<String, String>> aliases = new ConcurrentHashMap<>();
@@ -229,6 +235,7 @@ public final class HaraContext {
   private final AtomicLong gensymCounter = new AtomicLong();
   HaraContext(TruffleLanguage.Env environment) {
     this.environment = environment;
+    this.testRunner = runtimeTestRunner(environment.getOptions().get(HaraLanguage.TEST_RUNNER));
     currentNamespace = namespace(INTRINSIC_NAMESPACE);
     Map<String, Integer> ifnMethods = new LinkedHashMap<>();
     ifnMethods.put("invoke", -1);
@@ -2589,9 +2596,11 @@ public final class HaraContext {
     else if (raw instanceof hara.lang.data.List<?>) type = "List";
     else if (raw instanceof hara.lang.data.Cons<?>) type = "Cons";
     else if (raw instanceof hara.lang.data.Queue<?>) type = "Queue";
+    else if (raw instanceof hara.lang.data.Deque<?>) type = "Deque";
     else if (raw instanceof hara.lang.data.Tuple.Tup0 || raw instanceof hara.lang.data.Tuple.Tup1<?>) type = "Vector";
     else if (raw instanceof hara.lang.data.Vector<?>) type = "Vector";
     else if (raw instanceof hara.lang.data.OrderedMap<?, ?>) type = "OrderedMap";
+    else if (raw instanceof hara.lang.data.PriorityMap<?, ?>) type = "PriorityMap";
     else if (raw instanceof hara.lang.data.SortedMap<?, ?>) type = "SortedMap";
     else if (raw instanceof hara.lang.data.Trie<?>) type = "Trie";
     else if (raw instanceof hara.lang.data.Map<?, ?>) type = "HashMap";
@@ -2736,38 +2745,43 @@ public final class HaraContext {
             new Object[] {Keyword.create("code.test"), Keyword.create("native")}),
         Keyword.create("default"),
         Keyword.create("code.test"),
+        Keyword.create("runner"),
+        testRunner,
         Keyword.create("context"),
-        Keyword.create("kernel"),
+        Keyword.create("test"),
         Keyword.create("events"),
         nativeTestEvents(new Object[0]));
   }
 
-  private Keyword nativeTestRunner(Object value) {
-    Object runner = HaraBox.unwrap(value);
-    if (Keyword.create("code.test").equals(runner) || Keyword.create("native").equals(runner)) {
-      return (Keyword) runner;
+  private static Keyword runtimeTestRunner(String value) {
+    if ("code.test".equals(value) || "native".equals(value)) {
+      return Keyword.create(value);
     }
-    throw new HaraException(
-        "std.native.Test/config runner must be :code.test or :native");
+    throw new HaraException("runtime test runner must be code.test or native");
   }
 
   private Object nativeTestConfig(Object[] values) {
-    if (values.length > 2) {
-      throw new HaraException(
-          "std.native.Test/config expects an optional runner and options");
+    if (values.length > 1) {
+      throw new HaraException("std.native.Test/config expects optional options");
     }
-    Keyword runner =
-        values.length == 0 ? Keyword.create("code.test") : nativeTestRunner(values[0]);
-    Object options = values.length < 2 ? hara.lang.data.Map.Standard.EMPTY : HaraBox.unwrap(values[1]);
+    Object options = values.length == 0 ? hara.lang.data.Map.Standard.EMPTY : HaraBox.unwrap(values[0]);
     if (!(options instanceof IMapType<?, ?>)) {
       throw new HaraException("std.native.Test/config options must be a map");
+    }
+    if (hasMapKey((IMapType<?, ?>) options, Keyword.create("runner"))) {
+      throw new HaraException("std.native.Test/config runner is owned by the runtime");
     }
     return hara.lang.data.Map.Standard.from(
         null,
         Keyword.create("runner"),
-        runner,
+        testRunner,
         Keyword.create("options"),
         options);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static boolean hasMapKey(IMapType<?, ?> map, Object key) {
+    return ((IMapType) map).find(key) != null;
   }
 
   private Object nativeTestContext(Object[] values) {
@@ -2778,11 +2792,45 @@ public final class HaraContext {
     if (!(config instanceof IMapType<?, ?> map)) {
       throw new HaraException("std.native.Test/context expects a Test/config map");
     }
-    nativeTestRunner(lookupValue(map, Keyword.create("runner")));
+    if (!testRunner.equals(lookupValue(map, Keyword.create("runner")))) {
+      throw new HaraException(
+          "std.native.Test/context config runner does not match the runtime");
+    }
     java.util.Map<Object, Object> fields = new LinkedHashMap<>();
     fields.put(Keyword.create("id"), Keyword.create("test"));
     fields.put(Keyword.create("config"), config);
-    return new hara.lang.data.Pointer(Keyword.create("kernel"), fields);
+    return new hara.lang.data.Pointer(Keyword.create("test"), fields);
+  }
+
+  private Object nativeTestResult(Object[] values) {
+    if (values.length != 3) {
+      throw new HaraException(
+          "std.native.Test/result expects name, actual, and expected");
+    }
+    Object name = HaraBox.unwrap(values[0]);
+    Object actual = HaraBox.unwrap(values[1]);
+    Object expected = HaraBox.unwrap(values[2]);
+    return hara.lang.data.Map.Standard.from(
+        null,
+        Keyword.create("name"),
+        name,
+        Keyword.create("pass"),
+        Eq.eq(actual, expected),
+        Keyword.create("actual"),
+        actual,
+        Keyword.create("expected"),
+        expected);
+  }
+
+  private Object nativeTestPassed(Object[] values) {
+    if (values.length != 1 || !(HaraBox.unwrap(values[0]) instanceof IMapType<?, ?> result)) {
+      throw new HaraException("std.native.Test/passed? expects a test result map");
+    }
+    Object pass = lookupValue(result, Keyword.create("pass"));
+    if (!(pass instanceof Boolean)) {
+      throw new HaraException("std.native.Test/passed? expects a test result map");
+    }
+    return pass;
   }
 
   private static Keyword keyword(String value) {
@@ -2802,11 +2850,51 @@ public final class HaraContext {
 
   private void installNativeLibraries() {
     HaraStaticLibrary.install(this, "std.native.Crypto", NativeCrypto.class);
+    HaraNamespace document = namespace("std.native.Document");
+    for (String method : NATIVE_TYPES.get("Document")) {
+      document.define(
+          method,
+          new VariadicBuiltin(
+              "std.native.Document/" + method,
+              values -> NativeDocument.operation("std.native.Document/" + method, values)));
+    }
     HaraNamespace test = namespace("std.native.Test");
     test.define("catalog", new VariadicBuiltin("std.native.Test/catalog", this::nativeTestCatalog));
     test.define("config", new VariadicBuiltin("std.native.Test/config", this::nativeTestConfig));
     test.define("context", new VariadicBuiltin("std.native.Test/context", this::nativeTestContext));
     test.define("events", new VariadicBuiltin("std.native.Test/events", this::nativeTestEvents));
+    test.define("result", new VariadicBuiltin("std.native.Test/result", this::nativeTestResult));
+    test.define("passed?", new VariadicBuiltin("std.native.Test/passed?", this::nativeTestPassed));
+    HaraNamespace regex = namespace("std.native.Regex");
+    regex.define(
+        "instance?",
+        new UnaryBuiltin(
+            "std.native.Regex/instance?",
+            value -> HaraBox.unwrap(value) instanceof java.util.regex.Pattern));
+    regex.define(
+        "pattern",
+        new UnaryBuiltin(
+            "std.native.Regex/pattern",
+            value -> {
+              Object raw = HaraBox.unwrap(value);
+              if (!(raw instanceof java.util.regex.Pattern pattern)) {
+                throw new HaraException("std.native.Regex/pattern expects one regexp");
+              }
+              return pattern.pattern();
+            }));
+    regex.define(
+        "find?",
+        new VariadicBuiltin(
+            "std.native.Regex/find?",
+            values -> {
+              if (values.length != 2
+                  || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
+                  || !(HaraBox.unwrap(values[1]) instanceof String input)) {
+                throw new HaraException(
+                    "std.native.Regex/find? expects a regexp and string");
+              }
+              return pattern.matcher(input).find();
+            }));
     HaraNamespace kernel = namespace("std.native.Kernel");
     for (String method : NATIVE_TYPES.get("Kernel")) {
       kernel.define(

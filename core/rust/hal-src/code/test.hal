@@ -5,9 +5,11 @@
 ;; receives structured events; hosts decide whether and how to print them.
 ;; ============================================================================
 (ns code.test
-  (:require [code.test.cli :as cli]
+  (:require [code.test.artifact :as artifact]
+            [code.test.cli :as cli]
             [code.test.selector :as selector]
-            [std.work :as work]))
+            [std.work :as work]
+            [std.work.template.task :as task]))
 
 (defstruct Matcher [predicate expected])
 (defstruct ThrownValue [error])
@@ -18,7 +20,7 @@
 
 (defn fact-registry-key
   [namespace name]
-  (pointer {:context :kernel
+  (pointer {:context :test
             :id :test
             :namespace (str namespace)
             :name (str name)}))
@@ -568,6 +570,16 @@
                    false)]
     (and included (not excluded))))
 
+(defn report-selected?
+  [fact options]
+  (let [selection (:test/filter options)]
+    (if selection
+      (let [names (get selection (:namespace fact))]
+        (and names
+             (or (empty? names)
+                 (has? names (:name fact)))))
+      true)))
+
 (defn matches-selection?
   "Returns true when a fact matches namespace, name, and tag selectors."
   [fact options]
@@ -576,6 +588,7 @@
      (selector-match? (:namespace options) (:namespace fact))
      (selector-match? (:name options) (:name fact))
      (tag-selected? fact options)
+     (report-selected? fact options)
      (selector/matches-options? metadata options))))
 
 (defn selected?
@@ -778,7 +791,7 @@
 
 (defn fact-coordinate
   [namespace name fact-revision]
-  (pointer {:context :kernel
+  (pointer {:context :test
             :id :test
             :namespace (fact-identity namespace)
             :name (fact-identity name)
@@ -805,7 +818,7 @@
 (defn fact-item-coordinate
   [fact default-revision]
   (let [fact-revision (fact-revision fact default-revision)]
-    (pointer {:context :kernel
+    (pointer {:context :test
               :id :test
               :namespace (fact-identity (:namespace fact))
               :name (fact-identity (:name fact))
@@ -1256,14 +1269,67 @@
     result))
 
 (def suite-work fact-batch-work)
-(def +runner-work+ (fact-batch-work))
+
+(defn test-report-status
+  [summary bundle]
+  (if (= :passed (:status summary)) :completed :failed))
+
+(defn test-report-summary
+  [summary records results]
+  (get-in (first results) [:data :summary]))
+
+(def +report-task+
+  (task/template
+   {:id 'code.test/report
+    :type :test
+    :version 1
+    :item
+    {:run
+     (fn [summary context]
+       {:status :return
+        :data {:summary summary
+               :options (:test/options context)}})}
+    :summary
+    {:finalise test-report-summary
+     :fields [:files :facts :checks :passed :failed :throw :timeout :skipped]}
+    :report
+    {:title "TEST RESULTS"
+     :status test-report-status
+     :sections [:results :summary]
+     :labels {:results "FACTS" :summary "SUMMARY"}}
+    :return {:select :all :package :map}}))
+
+(defn persist-test-run
+  [bundle context]
+  (let [summary (:summary bundle)
+        report (:report bundle)
+        options (get-in (first (:records bundle)) [:data :options])
+        latest (artifact/record-run! summary options report)]
+    (assoc summary
+           :report report
+           :artifacts (:artifacts latest))))
+
+(defn runner-work
+  [batch-revision]
+  (work/chain
+   {:id 'code.test/run
+    :version batch-revision}
+   [(fact-batch-work batch-revision)
+    +report-task+
+    (work/step
+     {:id 'code.test/persist
+      :version batch-revision}
+     persist-test-run)]))
+
+(def +runner-work+ (runner-work +default-work-revision+))
 
 (defn runner-options
   [options]
-  (let [config (or (:test/config options)
-                   (Test/config :code.test {}))
+  (let [config (Test/config (dissoc (or options {})
+                                    :test/config
+                                    :test/context))
         context (Test/context config)]
-    (assoc options
+    (assoc (:options config)
            :test/config config
            :test/context context)))
 
@@ -1273,6 +1339,15 @@
    (if (map? selector-or-options)
      selector-or-options
      {:namespace selector-or-options})))
+
+(defn runner-work-options
+  [options work-options]
+  (assoc (or work-options {})
+         :context
+         (merge (or (:context work-options) {})
+                {:test/options options
+                 :test/config (:test/config options)
+                 :test/context (:test/context options)})))
 
 (defn run
   "Runs selected facts through the canonical IWork fact-batch graph."
@@ -1284,9 +1359,9 @@
   ([runtime selector-or-options work-options]
    (let [options (normalize-run-options selector-or-options)]
      (work/run runtime
-               (fact-batch-work (work-revision options))
+               (runner-work (work-revision options))
                options
-               work-options))))
+               (runner-work-options options work-options)))))
 
 (defn start
   "Starts the canonical fact-batch graph and returns a work reference."
@@ -1295,9 +1370,9 @@
   ([runtime selector-or-options work-options]
    (let [options (normalize-run-options selector-or-options)]
      (work/start runtime
-                 (fact-batch-work (work-revision options))
+                 (runner-work (work-revision options))
                  options
-                 work-options))))
+                 (runner-work-options options work-options)))))
 
 (defn batch-result
   [runtime reference]
@@ -1335,17 +1410,33 @@
 (defmacro fact:ns [& body] `(do ~@body))
 (defn fact:ns-load [namespace] namespace)
 
-(def run:current run)
+(def +latest+ artifact/+latest+)
+
+(defn run:current
+  ([] (run {:namespace (current-namespace)}))
+  ([options] (run (assoc options :namespace (current-namespace)))))
 (def run:test run)
 (def run:load run)
 (def run:unload run)
-(def run-errored run)
+
+(defn run-errored
+  ([] (run-errored {}))
+  ([options]
+   (let [failures (:failures (deref artifact/+latest+))]
+     (run (assoc options
+                 :test/filter
+                 (artifact/report-failed-facts failures))))))
 
 (defn run:interrupt [] true)
 (defn run:report
-  ([path] (run {:report path}))
-  ([path options] (run (assoc options :report path)))
-  ([path options project] (run (assoc options :report path))))
+  ([path] (run:report path {}))
+  ([path options]
+   (let [report (artifact/load-report path)]
+     (run (assoc options
+                 :test/filter
+                 (artifact/report-failed-facts report)))))
+  ([path options project]
+   (run:report path (assoc options :root (:root project)))))
 
 (defn print-options
   ([] (print-options :help))

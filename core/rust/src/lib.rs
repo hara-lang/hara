@@ -77,7 +77,6 @@ const EAGER_HAL_RESOURCES: &[&str] = &[
     "std.foundation.promise",
     "std.foundation.bytes",
     "std.foundation.coroutine",
-    "std.foundation.pretty.engine",
     "std.foundation.pretty",
 ];
 
@@ -139,6 +138,7 @@ impl PromiseHandle {
 #[wasm_bindgen]
 pub struct Runtime {
     env: HashMap<String, core::Value>,
+    test_runner: String,
     protocols: core::ProtocolRegistry,
     extensions: core::ExtensionRegistry,
     wasm_extensions: HashMap<String, extension::WasmExtension>,
@@ -203,6 +203,7 @@ pub struct SessionKernel {
     mounts: HashMap<u64, FilesystemMount>,
     session_mounts: HashMap<String, u64>,
     next_mount_id: u64,
+    test_runner: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -358,7 +359,17 @@ impl SessionKernel {
             mounts: HashMap::new(),
             session_mounts: HashMap::new(),
             next_mount_id: 1,
+            test_runner: "code.test".into(),
         }
+    }
+
+    pub fn set_test_runner(&mut self, runner: &str) -> Result<(), String> {
+        validate_test_runner(runner)?;
+        self.test_runner = runner.into();
+        for session in self.sessions.values_mut() {
+            session.runtime.configure_test_runner(runner)?;
+        }
+        Ok(())
     }
 
     pub fn create_session(&mut self, name: &str) -> Result<(), String> {
@@ -367,6 +378,7 @@ impl SessionKernel {
             return Err(format!("SESSION_EXISTS {name}"));
         }
         let mut runtime = Runtime::new();
+        runtime.configure_test_runner(&self.test_runner)?;
         for (resource, source) in &self.resources {
             runtime.register_resource(resource, source);
         }
@@ -533,6 +545,14 @@ fn validate_session_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_test_runner(runner: &str) -> Result<(), String> {
+    if matches!(runner, "code.test" | "native") {
+        Ok(())
+    } else {
+        Err("runtime test runner must be code.test or native".into())
+    }
+}
+
 /// The root Foundation surface deliberately contains only the iterator core.
 /// Native iterator mechanics must enter through the `Iter/*` type alias, so
 /// reject legacy unqualified call heads before namespace rewriting canonicalizes
@@ -649,6 +669,7 @@ impl Runtime {
         }
         Runtime {
             env: HashMap::new(),
+            test_runner: "code.test".into(),
             protocols: core::ProtocolRegistry::core(),
             extensions: core::ExtensionRegistry::new(),
             wasm_extensions: HashMap::new(),
@@ -699,6 +720,17 @@ impl Runtime {
         runtime.refer_foundation_into("user");
         runtime.use_namespace("user");
         runtime
+    }
+
+    fn configure_test_runner(&mut self, runner: &str) -> Result<(), String> {
+        validate_test_runner(runner)?;
+        self.test_runner = runner.into();
+        Ok(())
+    }
+
+    pub fn set_test_runner(&mut self, runner: &str) -> Result<(), JsValue> {
+        self.configure_test_runner(runner)
+            .map_err(|error| JsValue::from_str(&error))
     }
 
     #[cfg(feature = "bytecode-vm")]
@@ -1103,7 +1135,7 @@ impl Runtime {
     fn eval_form(&mut self, form: Form, traced: bool) -> Result<core::Value, String> {
         let namespace_source = self.namespace_source();
         if traced {
-            return core::with_capability_providers(
+            return core::with_test_runner(&self.test_runner, || core::with_capability_providers(
                 self.providers.file(),
                 self.providers.socket(),
                 self.providers.process(),
@@ -1135,10 +1167,10 @@ impl Runtime {
                         })
                     })
                 },
-            );
+            ));
         }
         let env = self.env.clone();
-        let (result, fiber) = core::with_capability_providers(
+        let (result, fiber) = core::with_test_runner(&self.test_runner, || core::with_capability_providers(
             self.providers.file(),
             self.providers.socket(),
             self.providers.process(),
@@ -1174,7 +1206,7 @@ impl Runtime {
                     })
                 })
             },
-        )?;
+        ))?;
         self.env = fiber.environment();
         result
     }
@@ -2760,7 +2792,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "recursive reduce in the pretty engine trips the structural-function reentrancy guard (runtime issue #TODO)"]
     fn portable_pretty_renderer_groups_and_breaks_documents() {
         let mut runtime = Runtime::new();
         runtime.require_resource("std.foundation.pretty").unwrap();
@@ -2770,7 +2801,7 @@ mod tests {
                 .unwrap(),
             "\"abc\""
         );
-        let document = "[:group \"(\" [:nest 2 [:line] \"alpha\" [:line] \"beta\"] \")\"]";
+        let document = "[:document/group \"(\" [:document/nest 2 [:document/line] \"alpha\" [:document/line] \"beta\"] \")\"]";
         assert_eq!(
             runtime
                 .eval_text(&format!(
@@ -2786,6 +2817,12 @@ mod tests {
                 ))
                 .unwrap(),
             "\"(\\n  alpha\\n  beta)\""
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(std.foundation.pretty/pprint-str {:b 2 :a 1})")
+                .unwrap(),
+            "\"{:a 1, :b 2}\""
         );
     }
 
@@ -3349,9 +3386,7 @@ mod tests {
             .unwrap_err()
             .contains("signed 64-bit integers"));
         assert_eq!(
-            runtime
-                .eval_text("(do (require 'std.pretty) (std.pretty/pprint-str {:a [1 2]}))")
-                .unwrap(),
+            runtime.eval_text("(pretty/pprint-str {:a [1 2]})").unwrap(),
             "\"{:a [1 2]}\""
         );
     }
@@ -5552,7 +5587,7 @@ mod tests {
     }
 
     #[test]
-    fn native_test_catalog_owns_runner_config_and_kernel_context() {
+    fn native_test_catalog_uses_runtime_runner_and_test_context() {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
@@ -5564,12 +5599,12 @@ mod tests {
                       (Test/events)]"
                 )
                 .unwrap(),
-            "[true [:code.test :native] :code.test :kernel [:test/run-started :test/fact-started :test/fact-completed :test/run-completed]]"
+            "[true [:code.test :native] :code.test :test [:test/run-started :test/fact-started :test/fact-completed :test/run-completed]]"
         );
         assert_eq!(
             runtime
                 .eval_text(
-                    "(let [config (Test/config :native {:focus :fast}) \
+                    "(let [config (Test/config {:focus :fast}) \
                            context (Test/context config)] \
                        [(get config :runner) \
                         (get (get config :options) :focus) \
@@ -5578,12 +5613,34 @@ mod tests {
                         (get (get context :config) :runner)])"
                 )
                 .unwrap(),
-            "[:native :fast :kernel :test :native]"
+            "[:code.test :fast :test :test :code.test]"
         );
         assert!(runtime
-            .eval_text("(Test/config :other)")
+            .eval_text("(Test/config {:runner :native})")
             .unwrap_err()
-            .contains("runner must be :code.test or :native"));
+            .contains("runner is owned by the runtime"));
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(Test/result \"equal\" {:a [1 2]} {:a [1 2]}) \
+                      (Test/passed? (Test/result \"equal\" 7 7)) \
+                      (Test/passed? (Test/result \"different\" 7 8))]"
+                )
+                .unwrap(),
+            "[{:name \"equal\" :pass true :actual {:a [1 2]} :expected {:a [1 2]}} true false]"
+        );
+        assert!(runtime
+            .eval_text("(Test/passed? {:status :error})")
+            .unwrap_err()
+            .contains("test result map"));
+
+        runtime.set_test_runner("native").unwrap();
+        assert_eq!(
+            runtime
+                .eval_text("[(get (Test/catalog) :runner) (get (Test/config) :runner)]")
+                .unwrap(),
+            "[:native :native]"
+        );
     }
 
     #[test]
@@ -8003,6 +8060,31 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
+                    r#"(str "std.foundation"
+                              (str/slice "std.lib.foundation/T"
+                                         (count "std.lib.foundation")
+                                         (count "std.lib.foundation/T")))"#,
+                )
+                .unwrap(),
+            r#""std.foundation/T""#
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    r#"(let [root (std.block.navigation/block-input "[std.lib.foundation/T]")
+                              rule {:rewrite {:op :replace-token-prefix :text "std.foundation"}}
+                              match {:source "std.lib.foundation/T"
+                                     :match/text "std.lib.foundation"
+                                     :path [0 0]}]
+                          (std.block.navigation/render
+                           (code.translate.rule/apply-match root rule match)))"#,
+                )
+                .unwrap(),
+            r#""[std.foundation/T]""#
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
                     r#"(get
                          (code.translate.rule/translate-source
                           "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] [std.native.Json :as json]))\n[c/map-keys walk/prewalk-replace json/read]"
@@ -8014,9 +8096,21 @@ mod tests {
         );
         assert_eq!(
             runtime
+                .eval_text(
+                    r#"(get
+                         (code.translate.rule/translate-source
+                          "(ns demo (:require [std.lib.foundation :as foundation]))\n[std.lib.foundation/T foundation/F]"
+                          {:mode :review})
+                         :output)"#,
+                )
+                .unwrap(),
+            r#""(ns demo (:require [std.foundation :as foundation]))\n[std.foundation/T std.foundation/F]""#
+        );
+        assert_eq!(
+            runtime
                 .eval_text("(count code.translate.rule/+ruleset+)")
                 .unwrap(),
-            "90"
+            "99"
         );
         for (native_type, _) in core::NATIVE_TYPES {
             let expression = format!(

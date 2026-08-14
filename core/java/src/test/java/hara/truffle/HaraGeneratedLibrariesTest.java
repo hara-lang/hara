@@ -111,10 +111,10 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
-  public void nativeTestCatalogOwnsRunnerConfigAndKernelContext() {
+  public void nativeTestCatalogUsesRuntimeRunnerAndTestContext() {
     try (Context context = context()) {
       assertEquals(
-          "[true [:code.test :native] :code.test :kernel "
+          "[true [:code.test :native] :code.test :test "
               + "[:test/run-started :test/fact-started :test/fact-completed :test/run-completed]]",
           context
               .eval(
@@ -124,18 +124,38 @@ public class HaraGeneratedLibrariesTest {
                       + "(Test/events)]")
               .toString());
       assertEquals(
-          "[:native :fast :kernel :test :native]",
+          "[:code.test :fast :test :test :code.test]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "(let [config (Test/config :native {:focus :fast}) "
+                  "(let [config (Test/config {:focus :fast}) "
                       + "context (Test/context config)] "
                       + "[(get config :runner) (get (get config :options) :focus) "
                       + "(IPointer/ptr-context context) (get context :id) "
                       + "(get (get context :config) :runner)])")
               .toString());
       assertErrorContains(
-          context, "(Test/config :other)", "runner must be :code.test or :native");
+          context, "(Test/config {:runner :native})", "runner is owned by the runtime");
+      assertEquals(
+          "[{:pass true :actual {:a [1 2]} :expected {:a [1 2]} :name \"equal\"} true false]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(Test/result \"equal\" {:a [1 2]} {:a [1 2]}) "
+                      + "(Test/passed? (Test/result \"equal\" 7 7)) "
+                      + "(Test/passed? (Test/result \"different\" 7 8))]")
+              .toString());
+      assertErrorContains(context, "(Test/passed? {:status :error})", "test result map");
+    }
+    try (Context context =
+        Context.newBuilder(HaraLanguage.ID).option("hara.TestRunner", "native").build()) {
+      assertEquals(
+          "[:native :native]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(get (Test/catalog) :runner) (get (Test/config) :runner)]")
+              .toString());
     }
   }
 

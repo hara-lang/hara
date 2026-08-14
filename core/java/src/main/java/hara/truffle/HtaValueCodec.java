@@ -56,6 +56,8 @@ public final class HtaValueCodec {
   private static final int STRUCT = 33;
   private static final int POINTER = 34;
   private static final int VAR_REF = 35;
+  private static final int DEQUE = 36;
+  private static final int PRIORITY_MAP = 37;
 
   private HtaValueCodec() {}
 
@@ -164,6 +166,8 @@ public final class HtaValueCodec {
       write(output, info.getMessage(), depth + 1);
       write(output, info.getData(), depth + 1);
       write(output, info.getCause(), depth + 1);
+    } else if (value instanceof hara.lang.data.PriorityMap<?, ?>) {
+      writeMap(output, ((IMapType<?, ?>) value).iterator(), depth, PRIORITY_MAP, false);
     } else if (value instanceof hara.lang.data.OrderedMap<?, ?>) {
       writeMap(output, ((IMapType<?, ?>) value).iterator(), depth, ORDERED_MAP, false);
     } else if (value instanceof hara.lang.data.SortedMap<?, ?>) {
@@ -194,6 +198,9 @@ public final class HtaValueCodec {
       writeCollection(output, (ILinearType<?>) value, depth);
     } else if (value instanceof hara.lang.data.Queue<?>) {
       output.write(QUEUE);
+      writeCollection(output, (ILinearType<?>) value, depth);
+    } else if (value instanceof hara.lang.data.Deque<?>) {
+      output.write(DEQUE);
       writeCollection(output, (ILinearType<?>) value, depth);
     } else if (value instanceof ILinearType<?>) {
       output.write(VECTOR);
@@ -364,6 +371,8 @@ public final class HtaValueCodec {
           return cons(depth + 1);
         case QUEUE:
           return hara.lang.data.Queue.Standard.from(null, sequenceArray(depth + 1, "queue"));
+        case DEQUE:
+          return hara.lang.data.Deque.Standard.from(null, sequenceArray(depth + 1, "deque"));
         case SET:
           return set(depth + 1);
         case ORDERED_SET:
@@ -380,6 +389,9 @@ public final class HtaValueCodec {
         case SORTED_MAP:
           return hara.lang.data.SortedMap.Standard.from(
               null, mapArray(depth + 1, "sorted map", false));
+        case PRIORITY_MAP:
+          return hara.lang.data.PriorityMap.Standard.from(
+              null, mapArray(depth + 1, "priority map", false));
         case TRIE:
           return trie(depth + 1);
         case HANDLE:

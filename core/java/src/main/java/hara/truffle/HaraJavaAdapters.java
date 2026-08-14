@@ -395,6 +395,8 @@ public final class HaraJavaAdapters {
                                   : receiver instanceof Symbol
                                       ? "visit-symbol"
                                       : receiver instanceof IVectorType<?>
+                                              || receiver instanceof Tuple.Tup0
+                                              || receiver instanceof Tuple.Tup1<?>
                                           ? "visit-vector"
                                           : receiver instanceof IMapType<?, ?>
                                               ? "visit-map"

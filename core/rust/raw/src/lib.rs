@@ -40,10 +40,6 @@ const FOUNDATION_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../lib/src/std/foundation/coroutine.hal"),
     ),
     (
-        "std.foundation.pretty.engine",
-        include_str!("../../../lib/src/std/foundation/pretty/engine.hal"),
-    ),
-    (
         "std.foundation.pretty",
         include_str!("../../../lib/src/std/foundation/pretty.hal"),
     ),

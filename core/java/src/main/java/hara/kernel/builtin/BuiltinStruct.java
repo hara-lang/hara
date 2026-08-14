@@ -82,6 +82,16 @@ public interface BuiltinStruct {
     return Queue.Standard.into(Iter.iter(elements));
   }
 
+  public static <ITR, E> Deque.Standard<E> deque(ITR elements) {
+    return Deque.Standard.into(Iter.iter(elements));
+  }
+
+  public static <ITR, K, V extends Comparable<? super V>> PriorityMap.Standard<K, V> priorityMap(
+      ITR elements) {
+    java.util.ArrayList<Object> values = Iter.toArrayList(Iter.iter(elements));
+    return PriorityMap.Standard.from(null, values.toArray());
+  }
+
   public static <ITR, K, V> SortedMap.Standard<K, V> sortedMap(ITR elements) {
     return SortedMap.Standard.into(Iter.partitionPair(Iter.iter(elements)));
   }

@@ -343,6 +343,13 @@ def generate(routes: dict, reference: Path, target_root: Path) -> dict:
             if route.get("state") == "implemented":
                 target_path = route.get("target_path")
                 target_symbol = route.get("target_symbol")
+                target_kind = route.get("target_kind", "hal")
+                if target_kind == "native":
+                    if not target_symbol or target_path:
+                        raise CorpusError(
+                            f"invalid native route: {name}/{route['source_symbol']}"
+                        )
+                    continue
                 pending_recipe_target = declaration.get("recipe") and target_path not in surfaces
                 if (not pending_recipe_target and
                         (not target_path or not target_symbol or
@@ -473,6 +480,14 @@ def validate(corpus: dict) -> list[dict]:
                     raise CorpusError(f"invalid route state for {name}/{route.get('source_symbol')}")
                 if route.get("safety") not in corpus.get("route_policy", {}).get("safety", []):
                     raise CorpusError(f"invalid route safety for {name}/{route.get('source_symbol')}")
+                target_kind = route.get("target_kind", "hal")
+                if target_kind not in {"hal", "native"}:
+                    raise CorpusError(f"invalid target kind for {name}/{route.get('source_symbol')}")
+                if target_kind == "native" and (
+                        route.get("state") != "implemented" or
+                        not route.get("target_symbol") or
+                        route.get("target_path")):
+                    raise CorpusError(f"invalid native route for {name}/{route.get('source_symbol')}")
             names.add(name)
             source_paths.add(source_path)
             continue

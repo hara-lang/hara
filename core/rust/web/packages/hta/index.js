@@ -1,5 +1,5 @@
 const MAGIC = new Uint8Array([0x48, 0x54, 0x41, 0x30]);
-const TAG = { nil: 0, false: 1, true: 2, i64: 3, string: 4, bytes: 5, keyword: 6, symbol: 7, list: 8, vector: 9, set: 10, map: 11, handle: 12, namespace: 13, var: 14, f64: 15, atom: 16, array: 17, object: 18, tuple:23, cons:24, queue:25, orderedMap:26, sortedMap:27, trie:28, orderedSet:29, sortedSet:30, tagged:31, exceptionInfo:32, struct:33 };
+const TAG = { nil: 0, false: 1, true: 2, i64: 3, string: 4, bytes: 5, keyword: 6, symbol: 7, list: 8, vector: 9, set: 10, map: 11, handle: 12, namespace: 13, var: 14, f64: 15, atom: 16, array: 17, object: 18, tuple:23, cons:24, queue:25, orderedMap:26, sortedMap:27, trie:28, orderedSet:29, sortedSet:30, tagged:31, exceptionInfo:32, struct:33, deque:36, priorityMap:37 };
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 export const HTA_MAX_FRAME_BYTES = 64 * 1024 * 1024;
@@ -14,9 +14,11 @@ export class HtaObject { constructor(entries){this.entries=entries;} toString(){
 export class HtaTuple { constructor(values){this.values=values;} }
 export class HtaCons { constructor(values){this.values=values;} }
 export class HtaQueue { constructor(values){this.values=values;} }
+export class HtaDeque { constructor(values){this.values=values;} }
 export class HtaOrderedMap { constructor(entries){this.entries=entries;} }
 export class HtaSortedMap { constructor(entries){this.entries=entries;} }
 export class HtaTrie { constructor(entries){this.entries=entries;} }
+export class HtaPriorityMap { constructor(entries){this.entries=entries;} }
 export class HtaOrderedSet { constructor(values){this.values=values;} }
 export class HtaSortedSet { constructor(values){this.values=values;} }
 export class HtaTagged { constructor(tag,value){this.tag=tag;this.value=value;} }
@@ -187,9 +189,10 @@ function writeValue(output, value, depth=0) {
   else if (value instanceof HtaTuple) { output.push(TAG.tuple); writeSequence(output,value.values,depth); }
   else if (value instanceof HtaCons) { output.push(TAG.cons); writeSequence(output,value.values,depth); }
   else if (value instanceof HtaQueue) { output.push(TAG.queue); writeSequence(output,value.values,depth); }
+  else if (value instanceof HtaDeque) { output.push(TAG.deque); writeSequence(output,value.values,depth); }
   else if (value instanceof HtaOrderedSet) { output.push(TAG.orderedSet); writeSequence(output,value.values,depth); }
   else if (value instanceof HtaSortedSet) { output.push(TAG.sortedSet); writeSequence(output,value.values,depth); }
-  else if (value instanceof HtaOrderedMap || value instanceof HtaSortedMap || value instanceof HtaTrie) { output.push(value instanceof HtaOrderedMap?TAG.orderedMap:value instanceof HtaSortedMap?TAG.sortedMap:TAG.trie);writeU32(output,value.entries.length);for(const [key,item] of value.entries){writeValue(output,key,depth+1);writeValue(output,item,depth+1);} }
+  else if (value instanceof HtaOrderedMap || value instanceof HtaSortedMap || value instanceof HtaTrie || value instanceof HtaPriorityMap) { output.push(value instanceof HtaOrderedMap?TAG.orderedMap:value instanceof HtaSortedMap?TAG.sortedMap:value instanceof HtaTrie?TAG.trie:TAG.priorityMap);writeU32(output,value.entries.length);for(const [key,item] of value.entries){writeValue(output,key,depth+1);writeValue(output,item,depth+1);} }
   else if (value instanceof HtaTagged) { output.push(TAG.tagged);writeValue(output,value.tag,depth+1);writeValue(output,value.value,depth+1); }
   else if (value instanceof HtaExceptionInfo) { output.push(TAG.exceptionInfo);writeValue(output,value.message,depth+1);writeValue(output,value.data,depth+1);writeValue(output,value.cause,depth+1); }
   else if (value instanceof HtaStruct) { output.push(TAG.struct);writeValue(output,value.name,depth+1);writeValue(output,value.fields,depth+1);writeValue(output,value.values,depth+1); }
@@ -228,10 +231,10 @@ class Reader {
     if(tag===TAG.string)return decoder.decode(this.data());if(tag===TAG.bytes)return this.data().slice();
     if(tag===TAG.keyword)return new HtaKeyword(decoder.decode(this.data()));if(tag===TAG.symbol)return new HtaSymbol(decoder.decode(this.data()));
     if(tag===TAG.list||tag===TAG.vector)return this.sequence(depth);if(tag===TAG.set)return new Set(this.sequence(depth));
-    if(tag===TAG.tuple)return new HtaTuple(this.sequence(depth));if(tag===TAG.cons)return new HtaCons(this.sequence(depth));if(tag===TAG.queue)return new HtaQueue(this.sequence(depth));
+    if(tag===TAG.tuple)return new HtaTuple(this.sequence(depth));if(tag===TAG.cons)return new HtaCons(this.sequence(depth));if(tag===TAG.queue)return new HtaQueue(this.sequence(depth));if(tag===TAG.deque)return new HtaDeque(this.sequence(depth));
     if(tag===TAG.orderedSet)return new HtaOrderedSet(this.sequence(depth));if(tag===TAG.sortedSet)return new HtaSortedSet(this.sequence(depth));
     if(tag===TAG.map){const size=this.u32();if(size>(this.bytes.length-this.cursor)/2)throw new Error("hta/value-malformed: impossible map length");const result=new Map();for(let i=0;i<size;i++)result.set(this.value(depth+1),this.value(depth+1));return result;}
-    if(tag===TAG.orderedMap||tag===TAG.sortedMap||tag===TAG.trie){const size=this.u32();if(size>(this.bytes.length-this.cursor)/2)throw new Error("hta/value-malformed: impossible map length");const entries=[];for(let i=0;i<size;i++)entries.push([this.value(depth+1),this.value(depth+1)]);return tag===TAG.orderedMap?new HtaOrderedMap(entries):tag===TAG.sortedMap?new HtaSortedMap(entries):new HtaTrie(entries);}
+    if(tag===TAG.orderedMap||tag===TAG.sortedMap||tag===TAG.trie||tag===TAG.priorityMap){const size=this.u32();if(size>(this.bytes.length-this.cursor)/2)throw new Error("hta/value-malformed: impossible map length");const entries=[];for(let i=0;i<size;i++)entries.push([this.value(depth+1),this.value(depth+1)]);return tag===TAG.orderedMap?new HtaOrderedMap(entries):tag===TAG.sortedMap?new HtaSortedMap(entries):tag===TAG.trie?new HtaTrie(entries):new HtaPriorityMap(entries);}
     if(tag===TAG.var){const symbol=this.value(depth+1),value=this.value(depth+1);if(!(symbol instanceof HtaSymbol))throw new Error("hta/value-malformed: invalid var symbol");return new HtaVar(symbol,value);}
     if(tag===TAG.atom)return new HtaAtom(this.value(depth+1));
     if(tag===TAG.array)return new HtaArray(this.sequence(depth));

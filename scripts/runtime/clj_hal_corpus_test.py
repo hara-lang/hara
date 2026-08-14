@@ -79,6 +79,36 @@ class SymbolRouteTest(unittest.TestCase):
             corpus.route_for("encode", declaration),
         )
 
+    def test_native_route_preserves_symbol_destination_without_a_hal_path(self):
+        declaration = {
+            "default": {
+                "state": "deferred",
+                "safety": "manual",
+                "message": "Review the helper.",
+            },
+            "symbols": {
+                "var-sym": {
+                    "state": "implemented",
+                    "safety": "review",
+                    "target_kind": "native",
+                    "target_namespace": "std.foundation",
+                    "target_symbol": "var-sym",
+                },
+            },
+        }
+        self.assertEqual(
+            {
+                "state": "implemented",
+                "safety": "review",
+                "message": "Review the helper.",
+                "target_kind": "native",
+                "target_namespace": "std.foundation",
+                "target_symbol": "var-sym",
+                "source_symbol": "var-sym",
+            },
+            corpus.route_for("var-sym", declaration),
+        )
+
 
 class DependencyPlanTest(unittest.TestCase):
     def test_orders_roots_before_dependants(self):
@@ -182,6 +212,33 @@ class CorpusValidationTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(corpus.CorpusError, "coverage is incomplete"):
             corpus.validate(fixture)
+
+    def test_v2_accepts_an_implemented_native_symbol_route(self):
+        entry = corpus.compile_entries([{
+            "namespace": "demo.root",
+            "source_path": "src/demo/root.clj",
+            "source_blob": "1" * 40,
+            "status": "reviewed",
+            "dependencies": [],
+            "public_symbols": ["native-call"],
+            "symbol_routes": [{
+                "source_symbol": "native-call",
+                "state": "implemented",
+                "safety": "review",
+                "target_kind": "native",
+                "target_namespace": "std.foundation",
+                "target_symbol": "native-call",
+            }],
+        }])[0]
+        fixture = {
+            "schema_version": 2,
+            "reference": {"repository": "example/foundation", "commit": "4" * 40},
+            "target": {"repository": "example/hara", "base_commit": "5" * 40},
+            "route_policy": {"states": ["implemented"], "safety": ["review"]},
+            "namespaces": [entry],
+            "inventory_sha256": corpus.checksum([entry]),
+        }
+        self.assertEqual([entry], corpus.validate(fixture))
 
 
 class FoundationScriptInventoryIntegrationTest(unittest.TestCase):

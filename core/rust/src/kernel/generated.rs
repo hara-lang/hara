@@ -7,6 +7,7 @@ const LIBRARIES: &[(&str, &str, &str)] = &[
     ("promise", "std.foundation.promise", "promise"),
     ("bytes", "std.foundation.bytes", "bytes"),
     ("coroutine", "std.foundation.coroutine", "co"),
+    ("pretty", "std.foundation.pretty", "pretty"),
 ];
 
 pub(crate) fn foundation_library_aliases() -> impl Iterator<Item = (&'static str, &'static str)> {
@@ -28,6 +29,7 @@ const NATIVE_TYPES: &[&str] = &[
     "Obj",
     "Runtime",
     "Printer",
+    "Document",
     "Edn",
     "Json",
     "Crypto",

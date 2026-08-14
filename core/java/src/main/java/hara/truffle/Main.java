@@ -253,8 +253,8 @@ public final class Main {
     Files.writeString(root.resolve("src").resolve(namespace).resolve("main.hal"),
         "(ns " + namespace + ".main)\n\n(defn main []\n  \"Hello from " + name + "\")\n\n(main)\n");
     Files.writeString(root.resolve("test").resolve(namespace).resolve("main_test.hal"),
-        "(ns " + namespace + ".main-test\n  (:require [std.lib.test :as test]))\n\n"
-            + "(test/print-results\n [(test/check \"starter project runs\" true true)])\n");
+        "(ns " + namespace + ".main-test)\n\n"
+            + "[(test-check \"starter project runs\" true true)]\n");
     output.println("created " + name);
     return 0;
   }
@@ -428,7 +428,7 @@ public final class Main {
               if (result) filePassed++; else fileFailed++;
             }
           } else {
-            throw new HaraException("test file must return code.test/run summary or test/print-results vector");
+            throw new HaraException("test file must return a code.test/run summary or test result vector");
           }
           passed += filePassed;
           failed += fileFailed;

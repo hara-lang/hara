@@ -1,15 +1,185 @@
-(ns std.foundation.pretty
-  (:config {:blank true})
-  (:require [std.foundation.pretty.engine :as engine]))
+(ns std.foundation.pretty)
+
+(def default-options
+  {:width 80 :print-meta false :sort-keys 80 :map-delimiter ","
+   :map-coll-separator " " :seq-limit nil :print-handlers {}
+   :print-fallback :pretty})
+
+(defstruct CanonicalVisitor [options])
+(defstruct PrettyVisitor [options])
+
+(declare format-doc)
+(declare format-doc-edn)
+
+(defn- annotate [kind document]
+  (Document/annotate kind document))
+
+(defn- handled [visitor kind value document]
+  (let [handler (get (:print-handlers (:options visitor)) kind)]
+    (if handler (handler visitor value) document)))
+
+(defn- value-meta [value]
+  (try
+    (IObjType/meta value)
+    (catch Throwable error nil)))
+
+(defn- join-documents [separator documents]
+  (if (empty? documents)
+    []
+    (vec (rest (reduce (fn [output document]
+                         (conj (conj output separator) document))
+                       []
+                       documents)))))
+
+(defn- limited-values [visitor values]
+  (let [limit (:seq-limit (:options visitor))]
+    (if (and (number? limit) (< 0 limit) (< limit (count values)))
+      (conj (vec (take limit values)) ::trimmed)
+      (vec values))))
+
+(defn- ordered-values [visitor values key-function]
+  (let [sort-keys (:sort-keys (:options visitor))
+        entries (vec values)]
+    (if (or (= true sort-keys)
+            (and (number? sort-keys) (<= (count entries) sort-keys)))
+      (sort-by key-function entries)
+      entries)))
+
+(defn- collection-document [visitor open close values separator]
+  (let [documents (map (fn [value]
+                         (if (= value ::trimmed)
+                           (annotate :pretty/nil "...")
+                           (format-doc visitor value)))
+                       (limited-values visitor values))]
+    (Document/group
+      open
+      (Document/align (join-documents separator documents))
+      close)))
+
+(defn- map-document [visitor value separator]
+  (let [options (:options visitor)
+        entries (ordered-values visitor (seq value) first)
+        documents (map (fn [entry]
+                         (Document/fragment
+                           (format-doc visitor (key entry))
+                           (if (coll? (val entry))
+                             (:map-coll-separator options)
+                             " ")
+                           (format-doc visitor (val entry))))
+                       entries)]
+    (Document/group
+      "{"
+      (Document/align (join-documents separator documents))
+      "}")))
+
+(defn- unknown-document [visitor value]
+  (let [fallback (:print-fallback (:options visitor))]
+    (if (= fallback :error)
+      (throw (str "No defined pretty representation for " (pr-str value)))
+      (if (fn? fallback)
+        (fallback visitor value)
+        (annotate :pretty/unknown (pr-str value))))))
+
+(extend-type CanonicalVisitor IEncodeVisitor
+  (visit-nil [visitor] (handled visitor :nil nil "nil"))
+  (visit-boolean [visitor value] (handled visitor :boolean value (pr-str value)))
+  (visit-number [visitor value] (handled visitor :number value (pr-str value)))
+  (visit-character [visitor value] (handled visitor :character value (pr-str value)))
+  (visit-string [visitor value] (handled visitor :string value (pr-str value)))
+  (visit-keyword [visitor value] (handled visitor :keyword value (str value)))
+  (visit-symbol [visitor value] (handled visitor :symbol value (str value)))
+  (visit-seq [visitor value]
+    (handled visitor :seq value (collection-document visitor "(" ")" value " ")))
+  (visit-vector [visitor value]
+    (handled visitor :vector value (collection-document visitor "[" "]" value " ")))
+  (visit-map [visitor value]
+    (handled visitor :map value (map-document visitor value " ")))
+  (visit-set [visitor value]
+    (handled visitor :set value
+             (collection-document visitor "#{" "}"
+                                  (ordered-values visitor value identity) " ")))
+  (visit-tagged [visitor tag form]
+    (handled visitor :tagged form
+             (Document/fragment "#" (str tag) " " (format-doc visitor form))))
+  (visit-unknown [visitor value] (unknown-document visitor value)))
+
+(extend-type PrettyVisitor IEncodeVisitor
+  (visit-nil [visitor] (handled visitor :nil nil (annotate :pretty/nil "nil")))
+  (visit-boolean [visitor value] (handled visitor :boolean value (annotate :pretty/boolean (pr-str value))))
+  (visit-number [visitor value] (handled visitor :number value (annotate :pretty/number (pr-str value))))
+  (visit-character [visitor value] (handled visitor :character value (annotate :pretty/character (pr-str value))))
+  (visit-string [visitor value] (handled visitor :string value (annotate :pretty/string (pr-str value))))
+  (visit-keyword [visitor value] (handled visitor :keyword value (annotate :pretty/keyword (str value))))
+  (visit-symbol [visitor value] (handled visitor :symbol value (annotate :pretty/symbol (str value))))
+  (visit-seq [visitor value]
+    (handled visitor :seq value
+             (collection-document visitor "(" ")" value (Document/line))))
+  (visit-vector [visitor value]
+    (handled visitor :vector value
+             (collection-document visitor "[" "]" value (Document/line))))
+  (visit-map [visitor value]
+    (handled visitor :map value
+             (map-document visitor value
+                           (Document/fragment
+                             (:map-delimiter (:options visitor))
+                             (Document/line)))))
+  (visit-set [visitor value]
+    (handled visitor :set value
+             (collection-document visitor "#{" "}"
+                                  (ordered-values visitor value identity)
+                                  (Document/line))))
+  (visit-tagged [visitor tag form]
+    (handled visitor :tagged form
+             (Document/group
+               (annotate :pretty/tag (str "#" tag))
+               (Document/line)
+               (format-doc visitor form))))
+  (visit-unknown [visitor value] (unknown-document visitor value)))
+
+(defn canonical-printer
+  ([] (canonical-printer {}))
+  ([options]
+   (std.foundation.pretty/CanonicalVisitor
+     (merge default-options options {:mode :canonical}))))
+
+(defn pretty-printer
+  ([] (pretty-printer {}))
+  ([options]
+   (std.foundation.pretty/PrettyVisitor
+     (merge default-options options {:mode :pretty}))))
+
+(defn format-doc-edn [visitor value]
+  (IEncodable/encode-with value visitor))
+
+(defn format-doc
+  ([visitor value]
+   (let [metadata (value-meta value)
+         options (:options visitor)]
+     (if (and metadata (:print-meta options))
+       (Document/align
+         (Document/fragment
+           (annotate :pretty/delimiter "^")
+           (format-doc visitor metadata))
+         (Document/line)
+         (format-doc-edn visitor value))
+       (format-doc-edn visitor value))))
+  ([value] (format-doc (pretty-printer) value)))
 
 (defn render
-  ([document]
-   (engine/render document {}))
-  ([document options]
-   (engine/render document options)))
+  ([document] (render document {}))
+  ([document options] (Document/render document options)))
 
 (defn write
-  ([document]
-   (write document {}))
-  ([document options]
-   (Printer/p (engine/render document options))))
+  ([document] (write document {}))
+  ([document options] (Printer/p (render document options))))
+
+(defn pprint-str
+  ([value] (pprint-str value {}))
+  ([value options]
+   (let [visitor (pretty-printer options)]
+     (render (format-doc visitor value)
+             {:width (:width (:options visitor))}))))
+
+(defn pprint
+  ([value] (pprint value {}))
+  ([value options] (Printer/p (pprint-str value options))))

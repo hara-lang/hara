@@ -42,6 +42,8 @@ const EXCEPTION_INFO: u8 = 32;
 const STRUCT: u8 = 33;
 const POINTER: u8 = 34;
 const VAR_REF: u8 = 35;
+const DEQUE: u8 = 36;
+const PRIORITY_MAP: u8 = 37;
 
 pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = MAGIC.to_vec();
@@ -132,6 +134,7 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
             depth,
         )?,
         Value::Queue(values) => encode_sequence(QUEUE, values.iter(), output, depth)?,
+        Value::Deque(values) => encode_sequence(DEQUE, values.iter(), output, depth)?,
         Value::Set(values) => {
             let mut encoded = values
                 .iter()
@@ -164,6 +167,15 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
             depth,
         )?,
         Value::SortedMap(values) => encode_map(SORTED_MAP, values.iter(), output, depth)?,
+        Value::PriorityMap(values) => {
+            let entries = values.iter().collect::<Vec<_>>();
+            encode_map(
+                PRIORITY_MAP,
+                entries.iter().map(|pair| (&pair.0, &pair.1)),
+                output,
+                depth,
+            )?;
+        }
         Value::Trie(values) => {
             let entries = values
                 .iter()
@@ -391,6 +403,9 @@ impl Reader<'_> {
             QUEUE => Ok(Value::Queue(Box::new(
                 self.sequence(depth)?.into_iter().collect(),
             ))),
+            DEQUE => Ok(Value::Deque(Box::new(
+                self.sequence(depth)?.into_iter().collect(),
+            ))),
             SET => Ok(Value::Set(self.sequence(depth)?.into())),
             ORDERED_SET => Ok(Value::OrderedSet(Box::new(
                 self.sequence(depth)?.into_iter().collect(),
@@ -413,6 +428,9 @@ impl Reader<'_> {
                 self.entries(depth)?.into_iter().collect(),
             ))),
             SORTED_MAP => Ok(Value::SortedMap(Box::new(
+                self.entries(depth)?.into_iter().collect(),
+            ))),
+            PRIORITY_MAP => Ok(Value::PriorityMap(Box::new(
                 self.entries(depth)?.into_iter().collect(),
             ))),
             TRIE => {
@@ -645,6 +663,26 @@ mod tests {
             decode(&encode(&queue).unwrap()).unwrap(),
             Value::Queue(_)
         ));
+        let deque = Value::Deque(Box::new(
+            vec![Value::Number(1), Value::Number(2)]
+                .into_iter()
+                .collect(),
+        ));
+        assert!(matches!(
+            decode(&encode(&deque).unwrap()).unwrap(),
+            Value::Deque(_)
+        ));
+        let priority_map = Value::PriorityMap(Box::new(
+            vec![
+                (Value::Keyword("a".into()), Value::Number(2)),
+                (Value::Keyword("b".into()), Value::Number(1)),
+            ]
+            .into_iter()
+            .collect(),
+        ));
+        let decoded = decode(&encode(&priority_map).unwrap()).unwrap();
+        assert!(matches!(decoded, Value::PriorityMap(_)));
+        assert_eq!(crate::core::map_entries(&decoded).unwrap()[0].0, Value::Keyword("b".into()));
         let tagged = Value::Tagged(Box::new(crate::lang::data::TaggedLiteral::new(
             crate::lang::data::Symbol::parse("demo/tag"),
             Value::Number(42),

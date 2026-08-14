@@ -15,29 +15,55 @@ public class StdLibCollectionTest {
           "(ns collection.java (:require [std.lib.collection :as collection]))");
 
       assertEquals(
-          "[:hara/OrderedMap :hara/OrderedSet :hara/Queue :hara/SortedMap :hara/SortedSet :hara/Trie]",
+          "[:hara/Deque :hara/OrderedMap :hara/OrderedSet :hara/PriorityMap :hara/Queue :hara/SortedMap :hara/SortedSet :hara/Trie]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "[(type (collection/ordered-map :a 1))"
+                  "[(type (collection/deque 1))"
+                      + " (type (collection/ordered-map :a 1))"
                       + " (type (collection/ordered-set 1))"
+                      + " (type (collection/priority-map :a 2))"
                       + " (type (collection/queue 1))"
                       + " (type (collection/sorted-map :b 2 :a 1))"
                       + " (type (collection/sorted-set 2 1))"
                       + " (type (collection/trie \"alpha\" 7))]")
               .toString());
       assertEquals(
-          "[true true true true true true false]",
+          "[true true true true true true true true false false]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "[(collection/ordered-map? (collection/ordered-map))"
+                  "[(collection/deque? (collection/deque))"
+                      + " (collection/ordered-map? (collection/ordered-map))"
                       + " (collection/ordered-set? (collection/ordered-set))"
+                      + " (collection/priority-map? (collection/priority-map))"
                       + " (collection/queue? (collection/queue))"
                       + " (collection/sorted-map? (collection/sorted-map))"
                       + " (collection/sorted-set? (collection/sorted-set))"
                       + " (collection/trie? (collection/trie))"
-                      + " (collection/trie? {})]")
+                      + " (collection/deque? [])"
+                      + " (collection/priority-map? {})]")
+              .toString());
+      assertEquals(
+          "[1 3 [0 1 2 3] [1 2 3 4] [2 3] [1 2] [1 9 3] [1 2 3]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [value (collection/deque 1 2 3)]"
+                      + " [(collection/peek-first value) (collection/peek-last value)"
+                      + " (collection/push-first value 0) (collection/push-last value 4)"
+                      + " (collection/pop-first value) (collection/pop-last value)"
+                      + " (assoc value 1 9) value])")
+              .toString());
+      assertEquals(
+          "[[:b :c :a] [:b 1] [:a 2] [:c :a :b] [:c :a] [:b :c]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [value (collection/priority-map :a 2 :b 1 :c 1)]"
+                      + " [(keys value) (collection/peek-first value) (collection/peek-last value)"
+                      + " (keys (assoc value :b 2)) (keys (collection/pop-first value))"
+                      + " (keys (collection/pop-last value))])")
               .toString());
       assertEquals(
           "[[:b :a] [:a :b] 5 7]",

@@ -131,15 +131,23 @@ pub fn eval_bytecode_bundle(runtime: &mut Runtime, bytes: &[u8]) -> Result<(), S
     let loaded_before = runtime.loaded_resources.clone();
     let loaded = (|| {
         for module in &modules {
-            let source_is_current = runtime
-                .resources
-                .get(&module.resource)
+            let source = runtime.resources.get(&module.resource);
+            if source.is_none() && standard_library_namespace(&module.resource) {
+                continue;
+            }
+            let source_is_current = source
                 .map(|source| {
                     let digest: [u8; 32] = Sha256::digest(source.as_bytes()).into();
                     digest == module.source_digest
                 })
                 .unwrap_or(true);
-            if !source_is_current && !module.eager {
+            if !source_is_current {
+                if module.eager {
+                    return Err(format!(
+                        "stale eager bytecode bundle module: {}",
+                        module.resource
+                    ));
+                }
                 continue;
             }
             runtime.register_bytecode_resource(

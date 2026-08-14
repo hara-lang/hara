@@ -12,6 +12,13 @@ public class StdPrettyTest {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       context.eval(HaraLanguage.ID, "(require 'std.foundation.pretty)");
       assertEquals(
+          "[:document/annotate :pretty/string \"x\"]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(pr-str (std.native.Document/annotate :pretty/string \"x\"))")
+              .asString());
+      assertEquals(
           "abc",
           context.eval(HaraLanguage.ID, "(std.foundation.pretty/render \"abc\")").asString());
       assertEquals(
@@ -44,11 +51,22 @@ public class StdPrettyTest {
                   HaraLanguage.ID,
                   "(std.foundation.pretty/render " + document + " {:width 8})")
               .asString());
+      assertEquals(
+          "{:a 1, :b 2}",
+          context
+              .eval(HaraLanguage.ID, "(pretty/pprint-str {:b 2 :a 1})")
+              .asString());
       assertThrows(
           RuntimeException.class,
           () ->
               context.eval(
                   HaraLanguage.ID, "(std.foundation.pretty/render \"abc\" nil)"));
+      assertThrows(
+          RuntimeException.class,
+          () -> context.eval(HaraLanguage.ID, "(require 'std.pretty)"));
+      assertThrows(
+          RuntimeException.class,
+          () -> context.eval(HaraLanguage.ID, "(require 'std.foundation.pretty.engine)"));
     }
   }
 }

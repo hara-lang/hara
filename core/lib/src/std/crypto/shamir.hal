@@ -48,7 +48,7 @@
         (recur (inc index)
                next-power
                (bit-xor y
-                        (gf-multiply (std.native.Bytes/get coefficients
+                        (gf-multiply (Bytes/get coefficients
                                                            (+ coefficient-start index))
                                      next-power)))))))
 
@@ -57,13 +57,13 @@
   (if (= share-index (count shares))
     shares
     (let [share (nth shares share-index)
-          updated (std.native.Bytes/set share
+          updated (Bytes/set share
                             (inc offset)
-                            (share-byte (std.native.Bytes/get secret offset)
+                            (share-byte (Bytes/get secret offset)
                                         coefficients
                                         coefficient-start
                                         coefficient-count
-                                        (std.native.Bytes/get share 0)))]
+                                        (Bytes/get share 0)))]
       (fill-share-offsets secret coefficients coefficient-start coefficient-count
                           (assoc shares share-index updated)
                           offset
@@ -71,7 +71,7 @@
 
 (defn validate-split
   [secret shares threshold coefficient-bytes]
-  (let [length (std.native.Bytes/count secret)
+  (let [length (Bytes/count secret)
         expected (* length (- threshold 1))]
     (if (= length 0)
       (throw (ex-info "secret must not be empty" {}))
@@ -82,17 +82,17 @@
     (if (or (< shares threshold) (> shares 255))
       (throw (ex-info "invalid share count" {:shares shares}))
       nil)
-    (if (not (= expected (std.native.Bytes/count coefficient-bytes)))
+    (if (not (= expected (Bytes/count coefficient-bytes)))
       (throw (ex-info "invalid coefficient byte count"
                       {:expected expected
-                       :actual (std.native.Bytes/count coefficient-bytes)}))
+                       :actual (Bytes/count coefficient-bytes)}))
       nil)
     true))
 
 (defn entropy-byte-count
   "Returns the exact entropy requested from the crypto.random capability."
   [secret shares threshold]
-  (let [length (std.native.Bytes/count secret)]
+  (let [length (Bytes/count secret)]
     (if (= length 0)
       (throw (ex-info "secret must not be empty" {}))
       nil)
@@ -109,14 +109,14 @@
    deterministic tests and audited entropy providers."
   [secret shares threshold coefficient-bytes]
   (validate-split secret shares threshold coefficient-bytes)
-  (let [length (std.native.Bytes/count secret)
+  (let [length (Bytes/count secret)
         output
         (loop [index 0 result []]
           (if (= index shares)
             result
             (recur (inc index)
                    (conj result
-                         (std.native.Bytes/set
+                         (Bytes/set
                           (apply bytes (repeat (inc length) 0))
                           0
                           (inc index))))))]
@@ -132,7 +132,7 @@
 (defn split
   "Splits secret into shares with the requested reconstruction threshold."
   [secret shares threshold]
-  (let [coefficient-count (* (std.native.Bytes/count secret) (- threshold 1))
+  (let [coefficient-count (* (Bytes/count secret) (- threshold 1))
         coefficients (deref (Host/call "crypto.random" "fill"
                                        [coefficient-count]))]
     (split-with-coefficients secret shares threshold coefficients)))
@@ -143,7 +143,7 @@
     (if (= index (count shares))
       result
       (recur (inc index)
-             (conj result (std.native.Bytes/get (nth shares index) 0))))))
+             (conj result (Bytes/get (nth shares index) 0))))))
 
 (defn contains-index?
   [indexes value limit]
@@ -159,7 +159,7 @@
   (if (< (count shares) 2)
     (throw (ex-info "at least two shares required" {}))
     nil)
-  (let [length (std.native.Bytes/count (nth shares 0))
+  (let [length (Bytes/count (nth shares 0))
         indexes (indexes-of shares)]
     (if (< length 2)
       (throw (ex-info "invalid share length" {:length length}))
@@ -168,7 +168,7 @@
       (if (< index (count shares))
         (let [share (nth shares index)
               share-index (nth indexes index)]
-          (if (not (= length (std.native.Bytes/count share)))
+          (if (not (= length (Bytes/count share)))
             (throw (ex-info "inconsistent shares" {:index index}))
             nil)
           (if (or (= share-index 0)
@@ -203,19 +203,19 @@
       (recur (inc index)
              (bit-xor value
                       (gf-multiply
-                       (std.native.Bytes/get (nth shares index) offset)
+                       (Bytes/get (nth shares index) offset)
                        (basis-for indexes index)))))))
 
 (defn combine
   "Reconstructs a secret from a threshold-sized set of distinct shares."
   [shares]
   (let [indexes (validate-shares shares)
-        length (std.native.Bytes/count (nth shares 0))]
+        length (Bytes/count (nth shares 0))]
     (loop [offset 1
            result (apply bytes (repeat (- length 1) 0))]
       (if (= offset length)
         result
         (recur (inc offset)
-               (std.native.Bytes/set result
+               (Bytes/set result
                          (- offset 1)
                          (combine-byte shares indexes offset)))))))

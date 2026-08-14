@@ -298,7 +298,7 @@ pub fn new_app(destination: &Path, name: &str) -> Result<Project, String> {
         format!("(ns {namespace}.main)\n\n(defn main []\n  \"Hello from {name}\")\n\n(main)\n"),
     )
     .map_err(io)?;
-    fs::write(destination.join("test").join(&namespace).join("main_test.hal"), format!("(ns {namespace}.main-test\n  (:require [std.lib.test :as test]))\n\n(test/print-results\n [(test/check \"starter project runs\" true true)])\n")).map_err(io)?;
+    fs::write(destination.join("test").join(&namespace).join("main_test.hal"), format!("(ns {namespace}.main-test)\n\n[(test-check \"starter project runs\" true true)]\n")).map_err(io)?;
     read(&destination.join("project.edn"))
 }
 

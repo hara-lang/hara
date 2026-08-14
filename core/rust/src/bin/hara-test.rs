@@ -57,6 +57,7 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
         .stack_size(TEST_STACK_SIZE)
         .spawn(move || {
             let mut kernel = SessionKernel::new();
+            kernel.set_test_runner("native")?;
             let mount = kernel.create_native_filesystem(&root_text);
             kernel.attach_filesystem("ROOT", mount)?;
             let session = kernel.session_mut("ROOT")?;
@@ -98,7 +99,7 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
 fn test_run_source(namespace: &str) -> String {
     format!(
         "(let [summary (code.test/run {{:namespace \"{}\"}})] \
-         (assoc (dissoc summary :results) :results (str (:results summary))))",
+         (assoc (dissoc summary :results :report) :results (str (:results summary))))",
         namespace
     )
 }
@@ -172,7 +173,7 @@ fn parse_summary(path: PathBuf, output: &str) -> Result<TestSummary, String> {
     match form {
         Form::Map(entries) => parse_code_test_summary(path, entries, output),
         Form::Vector(items) | Form::List(items) => parse_legacy_results(path, items, output),
-        _ => Err("test file must return code.test/run summary or test/print-results vector".into()),
+        _ => Err("test file must return a code.test/run summary or test result vector".into()),
     }
 }
 

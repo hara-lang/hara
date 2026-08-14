@@ -1,23 +1,55 @@
 (ns code.test.base.executive
-  (:require [code.test :as test]))
+  (:require [code.test :as test]
+            [code.test.artifact :as artifact]))
 
-(def +latest+ (atom {}))
+(def +latest+ artifact/+latest+)
 
-(defn report-edn-safe? [value] true)
-(defn report-edn [value] (pr-str value))
-(defn report-file-path [options] (:report options))
-(defn report->run-path [path] path)
-(defn run-file-path [options] (:run options))
-(defn history-file-path [options] (:history options))
-(defn run-file-params [options] options)
-(defn run-file-form [options] options)
-(defn save-run-history [report] report)
-(defn save-artifact [artifact] artifact)
-(defn artifact-notices [artifact] [])
-(defn save-report-paths [report] report)
-(defn announce-artifacts [report] report)
-(defn load-report [path] (read-string (file/read path)))
-(defn report-failed-facts [report] (:failed report))
+(def report-edn-safe? artifact/report-edn-safe?)
+(def report-edn artifact/report-edn)
+(def report->run-path artifact/report->run-path)
+(def artifact-notices artifact/artifact-notices)
+(def load-report artifact/load-report)
+(def report-failed-facts artifact/report-failed-facts)
+
+(defn report-file-path
+  ([] (artifact/report-file-path {:test/config {:started-at 0}}))
+  ([options] (artifact/report-file-path options)))
+
+(defn run-file-path
+  ([options]
+   (artifact/run-file-path (artifact/report-file-path options) options))
+  ([report-path options]
+   (artifact/run-file-path report-path options)))
+
+(defn history-file-path
+  [options]
+  (artifact/history-file-path (run-file-path options) options))
+
+(def run-file-params artifact/run-file-options)
+
+(defn run-file-form
+  ([options] (artifact/run-file-form options))
+  ([selector options]
+   (artifact/run-file-form (assoc options :namespace selector))))
+
+(defn save-run-history
+  [report]
+  (:history-path report))
+
+(defn save-artifact
+  ([artifact] artifact)
+  ([label path content]
+   (if path (artifact/write-text! path content) nil)))
+
+(defn save-report-paths
+  ([summary] (artifact/save-report-paths summary {}))
+  ([summary selector options]
+   (artifact/save-report-paths summary
+                               (assoc options :namespace selector))))
+
+(defn announce-artifacts
+  [artifacts]
+  artifacts)
 (defn accumulate [current result] (conj (or current []) result))
 (defn interim [results] results)
 (defn retrieve-line [key report] (or (get report key) []))
@@ -31,8 +63,13 @@
   [summary items results]
   summary)
 
-(defn save-report [path report]
-  (do (file/write path (pr-str report)) report))
+(defn save-report
+  ([summary]
+   (:run-path (artifact/save-report-paths summary {})))
+  ([summary selector options]
+   (:run-path
+    (artifact/save-report-paths summary
+                                (assoc options :namespace selector)))))
 (defn unload-namespace [namespace params lookup env] namespace)
 (defn load-namespace [namespace params lookup env] namespace)
 (defn test-namespace [namespace params lookup env]
