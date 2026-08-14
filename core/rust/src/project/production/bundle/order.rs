@@ -13,9 +13,10 @@ pub(super) fn module_order(modules: &[RenderedModule]) -> Vec<usize> {
     while !remaining.is_empty() {
         let next = remaining.iter().copied().find(|index| {
             modules[*index].dependencies.iter().all(|dependency| {
-                positions
-                    .get(dependency.as_str())
-                    .is_none_or(|dependency_index| !remaining.contains(dependency_index))
+                match positions.get(dependency.as_str()) {
+                    Some(dependency_index) => !remaining.contains(dependency_index),
+                    None => true,
+                }
             })
         });
         let Some(next) = next else {
