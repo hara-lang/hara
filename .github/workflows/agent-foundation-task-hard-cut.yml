@@ -1,0 +1,179 @@
+name: Apply Foundation bundle and code.test.task hard cut
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/agent-foundation-task-hard-cut.yml
+      - scripts/runtime/foundation-task-hard-cut.patch.gz.b64
+      - scripts/runtime/foundation-task-hard-cut.part00
+      - scripts/runtime/foundation-task-hard-cut.part01
+      - scripts/runtime/foundation-task-hard-cut.part02
+      - scripts/runtime/foundation-task-hard-cut.part03
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Reconstruct and apply focused patch
+        run: |
+          base64 --decode scripts/runtime/foundation-task-hard-cut.patch.gz.b64 | gzip --decompress > /tmp/foundation-task-hard-cut.patch
+          echo 'c17d224afb2ce10dd1d235895556a7e19d8cad620567505fad7da46d8e86d9fa  /tmp/foundation-task-hard-cut.patch' | sha256sum -c -
+          git apply --check /tmp/foundation-task-hard-cut.patch
+          git apply /tmp/foundation-task-hard-cut.patch
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose sibling specifications path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Validate source ownership and mirrors
+        run: |
+          python3 scripts/runtime/sync-rust-hal-src --check
+          python3 scripts/runtime/check-code-test-work-events
+          git diff --check
+
+      - name: Build fresh JVM and Truffle runner
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Probe data-only CLI handler metadata in native Hara
+        run: |
+          cat > /tmp/tool-cli-template-probe.hal <<'HAL'
+          (ns tool.cli.template-probe
+            (:require [tool.cli.model :as model]
+                      [tool.cli.template :as template]))
+
+          (let [handler
+                (template/handler
+                 {:id :probe/handler
+                  :version 7
+                  :template :probe
+                  :main {:argcount 1
+                         :fn (fn [request]
+                               (model/success request))}})
+                metadata (meta handler)
+                result (handler {:value 42})]
+            (pr-str [metadata
+                     (template/handler? handler)
+                     (:result/data result)]))
+          HAL
+          actual="$(./core/hara --project core --offline run /tmp/tool-cli-template-probe.hal)"
+          expected='[{:tool.cli.template/schema "tool.cli.template/0-alpha" :tool.cli.template/id :probe/handler :tool.cli.template/version 7 :tool.cli.template/type :probe} true {:value 42}]'
+          test "$actual" = "$expected"
+
+      - name: Prove canonical code.test owners load without cycles
+        run: |
+          cat > /tmp/code-test-owner-probe.hal <<'HAL'
+          (ns code.test-owner-probe
+            (:require [code.test :as test]
+                      [code.test.base.executive :as executive]
+                      [code.test.cli :as cli]
+                      [code.test.work :as test-work]))
+
+          (pr-str
+           [(fn? test/process-test-args)
+            (fn? cli/process-run-args)
+            (fn? executive/main)
+            (fn? test-work/run)
+            (test/process-test-args [":only" "std" "code"])])
+          HAL
+          actual="$(./core/hara --project core --offline run /tmp/code-test-owner-probe.hal)"
+          test "$actual" = '[true true true true {:namespace [std code]}]'
+
+      - name: Run focused Hara library tests
+        run: |
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/tool/cli/template_test.hal \
+            core/lib/test/code/test_support_test.hal \
+            core/lib/test/code/test_internal_modules_test.hal \
+            core/lib/test/code/test_compatibility_test.hal \
+            core/lib/test/code/test_facade_test.hal \
+            core/lib/test/code/deploy/cli_test.hal
+
+      - name: Regenerate and verify Foundation HBX
+        run: |
+          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
+          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
+
+      - name: Disassemble Foundation HBX and inspect code.test
+        run: |
+          ./core/hara bytecode disassemble core/rust/assets/std.foundation.hbx > /tmp/std.foundation.disassembly
+          grep -F 'code.test' /tmp/std.foundation.disassembly
+          grep -F 'process-test-args' /tmp/std.foundation.disassembly
+          if grep -F 'code.test.task' /tmp/std.foundation.disassembly; then
+            echo 'retired code.test.task remains in Foundation HBX' >&2
+            exit 1
+          fi
+
+      - name: Run Rust embedded-library and bundle tests
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml foundation_code_test_compatibility_namespaces_are_embedded
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm vm::bundle
+
+      - name: Run Java code.test and HBX codec tests
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -DfailIfNoTests=true
+          -Dtest=hara.truffle.CodeTestLibraryTest,hara.truffle.HaraBytecodeToolTest,hara.truffle.bytecode.HbcCodecTest
+          test
+
+      - name: Prepare and audit final tree
+        run: |
+          rm -rf hara-specs-registry
+          git fetch origin main
+          git checkout origin/main -- .github/workflows/agent-source-export.yml
+          rm .github/workflows/agent-foundation-task-hard-cut.yml
+          rm scripts/runtime/foundation-task-hard-cut.patch.gz.b64
+          rm scripts/runtime/foundation-task-hard-cut.part00
+          rm scripts/runtime/foundation-task-hard-cut.part01
+          rm scripts/runtime/foundation-task-hard-cut.part02
+          rm scripts/runtime/foundation-task-hard-cut.part03
+          python3 scripts/runtime/sync-rust-hal-src --check
+          python3 scripts/runtime/check-code-test-work-events
+          git diff --check
+          unexpected="$(rg -n 'code\.test\.task|task/process-test-args' core scripts notes plans \
+            | grep -v 'core/spec/foundation-workflow-parity.edn' \
+            | grep -v 'scripts/runtime/check-code-test-work-events' || true)"
+          if [ -n "$unexpected" ]; then
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          grep -F 'src/code/test/task.clj' core/spec/foundation-workflow-parity.edn
+
+      - name: Commit verified hard cut
+        run: |
+          git config user.name "OpenAI Agent"
+          git config user.email "openai-agent@users.noreply.github.com"
+          git add -A
+          git commit -m "Repair Foundation bundle generation and retire code.test.task"
+          git push origin HEAD:${{ github.head_ref }}

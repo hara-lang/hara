@@ -1,0 +1,175 @@
+diff --git a/core/java/src/test/java/hara/truffle/CodeTestLibraryTest.java b/core/java/src/test/java/hara/truffle/CodeTestLibraryTest.java
+index 3e9a074..ad6fc52 100644
+--- a/core/java/src/test/java/hara/truffle/CodeTestLibraryTest.java
++++ b/core/java/src/test/java/hara/truffle/CodeTestLibraryTest.java
+@@ -34,7 +34,7 @@ public class CodeTestLibraryTest {
+   public void foundationCompatibilityNamespacesLoadAndCompose() {
+     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+       assertEquals(
+-          "[true true true 42 {:ns [std code]}]",
++          "[true true true 42 {:namespace [std code]}]",
+           context
+               .eval(
+                   HaraLanguage.ID,
+@@ -42,8 +42,7 @@ public class CodeTestLibraryTest {
+                       + "(:require [code.test :as test] "
+                       + "[code.test.checker.common :as common] "
+                       + "[code.test.checker.collection :as collection] "
+-                      + "[code.test.compile.types :as types] "
+-                      + "[code.test.task :as task])) "
++                      + "[code.test.compile.types :as types])) "
+                       + "(pr-str (let [fact (types/Fact :core 'id 'probe nil nil "
+                       + "\"portable\" 1 1 nil nil (fn [] 42) {})] "
+                       + "[(common/succeeded? "
+@@ -53,7 +52,7 @@ public class CodeTestLibraryTest {
+                       + "         (collection/contains-map {:a 1}))) "
+                       + " (types/fact? fact) "
+                       + " (fact) "
+-                      + " (task/process-test-args "
++                      + " (test/process-test-args "
+                       + "  [\":only\" \"std\" \"code\"])]))")
+               .asString());
+     }
+diff --git a/core/lib/src/code/test.hal b/core/lib/src/code/test.hal
+index 39dc1f0..2c39aed 100644
+--- a/core/lib/src/code/test.hal
++++ b/core/lib/src/code/test.hal
+@@ -12,9 +12,9 @@
+             [code.test.checker.collection :as collection]
+             [code.test.checker.common :as common]
+             [code.test.checker.logic :as logic]
++            [code.test.cli :as cli]
+             [code.test.compile :as compile]
+             [code.test.manage :as manage]
+-            [code.test.task :as task]
+             [code.test.work :as test-work]))
+ 
+ ;; Assertion vocabulary.
+@@ -110,6 +110,6 @@
+ (def run-errored executive/run-errored)
+ (def run:interrupt executive/run:interrupt)
+ (def run:report executive/run:report)
+-(def print-options task/print-options)
+-(def process-test-args task/process-run-args)
+-(def -main task/main)
++(def print-options cli/print-options)
++(def process-test-args cli/process-run-args)
++(def -main executive/main)
+diff --git a/core/lib/src/code/test/base/executive.hal b/core/lib/src/code/test/base/executive.hal
+index 97289f4..3e03a41 100644
+--- a/core/lib/src/code/test/base/executive.hal
++++ b/core/lib/src/code/test/base/executive.hal
+@@ -1,6 +1,7 @@
+ (ns code.test.base.executive
+   (:require [code.test.artifact :as artifact]
+             [code.test.base.runtime :as runtime]
++            [code.test.cli :as cli]
+             [code.test.work :as test-work]))
+ 
+ (def +latest+ artifact/+latest+)
+@@ -160,3 +161,8 @@
+              (artifact/report-failed-facts report)))))
+   ([path options project]
+    (run:report path (assoc options :root (:root project)))))
++
++(defn main
++  "Runs code.test from command-line arguments using canonical CLI options."
++  [& arguments]
++  (test-work/run (cli/process-run-args arguments)))
+diff --git a/core/lib/src/code/test/cli.hal b/core/lib/src/code/test/cli.hal
+index 546fc30..16a6b6b 100644
+--- a/core/lib/src/code/test/cli.hal
++++ b/core/lib/src/code/test/cli.hal
+@@ -74,6 +74,19 @@
+                        (assoc output :namespace [value])
+                        (assoc output key value))))))))))
+ 
++(defn print-options
++  "Returns the supported code.test print modes, or preserves an explicit mode."
++  ([] (print-options :help))
++  ([options]
++   (if (= options :help)
++     #{:help :current :default :disable :all}
++     options)))
++
++(defn process-run-args
++  "Returns canonical code.test execution options from command-line arguments."
++  [arguments]
++  (process-args (collapse-only arguments)))
++
+ (defn native-result-counts
+   [results]
+   (reduce
+diff --git a/core/lib/src/code/test/task.hal b/core/lib/src/code/test/task.hal
+deleted file mode 100644
+index e0cb0bb..0000000
+--- a/core/lib/src/code/test/task.hal
++++ /dev/null
+@@ -1,59 +0,0 @@
+-;; Deprecated task-shaped entry names retained for callers while code.test
+-;; execution is owned by code.test.work.
+-(ns code.test.task
+-  (:require [code.test.cli :as cli]
+-            [code.test.work :as test-work]))
+-
+-(def run test-work/run)
+-(def run:current test-work/run)
+-(def run:test test-work/run)
+-(def run:load test-work/run)
+-(def run:unload test-work/run)
+-(def run-errored test-work/run)
+-
+-(defn resolve-files
+-  ([files] (resolve-files files nil))
+-  ([files project]
+-   (if (or (vector? files) (list? files) (set? files))
+-     (vec files)
+-     [files])))
+-
+-(defn run:interrupt [] true)
+-(defn run:report
+-  ([path] (test-work/run {:report path}))
+-  ([path options] (test-work/run (assoc options :report path)))
+-  ([path options project] (test-work/run (assoc options :report path))))
+-
+-(defn print-options
+-  ([] (print-options :help))
+-  ([options]
+-   (if (= options :help)
+-     #{:help :current :default :disable :all}
+-     options)))
+-
+-(defn legacy-test-options
+-  "Preserves the archived task CLI result shape while code.test.cli owns the
+-   canonical :namespace execution option."
+-  [options]
+-  (if (has? options :namespace)
+-    (assoc (dissoc options :namespace)
+-           :ns
+-           (:namespace options))
+-    options))
+-
+-(defn process-run-args
+-  "Returns the canonical options used by the public code.test facade."
+-  [arguments]
+-  (cli/process-args (cli/collapse-only arguments)))
+-
+-(defn process-test-args
+-  [arguments]
+-  (legacy-test-options (process-run-args arguments)))
+-
+-(defn main
+-  [& arguments]
+-  (test-work/run (process-run-args arguments)))
+-
+-(defn -main
+-  [& arguments]
+-  (test-work/run (process-test-args arguments)))
+diff --git a/core/lib/src/tool/cli/template.hal b/core/lib/src/tool/cli/template.hal
+index 5cab3b3..4cf3c98 100644
+--- a/core/lib/src/tool/cli/template.hal
++++ b/core/lib/src/tool/cli/template.hal
+@@ -243,8 +243,9 @@
+       (fn [request]
+         (std-work/run (runtime-fn) command-work request))
+       {:tool.cli.template/schema schema-id
