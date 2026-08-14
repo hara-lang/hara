@@ -1,0 +1,104 @@
+name: Apply PostgreSQL extension once
+
+on:
+  push:
+    branches:
+      - agent/postgres-arbitrary-precision-extension
+    paths:
+      - '.github/workflows/apply-postgres-extension-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: github.repository == 'hara-lang/hara'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/postgres-arbitrary-precision-extension
+          fetch-depth: 0
+      - name: Read the pinned Foundation script revision
+        id: foundation-script
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          policy = json.loads(Path("core/spec/foundation-script-policy.json").read_text())
+          print(f"commit={policy['reference']['commit']}")
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: zcaudate-xyz/foundation-base
+          ref: ${{ steps.foundation-script.outputs.commit }}
+          path: foundation-base
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Expose the specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Pin the validated extension and generate the current HBX bundle
+        env:
+          EXTENSION_REVISION: 11f189cf99c94048b290809218495a3fa043672b
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path("core/rust/Cargo.toml")
+          source = path.read_text()
+          old = 'hara-db-postgres = { git = "https://github.com/hara-lang/hara-extensions.git", rev = "6e1aa7f", package = "hara-db-postgres" }'
+          new = f'hara-db-postgres = {{ git = "https://github.com/hara-lang/hara-extensions.git", rev = "{os.environ["EXTENSION_REVISION"]}", package = "hara-db-postgres" }}'
+          if source.count(old) != 1:
+              raise SystemExit(f"expected one PostgreSQL extension pin, found {source.count(old)}")
+          path.write_text(source.replace(old, new, 1))
+          PY
+          python3 scripts/runtime/sync-rust-hal-src --check
+          cargo run --quiet \
+            --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm \
+            --bin hara-foundation-artifact \
+            -- generate
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Build Hara Truffle runtime
+        run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
+      - name: Execute emitted JavaScript, Python, and Lua
+        run: bash scripts/runtime/run-hara-runtime-smoke
+      - name: Execute the script contract and Foundation XTalk tranche
+        env:
+          FOUNDATION_BASE_ROOT: foundation-base
+        run: bash scripts/runtime/run-foundation-script-tranche
+      - name: Commit the validated extension pin and generated artifacts
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            core/rust/Cargo.toml \
+            core/rust/Cargo.lock \
+            core/rust/assets/std.foundation.hbx
+          git diff --cached --stat
+          git diff --cached --quiet && exit 0
+          git commit -m "Use the arbitrary-precision PostgreSQL extension"
+          git push origin HEAD:agent/postgres-arbitrary-precision-extension
