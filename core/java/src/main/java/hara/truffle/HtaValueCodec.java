@@ -55,6 +55,7 @@ public final class HtaValueCodec {
   private static final int EXCEPTION_INFO = 32;
   private static final int STRUCT = 33;
   private static final int POINTER = 34;
+  private static final int VAR_REF = 35;
 
   private HtaValueCodec() {}
 
@@ -127,6 +128,12 @@ public final class HtaValueCodec {
       Symbol symbol = (Symbol) value;
       output.write(SYMBOL);
       writeText(output, qualified(symbol.getNamespace(), symbol.getName()));
+    } else if (value instanceof HaraVar variable) {
+      output.write(VAR_REF);
+      write(
+          output,
+          Symbol.create(variable.namespaceName(), variable.symbolName()),
+          depth + 1);
     } else if (value instanceof HtaHandle) {
       HtaHandle handle = (HtaHandle) value;
       if (handle.released()) throw new HaraException("hta/handle-released: " + handle);
@@ -390,9 +397,19 @@ public final class HtaValueCodec {
           return exceptionInfo(depth + 1);
         case POINTER:
           return pointer(depth + 1);
+        case VAR_REF:
+          return varReference(depth + 1);
         default:
           throw malformed("unknown value tag " + tag);
       }
+    }
+
+    private Object varReference(int depth) {
+      Object value = read(depth);
+      if (!(value instanceof Symbol symbol) || symbol.getNamespace() == null) {
+        throw malformed("invalid Var reference");
+      }
+      return new HaraVar(symbol.getNamespace(), symbol.getName(), null);
     }
 
     private Object struct(int depth) {

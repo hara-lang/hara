@@ -5550,6 +5550,41 @@ mod tests {
     }
 
     #[test]
+    fn native_test_catalog_owns_runner_config_and_kernel_context() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(= Test std.native.Test) \
+                      (get (Test/catalog) :runners) \
+                      (get (Test/catalog) :default) \
+                      (get (Test/catalog) :context) \
+                      (Test/events)]"
+                )
+                .unwrap(),
+            "[true [:code.test :native] :code.test :kernel [:test/run-started :test/fact-started :test/fact-completed :test/run-completed]]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [config (Test/config :native {:focus :fast}) \
+                           context (Test/context config)] \
+                       [(get config :runner) \
+                        (get (get config :options) :focus) \
+                        (IPointer/ptr-context context) \
+                        (get context :id) \
+                        (get (get context :config) :runner)])"
+                )
+                .unwrap(),
+            "[:native :fast :kernel :test :native]"
+        );
+        assert!(runtime
+            .eval_text("(Test/config :other)")
+            .unwrap_err()
+            .contains("runner must be :code.test or :native"));
+    }
+
+    #[test]
     fn keyword_symbol_constructors_and_namespaced_protocol_match_java() {
         let mut runtime = Runtime::new();
         assert_eq!(

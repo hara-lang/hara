@@ -111,6 +111,35 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void nativeTestCatalogOwnsRunnerConfigAndKernelContext() {
+    try (Context context = context()) {
+      assertEquals(
+          "[true [:code.test :native] :code.test :kernel "
+              + "[:test/run-started :test/fact-started :test/fact-completed :test/run-completed]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(= Test std.native.Test) (get (Test/catalog) :runners) "
+                      + "(get (Test/catalog) :default) (get (Test/catalog) :context) "
+                      + "(Test/events)]")
+              .toString());
+      assertEquals(
+          "[:native :fast :kernel :test :native]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [config (Test/config :native {:focus :fast}) "
+                      + "context (Test/context config)] "
+                      + "[(get config :runner) (get (get config :options) :focus) "
+                      + "(IPointer/ptr-context context) (get context :id) "
+                      + "(get (get context :config) :runner)])")
+              .toString());
+      assertErrorContains(
+          context, "(Test/config :other)", "runner must be :code.test or :native");
+    }
+  }
+
+  @Test
   public void intrinsicsCanExcludeAndRenameGeneratedAliases() {
     try (Context context = context()) {
       assertEquals(

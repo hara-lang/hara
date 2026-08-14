@@ -142,7 +142,13 @@ public final class HaraContext {
           Map.entry("Kernel", java.util.List.of("session-create", "session-close", "session-list", "session-info", "session-eval", "session-namespace", "session-complete", "resource-register", "resource-remove", "resource-list", "filesystem-create", "filesystem-attach", "filesystem-detach", "filesystem-info", "filesystem-close", "capabilities")),
           Map.entry("String", java.util.List.of("length", "blank?", "includes?", "starts-with?", "ends-with?", "char-at", "slice", "index-of", "last-index-of", "join", "split", "split-lines", "repeat", "replace", "replace-first", "trim", "trim-left", "trim-right", "upper", "lower", "capitalize", "decapitalize", "pad-left", "pad-right", "reverse", "encode-utf8", "decode-utf8", "to-fixed")),
           Map.entry("Bytes", java.util.List.of("new", "instance?", "count", "get", "set", "copy", "slice", "u8", "s8")),
-          Map.entry("Crypto", java.util.List.of("sha256")),
+          Map.entry(
+              "Crypto",
+              java.util.List.of(
+                  "sha256", "sha512", "hmac-sha256", "hmac-sha512", "random-bytes",
+                  "secure-equal?", "ed25519-keypair", "ed25519-public", "ed25519-sign",
+                  "ed25519-verify", "x25519-keypair", "x25519-public", "x25519-shared",
+                  "p256-keypair", "p256-public", "p256-sign", "p256-verify", "p256-shared")),
           Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv")),
           Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "wait", "kill")),
           Map.entry("File", java.util.List.of("parent", "join", "resolve", "read", "write", "exists?", "stat", "list", "walk", "mkdir", "delete")),
@@ -156,6 +162,7 @@ public final class HaraContext {
           Map.entry("Edn", java.util.List.of("read", "read-forms", "write", "pretty")),
           Map.entry("Json", java.util.List.of("read", "write", "pretty")),
           Map.entry("Host", java.util.List.of("call", "describe", "capabilities", "capability?")),
+          Map.entry("Test", java.util.List.of("catalog", "config", "context", "events")),
           Map.entry("Regex", java.util.List.of("instance?")),
           Map.entry("UUID", java.util.List.of("instance?")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
@@ -2700,6 +2707,79 @@ public final class HaraContext {
     return new HaraPromise(future);
   }
 
+  private Object nativeTestEvents(Object[] values) {
+    if (values.length != 0) {
+      throw new HaraException("std.native.Test/events expects no arguments");
+    }
+    return BuiltinStruct.vector(
+        new Object[] {
+          Keyword.create("test", "run-started"),
+          Keyword.create("test", "fact-started"),
+          Keyword.create("test", "fact-completed"),
+          Keyword.create("test", "run-completed")
+        });
+  }
+
+  private Object nativeTestCatalog(Object[] values) {
+    if (values.length != 0) {
+      throw new HaraException("std.native.Test/catalog expects no arguments");
+    }
+    return hara.lang.data.Map.Standard.from(
+        null,
+        Keyword.create("runners"),
+        BuiltinStruct.vector(
+            new Object[] {Keyword.create("code.test"), Keyword.create("native")}),
+        Keyword.create("default"),
+        Keyword.create("code.test"),
+        Keyword.create("context"),
+        Keyword.create("kernel"),
+        Keyword.create("events"),
+        nativeTestEvents(new Object[0]));
+  }
+
+  private Keyword nativeTestRunner(Object value) {
+    Object runner = HaraBox.unwrap(value);
+    if (Keyword.create("code.test").equals(runner) || Keyword.create("native").equals(runner)) {
+      return (Keyword) runner;
+    }
+    throw new HaraException(
+        "std.native.Test/config runner must be :code.test or :native");
+  }
+
+  private Object nativeTestConfig(Object[] values) {
+    if (values.length > 2) {
+      throw new HaraException(
+          "std.native.Test/config expects an optional runner and options");
+    }
+    Keyword runner =
+        values.length == 0 ? Keyword.create("code.test") : nativeTestRunner(values[0]);
+    Object options = values.length < 2 ? hara.lang.data.Map.Standard.EMPTY : HaraBox.unwrap(values[1]);
+    if (!(options instanceof IMapType<?, ?>)) {
+      throw new HaraException("std.native.Test/config options must be a map");
+    }
+    return hara.lang.data.Map.Standard.from(
+        null,
+        Keyword.create("runner"),
+        runner,
+        Keyword.create("options"),
+        options);
+  }
+
+  private Object nativeTestContext(Object[] values) {
+    if (values.length > 1) {
+      throw new HaraException("std.native.Test/context expects an optional config");
+    }
+    Object config = values.length == 0 ? nativeTestConfig(new Object[0]) : HaraBox.unwrap(values[0]);
+    if (!(config instanceof IMapType<?, ?> map)) {
+      throw new HaraException("std.native.Test/context expects a Test/config map");
+    }
+    nativeTestRunner(lookupValue(map, Keyword.create("runner")));
+    java.util.Map<Object, Object> fields = new LinkedHashMap<>();
+    fields.put(Keyword.create("id"), Keyword.create("test"));
+    fields.put(Keyword.create("config"), config);
+    return new hara.lang.data.Pointer(Keyword.create("kernel"), fields);
+  }
+
   private static Keyword keyword(String value) {
     int separator = value.indexOf('/');
     return Keyword.create(
@@ -2716,6 +2796,12 @@ public final class HaraContext {
   }
 
   private void installNativeLibraries() {
+    HaraStaticLibrary.install(this, "std.native.Crypto", NativeCrypto.class);
+    HaraNamespace test = namespace("std.native.Test");
+    test.define("catalog", new VariadicBuiltin("std.native.Test/catalog", this::nativeTestCatalog));
+    test.define("config", new VariadicBuiltin("std.native.Test/config", this::nativeTestConfig));
+    test.define("context", new VariadicBuiltin("std.native.Test/context", this::nativeTestContext));
+    test.define("events", new VariadicBuiltin("std.native.Test/events", this::nativeTestEvents));
     HaraNamespace kernel = namespace("std.native.Kernel");
     for (String method : NATIVE_TYPES.get("Kernel")) {
       kernel.define(

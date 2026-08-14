@@ -85,9 +85,9 @@ public final class HaraNativeTestRunner {
   private static String testRunSource(String namespace) {
     String fact = System.getProperty("hara.xt.fact");
     String selection = fact == null || fact.isBlank() ? "" : " :name \"" + fact + "\"";
-    return "(let [summary (code.test/run {:namespace \""
+    return "(let [config (Test/config :native {:namespace \""
         + namespace
-        + "\"" + selection + "}) failures (filter (fn [result] (not= :passed (:status result))) (:results summary)) diagnostic (map (fn [result] (let [check (first (filter (fn [item] (not (:pass item))) (:checks result))) error (or (:error result) (:error check))] {:name (:name result) :status (:status result) :error (if error (apply str (take 2000 error)) nil) :actual (:actual check) :expected (:expected check)})) failures)] (assoc (dissoc summary :results) :results (str diagnostic)))";
+        + "\"" + selection + "}) summary (code.test/run (assoc (:options config) :test/config config)) failures (filter (fn [result] (not= :passed (:status result))) (:results summary)) diagnostic (map (fn [result] (let [check (first (filter (fn [item] (not (:pass item))) (:checks result))) error (or (:error result) (:error check))] {:name (:name result) :status (:status result) :error (if error (apply str (take 2000 error)) nil) :actual (:actual check) :expected (:expected check)})) failures)] (assoc (dissoc summary :results) :results (str diagnostic)))";
   }
 
   /** Discovers .hal test files from a project descriptor or explicit path. */

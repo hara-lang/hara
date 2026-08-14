@@ -16,13 +16,20 @@
 ;; Fact registration is evaluator-local domain state, not a provider protocol.
 (def +registry+ (atom {}))
 
+(defn fact-registry-key
+  [namespace name]
+  (pointer {:context :kernel
+            :id :test
+            :namespace (str namespace)
+            :name (str name)}))
+
 (defn clear-namespace-state
   [state namespace]
   (loop [output state
          remaining (keys state)]
     (if (seq remaining)
       (let [key (first remaining)]
-        (recur (if (= namespace (first key))
+        (recur (if (= namespace (:namespace key))
                  (dissoc output key)
                  output)
                (rest remaining)))
@@ -33,12 +40,14 @@
   (do
     (swap! registry
            (fn [state]
-             (assoc state [(:namespace fact) (:name fact)] fact)))
+             (assoc state
+                    (fact-registry-key (:namespace fact) (:name fact))
+                    fact)))
     fact))
 
 (defn registry-remove
   [registry namespace name]
-  (let [key [namespace name]
+  (let [key (fact-registry-key namespace name)
         found (get (deref registry) key)]
     (swap! registry (fn [state] (dissoc state key)))
     found))
@@ -55,7 +64,7 @@
 
 (defn registry-find
   [registry namespace name]
-  (get (deref registry) [namespace name]))
+  (get (deref registry) (fact-registry-key namespace name)))
 
 (extend-type Matcher std.protocol.imatch/IMatch
   (match-value [matcher actual]
@@ -411,7 +420,8 @@
    (register! name function {}))
   ([name function metadata]
    (registry-register +registry+
-    {:namespace (current-namespace)
+    {:namespace (or (:test/namespace metadata)
+                    (current-namespace))
      :name name
      :function function
      :meta metadata})))
@@ -529,7 +539,11 @@
 (defmacro fact
   "Registers one or more actual => expected assertions."
   [description & body]
-  (fact-form description body (meta &form)))
+  (fact-form description
+             body
+             (assoc (meta &form)
+                    :test/namespace
+                    (str (:ns &env)))))
 
 (defn selector-match?
   [selection value]
@@ -764,10 +778,11 @@
 
 (defn fact-coordinate
   [namespace name fact-revision]
-  [:test/fact
-   (fact-identity namespace)
-   (fact-identity name)
-   fact-revision])
+  (pointer {:context :kernel
+            :id :test
+            :namespace (fact-identity namespace)
+            :name (fact-identity name)
+            :revision fact-revision}))
 
 (defn fact-revision
   [fact default-revision]
@@ -790,11 +805,12 @@
 (defn fact-item-coordinate
   [fact default-revision]
   (let [fact-revision (fact-revision fact default-revision)]
-    (conj
-     (fact-coordinate (:namespace fact)
-                      (:name fact)
-                      fact-revision)
-     (fact-definition-token fact default-revision))))
+    (pointer {:context :kernel
+              :id :test
+              :namespace (fact-identity (:namespace fact))
+              :name (fact-identity (:name fact))
+              :revision fact-revision
+              :definition (fact-definition-token fact default-revision)})))
 
 (defn resolve-fact
   [namespace name]
@@ -1242,11 +1258,21 @@
 (def suite-work fact-batch-work)
 (def +runner-work+ (fact-batch-work))
 
+(defn runner-options
+  [options]
+  (let [config (or (:test/config options)
+                   (Test/config :code.test {}))
+        context (Test/context config)]
+    (assoc options
+           :test/config config
+           :test/context context)))
+
 (defn normalize-run-options
   [selector-or-options]
-  (if (map? selector-or-options)
-    selector-or-options
-    {:namespace selector-or-options}))
+  (runner-options
+   (if (map? selector-or-options)
+     selector-or-options
+     {:namespace selector-or-options})))
 
 (defn run
   "Runs selected facts through the canonical IWork fact-batch graph."

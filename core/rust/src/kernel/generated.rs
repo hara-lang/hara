@@ -32,6 +32,7 @@ const NATIVE_TYPES: &[&str] = &[
     "Json",
     "Crypto",
     "Host",
+    "Test",
     "Regex",
     "UUID",
     "Error",

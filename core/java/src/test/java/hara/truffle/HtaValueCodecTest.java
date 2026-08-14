@@ -105,4 +105,25 @@ public class HtaValueCodecTest {
     assertEquals(pointer, decodedPointer);
   }
 
+  @Test
+  public void qualifiedVarsRoundTripAsImmutableReferences() {
+    HaraVar variable = new HaraVar("example.lib", "answer", 42L);
+    byte[] encoded = HtaValueCodec.encode(variable);
+    assertEquals(35, Byte.toUnsignedInt(encoded[4]));
+    assertArrayEquals(
+        new byte[] {
+          'H', 'T', 'A', '0', 35, 7, 0, 0, 0, 18,
+          'e', 'x', 'a', 'm', 'p', 'l', 'e', '.', 'l', 'i', 'b', '/',
+          'a', 'n', 's', 'w', 'e', 'r'
+        },
+        encoded);
+
+    Object decoded = HtaValueCodec.decodeCanonical(encoded);
+    assertTrue(decoded instanceof HaraVar);
+    HaraVar reference = (HaraVar) decoded;
+    assertEquals("example.lib", reference.namespaceName());
+    assertEquals("answer", reference.symbolName());
+    assertEquals(null, reference.deref());
+  }
+
 }

@@ -1,6 +1,7 @@
 use crate::core::Value;
 #[cfg(test)]
 use crate::lang::data::{Tuple as PTuple, Vector as PVector};
+use crate::lang::protocol::INamespaced;
 
 const MAGIC: &[u8; 4] = b"HTA0";
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
@@ -40,6 +41,7 @@ const TAGGED: u8 = 31;
 const EXCEPTION_INFO: u8 = 32;
 const STRUCT: u8 = 33;
 const POINTER: u8 = 34;
+const VAR_REF: u8 = 35;
 
 pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = MAGIC.to_vec();
@@ -197,11 +199,8 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
             encode_bytes(value.name().as_str().as_bytes(), output)?;
         }
         Value::Var(value) => {
-            output.push(VAR);
+            output.push(VAR_REF);
             encode_bare(&Value::Symbol(value.symbol().clone()), output, depth + 1)?;
-            if encode_bare(&value.deref_value(), output, depth + 1).is_err() {
-                encode_bare(&Value::Nil, output, depth + 1)?;
-            }
         }
         Value::Atom(value) => {
             output.push(ATOM);
@@ -440,6 +439,16 @@ impl Reader<'_> {
                 };
                 let value = self.value(depth + 1)?;
                 Ok(Value::Var(crate::kernel::Var::new(symbol.as_str(), value)))
+            }
+            VAR_REF => {
+                let symbol = match self.value(depth + 1)? {
+                    Value::Symbol(symbol) if symbol.get_namespace().is_some() => symbol,
+                    _ => return Err("hta/value-malformed: invalid Var reference".into()),
+                };
+                Ok(Value::Var(crate::kernel::Var::new(
+                    symbol.as_str(),
+                    Value::Nil,
+                )))
             }
             ATOM => Ok(Value::Atom(Box::new(crate::core::RuntimeAtom::new(
                 self.value(depth + 1)?,
@@ -688,7 +697,7 @@ mod tests {
         assert_eq!(encode(&a).unwrap(), encode(&b).unwrap());
     }
     #[test]
-    fn namespaces_and_vars_round_trip_as_snapshots() {
+    fn namespaces_and_vars_use_snapshot_and_reference_contracts() {
         let namespace = crate::kernel::Namespace::new("example.lib");
         let var = namespace.intern("answer", Value::Number(42));
         let value = Value::Map(
@@ -715,7 +724,13 @@ mod tests {
             panic!("var snapshot")
         };
         assert_eq!(var.symbol().as_str(), "example.lib/answer");
-        assert_eq!(var.deref_value(), Value::Number(42));
+        assert_eq!(var.deref_value(), Value::Nil);
+        let encoded = encode(&Value::Var(var.clone())).unwrap();
+        assert_eq!(encoded[4], VAR_REF);
+        assert_eq!(
+            encoded,
+            b"HTA0\x23\x07\x00\x00\x00\x12example.lib/answer"
+        );
     }
 
     #[test]

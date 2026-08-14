@@ -21,12 +21,13 @@ use crate::lang::protocol::{IDisplay, IMetadata, INamespaced, IToMutable, IToPer
 pub use crate::task::{
     LocalPromiseProvider, Promise, PromiseProvider, PromiseRejection, PromiseState,
 };
-use sha2::{Digest, Sha256};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 #[path = "fiber.rs"]
 mod fiber;
+#[path = "native_crypto.rs"]
+mod native_crypto;
 pub(crate) use fiber::Cont;
 pub use fiber::{EvalFiber, EvalFiberState, Step};
 
@@ -168,7 +169,29 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "s8",
         ],
     ),
-    ("Crypto", &["sha256"]),
+    (
+        "Crypto",
+        &[
+            "sha256",
+            "sha512",
+            "hmac-sha256",
+            "hmac-sha512",
+            "random-bytes",
+            "secure-equal?",
+            "ed25519-keypair",
+            "ed25519-public",
+            "ed25519-sign",
+            "ed25519-verify",
+            "x25519-keypair",
+            "x25519-public",
+            "x25519-shared",
+            "p256-keypair",
+            "p256-public",
+            "p256-sign",
+            "p256-verify",
+            "p256-shared",
+        ],
+    ),
     ("OS", &["platform", "arch", "cwd", "env", "getenv"]),
     (
         "Process",
@@ -247,6 +270,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ("Edn", &["read", "read-forms", "write", "pretty"]),
     ("Json", &["read", "write", "pretty"]),
     ("Host", &["call", "describe", "capabilities", "capability?"]),
+    ("Test", &["catalog", "config", "context", "events"]),
     ("Regex", &["instance?"]),
     ("UUID", &["instance?"]),
     ("Error", &["new", "message", "class"]),
@@ -4117,6 +4141,120 @@ fn os_operation(
             crate::native_process::write(&process, &bytes).map(|count| Value::Number(count as i64))
         }
         _ => Err(format!("unknown os operation: {operation}")),
+    }
+}
+
+fn native_test_events() -> Value {
+    Value::Vector(PVector::from_iter([
+        Value::Keyword("test/run-started".into()),
+        Value::Keyword("test/fact-started".into()),
+        Value::Keyword("test/fact-completed".into()),
+        Value::Keyword("test/run-completed".into()),
+    ]))
+}
+
+fn native_test_runner(value: Value) -> Result<Value, String> {
+    match value {
+        Value::Keyword(runner) if matches!(runner.as_str(), "code.test" | "native") => {
+            Ok(Value::Keyword(runner))
+        }
+        _ => Err("std.native.Test/config runner must be :code.test or :native".into()),
+    }
+}
+
+fn native_test_config(runner: Value, options: Value) -> Result<Value, String> {
+    let runner = native_test_runner(runner)?;
+    if map_entries(&options).is_none() {
+        return Err("std.native.Test/config options must be a map".into());
+    }
+    Ok(Value::Map(PMap::from_iter([
+        (Value::Keyword("runner".into()), runner),
+        (Value::Keyword("options".into()), options),
+    ])))
+}
+
+fn native_test_default_config() -> Result<Value, String> {
+    native_test_config(Value::Keyword("code.test".into()), Value::Map(PMap::new()))
+}
+
+fn native_test_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let operation = operation
+        .strip_prefix("std.native.Test/")
+        .unwrap_or(operation);
+    match operation {
+        "events" => {
+            if !forms.is_empty() {
+                return Err("std.native.Test/events expects no arguments".into());
+            }
+            Ok(native_test_events())
+        }
+        "catalog" => {
+            if !forms.is_empty() {
+                return Err("std.native.Test/catalog expects no arguments".into());
+            }
+            Ok(Value::Map(PMap::from_iter([
+                (
+                    Value::Keyword("runners".into()),
+                    Value::Vector(PVector::from_iter([
+                        Value::Keyword("code.test".into()),
+                        Value::Keyword("native".into()),
+                    ])),
+                ),
+                (
+                    Value::Keyword("default".into()),
+                    Value::Keyword("code.test".into()),
+                ),
+                (
+                    Value::Keyword("context".into()),
+                    Value::Keyword("kernel".into()),
+                ),
+                (Value::Keyword("events".into()), native_test_events()),
+            ])))
+        }
+        "config" => {
+            if forms.len() > 2 {
+                return Err("std.native.Test/config expects an optional runner and options".into());
+            }
+            let runner = if forms.is_empty() {
+                Value::Keyword("code.test".into())
+            } else {
+                eval(&forms[0], env)?
+            };
+            let options = if forms.len() < 2 {
+                Value::Map(PMap::new())
+            } else {
+                eval(&forms[1], env)?
+            };
+            native_test_config(runner, options)
+        }
+        "context" => {
+            if forms.len() > 1 {
+                return Err("std.native.Test/context expects an optional config".into());
+            }
+            let config = if forms.is_empty() {
+                native_test_default_config()?
+            } else {
+                let value = eval(&forms[0], env)?;
+                let Some(runner) = map_value(&value, &Value::Keyword("runner".into())).cloned()
+                else {
+                    return Err("std.native.Test/context expects a Test/config map".into());
+                };
+                native_test_runner(runner)?;
+                value
+            };
+            Ok(Value::Pointer(PPointer::new(
+                "kernel".into(),
+                PMap::from_iter([
+                    (Value::Keyword("id".into()), Value::Keyword("test".into())),
+                    (Value::Keyword("config".into()), config),
+                ]),
+            )))
+        }
+        _ => Err(format!("unknown std.native.Test operation: {operation}")),
     }
 }
 
@@ -12955,19 +13093,18 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n) if n.starts_with("std.native.Host/") => {
                     native_host_operation(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n == "std.native.Crypto/sha256" => {
-                    if fs.len() != 2 {
-                        return Err("std.native.Crypto/sha256 expects bytes".into());
-                    }
-                    let bytes = match eval(&fs[1], env)? {
-                        Value::Bytes(value) => value,
-                        Value::ByteBuffer(value) => value.borrow().clone(),
-                        _ => return Err("std.native.Crypto/sha256 expects bytes".into()),
-                    };
-                    let digest = Sha256::digest(bytes);
-                    Ok(Value::String(
-                        digest.iter().map(|byte| format!("{byte:02x}")).collect(),
-                    ))
+                Form::Symbol(n) if n.starts_with("std.native.Test/") => {
+                    native_test_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Crypto/") => {
+                    let arguments = fs[1..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    native_crypto::operation(
+                        n.strip_prefix("std.native.Crypto/").unwrap_or(n),
+                        arguments,
+                    )
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Kernel/") => {
                     let operation = n.strip_prefix("std.native.Kernel/").unwrap_or(n);
