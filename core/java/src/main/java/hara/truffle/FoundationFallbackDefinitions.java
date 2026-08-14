@@ -2,10 +2,14 @@ package hara.truffle;
 
 import hara.lang.data.List;
 import hara.lang.data.Symbol;
+import hara.lang.data.types.ILinearType;
+import hara.lang.data.types.IMapType;
+import hara.lang.data.types.ISetType;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -40,12 +44,54 @@ final class FoundationFallbackDefinitions {
     return NAMES.contains(name) || INITIALIZATION_DEPENDENCIES.contains(name);
   }
 
+  /**
+   * Finds Foundation-defined special symbols and explicit initialization dependencies before the
+   * ordinary demand scanner discards language-special operators. This pass is deliberately
+   * conservative: a quoted or locally shadowed dependency may load Foundation unnecessarily, but
+   * no valid portable behavior is skipped.
+   */
+  static boolean requiresInitialization(Object[] forms, HaraContext context) {
+    for (Object form : forms) {
+      if (requiresInitialization(form, context)) return true;
+    }
+    return false;
+  }
+
   static boolean isInitializationDependency(String name) {
     return INITIALIZATION_DEPENDENCIES.contains(name);
   }
 
   static Set<String> names() {
     return NAMES;
+  }
+
+  private static boolean requiresInitialization(Object value, HaraContext context) {
+    if (value instanceof Symbol symbol) {
+      if (symbol.getNamespace() != null) return false;
+      String name = symbol.getName();
+      return INITIALIZATION_DEPENDENCIES.contains(name)
+          || (NAMES.contains(name) && context.isSpecialSymbol(symbol));
+    }
+    if (value instanceof IMapType<?, ?> map) {
+      for (Object entryValue : map) {
+        if (!(entryValue instanceof Map.Entry<?, ?> entry)) continue;
+        if (requiresInitialization(entry.getKey(), context)
+            || requiresInitialization(entry.getValue(), context)) return true;
+      }
+      return false;
+    }
+    if (value instanceof ISetType<?> set) {
+      for (Object item : set) {
+        if (requiresInitialization(item, context)) return true;
+      }
+      return false;
+    }
+    if (value instanceof ILinearType<?> linear) {
+      for (Object item : linear) {
+        if (requiresInitialization(item, context)) return true;
+      }
+    }
+    return false;
   }
 
   private static Set<String> load() {
