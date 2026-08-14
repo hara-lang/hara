@@ -39,8 +39,11 @@ pattern_argument = re.compile(
     r"(replace_regex\(\s*[^,]+,\s*r''')(.*?)(''',)", re.S
 )
 
+
 def normalize_pattern(match: re.Match[str]) -> str:
-    return match.group(1) + match.group(2).replace('\\\\', '\\') + match.group(3)
+    slash = chr(92)
+    return match.group(1) + match.group(2).replace(slash * 2, slash) + match.group(3)
+
 
 text, pattern_count = pattern_argument.subn(normalize_pattern, text)
 if pattern_count != 3:
