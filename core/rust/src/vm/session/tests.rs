@@ -42,6 +42,47 @@ fn live_session_runs_real_bytecode_and_emits_all_three_contracts() {
 }
 
 #[test]
+fn public_snapshot_exposes_deterministic_bounded_owned_globals() {
+    let mut source = String::from("(do ");
+    for index in (0..70).rev() {
+        if index == 0 {
+            source.push_str("(def g000 :abcdefgh) ");
+        } else {
+            source.push_str(&format!("(def g{index:03} {index}) "));
+        }
+    }
+    source.push_str("nil)");
+
+    let mut session = BytecodeObservationSession::compile_named(
+        "execution/globals",
+        "globals.hal",
+        source,
+    )
+    .expect("global fixture must compile");
+    let mut limits = session.observation_limits();
+    limits.display_chars = 4;
+    session.set_observation_limits(limits);
+    session.run(4096).expect("global fixture must execute");
+
+    let snapshot = json(&session.snapshot_value().expect("public snapshot"));
+    assert!(snapshot.contains("\"namespace\":\"user\""));
+    assert!(snapshot.contains("\"scope\":\"current-namespace-owned\""));
+    assert!(snapshot.contains("\"limit\":64"));
+    assert!(snapshot.contains("\"omitted\":6"));
+    assert!(snapshot.contains("\"symbol\":\"user/g000\""));
+    assert!(snapshot.contains("\"symbol\":\"user/g063\""));
+    assert!(!snapshot.contains("\"symbol\":\"user/g064\""));
+    assert!(!snapshot.contains("std.foundation/"));
+    assert!(snapshot.contains("\"origin\":\"source\""));
+    assert!(snapshot.contains("\"display\":\":abc…\""));
+    assert!(snapshot.contains("\"truncated\":true"));
+
+    let first = snapshot.find("user/g000").expect("first global");
+    let second = snapshot.find("user/g001").expect("second global");
+    assert!(first < second, "globals must be sorted by qualified symbol");
+}
+
+#[test]
 fn pause_resume_reset_and_sequence_identity_are_stable() {
     let mut session = BytecodeObservationSession::compile_named(
         "execution/lifecycle",

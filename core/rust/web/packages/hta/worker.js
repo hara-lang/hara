@@ -1,7 +1,7 @@
 import { decodeHta, encodeHta, HtaKeyword, HTA_MAX_FRAME_BYTES } from "./index.js";
 
 let instance,abiVersion; const requests=new Map(); const tasks=new Map();
-self.addEventListener("message", async event=>{try{const message=event.data;if(message.type==="init"){const bytes=message.moduleBytes??await(await fetch(message.moduleUrl)).arrayBuffer();instance=(await WebAssembly.instantiate(bytes,{})).instance;required();self.postMessage({type:"ready"});}
+self.addEventListener("message", async event=>{try{const message=event.data;if(message.type==="init"){const bytes=message.moduleBytes??await(await fetch(message.moduleUrl)).arrayBuffer();instance=(await WebAssembly.instantiate(bytes,{env:{hara_random_fill(pointer,length){crypto.getRandomValues(new Uint8Array(instance.exports.memory.buffer,pointer,length));return 0;}}})).instance;required();self.postMessage({type:"ready"});}
 else if(message.type==="call"){const session=requestSession(message.frame),task=Number(callFrame(instance.exports.hta_start,message.frame));requests.set(message.id,task);tasks.set(task,{id:message.id,session});pump();}
 else if(message.type==="delivery"){callFrame(instance.exports.hta_deliver,encodeHta([message.call,message.ok?0:1,decodeHta(message.frame)]));pump();}
 else if(message.type==="cancel"){const task=requests.get(message.id);if(task!==undefined){instance.exports.hta_cancel(BigInt(task));pump();}}

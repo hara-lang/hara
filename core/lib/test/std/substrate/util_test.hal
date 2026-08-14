@@ -1,20 +1,19 @@
 (ns std.substrate.util-test
   (:use code.test)
-  (:require [std.foundation.promise :as promise]
-            [std.lib.substrate :as core]
+  (:require [std.substrate :as substrate]
             [std.substrate.frame :as frame]
             [std.substrate.util :as util]))
 
 (fact "gets lists and sends through transports"
-  (let [node (core/node-create "node/transports")
+  (let [node (substrate/node-create "node/transports")
         sent (atom [])]
-    (core/section-put
+    (substrate/section-put
      node :transports "peer-b"
      {"id" "peer-b"
       "send_fn" (fn [outgoing]
                   (reset! sent (conj @sent ["peer-b" (get outgoing "id")]))
                   outgoing)})
-    (core/section-put
+    (substrate/section-put
      node :transports "peer-a"
      {"id" "peer-a"
       "send_fn" (fn [outgoing]
@@ -30,27 +29,27 @@
   => ["peer-a" ["peer-a" "peer-b"] [["peer-a" "evt-a"]]])
 
 (fact "selects explicit default and local request targets"
-  (let [node (core/node-create "node/target")]
-    (core/section-put node :transports "peer-a"
+  (let [node (substrate/node-create "node/target")]
+    (substrate/section-put node :transports "peer-a"
                       {"id" "peer-a" "send_fn" identity})
     [(util/transport-request-target node {"transport_id" "peer-b"})
      (util/transport-request-target node {})
      (util/transport-request-target node {"local" true})
      (util/transport-request-target
-      (core/node-create "node/empty") {})])
+      (substrate/node-create "node/empty") {})])
   => ["peer-b" "peer-a" nil nil])
 
 (fact "broadcasts while respecting exclusions"
-  (let [node (core/node-create "node/route")
+  (let [node (substrate/node-create "node/route")
         sent (atom [])
         outgoing (frame/stream-frame
                   "room/a" "event/a" 1 {"id" "evt-route"} nil)]
-    (core/section-put node :transports "peer-a"
+    (substrate/section-put node :transports "peer-a"
                       {"id" "peer-a"
                        "send_fn" (fn [value]
                                    (reset! sent (conj @sent "peer-a"))
                                    value)})
-    (core/section-put node :transports "peer-b"
+    (substrate/section-put node :transports "peer-b"
                       {"id" "peer-b"
                        "send_fn" (fn [value]
                                    (reset! sent (conj @sent "peer-b"))
@@ -77,11 +76,11 @@
        "meta" {"transport_id" "peer-b"}}])
 
 (fact "constructs and forwards response frames"
-  (let [node (core/node-create "node/response")
+  (let [node (substrate/node-create "node/response")
         captured (atom nil)
         incoming (frame/request-frame
                   "room/a" "echo" [] {"id" "req-1"})]
-    (core/section-put
+    (substrate/section-put
      node :transports "peer-a"
      {"id" "peer-a"
       "send_fn" (fn [outgoing]
@@ -142,7 +141,7 @@
       "custom" 42})
 
 (fact "registers lists and unregisters handlers and triggers"
-  (let [node (core/node-create "node/registry")]
+  (let [node (substrate/node-create "node/registry")]
     (util/register-handler node "sum" identity {"role" "request"})
     (util/register-handler node "echo" identity nil)
     (util/register-trigger node "event/b" identity nil)
@@ -157,11 +156,15 @@
       [before
        (util/list-handlers node)
        (util/list-triggers node)]))
-  => [[ ["echo" "sum"]
+  => [[ ["@/echo" "@/get-service" "@/list-handlers" "@/list-spaces"
+         "@/list-transports" "@/list-triggers" "@/node-info" "@/ping"
+         "echo" "sum"]
         ["event/a" "event/b"]
         "request"
         "stream"]
-      ["sum"]
+      ["@/echo" "@/get-service" "@/list-handlers" "@/list-spaces"
+       "@/list-transports" "@/list-triggers" "@/node-info" "@/ping"
+       "sum"]
       ["event/a"]])
 
 (pr-str (run '[std.substrate.util-test]))

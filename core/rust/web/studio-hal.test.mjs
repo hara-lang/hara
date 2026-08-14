@@ -9,7 +9,7 @@ import { defaultBootstrap } from "./studio/boot.js";
 import { createHostServices } from "./studio/host-services.js";
 import { NodeRuntime } from "./studio/node-runtime.js";
 import { SessionRouter } from "./studio/session-router.js";
-import { normalizeCreative } from "../../../website/hara-www/creative.js";
+import { normalizeCreative } from "../../../../../website/hara-www/creative.js";
 
 // Real-wasm integration tests for the studio hara libraries
 // (rust/web/studio/hal/*.hal): store/boot and canonical file behaviour is asserted by
@@ -22,6 +22,19 @@ const supersonicHal = () => readFile(
   new URL("../../../../hara-specs-registry/00-unsorted/contrib/greenways/supersonic/src/hal/gw/audio/supersonic.hal", import.meta.url),
   "utf8"
 );
+const substrateResources = async () => {
+  const output = {};
+  for (const name of [
+    "core", "frame", "json", "protocol", "pubsub", "request", "router",
+    "space", "transport_memory", "util", "util_handlers"
+  ]) {
+    output[`std.substrate.${name.replaceAll("_", "-")}`] = await readFile(
+      new URL(`../../lib/src/std/substrate/${name}.hal`, import.meta.url), "utf8"
+    );
+  }
+  output["std.substrate"] = await readFile(new URL("../../lib/src/std/substrate.hal", import.meta.url), "utf8");
+  return output;
+};
 const resources = wasmBytes === null
   ? null
   : {
@@ -32,9 +45,7 @@ const resources = wasmBytes === null
       "studio.graph": await hal("graph"),
       "studio.session": await hal("session"),
       "gw.audio.supersonic": await supersonicHal(),
-      "std.lib.substrate.protocol": await readFile(new URL("../../lib/src/std/lib/substrate/protocol.hal", import.meta.url), "utf8"),
-      "std.lib.substrate.frame": await readFile(new URL("../../lib/src/std/lib/substrate/frame.hal", import.meta.url), "utf8"),
-      "std.lib.substrate": await readFile(new URL("../../lib/src/std/lib/substrate.hal", import.meta.url), "utf8")
+      ...await substrateResources()
     };
 
 const LISTING_URL = "https://data.jsdelivr.com/v1/packages/gh/octo/lessons@main";
@@ -90,7 +101,7 @@ async function spawnRealKernel(hostCalls) {
     close: () => {}
   };
   globalThis.self = bridge.self;
-  await import(`./hta-worker.js?kernel=${kernelCounter}`);
+  await import(`./packages/hta/worker.js?kernel=${kernelCounter}`);
   const worker = {
     terminated: false,
     addEventListener: (type, handler) => {
@@ -194,7 +205,7 @@ test("gw.audio.supersonic exposes the portable graph lifecycle", { skip: wasmByt
   assert.equal(mapGet(await broker.eval("ROOT", '(sonic/stop "test")'), "status"), "stopped");
 });
 
-test("studio.node sends std.lib.substrate.frame envelopes through the browser adapter", { skip: wasmBytes === null }, async () => {
+test("studio.node sends std.substrate.frame envelopes through the browser adapter", { skip: wasmBytes === null }, async () => {
   const runtime = new NodeRuntime({ space: "workspace/studio-hal" });
   runtime.registerNode({ id: "node/a" });
   runtime.registerNode({ id: "node/b" });
@@ -324,13 +335,13 @@ test("studio.node registers kernel-owned request handlers", { skip: wasmBytes ==
   assert.equal((await runtime.call("node/a", "node/b", "double", [21])).data, 42);
 });
 
-test("Studio kernels load the atom-backed std.lib.substrate node", { skip: wasmBytes === null }, async () => {
+test("Studio kernels load the atom-backed std.substrate node", { skip: wasmBytes === null }, async () => {
   const broker = makeBroker();
   const value = await broker.eval(
     "ROOT",
     "(do " +
-      "(require [std.lib.substrate :as substrate]) " +
-      "(require [std.lib.substrate.protocol :as protocol]) " +
+      "(require [std.substrate :as substrate]) " +
+      "(require [std.substrate.protocol :as protocol]) " +
       '(def node (substrate/node-create "node/studio")) ' +
       '(protocol/set-service node "answer" 42) ' +
       '(protocol/get-service node "answer"))'
@@ -341,7 +352,7 @@ test("Studio kernels load the atom-backed std.lib.substrate node", { skip: wasmB
 test("Studio kernels run the atom-backed substrate request stream and cancellation lifecycle", { skip: wasmBytes === null }, async () => {
   const broker = makeBroker();
   const fixture = await readFile(
-    new URL("../../lib/test-fixtures/std/lib/substrate/node_lifecycle_conformance.hal", import.meta.url),
+    new URL("../../lib/test-fixtures/std/substrate/node_lifecycle_conformance.hal", import.meta.url),
     "utf8"
   );
   assert.deepEqual(await broker.eval("ROOT", fixture), [84, 42, new HtaKeyword("rejected")]);
@@ -350,22 +361,27 @@ test("Studio kernels run the atom-backed substrate request stream and cancellati
 test("Studio runs the shared substrate protocol fixture", { skip: wasmBytes === null }, async () => {
   const broker = makeBroker();
   const protocolFixture = await readFile(
-    new URL("../../lib/test-fixtures/std/lib/substrate/protocol_conformance.hal", import.meta.url),
+    new URL("../../lib/test-fixtures/std/substrate/protocol_conformance.hal", import.meta.url),
     "utf8"
   );
-  assert.deepEqual(await broker.eval("ROOT", protocolFixture), [40, 42]);
+  assert.deepEqual((await broker.eval("ROOT", protocolFixture)).values, [40, 42]);
 });
 
 test("Studio runs the shared substrate frame fixture", { skip: wasmBytes === null }, async () => {
   const broker = makeBroker();
   const frameFixture = await readFile(
-    new URL("../../lib/test-fixtures/std/lib/substrate/frame_conformance.hal", import.meta.url),
+    new URL("../../lib/test-fixtures/std/substrate/frame_conformance.hal", import.meta.url),
     "utf8"
   );
-  assert.equal(
-    await broker.eval("ROOT", frameFixture),
-    '{"version":"substrate.v1","kind":"request","id":"req-1","source":"client/a","target":"server/b","space":"workspace/main","meta":{"trace":"trace-1"},"action":"math/add","args":[19,23],"reply_to":null,"status":null,"data":null,"error":null,"signal":null,"cause":null}'
-  );
+  const frame = await broker.eval("ROOT", frameFixture);
+  assert.equal(frame.length, 15);
+  assert.deepEqual(frame.slice(0, 6), [
+    "substrate.v1", "request", "req-1", "client/a", "server/b", "workspace/main"
+  ]);
+  assert.deepEqual(frame[6].entries, [["trace", "trace-1"]]);
+  assert.equal(frame[7], "math/add");
+  assert.deepEqual(frame[8].values, [19, 23]);
+  assert.deepEqual(frame.slice(9), [null, null, null, null, null, null]);
 });
 
 test("studio.store round trips string values and lists keys", { skip: wasmBytes === null }, async () => {

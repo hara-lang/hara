@@ -1,0 +1,58 @@
+(ns db.protocol-test
+  (:use code.test)
+  (:require [db.protocol :as protocol]))
+
+(defstruct MockConnection
+  [id])
+
+(extend-type MockConnection protocol/IDatabase
+  (db-engine [connection]
+    :mock-sql)
+  (db-provider [connection]
+    :mock)
+  (db-info [connection]
+    {:id (:id connection)
+     :engine :mock-sql
+     :provider :mock})
+  (db-exec [connection sql parameters]
+    {:operation :exec
+     :id (:id connection)
+     :sql sql
+     :parameters parameters})
+  (db-query [connection sql parameters]
+    {:operation :query
+     :id (:id connection)
+     :sql sql
+     :parameters parameters})
+  (db-close [connection]
+    {:operation :close
+     :id (:id connection)}))
+
+(def connection (db.protocol-test/MockConnection 7))
+
+(def results
+  [(fact "metadata dispatches directly through IDatabase"
+     [(protocol/db-engine connection)
+      (protocol/db-provider connection)
+      (protocol/db-info connection)]
+     => [:mock-sql
+         :mock
+         {:id 7 :engine :mock-sql :provider :mock}])
+
+   (fact "exec and query require explicit parameter vectors"
+     [(protocol/db-exec connection "create table item (id integer)" [])
+      (protocol/db-query connection "select * from item where id = ?" [7])]
+     => [{:operation :exec
+          :id 7
+          :sql "create table item (id integer)"
+          :parameters []}
+         {:operation :query
+          :id 7
+          :sql "select * from item where id = ?"
+          :parameters [7]}])
+
+   (fact "close dispatches directly through IDatabase"
+     (protocol/db-close connection)
+     => {:operation :close :id 7})])
+
+(pr-str (run '[db.protocol-test]))

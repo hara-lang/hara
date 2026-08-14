@@ -90,7 +90,7 @@ Both embedded providers return `{:columns [...] :rows [[...]] :affected n}` and 
 
 ## Runtime status
 
-The original base `xt.db.node` architecture has been ported onto `std.lib.substrate`:
+The original base `xt.db.node` architecture has been ported onto `std.substrate`:
 
 - kernel/client/proxy action routing
 - local, SharedWorker, WebWorker and Node worker lifecycle adapters

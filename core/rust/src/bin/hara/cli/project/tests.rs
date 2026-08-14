@@ -1,4 +1,4 @@
-use super::{apply_manage_edits, eval_runtime, manage_arguments, Options};
+use super::{apply_manage_edits, eval_runtime, manage_arguments, test_results, Options};
 use hara_wasm::kernel::parse;
 use std::fs;
 use std::path::PathBuf;
@@ -47,6 +47,31 @@ fn project_eval_registers_sources_without_a_root_mount() {
             )
             .unwrap(),
         "42"
+    );
+}
+
+#[test]
+fn project_test_accepts_native_test_vectors() {
+    assert_eq!(
+        test_results("[{:name \"yes\" :pass true} {:name \"no\" :pass false}]").unwrap(),
+        (1, 1)
+    );
+}
+
+#[test]
+fn project_test_accepts_code_test_summaries() {
+    assert_eq!(
+        test_results("{:status :failed :counts {:passed 3 :failed 1 :error 1 :timeout 1}}")
+            .unwrap(),
+        (3, 3)
+    );
+}
+
+#[test]
+fn project_test_keeps_printed_legacy_vectors_compatible() {
+    assert_eq!(
+        test_results("\"[{:name \\\"yes\\\" :pass true}]\"").unwrap(),
+        (1, 0)
     );
 }
 

@@ -1,0 +1,34 @@
+(ns std.substrate.node-lifecycle-conformance
+  (:require [std.substrate :as substrate]
+            [std.substrate.protocol :as protocol]))
+
+(def client (substrate/node-create {:id "node/client"}))
+(def server
+  (substrate/node-create
+   {:id "node/server"
+    :handlers {"sum" (fn [space args request node]
+                        (+ (nth args 0) (nth args 1)))}}))
+
+(promise/value
+ (protocol/attach-transport
+  client "server"
+  {:send-fn (fn [value]
+              (protocol/receive-frame server value {:transport-id "client"}))}))
+(promise/value
+ (protocol/attach-transport
+  server "client"
+  {:send-fn (fn [value]
+              (protocol/receive-frame client value {:transport-id "server"}))}))
+
+(def reply (protocol/request client "main" "sum" [42 42] {}))
+(protocol/set-service client "stream" 42)
+
+(def cancelled-node (substrate/node-create {:id "node/cancel"}))
+(promise/value
+ (protocol/attach-transport cancelled-node "peer" {:send-fn (fn [value] value)}))
+(def pending (protocol/request cancelled-node "main" "wait" [] {:id "req-cancel"}))
+(protocol/cancel-request cancelled-node "req-cancel" :cancelled)
+
+[(promise/value reply)
+ (protocol/get-service client "stream")
+ (promise/state pending)]

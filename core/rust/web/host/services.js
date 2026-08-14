@@ -427,7 +427,7 @@ export function createNodeHostServices(runtime) {
     "node/in-frame": async (nodeId, signal) => toHta(await runtime.inFrame(nodeId, signal)),
     // Legacy value-oriented calls remain for existing Studio documents. New
     // documents use the frame forms below, which originate in
-    // std.lib.substrate.frame before reaching this browser adapter.
+    // std.substrate.frame before reaching this browser adapter.
     "node/emit": async (nodeId, signal, value, meta) =>
       toHta(await runtime.emit(nodeId, signal, value, toPlain(meta))),
     "node/call": async (nodeId, target, action, args, opts) =>

@@ -19,16 +19,13 @@ public class HaraSubstrateProtocolTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(require 'std.lib.substrate.protocol) "
+                  "(require 'std.substrate.protocol) "
                       + "(defstruct Fixture [id]) "
-                      + "(extend-type Fixture std.lib.substrate.protocol/IFrame "
-                      + "  (frame-id [frame] (:id frame)) "
-                      + "  (frame-kind [frame] :request) "
-                      + "  (frame-space [frame] \"space/test\") "
-                      + "  (frame-meta [frame] {}) "
-                      + "  (frame-cause [frame] nil) "
-                      + "  (frame-data [frame] 42)) "
-                      + "(std.lib.substrate.protocol/frame-data (Fixture \"frame-1\"))")
+                      + "(extend-type Fixture std.substrate.protocol/ISubstrateService "
+                      + "  (get-service [node service-id] 42) "
+                      + "  (set-service [node service-id service] service) "
+                      + "  (remove-service [node service-id] service-id)) "
+                      + "(std.substrate.protocol/get-service (Fixture \"fixture-1\") \"answer\")")
               .asLong());
     }
   }
@@ -42,19 +39,19 @@ public class HaraSubstrateProtocolTest {
               () ->
                   context.eval(
                       HaraLanguage.ID,
-                      "(require 'std.lib.substrate.protocol) "
+                      "(require 'std.substrate.protocol) "
                           + "(defstruct Incomplete []) "
-                          + "(std.lib.substrate.protocol/get-service "
+                          + "(std.substrate.protocol/get-service "
                           + "(Incomplete) \"cache\")"));
-      assertTrue(error.getMessage().contains("IService/get-service"));
+      assertTrue(error.getMessage().contains("ISubstrateService/get-service"));
     }
   }
 
   @Test
   public void protocolSurfaceHalFixturePasses() throws Exception {
-    String source = Files.readString(Path.of("lib/test/std/lib/substrate/protocol_test.hal"));
+    String source = Files.readString(Path.of("lib/test/std/substrate/protocol_test.hal"));
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      String result = context.eval(HaraLanguage.ID, source).asString();
+      String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
     }
   }
@@ -67,17 +64,17 @@ public class HaraSubstrateProtocolTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(require 'std.lib.substrate) "
-                      + "(def node (std.lib.substrate/node-create \"node-1\")) "
-                      + "(std.lib.substrate.protocol/set-service node \"cache\" 42) "
-                      + "(std.lib.substrate.protocol/get-service node \"cache\")")
+                  "(require 'std.substrate) "
+                      + "(def node (std.substrate/node-create \"node-1\")) "
+                      + "(std.substrate.protocol/set-service node \"cache\" 42) "
+                      + "(std.substrate.protocol/get-service node \"cache\")")
               .asLong());
     }
   }
 
   @Test
   public void sharedProtocolConformanceFixtureRuns() throws Exception {
-    String source = Files.readString(Path.of("lib/test-fixtures/std/lib/substrate/protocol_conformance.hal"));
+    String source = Files.readString(Path.of("lib/test-fixtures/std/substrate/protocol_conformance.hal"));
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals("[40 42]", context.eval(HaraLanguage.ID, source).toString());
     }
@@ -85,16 +82,16 @@ public class HaraSubstrateProtocolTest {
 
   @Test
   public void sharedSubstrateFrameConformanceFixtureRuns() throws Exception {
-    String source = Files.readString(Path.of("lib/test-fixtures/std/lib/substrate/frame_conformance.hal"));
+    String source = Files.readString(Path.of("lib/test-fixtures/std/substrate/frame_conformance.hal"));
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "{\"version\":\"substrate.v1\",\"kind\":\"request\",\"id\":\"req-1\",\"source\":\"client/a\",\"target\":\"server/b\",\"space\":\"workspace/main\",\"meta\":{\"trace\":\"trace-1\"},\"action\":\"math/add\",\"args\":[19,23],\"reply_to\":null,\"status\":null,\"data\":null,\"error\":null,\"signal\":null,\"cause\":null}",
+          "[\"substrate.v1\" \"request\" \"req-1\" \"client/a\" \"server/b\" \"workspace/main\" {\"trace\" \"trace-1\"} \"math/add\" [19 23] nil nil nil nil nil nil]",
           context.eval(HaraLanguage.ID, source).toString());
       try {
         context.eval(
             HaraLanguage.ID,
-            "(do (require 'std.lib.substrate.frame) "
-                + "(std.lib.substrate.frame/normalize-frame {:kind :unknown :id \"evt-1\"}))");
+            "(do (require 'std.substrate.json) "
+                + "(std.substrate.json/decode-frame {:kind :unknown :id \"evt-1\"}))");
         fail("expected invalid substrate frames to throw");
       } catch (PolyglotException expected) {
         // The Hara thrown value is intentionally opaque to the host.
@@ -102,8 +99,8 @@ public class HaraSubstrateProtocolTest {
       try {
         context.eval(
             HaraLanguage.ID,
-            "(do (require 'std.lib.substrate.frame) "
-                + "(std.lib.substrate.frame/decode-frame-json \"{bad\"))");
+            "(do (require 'std.substrate.json) "
+                + "(std.substrate.json/decode-frame \"{bad\"))");
         fail("expected malformed substrate JSON to throw");
       } catch (PolyglotException expected) {
         // The strict JSON reader reports malformed wire input through Hara.
@@ -113,7 +110,7 @@ public class HaraSubstrateProtocolTest {
 
   @Test
   public void sharedSubstrateNodeLifecycleFixtureRuns() throws Exception {
-    String source = Files.readString(Path.of("lib/test-fixtures/std/lib/substrate/node_lifecycle_conformance.hal"));
+    String source = Files.readString(Path.of("lib/test-fixtures/std/substrate/node_lifecycle_conformance.hal"));
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals("[84 42 :rejected]", context.eval(HaraLanguage.ID, source).toString());
     }
@@ -121,9 +118,9 @@ public class HaraSubstrateProtocolTest {
 
   @Test
   public void substrateNodeHalFixturePasses() throws Exception {
-    String source = Files.readString(Path.of("lib/test/std/lib/substrate/node_test.hal"));
+    String source = Files.readString(Path.of("lib/test/std/substrate_test.hal"));
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      String result = context.eval(HaraLanguage.ID, source).asString();
+      String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
     }
   }
@@ -136,15 +133,15 @@ public class HaraSubstrateProtocolTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(require 'std.lib.substrate) "
-                      + "(def node (std.lib.substrate/node-create \"node-1\")) "
-                      + "(std.lib.substrate.protocol/attach-transport node \"peer-a\" "
+                  "(require 'std.substrate) "
+                      + "(def node (std.substrate/node-create \"node-1\")) "
+                      + "(std.substrate.protocol/attach-transport node \"peer-a\" "
                       + "  (fn [frame] "
-                      + "    (std.lib.substrate.protocol/receive-frame node "
-                      + "      (std.lib.substrate/node-frame :response \"res-1\" \"main\" {} nil [] "
-                      + "        (std.lib.substrate.protocol/frame-id frame) :ok 84 nil nil nil) "
+                      + "    (std.substrate.protocol/receive-frame node "
+                      + "      (std.substrate/node-frame :response \"res-1\" \"main\" {} nil [] "
+                      + "        (std.substrate/frame-id frame) :ok 84 nil nil nil) "
                       + "      {:transport-id \"peer-a\"}))) "
-                      + "(def reply (std.lib.substrate.protocol/request node \"main\" \"sum\" [] "
+                      + "(def reply (std.substrate.protocol/request node \"main\" \"sum\" [] "
                       + "  {:id \"req-1\" :transport-id \"peer-a\"})) "
                       + "(promise/value reply)")
               .asLong());
@@ -159,12 +156,12 @@ public class HaraSubstrateProtocolTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(require 'std.lib.substrate) "
-                      + "(def node (std.lib.substrate/node-create \"node-1\")) "
-                      + "(std.lib.substrate.protocol/attach-transport node \"peer-a\" (fn [frame] nil)) "
-                      + "(def pending (std.lib.substrate.protocol/request node \"main\" \"wait\" [] "
+                  "(require 'std.substrate) "
+                      + "(def node (std.substrate/node-create \"node-1\")) "
+                      + "(std.substrate.protocol/attach-transport node \"peer-a\" (fn [frame] nil)) "
+                      + "(def pending (std.substrate.protocol/request node \"main\" \"wait\" [] "
                       + "  {:id \"req-cancel\" :transport-id \"peer-a\"})) "
-                      + "(std.lib.substrate.protocol/cancel-request node \"req-cancel\" :cancelled) "
+                      + "(std.substrate.protocol/cancel-request node \"req-cancel\" :cancelled) "
                       + "(promise/state pending)")
               .toString());
     }
@@ -178,9 +175,9 @@ public class HaraSubstrateProtocolTest {
           () ->
               context.eval(
                   HaraLanguage.ID,
-                  "(require 'std.lib.substrate) "
-                      + "(def node (std.lib.substrate/node-create \"node-1\")) "
-                      + "(std.lib.substrate.protocol/request node \"main\" \"missing\" [] {})"));
+                  "(require 'std.substrate) "
+                      + "(def node (std.substrate/node-create \"node-1\")) "
+                      + "(std.substrate.protocol/request node \"main\" \"missing\" [] {})"));
     }
   }
 }

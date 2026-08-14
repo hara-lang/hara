@@ -1,7 +1,7 @@
 (ns lang.runtime.postgres.db-client
-  (:require [lib.postgres :as base]
+  (:require [db.postgres :as postgres]
+            [lib.postgres.connection :as connection]
             [lang.core.compile :as compile :lazy true]
-            [db.postgres :as postgres]
             [lang.protocol.runtime :as context-eval]))
 
 (defstruct RuntimePostgresDbClient
@@ -28,13 +28,13 @@
 
 (defn start-runtime
   [runtime]
-  (let [started (base/start-pg runtime)]
+  (let [started (postgres/start-pg runtime)]
     (reset! (:state started) {:status :started})
     started))
 
 (defn stop-runtime
   [runtime]
-  (let [stopped (base/stop-pg runtime)]
+  (let [stopped (postgres/stop-pg runtime)]
     (reset! (:state stopped) {:status :stopped})
     stopped))
 
@@ -59,13 +59,13 @@
 
 (defn raw-eval
   [runtime source]
-  (let [connection (deref (:connection runtime))]
-    (if (nil? connection)
+  (let [value (deref (:connection runtime))]
+    (if (nil? value)
       (throw (ex-info "PostgreSQL runtime is not started" {:id (:id runtime)}))
       (if (execute-only? source)
-        (deref (postgres/exec connection source))
+        (deref (connection/exec value source))
         (normalize-query
-         (deref (postgres/query connection source)))))))
+         (deref (connection/query value source)))))))
 
 (defn evaluate-async
   [runtime source options]
@@ -87,7 +87,7 @@
       (if (not (empty? diagnostics))
         (throw (ex-info "PostgreSQL module compilation failed"
                         {:module module :diagnostics diagnostics})))
-      (deref (postgres/batch-exec (deref (:connection runtime)) (:output compiled)))
+      (deref (connection/batch-exec (deref (:connection runtime)) (:output compiled)))
       (swap! (:modules runtime) conj module)
       runtime)))
 

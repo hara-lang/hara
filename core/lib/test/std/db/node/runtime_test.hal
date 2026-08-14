@@ -1,11 +1,10 @@
 (ns std.db.node.runtime-test
   (:use code.test)
-  (:require [std.db :as db]
-            [std.db.node.client-base :as client]
+  (:require [std.db.node.client-base :as client]
             [std.db.node.connection :as remote]
             [std.db.node.kernel-base :as kernel]
             [std.db.node.runtime :as runtime]
-            [std.db.protocol :as db-protocol]
+            [db.protocol :as db-protocol]
             [std.foundation.promise :as promise]
             [std.substrate :as substrate]))
 
@@ -135,19 +134,22 @@
           :rows [[1 "wombat"]]
           :affected 0}])
 
-   (fact "runtime services can be used as ordinary std.db connections"
+   (fact "runtime services can be used as ordinary IDatabase connections"
      (let [server (substrate/node-create "server-connection")
            client-node (substrate/node-create "client-connection")]
        (kernel/register-driver server :mock (mock-driver))
        (let [connected (deref (runtime/local-connect client-node server config {} {}))
              connection (deref (runtime/open-service (get connected :runtime)
                                                      "db/primary"))
-             output (deref (db/query connection "select id, name from items" []))]
-         [(db/engine connection)
-          (db/provider connection)
-          (get (db/info connection) :remote)
+             output (deref (db-protocol/db-query
+                            connection
+                            "select id, name from items"
+                            []))]
+         [(db-protocol/db-engine connection)
+          (db-protocol/db-provider connection)
+          (get (db-protocol/db-info connection) :remote)
           (get output :rows)
-          (deref (db/close connection))
+          (deref (db-protocol/db-close connection))
           (remote/closed? connection)]))
      => [:mock-sql :mock true [[1 "wombat"]] true true])
 
@@ -157,8 +159,8 @@
        (kernel/register-driver server :mock (mock-driver))
        (deref (runtime/local-connect client-node server config {} {}))
        (let [connection (deref (remote/open client-node "db/primary"))]
-         (deref (db/close connection))
-         (db/query connection "select 1" [])))
+         (deref (db-protocol/db-close connection))
+         (db-protocol/db-query connection "select 1" [])))
      => (throws))
 
    (fact "reinitialization reports no change and preserves services"

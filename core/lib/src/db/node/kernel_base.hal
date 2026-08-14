@@ -7,9 +7,9 @@
 ;; not interleave on the same connection.
 ;; ============================================================================
 (ns db.node.kernel-base
-  (:require [db :as db]
-            [db.node.lifecycle :as lifecycle]
+  (:require [db.node.lifecycle :as lifecycle]
             [db.node.serial :as serial]
+            [db.protocol :as protocol]
             [std.substrate :as substrate]))
 
 (def DRIVER-SERVICE "db.runtime/drivers")
@@ -123,17 +123,17 @@
 (defn exec-service-main
   "Executes SQL directly on an already-acquired service queue."
   [service sql parameters]
-  (db/exec (service-connection service) sql (or parameters [])))
+  (protocol/db-exec (service-connection service) sql (or parameters [])))
 
 (defn query-service-main
   "Queries directly on an already-acquired service queue."
   [service sql parameters]
-  (db/query (service-connection service) sql (or parameters [])))
+  (protocol/db-query (service-connection service) sql (or parameters [])))
 
 (defn- service-summary
   [service]
   (if service
-    (let [database (db/info (service-connection service))]
+    (let [database (protocol/db-info (service-connection service))]
       {:id (compatible-get service :id)
        :role (compatible-get service :role)
        :type (compatible-get service :type)
@@ -250,12 +250,12 @@
          (let [cleanup (if primary-service
                          (service-submit primary-service
                                          (fn []
-                                           (db/close
+                                           (protocol/db-close
                                             (service-connection primary-service))))
                          (promise/from nil))]
-         (promise/then cleanup
-                       (fn [_]
-                         (throw error)))))))))
+           (promise/then cleanup
+                         (fn [_]
+                           (throw error)))))))))
 
 (defn- close-service
   [node service-id]
@@ -264,7 +264,7 @@
       (promise/finally
        (service-submit service
                        (fn []
-                         (db/close (service-connection service))))
+                         (protocol/db-close (service-connection service))))
        (fn [] (substrate/remove-service node service-id)))
       (promise/from nil))))
 

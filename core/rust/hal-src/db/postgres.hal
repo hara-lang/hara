@@ -1,163 +1,117 @@
 ;; ============================================================================
-;; db.postgres — provider-neutral PostgreSQL connector.
+;; db.postgres — managed PostgreSQL lifecycle facade.
 ;;
-;; The selected host owns database handles and authority. Native Hestia hosts
-;; can install the linked Rust provider; browser hosts can install PGlite or a
-;; remote Hestia transport under the same `db.postgres` service identity.
+;; Concrete connection and host-provider operations live in
+;; lib.postgres.connection. This namespace composes those primitives with
+;; Docker, temporary-database and component lifecycle management.
 ;; ============================================================================
 (ns db.postgres
-  (:require [db.protocol :as protocol]))
+  (:require [lib.docker :as docker]
+            [lib.postgres.connection :as connection]
+            [std.lib.component :as component]))
 
-(def SERVICE "db.postgres")
+(def SERVICE connection/SERVICE)
 
-(defstruct PostgresConnection
-  [id engine provider mode capabilities storage endpoint])
+(def open connection/open)
+(def start open)
 
-(defstruct PostgresSubscription
-  [id connection channel])
+(def close connection/close)
+(def stop close)
 
-(defn- inferred-array-dimensions
-  [values]
-  (loop [dimensions []
-         current values]
-    (if (vector? current)
-      (recur (conj dimensions [1 (count current)])
-             (first current))
-      dimensions)))
+(def exec connection/exec)
+(def execute connection/execute)
+(def query connection/query)
+(def batch-exec connection/batch-exec)
 
-(defn numeric
-  "Tags an exact PostgreSQL NUMERIC parameter without requiring a new ABI type."
-  [value]
-  {"$postgres" "numeric"
-   "value" value})
+(def listen connection/listen)
+(def next-notification connection/next-notification)
+(def unlisten connection/unlisten)
+(def notify connection/notify)
 
-(defn sql-array
-  "Tags a PostgreSQL ARRAY parameter with its element type and dimensions."
-  ([element-type values]
-   (sql-array element-type values (inferred-array-dimensions values)))
-  ([element-type values dimensions]
-   {"$postgres" "array"
-    "element" (if (keyword? element-type) (name element-type) element-type)
-    "dimensions" dimensions
-    "value" values}))
+(def describe connection/describe)
+(def capabilities connection/capabilities)
+(def version connection/version)
+(def wait-ready connection/wait-ready)
 
-(defn tagged?
-  "Returns true for a portable PostgreSQL tagged value."
-  [value]
-  (and (map? value)
-       (or (= "numeric" (get value "$postgres"))
-           (= "array" (get value "$postgres")))))
+(def server-start connection/server-start)
+(def server-stop connection/server-stop)
+(def database-create connection/database-create)
+(def database-drop connection/database-drop)
 
-(defn tag-type [value] (get value "$postgres"))
-(defn tag-value [value] (get value "value"))
+(def begin connection/begin)
+(def commit connection/commit)
+(def rollback connection/rollback)
 
-(defn- descriptor-field [descriptor keyword-key string-key]
-  (if (has? descriptor keyword-key)
-    (get descriptor keyword-key)
-    (get descriptor string-key)))
+(def numeric connection/numeric)
+(def sql-array connection/sql-array)
+(def tagged? connection/tagged?)
+(def tag-type connection/tag-type)
+(def tag-value connection/tag-value)
 
-(defn- connection [descriptor]
-  (db.postgres/PostgresConnection
-   (descriptor-field descriptor :id "id")
-   :postgresql
-   (keyword (descriptor-field descriptor :provider "provider"))
-   (keyword (descriptor-field descriptor :mode "mode"))
-   (descriptor-field descriptor :capabilities "capabilities")
-   (descriptor-field descriptor :storage "storage")
-   (descriptor-field descriptor :endpoint "endpoint")))
+(defn run-lifecycle
+  [runtime command]
+  (if command
+    (if (fn? command)
+      (command runtime)
+      (throw (ex-info "PostgreSQL lifecycle hooks must be functions in HAL"
+                      {:command command})))
+    runtime))
 
-(defn- subscription [value descriptor]
-  (db.postgres/PostgresSubscription
-   (descriptor-field descriptor :id "id")
-   value
-   (descriptor-field descriptor :channel "channel")))
+(defn connection-options
+  [runtime]
+  (let [options (:config (:options runtime))
+        container (:container runtime)
+        environment (get-in options [:container :environment])
+        options (dissoc options :container :temp :startup :shutdown)
+        options (if container
+                  (merge options {:host (:host container) :port (:port container)})
+                  options)
+        options (if (or (:user options) (nil? environment))
+                  options
+                  (assoc options :user (get environment "POSTGRES_USER")))]
+    (if (or (:password options) (nil? environment))
+      options
+      (assoc options :password (get environment "POSTGRES_PASSWORD")))))
 
-(extend-type PostgresConnection protocol/IDatabase
-  (db-engine [_] :postgresql)
-  (db-provider [value] (:provider value))
-  (db-info [value]
-    {:id (:id value)
-     :engine :postgresql
-     :provider (:provider value)
-     :mode (:mode value)
-     :capabilities (:capabilities value)
-     :storage (:storage value)
-     :endpoint (:endpoint value)})
-  (db-exec [value sql parameters]
-    (host/call SERVICE "exec" (:id value) sql parameters))
-  (db-query [value sql parameters]
-    (host/call SERVICE "query" (:id value) sql parameters))
-  (db-close [value]
-    (host/call SERVICE "close" (:id value))))
+(defn admin-options
+  [options]
+  (assoc (dissoc options :database) :dbname "postgres"))
 
-(defn describe
-  "Returns the installed PostgreSQL provider descriptor and capabilities."
-  []
-  (host/call SERVICE "describe"))
+(defn start-pg-raw
+  [runtime]
+  (let [options (connection-options runtime)
+        admin (admin-options options)
+        database (:dbname options)
+        timeout (:timeout runtime)]
+    (deref (connection/wait-ready admin))
+    (if (get-in runtime [:options :config :temp])
+      (deref (connection/database-create admin database)))
+    (reset! (:connection runtime)
+            (deref (connection/open options)))
+    runtime))
 
-(defn open
-  "Opens a PostgreSQL connection using host provider auto-selection."
-  ([] (open {}))
-  ([options]
-   (promise/then (host/call SERVICE "open" options) connection)))
+(defn stop-pg-raw
+  [runtime]
+  (let [value (deref (:connection runtime))
+        options (connection-options runtime)
+        database (:dbname options)
+        temp (get-in runtime [:options :config :temp])
+        timeout (:timeout runtime)]
+    (if value
+      (deref (connection/close value)))
+    (reset! (:connection runtime) nil)
+    (if (and temp (not= temp :create))
+      (deref (connection/database-drop (admin-options options) database)))
+    runtime))
 
-(defn capabilities
-  "Returns the capabilities reported for a connection."
-  [value]
-  (:capabilities value))
+(def start-pg
+  (component/wrap-start
+   start-pg-raw
+   [{:key :startup :setup run-lifecycle}
+    {:key :container :setup docker/start-runtime}]))
 
-(defn version
-  "Returns a promise resolving to the selected PostgreSQL engine version."
-  [value]
-  (host/call SERVICE "version" (:id value)))
-
-(defn exec
-  ([value sql] (exec value sql []))
-  ([value sql parameters] (protocol/db-exec value sql parameters)))
-
-(defn batch-exec
-  "Executes a complete PostgreSQL script without splitting embedded statements."
-  [value sql]
-  (host/call SERVICE "batch-exec" (:id value) sql))
-
-(defn query
-  ([value sql] (query value sql []))
-  ([value sql parameters] (protocol/db-query value sql parameters))
-  ([value sql parameters options]
-   (host/call SERVICE "query" (:id value) sql parameters options)))
-
-(defn close [value] (protocol/db-close value))
-(defn begin [value] (exec value "begin"))
-(defn commit [value] (exec value "commit"))
-(defn rollback [value] (exec value "rollback"))
-
-(defn wait-ready [options]
-  (host/call SERVICE "wait-ready" options))
-
-(defn database-create [options database]
-  (host/call SERVICE "database-create" options database))
-
-(defn database-drop [options database]
-  (host/call SERVICE "database-drop" options database))
-
-(defn server-start [options]
-  (host/call SERVICE "server-start" options))
-
-(defn server-stop [server]
-  (host/call SERVICE "server-stop" server))
-
-(defn listen [value channel]
-  (promise/then
-   (host/call SERVICE "listen" (:id value) channel)
-   (fn [descriptor] (subscription value descriptor))))
-
-(defn next-notification [value]
-  (host/call SERVICE "notification-next" (:id value)))
-
-(defn unlisten [value]
-  (host/call SERVICE "unlisten" (:id value)))
-
-(defn notify
-  ([value channel] (notify value channel ""))
-  ([value channel payload]
-   (host/call SERVICE "notify" (:id value) channel payload)))
+(def stop-pg
+  (component/wrap-stop
+   stop-pg-raw
+   [{:key :container :teardown docker/stop-runtime}
+    {:key :shutdown :teardown run-lifecycle}]))

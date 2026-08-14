@@ -17,10 +17,14 @@ const resources = {};
 for (const name of ["store", "boot", "node", "draw", "program", "graph", "session"]) {
   resources[`studio.${name}`] = await (await fetch(`./studio/hal/${name}.hal`)).text();
 }
-for (const name of ["protocol", "frame"]) {
-  resources[`std.lib.substrate.${name}`] = await (await fetch(`../../lib/src/std/lib/substrate/${name}.hal`)).text();
+for (const name of [
+  "core", "frame", "json", "protocol", "pubsub", "request", "router",
+  "space", "transport_memory", "util", "util_handlers"
+]) {
+  const namespaceName = name.replaceAll("_", "-");
+  resources[`std.substrate.${namespaceName}`] = await (await fetch(`../../lib/src/std/substrate/${name}.hal`)).text();
 }
-resources["std.lib.substrate"] = await (await fetch("../../lib/src/std/lib/substrate.hal")).text();
+resources["std.substrate"] = await (await fetch("../../lib/src/std/substrate.hal")).text();
 const sessionRouter = new SessionRouter();
 const canvasRuntime = new CanvasRuntime();
 const capabilityRegistry = new CapabilityRegistry({ adapters: {

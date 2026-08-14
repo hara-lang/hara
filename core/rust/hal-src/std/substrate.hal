@@ -8,9 +8,10 @@
 ;; ============================================================================
 (ns std.substrate
   (:require
-            [std.substrate.core :as core]
+            [std.substrate.core :as state]
             [std.substrate.frame :as frame]
             [std.substrate.pubsub :as pubsub]
+            [std.substrate.protocol :as protocol]
             [std.substrate.request :as node-request]
             [std.substrate.router :as router]
             [std.substrate.space :as space]
@@ -63,11 +64,19 @@
 
 (defn node-state
   [node]
-  (core/node-state node))
+  (state/node-state node))
 
 (defn node-section
   [node section]
-  (core/node-section node section))
+  (state/node-section node section))
+
+(defn section-put
+  [node section key value]
+  (state/section-put node section key value))
+
+(defn section-remove
+  [node section key]
+  (state/section-remove node section key))
 
 (defn transport?
   "Checks if value is a substrate transport."
@@ -95,7 +104,7 @@
 
 (defn get-services
   [node]
-  (core/node-section node :services))
+  (state/node-section node :services))
 
 (defn get-service
   [node service-id]
@@ -103,11 +112,11 @@
 
 (defn set-service
   [node service-id service]
-  (core/section-put node :services service-id service))
+  (state/section-put node :services service-id service))
 
 (defn remove-service
   [node service-id]
-  (core/section-remove node :services service-id))
+  (state/section-remove node :services service-id))
 
 (defn transport-get [node transport-id]
   (util/transport-get node transport-id))
@@ -306,7 +315,7 @@
           transport
           (transport-create transport-id transport))
         start-function (get transport "start_fn")]
-    (core/section-put node :transports transport-id transport)
+    (state/section-put node :transports transport-id transport)
     (router/register-connection
      node transport-id {"meta" (get transport "meta")})
     (if (nil? start-function)
@@ -323,7 +332,7 @@
              (receive-frame node event context)))))
        (fn [listener]
          (let [started (assoc transport "listener" listener)]
-           (core/section-put node :transports transport-id started)
+           (state/section-put node :transports transport-id started)
            started))))))
 
 (defn detach-transport
@@ -334,7 +343,7 @@
       (promise/from nil)
       (let [stop-function (get transport "stop_fn")
             listener (get transport "listener")]
-        (core/section-remove node :transports transport-id)
+        (state/section-remove node :transports transport-id)
         (router/unregister-connection node transport-id)
         (if (nil? stop-function)
           (promise/from transport)
@@ -352,7 +361,7 @@
 
 (defn reject-pending
   [node reason]
-  (let [pending (core/node-section node :pending)
+  (let [pending (state/node-section node :pending)
         request-ids (vec (keys pending))]
     (loop [index 0]
       (if (= index (count request-ids))
@@ -408,13 +417,95 @@
   (let [options (if (map? options) options {"id" options})
         id (or (option-value options "id" :id)
                (frame/rand-id "node-" 6))
-        node (std.substrate/SubstrateNode id (atom (core/empty-state)))
+        node (std.substrate/SubstrateNode id (atom (state/empty-state)))
         meta (or (option-value options "meta" :meta) {})
         services (or (option-value options "services" :services) {})]
     (map-each meta
               (fn [key value]
-                (core/section-put node :meta key value)))
+                (state/section-put node :meta key value)))
     (map-each services
               (fn [service-id service]
                 (set-service node service-id service)))
     (node-configure node options)))
+
+(extend-type std.substrate/SubstrateNode protocol/ISubstrateSpace
+  (get-space [node space-id]
+    (std.substrate/get-space node space-id))
+  (create-space [node space-id options]
+    (std.substrate/create-space node space-id options))
+  (ensure-space [node space-id options]
+    (std.substrate/ensure-space node space-id options))
+  (remove-space [node space-id]
+    (std.substrate/remove-space node space-id))
+  (list-spaces [node]
+    (std.substrate/list-spaces node))
+  (get-space-state [node space-id]
+    (std.substrate/get-space-state node space-id))
+  (set-space-state [node space-id state]
+    (std.substrate/set-space-state node space-id state))
+  (update-space-state [node space-id updater]
+    (std.substrate/update-space-state node space-id updater)))
+
+(extend-type std.substrate/SubstrateNode protocol/ISubstrateService
+  (get-service [node service-id]
+    (std.substrate/get-service node service-id))
+  (set-service [node service-id service]
+    (std.substrate/set-service node service-id service))
+  (remove-service [node service-id]
+    (std.substrate/remove-service node service-id)))
+
+(extend-type std.substrate/SubstrateNode protocol/ISubstrateHandler
+  (register-handler [node action handler meta]
+    (std.substrate/register-handler node action handler meta))
+  (unregister-handler [node action]
+    (std.substrate/unregister-handler node action))
+  (get-handler [node action]
+    (std.substrate/get-handler node action))
+  (list-handlers [node]
+    (std.substrate/list-handlers node))
+  (register-trigger [node signal trigger meta]
+    (std.substrate/register-trigger node signal trigger meta))
+  (unregister-trigger [node signal]
+    (std.substrate/unregister-trigger node signal))
+  (get-trigger [node signal]
+    (std.substrate/get-trigger node signal))
+  (list-triggers [node]
+    (std.substrate/list-triggers node)))
+
+(extend-type std.substrate/SubstrateNode protocol/ISubstrateTransport
+  (attach-transport [node transport-id transport]
+    (std.substrate/attach-transport node transport-id transport))
+  (detach-transport [node transport-id]
+    (std.substrate/detach-transport node transport-id))
+  (get-transport [node transport-id]
+    (std.substrate/transport-get node transport-id))
+  (list-transports [node]
+    (std.substrate/transport-list node))
+  (send-transport [node transport-id frame]
+    (std.substrate/transport-send node transport-id frame))
+  (receive-frame [node frame context]
+    (std.substrate/receive-frame node frame context)))
+
+(extend-type std.substrate/SubstrateNode protocol/ISubstrateRequest
+  (request [node space-id action args meta]
+    (std.substrate/request node space-id action args meta))
+  (receive-request [node frame context]
+    (std.substrate/receive-request node frame context))
+  (receive-response [node frame]
+    (std.substrate/receive-response node frame))
+  (cancel-request [node request-id reason]
+    (std.substrate/cancel-request node request-id reason))
+  (reject-pending [node reason]
+    (std.substrate/reject-pending node reason)))
+
+(extend-type std.substrate/SubstrateNode protocol/ISubstrateStream
+  (publish [node space-id signal data meta]
+    (std.substrate/publish node space-id signal data meta))
+  (receive-publish [node frame context]
+    (std.substrate/receive-publish node frame context))
+  (subscribe [node space-id signal subscription-id meta]
+    (std.substrate/subscribe node space-id signal subscription-id meta))
+  (unsubscribe [node space-id signal subscription-id meta]
+    (std.substrate/unsubscribe node space-id signal subscription-id meta))
+  (list-subscriptions [node space-id signal]
+    (std.substrate/list-subscriptions node space-id signal)))

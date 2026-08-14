@@ -1,0 +1,100 @@
+package hara.truffle;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+
+import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
+import org.junit.Test;
+
+public class FoundationFallbackDemandTest {
+  @Test
+  public void indexesPortableDefinitionsThatShadowJavaExports() {
+    for (String name : new String[] {"has?", "identity", "if-not", "long", "map"}) {
+      assertTrue(name, FoundationFallbackDefinitions.defines(name));
+    }
+    for (String name : new String[] {"assoc", "nth", "read-string"}) {
+      assertFalse(name, FoundationFallbackDefinitions.defines(name));
+      assertTrue(name, FoundationFallbackDefinitions.isInitializationDependency(name));
+    }
+    assertFalse(FoundationFallbackDefinitions.defines("+"));
+  }
+
+  @Test
+  public void builtinAndClosedLexicalSourceDoesNotMaterializeFoundation() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(42L, context.eval(HaraLanguage.ID, "(+ 19 23)").asLong());
+      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'map))").asBoolean());
+      assertEquals(
+          42L,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (defn local-successor [x] (+ x 1)) (local-successor 41))")
+              .asLong());
+      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'map))").asBoolean());
+    }
+  }
+
+  @Test
+  public void firstFallbackFunctionReferenceMaterializesFoundation() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'map))").asBoolean());
+      assertTrue(
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(= [2 3] (map (fn [value] (+ value 1)) [1 2]))")
+              .asBoolean());
+      assertFalse(context.eval(HaraLanguage.ID, "(= nil (resolve 'map))").asBoolean());
+    }
+  }
+
+  @Test
+  public void firstFallbackMacroReferenceMaterializesFoundation() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'if-not))").asBoolean());
+      assertEquals(42L, context.eval(HaraLanguage.ID, "(if-not false 42)").asLong());
+      assertFalse(context.eval(HaraLanguage.ID, "(= nil (resolve 'if-not))").asBoolean());
+    }
+  }
+
+  @Test
+  public void syntaxQuotedFallbackReferenceLoadsBeforeMacroDefinition() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          9L,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (defmacro documented [value] `(identity ~value)) (documented 9))")
+              .asLong());
+    }
+  }
+
+  @Test
+  public void portableOverridesRestoreReaderNumericAndCollectionSemantics() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(12.5, context.eval(HaraLanguage.ID, "(read-string \"12.5\")").asDouble(), 0.0);
+      assertEquals(1L, context.eval(HaraLanguage.ID, "(long 1.9)").asLong());
+      assertEquals(
+          "[:x 2 3]",
+          context.eval(HaraLanguage.ID, "(str (assoc [1 2 3] 0 :x))").asString());
+      assertTrue(context.eval(HaraLanguage.ID, "(has? [10 20] 1)").asBoolean());
+      assertEquals(20L, context.eval(HaraLanguage.ID, "(nth [10 20] 1)").asLong());
+    }
+  }
+
+  @Test
+  public void selectiveNamespacePolicySurvivesLaterFallbackUse() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      context.eval(HaraLanguage.ID, "(ns startup-selective (:config {:expose [inc]}))");
+      assertEquals(42L, context.eval(HaraLanguage.ID, "(inc 41)").asLong());
+      PolyglotException missing =
+          assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "map"));
+      assertTrue(missing.getMessage().contains("Unbound symbol: map"));
+    }
+  }
+}

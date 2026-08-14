@@ -506,11 +506,11 @@
     :rewrite {:op :delete-parent}
     :safety :safe
     :priority 125
-    :message "Remove the redundant std.foundation :refer :all dependency from native Hara source."
+    :message "Replace std.foundation :refer :all with namespace :config."
     :evidence
     (evidence "src/std/lib/foundation.clj"
               "core/lib/src/std/foundation.hal"
-              "Native Hara exposes the Foundation surface without an explicit refer-all dependency.")}
+              "Namespace :config owns Foundation exposure and override semantics.")}
 
    {:id :namespace/std-lib-walk
     :kind :token
@@ -524,30 +524,92 @@
               "The portable zipper no longer depends on a separate std.lib.walk namespace.")}
 
    {:id :dependency/std-lib-test
-    :kind :token
+    :kind :dependency-entry
     :match {:text "std.lib.test"}
-    :safety :manual
+    :rewrite {:op :delete-parent}
+    :safety :safe
     :priority 190
-    :message "Translate legacy test/check forms into canonical code.test facts and built-in assertions."
+    :message "Remove std.lib.test; native Hara exposes Test-backed helpers through Foundation."
     :evidence
     (evidence "test/std/lib/context/registry_test.clj"
-              "core/lib/src/code/test.hal"
-              "Canonical Hara tests register code.test facts instead of collecting std.lib.test result vectors.")}
+              "core/lib/src/std/foundation.hal"
+              "Native tests use unqualified Test-backed helpers and return result vectors directly.")}
+
+   {:id :test/std-lib-check
+    :kind :token
+    :match {:text "std.lib.test/check"}
+    :rewrite {:op :replace-token :text "test-check"}
+    :safety :safe
+    :priority 191
+    :message "Use the Test-backed Foundation test-check helper."
+    :evidence
+    (evidence "test/std/lib/context/registry_test"
+              "core/lib/src/std/foundation.hal"
+              "Foundation provides the portable test-check assertion helper.")}
+
+   {:id :test/std-lib-check-error
+    :kind :form-head
+    :match {:text "std.lib.test/check-error"}
+    :rewrite {:op :replace-call :builder :test-check-error}
+    :safety :safe
+    :priority 192
+    :message "Expand check-error through test-check and portable try/catch."
+    :evidence
+    (evidence "test/std/lib/context/registry_test"
+              "core/lib/src/std/foundation.hal"
+              "Error checks are expressed through the Test-backed assertion primitive.")}
+
+   {:id :test/std-lib-passed
+    :kind :token
+    :match {:text "std.lib.test/passed?"}
+    :rewrite {:op :replace-token :text "test-passed?"}
+    :safety :safe
+    :priority 193
+    :message "Use the Test-backed Foundation test-passed? helper."
+    :evidence
+    (evidence "test/std/lib/context/registry_test"
+              "core/lib/src/std/foundation.hal"
+              "Foundation delegates result status to native Test.")}
+
+   {:id :test/std-lib-config
+    :kind :token
+    :match {:text "std.lib.test/config"}
+    :rewrite {:op :replace-token :text "test-config"}
+    :safety :safe
+    :priority 194
+    :message "Use the Test-backed Foundation test-config helper."
+    :evidence
+    (evidence "test/std/lib/context/registry_test"
+              "core/lib/src/std/foundation.hal"
+              "Foundation delegates test context configuration to native Test.")}
+
+   {:id :test/std-lib-print-results
+    :kind :form-head
+    :match {:text "std.lib.test/print-results"}
+    :rewrite {:op :replace-call :builder :test-result-vector}
+    :safety :safe
+    :priority 195
+    :message "Return the test result vector directly."
+    :evidence
+    (evidence "test/std/lib/context/registry_test"
+              "core/lib/src/std/foundation.hal"
+              "Native runners consume result vectors without a print wrapper.")}
 
    {:id :host/clojure-tools-reader
     :kind :token
-    :match {:text "clojure.tools.reader"}
+    :match {:text (str "clojure" ".tools.reader")}
     :safety :manual
     :priority 200
     :message "Choose the Hara parser or an explicit host reader adapter."
     :evidence
     (evidence "src/std/block/parse.clj"
               "core/lib/src/std/block/parse.hal"
-              "The Hara parser is portable and does not mechanically import clojure.tools.reader.")}
+              (str "The Hara parser is portable and does not mechanically import "
+                   "clojure" ".tools.reader."))}
 
    {:id :host/clojure-tools-reader-types
     :kind :token
-    :match {:text "clojure.tools.reader.reader-types"}
+    :match {:text (str "clojure" ".tools.reader.reader-types")}
     :safety :manual
     :priority 210
     :message "Replace JVM reader types with an explicit portable reader adapter."

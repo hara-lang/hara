@@ -8,10 +8,11 @@
 //! instruction program and executes it on a stack machine (issue #223).
 //! See `notes/rust-bytecode-vm.md` for the design.
 //!
-//! Everything in this module is gated behind the non-default `bytecode-vm`
-//! Cargo feature. The VM never replaces `Runtime::eval_native` and never
-//! falls back to the tree-walking evaluator: unsupported forms are typed
-//! compile errors.
+//! The main `hara-wasm` crate enables `bytecode-vm` in its default feature
+//! set. VM entry points remain feature-gated for compiler-free and minimal
+//! builds, while live snapshots and one-boundary stepping are separately
+//! opt-in through `bytecode-observation`. The VM never falls back to the
+//! tree-walking evaluator: unsupported forms are typed compile errors.
 
 #[path = "vm/artifact.rs"]
 pub mod artifact;
@@ -19,6 +20,9 @@ pub mod artifact;
 pub mod bundle;
 #[path = "vm/compiler.rs"]
 pub mod compiler;
+#[cfg(feature = "code-vm-conformance")]
+#[path = "vm/conformance.rs"]
+pub mod conformance;
 #[path = "vm/disassemble.rs"]
 pub mod disassemble;
 #[path = "vm/error.rs"]
