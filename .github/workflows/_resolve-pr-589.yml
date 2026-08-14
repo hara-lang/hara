@@ -94,11 +94,11 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('core/rust/standard-library.namespaces')
+          inventory_path = Path('core/rust/standard-library.namespaces')
           retired = {'std.lib.test', 'std.lib.walk'}
-          lines = path.read_text().splitlines()
+          lines = inventory_path.read_text().splitlines()
           lines = [line for line in lines if line not in retired]
-          path.write_text('\n'.join(lines) + '\n')
+          inventory_path.write_text('\n'.join(lines) + '\n')
 
           required = {'code.vm.conformance', 'std.substrate.protocol'}
           missing = required - set(lines)
@@ -116,15 +116,39 @@ jobs:
               raise SystemExit(f'forbidden namespaces remain: {sorted(present)}')
 
           test_path = Path('core/lib/test/std/foundation_test_primitives_test.hal')
-          source = test_path.read_text()
-          old = '[true :passed false 1 2])'
-          new = '[true nil false 1 2])'
-          if source.count(old) != 1:
-              raise SystemExit('portable Test/result status expectation was not found exactly once')
-          test_path.write_text(source.replace(old, new))
+          test_source = test_path.read_text()
+          old_test = '[true :passed false 1 2])'
+          new_test = '[true nil false 1 2])'
+          if old_test in test_source:
+              if test_source.count(old_test) != 1:
+                  raise SystemExit('portable Test/result status expectation is ambiguous')
+              test_source = test_source.replace(old_test, new_test)
+          elif new_test not in test_source:
+              raise SystemExit('portable Test/result status expectation is missing')
+          test_path.write_text(test_source)
+
+          production_path = Path('core/rust/src/project/production.rs')
+          production_source = production_path.read_text()
+          old_initializer = (
+              '        namespace_edges: BTreeSet::new(),\n'
+              '        native_primitives: BTreeSet::new(),'
+          )
+          new_initializer = (
+              '        namespace_edges: BTreeSet::new(),\n'
+              '        native_roots: Default::default(),\n'
+              '        native_primitives: BTreeSet::new(),'
+          )
+          if old_initializer in production_source:
+              if production_source.count(old_initializer) != 1:
+                  raise SystemExit('failed-expansion UnitAnalysis initializer is ambiguous')
+              production_source = production_source.replace(old_initializer, new_initializer)
+          elif new_initializer not in production_source:
+              raise SystemExit('failed-expansion UnitAnalysis initializer shape is unsupported')
+          production_path.write_text(production_source)
           PY
           git add core/rust/standard-library.namespaces
           git add core/lib/test/std/foundation_test_primitives_test.hal
+          git add core/rust/src/project/production.rs
 
           if git ls-files -u -- core/rust/assets/std.foundation.hbx | grep -q .; then
             git checkout --theirs -- core/rust/assets/std.foundation.hbx
@@ -199,7 +223,7 @@ jobs:
           git diff --check
           python3 scripts/runtime/sync-rust-hal-src --check
           python3 scripts/runtime/retired_stdlib_hard_cut.py
-          git add -A
-          git status --short
+          git add -A -- . ':(exclude)hara-specs-registry'
+          git status --short --untracked-files=no
           git commit -m "Merge main and resolve retired stdlib conflicts"
           git push origin HEAD:codex/remove-retired-stdlib-modules
