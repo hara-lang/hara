@@ -1,0 +1,333 @@
+(ns code.vm.conformance-test
+  (:require [code.vm :as vm]
+            [code.vm.conformance :as conformance]
+            [code.vm.interpreter :as interpreter]
+            [code.vm.bytecode :as bytecode]))
+
+(def +source+
+  "(+ 1 (* 2 3))")
+
+(defn value-preview
+  [type display]
+  {:value/type type
+   :value/display display
+   :value/truncated false})
+
+(defn machine-state
+  [ip stack status]
+  {:function 0
+   :ip ip
+   :instruction nil
+   :stack stack
+   :locals []
+   :calls []
+   :handlers []
+   :status status})
+
+(def +interpreter-journal+
+  {:journal/schema "hal.evaluation-journal/0-alpha"
+   :journal/id "conformance-interpreter"
+   :journal/status :ok
+   :journal/events
+   [{:event/id 1
+     :event/sequence 1
+     :event/kind :evaluation/start
+     :event/source {:form/path [0]}}
+    {:event/id 2
+     :event/sequence 2
+     :event/kind :operation/enter
+     :event/source {:form/path [0 2]}
+     :operation/id 1
+     :operation/name "std.foundation/*"}
+    {:event/id 3
+     :event/sequence 3
+     :event/kind :operation/return
+     :operation/id 1
+     :operation/result (value-preview "integer" "6")}
+    {:event/id 4
+     :event/sequence 4
+     :event/kind :operation/enter
+     :event/source {:form/path [0]}
+     :operation/id 2
+     :operation/name "std.foundation/+"}
+    {:event/id 5
+     :event/sequence 5
+     :event/kind :operation/return
+     :operation/id 2
+     :operation/result (value-preview "integer" "7")}]
+   :journal/result (value-preview "integer" "7")})
+
+(def +halc-trace+
+  {:trace/schema "hal.halc-trace/0-alpha"
+   :trace/id "conformance-halc"
+   :trace/status :ok
+   :trace/events
+   [{:event/id 1
+     :event/sequence 1
+     :event/stage :source/read
+     :event/status :ok
+     :event/source {:form/path [0]}
+     :event/evidence {:form/count 1}}
+    {:event/id 2
+     :event/sequence 2
+     :event/stage :module/identity
+     :event/status :ok
+     :event/evidence
+     {:module/namespace "lesson.main"
+      :module/resource "lesson/main.hal"}}
+    {:event/id 3
+     :event/sequence 3
+     :event/stage :artifact/validate
+     :event/status :ok
+     :event/evidence {:artifact/valid true}}
+    {:event/id 4
+     :event/sequence 4
+     :event/stage :artifact/decode
+     :event/status :ok
+     :event/evidence {:decode/parity true}}]
+   :trace/result
+   {:module/namespace "lesson.main"
+    :module/resource "lesson/main.hal"
+    :decode/parity true}})
+
+(def +bytecode-program+
+  {:program/entry 0
+   :program/constants []
+   :program/functions []})
+
+(def +bytecode-trace+
+  {:trace/schema "hal.bytecode-trace/0-alpha"
+   :trace/id "conformance-bytecode"
+   :trace/status :ok
+   :trace/program +bytecode-program+
+   :trace/events
+   [{:event/id 1
+     :event/sequence 1
+     :event/kind :program/validated
+     :event/status :ok
+     :machine/before (machine-state 0 [] :ready)
+     :machine/after (machine-state 0 [] :ready)}
+    {:event/id 2
+     :event/sequence 2
+     :event/kind :instruction/execute
+     :event/status :ok
+     :event/source {:form/path [0 2]}
+     :event/instruction {:opcode :primitive :operands ["*" 2]}
+     :machine/before (machine-state 0 [] :ready)
+     :machine/after
+     (machine-state 1 [(value-preview "integer" "6")] :ready)}
+    {:event/id 3
+     :event/sequence 3
+     :event/kind :instruction/execute
+     :event/status :ok
+     :event/source {:form/path [0]}
+     :event/instruction {:opcode :primitive :operands ["+" 2]}
+     :machine/before
+     (machine-state 1 [(value-preview "integer" "6")] :ready)
+     :machine/after
+     (machine-state 2 [(value-preview "integer" "7")] :ready)}
+    {:event/id 4
+     :event/sequence 4
+     :event/kind :machine/return
+     :event/status :ok
+     :event/source {:form/path [0]}
+     :event/instruction {:opcode :return :operands []}
+     :machine/before
+     (machine-state 2 [(value-preview "integer" "7")] :ready)
+     :machine/after (machine-state 3 [] :returned)
+     :event/result (value-preview "integer" "7")}]
+   :trace/result (value-preview "integer" "7")})
+
+(def +fixture+
+  {:fixture/id "nested-arithmetic"
+   :fixture/source-id "lesson/main"
+   :fixture/source-version 4
+   :fixture/source +source+
+   :fixture/interpreter +interpreter-journal+
+   :fixture/halc +halc-trace+
+   :fixture/bytecode +bytecode-trace+})
+
+(def +interpreter-error+
+  {:journal/schema "hal.evaluation-journal/0-alpha"
+   :journal/id "conformance-interpreter-error"
+   :journal/status :error
+   :journal/events
+   [{:event/id 1
+     :event/sequence 1
+     :event/kind :evaluation/start
+     :event/source {:form/path [0]}}
+    {:event/id 2
+     :event/sequence 2
+     :event/kind :evaluation/error
+     :event/source {:form/path [0]}
+     :error/category :arithmetic/division-by-zero
+     :error/message "division by zero"}]
+   :journal/error "division by zero"})
+
+(def +bytecode-error+
+  {:trace/schema "hal.bytecode-trace/0-alpha"
+   :trace/id "conformance-bytecode-error"
+   :trace/status :error
+   :trace/program +bytecode-program+
+   :trace/events
+   [{:event/id 1
+     :event/sequence 1
+     :event/kind :machine/fail
+     :event/status :error
+     :event/source {:form/path [0]}
+     :event/instruction {:opcode :primitive :operands ["/" 2]}
+     :machine/before (machine-state 0 [] :ready)
+     :machine/after (machine-state 0 [] :failed)
+     :error/category :arithmetic/division-by-zero
+     :event/error "division by zero"}]
+   :trace/error "division by zero"})
+
+(defn check-by-id
+  [report id]
+  (first
+   (filter
+    (fn [check]
+      (= id (:check/id check)))
+    (:conformance/checks report))))
+
+(def results
+  [(test-check
+    "cross-stage conformance reports runtime, artifact, source, and trace parity"
+    (let [report (conformance/run +fixture+)]
+      [(conformance/report? report)
+       (:conformance/status report)
+       (get-in report
+               [:conformance/stages :interpreter :stage/status])
+       (get-in report
+               [:conformance/stages :halc :stage/status])
+       (get-in report
+               [:conformance/stages :bytecode :stage/status])
+       (:check/pass (check-by-id report :runtime/parity))
+       (:check/pass (check-by-id report :halc/decode-parity))
+       (:check/pass (check-by-id report :source/identity))
+       (:check/pass
+        (check-by-id report :trace/deterministic-and-bounded))])
+    [true :pass :returned :returned :returned
+     true true true true])
+
+   (test-check
+    "teaching annotations are deterministic data derived from recorded transitions"
+    (let [report (conformance/run +fixture+)
+          annotations (:conformance/teaching report)
+          first-annotation (first annotations)
+          instruction
+          (first
+           (filter
+            (fn [annotation]
+              (= :execution/instruction
+                 (:teaching/concept annotation)))
+            annotations))]
+      [(count annotations)
+       (:teaching/concept first-annotation)
+       (get-in first-annotation
+               [:teaching/evidence :stage/kind])
+       (get-in first-annotation
+               [:teaching/evidence :step/index])
+       (:teaching/concept instruction)
+       (get-in instruction
+               [:teaching/evidence :step/rule])
+       (get-in instruction [:teaching/focus :form/path])])
+    [15
+     :evaluation/order
+     :interpreter
+     1
+     :execution/instruction
+     :instruction/execute
+     [0 2]])
+
+   (test-check
+    "runtime result divergence fails the shared conformance report"
+    (let [trace
+          (assoc-in
+           (assoc +bytecode-trace+
+                  :trace/result (value-preview "integer" "8"))
+           [:trace/events 3 :event/result]
+           (value-preview "integer" "8"))
+          report
+          (conformance/run
+           (assoc +fixture+ :fixture/bytecode trace))
+          parity (check-by-id report :runtime/parity)]
+      [(:conformance/status report)
+       (:check/pass parity)
+       (get-in parity [:check/expected :value])
+       (get-in parity [:check/actual :value])])
+    [:fail false "7" "8"])
+
+   (test-check
+    "optional stages stay explicitly unsupported without silent fallback"
+    (let [report
+          (conformance/run
+           (dissoc
+            (assoc +fixture+
+                   :fixture/required [:interpreter :halc])
+            :fixture/bytecode))]
+      [(:conformance/status report)
+       (get-in report
+               [:conformance/stages :bytecode :stage/supported])
+       (get-in report
+               [:conformance/stages :bytecode :stage/status])
+       (:check/pass (check-by-id report :stages/required))
+       (:check/actual (check-by-id report :runtime/parity))])
+    [:pass false :unsupported true :unsupported])
+
+   (test-check
+    "missing required stages fail before a corpus fixture is accepted"
+    (let [report
+          (conformance/run
+           (dissoc +fixture+ :fixture/bytecode))]
+      [(:conformance/status report)
+       (:check/pass (check-by-id report :stages/required))
+       (:check/actual (check-by-id report :stages/required))])
+    [:fail false [:bytecode]])
+
+   (test-check
+    "failed runtimes compare normalized error categories rather than host text"
+    (let [report
+          (conformance/run
+           {:fixture/id "division-error"
+            :fixture/source-id "lesson/error"
+            :fixture/source "(/ 1 0)"
+            :fixture/required [:interpreter :bytecode]
+            :fixture/interpreter +interpreter-error+
+            :fixture/bytecode +bytecode-error+})
+          parity (check-by-id report :runtime/parity)]
+      [(:conformance/status report)
+       (:check/pass parity)
+       (get-in parity [:check/expected :status])
+       (get-in parity [:check/actual :status])
+       (get-in parity [:check/expected :error-category])
+       (get-in parity [:check/actual :error-category])])
+    [:pass true :failed :failed
+     :arithmetic/division-by-zero
+     :arithmetic/division-by-zero])
+
+   (test-check
+    "source identity mismatches are surfaced as a dedicated check"
+    (let [interpreter-machine
+          (interpreter/from-journal
+           +source+
+           +interpreter-journal+
+           {:source {:id "lesson/interpreter"}})
+          bytecode-machine
+          (bytecode/from-trace
+           +source+
+           +bytecode-trace+
+           {:source {:id "lesson/bytecode"}})
+          report
+          (conformance/report
+           "source-mismatch"
+           {:interpreter interpreter-machine
+            :bytecode bytecode-machine}
+           {:required [:interpreter :bytecode]})
+          source-check (check-by-id report :source/identity)]
+      [(:conformance/status report)
+       (:check/pass source-check)
+       (:check/actual source-check)])
+    [:fail false ["lesson/interpreter" "lesson/bytecode"]])])
+
+results
