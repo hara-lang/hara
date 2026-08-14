@@ -501,11 +501,22 @@ fn forms_cps(
     }
     let next = forms.clone();
     let e = env.clone();
+    let form = forms[i].clone();
+    let boundary_form = form.clone();
+    let boundary_env = env.clone();
     one(
-        forms[i].clone(),
+        form,
         env,
         Box::new(move |r| match r {
-            Ok(v) => Step::Continue(Box::new(move || forms_cps(next, i + 1, v, e, k))),
+            Ok(v) => {
+                coroutine::semantic::record_boundary(
+                    coroutine::semantic::EvalSemanticRule::FormReturn,
+                    &boundary_form,
+                    &v,
+                    &boundary_env,
+                );
+                Step::Continue(Box::new(move || forms_cps(next, i + 1, v, e, k)))
+            }
             Err(x) => k(Err(x)),
         }),
     )
@@ -522,11 +533,20 @@ fn values_cps(
     }
     let next = forms.clone();
     let e = env.clone();
+    let form = forms[i].clone();
+    let boundary_form = form.clone();
+    let boundary_env = env.clone();
     one(
-        forms[i].clone(),
+        form,
         env,
         Box::new(move |r| match r {
             Ok(v) => {
+                coroutine::semantic::record_boundary(
+                    coroutine::semantic::EvalSemanticRule::ValueReturn,
+                    &boundary_form,
+                    &v,
+                    &boundary_env,
+                );
                 let mut values = values;
                 values.push(v);
                 Step::Continue(Box::new(move || values_cps(next, i + 1, values, e, k)))
@@ -953,7 +973,7 @@ fn set_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> 
         Form::Keyword(field) | Form::Symbol(field) if !field.contains('/') => field.clone(),
         _ => {
             return k(Err(
-                "set! field place expects an unqualified literal field".into(),
+                "set! field place expects an unqualified literal field".into()
             ))
         }
     };
