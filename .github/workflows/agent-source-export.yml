@@ -52,7 +52,7 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Apply the runtime loader and CLI handler closeout patches
+      - name: Apply runtime, compiler, and portable-source closeout patches
         if: steps.pending.outputs.apply == 'true'
         shell: bash
         run: |
@@ -133,6 +133,106 @@ jobs:
               raise SystemExit('stale-eager regression insertion point did not match exactly once')
           bundle = bundle.replace(insertion, regression + insertion, 1)
           bundle_path.write_text(bundle)
+
+          functions_path = Path('core/rust/src/vm/compiler/functions.rs')
+          functions = functions_path.read_text()
+          special_anchor = '''\
+                                  "quote" => {}
+                                  "." => {
+          '''
+          special_replacement = '''\
+                                  "quote" => {}
+                                  "set!" => {
+                                      if let Some(place) = children.get(1) {
+                                          match place.form {
+                                              Form::List(forms)
+                                                  if matches!(
+                                                      forms.first(),
+                                                      Some(Form::Symbol(operation))
+                                                          if operation == "field"
+                                                  ) =>
+                                              {
+                                                  let place_children = self.list_children(
+                                                      forms,
+                                                      place.span,
+                                                      place.children,
+                                                  );
+                                                  if let Some(receiver) = place_children.get(1) {
+                                                      self.collect_free(receiver, bound, free);
+                                                  }
+                                              }
+                                              Form::Symbol(_) => {}
+                                              _ => self.collect_free(place, bound, free),
+                                          }
+                                      }
+                                      if let Some(value) = children.get(2) {
+                                          self.collect_free(value, bound, free);
+                                      }
+                                  }
+                                  "field" => {
+                                      if let Some(instance) = children.get(1) {
+                                          self.collect_free(instance, bound, free);
+                                      }
+                                  }
+                                  "." => {
+          '''
+          if functions.count(special_anchor) != 1:
+              raise SystemExit('closure special-form insertion point did not match exactly once')
+          functions_path.write_text(functions.replace(special_anchor, special_replacement, 1))
+
+          execution_path = Path('core/rust/src/vm/execution_tests.rs')
+          execution = execution_path.read_text()
+          mutable_anchor = '''\
+                  assert_eq!(
+                      eval("(do (def order []) (defmutable Cursor [x]) (def cursor (Cursor 1)) (set! (field (do (set! order (conj order :receiver)) cursor) :x) (do (set! order (conj order :replacement)) 10)) [order (field cursor :x)])"),
+                      "[[:receiver :replacement] 10]"
+                  );
+          '''
+          mutable_regression = '''\
+                  assert_eq!(
+                      eval("(do (defmutable Cursor [x]) (defn move! [cursor value] (set! (field cursor :x) value)) (defn position [cursor] (field cursor :x)) (let [cursor (Cursor 1)] [(move! cursor 10) (position cursor)]))"),
+                      "[10 10]"
+                  );
+          ''' + mutable_anchor
+          if execution.count(mutable_anchor) != 1:
+              raise SystemExit('mutable closure regression insertion point did not match')
+          execution_path.write_text(execution.replace(mutable_anchor, mutable_regression, 1))
+
+          dom_path = Path('core/lib/src/std/dom/common.hal')
+          dom = dom_path.read_text()
+          exploratory = '''\
+          (defn dom-field-set!
+            [dom key value]
+            (cond
+              (= key :tag) (set! (field dom :tag) value)
+              (= key :props) (set! (field dom :props) value)
+              (= key :item) (set! (field dom :item) value)
+              (= key :parent) (set! (field dom :parent) value)
+              (= key :handler) (set! (field dom :handler) value)
+              (= key :shadow) (set! (field dom :shadow) value)
+              (= key :cache) (set! (field dom :cache) value)
+              (= key :extra) (set! (field dom :extra) value)
+              :else (throw (ex-info "Unknown DOM field" {:field key})))
+            dom)
+          '''
+          canonical = '''\
+          (defn dom-field-set!
+            [dom key value]
+            (case key
+              :tag (set! (field dom :tag) value)
+              :props (set! (field dom :props) value)
+              :item (set! (field dom :item) value)
+              :parent (set! (field dom :parent) value)
+              :handler (set! (field dom :handler) value)
+              :shadow (set! (field dom :shadow) value)
+              :cache (set! (field dom :cache) value)
+              :extra (set! (field dom :extra) value)
+              (throw (ex-info "Unknown DOM field" {:field key})))
+            dom)
+          '''
+          if dom.count(exploratory) != 1:
+              raise SystemExit('exploratory std.dom rewrite did not match exactly once')
+          dom_path.write_text(dom.replace(exploratory, canonical, 1))
 
           template_path = Path('core/lib/src/tool/cli/template.hal')
           template = template_path.read_text()
@@ -218,13 +318,16 @@ jobs:
 
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
-          rustfmt --edition 2021 core/rust/src/vm/bundle.rs
-          git diff --check
-          git diff -- \
+          rustfmt --edition 2021 \
             core/rust/src/vm/bundle.rs \
-            core/lib/src/tool/cli/template.hal \
-            core/rust/hal-src/tool/cli/template.hal \
-            core/lib/test/tool/cli/template_test.hal
+            core/rust/src/vm/compiler/functions.rs \
+            core/rust/src/vm/execution_tests.rs
+          git diff --check
+          git diff --stat
+
+      - name: Run mutable-field closure regression
+        if: steps.pending.outputs.apply == 'true'
+        run: cargo test --manifest-path core/rust/Cargo.toml 'vm::execution_tests::defmutable_forms_use_reference_identity_and_settable_fields' --lib -- --nocapture
 
       - name: Run the complete Rust bytecode bundle suite
         if: steps.pending.outputs.apply == 'true'
@@ -284,12 +387,19 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           git add \
+            core/rust/src/vm/compiler/functions.rs \
+            core/rust/src/vm/execution_tests.rs \
+            core/lib/src/std/dom/common.hal \
+            core/rust/hal-src/std/dom/common.hal \
+            core/rust/hal-src/code/test/base/executive.hal
+          git diff --cached --quiet || git commit -m 'fix(vm): collect mutable field special-form operands'
+
+          git add \
             core/lib/src/tool/cli/template.hal \
             core/rust/hal-src/tool/cli/template.hal \
-            core/lib/test/tool/cli/template_test.hal \
-            core/rust/assets/std.foundation.hbx
-          git commit -m 'fix(tool.cli): keep handler provenance runtime-local'
+            core/lib/test/tool/cli/template_test.hal
+          git diff --cached --quiet || git commit -m 'fix(tool.cli): keep handler provenance runtime-local'
 
-          git add core/rust/src/vm/bundle.rs
-          git commit -m 'fix(runtime): load source-free standard-library bundles'
+          git add core/rust/src/vm/bundle.rs core/rust/assets/std.foundation.hbx
+          git diff --cached --quiet || git commit -m 'fix(runtime): load source-free standard-library bundles'
           git push origin HEAD:agent/runtime-closeout-575-493
