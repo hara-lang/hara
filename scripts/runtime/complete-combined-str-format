@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT=$(pwd)
+LOG=/tmp/combined-str-format-v2.log
+exec > >(tee -a "$LOG") 2>&1
+
+HARA="$ROOT/core/rust/target/debug/hara"
+HARA_TEST="$ROOT/core/rust/target/debug/hara-test"
+COMMON="$ROOT/core/lib/src/std/format/common.hal"
+TABLE="$ROOT/core/lib/src/std/format/table.hal"
+REPORT="$ROOT/core/lib/src/std/format/report.hal"
+TERMINAL="$ROOT/core/lib/src/std/format/terminal.hal"
+
+evaluate() {
+  cat "$@" | (cd /tmp && "$HARA" --offline stdin)
+}
+
+run_test() {
+  local path=$1
+  (cd /tmp && "$HARA_TEST" --root "$ROOT/core" "$ROOT/$path")
+}
+
+echo '=== build candidate tools ==='
+cargo build --quiet \
+  --manifest-path core/rust/Cargo.toml \
+  --bin hara \
+  --bin hara-test
+
+echo '=== candidate evaluate string ==='
+evaluate "$ROOT/core/lib/src/std/foundation/string.hal"
+
+echo '=== candidate evaluate format.common ==='
+evaluate "$COMMON"
+
+echo '=== candidate evaluate format.table ==='
+evaluate "$COMMON" "$TABLE"
+
+echo '=== candidate evaluate format.report ==='
+evaluate "$COMMON" "$TABLE" "$REPORT"
+
+echo '=== candidate evaluate format.terminal ==='
+evaluate "$TERMINAL"
+
+echo '=== candidate evaluate format facade ==='
+evaluate "$COMMON" "$TABLE" "$REPORT" "$TERMINAL" \
+  "$ROOT/core/lib/src/std/format.hal"
+
+echo '=== candidate evaluate work.report ==='
+evaluate "$COMMON" "$TABLE" "$REPORT" "$TERMINAL" \
+  "$ROOT/core/lib/src/std/work/report.hal"
+
+echo '=== candidate focused tests ==='
+run_test core/lib/test/std/foundation/string_test.hal
+run_test core/lib/test/std/work_report_renderer_test.hal
+
+echo '=== repair Rust numeric parity and work evidence ==='
+python3 - <<'PY'
+import re
+from pathlib import Path
+
+numeric_path = Path('core/rust/src/numeric.rs')
+numeric = numeric_path.read_text()
+if 'pub(crate) fn format_fixed' not in numeric:
+    marker = 'fn float_value(value: &Value) -> Result<f64, String> {'
+    if marker not in numeric:
+        raise SystemExit('numeric float_value insertion marker not found')
+    helper = '''pub(crate) fn format_fixed(
+    value: &Value,
+    precision: usize,
+) -> Result<String, String> {
+    let number = float_value(value)?;
+    Ok(format!("{number:.precision$}"))
+}
+
+'''
+    numeric = numeric.replace(marker, helper + marker, 1)
+    numeric_path.write_text(numeric)
+
+core_path = Path('core/rust/src/core.rs')
+core = core_path.read_text()
+if 'numeric::format_fixed' not in core:
+    pattern = re.compile(
+        r'        "str/to-fixed" => \{\n.*?\n'
+        r'        \}\n'
+        r'        "str/replace" => \{',
+        re.DOTALL,
+    )
+    replacement = '''        "str/to-fixed" => {
+            if values.len() != 2 || !numeric::is_numeric_value(&values[0]) {
+                return Err("str/to-fixed expects a number and precision".into());
+            }
+            let precision = numeric::to_i64_exact(&values[1])
+                .map_err(|_| "str/to-fixed expects a number and precision".to_string())?;
+            if !(0..=100).contains(&precision) {
+                return Err(
+                    "str/to-fixed precision must be in the range 0..100".into(),
+                );
+            }
+            Ok(Value::String(numeric::format_fixed(
+                &values[0],
+                precision as usize,
+            )?))
+        }
+        "str/replace" => {'''
+    core, count = pattern.subn(replacement, core, count=1)
+    if count != 1:
+        raise SystemExit(f'expected one str/to-fixed block, replaced {count}')
+    core_path.write_text(core)
+
+parity_path = Path('core/spec/std-work-task-parity.edn')
+parity = parity_path.read_text()
+replacements = {
+    'std.work.report.plain/table-lines': 'std.format.table/table-lines',
+    'std.work.report.plain/event-lines': 'std.work.report/event-lines',
+    'std.work.report.terminal/observer': 'std.work.report/observer',
+    'std.work.report.terminal/replay!': 'std.work.report/replay!',
+    'std.work.report.plain/render': 'std.format.report/report',
+    'std.work.report.terminal/render': 'std.format.terminal/render',
+}
+for old, new in replacements.items():
+    if old not in parity and new not in parity:
+        raise SystemExit(f'missing parity evidence marker: {old}')
+    parity = parity.replace(old, new)
+parity_path.write_text(parity)
+PY
+
+echo '=== synchronize Rust HAL snapshots ==='
+python3 scripts/runtime/sync-rust-hal-src
+python3 scripts/runtime/sync-rust-hal-src --check
+
+echo '=== format and rebuild latest runtime ==='
+cargo fmt --manifest-path core/rust/Cargo.toml --all
+cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
+cargo build --quiet \
+  --manifest-path core/rust/Cargo.toml \
+  --bin hara \
+  --bin hara-test
+
+echo '=== fresh-run canonical HAL sources ==='
+(cd /tmp && "$HARA" --offline run \
+  "$ROOT/core/lib/src/std/foundation/string.hal")
+for source in \
+  core/lib/src/std/format/common.hal \
+  core/lib/src/std/format/table.hal \
+  core/lib/src/std/format/report.hal \
+  core/lib/src/std/format/terminal.hal \
+  core/lib/src/std/format.hal \
+  core/lib/src/std/work/report.hal
+do
+  (cd /tmp && "$HARA" --offline run "$ROOT/$source")
+done
+
+echo '=== fresh focused HAL tests ==='
+run_test core/lib/test/std/foundation/string_test.hal
+run_test core/lib/test/std/work_report_renderer_test.hal
+
+echo '=== validate hard cuts and public surface ==='
+test ! -e core/lib/src/std/work/report/plain.hal
+test ! -e core/lib/src/std/work/report/terminal.hal
+test ! -e core/rust/hal-src/std/work/report/plain.hal
+test ! -e core/rust/hal-src/std/work/report/terminal.hal
+! rg -n \
+  'std\.work\.report\.(plain|terminal)|terminal-observer|std\.lib\.format' \
+  core/lib/src core/spec core/rust/hal-src \
+  core/rust/standard-library.namespaces
+! rg -n \
+  '^\s*\(defn[- ]+\s*(joinl|truncate|lines|single-line|filter-empty)\b' \
+  core/lib/src/std/foundation/string.hal
+git diff --check
+
+echo '=== focused Rust numeric parity ==='
+cargo test --manifest-path core/rust/Cargo.toml --test string_to_fixed
+
+echo '=== focused and broad HAL library suites ==='
+./scripts/runtime/run-lib-tests \
+  core/lib/test/std/foundation/string_test.hal \
+  core/lib/test/std/work_report_renderer_test.hal
+./scripts/runtime/run-lib-tests
+
+echo '=== broader Rust suite and final snapshot check ==='
+cargo test --manifest-path core/rust/Cargo.toml
+python3 scripts/runtime/sync-rust-hal-src --check
+
+echo '=== commit verified non-workflow completion ==='
+git config user.name 'hara-agent'
+git config user.email 'hara-agent@users.noreply.github.com'
+git add \
+  core/lib/src/std/foundation/string.hal \
+  core/lib/src/std/format.hal \
+  core/lib/src/std/format \
+  core/lib/src/std/work/report.hal \
+  core/lib/test/std/foundation/string_test.hal \
+  core/lib/test/std/work_report_renderer_test.hal \
+  core/rust/src/core.rs \
+  core/rust/src/numeric.rs \
+  core/rust/tests/string_to_fixed.rs \
+  core/rust/hal-src \
+  core/rust/standard-library.namespaces \
+  core/spec/std-work-task-parity.edn
+
+git diff --cached --check
+if git diff --cached --quiet; then
+  echo 'verified completion produced no new source changes'
+else
+  git commit -m 'Complete portable strings and format layers'
+  git push origin HEAD:agent/complete-combined-str-format
+fi
