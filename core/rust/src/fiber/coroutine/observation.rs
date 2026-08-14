@@ -8,20 +8,32 @@
 //! involved.
 
 use super::super::*;
+use super::semantic;
+use crate::kernel::{read_forms, SpannedForm};
 
 impl EvalFiber {
     /// Creates a live evaluator paused before the first production CPS step.
     pub fn start_observed(source: &str, env: HashMap<String, Value>) -> Result<Self, String> {
-        let forms = parse_forms(source).map_err(|error| error.to_string())?;
-        Self::start_forms_observed(forms, env)
+        let spanned = read_forms(source).map_err(|error| error.to_string())?;
+        let forms = spanned.iter().map(|form| form.form.clone()).collect();
+        Self::start_forms_observed_internal(forms, Some(Rc::new(spanned)), env)
     }
 
-    /// Creates a live evaluator paused before evaluating the supplied forms.
+    /// Creates a live evaluator paused before evaluating forms without source spans.
     pub fn start_forms_observed(
         forms: Vec<Form>,
         env: HashMap<String, Value>,
     ) -> Result<Self, String> {
+        Self::start_forms_observed_internal(forms, None, env)
+    }
+
+    fn start_forms_observed_internal(
+        forms: Vec<Form>,
+        source_forms: Option<Rc<Vec<SpannedForm>>>,
+        env: HashMap<String, Value>,
+    ) -> Result<Self, String> {
         let env = Rc::new(RefCell::new(env));
+        semantic::register_context(&env, source_forms);
         let execution_env = env.clone();
         let forms = Rc::new(forms);
         let resume: Resume =
@@ -50,7 +62,8 @@ impl EvalFiber {
             self.state = EvalFiberState::Failed("observed evaluator continuation missing".into());
             return self.state();
         };
-        self.accept_observed(resume(PromiseState::Pending));
+        let step = semantic::with_active_context(&self.env, || resume(PromiseState::Pending));
+        self.accept_observed(step);
         self.state()
     }
 
@@ -76,7 +89,8 @@ impl EvalFiber {
         };
         self.pending = None;
         self.state = EvalFiberState::Running;
-        self.accept_observed(resume(state));
+        let step = semantic::with_active_context(&self.env, || resume(state));
+        self.accept_observed(step);
         self.state()
     }
 
@@ -109,6 +123,12 @@ impl EvalFiber {
                     EvalFiberState::Failed("coroutine/yield used outside of a coroutine".into());
             }
         }
+    }
+}
+
+impl Drop for EvalFiber {
+    fn drop(&mut self) {
+        semantic::remove_context(&self.env);
     }
 }
 
