@@ -4,7 +4,7 @@ use super::super::source::{Diagnostic, SourceLocation};
 use super::dynamic::{canonical_symbol, collect_resolved_symbols, scan_dynamic_access};
 use super::program::{classify_effect, scan_program};
 use super::provides::{list_head, provided_vars, unit_kind, without_metadata};
-use crate::core::{self, Value};
+use crate::core;
 use crate::kernel::Form;
 use crate::vm::Program;
 use crate::Runtime;
