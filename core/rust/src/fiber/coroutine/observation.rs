@@ -150,7 +150,8 @@ mod tests {
         let promise = Promise::new();
         let mut env = HashMap::new();
         env.insert("pending-value".into(), Value::Promise(promise.clone()));
-        let mut fiber = EvalFiber::start_observed("(deref pending-value)", env).unwrap();
+        let mut fiber =
+            EvalFiber::start_observed("(Coroutine/await pending-value)", env).unwrap();
 
         fiber.run_observed(16);
         assert_eq!(fiber.state(), EvalFiberState::Suspended);
