@@ -17,6 +17,7 @@ pub use invoke_hta::{InvokeHtaError, MAX_INVOKE_HTA_RESULT_BYTES};
 pub mod identity_tool;
 #[cfg(feature = "evaluation-journal")]
 pub mod journal;
+pub mod interpreter_observation;
 mod json;
 pub mod kernel;
 pub mod lang;
