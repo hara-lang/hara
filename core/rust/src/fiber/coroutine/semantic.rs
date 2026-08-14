@@ -1,18 +1,24 @@
 //! Runtime-owned semantic evidence for the opt-in live evaluator.
 //!
 //! The ordinary evaluator records nothing. While an observed [`EvalFiber`] is
-//! actively executing, the existing CPS continuation producers call
-//! [`record_boundary`] with the form and value they actually completed. The
-//! context keeps owned clones for later bounded projection; it never executes
-//! forms or predicts evaluation order.
+//! actively executing, authoritative CPS and mutation seams enqueue owned
+//! semantic evidence. The observed driver publishes at most one queued event
+//! per host step; it never replays source or predicts evaluation order.
 
 use super::super::*;
 use crate::kernel::SpannedForm;
+use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::core::fiber) enum EvalSemanticRule {
     FormReturn,
     ValueReturn,
+    CallEnter,
+    VarDefine,
+    VarSet,
+    FieldSet,
+    ErrorRaise,
+    ErrorCatch,
 }
 
 impl EvalSemanticRule {
@@ -20,8 +26,32 @@ impl EvalSemanticRule {
         match self {
             Self::FormReturn => "form/return",
             Self::ValueReturn => "value/return",
+            Self::CallEnter => "call/enter",
+            Self::VarDefine => "effect/var-define",
+            Self::VarSet => "effect/var-set",
+            Self::FieldSet => "effect/field-set",
+            Self::ErrorRaise => "error/raise",
+            Self::ErrorCatch => "error/catch",
         }
     }
+}
+
+#[derive(Clone)]
+pub(in crate::core::fiber) enum EvalSemanticPayload {
+    Result(Value),
+    Call {
+        name: String,
+        arguments: Vec<Value>,
+    },
+    Effect {
+        target: String,
+        before: Option<Value>,
+        after: Value,
+    },
+    Error {
+        message: String,
+        caught: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -29,7 +59,7 @@ pub(super) struct EvalSemanticBoundary {
     pub(super) sequence: usize,
     pub(super) rule: EvalSemanticRule,
     pub(super) form: Form,
-    pub(super) result: Value,
+    pub(super) payload: EvalSemanticPayload,
     pub(super) environment: HashMap<String, Value>,
 }
 
@@ -37,6 +67,7 @@ struct EvalObservationContext {
     source_forms: Option<Rc<Vec<SpannedForm>>>,
     sequence: usize,
     current: Option<EvalSemanticBoundary>,
+    pending: VecDeque<EvalSemanticBoundary>,
 }
 
 thread_local! {
@@ -58,6 +89,7 @@ pub(super) fn register_context(
         source_forms,
         sequence: 0,
         current: None,
+        pending: VecDeque::new(),
     }));
     OBSERVED_CONTEXTS.with(|contexts| {
         contexts
@@ -105,26 +137,140 @@ pub(super) fn with_active_context<T>(
     operation()
 }
 
+fn active_context() -> Option<Rc<RefCell<EvalObservationContext>>> {
+    ACTIVE_CONTEXTS.with(|contexts| contexts.borrow().last().cloned())
+}
+
+fn enqueue(
+    rule: EvalSemanticRule,
+    form: &Form,
+    payload: EvalSemanticPayload,
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) {
+    let Some(context) = active_context() else {
+        return;
+    };
+    let environment = environment.borrow().clone();
+    let mut context = context.borrow_mut();
+    context.sequence = context.sequence.saturating_add(1);
+    let sequence = context.sequence;
+    context.pending.push_back(EvalSemanticBoundary {
+        sequence,
+        rule,
+        form: form.clone(),
+        payload,
+        environment,
+    });
+}
+
 pub(in crate::core::fiber) fn record_boundary(
     rule: EvalSemanticRule,
     form: &Form,
     result: &Value,
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) {
-    let context = ACTIVE_CONTEXTS.with(|contexts| contexts.borrow().last().cloned());
-    let Some(context) = context else {
-        return;
-    };
-    let environment = environment.borrow().clone();
-    let mut context = context.borrow_mut();
-    context.sequence = context.sequence.saturating_add(1);
-    context.current = Some(EvalSemanticBoundary {
-        sequence: context.sequence,
+    enqueue(
         rule,
-        form: form.clone(),
-        result: result.clone(),
+        form,
+        EvalSemanticPayload::Result(result.clone()),
         environment,
+    );
+}
+
+pub(in crate::core::fiber) fn record_call(
+    form: &Form,
+    name: impl Into<String>,
+    arguments: &[Value],
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) {
+    enqueue(
+        EvalSemanticRule::CallEnter,
+        form,
+        EvalSemanticPayload::Call {
+            name: name.into(),
+            arguments: arguments.to_vec(),
+        },
+        environment,
+    );
+}
+
+pub(in crate::core::fiber) fn record_effect(
+    rule: EvalSemanticRule,
+    form: &Form,
+    target: impl Into<String>,
+    before: Option<Value>,
+    after: Value,
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) {
+    debug_assert!(matches!(
+        rule,
+        EvalSemanticRule::VarDefine | EvalSemanticRule::VarSet | EvalSemanticRule::FieldSet
+    ));
+    enqueue(
+        rule,
+        form,
+        EvalSemanticPayload::Effect {
+            target: target.into(),
+            before,
+            after,
+        },
+        environment,
+    );
+}
+
+pub(in crate::core::fiber) fn record_error(
+    rule: EvalSemanticRule,
+    form: &Form,
+    message: impl Into<String>,
+    caught: bool,
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) {
+    debug_assert!(matches!(
+        rule,
+        EvalSemanticRule::ErrorRaise | EvalSemanticRule::ErrorCatch
+    ));
+    let message = message.into();
+    let duplicate = active_context().is_some_and(|context| {
+        context.borrow().pending.back().is_some_and(|boundary| {
+            matches!(
+                &boundary.payload,
+                EvalSemanticPayload::Error {
+                    message: prior,
+                    caught: prior_caught,
+                } if prior == &message && *prior_caught == caught
+            )
+        })
     });
+    if duplicate {
+        return;
+    }
+    enqueue(
+        rule,
+        form,
+        EvalSemanticPayload::Error { message, caught },
+        environment,
+    );
+}
+
+/// Publishes one queued semantic event without executing another continuation.
+pub(super) fn advance_pending(
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) -> bool {
+    let Some(context) = context_for(environment) else {
+        return false;
+    };
+    let mut context = context.borrow_mut();
+    let Some(next) = context.pending.pop_front() else {
+        return false;
+    };
+    context.current = Some(next);
+    true
+}
+
+pub(super) fn pending_count(environment: &Rc<RefCell<HashMap<String, Value>>>) -> usize {
+    context_for(environment)
+        .map(|context| context.borrow().pending.len())
+        .unwrap_or(0)
 }
 
 pub(super) fn current_boundary(
