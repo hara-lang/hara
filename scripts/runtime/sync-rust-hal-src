@@ -15,6 +15,7 @@ SOURCE_ROOTS = (
     CORE / "lib" / "src-lang",
 )
 MIRROR_ROOT = CORE / "rust" / "hal-src"
+INVENTORY = CORE / "rust" / "standard-library.namespaces"
 
 
 def editor_artifact(path: Path) -> bool:
@@ -43,6 +44,39 @@ def collect_sources() -> dict[Path, bytes]:
             files[relative] = content
             owners[relative] = root
     return files
+
+
+def declared_namespace(path: Path, content: bytes) -> str:
+    source = content.decode("utf-8")
+    for line in source.splitlines():
+        line = line.lstrip()
+        for prefix in ("(ns ", "(ns+ "):
+            if line.startswith(prefix):
+                remainder = line[len(prefix) :]
+                namespace = remainder.split(maxsplit=1)[0].split(")", 1)[0]
+                if namespace:
+                    return namespace
+    raise RuntimeError(f"{path} does not declare an ns or ns+ namespace")
+
+
+def standard_library_namespace(namespace: str) -> bool:
+    return namespace == "db" or namespace.startswith(("std.", "code.", "lang.", "db."))
+
+
+def inventory_content(files: dict[Path, bytes]) -> bytes:
+    owners: dict[str, Path] = {}
+    namespaces: list[str] = []
+    for path, content in sorted(files.items()):
+        namespace = declared_namespace(path, content)
+        previous = owners.get(namespace)
+        if previous is not None:
+            raise RuntimeError(
+                f"duplicate HAL namespace {namespace}: {previous} and {path}"
+            )
+        owners[namespace] = path
+        if standard_library_namespace(namespace):
+            namespaces.append(namespace)
+    return ("\n".join(sorted(namespaces)) + "\n").encode("utf-8")
 
 
 def classify(
@@ -83,14 +117,26 @@ def check() -> int:
     display(missing, "missing from core/rust/hal-src")
     display(stale, "stale in core/rust/hal-src")
     display(changed, "different in core/rust/hal-src")
-    if missing or stale or changed:
+    expected_inventory = inventory_content(source)
+    actual_inventory = INVENTORY.read_bytes() if INVENTORY.is_file() else b""
+    inventory_stale = actual_inventory != expected_inventory
+    if inventory_stale:
+        print(
+            f"{INVENTORY.relative_to(REPOSITORY)} is not synchronized; "
+            "run scripts/runtime/sync-rust-hal-src",
+            file=sys.stderr,
+        )
+    if missing or stale or changed or inventory_stale:
         print(
             "core/rust/hal-src is not synchronized; "
             "run scripts/runtime/sync-rust-hal-src",
             file=sys.stderr,
         )
         return 1
-    print(f"core/rust/hal-src matches {len(source)} canonical HAL sources")
+    print(
+        f"core/rust/hal-src matches {len(source)} canonical HAL sources "
+        "and namespace inventory"
+    )
     return 0
 
 
@@ -108,9 +154,16 @@ def synchronize() -> int:
         target.write_bytes(source[path])
 
     prune_empty_directories(MIRROR_ROOT)
+    expected_inventory = inventory_content(source)
+    inventory_changed = (
+        not INVENTORY.is_file() or INVENTORY.read_bytes() != expected_inventory
+    )
+    if inventory_changed:
+        INVENTORY.write_bytes(expected_inventory)
     print(
         "synchronized core/rust/hal-src: "
-        f"{len(missing)} added, {len(changed)} updated, {len(stale)} removed"
+        f"{len(missing)} added, {len(changed)} updated, {len(stale)} removed; "
+        f"namespace inventory {'updated' if inventory_changed else 'unchanged'}"
     )
     return 0
 
