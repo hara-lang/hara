@@ -1,4 +1,4 @@
-name: Validate portable filesystem implementation
+name: Validate and publish stacked filesystem implementation
 
 on:
   push:
@@ -7,16 +7,16 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: agent-fs-port-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
+  materialize:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - name: Checkout patch control branch
         uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
         with:
           ref: main
           path: hara
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Checkout specifications registry
         uses: actions/checkout@v4
@@ -58,6 +58,10 @@ jobs:
             | base64 -d \
             | gzip -d \
             > "$RUNNER_TEMP/fs-current-main-overlay.patch"
+          base64 -d control/.github/patches/fs-current-main-fix-03.patch.gz.b64 \
+            | gzip -d \
+            > "$RUNNER_TEMP/fs-current-main-fix-03.patch"
+
           cd hara
           git apply --check "$RUNNER_TEMP/fs-current-main.patch"
           git apply "$RUNNER_TEMP/fs-current-main.patch"
@@ -65,6 +69,8 @@ jobs:
           git apply ../control/.github/patches/fs-current-main-fix-01.patch
           git apply --check "$RUNNER_TEMP/fs-current-main-overlay.patch"
           git apply "$RUNNER_TEMP/fs-current-main-overlay.patch"
+          git apply --check "$RUNNER_TEMP/fs-current-main-fix-03.patch"
+          git apply "$RUNNER_TEMP/fs-current-main-fix-03.patch"
           git diff --check
           git diff --stat
 
@@ -121,3 +127,60 @@ jobs:
           set -euo pipefail
           cd hara
           ./scripts/runtime/run-lib-tests core/lib/test/std/fs/path_test.hal
+
+      - name: Publish Rust native boundary branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          rm hara-specs-registry
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/std-native-file-rust
+          git add \
+            core/rust/src/core.rs \
+            core/rust/src/file.rs \
+            core/rust/src/fiber.rs \
+            core/rust/src/lib.rs
+          git diff --cached --check
+          git commit -m "Implement capability-backed std.native.File in Rust"
+          git push --force origin HEAD:refs/heads/agent/std-native-file-rust
+
+      - name: Publish portable std.fs branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          git checkout -B agent/std-fs-portable-hal
+          git add \
+            core/lib/src/std/fs.hal \
+            core/lib/src/std/fs/path.hal \
+            core/lib/src/std/fs/walk.hal \
+            core/lib/test/std/fs/path_test.hal \
+            core/rust/hal-src/std/fs.hal \
+            core/rust/hal-src/std/fs/path.hal \
+            core/rust/hal-src/std/fs/walk.hal \
+            core/rust/standard-library.namespaces
+          git diff --cached --check
+          git commit -m "Port the portable std.fs core"
+          git push --force origin HEAD:refs/heads/agent/std-fs-portable-hal
+
+      - name: Publish JVM provider parity branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          git checkout -B agent/std-native-file-jvm
+          git add \
+            core/java/src/main/java/hara/truffle/HaraContext.java \
+            core/java/src/main/java/hara/truffle/HaraFileProvider.java \
+            core/java/src/main/java/hara/truffle/HaraLogicalPath.java \
+            core/java/src/main/java/hara/truffle/HaraMountedFileSystem.java \
+            core/java/src/test/java/hara/truffle/HaraFileProviderTest.java \
+            core/java/src/test/java/hara/truffle/HaraLogicalPathTest.java \
+            core/java/src/test/java/hara/truffle/MainTest.java \
+            core/java/src/test/java/hara/truffle/StdFsTest.java
+          git diff --cached --check
+          git commit -m "Implement std.native.File provider parity on the JVM"
+          test -z "$(git status --porcelain)"
+          git push --force origin HEAD:refs/heads/agent/std-native-file-jvm
