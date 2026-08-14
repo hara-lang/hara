@@ -27,9 +27,18 @@ pub struct Project {
     pub manifest_path: PathBuf,
     pub id: String,
     pub version: Version,
+    /// Effective native-Rust paths (shared paths followed by :rust additions).
     pub source_paths: Vec<PathBuf>,
     pub test_paths: Vec<PathBuf>,
     pub extension_paths: Vec<PathBuf>,
+    pub shared_source_paths: Vec<PathBuf>,
+    pub shared_test_paths: Vec<PathBuf>,
+    pub shared_extension_paths: Vec<PathBuf>,
+    pub runtime_profiles: BTreeMap<String, RuntimeProfile>,
+    pub active_runtime: String,
+    pub native_source_paths: Vec<PathBuf>,
+    pub runtime_target_path: Option<PathBuf>,
+    pub maven_dependencies: BTreeMap<String, String>,
     pub capabilities: Vec<String>,
     pub artifact_paths: Vec<PathBuf>,
     pub archive_root: Option<PathBuf>,
@@ -39,7 +48,9 @@ pub struct Project {
     pub main: Option<String>,
     pub default_profile: Option<String>,
     pub profiles: BTreeMap<String, ProjectProfile>,
+    /// Effective native-Rust Hara dependencies.
     pub dependencies: BTreeMap<String, String>,
+    pub shared_dependencies: BTreeMap<String, String>,
     pub extensions: BTreeMap<String, Form>,
     /// Project-local command aliases.  Values are argv prefixes, never shell
     /// expressions; callers append their own arguments after expansion.
@@ -54,6 +65,29 @@ pub struct ProjectProfile {
     pub options: Form,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct RuntimeProfile {
+    pub source_paths: Vec<PathBuf>,
+    pub test_paths: Vec<PathBuf>,
+    pub extension_paths: Vec<PathBuf>,
+    pub native_source_paths: Vec<PathBuf>,
+    pub target_path: Option<PathBuf>,
+    pub hara_dependencies: BTreeMap<String, String>,
+    pub maven_dependencies: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedRuntimeProfile {
+    pub runtime: String,
+    pub source_paths: Vec<PathBuf>,
+    pub test_paths: Vec<PathBuf>,
+    pub extension_paths: Vec<PathBuf>,
+    pub native_source_paths: Vec<PathBuf>,
+    pub target_path: Option<PathBuf>,
+    pub hara_dependencies: BTreeMap<String, String>,
+    pub maven_dependencies: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedProfile {
     pub name: String,
@@ -63,6 +97,18 @@ pub struct ResolvedProfile {
 }
 
 impl Project {
+    /// Resolves the shared project declaration with one host runtime overlay.
+    pub fn resolve_runtime_profile(&self, runtime: &str) -> Result<ResolvedRuntimeProfile, String> {
+        resolve_runtime_profile_values(
+            runtime,
+            &self.shared_source_paths,
+            &self.shared_test_paths,
+            &self.shared_extension_paths,
+            &self.shared_dependencies,
+            &self.runtime_profiles,
+        )
+    }
+
     /// Resolves a named runnable target without assigning any meaning to its
     /// language or options. Language hosts such as Hoplite own that policy.
     pub fn resolve_profile(
@@ -139,6 +185,7 @@ pub fn read(input: &Path) -> Result<Project, String> {
         .map_err(|error| format!("cannot read {}: {error}", manifest_path.display()))?;
     let form = parse(&source).map_err(|error| format!("{}: {error}", manifest_path.display()))?;
     let entries = map(&form, "project.edn must be an EDN map")?;
+    reject_legacy_runtime_keys(entries)?;
     for key in REQUIRED {
         if lookup(entries, key).is_none() {
             return Err(format!("project.edn missing required key :{key}"));
@@ -157,15 +204,15 @@ pub fn read(input: &Path) -> Result<Project, String> {
     )?;
     let version = Version::parse(&version_text)
         .map_err(|error| format!("project.edn :project/version is not SemVer: {error}"))?;
-    let source_paths = paths(
+    let shared_source_paths = paths(
         lookup(entries, "project/source-paths").unwrap(),
         "project/source-paths",
     )?;
-    let test_paths = paths(
+    let shared_test_paths = paths(
         lookup(entries, "project/test-paths").unwrap(),
         "project/test-paths",
     )?;
-    let extension_paths = paths(
+    let shared_extension_paths = paths(
         lookup(entries, "project/extension-paths").unwrap(),
         "project/extension-paths",
     )?;
@@ -206,10 +253,29 @@ pub fn read(input: &Path) -> Result<Project, String> {
             ));
         }
     }
-    let dependencies = lookup(entries, "project/dependencies")
+    let shared_dependencies = lookup(entries, "project/dependencies")
         .map(dependencies)
         .transpose()?
         .unwrap_or_default();
+    let runtime_profiles = lookup(entries, "project/runtime-profiles")
+        .map(runtime_profiles)
+        .transpose()?
+        .unwrap_or_default();
+    let active = resolve_runtime_profile_values(
+        "rust",
+        &shared_source_paths,
+        &shared_test_paths,
+        &shared_extension_paths,
+        &shared_dependencies,
+        &runtime_profiles,
+    )?;
+    let source_paths = active.source_paths.clone();
+    let test_paths = active.test_paths.clone();
+    let extension_paths = active.extension_paths.clone();
+    let dependencies = active.hara_dependencies.clone();
+    let native_source_paths = active.native_source_paths.clone();
+    let runtime_target_path = active.target_path.clone();
+    let maven_dependencies = active.maven_dependencies.clone();
     let extensions = lookup(entries, "project/extensions")
         .map(extension_declarations)
         .transpose()?
@@ -237,6 +303,14 @@ pub fn read(input: &Path) -> Result<Project, String> {
         source_paths,
         test_paths,
         extension_paths,
+        shared_source_paths,
+        shared_test_paths,
+        shared_extension_paths,
+        runtime_profiles,
+        active_runtime: "rust".into(),
+        native_source_paths,
+        runtime_target_path,
+        maven_dependencies,
         capabilities,
         artifact_paths,
         archive_root,
@@ -245,6 +319,7 @@ pub fn read(input: &Path) -> Result<Project, String> {
         default_profile,
         profiles,
         dependencies,
+        shared_dependencies,
         extensions,
         aliases,
         recipe,
@@ -298,7 +373,16 @@ pub fn new_app(destination: &Path, name: &str) -> Result<Project, String> {
         format!("(ns {namespace}.main)\n\n(defn main []\n  \"Hello from {name}\")\n\n(main)\n"),
     )
     .map_err(io)?;
-    fs::write(destination.join("test").join(&namespace).join("main_test.hal"), format!("(ns {namespace}.main-test)\n\n[(test-check \"starter project runs\" true true)]\n")).map_err(io)?;
+    fs::write(
+        destination
+            .join("test")
+            .join(&namespace)
+            .join("main_test.hal"),
+        format!(
+            "(ns {namespace}.main-test)\n\n[(test-check \"starter project runs\" true true)]\n"
+        ),
+    )
+    .map_err(io)?;
     read(&destination.join("project.edn"))
 }
 
@@ -367,14 +451,26 @@ pub fn files_in(root: &Path, paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> 
     Ok(output)
 }
 
-/// Registers namespaces from `:project/source-paths` for runtime `require`.
+/// Registers namespaces from the automatically selected native Rust profile.
 pub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {
+    let mut resources = Vec::new();
+    let mut declarations = BTreeMap::new();
     for path in files_in(&project.root, &project.source_paths)? {
         let source = fs::read_to_string(&path)
             .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
         let namespace = declared_namespace(&source)
             .map_err(|error| format!("{}: {error}", path.display()))?
             .ok_or_else(|| format!("{} does not declare an ns or ns+ namespace", path.display()))?;
+        if let Some(previous) = declarations.insert(namespace.clone(), path.clone()) {
+            return Err(format!(
+                "duplicate namespace {namespace} in effective :rust profile: {} and {}",
+                previous.display(),
+                path.display()
+            ));
+        }
+        resources.push((namespace, source));
+    }
+    for (namespace, source) in resources {
         runtime.register_resource(&namespace, &source);
     }
     Ok(())
@@ -473,7 +569,9 @@ fn collect_hal(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String
 fn editor_artifact(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
-        .is_some_and(|name| name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#')))
+        .is_some_and(|name| {
+            name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#'))
+        })
 }
 
 fn validate_empty_lock(path: &Path) -> Result<(), String> {
@@ -542,6 +640,171 @@ fn capability_set(form: &Form, label: &str) -> Result<Vec<String>, String> {
         .collect::<Result<Vec<_>, _>>()?;
     output.sort();
     output.dedup();
+    Ok(output)
+}
+
+fn reject_legacy_runtime_keys(entries: &[(Form, Form)]) -> Result<(), String> {
+    for (key, replacement) in [
+        (
+            "jvm/source-paths",
+            ":project/runtime-profiles :jvm :runtime/native-source-paths",
+        ),
+        (
+            "jvm/dependencies",
+            ":project/runtime-profiles :jvm :runtime/dependencies :maven",
+        ),
+        (
+            "jvm/target-path",
+            ":project/runtime-profiles :jvm :runtime/target-path",
+        ),
+    ] {
+        if lookup(entries, key).is_some() {
+            return Err(format!(
+                "project.edn :{key} is no longer supported; use {replacement}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn runtime_profiles(form: &Form) -> Result<BTreeMap<String, RuntimeProfile>, String> {
+    let mut output = BTreeMap::new();
+    for (key, value) in map(
+        form,
+        "project.edn :project/runtime-profiles must be an EDN map",
+    )? {
+        let runtime = identifier(key, "runtime profile name")?;
+        if runtime != "jvm" && runtime != "rust" {
+            return Err(format!("unsupported project runtime profile {runtime:?}"));
+        }
+        let entries = map(value, "runtime profile must be an EDN map")?;
+        let source_paths = lookup(entries, "runtime/source-paths")
+            .map(|value| paths(value, "runtime/source-paths"))
+            .transpose()?
+            .unwrap_or_default();
+        let test_paths = lookup(entries, "runtime/test-paths")
+            .map(|value| paths(value, "runtime/test-paths"))
+            .transpose()?
+            .unwrap_or_default();
+        let extension_paths = lookup(entries, "runtime/extension-paths")
+            .map(|value| paths(value, "runtime/extension-paths"))
+            .transpose()?
+            .unwrap_or_default();
+        let native_source_paths = lookup(entries, "runtime/native-source-paths")
+            .map(|value| paths(value, "runtime/native-source-paths"))
+            .transpose()?
+            .unwrap_or_default();
+        let target_path = lookup(entries, "runtime/target-path")
+            .map(|value| {
+                relative_path(
+                    &string(value, "runtime/target-path")?,
+                    "runtime/target-path",
+                )
+            })
+            .transpose()?;
+        let (hara_dependencies, maven_dependencies) = match lookup(entries, "runtime/dependencies")
+        {
+            None => (BTreeMap::new(), BTreeMap::new()),
+            Some(value) => {
+                let groups = map(value, "runtime :runtime/dependencies must be an EDN map")?;
+                let hara = lookup(groups, "hara")
+                    .map(dependencies)
+                    .transpose()?
+                    .unwrap_or_default();
+                let maven = lookup(groups, "maven")
+                    .map(maven_dependencies)
+                    .transpose()?
+                    .unwrap_or_default();
+                (hara, maven)
+            }
+        };
+        let profile = RuntimeProfile {
+            source_paths,
+            test_paths,
+            extension_paths,
+            native_source_paths,
+            target_path,
+            hara_dependencies,
+            maven_dependencies,
+        };
+        if output.insert(runtime.clone(), profile).is_some() {
+            return Err(format!("duplicate project runtime profile {runtime:?}"));
+        }
+    }
+    Ok(output)
+}
+
+fn resolve_runtime_profile_values(
+    runtime: &str,
+    shared_source_paths: &[PathBuf],
+    shared_test_paths: &[PathBuf],
+    shared_extension_paths: &[PathBuf],
+    shared_dependencies: &BTreeMap<String, String>,
+    runtime_profiles: &BTreeMap<String, RuntimeProfile>,
+) -> Result<ResolvedRuntimeProfile, String> {
+    if runtime != "jvm" && runtime != "rust" {
+        return Err(format!("unsupported project runtime profile {runtime:?}"));
+    }
+    let profile = runtime_profiles.get(runtime).cloned().unwrap_or_default();
+    let mut hara_dependencies = shared_dependencies.clone();
+    for (coordinate, requirement) in &profile.hara_dependencies {
+        if let Some(shared) = hara_dependencies.get(coordinate) {
+            if shared != requirement {
+                return Err(format!(
+                    "conflicting Hara dependency requirements for {coordinate} in :{runtime}: {shared:?} and {requirement:?}"
+                ));
+            }
+        }
+        hara_dependencies.insert(coordinate.clone(), requirement.clone());
+    }
+    let mut source_paths = shared_source_paths.to_vec();
+    source_paths.extend(profile.source_paths.iter().cloned());
+    let mut test_paths = shared_test_paths.to_vec();
+    test_paths.extend(profile.test_paths.iter().cloned());
+    let mut extension_paths = shared_extension_paths.to_vec();
+    extension_paths.extend(profile.extension_paths.iter().cloned());
+    Ok(ResolvedRuntimeProfile {
+        runtime: runtime.into(),
+        source_paths,
+        test_paths,
+        extension_paths,
+        native_source_paths: profile.native_source_paths,
+        target_path: profile.target_path,
+        hara_dependencies,
+        maven_dependencies: profile.maven_dependencies,
+    })
+}
+
+fn maven_dependencies(form: &Form) -> Result<BTreeMap<String, String>, String> {
+    let mut output = BTreeMap::new();
+    for (key, value) in map(form, "runtime Maven dependencies must be an EDN map")? {
+        let coordinate = scalar(key, "Maven dependency coordinate")?;
+        let mut parts = coordinate.split('/');
+        if !matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(group), Some(artifact), None) if !group.is_empty() && !artifact.is_empty()
+        ) {
+            return Err(format!(
+                "invalid Maven dependency coordinate {coordinate:?}"
+            ));
+        }
+        let declaration = map(value, "Maven dependency declaration must be an EDN map")?;
+        let version = lookup(declaration, "version")
+            .ok_or_else(|| format!("Maven dependency {coordinate} is missing :version"))
+            .and_then(|value| string(value, "Maven dependency :version"))?;
+        if version.is_empty()
+            || version
+                .chars()
+                .any(|value| matches!(value, '[' | ']' | '(' | ')' | ',' | '*'))
+        {
+            return Err(format!(
+                "Maven dependency {coordinate} requires an exact version"
+            ));
+        }
+        if output.insert(coordinate.clone(), version).is_some() {
+            return Err(format!("duplicate Maven dependency {coordinate}"));
+        }
+    }
     Ok(output)
 }
 

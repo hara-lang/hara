@@ -137,3 +137,108 @@ fn expands_project_aliases_and_rejects_cycles() {
         .contains("cycle"));
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn selects_rust_runtime_profile_and_can_resolve_jvm_overlay() {
+    let root = temp("runtime-profiles");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("project.edn"),
+        "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [\"src\"] :project/test-paths [\"test\"] :project/extension-paths [\"extensions\"] :project/capabilities #{} :project/dependencies {\"hara:hara/base\" {:version \"^1.0.0\"}} :project/profiles {:production {:profile/language :hara}} :project/runtime-profiles {:rust {:runtime/source-paths [\"src-rust\"] :runtime/test-paths [\"test-rust\"] :runtime/extension-paths [\"extensions-rust\"] :runtime/dependencies {:hara {\"hara:hara/crypto\" {:version \"^1.0.0\"}}}} :jvm {:runtime/source-paths [\"src-jvm\"] :runtime/native-source-paths [\"src-java\"] :runtime/target-path \"target/jvm/classes\" :runtime/dependencies {:maven {org.postgresql/postgresql {:version \"42.7.7\"}}}}}}",
+    )
+    .unwrap();
+    let project = read(&root).unwrap();
+    assert_eq!(project.active_runtime, "rust");
+    assert_eq!(
+        project.source_paths,
+        vec![PathBuf::from("src"), PathBuf::from("src-rust")]
+    );
+    assert_eq!(
+        project.test_paths,
+        vec![PathBuf::from("test"), PathBuf::from("test-rust")]
+    );
+    assert_eq!(
+        project.extension_paths,
+        vec![
+            PathBuf::from("extensions"),
+            PathBuf::from("extensions-rust")
+        ]
+    );
+    assert_eq!(project.dependencies["hara:hara/base"], "^1.0.0");
+    assert_eq!(project.dependencies["hara:hara/crypto"], "^1.0.0");
+    assert!(project.profiles.contains_key("production"));
+
+    let jvm = project.resolve_runtime_profile("jvm").unwrap();
+    assert_eq!(
+        jvm.source_paths,
+        vec![PathBuf::from("src"), PathBuf::from("src-jvm")]
+    );
+    assert_eq!(jvm.native_source_paths, vec![PathBuf::from("src-java")]);
+    assert_eq!(jvm.target_path, Some(PathBuf::from("target/jvm/classes")));
+    assert_eq!(
+        jvm.maven_dependencies["org.postgresql/postgresql"],
+        "42.7.7"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rejects_legacy_jvm_project_keys_and_conflicting_runtime_dependencies() {
+    let root = temp("runtime-invalid");
+    fs::create_dir_all(&root).unwrap();
+    let prefix = "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [] :project/test-paths [] :project/extension-paths [] :project/capabilities #{} ";
+    fs::write(
+        root.join("project.edn"),
+        format!("{prefix}:jvm/source-paths [\"src-java\"]}}"),
+    )
+    .unwrap();
+    let legacy = read(&root).unwrap_err();
+    assert!(legacy.contains(":project/runtime-profiles :jvm :runtime/native-source-paths"));
+
+    fs::write(
+        root.join("project.edn"),
+        format!("{prefix}:project/dependencies {{\"hara:hara/crypto\" {{:version \"^1.0.0\"}}}} :project/runtime-profiles {{:rust {{:runtime/dependencies {{:hara {{\"hara:hara/crypto\" {{:version \"^2.0.0\"}}}}}}}}}}}}"),
+    )
+    .unwrap();
+    let conflict = read(&root).unwrap_err();
+    assert!(conflict.contains("conflicting Hara dependency requirements"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn runtime_namespace_alternatives_are_isolated_but_effective_duplicates_fail() {
+    let root = temp("runtime-namespaces");
+    fs::create_dir_all(root.join("src-rust/demo")).unwrap();
+    fs::create_dir_all(root.join("src-jvm/demo")).unwrap();
+    fs::create_dir_all(root.join("src/demo")).unwrap();
+    fs::write(
+        root.join("project.edn"),
+        "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [\"src\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{} :project/runtime-profiles {:rust {:runtime/source-paths [\"src-rust\"]} :jvm {:runtime/source-paths [\"src-jvm\"]}}}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src-rust/demo/adapter.hal"),
+        "(ns demo.adapter) (def runtime :rust)",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src-jvm/demo/adapter.hal"),
+        "(ns demo.adapter) (def runtime :jvm)",
+    )
+    .unwrap();
+    let project = read(&root).unwrap();
+    let mut runtime = Runtime::new();
+    register_sources(&project, &mut runtime).unwrap();
+
+    fs::write(
+        root.join("src/demo/adapter.hal"),
+        "(ns demo.adapter) (def runtime :shared)",
+    )
+    .unwrap();
+    let project = read(&root).unwrap();
+    let mut runtime = Runtime::new();
+    assert!(register_sources(&project, &mut runtime)
+        .unwrap_err()
+        .contains("duplicate namespace demo.adapter"));
+    fs::remove_dir_all(root).unwrap();
+}
