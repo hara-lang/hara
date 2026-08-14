@@ -31,6 +31,7 @@ explicit_infer_header = """(ns std.typed.infer
                      set? str string? symbol symbol? vec vector vector? when]]
             [std.typed.schema :as schema]))"""
 minimal_infer_header = """(ns std.typed.infer
+  (:config {:blank true})
   (:require [std.typed.schema :as schema]))"""
 if infer.count(explicit_infer_header) != 1:
     raise SystemExit("std.typed.infer transformed header changed unexpectedly")
