@@ -1,0 +1,197 @@
+        "file/walk" => provider.walk(&path),
++                _ => unreachable!(),
++            }))
+         }
+         "file/write" => {
+-            if forms.len() != 2 {
+-                return Err("file/write expects a path and bytes".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/write expects a path and bytes".into()),
+-            };
++            if !(2..=3).contains(&forms.len()) { return Err("file/write expects a path, bytes, and optional options".into()); }
++            let Value::String(path) = eval(&forms[0], env)? else { return Err("file/write expects a path and bytes".into()); };
+             let bytes = match eval(&forms[1], env)? {
+                 Value::Bytes(value) => value,
+                 Value::ByteBuffer(value) => value.borrow().clone(),
+                 _ => return Err("file/write expects a path and bytes".into()),
+             };
+-            file_provider(operation)?
+-                .write(&path, bytes)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/exists?" => {
+-            if forms.len() != 1 {
+-                return Err("file/exists? expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/exists? expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .exists(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/stat" => {
+-            if forms.len() != 1 {
+-                return Err("file/stat expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/stat expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .stat(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/list" => {
+-            if forms.len() != 1 {
+-                return Err("file/list expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/list expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .list(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/walk" => {
+-            if forms.len() != 1 {
+-                return Err("file/walk expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/walk expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .walk(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
++            let options = if forms.len() == 3 { file_options_value(eval(&forms[2], env)?, operation)? } else { Value::Map(PMap::new()) };
++            let options = file_write_options(&options)?;
++            Ok(file_effect(operation, &path, None, |provider| provider.write_with_options(&path, bytes, options)))
+         }
+         "file/mkdir" => {
+-            if forms.len() != 1 {
+-                return Err("file/mkdir expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/mkdir expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .mkdir(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
++            if !(1..=2).contains(&forms.len()) { return Err("file/mkdir expects a path and optional options".into()); }
++            let Value::String(path) = eval(&forms[0], env)? else { return Err("file/mkdir expects a path".into()); };
++            let options = if forms.len() == 2 { file_options_value(eval(&forms[1], env)?, operation)? } else { Value::Map(PMap::new()) };
++            let options = file_mkdir_options(&options)?;
++            Ok(file_effect(operation, &path, None, |provider| provider.mkdir_with_options(&path, options)))
+         }
+         "file/delete" => {
+-            if forms.len() != 1 {
+-                return Err("file/delete expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/delete expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .delete(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
++            if !(1..=2).contains(&forms.len()) { return Err("file/delete expects a path and optional options".into()); }
++            let Value::String(path) = eval(&forms[0], env)? else { return Err("file/delete expects a path".into()); };
++            let options = if forms.len() == 2 { file_options_value(eval(&forms[1], env)?, operation)? } else { Value::Map(PMap::new()) };
++            let options = file_delete_options(&options)?;
++            Ok(file_effect(operation, &path, None, |provider| provider.delete_with_options(&path, options)))
++        }
++        "file/copy" | "file/move" => {
++            if !(2..=3).contains(&forms.len()) { return Err(format!("{operation} expects source, target, and optional options")); }
++            let Value::String(source) = eval(&forms[0], env)? else { return Err(format!("{operation} expects source and target paths")); };
++            let Value::String(target) = eval(&forms[1], env)? else { return Err(format!("{operation} expects source and target paths")); };
++            let options = if forms.len() == 3 { file_options_value(eval(&forms[2], env)?, operation)? } else { Value::Map(PMap::new()) };
++            Ok(if operation == "file/copy" {
++                let options = file_copy_options(&options)?;
++                file_effect(operation, &source, Some(&target), |provider| provider.copy(&source, &target, options))
++            } else {
++                let options = file_move_options(&options)?;
++                file_effect(operation, &source, Some(&target), |provider| provider.move_entry(&source, &target, options))
++            })
+         }
+-        _ => unreachable!(),
++        "file/temp-file" | "file/temp-directory" => {
++            if !(1..=2).contains(&forms.len()) { return Err(format!("{operation} expects a parent and optional options")); }
++            let Value::String(parent) = eval(&forms[0], env)? else { return Err(format!("{operation} expects a parent path")); };
++            let options = if forms.len() == 2 { file_options_value(eval(&forms[1], env)?, operation)? } else { Value::Map(PMap::new()) };
++            Ok(if operation == "file/temp-file" {
++                let options = TempFileOptions {
++                    prefix: file_string_option(&options, "prefix", "tmp", operation)?,
++                    suffix: file_string_option(&options, "suffix", "", operation)?,
++                };
++                file_effect(operation, &parent, None, |provider| provider.temp_file(&parent, options))
++            } else {
++                let options = TempDirectoryOptions {
++                    prefix: file_string_option(&options, "prefix", "tmp", operation)?,
++                };
++                file_effect(operation, &parent, None, |provider| provider.temp_directory(&parent, options))
++            })
++        }
++        _ => Err(format!("unknown std.native.File operation: {operation}")),
+     }
+ }
+ 
+@@ -4976,23 +5003,13 @@ impl ExtensionRegistry {
+     }
+ }
+ 
+-#[allow(dead_code)]
+-#[derive(Debug, Clone, PartialEq)]
+-pub enum FileError {
+-    Unsupported,
+-    Denied,
+-    Invalid(String),
+-}
+-
+-impl FileError {
+-    pub fn code(&self) -> &'static str {
+-        match self {
+-            Self::Unsupported => "unsupported",
+-            Self::Denied => "denied",
+-            Self::Invalid(_) => "invalid",
+-        }
+-    }
+-}
++pub use crate::file::{
++    CopyOptions, DeleteOptions, FileEntry, FileError, FileProvider, FileType, MemoryFileProvider,
++    MkdirOptions, MoveOptions, TempDirectoryOptions, TempFileOptions, UnsupportedFileProvider,
++    WriteMode, WriteOptions,
++};
++#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
++pub use crate::file::NativeFileProvider;
+ 
+ #[derive(Debug, Clone, PartialEq)]
+ pub enum SocketError {
+@@ -5011,18 +5028,6 @@ impl SocketError {
+     }
+ }
+ 
+-pub trait FileProvider {
+-    fn resolve(&self, root: &str, path: &str) -> Result<String, FileError>;
+-    fn read(&self, path: &str) -> Result<Promise, FileError>;
+-    fn write(&self, path: &str, bytes: Vec<u8>) -> Result<Promise, FileError>;
+-    fn exists(&self, path: &str) -> Result<Promise, FileError>;
+-    fn stat(&self, path: &str) -> Result<Promise, FileError>;
+-    fn list(&self, path: &str) -> Result<Promise, FileError>;
+-    fn walk(&self, path: &str) -> Result<Promise, FileError>;
+-    fn mkdir(&self, path: &str) -> Result<Promise, FileError>;
+-    fn delete(&self, path: &str) -> Result<Promise, FileError>;
+-}
+-
