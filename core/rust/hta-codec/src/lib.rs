@@ -131,6 +131,7 @@ fn encode_value(value: &Value, depth: usize, output: &mut Vec<u8>) -> Result<(),
             Ok(())
         }
         Value::Record(values) => encode_record(values, depth, output),
+        _ => Err("hta/value-unsupported: ABI value is not portable through HTA0".into()),
     }
 }
 
