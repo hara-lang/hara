@@ -1,7 +1,6 @@
-(ns std.db-test
+(ns db.protocol-test
   (:use code.test)
-  (:require [std.db :as db]
-            [std.db.protocol :as protocol]))
+  (:require [db.protocol :as protocol]))
 
 (defstruct MockConnection
   [id])
@@ -29,20 +28,20 @@
     {:operation :close
      :id (:id connection)}))
 
-(def connection (std.db-test/MockConnection 7))
+(def connection (db.protocol-test/MockConnection 7))
 
 (def results
-  [(fact "generic metadata dispatches through IDatabase"
-     [(db/engine connection)
-      (db/provider connection)
-      (db/info connection)]
+  [(fact "metadata dispatches directly through IDatabase"
+     [(protocol/db-engine connection)
+      (protocol/db-provider connection)
+      (protocol/db-info connection)]
      => [:mock-sql
          :mock
          {:id 7 :engine :mock-sql :provider :mock}])
 
-   (fact "generic exec and query preserve optional parameters"
-     [(db/exec connection "create table item (id integer)")
-      (db/query connection "select * from item where id = ?" [7])]
+   (fact "exec and query require explicit parameter vectors"
+     [(protocol/db-exec connection "create table item (id integer)" [])
+      (protocol/db-query connection "select * from item where id = ?" [7])]
      => [{:operation :exec
           :id 7
           :sql "create table item (id integer)"
@@ -52,14 +51,8 @@
           :sql "select * from item where id = ?"
           :parameters [7]}])
 
-   (fact "transaction helpers and close use the same protocol"
-     [(db/begin connection)
-      (db/commit connection)
-      (db/rollback connection)
-      (db/close connection)]
-     => [{:operation :exec :id 7 :sql "begin" :parameters []}
-         {:operation :exec :id 7 :sql "commit" :parameters []}
-         {:operation :exec :id 7 :sql "rollback" :parameters []}
-         {:operation :close :id 7}])])
+   (fact "close dispatches directly through IDatabase"
+     (protocol/db-close connection)
+     => {:operation :close :id 7})])
 
-(pr-str (run '[std.db-test]))
+(pr-str (run '[db.protocol-test]))

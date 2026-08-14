@@ -1,8 +1,8 @@
 ;; ============================================================================
-;; db.text.sql-call — validated SQL function invocation over db.
+;; db.text.sql-call — validated SQL function invocation over IDatabase.
 ;; ============================================================================
 (ns db.text.sql-call
-  (:require [db :as db]
+  (:require [db.protocol :as protocol]
             [db.text.base-check :as check]
             [db.text.sql-util :as sql]))
 
@@ -58,7 +58,7 @@
         database-name (str "\"" schema-name "\"."
                            (str/replace function-id "-" "_"))
         database-arguments (str/join ", "
-                                        (call-format-input spec arguments))]
+                                     (call-format-input spec arguments))]
     (str "SELECT " database-name "(" database-arguments ");")))
 
 (defn- validation-result
@@ -90,14 +90,14 @@
     value))
 
 (defn call-raw
-  "Validates and invokes a database function through a generic db connection."
+  "Validates and invokes a database function through an IDatabase value."
   [connection spec arguments]
   (let [validation (validation-result spec arguments)]
     (if (not (first validation))
       (throw (ex-info "Invalid database function arguments"
                       {:validation (second validation)}))
       (promise/then
-       (db/query connection (call-format-query spec arguments))
+       (protocol/db-query connection (call-format-query spec arguments) [])
        (fn [result]
          (decode-function-value spec (first-query-value result)))))))
 
@@ -109,7 +109,7 @@
       (json/write (sql/json-compatible {:status "error" :data (second validation)}))
       (promise/catch
        (promise/then
-        (db/query connection (call-format-query spec arguments))
+        (protocol/db-query connection (call-format-query spec arguments) [])
         (fn [result]
           (let [value (first-query-value result)
                 decoded (decode-function-value spec value)]
