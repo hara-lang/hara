@@ -17,6 +17,8 @@ import subprocess
 import sys
 from collections.abc import Iterable, Iterator
 
+from retired_stdlib_hbx import HbxFormatError, retired_module_references
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 RETIRED = ("std.lib.walk", "std.lib.test")
@@ -999,6 +1001,17 @@ def audit() -> list[str]:
 
     for full in tracked:
         relative = full.relative_to(ROOT).as_posix()
+        if relative == HBX.as_posix():
+            try:
+                references = retired_module_references(full, RETIRED)
+            except HbxFormatError as error:
+                failures.append(f"cannot inspect HBX module table in {relative}: {error}")
+            else:
+                failures.extend(
+                    f"retired namespace remains embedded in HBX module table: {reference}"
+                    for reference in references
+                )
+            continue
         try:
             data = full.read_bytes()
         except OSError as error:
@@ -1006,12 +1019,9 @@ def audit() -> list[str]:
             continue
         if not any(namespace.encode() in data for namespace in RETIRED):
             continue
-        if relative == HBX.as_posix():
-            failures.append(f"retired namespace remains embedded in HBX: {relative}")
-        elif relative not in LEGACY_ALLOWLIST:
+        if relative not in LEGACY_ALLOWLIST:
             names = [name for name in RETIRED if name.encode() in data]
             failures.append(f"live retired namespace reference in {relative}: {', '.join(names)}")
-
     foundation = (ROOT / FOUNDATION).read_text()
     if not re.search(r"\(defn \^\{:schema \[:fn \[:any\] :bool\]\}\s+form\?", foundation):
         failures.append("std.foundation/form? is missing or lacks its public schema")
