@@ -1,7 +1,6 @@
 (ns postgres.gen.bind-macro
-  (:require [std.foundation :refer :all :exclude [resolve]]
-            [std.lib.walk :as walk]
-            [lang.common.emit-helper :as helper]
+  (:config {:override [resolve]})
+  (:require [lang.common.emit-helper :as helper]
             [lang.common.util :as util]
             [lang.core.script :as script]))
 
@@ -103,7 +102,7 @@
                 (string? value)
                 {"::" "sql/arg" :name value}
                 :else value))]
-    (cond (walk/form? form)
+    (cond (form? form)
           (cond (= 'quote (first form))
                 [(vec (second form))]
                 (= '++ (first form))
@@ -124,21 +123,21 @@
   "Transforms a PostgreSQL query into its portable transport representation."
   ([query] (transform-query query plain-symbol?))
   ([query symbol-predicate]
-   (walk/postwalk
+   (postwalk
     transform-to-str
-    (walk/prewalk
+    (prewalk
      transform-query-classify
-     (walk/postwalk
+     (postwalk
       (fn [form]
         (if (symbol-predicate form)
           (str "{{" (util/sym-default-str form) "}}")
           form))
-      (walk/prewalk transform-query-or query))))))
+      (prewalk transform-query-or query))))))
 
 (defn transform-schema
   "Transforms an application schema into JSON-safe Hara data."
   [schema]
-  (walk/postwalk
+  (postwalk
    (fn [value]
      (cond (keyword? value)
            (str/replace (name value) "-" "_")
@@ -151,7 +150,7 @@
                  default (get sql "default")
                  cleaned (dissoc value "web" "sql")]
              (if (and (not (nil? default))
-                      (not (walk/form? default)))
+                      (not (form? default)))
                (assoc cleaned "sql" {"default" default})
                cleaned))
 
@@ -186,7 +185,7 @@
         output (update output :input (fn [input]
                                        (vec (map helper/emit-type-record input))))]
     (if notify
-      (assoc output :notify (walk/postwalk transform-to-str notify))
+      (assoc output :notify (postwalk transform-to-str notify))
       output)))
 
 (defn bind-view-guards
