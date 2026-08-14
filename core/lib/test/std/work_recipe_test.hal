@@ -1,5 +1,5 @@
 (ns std.work-recipe-test
-  (:require [std.lib.test :as test]
+  (:require 
             [std.work :as work]
             [std.work.recipe :as recipe]))
 
@@ -220,7 +220,7 @@
     :params {:path "world.edn"}}})
 
 (def results
-  [(test/check
+  [(test-check
     "portable recipes compile to ordinary work graphs"
     (let [spec (work/work-spec compiled-math)
           body (work/work-spec (first (:children spec)))
@@ -245,7 +245,7 @@
      [:step :math/multiply]
      true])
 
-   (test/check
+   (test-check
     "compiled recipes execute and retain durable step identity"
     [(work/status math-runtime math-reference)
      (work/result math-runtime math-reference)
@@ -254,7 +254,7 @@
      (count (work/checkpoints math-runtime math-reference))]
     [:completed 8 true 1 1])
 
-   (test/check
+   (test-check
     "batch recipes preserve stop/cancel policy, stable identities and summaries"
     (let [compiled (recipe/compile batch-recipe operation-registry)
           body (work/work-spec
@@ -270,7 +270,7 @@
      {:items 3
       :values [10 20 -3]}])
 
-   (test/check
+   (test-check
     "choose recipes compile portable selectors and alternatives"
     [(work/run
       (work/local-runtime)
@@ -283,7 +283,7 @@
     [[:left 7]
      [:right 9]])
 
-   (test/check
+   (test-check
     "ensure recipes preserve cleanup after failure"
     [(throws?
       (fn []
@@ -294,7 +294,7 @@
      (deref cleanup-count)]
     [true 1])
 
-   (test/check
+   (test-check
     "operation capabilities are checked from runtime context"
     [(throws?
       (fn []
@@ -310,7 +310,7 @@
        {:capabilities [:filesystem/read]}})]
     [true "world.edn"])
 
-   (test/check
+   (test-check
     "definition signatures ignore visual layout but include semantic changes"
     (let [layout-a
           (assoc-in math-recipe [:body :layout] {:x 10 :y 20})
@@ -336,7 +336,7 @@
        (not= version-a version-changed)])
     [true true])
 
-   (test/check
+   (test-check
     "structural validation returns portable diagnostics"
     [(recipe/validate math-recipe)
      (:valid
@@ -349,28 +349,31 @@
       :errors []}
      false])
 
-   (test/check-error
-    "unknown operation references fail before execution"
-    (recipe/compile
+   (test-check "unknown operation references fail before execution"
+    (try (do (recipe/compile
      (assoc-in math-recipe
                [:body :children 0 :uses]
                :missing/operation)
-     operation-registry))
+     operation-registry) false)
+         (catch Throwable error true))
+    true)
 
-   (test/check-error
-    "pure and checkpointed registry kinds cannot be confused"
-    (recipe/compile
+   (test-check "pure and checkpointed registry kinds cannot be confused"
+    (try (do (recipe/compile
      (assoc-in math-recipe
                [:body :children 0 :uses]
                :math/multiply)
-     operation-registry))
+     operation-registry) false)
+         (catch Throwable error true))
+    true)
 
-   (test/check-error
-    "recipe parameters cannot carry executable functions"
-    (recipe/compile
+   (test-check "recipe parameters cannot carry executable functions"
+    (try (do (recipe/compile
      (assoc-in math-recipe
                [:body :children 0 :params]
                {:function (fn [] true)})
-     operation-registry))])
+     operation-registry) false)
+         (catch Throwable error true))
+    true)])
 
-(test/print-results results)
+results
