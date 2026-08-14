@@ -35,13 +35,27 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path('scripts/runtime/refactor-interpreter-observation-session.py')
-          source = path.read_text()
+          script_path = Path('scripts/runtime/refactor-interpreter-observation-session.py')
+          script = script_path.read_text()
           wrong = "key.as_str() == Some(name)"
           right = "key.as_str() == name"
-          if source.count(wrong) != 1:
+          if script.count(wrong) != 1:
               raise SystemExit('interpreter observation keyword comparison seam changed')
-          path.write_text(source.replace(wrong, right, 1))
+          script_path.write_text(script.replace(wrong, right, 1))
+
+          raw_path = Path('core/rust/interpreter-observation-raw/src/lib.rs')
+          raw = raw_path.read_text()
+          old_promise = '(Coroutine/await (promise/new))'
+          new_promise = '(Coroutine/await (promise/new (fn [resolve reject] nil)))'
+          if raw.count(old_promise) != 1:
+              raise SystemExit('interpreter observation pending-promise fixture seam changed')
+          raw = raw.replace(old_promise, new_promise, 1)
+
+          old_drop = 'assert!(matches!(field(&history, "dropped"), Some(Value::Number(value)) if value > 0));'
+          new_drop = 'assert_eq!(field(&history, "dropped"), Some(Value::Number(0)));'
+          if raw.count(old_drop) != 1:
+              raise SystemExit('interpreter observation arithmetic-retention fixture seam changed')
+          raw_path.write_text(raw.replace(old_drop, new_drop, 1))
           PY
           python3 scripts/runtime/refactor-interpreter-observation-session.py
           rm scripts/runtime/refactor-interpreter-observation-session.py
