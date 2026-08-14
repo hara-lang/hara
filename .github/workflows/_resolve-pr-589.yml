@@ -1,0 +1,58 @@
+name: Diagnose PR 589 merge conflicts
+
+on:
+  push:
+    branches:
+      - codex/remove-retired-stdlib-modules
+    paths:
+      - .github/workflows/_resolve-pr-589.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/remove-retired-stdlib-modules
+          fetch-depth: 0
+
+      - name: Collect three-way conflict inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          set +e
+          git merge --no-commit --no-ff origin/main
+          merge_status=$?
+          set -e
+
+          mkdir -p conflict-artifact/base conflict-artifact/ours conflict-artifact/theirs
+          printf '%s\n' "$merge_status" > conflict-artifact/merge-status.txt
+          git status --short > conflict-artifact/status.txt
+          git diff --name-only --diff-filter=U > conflict-artifact/conflicts.txt
+          git rev-parse HEAD > conflict-artifact/head-sha.txt
+          git rev-parse origin/main > conflict-artifact/main-sha.txt
+          git merge-base HEAD origin/main > conflict-artifact/merge-base-sha.txt
+
+          while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            mkdir -p "conflict-artifact/base/$(dirname "$path")"
+            mkdir -p "conflict-artifact/ours/$(dirname "$path")"
+            mkdir -p "conflict-artifact/theirs/$(dirname "$path")"
+            git show ":1:$path" > "conflict-artifact/base/$path" 2>/dev/null || true
+            git show ":2:$path" > "conflict-artifact/ours/$path" 2>/dev/null || true
+            git show ":3:$path" > "conflict-artifact/theirs/$path" 2>/dev/null || true
+          done < conflict-artifact/conflicts.txt
+
+          echo "Merge status: $merge_status"
+          echo "Conflicting paths:"
+          cat conflict-artifact/conflicts.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-589-conflicts
+          path: conflict-artifact
+          if-no-files-found: error
