@@ -41,25 +41,17 @@ jobs:
               raise SystemExit("unexpected hard-cut import layout")
           source = source.replace(old_import, new_import, 1)
 
-          old_loop = '''    for full in tracked:
-              relative = full.relative_to(ROOT).as_posix()
-              try:
-                  data = full.read_bytes()
-              except OSError as error:
-                  failures.append(f"cannot read {relative}: {error}")
-                  continue
-              if not any(namespace.encode() in data for namespace in RETIRED):
-                  continue
-              if relative == HBX.as_posix():
-                  failures.append(f"retired namespace remains embedded in HBX: {relative}")
-              elif relative not in LEGACY_ALLOWLIST:
-                  names = [name for name in RETIRED if name.encode() in data]
-                  failures.append(f"live retired namespace reference in {relative}: {', '.join(names)}")
-          '''
-          old_loop = "\n".join(
-              line[14:] if line.startswith("              ") else line
-              for line in old_loop.splitlines()
-          ) + "\n"
+          audit_start = source.index("def audit() -> list[str]:")
+          loop_start = source.index("    for full in tracked:\n", audit_start)
+          loop_end = source.index("\n    foundation =", loop_start)
+          old_loop = source[loop_start:loop_end]
+          required_markers = (
+              "data = full.read_bytes()",
+              "retired namespace remains embedded in HBX",
+              "relative not in LEGACY_ALLOWLIST",
+          )
+          if not all(marker in old_loop for marker in required_markers):
+              raise SystemExit("unexpected hard-cut audit loop contents")
 
           new_loop = '''    for full in tracked:
               relative = full.relative_to(ROOT).as_posix()
@@ -83,16 +75,9 @@ jobs:
                   continue
               if relative not in LEGACY_ALLOWLIST:
                   names = [name for name in RETIRED if name.encode() in data]
-                  failures.append(f"live retired namespace reference in {relative}: {', '.join(names)}")
-          '''
-          new_loop = "\n".join(
-              line[14:] if line.startswith("              ") else line
-              for line in new_loop.splitlines()
-          ) + "\n"
-
-          if source.count(old_loop) != 1:
-              raise SystemExit("unexpected hard-cut audit loop layout")
-          path.write_text(source.replace(old_loop, new_loop, 1))
+                  failures.append(f"live retired namespace reference in {relative}: {', '.join(names)}")'''
+          source = source[:loop_start] + new_loop + source[loop_end:]
+          path.write_text(source)
           Path(".github/workflows/retired-stdlib-hbx-audit-fix.yml").unlink()
           PYCODE
 
