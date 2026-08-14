@@ -326,12 +326,12 @@
 (defn ^{:schema [:fn [:any] :any]}
   keys
   "Returns a vector of the map's keys."
-  [value] (map key value))
+  [value] (mapv key value))
 
 (defn ^{:schema [:fn [:any] :any]}
   vals
   "Returns a vector of the map's values."
-  [value] (map val value))
+  [value] (mapv val value))
 
 ;; ---------------------------------------------------------------------------
 ;; Lazy producers and transformers
@@ -339,9 +339,25 @@
 
 (defn- ^{:schema [:fn [:any :any] :any]}
   materialize-vector
-  "Materializes iterator values into a persistent vector."
-  [_ values]
-  (vec values))
+  "Materializes values using template's persistent collection shape when possible."
+  [template values]
+  (let [items (vec values)
+        rebuild (fn [seed source] (reduce conj seed source))
+        output
+        (cond (map? template) (rebuild (empty template) items)
+              (set? template) (rebuild (empty template) items)
+              (list? template) (rebuild (empty template) (reverse items))
+              (= (type template) :hara.type/queue)
+              (rebuild (empty template) items)
+              (= (type template) :hara.type/tuple)
+              (if (<= (count items) 8)
+                (rebuild (empty template) items)
+                items)
+              (vector? template) items
+              :else items)]
+    (if (not (nil? (meta template)))
+      (with-meta output (meta template))
+      output)))
 
 (defn ^{:schema [:function [:fn [] :any]
                             [:fn [:num] :any]
@@ -352,6 +368,12 @@
   ([] (seq (Iter/iter-range 0)))
   ([end] (seq (Iter/iter-range end)))
   ([start end] (seq (Iter/iter-range start end))))
+
+(defn- ^{:schema [:fn [:any :any] :vector]}
+  materialize-groups
+  "Materializes partition groups as a vector of collections shaped like template."
+  [template groups]
+  (mapv (fn [group] (materialize-vector template group)) groups))
 
 (defn ^{:schema [:function [:fn [:any] :any]
                             [:fn [:num :any] :any]]}
@@ -395,7 +417,7 @@
    transform."
   ([amount] (partial Iter/iter-partition-all amount))
   ([amount value]
-   (materialize-vector value (Iter/iter-partition-all amount value))))
+   (materialize-groups value (Iter/iter-partition-all amount value))))
 
 (defn ^{:schema [:function [:fn [:num] :fn]
                             [:fn [:num :any] :any]]}
@@ -404,7 +426,7 @@
    transform."
   ([amount] (partial Iter/iter-partition amount))
   ([amount value]
-   (materialize-vector value (Iter/iter-partition amount value))))
+   (materialize-groups value (Iter/iter-partition amount value))))
 
 (defn ^{:schema [:fn [:any :any] :any]}
   interpose
@@ -829,7 +851,9 @@
           (if (if started (not= marker previous) false)
             (recur (conj groups group) [value] marker true)
             (recur groups (conj group value) marker true)))
-        (if started (conj groups group) groups)))))
+        (materialize-groups
+         values
+         (if started (conj groups group) groups))))))
 
 (defn ^{:schema [:fn [:num :any] :any]}
   take-nth
@@ -890,7 +914,7 @@
   mapv
   "Returns a vector containing function applied across one or more collections."
   [function & collections]
-  (vec (apply map function collections)))
+  (vec (apply Iter/iter-map (concat [function] collections))))
 
 (defn ^{:schema [:fn [:fn :any] :vector]}
   map-indexed
@@ -922,7 +946,7 @@
   [map-keys map-values]
   (let [key-it (iter map-keys)
         value-it (iter map-values)]
-    (loop [result {}]
+    (loop [result (empty value-map)]
       (if (if (iter-next? key-it) (iter-next? value-it) false)
         (recur (assoc result (iter-next key-it) (iter-next value-it)))
         result))))
@@ -933,7 +957,7 @@
    When transformed keys collide, the later entry wins."
   [function value-map]
   (let [it (iter value-map)]
-    (loop [result {}]
+    (loop [result (empty value-map)]
       (if (iter-next? it)
         (let [entry (iter-next it)]
           (recur (assoc result
@@ -999,6 +1023,230 @@
           values))
 
 ;; ---------------------------------------------------------------------------
+;; ---------------------------------------------------------------------------
+;; Set algebra and graph ordering
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [& :set] :set]}
+  union
+  "Returns a set containing every value in sets."
+  [& sets]
+  (reduce (fn [result values] (reduce conj result values)) #{} sets))
+
+(defn ^{:schema [:fn [:set & :set] :set]}
+  intersection
+  "Returns the values present in every set."
+  [first-set & sets]
+  (reduce (fn [result values]
+            (reduce (fn [output value]
+                      (if (has? values value) (conj output value) output))
+                    #{}
+                    result))
+          first-set
+          sets))
+
+(defn ^{:schema [:fn [:set & :set] :set]}
+  difference
+  "Returns values in first-set absent from every remaining set."
+  [first-set & sets]
+  (reduce (fn [result values] (reduce dissoc result values)) first-set sets))
+
+(defn ^{:schema [:fn [:set :set] :bool]}
+  subset?
+  "Returns true when every value in left is present in right."
+  [left right]
+  (every? (fn [value] (has? right value)) left))
+
+(defn ^{:schema [:fn [:set :set] :bool]}
+  superset?
+  "Returns true when every value in right is present in left."
+  [left right]
+  (subset? right left))
+
+(defn ^{:schema [:fn [:map] :any]}
+  hierarchical-top
+  "Returns the root node of a descendant hierarchy."
+  [index]
+  (let [descendants (apply union (vals index))]
+    (ffirst
+      (filter (fn [entry]
+                (not-empty
+                  (difference (conj (val entry) (key entry)) descendants)))
+              index))))
+
+(defn ^{:schema [:fn [:map] :map]}
+  hierarchical-sort
+  "Prunes a descendant hierarchy into its direct dependency graph."
+  [index]
+  (let [top (hierarchical-top index)]
+    (loop [output {}
+           candidates (dissoc index top)
+           level #{top}]
+      (if (empty? level)
+        output
+        (let [base (apply union (vals candidates))
+              next-output
+              (reduce (fn [result node]
+                        (assoc result node (difference (get index node) base)))
+                      output
+                      level)
+              next-level (mapcat (fn [node] (get next-output node)) level)
+              next-candidates
+              (apply dissoc index (concat (keys next-output) next-level))]
+          (recur next-output next-candidates next-level))))))
+
+(defn ^{:schema [:fn [:map] :set]}
+  topological-top
+  "Returns graph nodes which are not dependencies of another node."
+  [graph]
+  (difference (set (keys graph)) (apply union (vals graph))))
+
+(defn- cycle-index [path node]
+  (loop [index 0]
+    (if (= index (count path))
+      nil
+      (if (= node (nth path index)) index (recur (+ index 1))))))
+
+(defn- cycle-visit [graph node active path]
+  (if (has? active node)
+    (let [index (cycle-index path node)]
+      (conj (vec (drop index path)) node))
+    (let [dependencies (get graph node)]
+      (if (empty? dependencies)
+        nil
+        (first
+          (keep (fn [dependency]
+                  (cycle-visit graph
+                               dependency
+                               (conj active node)
+                               (conj path node)))
+                dependencies))))))
+
+(defn ^{:schema [:fn [:map] :any]}
+  find-cycle
+  "Returns one closed cycle path from graph, or nil."
+  [graph]
+  (first (keep (fn [node] (cycle-visit graph node #{} [])) (keys graph))))
+
+(defn ^{:schema [:fn [:map] :vector]}
+  topological-sort
+  "Returns graph nodes in dependency order and throws on a cycle."
+  [graph]
+  (let [without-self
+        (reduce (fn [output entry]
+                  (assoc output (key entry) (dissoc (val entry) (key entry))))
+                {}
+                graph)
+        all-dependencies (apply union (vals without-self))
+        complete
+        (reduce (fn [output node]
+                  (if (has? output node) output (assoc output node #{})))
+                without-self
+                all-dependencies)]
+    (loop [remaining complete
+           ordered []]
+      (if (empty? remaining)
+        ordered
+        (let [ready (filter (fn [entry] (empty? (val entry))) remaining)]
+          (if (empty? ready)
+            (let [cycle (find-cycle remaining)]
+              (throw (ex-info (str "Graph Contains Circular Dependency: "
+                                   (pr-str cycle))
+                              {:data remaining :list ordered :cycle cycle})))
+            (let [nodes (set (map key ready))
+                  next-remaining
+                  (reduce (fn [output entry]
+                            (if (has? nodes (key entry))
+                              output
+                              (assoc output
+                                     (key entry)
+                                     (difference (val entry) nodes))))
+                          {}
+                          remaining)]
+              (recur next-remaining (vec (concat ordered (keys ready)))))))))))
+
+(defn ^{:schema [:fn [:map :any] :vector]}
+  topological-sort-order-by-deps
+  "Stably sorts each dependency level by dependency count and node identity."
+  [graph sorted-values]
+  (loop [processed #{}
+         result []
+         remaining sorted-values]
+    (if (empty? remaining)
+      result
+      (let [level (take-while
+                    (fn [node]
+                      (every? (fn [dependency] (has? processed dependency))
+                              (get graph node)))
+                    remaining)
+            sorted-level
+            (sort-by (juxt (fn [node] (count (get graph node))) identity) level)]
+        (recur (apply conj processed sorted-level)
+               (vec (concat result sorted-level))
+               (drop (count level) remaining))))))
+
+;; ---------------------------------------------------------------------------
+;; Structural walking
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:fn :fn :any] :any]}
+  walk
+  "Traverses persistent data while preserving collection kinds and metadata."
+  [inner outer form]
+  (cond (list? form)
+        (outer (with-meta (apply list (map inner form)) (meta form)))
+
+        (vector? form)
+        (outer (with-meta (reduce (fn [out value] (conj out (inner value)))
+                                  (empty form)
+                                  form)
+                          (meta form)))
+
+        (set? form)
+        (outer (with-meta (reduce (fn [out value] (conj out (inner value)))
+                                  (empty form)
+                                  form)
+                          (meta form)))
+
+        (map? form)
+        (outer (with-meta (reduce (fn [out entry]
+                                    (assoc out
+                                           (inner (key entry))
+                                           (inner (val entry))))
+                                  (empty form)
+                                  form)
+                          (meta form)))
+
+        :else (outer form)))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  postwalk
+  "Performs a depth-first post-order traversal."
+  [function form]
+  (walk (fn [value] (postwalk function value)) function form))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  prewalk
+  "Performs a depth-first pre-order traversal."
+  [function form]
+  (walk (fn [value] (prewalk function value)) identity (function form)))
+
+(defn ^{:schema [:fn [:map :any] :any]}
+  prewalk-replace
+  "Recursively replaces keys found in replacements before descending."
+  [replacements form]
+  (prewalk (fn [value]
+             (if (has? replacements value) (get replacements value) value))
+           form))
+
+(defn ^{:schema [:fn [:map :any] :any]}
+  postwalk-replace
+  "Recursively replaces keys found in replacements after descending."
+  [replacements form]
+  (postwalk (fn [value]
+              (if (has? replacements value) (get replacements value) value))
+            form))
+
 ;; Macro tooling
 ;; ---------------------------------------------------------------------------
 

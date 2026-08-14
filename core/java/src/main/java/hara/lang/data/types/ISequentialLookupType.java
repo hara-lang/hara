@@ -1,6 +1,7 @@
 package hara.lang.data.types;
 
 import hara.lang.base.Iter;
+import hara.lang.data.Tuple;
 import hara.lang.protocol.*;
 
 import java.util.Iterator;
@@ -19,22 +20,7 @@ public interface ISequentialLookupType<E>
   default Entry<Long, E> find(Long idx) {
     if (idx >= 0 && idx < count()) {
       E out = nth(idx);
-      return new Entry<Long, E>() {
-        @Override
-        public Long getKey() {
-          return idx;
-        }
-
-        @Override
-        public E getValue() {
-          return out;
-        }
-
-        @Override
-        public E setValue(E value) {
-          throw new UnsupportedOperationException("Not Supported");
-        }
-      };
+      return new Tuple.Tup2.L<>(null, idx, out);
     }
     return null;
   }

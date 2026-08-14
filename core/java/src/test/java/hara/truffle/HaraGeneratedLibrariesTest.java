@@ -36,6 +36,35 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void protocolPredicatesAndMapEntriesUseCanonicalCapabilities() {
+    try (Context context = context()) {
+      assertEquals(
+          "[true true true true]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(coll? {}) (counted? []) (pair? (first {:a 1})) "
+                      + "(map-entry? (first {:a 1}))]")
+              .toString());
+      assertEquals(
+          ":hara.type/tuple",
+          context.eval(HaraLanguage.ID, "(type (first {:a 1}))").toString());
+      assertEquals(
+          "[false true]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(defprotocol Ready (ready [self])) "
+                      + "(defstruct Box [value]) "
+                      + "(def before (satisfies? Ready (Box 1))) "
+                      + "(extend-type Box Ready (ready [self] (:value self))) "
+                      + "[before (satisfies? Ready (Box 1))]")
+              .toString());
+      assertErrorContains(context, "(collection? [])", "Unbound symbol");
+    }
+  }
+
+  @Test
   public void intrinsicsCanExcludeAndRenameGeneratedAliases() {
     try (Context context = context()) {
       assertEquals(

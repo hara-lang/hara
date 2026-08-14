@@ -7676,6 +7676,92 @@ mod tests {
     }
 
     #[test]
+    fn protocol_capability_predicates_cover_core_and_guest_values() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(coll? {})
+                      (iterable? \"value\")
+                      (iterator? (iter []))
+                      (counted? nil)
+                      (reducible? [])
+                      (indexed? [1])
+                      (associative? {})
+                      (findable? #{:value})
+                      (lookupable? {:value 1})
+                      (derefable? (atom 1))
+                      (resettable? (atom 1))
+                      (casable? (atom 1))
+                      (watchable? (atom 1))
+                      (callable? (fn [value] value))
+                      (pair? (first {:value 1}))
+                      (persistent? [])
+                      (mutable? (to-mutable (vec [])))]",
+                )
+                .unwrap(),
+            "[true true true true true true true true true true true true true true true true true]"
+        );
+        assert!(runtime.eval_text("(collection? [])").is_err());
+
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do
+                       (defprotocol Ready (ready [self]))
+                       (defstruct Box [value])
+                       (def before (satisfies? Ready (Box 1)))
+                       (extend-type Box Ready (ready [self] (:value self)))
+                       [before (satisfies? Ready (Box 1))])",
+                )
+                .unwrap(),
+            "[false true]"
+        );
+    }
+
+    #[test]
+    fn map_iteration_and_find_return_canonical_pair_tuples() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(type (first {:a 1}))
+                      (map-entry? (first {:a 1}))
+                      (type (IFind/find {:a 1} :a))
+                      (map-entry? (IFind/find {:a 1} :a))]",
+                )
+                .unwrap(),
+            "[:hara.type/tuple true :hara.type/tuple true]"
+        );
+    }
+
+    #[test]
+    fn code_translate_resolves_required_namespace_aliases() {
+        let mut runtime = Runtime::core();
+        for (namespace, _, source) in EMBEDDED_HAL_RESOURCES {
+            runtime.register_resource(namespace, source);
+        }
+        runtime.prepare_foundation_bytecode();
+        runtime
+            .eval_text(include_str!("../hal-src/std/foundation.hal"))
+            .unwrap();
+        runtime.eval_text("(ns user)").unwrap();
+        runtime.eval_text("(require 'code.translate.rule)").unwrap();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    r#"(get
+                         (code.translate.rule/translate-source
+                          "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] [std.native.Json :as json]))\n[c/map-keys walk/prewalk-replace json/read]"
+                          {:mode :safe})
+                         :output)"#,
+                )
+                .unwrap(),
+            r#""(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] ))\n[std.foundation/map-keys std.foundation/prewalk-replace Json/read]""#
+        );
+    }
+
+    #[test]
     fn core_sequence_navigation_ranges_and_quantifiers() {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.eval_text("(second [10 20 30])").unwrap(), "20");

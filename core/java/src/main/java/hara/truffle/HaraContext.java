@@ -1861,10 +1861,7 @@ public final class HaraContext {
     }));
     target.define("sequential?", new UnaryBuiltin("sequential?", value ->
         HaraBox.unwrap(value) instanceof hara.lang.data.types.ISequentialType<?>));
-    target.define("collection?", new UnaryBuiltin("collection?", value -> {
-      Object raw = HaraBox.unwrap(value);
-      return raw instanceof hara.lang.protocol.IColl<?> || raw instanceof HaraArray;
-    }));
+    target.define("coll?", new UnaryBuiltin("coll?", value -> protocolSatisfies("IColl", value)));
     target.define("tuple?", new UnaryBuiltin("tuple?", value ->
         HaraBox.unwrap(value) instanceof hara.lang.data.Tuple.Tup0));
     target.define("queue?", new UnaryBuiltin("queue?", value ->
@@ -1879,23 +1876,29 @@ public final class HaraContext {
         HaraBox.unwrap(value) instanceof HaraPromise));
     target.define("coroutine?", new UnaryBuiltin("coroutine?", value ->
         HaraBox.unwrap(value) instanceof StdFoundationCoroutine.HaraCoroutine));
-    target.define("callable?", new UnaryBuiltin("callable?", this::isFunctionValue));
-    target.define("iterator?", new UnaryBuiltin("iterator?", value ->
-        HaraBox.unwrap(value) instanceof Iterator<?>));
-    target.define("iterable?", new UnaryBuiltin("iterable?", value -> {
-      Object raw = HaraBox.unwrap(value);
-      return raw instanceof Iterable<?> || raw instanceof Iterator<?> || raw instanceof byte[];
+    target.define("callable?", new UnaryBuiltin("callable?", value -> protocolSatisfies("IFn", value)));
+    target.define("iterator?", new UnaryBuiltin("iterator?", value -> protocolSatisfies("IIterator", value)));
+    target.define("iterable?", new UnaryBuiltin("iterable?", value -> protocolSatisfies("IIter", value)));
+    target.define("counted?", new UnaryBuiltin("counted?", value -> protocolSatisfies("ICount", value)));
+    target.define("reducible?", new UnaryBuiltin("reducible?", value -> protocolSatisfies("IReduce", value)));
+    target.define("indexed?", new UnaryBuiltin("indexed?", value -> protocolSatisfies("INth", value)));
+    target.define("associative?", new UnaryBuiltin("associative?", value -> protocolSatisfies("IAssoc", value)));
+    target.define("findable?", new UnaryBuiltin("findable?", value -> protocolSatisfies("IFind", value)));
+    target.define("lookupable?", new UnaryBuiltin("lookupable?", value -> protocolSatisfies("ILookup", value)));
+    target.define("derefable?", new UnaryBuiltin("derefable?", value -> protocolSatisfies("IDeref", value)));
+    target.define("resettable?", new UnaryBuiltin("resettable?", value -> protocolSatisfies("IReset", value)));
+    target.define("casable?", new UnaryBuiltin("casable?", value -> protocolSatisfies("ICas", value)));
+    target.define("watchable?", new UnaryBuiltin("watchable?", value -> protocolSatisfies("IWatch", value)));
+    target.define("applicable?", new UnaryBuiltin("applicable?", value -> protocolSatisfies("IApplicable", value)));
+    target.define("pair?", new UnaryBuiltin("pair?", value -> protocolSatisfies("IPair", value)));
+    target.define("mutable?", new UnaryBuiltin("mutable?", value -> protocolSatisfies("IMutable", value)));
+    target.define("persistent?", new UnaryBuiltin("persistent?", value -> protocolSatisfies("IPersistent", value)));
+    target.define("satisfies?", new VariadicBuiltin("satisfies?", values -> {
+      if (values.length != 2 || !(HaraBox.unwrap(values[0]) instanceof HaraProtocol protocol)) {
+        throw new HaraException("satisfies? expects a protocol and value");
+      }
+      return protocol.satisfies(HaraBox.unwrap(values[1]));
     }));
-    target.define("counted?", new UnaryBuiltin("counted?", value ->
-        HaraBox.unwrap(value) instanceof ICount));
-    target.define("indexed?", new UnaryBuiltin("indexed?", value ->
-        HaraBox.unwrap(value) instanceof hara.lang.protocol.INth<?>));
-    target.define("associative?", new UnaryBuiltin("associative?", value ->
-        HaraBox.unwrap(value) instanceof hara.lang.protocol.IAssoc<?, ?>));
-    target.define("derefable?", new UnaryBuiltin("derefable?", value ->
-        HaraBox.unwrap(value) instanceof IDeref<?>));
-    target.define("watchable?", new UnaryBuiltin("watchable?", value ->
-        HaraBox.unwrap(value) instanceof hara.lang.protocol.IWatch<?, ?>));
     target.define(
         "instance?",
         new VariadicBuiltin(
@@ -5616,6 +5619,18 @@ public final class HaraContext {
         || function instanceof HbcMachine.HbcNativeCallable
         || function instanceof UnaryBuiltin
         || function instanceof VariadicBuiltin;
+  }
+
+  private boolean protocolSatisfies(String protocolName, Object value) {
+    Object receiver = HaraBox.unwrap(value);
+    if ("IColl".equals(protocolName)) {
+      return receiver instanceof hara.lang.protocol.IColl;
+    }
+    HaraNamespace foundation = namespaces.get(FOUNDATION_NAMESPACE);
+    HaraVar variable = foundation == null ? null : foundation.lookup(protocolName);
+    Object descriptor = variable == null ? null : HaraBox.unwrap(variable.deref());
+    return descriptor instanceof HaraProtocol protocol
+        && protocol.satisfies(receiver);
   }
 
   private Iterator<?> requireIterator(Object value, String operation) {

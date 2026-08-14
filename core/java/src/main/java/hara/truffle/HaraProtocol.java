@@ -119,6 +119,20 @@ public final class HaraProtocol implements TruffleObject {
     return implementations.resolve(methodName, receiver);
   }
 
+  /** Returns true when receiver implements every method in this protocol. */
+  @TruffleBoundary
+  public boolean satisfies(Object receiver) {
+    if (methods.isEmpty()) {
+      if (name.endsWith("/IMutable")) return receiver instanceof hara.lang.protocol.IMutable;
+      if (name.endsWith("/IPersistent")) return receiver instanceof hara.lang.protocol.IPersistent;
+      return false;
+    }
+    for (String methodName : methods.keySet()) {
+      if (implementation(receiver, methodName) == null) return false;
+    }
+    return true;
+  }
+
   @TruffleBoundary
   public Object invoke(String methodName, Object receiver, Object[] arguments) {
     HaraProtocolMethod method = method(methodName);

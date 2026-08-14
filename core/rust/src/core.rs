@@ -1223,6 +1223,25 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "double?",
             "boolean?",
             "fn?",
+            "satisfies?",
+            "coll?",
+            "iterable?",
+            "iterator?",
+            "counted?",
+            "reducible?",
+            "indexed?",
+            "associative?",
+            "findable?",
+            "lookupable?",
+            "derefable?",
+            "resettable?",
+            "casable?",
+            "watchable?",
+            "callable?",
+            "applicable?",
+            "pair?",
+            "mutable?",
+            "persistent?",
             "bytes?",
             "array?",
             "object?",
@@ -2979,6 +2998,51 @@ impl ProtocolRegistry {
         methods
             .get(&(protocol, method.to_string()))
             .is_some_and(|implementations| !implementations.is_empty())
+    }
+
+    pub fn satisfies(&self, protocol: &GuestProtocol, value: &Value) -> bool {
+        let protocol_name = canonical_protocol_name(&protocol.name);
+        if protocol.methods.is_empty() {
+            return match protocol_name.rsplit('/').next().unwrap_or("") {
+                "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
+                "IPersistent" => matches!(
+                    value,
+                    Value::Map(_)
+                        | Value::OrderedMap(_)
+                        | Value::SortedMap(_)
+                        | Value::Trie(_)
+                        | Value::Set(_)
+                        | Value::OrderedSet(_)
+                        | Value::SortedSet(_)
+                        | Value::List(_)
+                        | Value::Cons(_)
+                        | Value::Queue(_)
+                        | Value::Tuple(_)
+                        | Value::Vector(_)
+                        | Value::Struct(_)
+                ),
+                _ => false,
+            };
+        }
+        if let Value::Struct(receiver) = value {
+            return protocol.methods.keys().all(|method| {
+                self.guest_methods.borrow().contains_key(&(
+                    protocol_name.clone(),
+                    receiver.ty.name.clone(),
+                    method.clone(),
+                ))
+            });
+        }
+        if let Value::Mutable(receiver) = value {
+            return protocol.methods.keys().all(|method| {
+                self.guest_methods.borrow().contains_key(&(
+                    protocol_name.clone(),
+                    receiver.ty.name.clone(),
+                    method.clone(),
+                ))
+            });
+        }
+        builtin_protocol_satisfies(&protocol_name, value)
     }
 
     /// Returns the built-in collection protocol registry used by evaluator dispatch.
@@ -6843,24 +6907,23 @@ fn protocol_dissoc(arguments: &[Value]) -> Result<Value, String> {
 
 fn pair_parts(value: &Value) -> Option<(Value, Value)> {
     match value {
-        Value::Tuple(values) if values.len() >= 2 => Some((
+        Value::Tuple(values) if values.len() == 2 => Some((
             values.get(0).unwrap().clone(),
             values.get(1).unwrap().clone(),
         )),
-        Value::Vector(values) if values.len() >= 2 => Some((values[0].clone(), values[1].clone())),
-        Value::List(values) if values.len() >= 2 => Some((values[0].clone(), values[1].clone())),
+        Value::Vector(values) if values.len() == 2 => Some((values[0].clone(), values[1].clone())),
+        Value::List(values) if values.len() == 2 => Some((values[0].clone(), values[1].clone())),
         _ => None,
     }
 }
 
+fn pair_value(key: Value, value: Value) -> Value {
+    Value::Tuple(Box::new(PTuple::Tup2([key, value])))
+}
+
 fn indexed_find(value: Option<&Value>, index: usize) -> Result<Value, String> {
     Ok(value
-        .map(|value| {
-            Value::Vector(PVector::from_iter([
-                Value::Number(index as i64),
-                value.clone(),
-            ]))
-        })
+        .map(|value| pair_value(Value::Number(index as i64), value.clone()))
         .unwrap_or(Value::Nil))
 }
 
@@ -6879,7 +6942,7 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
                 .unwrap()
                 .into_iter()
                 .find(|(candidate, _)| candidate == key)
-                .map(|(candidate, value)| Value::Vector(PVector::from_iter([candidate, value])))
+                .map(|(candidate, value)| pair_value(candidate, value))
                 .unwrap_or(Value::Nil))
         }
         Value::Object(values) => {
@@ -6893,20 +6956,17 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
                 .iter()
                 .find(|(candidate, _)| candidate == key)
                 .map(|(candidate, value)| {
-                    Value::Vector(PVector::from_iter([
-                        Value::String(candidate.clone()),
-                        value.clone(),
-                    ]))
+                    pair_value(Value::String(candidate.clone()), value.clone())
                 })
                 .unwrap_or(Value::Nil))
         }
         Value::Struct(value) => Ok(named_field_name(key)
             .and_then(|name| value.get(name).cloned().map(|item| (name, item)))
-            .map(|(name, item)| Value::Vector(PVector::from_iter([named_field_key(name), item])))
+            .map(|(name, item)| pair_value(named_field_key(name), item))
             .unwrap_or(Value::Nil)),
         Value::Mutable(value) => Ok(named_field_name(key)
             .and_then(|name| value.get(name).map(|item| (name, item)))
-            .map(|(name, item)| Value::Vector(PVector::from_iter([named_field_key(name), item])))
+            .map(|(name, item)| pair_value(named_field_key(name), item))
             .unwrap_or(Value::Nil)),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             Ok(set_find(value, key).unwrap_or(Value::Nil))
@@ -7385,6 +7445,151 @@ fn extension_has_category(receiver: &ExtensionValue, category: &str) -> bool {
             .as_ref()
             .is_some_and(|registry| registry.extension_has_category(receiver, category))
     })
+}
+
+fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
+    let name = protocol.rsplit('/').next().unwrap_or(protocol);
+    let persistent_collection = matches!(
+        value,
+        Value::Map(_)
+            | Value::OrderedMap(_)
+            | Value::SortedMap(_)
+            | Value::Trie(_)
+            | Value::Set(_)
+            | Value::OrderedSet(_)
+            | Value::SortedSet(_)
+            | Value::List(_)
+            | Value::Cons(_)
+            | Value::Queue(_)
+            | Value::Tuple(_)
+            | Value::Vector(_)
+    );
+    let map_like = matches!(
+        value,
+        Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)
+    );
+    let sequential = matches!(
+        value,
+        Value::List(_) | Value::Cons(_) | Value::Queue(_) | Value::Tuple(_) | Value::Vector(_)
+    );
+    match name {
+        "IColl" | "IConj" | "IEmpty" => persistent_collection,
+        "IIter" | "IReduce" => {
+            persistent_collection
+                || matches!(
+                    value,
+                    Value::Iterator(_)
+                        | Value::String(_)
+                        | Value::Bytes(_)
+                        | Value::ByteBuffer(_)
+                        | Value::Array(_)
+                        | Value::Object(_)
+                        | Value::Nil
+                )
+        }
+        "IIterator" => matches!(value, Value::Iterator(_)),
+        "ICount" => {
+            persistent_collection
+                || matches!(
+                    value,
+                    Value::String(_)
+                        | Value::Bytes(_)
+                        | Value::ByteBuffer(_)
+                        | Value::Array(_)
+                        | Value::Object(_)
+                        | Value::Nil
+                )
+        }
+        "INth" => {
+            sequential
+                || matches!(
+                    value,
+                    Value::String(_) | Value::Bytes(_) | Value::ByteBuffer(_) | Value::Array(_)
+                )
+        }
+        "IAssoc" | "IDissoc" => map_like || matches!(value, Value::Vector(_)),
+        "IFind" => {
+            map_like
+                || matches!(
+                    value,
+                    Value::Set(_)
+                        | Value::OrderedSet(_)
+                        | Value::SortedSet(_)
+                        | Value::Vector(_)
+                        | Value::Tuple(_)
+                )
+        }
+        "ILookup" => map_like || matches!(value, Value::Vector(_) | Value::Tuple(_)),
+        "IDeref" => matches!(value, Value::Atom(_) | Value::Promise(_) | Value::Var(_)),
+        "IReset" => matches!(value, Value::Atom(_) | Value::Var(_)),
+        "ICas" | "IWatch" => matches!(value, Value::Atom(_)),
+        "IFn" => matches!(
+            value,
+            Value::Function(_) | Value::StructType(_) | Value::MutableType(_)
+        ),
+        "IPair" => pair_parts(value).is_some(),
+        _ => false,
+    }
+}
+
+fn protocol_satisfies(protocol: &GuestProtocol, value: &Value) -> bool {
+    ACTIVE_PROTOCOLS.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(ProtocolRegistry::core)
+            .satisfies(protocol, value)
+    })
+}
+
+fn named_predicate_protocol(name: &str) -> Option<&'static str> {
+    match name {
+        "coll?" => Some("IColl"),
+        "iterable?" => Some("IIter"),
+        "iterator?" => Some("IIterator"),
+        "counted?" => Some("ICount"),
+        "reducible?" => Some("IReduce"),
+        "indexed?" => Some("INth"),
+        "associative?" => Some("IAssoc"),
+        "findable?" => Some("IFind"),
+        "lookupable?" => Some("ILookup"),
+        "derefable?" => Some("IDeref"),
+        "resettable?" => Some("IReset"),
+        "casable?" => Some("ICas"),
+        "watchable?" => Some("IWatch"),
+        "callable?" => Some("IFn"),
+        "applicable?" => Some("IApplicable"),
+        "pair?" => Some("IPair"),
+        "mutable?" => Some("IMutable"),
+        "persistent?" => Some("IPersistent"),
+        _ => None,
+    }
+}
+
+fn named_protocol_satisfies(name: &str, value: &Value) -> bool {
+    let Some(protocol_name) = named_predicate_protocol(name) else {
+        return false;
+    };
+    if protocol_name == "IColl" {
+        return builtin_protocol_satisfies(protocol_name, value);
+    }
+    let Some((_, methods)) = FOUNDATION_PROTOCOLS
+        .iter()
+        .find(|(candidate, _)| *candidate == protocol_name)
+    else {
+        return false;
+    };
+    protocol_satisfies(
+        &GuestProtocol {
+            name: builtin_protocol_name(protocol_name),
+            methods: methods
+                .iter()
+                .map(|(method, arity)| ((*method).to_owned(), *arity))
+                .collect(),
+        },
+        value,
+    )
 }
 
 fn promise_value(value: &Value, operation: &str) -> Result<Promise, String> {
@@ -8345,28 +8550,23 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
         Value::Object(values) => Ok(values
             .borrow()
             .iter()
-            .map(|(key, value)| {
-                Value::Vector(PVector::from_iter([
-                    Value::String(key.clone()),
-                    value.clone(),
-                ]))
-            })
+            .map(|(key, value)| pair_value(Value::String(key.clone()), value.clone()))
             .collect()),
         Value::Struct(value) => Ok(value
             .ordered_entries()
             .into_iter()
-            .map(|(key, value)| Value::Vector(PVector::from_iter([key, value])))
+            .map(|(key, value)| pair_value(key, value))
             .collect()),
         Value::Mutable(value) => Ok(value
             .ordered_entries()
             .into_iter()
-            .map(|(key, value)| Value::Vector(PVector::from_iter([key, value])))
+            .map(|(key, value)| pair_value(key, value))
             .collect()),
         value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(map_entries(&value)
                 .unwrap()
                 .into_iter()
-                .map(|(key, value)| Value::Vector(PVector::from_iter([key, value])))
+                .map(|(key, value)| pair_value(key, value))
                 .collect())
         }
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
@@ -13895,6 +14095,23 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     collection_empty_value(eval(&fs[1], env)?)
                 }
+                Form::Symbol(n) if n == "satisfies?" => {
+                    if fs.len() != 3 {
+                        return Err("satisfies? expects a protocol and value".into());
+                    }
+                    let Value::Protocol(protocol) = eval(&fs[1], env)? else {
+                        return Err("satisfies? expects a protocol and value".into());
+                    };
+                    let value = eval(&fs[2], env)?;
+                    Ok(Value::Bool(protocol_satisfies(&protocol, &value)))
+                }
+                Form::Symbol(n) if named_predicate_protocol(n).is_some() => {
+                    if fs.len() != 2 {
+                        return Err(format!("{n} expects one argument"));
+                    }
+                    let value = eval(&fs[1], env)?;
+                    Ok(Value::Bool(named_protocol_satisfies(n, &value)))
+                }
                 Form::Symbol(n)
                     if [
                         "list?",
@@ -13940,9 +14157,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             Value::Extension(receiver) => extension_has_category(receiver, "map"),
                             _ => false,
                         },
-                        // Rust materializes map iteration entries as ordinary
-                        // two-element vectors rather than a distinct MapEntry.
-                        "map-entry?" => false,
+                        "map-entry?" => {
+                            matches!(value, Value::Tuple(ref entry) if entry.len() == 2)
+                        }
                         "set?" => matches!(
                             value,
                             Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)

@@ -12,9 +12,13 @@
                 (every? (fn [entry] (not (empty? (:evidence entry))))
                         translate/rules)
                 (vec (map :compiled/index translate/rules))]
-               [{:total 14 :safe 3 :review 2 :manual 9}
+               [{:total 44 :safe 27 :review 3 :manual 14}
                 true
-                [0 1 2 3 4 5 6 7 8 9 10 11 12 13]])
+                [0 1 2 3 4 5 6 7 8 9
+                 10 11 12 13 14 15 16 17 18 19
+                 20 21 22 23 24 25 26 27 28 29
+                 30 31 32 33 34 35 36 37 38 39
+                 40 41 42 43]])
 
    (test/check "automatic matcher conflicts are rejected"
                (let [base (first translate/rules)
@@ -94,6 +98,42 @@
                ["(ns demo-test (:require [std.lib.test :as test]))\n(test/check \"demo\" 1 1)\n"
                 [:dependency/std-lib-test]
                 [:code.translate/manual]])
+
+   (test/check "collection and walk idioms resolve to their classified destinations"
+               (let [source
+                     "(vector std.lib.collection/map-keys std.lib.collection/filter-vals std.lib.walk/prewalk-replace std.lib.walk/walk:find)"
+                     result (translate/translate-source source {:mode :safe})]
+                 [(:output result)
+                  (vec (map :rule/id (:rules/matched result)))
+                  (vec (map :rule/id (:rules/applied result)))])
+               ["(vector std.foundation/map-keys std.lib.collection/filter-vals std.foundation/prewalk-replace std.lib.collection/walk:find)"
+                [:collection/map-keys
+                 :collection/filter-vals
+                 :walk/core-prewalk
+                 :walk/collection-search]
+                [:collection/map-keys
+                 :walk/core-prewalk
+                 :walk/collection-search]])
+
+   (test/check "namespace-family prefixes preserve dotted and qualified suffixes"
+               (let [source "[std.db.node std.db.node/open std.lib.schema.check/value]"
+                     result (translate/translate-source source {:mode :review})]
+                 (:output result))
+               "[db.node db.node/open db.schema.check/value]")
+
+   (test/check "host facade calls resolve to explicit native capability types"
+               (let [source
+                     "[std.foundation.json/read std.foundation.file/read std.json/write std.native.Json/read]"
+                     result (translate/translate-source source {:mode :safe})]
+                 (:output result))
+               "[Json/read File/read Json/write Json/read]")
+
+   (test/check "required namespace aliases participate in semantic rewrites"
+               (let [source
+                     "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] [std.native.Json :as json]))\n[c/map-keys walk/prewalk-replace json/read]"
+                     result (translate/translate-source source {:mode :safe})]
+                 (:output result))
+               "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] ))\n[std.foundation/map-keys std.foundation/prewalk-replace Json/read]")
 
    (test/check "supported translations are idempotent"
                (let [first-pass (translate/translate-source source {:mode :review})
