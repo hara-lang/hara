@@ -20,6 +20,7 @@ const SYNC_SPECIAL_FORMS: &[&str] = &[
     "comment",
     "declare",
     "def",
+    "defmutable",
     "defstruct",
     "defprotocol",
     "defmulti",
@@ -1307,6 +1308,33 @@ mod tests {
             assert_eq!(var.display(), "#'user/player");
             assert_eq!(var.deref_value(), Value::Number(1));
         });
+    }
+
+    #[test]
+    fn named_value_constructors_are_visible_to_later_forms_in_the_same_do() {
+        let cases = [
+            (
+                "(do (defstruct Point [x y]) \
+                 (+ (get (Point 1 2) :x) \
+                    (get (->Point 3 4) :x) \
+                    (get (map->Point {:x 5}) :x)))",
+                Value::Number(9),
+            ),
+            (
+                "(do (defmutable Cursor [x y]) \
+                 (+ (field (Cursor 1 2) :x) \
+                    (field (->Cursor 3 4) :x) \
+                    (field (map->Cursor {:x 5}) :x)))",
+                Value::Number(9),
+            ),
+        ];
+        for (source, expected) in cases {
+            let registry = crate::kernel::NamespaceRegistry::new("user");
+            crate::core::with_namespace_registry(&registry, || {
+                let mut fiber = EvalFiber::start(source, HashMap::new()).unwrap();
+                assert_eq!(fiber.drive_sync(), Ok(expected));
+            });
+        }
     }
 
     #[test]
