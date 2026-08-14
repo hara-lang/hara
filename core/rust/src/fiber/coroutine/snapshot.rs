@@ -8,10 +8,8 @@
 use super::super::*;
 use crate::lang::data::{OrderedMap, Vector};
 
-pub const INTERPRETER_LIVE_SNAPSHOT_SCHEMA: &str =
-    "hal.interpreter-live-snapshot/0-alpha";
-pub const INTERPRETER_LIVE_BOUNDARY_SCHEMA: &str =
-    "hal.interpreter-live-boundary/0-alpha";
+pub const INTERPRETER_LIVE_SNAPSHOT_SCHEMA: &str = "hal.interpreter-live-snapshot/0-alpha";
+pub const INTERPRETER_LIVE_BOUNDARY_SCHEMA: &str = "hal.interpreter-live-boundary/0-alpha";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EvalObservationLimits {
@@ -125,10 +123,7 @@ impl EvalObservationSnapshot {
             ("status", string(self.status.as_keyword())),
             ("paused", Value::Bool(self.paused)),
             ("bindingCount", integer(self.binding_count)),
-            (
-                "bindings",
-                vector(self.bindings.iter().map(binding_value)),
-            ),
+            ("bindings", vector(self.bindings.iter().map(binding_value))),
             ("bindingsOmitted", integer(self.bindings_omitted)),
             (
                 "pending",
@@ -266,9 +261,7 @@ impl EvalFiber {
             state: promise_state_keyword(&promise.state()),
         });
         let result = match &self.state {
-            EvalFiberState::Completed(value) => {
-                Some(value_snapshot(value, limits.display_chars))
-            }
+            EvalFiberState::Completed(value) => Some(value_snapshot(value, limits.display_chars)),
             _ => None,
         };
         let error = match &self.state {
@@ -409,10 +402,7 @@ fn safe_display(value: &Value) -> (String, bool) {
         Value::Coroutine(_) => ("<coroutine>".into(), true),
         Value::Iterator(_) => ("<iterator>".into(), true),
         Value::Extension(extension) => (
-            format!(
-                "<extension {}/{}>",
-                extension.provider, extension.type_name
-            ),
+            format!("<extension {}/{}>", extension.provider, extension.type_name),
             true,
         ),
         Value::ByteBuffer(_) => ("<byte-buffer>".into(), true),
@@ -545,7 +535,11 @@ mod tests {
         assert_eq!(returned.kind, EvalObservedBoundaryKind::Return);
         assert_eq!(returned.after.status, EvalObservationStatus::Returned);
         assert_eq!(
-            returned.after.result.as_ref().map(|value| value.display.as_str()),
+            returned
+                .after
+                .result
+                .as_ref()
+                .map(|value| value.display.as_str()),
             Some("42")
         );
         let json = crate::json::write(&returned.to_value()).unwrap();
@@ -573,11 +567,7 @@ mod tests {
         );
 
         promise.resolve(Value::Number(42));
-        let resumed = fiber.resume_observed_snapshot(
-            promise.state(),
-            "fixture/await.hal",
-            limits,
-        );
+        let resumed = fiber.resume_observed_snapshot(promise.state(), "fixture/await.hal", limits);
         assert_eq!(resumed.kind, EvalObservedBoundaryKind::Resume);
         assert_eq!(resumed.after.status, EvalObservationStatus::Paused);
         assert!(resumed.after.pending.is_none());
