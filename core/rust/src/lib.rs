@@ -4666,59 +4666,83 @@ mod tests {
     }
 
     #[test]
-    fn java_collection_families_are_first_class_runtime_values() {
+    fn std_lib_collection_families_are_first_class_runtime_values() {
         let mut runtime = Runtime::new();
+        runtime
+            .eval_text("(ns collection.runtime (:require [std.lib.collection :as collection]))")
+            .unwrap();
         for source in [
-            "(= (hash-map :a 1 :b 2) (ordered-map :b 2 :a 1))",
-            "(= (hash-map :a 1 :b 2) (sorted-map :b 2 :a 1))",
-            "(= (hash-set 1 2) (ordered-set 2 1))",
-            "(= (hash-set 1 2) (sorted-set 2 1))",
-            "(= (queue 1 2) [1 2])",
+            "(= (hash-map :a 1 :b 2) (collection/ordered-map :b 2 :a 1))",
+            "(= (hash-map :a 1 :b 2) (collection/sorted-map :b 2 :a 1))",
+            "(= (hash-set 1 2) (collection/ordered-set 2 1))",
+            "(= (hash-set 1 2) (collection/sorted-set 2 1))",
+            "(= (collection/queue 1 2) [1 2])",
         ] {
             assert_eq!(runtime.eval_text(source).unwrap(), "true", "{source}");
         }
         assert_eq!(runtime.eval_text("(get (hash-map :a 1) :a)").unwrap(), "1");
         assert_eq!(
-            runtime.eval_text("(get (ordered-map :a 1) :a)").unwrap(),
-            "1"
-        );
-        assert_eq!(
-            runtime.eval_text("(get (sorted-map :a 1) :a)").unwrap(),
+            runtime
+                .eval_text("(get (collection/ordered-map :a 1) :a)")
+                .unwrap(),
             "1"
         );
         assert_eq!(
             runtime
-                .eval_text("(get (trie \"alpha\" 7) \"alpha\")")
+                .eval_text("(get (collection/sorted-map :a 1) :a)")
+                .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(get (collection/trie \"alpha\" 7) \"alpha\")")
                 .unwrap(),
             "7"
         );
         assert_eq!(
-            runtime.eval_text("(keys (sorted-map :b 2 :a 1))").unwrap(),
+            runtime
+                .eval_text("(keys (collection/sorted-map :b 2 :a 1))")
+                .unwrap(),
             "[:a :b]"
         );
-        assert_eq!(runtime.eval_text("(nth (queue 4 5 6) 1)").unwrap(), "5");
         assert_eq!(
-            runtime.eval_text("(last (conj (queue 4 5) 6))").unwrap(),
+            runtime
+                .eval_text("(nth (collection/queue 4 5 6) 1)")
+                .unwrap(),
+            "5"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(last (conj (collection/queue 4 5) 6))")
+                .unwrap(),
             "6"
         );
         assert_eq!(
             runtime
-                .eval_text("(count (dissoc (ordered-set 1 2) 1))")
+                .eval_text("(count (dissoc (collection/ordered-set 1 2) 1))")
                 .unwrap(),
             "1"
         );
         assert_eq!(
             runtime
-                .eval_text("(get (assoc (trie) \"x\" 9) \"x\")")
+                .eval_text("(get (assoc (collection/trie) \"x\" 9) \"x\")")
                 .unwrap(),
             "9"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(collection/trie? (collection/trie))")
+                .unwrap(),
+            "true"
         );
         let error = runtime.eval_text("(hash-map :a)").unwrap_err();
         assert!(error.contains("even number"), "{error}");
         assert!(runtime
-            .eval_text("(trie :a 1)")
+            .eval_text("(collection/trie :a 1)")
             .unwrap_err()
             .contains("string keys"));
+        assert!(runtime.eval_text("(ordered-map)").is_err());
+        assert!(runtime.eval_text("(std.foundation/ordered-map)").is_err());
     }
 
     #[test]
@@ -6445,21 +6469,24 @@ mod tests {
     #[test]
     fn portable_type_descriptors_cover_named_and_collection_values() {
         let mut runtime = Runtime::new();
+        runtime
+            .eval_text("(ns type.runtime (:require [std.lib.collection :as collection]))")
+            .unwrap();
         for (source, expected) in [
             ("nil", ":hara/Nil"),
             (":key", ":hara/Keyword"),
             ("(symbol \"hara/name\")", ":hara/Symbol"),
             ("[]", ":hara/Vector"),
             ("(list)", ":hara/List"),
-            ("(queue)", ":hara/Queue"),
+            ("(collection/queue)", ":hara/Queue"),
             ("(vector)", ":hara/Vector"),
             ("(hash-map)", ":hara/HashMap"),
             ("{}", ":hara/HashMap"),
-            ("(sorted-map)", ":hara/SortedMap"),
-            ("(trie)", ":hara/Trie"),
+            ("(collection/sorted-map)", ":hara/SortedMap"),
+            ("(collection/trie)", ":hara/Trie"),
             ("(hash-set)", ":hara/HashSet"),
             ("#{}", ":hara/OrderedSet"),
-            ("(sorted-set)", ":hara/SortedSet"),
+            ("(collection/sorted-set)", ":hara/SortedSet"),
             ("(bytes)", ":hara/ByteBuffer"),
             ("(array)", ":hara/Array"),
             ("(object)", ":hara/Object"),

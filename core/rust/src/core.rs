@@ -1203,6 +1203,43 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
         })
 }
 
+const COLLECTION_NAMESPACE: &str = "std.lib.collection";
+const COLLECTION_BUILTINS: &[&str] = &[
+    "ordered-map",
+    "ordered-set",
+    "queue",
+    "sorted-map",
+    "sorted-set",
+    "trie",
+];
+
+fn namespace_builtin(namespace: &str, name: &str) -> Option<Value> {
+    (namespace == COLLECTION_NAMESPACE && COLLECTION_BUILTINS.contains(&name))
+        .then(|| structural_function_value(name))
+}
+
+fn activate_namespace_builtins(
+    registry: &NamespaceRegistry<Value>,
+    env: &mut HashMap<String, Value>,
+    namespace: &str,
+    names: &[String],
+) -> Result<(), String> {
+    if names.is_empty() || namespace != COLLECTION_NAMESPACE {
+        return Ok(());
+    }
+    let target = registry.find_or_create(namespace);
+    for name in names {
+        let value = namespace_builtin(namespace, name)
+            .ok_or_else(|| format!("Missing builtin export: {namespace}/{name}"))?;
+        let var = target.intern(name, value);
+        var.set_origin(VarOrigin::RuntimePrimitive);
+        target.map_var(Symbol::parse(name), var.clone());
+        env.insert(name.clone(), Value::Var(var));
+    }
+    refresh_namespace_environment(registry, env);
+    Ok(())
+}
+
 #[cfg(feature = "bytecode-vm")]
 pub(crate) fn foundation_bootstrap_callable_names() -> impl Iterator<Item = &'static str> {
     structural_callable_names().chain([
@@ -11128,6 +11165,7 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
         refer_startup_defaults(&registry, &name);
     }
     select_namespace_environment(&registry, env, &name);
+    activate_namespace_builtins(&registry, env, &name, config.builtins())?;
     let destination = registry.current();
     let omitted = match config.exposed_foundation() {
         Some(exposed) => destination
@@ -13139,7 +13177,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "sorted-set",
                         "trie",
                     ]
-                    .contains(&n.as_str()) =>
+                    .contains(&n.as_str())
+                        && (!COLLECTION_BUILTINS.contains(&n.as_str())
+                            || structural_native_dispatch_active(n)
+                            || binding_value(env, n).is_some()) =>
                 {
                     eval_collection_constructor(n, &fs[1..], env)
                 }

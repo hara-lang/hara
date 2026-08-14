@@ -1033,6 +1033,12 @@ public final class HaraContext {
         requireResolvedSource(projectSource.toString(), false);
         loaded = loadedSourceNamespace(target, projectSource.toString());
       }
+      if (loaded == null
+          && "std.lib.collection".equals(target)
+          && libraryLoader.provides(target)) {
+        libraryLoader.ensure(this, target);
+        loaded = loadLibraryResource(target, false);
+      }
       if (loaded == null) loaded = loadBytecodeNamespace(target);
       if (loaded == null) libraryLoader.ensure(this, target);
       if (loaded == null) {
@@ -1833,8 +1839,6 @@ public final class HaraContext {
               return raw instanceof hara.lang.data.Tuple.Tup0
                   || raw instanceof hara.lang.data.Tuple.Tup1<?>;
             }));
-    target.define("queue?", new UnaryBuiltin("queue?", value ->
-        HaraBox.unwrap(value) instanceof hara.lang.data.Queue<?>));
     target.define("object?", new UnaryBuiltin("object?", value ->
         HaraBox.unwrap(value) instanceof HaraObject));
     target.define("bytes?", new UnaryBuiltin("bytes?", value ->

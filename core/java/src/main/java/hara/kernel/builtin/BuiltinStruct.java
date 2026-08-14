@@ -60,12 +60,10 @@ public interface BuiltinStruct {
     return List.Standard.into(Iter.iter(elements));
   }
 
-  @Module.Fn(name = "ordered-map", vargs = true, complete = true)
   public static <ITR, K, V> OrderedMap.Standard<K, V> orderedMap(ITR elements) {
     return OrderedMap.Standard.into(Iter.partitionPair(Iter.iter(elements)));
   }
 
-  @Module.Fn(name = "ordered-set", vargs = true, complete = true)
   public static <ITR, E> OrderedSet.Standard<E> orderedSet(ITR elements) {
     return OrderedSet.Standard.into(Iter.iter(elements));
   }
@@ -80,17 +78,14 @@ public interface BuiltinStruct {
     return hara.lang.data.Symbol.create(name);
   }
 
-  @Module.Fn(name = "queue", vargs = true, complete = true)
   public static <ITR, E> Queue.Standard<E> queue(ITR elements) {
     return Queue.Standard.into(Iter.iter(elements));
   }
 
-  @Module.Fn(name = "sorted-map", vargs = true, complete = true)
   public static <ITR, K, V> SortedMap.Standard<K, V> sortedMap(ITR elements) {
     return SortedMap.Standard.into(Iter.partitionPair(Iter.iter(elements)));
   }
 
-  @Module.Fn(name = "sorted-set", vargs = true, complete = true)
   public static <ITR, E> SortedSet.Standard<E> sortedSet(ITR elements) {
     return SortedSet.Standard.into(Iter.iter(elements));
   }
