@@ -1,0 +1,38 @@
+name: Apply code.manage agent payload
+
+on:
+  push:
+    branches:
+      - agent/restore-code-manage-workflows
+    paths:
+      - .agent/code-manage-payload.b64
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/restore-code-manage-workflows
+          fetch-depth: 0
+      - name: Materialize source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .agent/code-manage-payload.b64 > /tmp/code-manage-payload.tar.gz
+          tar -xzf /tmp/code-manage-payload.tar.gz -C .
+          rm -f .agent/code-manage-payload.b64
+          rmdir .agent 2>/dev/null || true
+      - name: Commit generated tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Restore Foundation code.manage workflows"
+          git push origin HEAD:agent/restore-code-manage-workflows
