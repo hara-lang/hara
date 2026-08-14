@@ -7,7 +7,9 @@ use crate::Runtime;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-pub(super) fn compile(build: &ProductionBuild) -> Result<CompiledBundle, String> {
+pub(in crate::task::production) fn compile(
+    build: &ProductionBuild,
+) -> Result<CompiledBundle, String> {
     let rendered = render::retained_modules(build)?;
     let order = order::module_order(&rendered);
     let mut runtime = Runtime::core();

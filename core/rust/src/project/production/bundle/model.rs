@@ -2,15 +2,15 @@ use super::super::{graph::Analysis, plan::BuildPlan};
 use crate::vm::BytecodeBundleModule;
 
 #[derive(Debug, Clone)]
-pub(super) struct ProductionBuild {
-    pub(super) plan: BuildPlan,
-    pub(super) analysis: Analysis,
+pub(in crate::task::production) struct ProductionBuild {
+    pub(in crate::task::production) plan: BuildPlan,
+    pub(in crate::task::production) analysis: Analysis,
 }
 
 #[derive(Clone)]
-pub(super) struct CompiledBundle {
-    pub(super) bytes: Vec<u8>,
-    pub(super) modules: Vec<BytecodeBundleModule>,
+pub(in crate::task::production) struct CompiledBundle {
+    pub(in crate::task::production) bytes: Vec<u8>,
+    pub(in crate::task::production) modules: Vec<BytecodeBundleModule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

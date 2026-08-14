@@ -1,7 +1,7 @@
 use crate::core::Value;
 use crate::{vm, Runtime};
 
-pub(super) fn validate_bundle(
+pub(in crate::task::production) fn validate_bundle(
     bytes: &[u8],
     entrypoints: &[String],
 ) -> Result<Runtime, String> {
