@@ -1,0 +1,64 @@
+name: Apply combined string evaluation working directory fix
+
+on:
+  push:
+    branches:
+      - agent/complete-combined-str-format
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.head_commit.message == 'Apply isolated HAL working directory fix'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out completion branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply surgical workflow substitutions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/agent-complete-combined-str-format.yml')
+          text = path.read_text()
+
+          substitutions = [
+              (
+                  '            cat "$@" | "$HARA" --offline stdin',
+                  '            cat "$@" | (cd /tmp && "$HARA" --offline stdin)',
+              ),
+              (
+                  '          "$HARA" --offline run core/lib/src/std/foundation/string.hal',
+                  '          (cd /tmp && "$HARA" --offline run "$GITHUB_WORKSPACE/core/lib/src/std/foundation/string.hal")',
+              ),
+              (
+                  '            "$HARA" --offline run "$source"',
+                  '            (cd /tmp && "$HARA" --offline run "$GITHUB_WORKSPACE/$source")',
+              ),
+          ]
+
+          for old, new in substitutions:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected one workflow marker, found {count}: {old}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text)
+          PY
+
+          rm -f \
+            .github/workflows/agent-fix-combined-str-eval-cwd.yml \
+            .github/workflows/agent-fix-combined-str-eval-cwd-v2.yml
+          git config user.name "hara-agent"
+          git config user.email "hara-agent@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Run format validation outside project discovery"
+          git push origin HEAD:agent/complete-combined-str-format
