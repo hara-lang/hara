@@ -133,17 +133,15 @@ fn portable_string_contract_is_exercised_inside_hal() {
     }
 }
 
-#[test]
-fn layered_formatting_and_work_event_projection_are_exact() {
-    let output = evaluate(
-        r#"
+const FORMAT_PRELUDE: &str = r#"
 (require [std.foundation.string :as str])
 (require [std.format :as format])
 (require [std.format.report :as format-report])
 (require [std.work.report :as report])
 (require [std.work.protocol :as protocol])
-"#,
-        r#"
+"#;
+
+const REPORT_FIXTURE: &str = r#"
 (def item-a
   {:item/id :alpha
    :item/index 0
@@ -242,7 +240,37 @@ fn layered_formatting_and_work_event_projection_are_exact() {
    {:event :task/item-completed :record item-a}
    {:event :task/item-completed :record item-b}
    {:event :task/run-completed :report document}])
+"#;
 
+fn assert_format_case(name: &str, setup: &str, tail: &str, expected: &str) {
+    eprintln!("=== format-case:{name} ===");
+    let body = format!("{REPORT_FIXTURE}\n{setup}\n{tail}");
+    let output = evaluate(FORMAT_PRELUDE, &body)
+        .unwrap_or_else(|error| panic!("format case {name} failed: {error}"));
+    assert_eq!(output, expected, "format case {name}");
+}
+
+#[test]
+fn layered_formatting_and_work_event_projection_are_exact() {
+    assert_format_case("fixture", "", "(report/report? document)", "true");
+
+    assert_format_case(
+        "plain-report",
+        "",
+        "(= (format/report document) expected)",
+        "true",
+    );
+
+    assert_format_case(
+        "event-render",
+        "",
+        "(= (report/render-events events) expected)",
+        "true",
+    );
+
+    assert_format_case(
+        "terminal-emission",
+        r#"
 (def emitted-output (atom []))
 (def emitted-count
   (format/emit-lines!
@@ -251,7 +279,50 @@ fn layered_formatting_and_work_event_projection_are_exact() {
    {:emit
     (fn [text]
       (swap! emitted-output conj text))}))
+"#,
+        "[(= emitted-count 2) (= (deref emitted-output) [\"first\" \"second\"])]",
+        "[true true]",
+    );
 
+    assert_format_case(
+        "ansi",
+        r#"
+(def ansi-title
+  (first
+   (format/render-lines
+    (format/report-lines document)
+    {:ansi true})))
+"#,
+        r#"[(str/starts-with? ansi-title "\u001b[1;36m")
+             (str/ends-with? ansi-title "\u001b[0m")]"#,
+        "[true true]",
+    );
+
+    assert_format_case(
+        "summary-filter",
+        "",
+        r#"
+(= (format-report/report
+    document
+    {:include-sections [:summary]
+     :include-title false
+     :include-annotations false})
+   (str/join
+    "\n"
+    ["SUMMARY"
+     "Items: 2"
+     "Results: 2"
+     "Warnings: 1"
+     "Errors: 0"
+     "Cumulative: 7ms"
+     "Elapsed: 8ms"]))
+"#,
+        "true",
+    );
+
+    assert_format_case(
+        "live-observer",
+        r#"
 (def live-output (atom []))
 (def live-observer
   (report/observer
@@ -259,7 +330,6 @@ fn layered_formatting_and_work_event_projection_are_exact() {
     :emit
     (fn [text]
       (swap! live-output conj text))}))
-
 (def _live-events
   (reduce
    (fn [count event]
@@ -267,7 +337,14 @@ fn layered_formatting_and_work_event_projection_are_exact() {
      (inc count))
    0
    events))
+"#,
+        "(= (str/join \"\\n\" (deref live-output)) expected)",
+        "true",
+    );
 
+    assert_format_case(
+        "replay",
+        r#"
 (def replay-output (atom []))
 (def replay-count
   (report/replay!
@@ -276,42 +353,9 @@ fn layered_formatting_and_work_event_projection_are_exact() {
     :emit
     (fn [text]
       (swap! replay-output conj text))}))
-
-(def ansi-title
-  (first
-   (format/render-lines
-    (format/report-lines document)
-    {:ansi true})))
-
-[(= (format/report document) expected)
- (= (report/render-events events) expected)
- (= emitted-count 2)
- (= (deref emitted-output) ["first" "second"])
- (str/starts-with? ansi-title "\u001b[1;36m")
- (str/ends-with? ansi-title "\u001b[0m")
- (= (str/join "\n" (deref live-output)) expected)
- (= (str/join "\n" (deref replay-output)) expected)
- (= replay-count (count (deref replay-output)))
- (= (format-report/report
-     document
-     {:include-sections [:summary]
-      :include-title false
-      :include-annotations false})
-    (str/join
-     "\n"
-     ["SUMMARY"
-      "Items: 2"
-      "Results: 2"
-      "Warnings: 1"
-      "Errors: 0"
-      "Cumulative: 7ms"
-      "Elapsed: 8ms"]))]
 "#,
-    )
-    .expect("layered formatting contract should evaluate");
-
-    assert_eq!(
-        output,
-        "[true true true true true true true true true true]"
+        r#"[(= (str/join "\n" (deref replay-output)) expected)
+             (= replay-count (count (deref replay-output)))]"#,
+        "[true true]",
     );
 }
