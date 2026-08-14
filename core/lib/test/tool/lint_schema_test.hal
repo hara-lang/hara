@@ -1,0 +1,136 @@
+(ns tool.lint-schema-test
+  (:use code.test)
+  (:require [std.typed.schema :as typed-schema]
+            [tool.lint :as lint]
+            [tool.lint.analyze :as analyze]
+            [tool.lint.schema :as lint-schema]))
+
+(defn finding-types [findings]
+  (vec (map (fn [finding] (:type finding)) findings)))
+
+(defn finding-levels [findings]
+  (vec (map (fn [finding] (:level finding)) findings)))
+
+^{:refer 'tool.lint/analyze-source
+  :id 'metadata-signature-precedence}
+(fact "uses metadata function signatures ahead of profile signatures"
+  (let [analysis
+        (lint/analyze-source
+         "(ns demo)\n(defn ^{:schema [:fn [:str] :str]} inc [value] value)\n(inc \"ok\")")]
+    [(finding-types (:findings analysis))
+     (get-in analysis [:schema-index :functions 'demo/inc])])
+  => [[]
+      {:kind :fn
+       :inputs {:fixed [{:kind :primitive :name :str}] :rest nil}
+       :output {:kind :primitive :name :str}}])
+
+^{:refer 'tool.lint/lint-source
+  :id 'schema-finding-categories}
+(fact "emits distinct metadata-derived findings"
+  (let [source
+        (str "(ns demo)\n"
+             "(def Unary [:fn [:int] :str])\n"
+             "(def Bad [:map [:name]])\n"
+             "(def ^{:schema :int} answer \"forty-two\")\n"
+             "(defn ^{:schema #'Unary} label [value] 1)\n"
+             "(defn ^{:schema :int} not-a-contract [value] value)\n"
+             "(defn ^{:schema [:fn [:int :int] :int]} wrong-arity [value] value)\n"
+             "(defn ^{:schema #'Bad} malformed [value] value)\n"
+             "(defn ^{:schema #'Missing} missing-contract [value] value)\n"
+             "(defn ^{:schema [:vec :any]} unsupported [value] value)\n"
+             "(label \"bad\")")
+        types (into #{} (finding-types (lint/lint-source source)))]
+    (every? (fn [expected] (has? types expected))
+            #{:tool.lint/invalid-schema
+              :tool.lint/unresolved-schema
+              :tool.lint/invalid-function-schema
+              :tool.lint/schema-arity-mismatch
+              :tool.lint/schema-argument-mismatch
+              :tool.lint/schema-value-mismatch
+              :tool.lint/schema-return-mismatch}))
+  => true)
+
+^{:refer 'tool.lint/lint-source
+  :id 'schema-mode-levels}
+(fact "defaults schema findings to warnings and supports error and off modes"
+  (let [source "(ns demo)\n(def ^{:schema :int} answer \"bad\")"]
+    [(finding-levels (lint/lint-source source))
+     (finding-levels (lint/lint-source source {:schema-mode :error}))
+     (lint/lint-source source {:schema-mode :off})
+     (get-in (lint/analyze-source source {:schema-mode :off})
+             [:schema-index :values 'demo/answer])])
+  => [[:warning]
+      [:error]
+      []
+      {:kind :primitive :name :int}])
+
+^{:refer 'tool.lint/lint-source
+  :id 'unknown-input-suppression}
+(fact "suppresses schema mismatch findings when an argument is unknown"
+  (finding-types
+   (lint/lint-source
+    "(ns demo)\n(defn ^{:schema [:fn [:int] :int]} use [value] value)\n(use missing)"))
+  => [:tool.lint/unresolved-symbol])
+
+^{:refer 'tool.lint.schema/build-schema-index
+  :id 'cross-namespace-schema-resolution}
+(fact "resolves aliases, refers, forward references, and recursive definitions project-wide"
+  (let [contracts
+        (analyze/scan-source
+         (str "(ns demo.contracts)\n"
+              "(def Node [:map [:next [:maybe #'Node]]])\n"
+              "(def Unary [:fn [#'Node] :str])")
+         {:file "contracts.hal"})
+        consumer
+        (analyze/scan-source
+         (str "(ns demo.consumer\n"
+              "  (:require [demo.contracts :as c :refer [Unary]]))\n"
+              "(defn ^{:schema #'Unary} label [node] \"ok\")\n"
+              "(label 1)")
+         {:file "consumer.hal"})
+        index (lint-schema/build-schema-index [consumer contracts])
+        document (analyze/analyze-scan
+                  consumer
+                  {:known-namespaces #{'demo.contracts 'demo.consumer}
+                   :schema-index index
+                   :schema-index-built true})]
+    [(has? (:definitions index) 'demo.contracts/Node)
+     (has? (:functions index) 'demo.consumer/label)
+     (finding-types (:findings document))])
+  => [true true [:tool.lint/schema-argument-mismatch]])
+
+^{:refer 'tool.lint/analyze-source
+  :id 'external-schema-index}
+(fact "keeps unavailable dependency schemas unknown unless supplied explicitly"
+  (let [source
+        (str "(ns demo (:require [external.contracts :as ext]))\n"
+             "(defn ^{:schema #'ext/Unary} label [value] value)\n"
+             "(label \"bad\")")
+        without (lint/analyze-source source)
+        with (lint/analyze-source
+              source
+              {:schema-index
+               {:definitions
+                {'external.contracts/Unary
+                 (typed-schema/normalize [:fn [:int] :int])}}})]
+    [(finding-types (:findings without))
+     (finding-types (:findings with))])
+  => [[] [:tool.lint/schema-argument-mismatch]])
+
+^{:refer 'tool.lint/lint-source
+  :id 'fixed-and-variadic-schema-arities}
+(fact "checks exact fixed and variadic metadata arities"
+  (let [source
+        (str "(ns demo)\n"
+             "(defn ^{:schema [:function\n"
+             "                    [:fn [:int] :int]\n"
+             "                    [:fn [:str & :str] :str]]}\n"
+             "  combine\n"
+             "  ([value] value)\n"
+             "  ([value & more] value))\n"
+             "(combine)\n"
+             "(combine \"a\" \"b\")")]
+    (finding-types (lint/lint-source source)))
+  => [:tool.lint/schema-arity-mismatch])
+
+(pr-str (run '[tool.lint-schema-test]))

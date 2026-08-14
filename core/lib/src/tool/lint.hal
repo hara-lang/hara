@@ -3,6 +3,7 @@
             [tool.lint.model :as model]
             [tool.lint.profile :as profile]
             [tool.lint.report :as report]
+            [tool.lint.schema :as lint-schema]
             [tool.project :as project]))
 
 (def analyze-source analyze/analyze-source)
@@ -16,10 +17,20 @@
   ([path] (lint-file path {}))
   ([path options] (:findings (analyze/analyze-file path options))))
 
+(defn project-options
+  [current-project options]
+  (if (has? options :schema-mode)
+    options
+    (let [configured (get-in current-project [:lint :schema-mode])]
+      (if configured
+        (assoc options :schema-mode configured)
+        options))))
+
 (defn lint-project
   ([current-project] (lint-project current-project {}))
   ([current-project options]
-   (let [paths (project/files-in
+   (let [options (project-options current-project options)
+         paths (project/files-in
                 current-project
                 (vec (concat (:project/source-paths current-project)
                              (:project/test-paths current-project)))
@@ -33,16 +44,20 @@
                                       (map (fn [scan]
                                              (get-in scan [:namespace :name]))
                                            scans)))
+         schema-index (lint-schema/build-schema-index scans options)
+         analysis-options (assoc options
+                                 :known-namespaces namespaces
+                                 :schema-index schema-index
+                                 :schema-index-built true)
          documents (vec (map (fn [scan]
-                               (analyze/analyze-scan
-                                scan
-                                (assoc options :known-namespaces namespaces)))
+                               (analyze/analyze-scan scan analysis-options))
                              scans))
          findings (report/sort-findings
                    (reduce (fn [output document]
                              (into output (:findings document)))
                            [] documents))]
      {:profile (or (:profile options) profile/+profile+)
+      :schema-index (lint-schema/public-index schema-index)
       :documents documents
       :findings findings
       :summary (model/summarize findings)})))

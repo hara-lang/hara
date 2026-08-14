@@ -1,0 +1,499 @@
+(ns tool.lint.schema
+  (:config {:blank true})
+  (:require [std.foundation :refer :all]
+            [std.block :as block]
+            [std.typed.infer :as infer]
+            [std.typed.schema :as schema]
+            [tool.lint.model :as model]))
+
+(def +schema-finding-types+
+  #{:tool.lint/invalid-schema
+    :tool.lint/unresolved-schema
+    :tool.lint/invalid-function-schema
+    :tool.lint/schema-arity-mismatch
+    :tool.lint/schema-argument-mismatch
+    :tool.lint/schema-value-mismatch
+    :tool.lint/schema-return-mismatch})
+
+(defn schema-mode
+  [options]
+  (let [mode (or (:schema-mode options) :warn)]
+    (if (has? #{:off :warn :error} mode)
+      mode
+      :warn)))
+
+(defn schema-level
+  [options]
+  (let [mode (schema-mode options)]
+    (cond
+      (= mode :off) nil
+      (= mode :error) :error
+      :else :warning)))
+
+(defn schema-finding
+  [block type message options requirement]
+  (let [level (schema-level options)]
+    (when level
+      (model/finding block type level message requirement))))
+
+(defn namespace-context
+  [scan]
+  (let [info (:namespace scan)]
+    {:namespace (:name info)
+     :aliases (:aliases info)
+     :refer-map (:refer-map info)}))
+
+(defn normalized?
+  [value]
+  (and (map? value) (keyword? (:kind value))))
+
+(defn normalize-entry
+  [surface context]
+  (if (normalized? surface)
+    {:schema surface}
+    (schema/normalize-result surface context)))
+
+(defn definition-entry
+  [definition]
+  (when (and (= :var (:kind definition))
+             (:initializer definition))
+    (let [surface (block/value (:initializer definition))
+          result (normalize-entry surface (:schema-context definition))]
+      (merge {:definition definition
+              :surface surface}
+             result))))
+
+(defn collect-definition-entries
+  [scans]
+  (reduce
+   (fn [output scan]
+     (reduce
+      (fn [acc definition]
+        (let [entry (definition-entry definition)]
+          (if entry
+            (assoc acc (:qualified definition) entry)
+            acc)))
+      output
+      (:definitions scan)))
+   {} scans))
+
+(defn valid-definition-candidates
+  [entries external]
+  (reduce
+   (fn [output name]
+     (let [entry (get entries name)]
+       (if (:schema entry)
+         (assoc output name (:schema entry))
+         output)))
+   (or external {})
+   (keys entries)))
+
+(defn project-namespace?
+  [reference namespaces]
+  (let [prefix (namespace reference)]
+    (and prefix (has? namespaces (symbol prefix)))))
+
+(defn annotation-record
+  [definition candidates known-names namespaces options]
+  (let [surface (:schema-surface definition)]
+    (when (:has-schema definition)
+      (let [result (normalize-entry surface (:schema-context definition))
+            anchor (or (:schema-block definition) (:block definition))]
+        (if (:error result)
+          {:definition definition
+           :findings
+           (vec
+            (filter identity
+                    [(schema-finding
+                      anchor
+                      :tool.lint/invalid-schema
+                      (str "invalid schema for " (:qualified definition)
+                           ": " (get-in result [:error :message]))
+                      options
+                      :tool.source-analysis/schema-normalization)]))}
+          (let [normalized (:schema result)
+                unresolved (schema/unresolved-references normalized known-names)
+                local-unresolved (vec (filter (fn [reference]
+                                                (project-namespace? reference namespaces))
+                                              unresolved))
+                resolved (schema/resolve normalized candidates)
+                external-unknown (and (not (empty? unresolved))
+                                      (empty? local-unresolved))
+                findings
+                (vec
+                 (filter
+                  identity
+                  (map
+                   (fn [reference]
+                     (schema-finding
+                      anchor
+                      :tool.lint/unresolved-schema
+                      (str "unresolved project schema reference: " reference)
+                      options
+                      :tool.source-analysis/schema-resolution))
+                   local-unresolved)))]
+            {:definition definition
+             :surface surface
+             :normalized normalized
+             :resolved (if external-unknown (schema/unknown surface) resolved)
+             :unresolved unresolved
+             :local-unresolved local-unresolved
+             :findings findings}))))))
+
+(defn collect-annotations
+  [scans candidates known-names namespaces options]
+  (vec
+   (filter identity
+           (reduce
+            (fn [output scan]
+              (into output
+                    (map (fn [definition]
+                           (annotation-record definition candidates known-names namespaces options))
+                         (:definitions scan))))
+            [] scans))))
+
+(defn annotation-roots
+  [records]
+  (reduce
+   (fn [output record]
+     (if (:normalized record)
+       (into output (schema/reference-names (:normalized record)))
+       output))
+   #{}
+   records))
+
+(defn reachable-definition-names
+  [roots definitions]
+  (loop [pending (vec roots)
+         seen #{}]
+    (if (empty? pending)
+      seen
+      (let [name (first pending)]
+        (if (has? seen name)
+          (recur (vec (rest pending)) seen)
+          (let [definition (get definitions name)
+                nested (if definition
+                         (schema/reference-names definition)
+                         #{})]
+            (recur (vec (concat (rest pending) nested))
+                   (conj seen name))))))))
+
+(defn select-definitions
+  [definitions names]
+  (reduce (fn [output name]
+            (if (has? definitions name)
+              (assoc output name (get definitions name))
+              output))
+          {} names))
+
+(defn record-definition-closure
+  [record candidates]
+  (if (:normalized record)
+    (reachable-definition-names
+     (schema/reference-names (:normalized record))
+     candidates)
+    #{}))
+
+(defn finalize-record
+  [record candidates invalid-names options]
+  (if (nil? (:normalized record))
+    record
+    (let [definition (:definition record)
+          closure (record-definition-closure record candidates)
+          invalid-reference (any? (fn [name] (has? invalid-names name)) closure)
+          resolved (if invalid-reference
+                     (schema/unknown (:surface record))
+                     (:resolved record))
+          invalid-function (and (= :function (:kind definition))
+                                (empty? (:unresolved record))
+                                (not invalid-reference)
+                                (not (schema/function-schema? resolved)))
+          finding (when invalid-function
+                    (schema-finding
+                     (or (:schema-block definition) (:block definition))
+                     :tool.lint/invalid-function-schema
+                     (str "function " (:qualified definition)
+                          " requires a :fn or :function schema")
+                     options
+                     :tool.source-analysis/function-schema))]
+      (assoc record
+             :definition-closure closure
+             :invalid-reference invalid-reference
+             :resolved resolved
+             :invalid-function invalid-function
+             :findings (if finding
+                         (conj (:findings record) finding)
+                         (:findings record))))))
+
+(defn invalid-definition-findings
+  [entries reachable options]
+  (vec
+   (filter
+    identity
+    (map
+     (fn [name]
+       (let [entry (get entries name)
+             definition (:definition entry)]
+         (when (and entry (:error entry))
+           (let [finding (schema-finding
+                          (or (:initializer definition) (:block definition))
+                          :tool.lint/invalid-schema
+                          (str "invalid named schema " name ": "
+                               (get-in entry [:error :message]))
+                          options
+                          :tool.source-analysis/schema-normalization)]
+             (when finding
+               (assoc finding :file (:file definition)))))))
+     reachable))))
+
+(defn annotation-tables
+  [records]
+  (reduce
+   (fn [tables record]
+     (let [definition (:definition record)
+           qualified (:qualified definition)
+           resolved (:resolved record)]
+       (cond
+         (or (nil? resolved) (:invalid-reference record)) tables
+         (= :function (:kind definition))
+         (if (or (:invalid-function record)
+                 (not (schema/function-schema? resolved)))
+           tables
+           (assoc-in tables [:functions qualified] resolved))
+         (= :var (:kind definition))
+         (assoc-in tables [:values qualified] resolved)
+         :else tables)))
+   {:values {} :functions {}}
+   records))
+
+(defn function-context
+  [definition functions values]
+  (let [info (:namespace-info definition)]
+    {:namespace (:name info)
+     :aliases (:aliases info)
+     :refer-map (:refer-map info)
+     :locals {}
+     :functions functions
+     :values values}))
+
+(defn infer-definition
+  [definition functions values]
+  (let [declared (get functions (:qualified definition))
+        context (function-context definition functions values)
+        arities
+        (vec
+         (map (fn [arity]
+                (infer/infer-function-arity (:parameters arity)
+                                            (:body arity)
+                                            declared
+                                            context))
+              (:arities definition)))]
+    (cond
+      (empty? arities) nil
+      (= 1 (count arities)) (first arities)
+      :else {:kind :function :arities arities})))
+
+(defn infer-functions-pass
+  [scans functions values seed]
+  (reduce
+   (fn [output scan]
+     (reduce
+      (fn [acc definition]
+        (if (= :function (:kind definition))
+          (let [inferred (infer-definition definition
+                                            (merge seed acc functions)
+                                            values)]
+            (if inferred
+              (assoc acc (:qualified definition) inferred)
+              acc))
+          acc))
+      output (:definitions scan)))
+   {} scans))
+
+(defn arity-shape
+  [arity]
+  [(count (get-in arity [:inputs :fixed]))
+   (boolean (get-in arity [:inputs :rest]))])
+
+(defn declared-shapes
+  [function-schema]
+  (into #{} (map (fn [arity] (arity-shape arity))
+                        (schema/project-arities-normal function-schema))))
+
+(defn actual-shapes
+  [definition]
+  (into #{} (map (fn [arity]
+                   [(count (get-in arity [:layout :fixed]))
+                    (boolean (get-in arity [:layout :rest]))])
+                 (:arities definition))))
+
+(defn schema-arity-finding
+  [record options]
+  (let [definition (:definition record)
+        contract (:resolved record)]
+    (when (and (= :function (:kind definition))
+               (schema/function-schema? contract)
+               (not= (declared-shapes contract) (actual-shapes definition)))
+      (schema-finding
+       (:block definition)
+       :tool.lint/schema-arity-mismatch
+       (str "schema arities for " (:qualified definition)
+            " do not match its parameter lists")
+       options
+       :tool.source-analysis/schema-arity))))
+
+(defn inferred-arity-by-shape
+  [inferred shape]
+  (first (filter (fn [arity] (= shape (arity-shape arity)))
+                 (schema/project-arities-normal inferred))))
+
+(defn declared-arity-by-shape
+  [declared shape]
+  (first (filter (fn [arity] (= shape (arity-shape arity)))
+                 (schema/project-arities-normal declared))))
+
+(defn return-findings
+  [record inferred options]
+  (let [definition (:definition record)
+        declared (:resolved record)]
+    (if (or (not= :function (:kind definition))
+            (not (schema/function-schema? declared))
+            (not (schema/function-schema? inferred)))
+      []
+      (vec
+       (filter
+        identity
+        (map
+         (fn [arity]
+           (let [shape [(count (get-in arity [:layout :fixed]))
+                        (boolean (get-in arity [:layout :rest]))]
+                 expected (declared-arity-by-shape declared shape)
+                 actual (inferred-arity-by-shape inferred shape)
+                 actual-output (:output actual)
+                 expected-output (:output expected)]
+             (when (and expected actual
+                        (not (schema/unknown? actual-output))
+                        (not (schema/assignable-normal? expected-output actual-output)))
+               (schema-finding
+                (:block definition)
+                :tool.lint/schema-return-mismatch
+                (str "declared return schema for " (:qualified definition)
+                     " does not accept inferred " actual-output)
+                options
+                :tool.source-analysis/schema-return))))
+         (:arities definition)))))))
+
+(defn records-findings
+  [records inferred options]
+  (reduce
+   (fn [output record]
+     (let [definition (:definition record)
+           arity-finding (schema-arity-finding record options)
+           returns (return-findings record
+                                    (get inferred (:qualified definition))
+                                    options)]
+       (vec (concat output
+                    (map (fn [finding]
+                           (assoc finding :file (:file definition)))
+                         (:findings record))
+                    (if arity-finding
+                      [(assoc arity-finding :file (:file definition))]
+                      [])
+                    (map (fn [finding]
+                           (assoc finding :file (:file definition)))
+                         returns)))))
+   [] records))
+
+(defn clean-external-index
+  [index]
+  {:definitions (or (:definitions index) {})
+   :values (or (:values index) {})
+   :functions (or (:functions index) {})
+   :inferred-functions (or (:inferred-functions index) {})})
+
+(defn count-function-definitions
+  [scans]
+  (reduce (fn [output scan]
+            (+ output
+               (count (filter (fn [definition]
+                                (= :function (:kind definition)))
+                              (:definitions scan)))))
+          0 scans))
+
+(defn infer-functions
+  [scans functions values seed]
+  (loop [remaining (inc (count-function-definitions scans))
+         current (or seed {})]
+    (let [pass (infer-functions-pass scans functions values current)
+          next (merge current pass)]
+      (if (or (= next current) (= remaining 0))
+        next
+        (recur (dec remaining) next)))))
+
+(defn build-schema-index
+  "Builds the normalized project schema index before per-file analysis."
+  ([scans]
+   (build-schema-index scans {}))
+  ([scans options]
+   (let [external (clean-external-index (:schema-index options))
+         namespaces (into #{} (filter identity
+                                      (map (fn [scan] (get-in scan [:namespace :name]))
+                                           scans)))
+         entries (collect-definition-entries scans)
+         candidates (valid-definition-candidates entries (:definitions external))
+         known-names (into #{} (concat (keys candidates) (keys entries)))
+         records-initial (collect-annotations scans candidates known-names namespaces options)
+         reachable (reachable-definition-names
+                    (annotation-roots records-initial) candidates)
+         invalid-names (into #{} (filter (fn [name]
+                                          (:error (get entries name)))
+                                        reachable))
+         records (vec (map (fn [record]
+                             (finalize-record record candidates invalid-names options))
+                           records-initial))
+         definitions (merge (:definitions external)
+                            (select-definitions candidates reachable))
+         tables (annotation-tables records)
+         values (merge (:values external) (:values tables))
+         functions (merge (:functions external) (:functions tables))
+         inferred (infer-functions scans functions values
+                                   (:inferred-functions external))
+         findings (vec (concat (invalid-definition-findings entries reachable options)
+                               (records-findings records inferred options)))]
+     {:definitions definitions
+      :values values
+      :functions functions
+      :inferred-functions inferred
+      :findings findings
+      :mode (schema-mode options)})))
+
+(defn public-index
+  [index]
+  (select-keys index
+               [:definitions :values :functions :inferred-functions :mode]))
+
+(defn file-findings
+  [index file]
+  (vec (filter (fn [finding] (= file (:file finding))) (:findings index))))
+
+(defn qualify-symbol
+  [symbol context]
+  (let [prefix (namespace symbol)]
+    (if prefix
+      (let [prefix-symbol (symbol prefix)
+            target (or (get (:aliases context) prefix-symbol) prefix-symbol)]
+        (symbol (str target) (name symbol)))
+      (or (get (:refer-map context) symbol)
+          (when (:namespace context)
+            (symbol (str (:namespace context)) (name symbol)))
+          symbol))))
+
+(defn function-contract
+  [index symbol context]
+  (let [qualified (qualify-symbol symbol context)]
+    (or (get (:functions index) qualified)
+        (get (:functions index) symbol))))
+
+(defn value-contract
+  [index qualified]
+  (get (:values index) qualified))
