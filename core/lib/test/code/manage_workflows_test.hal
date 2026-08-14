@@ -1,0 +1,142 @@
+(ns code.manage-workflows-test
+  (:use code.test)
+  (:require [code.framework :as framework]
+            [code.manage.editor :as editor]
+            [code.manage.unit :as unit]
+            [code.manage.unit.import :as unit-import]))
+
+(def structural-source
+  "(ns demo.structural)\n\n(defn ^{:schema [:fn [:str] :str] :owner :runtime}\n  render\n  \"A multiline\\ndocstring with \\\"quotes\\\".\"\n  [value]\n  value)\n\n(defmacro\n  expose\n  \"Expose a form.\"\n  [form]\n  form)\n\n(defonce ^:private hidden 1)\n\n(defonce cache 7)\n\n(def undocumented 42)\n")
+
+(fact "structural analysis handles metadata, multiline declarations, escaped docs, and privacy"
+  (let [analysis (framework/analyse-source structural-source)
+        definitions (:definitions analysis)]
+    [(:namespace analysis)
+     (vec (map (fn [entry] (:name entry)) definitions))
+     (:docstring (nth definitions 0))
+     (:schema (:meta (nth definitions 0)))
+     (:public (nth definitions 2))
+     (:docstring (nth definitions 4))
+     (unit/public-definition-names
+      {:path "src/demo/structural.hal" :source structural-source})
+     (> (:line (nth definitions 1)) 1)])
+  => ["demo.structural"
+      ["render" "expose" "hidden" "cache" "undocumented"]
+      "A multiline\ndocstring with \"quotes\"."
+      [:fn [:str] :str]
+      false
+      nil
+      ["render" "expose" "cache" "undocumented"]
+      true])
+
+(def scaffold-unit
+  {:path "src/demo/core.hal"
+   :test-path "test/demo/core_test.hal"
+   :version "5.8.3"
+   :source
+   "(ns demo.core)\n\n(defn first-value\n  \"Existing title.\"\n  []\n  1)\n\n(defn second-value\n  \"Second title.\"\n  []\n  2)\n"
+   :test-source
+   "(ns demo.core-test\n  (:use code.test))\n\n^{:ref demo.core/first-value :added \"1.0\"}\n(fact \"Keep me byte-for-byte\")\n\n(pr-str (run {:namespace \"demo.core-test\"}))\n"})
+
+(fact "scaffold appends only missing facts before the runner and preserves legacy refs"
+  (let [edit (unit/scaffold scaffold-unit {})
+        after (:after edit)
+        existing "^{:ref demo.core/first-value :added \"1.0\"}\n(fact \"Keep me byte-for-byte\")"
+        generated "^{:refer demo.core/second-value :added \"5.8\"}\n(fact \"Second title.\")"]
+    [(:new edit)
+     (:create edit)
+     (= (str/index-of after generated)
+        (str/last-index-of after generated))
+     (str/includes? after existing)
+     (< (str/index-of after generated)
+        (str/index-of after "(pr-str (run"))])
+  => [["second-value"] false true true true])
+
+(fact "scaffold creates a complete test and honours --added major/minor override"
+  (let [edit (unit/scaffold (assoc scaffold-unit :test-source "")
+                            {:added "9.4.7"})]
+    [(:create edit)
+     (:added edit)
+     (str/includes? (:after edit)
+                    "^{:refer demo.core/first-value :added \"9.4\"}")
+     (str/includes? (:after edit) "(fact \"Existing title.\")")])
+  => [true "9.4" true true])
+
+(def import-unit
+  {:path "src/demo/imports.hal"
+   :test-path "test/demo/imports_test.hal"
+   :source
+   "(ns demo.imports)\n\n(defn ^{:schema [:fn [] :int] :owner :api}\n  answer\n  \"Old title.\"\n  []\n  42)\n\n(defmacro expose\n  [form]\n  form)\n"
+   :test-source
+   "(ns demo.imports-test (:use code.test))\n\n^{:refer demo.imports/answer :added \"2.1\"}\n(fact \"Earlier title\")\n\n^{:refer demo.imports/answer :added \"3.7\"}\n(fact \"Canonical title\")\n\n^{:refer demo.imports/expose :added \"3.7\"}\n(fact \"Expose a form\")\n"})
+
+(fact "import uses the last duplicate fact, replaces docs, and merges :added metadata"
+  (let [edit (unit-import/import import-unit {})
+        after (:after edit)]
+    [(:imported edit)
+     (str/includes? after "\"Canonical title\"")
+     (str/includes? after ":schema [:fn [] :int]")
+     (str/includes? after ":owner :api")
+     (str/includes? after ":added \"3.7\"")
+     (str/includes? after "expose\n  \"Expose a form\"")])
+  => [["demo.imports/answer" "demo.imports/expose"]
+      true true true true true])
+
+(fact "purge removes docstrings and :added while preserving schema and unrelated metadata"
+  (let [imported (:after (unit-import/import import-unit {}))
+        edit (unit/purge (assoc import-unit :source imported) {})
+        after (:after edit)]
+    [(str/includes? after "Canonical title")
+     (str/includes? after "Expose a form")
+     (str/includes? after ":added")
+     (str/includes? after ":schema [:fn [] :int]")
+     (str/includes? after ":owner :api")])
+  => [false false false true true])
+
+(def report-unit
+  {:path "src/demo/report.hal"
+   :test-path "test/demo/report_test.hal"
+   :source
+   "(ns demo.report)\n(defn missing [] nil)\n(defn todo [] nil)\n(defn unchecked [] nil)\n(defn commented [] nil)\n(defn allowed [] nil)\n"
+   :test-source
+   "(ns demo.report-test (:use code.test))\n\n^{:refer demo.report/todo :added \"1.0\"}\n(fact \"TODO\" 1 => 1)\n\n^{:refer demo.report/unchecked :added \"1.0\"}\n(fact \"No expectation\" (+ 1 1))\n\n(comment\n  ^{:refer demo.report/commented :added \"1.0\"}\n  (fact \"Disabled\" 1 => 1))\n\n^{:refer demo.report/allowed :added \"1.0\" :unchecked true}\n(fact \"Deliberately unchecked\" (+ 2 2))\n"})
+
+(fact "incomplete reports missing and TODO findings with stable locations"
+  (let [findings (unit/incomplete report-unit)]
+    [(vec (map (fn [entry] (:classification entry)) findings))
+     (vec (map (fn [entry] (:kind entry)) findings))
+     (reduce (fn [ok entry]
+               (and ok
+                    (string? (:path entry))
+                    (> (:line entry) 0)
+                    (> (:column entry) 0)))
+             true
+             findings)])
+  => [["M" "T"] [:missing :todo] true])
+
+(fact "pedantic preserves Foundation M/T/N/C order"
+  (let [findings (unit/pedantic report-unit)]
+    [(vec (map (fn [entry] (:classification entry)) findings))
+     (vec (map (fn [entry] (:kind entry)) findings))])
+  => [["M" "T" "N" "C"]
+      [:missing :todo :unchecked :commented]])
+
+(fact "editor payload exposes the stable editor-json schema"
+  (let [edit (unit/scaffold scaffold-unit {})
+        findings (unit/pedantic report-unit)
+        payload (editor/payload
+                 {:operation :scaffold
+                  :summary {:operation :scaffold :changed 1 :findings 4}
+                  :edits [edit]
+                  :findings findings}
+                 false)]
+    [(get payload "schema")
+     (get payload "operation")
+     (set (keys (first (get payload "edits"))))
+     (set (keys (first (get payload "findings"))))])
+  => ["code.manage.editor/0-alpha"
+      "scaffold"
+      #{"path" "before" "after" "changed" "create"}
+      #{"path" "line" "column" "classification" "kind" "refer" "message"}])
+
+(pr-str (run {:namespace "code.manage-workflows-test"}))

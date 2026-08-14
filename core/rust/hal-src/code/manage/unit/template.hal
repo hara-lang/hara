@@ -85,10 +85,33 @@
             (:records batch)
             []))))
 
+(defn result-envelope-key?
+  [key]
+  (or (= key :status)
+      (= "item" (namespace key))))
+
+(defn flattened-result-data
+  [record]
+  (reduce
+   (fn [output entry]
+     (let [key (first entry)]
+       (if (result-envelope-key? key)
+         output
+         (assoc output key (second entry)))))
+   {}
+   record))
+
+(defn legacy-record
+  "Restores the historical :data boundary for map-valued tasklet results."
+  [record]
+  (if (has? record :data)
+    record
+    (assoc record :data (flattened-result-data record))))
+
 (defn legacy-item
   [record]
   {:item/id (:item/id record)
-   :item/value record})
+   :item/value (legacy-record record)})
 
 (defn legacy-input-item
   [record]

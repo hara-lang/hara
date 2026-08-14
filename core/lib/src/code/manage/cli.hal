@@ -1,5 +1,6 @@
 (ns code.manage.cli
   (:require [code.manage :as manage]
+            [code.manage.editor :as editor]
             [tool.cli.model :as model]
             [tool.project :as project]
             [std.work :as work]))
@@ -7,7 +8,10 @@
 (def +value-options+
   {"--match" :match "--replacement" :replacement
    "--from" :from "--to" :to "--needle" :needle
-   "--form" :form "--var" :var "--corpus" :corpus})
+   "--form" :form "--var" :var "--corpus" :corpus
+   "--added" :added "--format" :format})
+
+(def +formats+ #{:edn :editor-json})
 
 (def +test-only+
   #{:refactor-test :isolate :factcheck-remove :factcheck-generate :unchecked})
@@ -22,6 +26,28 @@
     (throw (ex-info (str option " requires a value") {:option option}))
     (first remaining)))
 
+(defn validate-parsed
+  [parsed]
+  (let [operation (:operation parsed)
+        raw-options (:options parsed)
+        format (keyword (or (:format raw-options) "edn"))
+        options (dissoc raw-options :format)]
+    (cond
+      (not (has? +formats+ format))
+      (throw (ex-info (str "unsupported manage format " format)
+                      {:format format}))
+
+      (and (= operation :import) (:form options))
+      (throw (ex-info "import --form is obsolete; import reads matching fact titles"
+                      {:operation operation :option "--form"}))
+
+      (and (= operation :purge) (:patterns options))
+      (throw (ex-info "purge --pattern is obsolete; purge removes docstrings and :added metadata"
+                      {:operation operation :option "--pattern"}))
+
+      :else
+      (assoc (assoc parsed :format format) :options options))))
+
 (defn parse-arguments [arguments]
   (let [operation (keyword (or (first arguments) "analyse"))]
     (if (nil? (get manage/parity-inventory operation))
@@ -33,29 +59,55 @@
              patterns []
              options {}]
         (if (empty? remaining)
-          {:operation operation
-           :write write
-           :namespaces namespaces
-           :options (if (empty? patterns)
-                      options
-                      (assoc options :patterns patterns))}
+          (validate-parsed
+           {:operation operation
+            :write write
+            :namespaces namespaces
+            :options (if (empty? patterns)
+                       options
+                       (assoc options :patterns patterns))})
           (let [argument (first remaining)
                 more (tail remaining)
-                option-key (get +value-options+ argument)]
-            (cond
-              (= argument "--write")
-              (recur more true namespaces patterns options)
-              (= argument "--pattern")
-              (recur (tail more) write namespaces
-                     (conj patterns (required more argument)) options)
-              option-key
-              (recur (tail more) write namespaces patterns
-                     (assoc options option-key (required more argument)))
-              (str/starts-with? argument "-")
-              (throw (ex-info (str "unknown manage option " argument)
-                              {:option argument}))
-              :else
-              (recur more write (conj namespaces argument) patterns options))))))))
+                option-key (get +value-options+ argument)
+                next-state
+                (cond
+                  (= argument "--write")
+                  {:remaining more
+                   :write true
+                   :namespaces namespaces
+                   :patterns patterns
+                   :options options}
+
+                  (= argument "--pattern")
+                  {:remaining (tail more)
+                   :write write
+                   :namespaces namespaces
+                   :patterns (conj patterns (required more argument))
+                   :options options}
+
+                  option-key
+                  {:remaining (tail more)
+                   :write write
+                   :namespaces namespaces
+                   :patterns patterns
+                   :options (assoc options option-key (required more argument))}
+
+                  (str/starts-with? argument "-")
+                  (throw (ex-info (str "unknown manage option " argument)
+                                  {:option argument}))
+
+                  :else
+                  {:remaining more
+                   :write write
+                   :namespaces (conj namespaces argument)
+                   :patterns patterns
+                   :options options})]
+            (recur (:remaining next-state)
+                   (:write next-state)
+                   (:namespaces next-state)
+                   (:patterns next-state)
+                   (:options next-state))))))))
+
 
 (defn selected? [path namespaces]
   (or (empty? namespaces)
@@ -80,6 +132,64 @@
   {:path path
    :type type
    :source (project/read-text path)})
+
+(defn versioned-unit
+  [base version]
+  (assoc (assoc base :version version)
+         :project-version version))
+
+(defn paired-source-unit
+  "Adds the mapped test and project-version fields required by manage workflows."
+  [base version test-path test-source]
+  (assoc (versioned-unit base version)
+         :test-path test-path
+         :test-source (or test-source "")))
+
+(defn project-test-path
+  "Maps an absolute source PATH through the project's corresponding test root."
+  [current-project path]
+  (let [project-root (:project/root current-project)
+        source-roots (:project/source-paths current-project)
+        test-roots (:project/test-paths current-project)
+        normalized-path (str/replace path "\\" "/")]
+    (loop [index 0]
+      (if (= index (count source-roots))
+        (manage/test-path-for {:path path} {})
+        (let [source-root
+              (str/replace
+               (File/join project-root (nth source-roots index))
+               "\\"
+               "/")
+              prefix (str source-root "/")]
+          (if (str/starts-with? normalized-path prefix)
+            (let [test-root (or (get test-roots index)
+                                (first test-roots))]
+              (if test-root
+                (manage/test-path-for
+                 {:path
+                  (File/join
+                   (File/join project-root test-root)
+                   (str/slice normalized-path
+                              (str/length prefix)
+                              (str/length normalized-path)))}
+                 {})
+                (manage/test-path-for {:path path} {})))
+            (recur (inc index))))))))
+
+(defn paired-unit
+  [current-project path type]
+  (let [version (:project/version current-project)
+        base (unit path type)]
+    (if (= type :source)
+      (let [test-path (project-test-path current-project path)]
+        (paired-source-unit
+         base
+         version
+         test-path
+         (if (deref (File/exists? test-path))
+           (project/read-text test-path)
+           "")))
+      (versioned-unit base version))))
 
 (defn translation-field [value keyword-key string-key]
   (if (map? value)
@@ -119,20 +229,20 @@
     false))
 
 (defn translation-project-path [project-root path]
-  (let [direct (file/join project-root path)]
-    (if (deref (file/exists? direct))
+  (let [direct (File/join project-root path)]
+    (if (deref (File/exists? direct))
       direct
       (if (str/starts-with? path "core/")
-        (file/join project-root (str/slice path 5 (count path)))
+        (File/join project-root (str/slice path 5 (count path)))
         direct))))
 
 (defn translation-project [target-root]
-  (let [direct (file/join target-root "project.edn")
-        nested-root (file/join target-root "core")
-        nested (file/join nested-root "project.edn")]
+  (let [direct (File/join target-root "project.edn")
+        nested-root (File/join target-root "core")
+        nested (File/join nested-root "project.edn")]
     (cond
-      (deref (file/exists? direct)) {:project/root target-root}
-      (deref (file/exists? nested)) {:project/root nested-root}
+      (deref (File/exists? direct)) {:project/root target-root}
+      (deref (File/exists? nested)) {:project/root nested-root}
       :else (throw (ex-info "clojure-to-hal --to must name a Hara repository or project"
                             {:target/root target-root})))))
 
@@ -159,7 +269,7 @@
         fallback (str target-prefix
                       (str/slice relative source-offset (- (count relative) 4))
                       ".hal")]
-    (file/join target-root (or routed fallback))))
+    (File/join target-root (or routed fallback))))
 
 (defn dedupe-translation-units [units]
   (:units
@@ -190,7 +300,7 @@
                          (str/starts-with? path "core/"))
                  (str/slice path 5 (count path))
                  path)]
-    (file/join target-root routed)))
+    (File/join target-root routed)))
 
 (defn translation-recipe-output [current-project recipe-path]
   (translation-read-text
@@ -208,7 +318,7 @@
               (assoc unit
                      :target/path target-path
                      :target/text
-                     (if (deref (file/exists? target-path))
+                     (if (deref (File/exists? target-path))
                        (translation-read-text target-path)
                        nil)
                      :translation/role :mirror)))
@@ -217,7 +327,7 @@
         test-unit
         (if test-route
           (let [source-path
-                (file/join source-root
+                (File/join source-root
                            (translation-field test-route :source_path "source_path"))
                 target-path
                 (translation-routed-path
@@ -233,7 +343,7 @@
                                               (str/encode-utf8 source)))
              :target/root target-root
              :target/path target-path
-             :target/text (if (deref (file/exists? target-path))
+             :target/text (if (deref (File/exists? target-path))
                             (translation-read-text target-path)
                             nil)
              :corpus/entry entry
@@ -264,7 +374,7 @@
         paths (vec
                (map
                 (fn [entry]
-                  (file/join
+                  (File/join
                    source-root
                    (translation-field entry :source_path "source_path")))
                 selected-entries))]
@@ -303,7 +413,7 @@
                                               (str/encode-utf8 source)))
              :target/root target-root
              :target/path target-path
-             :target/text (if (deref (file/exists? target-path))
+             :target/text (if (deref (File/exists? target-path))
                             (translation-read-text target-path)
                             nil)
              :corpus/entry entry
@@ -334,59 +444,105 @@
      (fn [output path]
        (if (selected? path (:namespaces parsed))
          (conj output
-               (unit path
-                     (if (not
-                          (empty?
-                           (filter (fn [root]
-                                     (str/includes?
-                                      path
-                                      (file/join (:project/root project) root)))
-                                   test-roots)))
-                       :test
-                       :source)))
+               (paired-unit
+                project
+                path
+                (if (not
+                     (empty?
+                      (filter (fn [root]
+                                (str/includes?
+                                 path
+                                 (File/join (:project/root project) root)))
+                              test-roots)))
+                  :test
+                  :source)))
          output))
      []
      paths))))
 
 (defn current-source [path]
-  (if (deref (file/exists? path)) (project/read-text path) ""))
+  (if (deref (File/exists? path)) (project/read-text path) ""))
 
-(defn preflight! [edits]
-  (loop [remaining edits]
-    (if (empty? remaining)
-      edits
-      (let [edit (first remaining)]
-        (if (= (:before edit) (current-source (:path edit)))
-          (recur (tail remaining))
-          (throw (ex-info (str "code.manage stale edit: " (:path edit))
-                          {:path (:path edit)})))))))
+(defn strip-trailing-separator
+  [path]
+  (if (and (> (str/length path) 1)
+           (str/ends-with? path "/"))
+    (strip-trailing-separator
+     (str/slice path 0 (dec (str/length path))))
+    path))
 
-(defn apply-edits! [edits]
-  (preflight! edits)
-  (loop [remaining edits]
-    (if (empty? remaining)
-      edits
-      (let [edit (first remaining)
-            path (:path edit)
-            parent (file/parent path)]
-        (if parent (deref (file/mkdir parent)) nil)
-        (deref (file/write path (str/encode-utf8 (:after edit))))
-        (recur (tail remaining))))))
+(defn normalized-path-text
+  [path]
+  (strip-trailing-separator
+   (str/replace (str path) "\\" "/")))
+
+(defn path-under-root?
+  [root path]
+  (let [root (normalized-path-text root)
+        path (normalized-path-text path)]
+    (or (= root path)
+        (str/starts-with? path (str root "/")))))
+
+(defn resolve-edit-path
+  [root path]
+  (let [resolved-root (File/resolve root "")
+        resolved-path (File/resolve root path)]
+    (if (path-under-root? resolved-root resolved-path)
+      resolved-path
+      (throw
+       (ex-info
+        (str "code.manage edit escapes project root: " path)
+        {:root resolved-root :path path :resolved resolved-path})))))
+
+(defn validate-edit!
+  [root edit]
+  (let [path (resolve-edit-path root (:path edit))
+        current (current-source path)]
+    (if (= (:before edit) current)
+      (assoc edit :resolved-path path)
+      (throw (ex-info (str "code.manage stale edit: " path)
+                      {:path path})))))
+
+(defn preflight!
+  [root edits]
+  (vec (map (fn [edit] (validate-edit! root edit)) edits)))
+
+(defn write-edit!
+  [edit]
+  (let [path (:resolved-path edit)
+        parent (File/parent path)]
+    (if parent (deref (File/mkdir parent)) nil)
+    (deref (File/write path (str/encode-utf8 (:after edit))))
+    edit))
+
+(defn apply-edits!
+  [root edits]
+  (let [validated (preflight! root edits)]
+    (vec (map write-edit! validated))))
+
+(defn render-plan
+  [plan parsed]
+  (if (= :editor-json (:format parsed))
+    (Json/write (editor/payload plan (:write parsed)))
+    (pr-str plan)))
 
 (defn execute [request]
   (let [parsed (parse-arguments (:request/arguments request))
         start (or (:project (:request/options request))
                   (:root (:request/options request))
                   (:request/cwd request)
-                  (os/cwd))
+                  (OS/cwd))
         current-project (if (= :clojure-to-hal (:operation parsed))
                           (translation-project (get-in parsed [:options :to]))
                           (project/discover start))
         plan (manage/plan (:operation parsed)
                           {:units (units-for current-project parsed)
-                           :options (:options parsed)})]
-    (if (:write parsed) (apply-edits! (:edits plan)) nil)
-    (model/success plan [(model/message (str (pr-str plan) "\n"))])))
+                           :options (:options parsed)})
+        output (render-plan plan parsed)]
+    (if (:write parsed)
+      (apply-edits! (:project/root current-project) (:edits plan))
+      nil)
+    (model/success plan [(model/message (str output "\n"))])))
 
 (def +command-work+
   (work/step

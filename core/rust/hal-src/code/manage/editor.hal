@@ -1,0 +1,64 @@
+(ns code.manage.editor)
+
+(def +schema+ "code.manage.editor/0-alpha")
+
+(defn json-key
+  [key]
+  (cond
+    (keyword? key) (name key)
+    (symbol? key) (str key)
+    (string? key) key
+    :else (str key)))
+
+(defn json-value
+  "Recursively converts portable Hara values into native JSON-safe data."
+  [value]
+  (cond
+    (map? value)
+    (reduce
+     (fn [output entry]
+       (assoc output
+              (json-key (first entry))
+              (json-value (second entry))))
+     {}
+     value)
+
+    (or (vector? value) (list? value) (set? value))
+    (vec (map json-value value))
+
+    (keyword? value)
+    (name value)
+
+    (symbol? value)
+    (str value)
+
+    :else
+    value))
+
+(defn edit-record
+  [edit]
+  {"path" (:path edit)
+   "before" (or (:before edit) "")
+   "after" (or (:after edit) "")
+   "changed" (= true (:changed edit))
+   "create" (= true (:create edit))})
+
+(defn finding-record
+  [finding]
+  {"path" (:path finding)
+   "line" (or (:line finding) 1)
+   "column" (or (:column finding) 1)
+   "classification" (:classification finding)
+   "kind" (if (:kind finding) (name (:kind finding)) nil)
+   "refer" (:refer finding)
+   "message" (:message finding)})
+
+(defn payload
+  "Creates the stable editor protocol envelope from a code.manage plan."
+  [plan write]
+  {"schema" +schema+
+   "operation" (if (:operation plan) (name (:operation plan)) nil)
+   "write" (= true write)
+   "summary" (json-value (or (:summary plan) {}))
+   "findings" (vec (map finding-record (or (:findings plan) [])))
+   "edits" (vec (map edit-record (or (:edits plan) [])))})
