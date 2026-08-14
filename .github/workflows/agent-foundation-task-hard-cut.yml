@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/agent-foundation-task-hard-cut.yml
       - scripts/runtime/foundation-task-hard-cut.patch.gz.b64
+      - scripts/runtime/function-metadata-support.patch.gz.b64
       - scripts/runtime/foundation-task-hard-cut.part00
       - scripts/runtime/foundation-task-hard-cut.part01
       - scripts/runtime/foundation-task-hard-cut.part02
@@ -25,12 +26,17 @@ jobs:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
 
-      - name: Reconstruct and apply focused patch
+      - name: Reconstruct and apply focused patches
         run: |
           base64 --decode scripts/runtime/foundation-task-hard-cut.patch.gz.b64 | gzip --decompress > /tmp/foundation-task-hard-cut.patch
           echo 'c17d224afb2ce10dd1d235895556a7e19d8cad620567505fad7da46d8e86d9fa  /tmp/foundation-task-hard-cut.patch' | sha256sum -c -
           git apply --check /tmp/foundation-task-hard-cut.patch
           git apply /tmp/foundation-task-hard-cut.patch
+
+          base64 --decode scripts/runtime/function-metadata-support.patch.gz.b64 | gzip --decompress > /tmp/function-metadata-support.patch
+          echo '699e1920af688f421316365051c89a77bb8ea335e3dae869ab1be63d88d3beef  /tmp/function-metadata-support.patch' | sha256sum -c -
+          git apply --check /tmp/function-metadata-support.patch
+          git apply /tmp/function-metadata-support.patch
 
       - name: Check out specifications registry
         uses: actions/checkout@v4
@@ -57,10 +63,11 @@ jobs:
           targets: wasm32-unknown-unknown
           components: rustfmt, clippy
 
-      - name: Validate source ownership and mirrors
+      - name: Validate source ownership, mirrors, and formatting
         run: |
           python3 scripts/runtime/sync-rust-hal-src --check
           python3 scripts/runtime/check-code-test-work-events
+          rustfmt --edition 2021 --check core/rust/src/core.rs core/rust/src/lib.rs
           git diff --check
 
       - name: Build fresh JVM and Truffle runner
@@ -83,13 +90,16 @@ jobs:
                                (model/success request))}})
                 metadata (meta handler)
                 result (handler {:value 42})]
-            (pr-str [metadata
+            (pr-str [(= metadata
+                        {:tool.cli.template/schema "tool.cli.template/0-alpha"
+                         :tool.cli.template/id :probe/handler
+                         :tool.cli.template/version 7
+                         :tool.cli.template/type :probe})
                      (template/handler? handler)
-                     (:result/data result)]))
+                     (= (:result/data result) {:value 42})]))
           HAL
           actual="$(./core/hara --project core --offline run /tmp/tool-cli-template-probe.hal)"
-          expected='[{:tool.cli.template/schema "tool.cli.template/0-alpha" :tool.cli.template/id :probe/handler :tool.cli.template/version 7 :tool.cli.template/type :probe} true {:value 42}]'
-          test "$actual" = "$expected"
+          test "$actual" = '[true true true]'
 
       - name: Prove canonical code.test owners load without cycles
         run: |
@@ -135,9 +145,10 @@ jobs:
             exit 1
           fi
 
-      - name: Run Rust embedded-library and bundle tests
+      - name: Run Rust embedded-library, metadata, and bundle tests
         run: |
           cargo test --manifest-path core/rust/Cargo.toml foundation_code_test_compatibility_namespaces_are_embedded
+          cargo test --manifest-path core/rust/Cargo.toml runtime_metadata_round_trips_through_protocols_and_reader_literals
           cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm vm::bundle
 
       - name: Run Java code.test and HBX codec tests
@@ -154,12 +165,14 @@ jobs:
           git checkout origin/main -- .github/workflows/agent-source-export.yml
           rm .github/workflows/agent-foundation-task-hard-cut.yml
           rm scripts/runtime/foundation-task-hard-cut.patch.gz.b64
+          rm scripts/runtime/function-metadata-support.patch.gz.b64
           rm scripts/runtime/foundation-task-hard-cut.part00
           rm scripts/runtime/foundation-task-hard-cut.part01
           rm scripts/runtime/foundation-task-hard-cut.part02
           rm scripts/runtime/foundation-task-hard-cut.part03
           python3 scripts/runtime/sync-rust-hal-src --check
           python3 scripts/runtime/check-code-test-work-events
+          rustfmt --edition 2021 --check core/rust/src/core.rs core/rust/src/lib.rs
           git diff --check
           unexpected="$(rg -n 'code\.test\.task|task/process-test-args' core scripts notes plans \
             | grep -v 'core/spec/foundation-workflow-parity.edn' \
