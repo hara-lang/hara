@@ -28,6 +28,8 @@
            (or (and (or (= :replace-token (:op rewrite))
                         (= :replace-token-prefix (:op rewrite)))
                     (string? (:text rewrite)))
+               (and (= :replace-call (:op rewrite))
+                    (keyword? (:builder rewrite)))
                (= :delete-parent (:op rewrite)))))))
 
 (defn rule-valid?
@@ -141,10 +143,34 @@
 
 (defn match-condition?
   [rule location]
-  (let [condition (:match/when rule)]
+  (let [condition (:match/when rule)
+        arity-condition?
+        (and condition
+             (or (not (nil? (:form-arity condition)))
+                 (not (nil? (:not-form-arity condition)))
+                 (not (nil? (:not-form-arities condition)))))
+        form-location
+        (if arity-condition?
+          (if (nav/form? location)
+            location
+            (if (and (:parent location) (nav/form? (:parent location)))
+              (:parent location)
+              nil))
+          nil)
+        form-arity
+        (if form-location
+          (dec (count (nav/code-children form-location)))
+          nil)]
     (if (nil? condition)
       true
       (and
+       (or (nil? (:form-arity condition))
+           (= (:form-arity condition) form-arity))
+       (or (nil? (:not-form-arity condition))
+           (not (= (:not-form-arity condition) form-arity)))
+       (or (nil? (:not-form-arities condition))
+           (empty? (filter (fn [arity] (= arity form-arity))
+                           (:not-form-arities condition))))
        (or (nil? (:second condition))
            (= (:second condition) (nav/form-second location)))
        (or (nil? (:contains condition))
@@ -312,6 +338,58 @@
                 [:path :file :start-offset :end-offset
                  :row :col :end-row :end-col :source])))
 
+(defn call-arguments
+  [root match]
+  (vec
+   (map block/string
+        (rest (nav/code-children (nav/location-at root (:path match)))))))
+
+(defn collection-call-replacement
+  [builder arguments]
+  (let [function (first arguments)
+        predicate (first arguments)
+        collection (last arguments)]
+    (case builder
+      :map-entries
+      (str "(let [function__ct " function " collection__ct " collection "] "
+           "(into (empty collection__ct) "
+           "(map (fn [entry__ct] "
+           "(let [mapped__ct (function__ct entry__ct)] "
+           "(pair (first mapped__ct) (second mapped__ct)))) "
+           "collection__ct)))")
+
+      :filter-keys
+      (str "(let [predicate__ct " predicate " collection__ct " collection "] "
+           "(into (empty collection__ct) "
+           "(filter (fn [entry__ct] (predicate__ct (key entry__ct))) "
+           "collection__ct)))")
+
+      :filter-vals
+      (str "(let [predicate__ct " predicate " collection__ct " collection "] "
+           "(into (empty collection__ct) "
+           "(filter (fn [entry__ct] (predicate__ct (val entry__ct))) "
+           "collection__ct)))")
+
+      :keep-vals
+      (str "(let [function__ct " function " collection__ct " collection "] "
+           "(into (empty collection__ct) "
+           "(keep (fn [entry__ct] "
+           "(let [mapped__ct (function__ct (val entry__ct))] "
+           "(if mapped__ct (pair (key entry__ct) mapped__ct)))) "
+           "collection__ct)))")
+
+      :keep-vals-when
+      (let [predicate (second arguments)]
+        (str "(let [function__ct " function
+             " predicate__ct " predicate
+             " collection__ct " collection "] "
+             "(into (empty collection__ct) "
+             "(keep (fn [entry__ct] "
+             "(let [mapped__ct (function__ct (val entry__ct))] "
+             "(if (predicate__ct mapped__ct) "
+             "(pair (key entry__ct) mapped__ct)))) "
+             "collection__ct)))")))))
+
 (defn apply-match
   [root rule match]
   (let [rewrite (:rewrite rule)]
@@ -330,6 +408,14 @@
       (= :delete-parent (:op rewrite))
       (nav/root-block
        (nav/delete-at root (vec (drop-last (:path match)))))
+
+      (= :replace-call (:op rewrite))
+      (nav/root-block
+       (nav/replace-at root
+                       (:path match)
+                       (collection-call-replacement
+                        (:builder rewrite)
+                        (call-arguments root match))))
 
       :else root)))
 

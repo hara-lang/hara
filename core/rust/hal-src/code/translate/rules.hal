@@ -1,7 +1,7 @@
 (ns code.translate.rules)
 
 (def +foundation-revision+
-  "baa75aabd6a879753d7d5cb07271b1448271e7cb")
+  "f909a44ad504cc6c9f44248d59ec3148261a48d7")
 
 (defn evidence
   [foundation-path hara-path note]
@@ -183,9 +183,11 @@
               "map-vals is one of the two retained map transformation operations.")}
 
    {:id :collection/map-entries
-    :kind :token
+    :kind :form-head
     :match {:text "std.lib.collection/map-entries"}
-    :safety :manual
+    :match/when {:form-arity 2}
+    :rewrite {:op :replace-call :builder :map-entries}
+    :safety :review
     :priority 119
     :message "Rewrite map-entries as into plus map, returning pair tuples from the mapping function."
     :evidence
@@ -193,10 +195,24 @@
               "core/lib/src/std/foundation.hal"
               "Hara composes map entry transformations instead of retaining a wrapper.")}
 
-   {:id :collection/filter-keys
+   {:id :collection/map-entries-manual
     :kind :token
-    :match {:text "std.lib.collection/filter-keys"}
+    :match {:text "std.lib.collection/map-entries"}
+    :match/when {:not-form-arity 2}
     :safety :manual
+    :priority 119
+    :message "map-entries requires a reviewed two-argument call before translation."
+    :evidence
+    (evidence "src/std/lib/collection.clj"
+              "core/lib/src/std/foundation.hal"
+              "Non-call references and noncanonical arities remain manual.")}
+
+   {:id :collection/filter-keys
+    :kind :form-head
+    :match {:text "std.lib.collection/filter-keys"}
+    :match/when {:form-arity 2}
+    :rewrite {:op :replace-call :builder :filter-keys}
+    :safety :review
     :priority 119
     :message "Rewrite filter-keys as into plus filter over pair entries."
     :evidence
@@ -204,10 +220,24 @@
               "core/lib/src/std/foundation.hal"
               "The specialized filter helper is intentionally not part of Hara.")}
 
-   {:id :collection/filter-vals
+   {:id :collection/filter-keys-manual
     :kind :token
-    :match {:text "std.lib.collection/filter-vals"}
+    :match {:text "std.lib.collection/filter-keys"}
+    :match/when {:not-form-arity 2}
     :safety :manual
+    :priority 119
+    :message "filter-keys requires a reviewed two-argument call before translation."
+    :evidence
+    (evidence "src/std/lib/collection.clj"
+              "core/lib/src/std/foundation.hal"
+              "Non-call references and noncanonical arities remain manual.")}
+
+   {:id :collection/filter-vals
+    :kind :form-head
+    :match {:text "std.lib.collection/filter-vals"}
+    :match/when {:form-arity 2}
+    :rewrite {:op :replace-call :builder :filter-vals}
+    :safety :review
     :priority 119
     :message "Rewrite filter-vals as into plus filter over pair entries."
     :evidence
@@ -215,16 +245,55 @@
               "core/lib/src/std/foundation.hal"
               "The specialized filter helper is intentionally not part of Hara.")}
 
-   {:id :collection/keep-vals
+   {:id :collection/filter-vals-manual
     :kind :token
-    :match {:text "std.lib.collection/keep-vals"}
+    :match {:text "std.lib.collection/filter-vals"}
+    :match/when {:not-form-arity 2}
     :safety :manual
+    :priority 119
+    :message "filter-vals requires a reviewed two-argument call before translation."
+    :evidence
+    (evidence "src/std/lib/collection.clj"
+              "core/lib/src/std/foundation.hal"
+              "Non-call references and noncanonical arities remain manual.")}
+
+   {:id :collection/keep-vals
+    :kind :form-head
+    :match {:text "std.lib.collection/keep-vals"}
+    :match/when {:form-arity 2}
+    :rewrite {:op :replace-call :builder :keep-vals}
+    :safety :review
     :priority 119
     :message "Rewrite keep-vals as into plus keep producing pair tuples."
     :evidence
     (evidence "src/std/lib/collection.clj"
               "core/lib/src/std/foundation.hal"
               "The specialized keep helper is intentionally not part of Hara.")}
+
+   {:id :collection/keep-vals-when
+    :kind :form-head
+    :match {:text "std.lib.collection/keep-vals"}
+    :match/when {:form-arity 3}
+    :rewrite {:op :replace-call :builder :keep-vals-when}
+    :safety :review
+    :priority 119
+    :message "Rewrite conditional keep-vals as into plus keep producing pair tuples."
+    :evidence
+    (evidence "src/std/lib/collection.clj"
+              "core/lib/src/std/foundation.hal"
+              "The three-argument helper retains its mapped-value predicate.")}
+
+   {:id :collection/keep-vals-manual
+    :kind :token
+    :match {:text "std.lib.collection/keep-vals"}
+    :match/when {:not-form-arities [2 3]}
+    :safety :manual
+    :priority 119
+    :message "keep-vals requires a reviewed two- or three-argument call before translation."
+    :evidence
+    (evidence "src/std/lib/collection.clj"
+              "core/lib/src/std/foundation.hal"
+              "Non-call references and noncanonical arities remain manual.")}
 
    {:id :walk/core-prewalk
     :kind :token-prefix
@@ -253,6 +322,7 @@
    {:id :walk/core-walk
     :kind :token
     :match {:text "std.lib.walk/walk"}
+    :match/when {:not-parent-contains "std.lib.walk/walk:"}
     :rewrite {:op :replace-token :text "std.foundation/walk"}
     :safety :safe
     :priority 119
@@ -299,9 +369,10 @@
               "Recursive key transformations belong in std.lib.collection.")}
 
    {:id :walk/collection-search
-    :kind :token-prefix
-    :match {:text "std.lib.walk/walk:" :boundary false}
-    :rewrite {:op :replace-token-prefix :text "std.lib.collection/walk:"}
+    :kind :token
+    :match {:text "std.lib.walk/walk"}
+    :match/when {:parent-contains "std.lib.walk/walk:"}
+    :rewrite {:op :replace-token :text "std.lib.collection/walk"}
     :safety :safe
     :priority 119
     :message "Use std.lib.collection for nested collection search helpers."

@@ -12,7 +12,7 @@
                 (every? (fn [entry] (not (empty? (:evidence entry))))
                         translate/rules)
                 (vec (map :compiled/index translate/rules))]
-               [{:total 90 :safe 73 :review 3 :manual 14}
+               [{:total 95 :safe 73 :review 8 :manual 14}
                 true
                 [0 1 2 3 4 5 6 7 8 9
                  10 11 12 13 14 15 16 17 18 19
@@ -22,7 +22,8 @@
                  50 51 52 53 54 55 56 57 58 59
                  60 61 62 63 64 65 66 67 68 69
                  70 71 72 73 74 75 76 77 78 79
-                 80 81 82 83 84 85 86 87 88 89]])
+                 80 81 82 83 84 85 86 87 88 89
+                 90 91 92 93 94]])
 
    (test/check "automatic matcher conflicts are rejected"
                (let [base (first translate/rules)
@@ -112,12 +113,33 @@
                   (vec (map :rule/id (:rules/applied result)))])
                ["(vector std.foundation/map-keys std.lib.collection/filter-vals std.foundation/prewalk-replace std.lib.collection/walk:find)"
                 [:collection/map-keys
-                 :collection/filter-vals
+                 :collection/filter-vals-manual
                  :walk/core-prewalk
                  :walk/collection-search]
                 [:collection/map-keys
                  :walk/core-prewalk
                  :walk/collection-search]])
+
+   (test/check "collection helper calls translate into shape-preserving pair compositions"
+               (let [source
+                     "[(std.lib.collection/map-entries f m) (std.lib.collection/filter-keys p m) (std.lib.collection/filter-vals p m) (std.lib.collection/keep-vals f m) (std.lib.collection/keep-vals f p m)]"
+                     result (translate/translate-source source {:mode :review})]
+                 [(vec (map :rule/id (:rules/applied result)))
+                  (str/includes? (:output result) "(pair (first mapped__ct) (second mapped__ct))")
+                  (str/includes? (:output result) "(predicate__ct (key entry__ct))")
+                  (str/includes? (:output result) "(predicate__ct (val entry__ct))")
+                  (count (filter (fn [match]
+                                   (= :collection/keep-vals (:rule/id match)))
+                                 (:rules/applied result)))
+                  (count (filter (fn [match]
+                                   (= :collection/keep-vals-when (:rule/id match)))
+                                 (:rules/applied result)))])
+               [[:collection/map-entries
+                 :collection/filter-keys
+                 :collection/filter-vals
+                 :collection/keep-vals
+                 :collection/keep-vals-when]
+                true true true 1 1])
 
    (test/check "namespace-family prefixes preserve dotted and qualified suffixes"
                (let [source "[std.db.node std.db.node/open std.lib.schema.check/value]"
