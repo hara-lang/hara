@@ -9,21 +9,39 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * Names supplied by the portable {@code std.foundation} source.
+ * Names whose complete Truffle semantics require the portable {@code std.foundation} startup.
  *
  * <p>The source is parsed once, on the first Truffle source compilation, but none of its
- * definitions are executed. This keeps the demand decision exact even when an optimized Java
- * export currently occupies the same Var and is intended to be replaced by the portable
+ * definitions are executed. This keeps demand exact for optimized Java exports that are replaced
+ * or completed by a HAL definition. A small set of Java primitives also depends on protocol or
+ * reader initialization performed while Foundation executes despite having no same-name HAL
  * definition.
  */
 final class FoundationFallbackDefinitions {
   private static final String RESOURCE = "std/foundation.hal";
   private static final Set<String> NAMES = load();
+  private static final Set<String> INITIALIZATION_DEPENDENCIES =
+      Set.of(
+          // Reader registration turns decimal text into the exact numeric value rather than
+          // leaving the parsed representation as an interop map.
+          "read-string",
+          // These optimized collection operations dispatch through protocol implementations
+          // installed while Foundation starts, including compact Tuple receivers.
+          "assoc",
+          "nth");
 
   private FoundationFallbackDefinitions() {}
 
   static boolean defines(String name) {
     return NAMES.contains(name);
+  }
+
+  static boolean requiresInitialization(String name) {
+    return NAMES.contains(name) || INITIALIZATION_DEPENDENCIES.contains(name);
+  }
+
+  static boolean isInitializationDependency(String name) {
+    return INITIALIZATION_DEPENDENCIES.contains(name);
   }
 
   static Set<String> names() {
