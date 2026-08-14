@@ -32,4 +32,18 @@ replace(
     '''old_resources = """(defn declared-resources [project]\n  (reduce\n   (fn [resources path]\n     (let [source (read-text path)\n           namespace (framework/namespace-name source)]\n       (if (nil? namespace)\n         (throw (ex-info (str path " does not declare an ns or ns+ namespace")\n                         {:path path}))\n         (conj resources {:resource/name namespace\n                          :resource/path path\n                          :resource/source source}))))\n   []\n   (files-in project (:project/source-paths project) ".hal")))\n"""\nnew_resources = """(defn declared-resources [project]\n  (:resources\n   (reduce\n    (fn [state path]\n      (let [source (read-text path)\n            namespace (framework/namespace-name source)]\n        (if (nil? namespace)\n          (throw (ex-info (str path " does not declare an ns or ns+ namespace")\n                          {:path path})))\n        (if (has? (:names state) namespace)\n          (throw (ex-info "duplicate namespace in effective project profile"\n                          {:type :duplicate-namespace\n                           :namespace namespace\n                           :paths [(get (:names state) namespace) path]})))\n        {:names (assoc (:names state) namespace path)\n         :resources\n         (conj (:resources state)\n               {:resource/name namespace\n                :resource/path path\n                :resource/source source})}))\n    {:names {} :resources []}\n    (files-in project (:project/source-paths project) ".hal"))))\n"""\nreplace_once(hal, old_resources, new_resources)''',
 )
 
+# The initial generator wrote raw regular-expression literals with every
+# backslash doubled. Collapse only the pattern argument of replace_regex calls;
+# replacement text and ordinary source literals must keep their escaping.
+pattern_argument = re.compile(
+    r"(replace_regex\(\s*[^,]+,\s*r''')(.*?)(''',)", re.S
+)
+
+def normalize_pattern(match: re.Match[str]) -> str:
+    return match.group(1) + match.group(2).replace('\\\\', '\\') + match.group(3)
+
+text, pattern_count = pattern_argument.subn(normalize_pattern, text)
+if pattern_count != 3:
+    raise SystemExit(f'expected three replace_regex patterns, found {pattern_count}')
+
 path.write_text(text)
