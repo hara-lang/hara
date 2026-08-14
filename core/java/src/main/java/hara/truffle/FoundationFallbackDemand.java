@@ -14,15 +14,21 @@ import java.util.Set;
 /**
  * Conservative pre-analysis check for source that needs the portable Foundation fallback.
  *
- * <p>The check runs before {@code ns} forms are analyzed. That ordering matters: if a source unit
- * uses {@code :config :override}, {@code :config :expose}, or a blank namespace, Foundation is
- * materialized first and the namespace declaration can then remove exactly the bindings it owns.
- * Builtin-only and closed lexical forms stay on the Java-intrinsic path and do not execute the HAL
- * fallback at context startup.
+ * <p>The check runs before {@code ns} forms are analyzed. It distinguishes lexical and
+ * same-unit bindings from portable Foundation Vars, including Vars that currently have an
+ * optimized Java implementation but are replaced or completed by the HAL definition.
  */
 final class FoundationFallbackDemand {
   private static final Set<String> TOP_LEVEL_DEFINITIONS =
-      Set.of("def", "defn", "defn-", "defmacro", "defstruct", "defmutable");
+      Set.of(
+          "def",
+          "defn",
+          "defn-",
+          "defmacro",
+          "defstruct",
+          "defmutable",
+          "defprotocol",
+          "defmulti");
 
   private final HaraContext context;
 
@@ -44,7 +50,7 @@ final class FoundationFallbackDemand {
       int end = index;
       while (end < forms.length && !topLevelForm(forms[end], "ns")) end++;
       HashSet<String> globals = new HashSet<>();
-      predeclare(forms, index, end, globals);
+      for (int item = index; item < end; item++) predeclare(forms[item], globals);
       HashSet<String> lexical = new HashSet<>();
       while (index < end) {
         if (scan(forms[index], lexical, globals)) return true;
@@ -54,29 +60,30 @@ final class FoundationFallbackDemand {
     return false;
   }
 
-  private void predeclare(Object[] forms, int start, int end, Set<String> globals) {
-    for (int index = start; index < end; index++) {
-      if (!(forms[index] instanceof List<?> list)
-          || list.count() < 2
-          || !(list.nth(0) instanceof Symbol operator)
-          || operator.getNamespace() != null) {
-        continue;
-      }
-      if ("declare".equals(operator.getName())) {
-        for (int item = 1; item < list.count(); item++) {
-          if (list.nth(item) instanceof Symbol symbol && symbol.getNamespace() == null) {
-            globals.add(symbol.getName());
-          }
-        }
-        continue;
-      }
-      if (!TOP_LEVEL_DEFINITIONS.contains(operator.getName())
-          || !(list.nth(1) instanceof Symbol name)
-          || name.getNamespace() != null) {
-        continue;
-      }
-      addDefinitionNames(globals, operator.getName(), name.getName());
+  private void predeclare(Object form, Set<String> globals) {
+    if (!(form instanceof List<?> list)
+        || list.count() == 0
+        || !(list.nth(0) instanceof Symbol operator)
+        || operator.getNamespace() != null) {
+      return;
     }
+    String operation = operator.getName();
+    if ("do".equals(operation)) {
+      for (int index = 1; index < list.count(); index++) predeclare(list.nth(index), globals);
+      return;
+    }
+    if ("declare".equals(operation)) {
+      addDeclared(list, globals);
+      return;
+    }
+    if (!TOP_LEVEL_DEFINITIONS.contains(operation)
+        || list.count() < 2
+        || !(list.nth(1) instanceof Symbol name)
+        || name.getNamespace() != null) {
+      return;
+    }
+    addDefinitionNames(globals, operation, name.getName());
+    if ("defprotocol".equals(operation)) addProtocolMethodNames(list, globals);
   }
 
   private boolean scan(Object form, Set<String> lexical, Set<String> globals) {
@@ -159,7 +166,7 @@ final class FoundationFallbackDemand {
         case "defmutable":
           return scanNamedValue(form, lexical, globals, name);
         case "defprotocol":
-          addProtocolNames(form, globals);
+          predeclare(form, globals);
           return false;
         case "extend-type":
           return scanExtendType(form, lexical, globals);
@@ -225,10 +232,7 @@ final class FoundationFallbackDemand {
       if (!(value instanceof List<?> definition) || definition.count() < 2) continue;
       if (scanFunctionShape(definition, 1, scope, globals, false)) return true;
     }
-    for (int index = 2; index < form.count(); index++) {
-      if (scan(form.nth(index), scope, globals)) return true;
-    }
-    return false;
+    return scanRange(form, 2, scope, globals);
   }
 
   private boolean scanBinding(List<?> form, Set<String> lexical, Set<String> globals) {
@@ -389,12 +393,7 @@ final class FoundationFallbackDemand {
     return false;
   }
 
-  private void addProtocolNames(List<?> form, Set<String> globals) {
-    if (form.count() > 1
-        && form.nth(1) instanceof Symbol name
-        && name.getNamespace() == null) {
-      globals.add(name.getName());
-    }
+  private void addProtocolMethodNames(List<?> form, Set<String> globals) {
     for (int index = 2; index < form.count(); index++) {
       if (form.nth(index) instanceof List<?> method
           && method.count() > 0
@@ -463,6 +462,7 @@ final class FoundationFallbackDemand {
 
   private boolean scanSyntaxQuote(
       Object value, Set<String> lexical, Set<String> globals) {
+    if (value instanceof Symbol symbol) return needsFallback(symbol, lexical, globals);
     if (value instanceof List<?> list) {
       if (list.count() > 0
           && list.nth(0) instanceof Symbol operation
@@ -550,6 +550,7 @@ final class FoundationFallbackDemand {
         || globals.contains(name)
         || "&".equals(name)
         || context.isSpecialSymbol(symbol)) return false;
+    if (FoundationFallbackDefinitions.defines(name)) return true;
     return context.resolve(symbol) == null && context.resolveMacro(symbol) == null;
   }
 
