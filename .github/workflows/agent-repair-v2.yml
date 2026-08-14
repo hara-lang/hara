@@ -1,4 +1,4 @@
-name: Apply Truffle tuple regression repair v2
+name: Apply explicit live code.vm semantic events
 
 on:
   pull_request:
@@ -13,6 +13,7 @@ jobs:
   apply-and-verify:
     if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out pull request branch
         uses: actions/checkout@v4
@@ -27,41 +28,11 @@ jobs:
           git fetch origin main
           git rebase origin/main
 
-      - name: Extract and apply the focused repair
+      - name: Apply explicit semantic event instrumentation
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          source = Path('.github/workflows/agent-source-snapshot.yml').read_text()
-          marker = "          cat > /tmp/truffle-tuple-repair.patch <<'PATCH'\n"
-          start = source.index(marker) + len(marker)
-          end = source.index("\nPATCH\n", start)
-          Path('/tmp/truffle-tuple-repair.patch').write_text(source[start:end] + '\n')
-          PY
-          git apply --check /tmp/truffle-tuple-repair.patch
-          git apply /tmp/truffle-tuple-repair.patch
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('core/java/src/main/java/hara/truffle/HaraJavaAdapters.java')
-          source = path.read_text()
-          old = '''  private static Integer assocIndex(Object key) {
-    return HaraNumericConversions.toInt(key, "assoc index");
-  }
-'''
-          new = '''  private static Integer assocIndex(Object key) {
-    if (!HaraNumericConversions.isNumeric(key)) {
-      throw new HaraException("assoc index must be a number");
-    }
-    return HaraNumericConversions.toInt(key, "assoc index");
-  }
-'''
-          if old not in source:
-              raise SystemExit('assocIndex helper changed unexpectedly')
-          path.write_text(source.replace(old, new, 1))
-          PY
-          rm .github/workflows/agent-source-snapshot.yml
-          rm .github/workflows/agent-repair-v2.yml
+          python3 scripts/runtime/apply-code-vm-semantic-events.py
+          rm scripts/runtime/apply-code-vm-semantic-events.py
+          git checkout origin/main -- .github/workflows/agent-repair-v2.yml
 
       - name: Checkout hara-specs-registry
         uses: actions/checkout@v4
@@ -70,23 +41,36 @@ jobs:
           path: hara-specs-registry
           fetch-depth: 1
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
+          components: rustfmt
+          targets: wasm32-unknown-unknown
 
-      - name: Run focused Truffle regression slice
-        run: >-
-          mvn -B -f core/java/pom.xml -Ptruffle
-          -DfailIfNoTests=true
-          -Dtest=hara.kernel.builtin.BuiltinStructTest,hara.truffle.FoundationFallbackDemandTest,hara.truffle.HaraLanguageTest
-          test
+      - name: Format touched Rust
+        run: |
+          rustfmt --edition 2021 \
+            core/rust/src/fiber.rs \
+            core/rust/src/fiber/coroutine.rs \
+            core/rust/src/fiber/coroutine/observation.rs \
+            core/rust/src/fiber/coroutine/semantic.rs \
+            core/rust/src/fiber/coroutine/snapshot.rs
 
-      - name: Commit verified repair
+      - name: Test all live evaluator semantic slices
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            core::fiber::coroutine --lib
+
+      - name: Compile explicit event stream for browser Wasm
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib
+
+      - name: Commit verified semantic events
         run: |
           git add -A
-          git commit -m "truffle: restore compact tuple protocol semantics"
+          git commit -m "code.vm: expose call mutation and error events"
           git push --force-with-lease origin HEAD:${{ github.head_ref }}
