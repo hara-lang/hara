@@ -205,15 +205,18 @@ fn compile_handoff(
     let module = super::halc::decode_halc(&halc_artifact).map_err(|error| {
         HandoffFailure::new("bytecode/halc-decode", error)
     })?;
-    let registry = crate::embedding_namespace_registry();
-    let program = crate::vm::compile_halc_module(&module, &registry)
-        .map_err(|error| {
-            HandoffFailure::new(
-                compile_failure_category(error.kind()),
-                error.to_string(),
-            )
-        })?;
-    crate::vm::validate(&program).map_err(|error| {
+    let registry = compiler_registry();
+    let program = crate::vm::compiler::compile_halc_module(
+        &module,
+        &registry,
+    )
+    .map_err(|error| {
+        HandoffFailure::new(
+            compile_failure_category(error.kind()),
+            error.to_string(),
+        )
+    })?;
+    crate::vm::validate::validate(&program).map_err(|error| {
         HandoffFailure::new("bytecode/validation", error.to_string())
     })?;
 
@@ -224,11 +227,11 @@ fn compile_handoff(
         ));
     }
 
-    let bytecode_artifact = crate::vm::encode_program(&program)
+    let bytecode_artifact = crate::vm::artifact::encode_program(&program)
         .map_err(|error| {
             HandoffFailure::new("bytecode/artifact-encode", error)
         })?;
-    let decoded = crate::vm::decode_program(&bytecode_artifact)
+    let decoded = crate::vm::artifact::decode_program(&bytecode_artifact)
         .map_err(|error| {
             HandoffFailure::new("bytecode/artifact-decode", error)
         })?;
@@ -327,24 +330,55 @@ fn compile_handoff(
 }
 
 #[cfg(feature = "bytecode-vm")]
+fn compiler_registry() -> super::namespace::NamespaceRegistry<crate::core::Value> {
+    let namespaces = super::namespace::NamespaceRegistry::new("user");
+    let foundation = namespaces.find_or_create("std.foundation");
+    for (name, value) in crate::core::exception_function_values() {
+        foundation.intern(name, value);
+    }
+    for (name, protocol) in crate::core::foundation_protocol_values() {
+        foundation.intern(&name, protocol.clone());
+        namespaces
+            .find_or_create(crate::core::builtin_protocol_namespace(&name))
+            .intern(name, protocol);
+    }
+    for (namespace, name, method) in
+        crate::core::builtin_protocol_method_values()
+    {
+        namespaces.find_or_create(namespace).intern(name, method);
+    }
+    for (name, descriptor) in crate::core::native_type_values() {
+        let canonical_name = format!("std.native.{name}");
+        let var = foundation.intern(&canonical_name, descriptor);
+        foundation.map_var(
+            crate::lang::data::Symbol::parse(&name),
+            var,
+        );
+        namespaces.find_or_create(canonical_name);
+    }
+    crate::core::refer_startup_defaults(&namespaces, "user");
+    namespaces
+}
+
+#[cfg(feature = "bytecode-vm")]
 fn compile_failure_category(
-    kind: crate::vm::CompileErrorKind,
+    kind: crate::vm::error::CompileErrorKind,
 ) -> &'static str {
     match kind {
-        crate::vm::CompileErrorKind::Parse => "bytecode/parse",
-        crate::vm::CompileErrorKind::UnsupportedForm => {
+        crate::vm::error::CompileErrorKind::Parse => "bytecode/parse",
+        crate::vm::error::CompileErrorKind::UnsupportedForm => {
             "bytecode/unsupported-form"
         }
-        crate::vm::CompileErrorKind::UnboundSymbol => {
+        crate::vm::error::CompileErrorKind::UnboundSymbol => {
             "bytecode/unbound-symbol"
         }
-        crate::vm::CompileErrorKind::Arity => "bytecode/arity",
-        crate::vm::CompileErrorKind::Recur => "bytecode/recur",
-        crate::vm::CompileErrorKind::InvalidEffect => {
+        crate::vm::error::CompileErrorKind::Arity => "bytecode/arity",
+        crate::vm::error::CompileErrorKind::Recur => "bytecode/recur",
+        crate::vm::error::CompileErrorKind::InvalidEffect => {
             "bytecode/invalid-effect"
         }
-        crate::vm::CompileErrorKind::Limit => "bytecode/limit",
-        crate::vm::CompileErrorKind::Internal => "bytecode/internal",
+        crate::vm::error::CompileErrorKind::Limit => "bytecode/limit",
+        crate::vm::error::CompileErrorKind::Internal => "bytecode/internal",
     }
 }
 
