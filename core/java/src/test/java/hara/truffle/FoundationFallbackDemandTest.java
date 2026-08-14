@@ -68,14 +68,17 @@ public class FoundationFallbackDemandTest {
   }
 
   @Test
-  public void demandLoadsBeforeSelectiveNamespaceConfiguration() {
+  public void selectiveNamespacePolicySurvivesLaterFallbackUse() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      context.eval(
+          HaraLanguage.ID,
+          "(ns startup-selective (:config {:expose [map count]}))");
+
       assertTrue(
           context
               .eval(
                   HaraLanguage.ID,
-                  "(ns startup-selective (:config {:expose [map count]})) "
-                      + "(and (= 2 (count (map (fn [value] value) [1 2]))) "
+                  "(and (= 2 (count (map (fn [value] value) [1 2]))) "
                       + "     (= nil (resolve 'inc)))")
               .asBoolean());
     }
