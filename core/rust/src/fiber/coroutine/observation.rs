@@ -155,9 +155,8 @@ mod tests {
 
         fiber.run_observed(16);
         assert_eq!(fiber.state(), EvalFiberState::Suspended);
-        assert!(fiber
-            .pending()
-            .is_some_and(|pending| pending.same_identity(&promise)));
+        let retained = fiber.pending().expect("retained promise");
+        assert!(retained.same_identity(&promise));
 
         assert!(promise.resolve(Value::Number(42)));
         let state = fiber.resume_observed(promise.state());
