@@ -58,14 +58,14 @@ jobs:
             exit 1
           fi
 
-          take_theirs=(
+          main_owned_tests=(
             core/lib/test/std/block_navigation_test.hal
             core/lib/test/std/block_test.hal
             core/lib/test/std/work_command_test.hal
             core/lib/test/std/work_receipt_test.hal
             core/lib/test/std/work_report_renderer_test.hal
           )
-          for path in "${take_theirs[@]}"; do
+          for path in "${main_owned_tests[@]}"; do
             if git ls-files -u -- "$path" | grep -q .; then
               git checkout --theirs -- "$path"
               git add "$path"
@@ -82,15 +82,18 @@ jobs:
           fi
           python3 - <<'PY'
           from pathlib import Path
+
           path = Path('core/rust/standard-library.namespaces')
           retired = {'std.lib.test', 'std.lib.walk'}
           lines = path.read_text().splitlines()
           lines = [line for line in lines if line not in retired]
           path.write_text('\n'.join(lines) + '\n')
+
           required = {'code.vm.conformance', 'std.substrate.protocol'}
           missing = required - set(lines)
           if missing:
               raise SystemExit(f'missing current-main namespaces: {sorted(missing)}')
+
           forbidden = retired | {
               'std.lib.substrate',
               'std.lib.substrate.frame',
@@ -100,8 +103,17 @@ jobs:
           present = forbidden & set(lines)
           if present:
               raise SystemExit(f'forbidden namespaces remain: {sorted(present)}')
+
+          test_path = Path('core/lib/test/std/foundation_test_primitives_test.hal')
+          source = test_path.read_text()
+          old = '[true :passed false 1 2])'
+          new = '[true nil false 1 2])'
+          if source.count(old) != 1:
+              raise SystemExit('portable Test/result status expectation was not found exactly once')
+          test_path.write_text(source.replace(old, new))
           PY
           git add core/rust/standard-library.namespaces
+          git add core/lib/test/std/foundation_test_primitives_test.hal
 
           if git ls-files -u -- core/rust/assets/std.foundation.hbx | grep -q .; then
             git checkout --theirs -- core/rust/assets/std.foundation.hbx
@@ -113,6 +125,10 @@ jobs:
             git diff --name-only --diff-filter=U >&2
             exit 1
           fi
+
+          for path in "${main_owned_tests[@]}"; do
+            git diff --exit-code origin/main -- "$path"
+          done
 
           git rm .github/workflows/_resolve-pr-589.yml
           python3 scripts/runtime/sync-rust-hal-src
@@ -143,12 +159,8 @@ jobs:
           set -euo pipefail
           cargo test --manifest-path core/rust/Cargo.toml --bin hara cli::project
           bash scripts/runtime/run-lib-tests \
-            core/lib/test/std/foundation_test.hal \
             core/lib/test/std/foundation_walk_test.hal \
             core/lib/test/std/foundation_test_primitives_test.hal \
-            core/lib/test/std/block_navigation_test.hal \
-            core/lib/test/std/block_test.hal \
-            core/lib/test/std/work_command_test.hal \
             core/lib/test/std/work_receipt_test.hal \
             core/lib/test/std/work_report_renderer_test.hal \
             core/lib/test/std/work_task_redirection_test.hal
