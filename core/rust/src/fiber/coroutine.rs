@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "coroutine/observation.rs"]
+mod observation;
+
 pub fn pack_values(values: Vec<Value>) -> Result<Value, String> {
     match values.len() {
         0 => Ok(Value::Nil),
