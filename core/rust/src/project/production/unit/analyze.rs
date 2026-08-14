@@ -66,6 +66,7 @@ pub fn analyze_unit(runtime: &Runtime, seed: UnitSeed, plan: &BuildPlan) -> Comp
         runtime_edges: BTreeSet::new(),
         compile_time_edges: seed.compile_time_edges,
         namespace_edges: BTreeSet::new(),
+        native_roots: Default::default(),
         native_primitives: BTreeSet::new(),
         native_types: BTreeSet::new(),
         native_protocols: BTreeSet::new(),
