@@ -7,6 +7,7 @@
 //! forms or predicts evaluation order.
 
 use super::super::*;
+use crate::kernel::SpannedForm;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EvalSemanticRule {
@@ -129,11 +130,15 @@ pub(super) fn record_boundary(
 pub(super) fn current_boundary(
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) -> Option<EvalSemanticBoundary> {
-    context_for(environment)?.borrow().current.clone()
+    let context = context_for(environment)?;
+    let boundary = context.borrow().current.clone();
+    boundary
 }
 
 pub(super) fn source_forms(
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) -> Option<Rc<Vec<SpannedForm>>> {
-    context_for(environment)?.borrow().source_forms.clone()
+    let context = context_for(environment)?;
+    let source_forms = context.borrow().source_forms.clone();
+    source_forms
 }
