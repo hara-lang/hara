@@ -37,24 +37,56 @@ jobs:
         with:
           workspaces: core/rust
 
-      - name: Build candidate development tools
+      - name: Preserve candidates and stage them on current main
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
+
+          tar -cf /tmp/combined-str-format-candidates.tar \
+            core/lib/src/std/foundation/string.hal \
+            core/lib/src/std/format.hal \
+            core/lib/src/std/format \
+            core/lib/src/std/work/report.hal \
+            core/lib/test/std/foundation/string_test.hal \
+            core/lib/test/std/work_report_renderer_test.hal \
+            core/rust/tests/string_to_fixed.rs
+
+          rm -rf /tmp/combined-str-format-candidates
+          mkdir -p /tmp/combined-str-format-candidates
+          tar -xf /tmp/combined-str-format-candidates.tar \
+            -C /tmp/combined-str-format-candidates
+
+          git config user.name "hara-agent"
+          git config user.email "hara-agent@users.noreply.github.com"
+          git fetch origin main
+          git reset --hard origin/main
+          tar -xf /tmp/combined-str-format-candidates.tar
+          rm -f \
+            core/lib/src/std/work/report/plain.hal \
+            core/lib/src/std/work/report/terminal.hal
+
+      - name: Build current-main candidate tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           cargo build --quiet \
             --manifest-path core/rust/Cargo.toml \
             --bin hara \
             --bin hara-test
 
-      - name: Candidate-evaluate and test every HAL change
+      - name: Candidate-evaluate and focused-test every HAL change
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           HARA="$PWD/core/rust/target/debug/hara"
           HARA_TEST="$PWD/core/rust/target/debug/hara-test"
+          CANDIDATE=/tmp/combined-str-format-candidates
 
           "$HARA" --project core --offline stdin \
-            < core/lib/src/std/foundation/string.hal
+            < "$CANDIDATE/core/lib/src/std/foundation/string.hal"
           "$HARA_TEST" \
             --root "$PWD/core" \
             "$PWD/core/lib/test/std/foundation/string_test.hal"
@@ -67,28 +99,18 @@ jobs:
             core/lib/src/std/format.hal \
             core/lib/src/std/work/report.hal
           do
-            "$HARA" --project core --offline stdin < "$source"
+            "$HARA" --project core --offline stdin \
+              < "$CANDIDATE/$source"
           done
           "$HARA_TEST" \
             --root "$PWD/core" \
             "$PWD/core/lib/test/std/work_report_renderer_test.hal"
 
-      - name: Preserve candidates and reset onto current main
+      - name: Reapply candidates as final writes
         shell: bash
         run: |
           set -euo pipefail
-          tar -cf /tmp/combined-str-format-candidates.tar \
-            core/lib/src/std/foundation/string.hal \
-            core/lib/src/std/format.hal \
-            core/lib/src/std/format \
-            core/lib/src/std/work/report.hal \
-            core/lib/test/std/foundation/string_test.hal \
-            core/lib/test/std/work_report_renderer_test.hal \
-            core/rust/tests/string_to_fixed.rs
-
-          git config user.name "hara-agent"
-          git config user.email "hara-agent@users.noreply.github.com"
-          git fetch origin main
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           git reset --hard origin/main
           tar -xf /tmp/combined-str-format-candidates.tar
           rm -f \
@@ -99,6 +121,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           python3 - <<'PY'
           import re
           from pathlib import Path
@@ -181,6 +204,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
 
@@ -188,6 +212,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           cargo build --quiet \
             --manifest-path core/rust/Cargo.toml \
             --bin hara \
@@ -197,6 +222,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           HARA="$PWD/core/rust/target/debug/hara"
           HARA_TEST="$PWD/core/rust/target/debug/hara-test"
 
@@ -224,6 +250,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           test ! -e core/lib/src/std/work/report/plain.hal
           test ! -e core/lib/src/std/work/report/terminal.hal
           test ! -e core/rust/hal-src/std/work/report/plain.hal
@@ -241,6 +268,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           cargo fmt --manifest-path core/rust/Cargo.toml --all
           cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
           cargo test --manifest-path core/rust/Cargo.toml \
@@ -250,6 +278,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           ./scripts/runtime/run-lib-tests \
             core/lib/test/std/foundation/string_test.hal \
             core/lib/test/std/work_report_renderer_test.hal
@@ -259,6 +288,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           cargo test --manifest-path core/rust/Cargo.toml
           python3 scripts/runtime/sync-rust-hal-src --check
 
@@ -266,7 +296,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          exec > >(tee -a /tmp/combined-str-format-workflow.log) 2>&1
           git add -A
           git diff --cached --check
           git commit -m "Expand portable strings and layer report formatting"
           git push --force origin HEAD:${{ github.head_ref }}
+
+      - name: Upload verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: combined-str-format-workflow-${{ github.run_id }}
+          path: /tmp/combined-str-format-workflow.log
+          if-no-files-found: error
