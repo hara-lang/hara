@@ -1,0 +1,84 @@
+name: Restore valid #605 baseline
+
+on:
+  push:
+    branches: [agent/restore-valid-baseline-605]
+    paths:
+      - .github/workflows/agent-restore-valid-baseline-605.yml
+      - scripts/runtime/restore-valid-baseline-605.py.gz.b64
+      - scripts/runtime/validate-restore-valid-baseline-605.sh.gz.b64
+
+permissions:
+  contents: write
+
+concurrency:
+  group: restore-valid-baseline-605
+  cancel-in-progress: true
+
+jobs:
+  materialize-validate-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out bootstrap branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/restore-valid-baseline-605
+          fetch-depth: 0
+
+      - name: Materialize guarded implementation
+        run: |
+          git fetch origin main
+          test "$(git merge-base HEAD origin/main)" = "$(git rev-parse origin/main)"
+          base64 --decode scripts/runtime/restore-valid-baseline-605.py.gz.b64 \
+            | gzip --decompress > /tmp/restore-valid-baseline-605.py
+          echo 'b587986f4564bbe3a97bed9fb7620c9b8f6a325eae4b235d42782d4d1194f0fb  /tmp/restore-valid-baseline-605.py' | sha256sum -c -
+          python3 /tmp/restore-valid-baseline-605.py
+          python3 scripts/runtime/sync-rust-hal-src
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose sibling specifications path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Validate source-only baseline
+        run: |
+          base64 --decode scripts/runtime/validate-restore-valid-baseline-605.sh.gz.b64 \
+            | gzip --decompress > /tmp/validate-restore-valid-baseline-605.sh
+          echo '195d9bc354740ea747a4212218edb1d8e2a79184a39a351c59f3881629d08a4d  /tmp/validate-restore-valid-baseline-605.sh' | sha256sum -c -
+          bash /tmp/validate-restore-valid-baseline-605.sh
+
+      - name: Commit the clean implementation tree
+        run: |
+          rm -rf hara-specs-registry
+          rm -f "$GITHUB_WORKSPACE/../hara-specs-registry"
+          rm .github/workflows/agent-restore-valid-baseline-605.yml
+          rm scripts/runtime/restore-valid-baseline-605.py.gz.b64
+          rm scripts/runtime/validate-restore-valid-baseline-605.sh.gz.b64
+          python3 scripts/runtime/sync-rust-hal-src --check
+          git diff --check
+          git config user.name "OpenAI Agent"
+          git config user.email "openai-agent@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Restore valid code.test and source-only development baseline"
+          git push origin HEAD:agent/restore-valid-baseline-605
