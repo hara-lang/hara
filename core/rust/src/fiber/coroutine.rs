@@ -2,6 +2,13 @@ use super::*;
 
 #[path = "coroutine/observation.rs"]
 mod observation;
+#[path = "coroutine/snapshot.rs"]
+mod snapshot;
+pub use snapshot::{
+    EvalBindingSnapshot, EvalErrorSnapshot, EvalObservationLimits, EvalObservationSnapshot,
+    EvalObservationStatus, EvalObservedBoundary, EvalObservedBoundaryKind, EvalPendingSnapshot,
+    EvalValueSnapshot, INTERPRETER_LIVE_BOUNDARY_SCHEMA, INTERPRETER_LIVE_SNAPSHOT_SCHEMA,
+};
 
 pub fn pack_values(values: Vec<Value>) -> Result<Value, String> {
     match values.len() {
