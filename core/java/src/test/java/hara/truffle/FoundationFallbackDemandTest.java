@@ -2,17 +2,22 @@ package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import org.graalvm.polyglot.Context;
+import org.graalvm.polyglot.PolyglotException;
 import org.junit.Test;
 
 public class FoundationFallbackDemandTest {
   @Test
   public void indexesPortableDefinitionsThatShadowJavaExports() {
-    for (String name :
-        new String[] {"assoc", "has?", "identity", "if-not", "long", "map", "nth", "read-string"}) {
+    for (String name : new String[] {"has?", "identity", "if-not", "long", "map"}) {
       assertTrue(name, FoundationFallbackDefinitions.defines(name));
+    }
+    for (String name : new String[] {"assoc", "nth", "read-string"}) {
+      assertFalse(name, FoundationFallbackDefinitions.defines(name));
+      assertTrue(name, FoundationFallbackDefinitions.isInitializationDependency(name));
     }
     assertFalse(FoundationFallbackDefinitions.defines("+"));
   }
@@ -109,13 +114,14 @@ public class FoundationFallbackDemandTest {
           HaraLanguage.ID,
           "(ns startup-selective (:config {:expose [map count]}))");
 
-      assertTrue(
+      assertEquals(
+          2L,
           context
-              .eval(
-                  HaraLanguage.ID,
-                  "(and (= 2 (count (map (fn [value] value) [1 2]))) "
-                      + "     (= nil (resolve 'inc)))")
-              .asBoolean());
+              .eval(HaraLanguage.ID, "(count (map (fn [value] value) [1 2]))")
+              .asLong());
+      PolyglotException missing =
+          assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "inc"));
+      assertTrue(missing.getMessage().contains("Unbound symbol: inc"));
     }
   }
 }
