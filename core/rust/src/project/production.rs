@@ -221,8 +221,14 @@ fn analyze_modules(plan: &BuildPlan, mut modules: Vec<SourceModule>) -> Result<A
         let mut unit_ids = Vec::new();
         for (index, form) in module.forms.iter().enumerate() {
             let location = unit::source_location(&module.path, module.body_line_base, &form.span);
+            let config = runtime
+                .generated_configs
+                .get(&module.name)
+                .cloned()
+                .unwrap_or_else(GeneratedNamespaceConfig::defaults);
             let seeds = match unit::expand_top_level(
                 &runtime,
+                &config,
                 &module.name,
                 index,
                 &form.form,

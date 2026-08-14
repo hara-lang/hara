@@ -15,6 +15,9 @@ pub(crate) fn foundation_library_aliases() -> impl Iterator<Item = (&'static str
         .iter()
         .map(|(_, namespace, alias)| (*namespace, *alias))
 }
+#[path = "generated/rewrite.rs"]
+mod rewrite;
+
 const NATIVE_TYPES: &[&str] = &[
     "Maths",
     "Numbers",
@@ -47,6 +50,7 @@ pub struct GeneratedNamespaceConfig {
     aliases: HashMap<String, String>,
     lazy_aliases: HashMap<String, String>,
     refers: HashMap<String, String>,
+    macro_refers: HashMap<String, String>,
     required_namespaces: Vec<String>,
     used_namespaces: Vec<String>,
     used_exclusions: HashMap<String, HashSet<String>>,
@@ -69,6 +73,7 @@ impl GeneratedNamespaceConfig {
             aliases,
             lazy_aliases: HashMap::new(),
             refers: HashMap::new(),
+            macro_refers: HashMap::new(),
             required_namespaces: Vec::new(),
             used_namespaces: Vec::new(),
             used_exclusions: HashMap::new(),
@@ -229,75 +234,6 @@ impl GeneratedNamespaceConfig {
             .collect()
     }
 
-    pub fn rewrite(&self, form: Form) -> Form {
-        match form {
-            Form::Symbol(name) => Form::Symbol(self.resolve_symbol(&name)),
-            Form::List(values) => {
-                if matches!(
-                    values.first(),
-                    Some(Form::Symbol(name)) if name == "quote" || name == "require"
-                ) {
-                    Form::List(values)
-                } else {
-                    Form::List(
-                        values
-                            .into_iter()
-                            .map(|value| self.rewrite(value))
-                            .collect(),
-                    )
-                }
-            }
-            Form::Vector(values) => Form::Vector(
-                values
-                    .into_iter()
-                    .map(|value| self.rewrite(value))
-                    .collect(),
-            ),
-            Form::Set(values) => Form::Set(
-                values
-                    .into_iter()
-                    .map(|value| self.rewrite(value))
-                    .collect(),
-            ),
-            Form::Map(values) => Form::Map(
-                values
-                    .into_iter()
-                    .map(|(key, value)| (self.rewrite(key), self.rewrite(value)))
-                    .collect(),
-            ),
-            Form::Tagged(tag, value) => Form::Tagged(tag, Box::new(self.rewrite(*value))),
-            Form::Metadata(meta, value) => Form::Metadata(meta, Box::new(self.rewrite(*value))),
-            value => value,
-        }
-    }
-
-    fn resolve_symbol(&self, symbol: &str) -> String {
-        if let Some((namespace, method)) = symbol.rsplit_once('/') {
-            if known_namespace(namespace) {
-                return canonical(namespace, method);
-            }
-        }
-        if let Some(canonical) = self.refers.get(symbol) {
-            return canonical.clone();
-        }
-        let Some((alias, method)) = symbol.split_once('/') else {
-            return symbol.into();
-        };
-        if self.lazy_aliases.contains_key(alias) {
-            return symbol.into();
-        }
-        if LIBRARIES
-            .iter()
-            .any(|(_, _, default_alias)| *default_alias == alias)
-            && !self.aliases.contains_key(alias)
-        {
-            return format!("unavailable/{symbol}");
-        }
-        self.aliases
-            .get(alias)
-            .map_or_else(|| symbol.into(), |namespace| canonical(namespace, method))
-    }
-
     fn put_alias(&mut self, alias: &str, namespace: &str) -> Result<(), String> {
         if alias.is_empty() {
             return Err("Namespace alias cannot be empty".into());
@@ -417,6 +353,12 @@ impl GeneratedNamespaceConfig {
                             symbol(value, ":require :refer-macros expects unqualified symbols")?;
                         if qualified_symbol(name) {
                             return Err(":require :refer-macros expects unqualified symbols".into());
+                        }
+                        let canonical = canonical(target, name);
+                        if let Some(previous) = self.macro_refers.insert(name.into(), canonical) {
+                            return Err(format!(
+                                "Referred macro already exists: {name} ({previous})"
+                            ));
                         }
                     }
                 }

@@ -9,6 +9,7 @@ fn plan(entrypoint: &str) -> BuildPlan {
         language: "hara".into(),
         main: "app.main".into(),
         entrypoints: vec![entrypoint.into()],
+        default_entrypoint: entrypoint.into(),
         keep_vars: Vec::new(),
         keep_namespaces: Vec::new(),
         output_bundle: "target/demo-app-production.hbx".into(),
@@ -52,4 +53,37 @@ fn literal_dynamic_targets_become_ordinary_edges() {
     let analysis = analyze_modules(&plan("app.main/start"), modules).unwrap();
     assert!(analysis.runtime_closure.contains("app.handlers/run"));
     assert!(analysis.retained_vars.contains("app.handlers/run"));
+}
+
+#[test]
+fn reports_dynamic_access_generated_by_a_referred_macro() {
+    let modules = vec![
+        SourceModule::synthetic(
+            "app.macros",
+            "(ns app.macros)\n(defmacro dynamic-form [target] (list 'resolve target))\n",
+        ),
+        SourceModule::synthetic(
+            "app.main",
+            "(ns app.main (:require [app.macros :refer-macros [dynamic-form]]))\n(defn start [target] (dynamic-form target))\n",
+        ),
+    ];
+    let analysis = analyze_modules(&plan("app.main/start"), modules).unwrap();
+    assert!(analysis.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == "production/unbounded-dynamic-var" && diagnostic.module == "app.main"
+    }));
+}
+
+#[test]
+fn ignores_dynamic_operation_names_shadowed_by_lexical_bindings() {
+    let modules = vec![SourceModule::synthetic(
+        "app.main",
+        "(ns app.main)\n(defn start [resolve require eval load-string]\n  (let [resolve (fn [value] value)]\n    [(resolve 1) (require 2) (eval 3) (load-string 4)\n     ((fn [resolve] (resolve 5)) resolve)]))\n",
+    )];
+    let analysis = analyze_modules(&plan("app.main/start"), modules).unwrap();
+    assert!(analysis.succeeded(), "{:?}", analysis.diagnostics);
+    assert!(!analysis.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code.contains("dynamic")
+            || diagnostic.code.contains("eval")
+            || diagnostic.code.contains("generated")
+    }));
 }

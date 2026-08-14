@@ -5,7 +5,7 @@ use super::dynamic::{canonical_symbol, collect_resolved_symbols, scan_dynamic_ac
 use super::program::{classify_effect, scan_program};
 use super::provides::{list_head, provided_vars, unit_kind, without_metadata};
 use crate::core;
-use crate::kernel::Form;
+use crate::kernel::{Form, GeneratedNamespaceConfig};
 use crate::vm::Program;
 use crate::Runtime;
 use std::collections::BTreeSet;
@@ -16,6 +16,7 @@ pub struct UnitSeed {
     pub module: String,
     pub index: usize,
     pub form: Form,
+    pub source_form: Option<Form>,
     pub compile_time_edges: BTreeSet<String>,
     pub location: SourceLocation,
 }
@@ -27,13 +28,15 @@ pub struct CompiledUnit {
 
 pub fn expand_top_level(
     runtime: &Runtime,
+    config: &GeneratedNamespaceConfig,
     module: &str,
     index: usize,
     form: &Form,
     location: SourceLocation,
 ) -> Result<Vec<UnitSeed>, String> {
     let mut compile_time_edges = BTreeSet::new();
-    let expanded = expand_form(runtime, module, form, &mut compile_time_edges)?;
+    let configured = config.rewrite_for_macroexpand(form.clone());
+    let expanded = expand_form(runtime, module, &configured, &mut compile_time_edges)?;
     let mut forms = Vec::new();
     flatten_top_level(expanded, &mut forms);
     Ok(forms
@@ -44,6 +47,7 @@ pub fn expand_top_level(
             module: module.into(),
             index: index * 1000 + subindex,
             form,
+            source_form: (subindex == 0).then(|| configured.clone()),
             compile_time_edges: compile_time_edges.clone(),
             location: location.clone(),
         })
@@ -72,7 +76,12 @@ pub fn analyze_unit(runtime: &Runtime, seed: UnitSeed, plan: &BuildPlan) -> Comp
         native_protocols: BTreeSet::new(),
         diagnostics: Vec::new(),
     };
-    scan_dynamic_access(runtime, &seed.module, &seed.form, plan, &mut analysis);
+    if let Some(source_form) = &seed.source_form {
+        scan_dynamic_access(runtime, &seed.module, source_form, plan, &mut analysis);
+    }
+    if seed.source_form.as_ref() != Some(&seed.form) {
+        scan_dynamic_access(runtime, &seed.module, &seed.form, plan, &mut analysis);
+    }
     if kind == UnitKind::Registration {
         collect_resolved_symbols(
             runtime,

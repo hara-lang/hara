@@ -61,6 +61,7 @@ fn report_form(plan: &BuildPlan, analysis: &Analysis, output: Option<&BundleSumm
             "shake/entrypoints",
             symbol_vector(plan.entrypoints.iter().cloned()),
         ),
+        ("shake/default-entrypoint", symbol(&plan.default_entrypoint)),
         (
             "shake/keep-vars",
             symbol_vector(plan.keep_vars.iter().cloned()),

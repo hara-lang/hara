@@ -9,6 +9,7 @@ pub struct BuildPlan {
     pub language: String,
     pub main: String,
     pub entrypoints: Vec<String>,
+    pub default_entrypoint: String,
     pub keep_vars: Vec<String>,
     pub keep_namespaces: Vec<String>,
     pub output_bundle: String,
@@ -31,6 +32,9 @@ impl BuildPlan {
             ":build/entrypoints",
             true,
         )?;
+        let default_entrypoint = optional(entries, "build/default-entrypoint")
+            .map(|value| qualified_symbol(value, ":build/default-entrypoint"))
+            .transpose()?;
         let keep_vars = symbol_vector(
             required(entries, "build/keep-vars")?,
             ":build/keep-vars",
@@ -58,6 +62,19 @@ impl BuildPlan {
         if entrypoints.is_empty() {
             return Err("production build plan has no entrypoints".into());
         }
+        let default_entrypoint = match default_entrypoint {
+            Some(default) => default,
+            None if entrypoints.len() == 1 => entrypoints[0].clone(),
+            None => {
+                return Err(
+                    "production build plan with multiple entrypoints requires :build/default-entrypoint"
+                        .into(),
+                )
+            }
+        };
+        if !entrypoints.contains(&default_entrypoint) {
+            return Err(":build/default-entrypoint must name one of :build/entrypoints".into());
+        }
         Ok(Self {
             project_id,
             project_version,
@@ -65,6 +82,7 @@ impl BuildPlan {
             language,
             main,
             entrypoints,
+            default_entrypoint,
             keep_vars,
             keep_namespaces,
             output_bundle,
@@ -91,6 +109,12 @@ fn required<'a>(entries: &'a [(Form, Form)], key: &str) -> Result<&'a Form, Stri
             matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
         })
         .ok_or_else(|| format!("production build plan is missing :{key}"))
+}
+
+fn optional<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
+    entries.iter().find_map(|(candidate, value)| {
+        matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
+    })
 }
 
 fn scalar(form: &Form, label: &str) -> Result<String, String> {
@@ -121,6 +145,15 @@ fn identifier(form: &Form, label: &str) -> Result<String, String> {
     }
 }
 
+fn qualified_symbol(form: &Form, label: &str) -> Result<String, String> {
+    let value = scalar(form, label)?;
+    if qualified_var(&value) {
+        Ok(value)
+    } else {
+        Err(format!("{label} must be a qualified Var symbol"))
+    }
+}
+
 fn symbol_vector(form: &Form, label: &str, qualified: bool) -> Result<Vec<String>, String> {
     let Form::Vector(values) = form else {
         return Err(format!("{label} must be a vector"));
@@ -145,4 +178,48 @@ fn qualified_var(value: &str) -> bool {
         return false;
     };
     !namespace.is_empty() && !name.is_empty() && !name.contains('/')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BuildPlan;
+
+    fn source(entrypoints: &str, default: &str) -> String {
+        format!(
+            "{{:project/id demo-app \
+              :project/version \"0.1.0\" \
+              :profile/name :production \
+              :profile/language :hara \
+              :profile/main app.main \
+              :build/tree-shake true \
+              :build/entrypoints [{entrypoints}] \
+              {default} \
+              :build/keep-vars [] \
+              :build/keep-namespaces [] \
+              :build/output-bundle \"target/app.hbx\" \
+              :build/output-report \"target/app.shake.edn\"}}"
+        )
+    }
+
+    #[test]
+    fn infers_the_only_entrypoint_as_default() {
+        let plan = BuildPlan::parse(&source("app.main/start", "")).unwrap();
+        assert_eq!(plan.default_entrypoint, "app.main/start");
+    }
+
+    #[test]
+    fn requires_a_default_for_multiple_entrypoints() {
+        let error = BuildPlan::parse(&source("app.main/start app.main/worker", "")).unwrap_err();
+        assert!(error.contains("requires :build/default-entrypoint"));
+    }
+
+    #[test]
+    fn validates_the_default_against_the_entrypoint_set() {
+        let error = BuildPlan::parse(&source(
+            "app.main/start",
+            ":build/default-entrypoint app.main/missing",
+        ))
+        .unwrap_err();
+        assert!(error.contains("must name one of"));
+    }
 }
