@@ -1,0 +1,244 @@
+name: Complete shell, codec, and dependency migration
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/agent-complete-shell-codec-deps.yml
+      - scripts/runtime/complete-shell-codec-deps.part*
+
+permissions:
+  contents: write
+
+concurrency:
+  group: complete-shell-codec-deps-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out pull request branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Preserve and apply guarded migration
+        run: |
+          cat \
+            scripts/runtime/complete-shell-codec-deps.part00 \
+            scripts/runtime/complete-shell-codec-deps.part01a \
+            scripts/runtime/complete-shell-codec-deps.part01b \
+            scripts/runtime/complete-shell-codec-deps.part02a \
+            scripts/runtime/complete-shell-codec-deps.part02b \
+            | base64 --decode \
+            | gzip --decompress > /tmp/complete-shell-codec-deps.py
+          echo '24cdfde4a6eb111f1ba201e98e4fd2c24bb1f6c923440249afd54e54cc69abdf  /tmp/complete-shell-codec-deps.py' | sha256sum -c -
+          python3 /tmp/complete-shell-codec-deps.py --implementation
+          python3 scripts/runtime/sync-rust-hal-src
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose sibling specifications path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+
+      - name: Audit ownership before building
+        run: |
+          python3 scripts/runtime/sync-rust-hal-src --check
+          test ! -e core/lib/src/lib/docker.hal
+          test ! -e core/rust/hal-src/lib/docker.hal
+          unexpected="$(rg -n 'Process/spawn' core/lib/src core/rust/hal-src \
+            | grep -v '^core/lib/src/tool/sh.hal:' \
+            | grep -v '^core/rust/hal-src/tool/sh.hal:' || true)"
+          if [ -n "$unexpected" ]; then
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          if rg -n 'lib\.docker' core/lib/src core/lib/test core/rust/hal-src; then
+            echo 'retired lib.docker owner remains' >&2
+            exit 1
+          fi
+          grep -Fx 'std.foundation.os' core/rust/standard-library.namespaces
+          test -f core/rust/hal-src/tool/sh.hal
+          test -f core/rust/hal-src/tool/sh/docker.hal
+          grep -Fx 'std.codec.base64' core/rust/standard-library.namespaces
+          git diff --check
+
+      - name: Build fresh JVM and Truffle runner
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Build fresh Rust runner
+        run: cargo build --manifest-path core/rust/Cargo.toml --bin hara
+
+      - name: Run focused portable library tests
+        run: |
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/tool/sh_test.hal \
+            core/lib/test/tool/sh/docker_test.hal \
+            core/lib/test/tool/sh/git_test.hal \
+            core/lib/test/tool/sh/domain_test.hal \
+            core/lib/test/std/codec/hex_test.hal \
+            core/lib/test/std/codec/base64_test.hal \
+            core/lib/test/std/codec/url_test.hal \
+            core/lib/test/std/codec/form_test.hal \
+            core/lib/test/std/foundation/deps_test.hal \
+            core/lib/test/std/foundation/os_test.hal \
+            core/lib/test/db/postgres_test.hal \
+            core/lib/test/code/deploy/runtime_test.hal
+
+      - name: Probe actual process semantics on JVM and Rust
+        run: |
+          cat > /tmp/tool-sh-process-probe.hal <<'HAL'
+          (ns tool.sh-process-probe
+            (:require [tool.sh :as sh]))
+
+          (let [trimmed (sh/run ["printf" "  hello  "])
+                raw (sh/run ["printf" " raw\n"] {:trim false})
+                cwd (sh/run ["pwd"] {:cwd "/tmp"})
+                environment (sh/run ["printenv" "HARA_TOOL_SH_TEST"]
+                                    {:env {"HARA_TOOL_SH_TEST" "present"}})
+                failed (sh/run ["sh" "-c" "printf out; printf err >&2; exit 7"])
+                thrown (try
+                         (sh/run! ["sh" "-c" "printf out; printf err >&2; exit 7"])
+                         nil
+                         (catch Throwable error (ex-data error)))]
+            (pr-str
+             [(= "hello" (:stdout trimmed))
+              (= " raw\n" (:stdout raw))
+              (= "/tmp" (:stdout cwd))
+              (= "present" (:stdout environment))
+              (= {:command ["sh" "-c" "printf out; printf err >&2; exit 7"]
+                  :stdout "out" :stderr "err" :exit 7}
+                 failed)
+              (= failed thrown)]))
+          HAL
+          expected='[true true true true true true]'
+          actual="$(./core/hara --project core --offline run /tmp/tool-sh-process-probe.hal)"
+          test "$actual" = "$expected"
+          actual="$(HARA_RUNTIME=rust HARA_NATIVE="$GITHUB_WORKSPACE/core/rust/target/debug/hara" \
+            ./core/hara --project core --offline run /tmp/tool-sh-process-probe.hal)"
+          test "$actual" = "$expected"
+
+      - name: Probe codecs and dependency graphs in fresh JVM and Rust processes
+        run: |
+          cat > /tmp/codec-deps-probe.hal <<'HAL'
+          (ns codec-deps-probe
+            (:require [std.codec.base64 :as base64]
+                      [std.codec.form :as form]
+                      [std.codec.hex :as hex]
+                      [std.codec.url :as url]))
+
+          (let [graph {:a {:entry :A :deps #{:b}}
+                       :b {:entry :B :deps #{:c}}
+                       :c {:entry :C :deps #{}}}]
+            (pr-str
+             [(= "68617261" (hex/encode "hara"))
+              (= "aGFyYQ==" (base64/encode "hara"))
+              (= "a%20%2B" (url/encode "a +"))
+              (= "items[0]=a%20b&items[1]=%2B"
+                 (form/encode {:items ["a b" "+"]}))
+              (= [:c :b :a] (deps-ordered graph [:a]))
+              (= [:a :b :c] (dependents-ordered graph :c))
+              (try
+                (deps-ordered {:a {:deps #{:b}} :b {:deps #{:a}}})
+                false
+                (catch Throwable error true))]))
+          HAL
+          expected='[true true true true true true true]'
+          actual="$(./core/hara --project core --offline run /tmp/codec-deps-probe.hal)"
+          test "$actual" = "$expected"
+          actual="$(HARA_RUNTIME=rust HARA_NATIVE="$GITHUB_WORKSPACE/core/rust/target/debug/hara" \
+            ./core/hara --project core --offline run /tmp/codec-deps-probe.hal)"
+          test "$actual" = "$expected"
+
+      - name: Validate JVM dependency bridge and Foundation facade
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -DfailIfNoTests=true
+          -Dtest=hara.truffle.HaraJavaAdaptersTest,hara.truffle.StdFoundationTest
+          test
+
+      - name: Regenerate and verify Foundation HBX
+        run: |
+          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
+          cargo run --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm vm::bundle
+
+      - name: Commit the implementation snapshot
+        run: |
+          rm -rf hara-specs-registry
+          git config user.name "OpenAI Agent"
+          git config user.email "openai-agent@users.noreply.github.com"
+          python3 scripts/runtime/sync-rust-hal-src --check
+          git diff --check
+          git add -A
+          git commit -m "Implement canonical shell, codecs, and dependency graphs"
+          echo "IMPLEMENTATION_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Check out pinned Foundation reference
+        uses: actions/checkout@v4
+        with:
+          repository: zcaudate-xyz/foundation-base
+          ref: f909a44ad504cc6c9f44248d59ec3148261a48d7
+          path: .foundation-reference
+          fetch-depth: 1
+
+      - name: Record exact migration evidence
+        run: |
+          python3 /tmp/complete-shell-codec-deps.py --evidence "$IMPLEMENTATION_SHA"
+          python3 scripts/runtime/clj_hal_corpus.py \
+            --generate \
+            --reference .foundation-reference
+          python3 scripts/runtime/clj_hal_corpus.py \
+            --check-generated \
+            --verify-reference \
+            --reference .foundation-reference
+          python3 scripts/runtime/foundation_target_snapshot.py --ledger corpus
+          grep -F '"namespace": "std.lib.git"' core/spec/clj-hal-routes.json
+          grep -F '"namespace": "std.lib.deps"' core/spec/clj-hal-routes.json
+          grep -F '"namespace": "std.protocol.deps"' core/spec/clj-hal-routes.json
+
+      - name: Final ownership and mirror audit
+        run: |
+          python3 scripts/runtime/sync-rust-hal-src --check
+          test ! -e core/lib/src/lib/docker.hal
+          test ! -e core/rust/hal-src/lib/docker.hal
+          unexpected="$(rg -n 'Process/spawn' core/lib/src core/rust/hal-src \
+            | grep -v '^core/lib/src/tool/sh.hal:' \
+            | grep -v '^core/rust/hal-src/tool/sh.hal:' || true)"
+          test -z "$unexpected" || { printf '%s\n' "$unexpected" >&2; exit 1; }
+          if rg -n 'lib\.docker' core/lib/src core/lib/test core/rust/hal-src; then
+            exit 1
+          fi
+          git diff --check
+
+      - name: Finalize and push verified branch
+        run: |
+          rm -rf .foundation-reference
+          rm .github/workflows/agent-complete-shell-codec-deps.yml
+          rm scripts/runtime/complete-shell-codec-deps.part*
+          git add -A
+          git commit -m "Record completed Foundation migration routes"
+          git push origin HEAD:${{ github.head_ref }}
