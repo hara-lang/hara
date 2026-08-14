@@ -9,6 +9,15 @@ import org.junit.Test;
 
 public class FoundationFallbackDemandTest {
   @Test
+  public void indexesPortableDefinitionsThatShadowJavaExports() {
+    for (String name :
+        new String[] {"assoc", "has?", "identity", "if-not", "long", "map", "nth", "read-string"}) {
+      assertTrue(name, FoundationFallbackDefinitions.defines(name));
+    }
+    assertFalse(FoundationFallbackDefinitions.defines("+"));
+  }
+
+  @Test
   public void builtinAndClosedLexicalSourceDoesNotMaterializeFoundation() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(42L, context.eval(HaraLanguage.ID, "(+ 19 23)").asLong());
@@ -64,6 +73,32 @@ public class FoundationFallbackDemandTest {
           context
               .eval(HaraLanguage.ID, "(= nil (resolve 'if-not))")
               .asBoolean());
+    }
+  }
+
+  @Test
+  public void syntaxQuotedFallbackReferenceLoadsBeforeMacroDefinition() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          9L,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (defmacro documented [value] `(identity ~value)) (documented 9))")
+              .asLong());
+    }
+  }
+
+  @Test
+  public void portableOverridesRestoreReaderNumericAndCollectionSemantics() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(12.5, context.eval(HaraLanguage.ID, "(read-string \"12.5\")").asDouble(), 0.0);
+      assertEquals(1L, context.eval(HaraLanguage.ID, "(long 1.9)").asLong());
+      assertEquals(
+          "[:x 2 3]",
+          context.eval(HaraLanguage.ID, "(str (assoc [1 2 3] 0 :x))").asString());
+      assertTrue(context.eval(HaraLanguage.ID, "(has? [10 20] 1)").asBoolean());
+      assertEquals(20L, context.eval(HaraLanguage.ID, "(nth [10 20] 1)").asLong());
     }
   }
 
