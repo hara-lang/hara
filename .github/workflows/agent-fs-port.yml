@@ -1,0 +1,68 @@
+name: Inspect portable filesystem port
+
+on:
+  push:
+    branches:
+      - agent/std-native-file-portable-fs
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/std-native-file-portable-fs
+          fetch-depth: 0
+
+      - name: Inspect filesystem implementation and module layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def section(path, markers, before=20, after=120):
+              text = Path(path).read_text().splitlines()
+              print(f"\n===== {path} ({len(text)} lines) =====")
+              for marker in markers:
+                  hits = [i for i, line in enumerate(text) if marker in line]
+                  print(f"\n--- marker {marker!r}: {[i + 1 for i in hits]} ---")
+                  for i in hits:
+                      lo = max(0, i - before)
+                      hi = min(len(text), i + after)
+                      for n in range(lo, hi):
+                          print(f"{n + 1:6}: {text[n]}")
+                      print("--- end hit ---")
+
+          section('core/rust/src/core.rs', [
+              'pub enum FileError',
+              'pub trait FileProvider',
+              'pub struct NativeFileProvider',
+              'pub struct MemoryFileProvider',
+              'pub struct UnsupportedFileProvider',
+              'fn install_file_library',
+              '"std.native.File"',
+              '"file/read"',
+          ], before=15, after=180)
+          section('core/java/src/main/java/hara/truffle/HaraContext.java', [
+              'void installFileLibrary',
+              'private void defineFileLibrary',
+              '"std.native.File"',
+              'file/read',
+          ], before=15, after=260)
+          PY
+
+          echo '===== filesystem-related files ====='
+          find core -type f \( -iname '*file*' -o -path '*std/fs*' -o -iname '*promise*' \) | sort
+          echo '===== HAL source layout ====='
+          find core/lib/src/std -maxdepth 3 -type f | sort | sed -n '1,240p'
+          echo '===== Rust embedded HAL layout ====='
+          find core/rust/hal-src -maxdepth 4 -type f 2>/dev/null | sort | sed -n '1,240p'
+          echo '===== specs candidates ====='
+          find . -type f \( -iname '*native*spec*' -o -iname '*foundation*spec*' -o -iname '*namespace*' -o -iname '*manifest*' \) | sort | sed -n '1,240p'
+          echo '===== build files ====='
+          find core -maxdepth 3 -type f \( -name 'pom.xml' -o -name 'Cargo.toml' -o -name 'Makefile' -o -name 'build.rs' \) -print | sort
