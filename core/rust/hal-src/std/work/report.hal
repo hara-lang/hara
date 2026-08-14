@@ -1,7 +1,11 @@
-(ns std.work.report)
+(ns std.work.report
+  (:require [std.work :as work]
+            [std.format.report :as format-report]
+            [std.format.terminal :as terminal]))
 
-;; A report is portable data. Renderers and sinks are capabilities layered on
-;; top of this document rather than alternate execution or result paths.
+;; A report is portable data. Presentation is delegated to std.format while
+;; profiles, document construction, task-event interpretation, and replay
+;; remain owned by std.work.report.
 
 (def schema-id "std.work.report/0-alpha")
 
@@ -88,7 +92,8 @@
 (defn add-section
   [document section]
   (update document :report/sections
-          (fn [sections] (conj (vec sections) section))))
+          (fn [sections]
+            (conj (vec sections) section))))
 
 (defn annotate
   [document annotation]
@@ -100,7 +105,8 @@
   [document id]
   (first
    (filter
-    (fn [section] (= id (:section/id section)))
+    (fn [section]
+      (= id (:section/id section)))
     (:report/sections document))))
 
 (defn complete
@@ -112,3 +118,119 @@
   (and (map? value)
        (= schema-id (:report/schema value))
        (vector? (:report/sections value))))
+
+(defn- started-event-document
+  [event]
+  (let [profile (normalise-profile (:report/profile event))
+        sections
+        (if (section-enabled? profile :items)
+          [(section
+            :items
+            :progress
+            []
+            {:section/title
+             (get-in profile [:labels :items])})]
+          [])]
+    {:report/title (:report/title event)
+     :report/sections sections
+     :report/annotations []}))
+
+(defn- item-event-document
+  [event]
+  {:report/sections
+   [(section
+     :items
+     :progress
+     [(:record event)])]
+   :report/annotations []})
+
+(defn event-lines
+  "Interprets one committed std.work event as structured presentation lines."
+  ([event]
+   (event-lines event {}))
+  ([event options]
+   (case (:event event)
+     :task/run-started
+     (format-report/report-lines
+      (started-event-document event)
+      (merge
+       options
+       {:include-annotations false
+        :include-empty true}))
+
+     :task/item-completed
+     (format-report/report-lines
+      (item-event-document event)
+      (merge
+       options
+       {:include-title false
+        :include-section-titles false
+        :include-annotations false}))
+
+     :task/run-completed
+     (if (:report event)
+       (let [group
+             (format-report/report-lines
+              (:report event)
+              (merge
+               options
+               {:include-title false
+                :exclude-sections
+                (distinct-values
+                 (conj
+                  (vec
+                   (or (:exclude-sections options) []))
+                  :items))}))]
+         (if (empty? group)
+           []
+           (vec
+            (concat
+             [{:line/text ""
+               :line/role :default}]
+             group))))
+       [])
+
+     [])))
+
+(defn- events-lines
+  [events options]
+  (reduce
+   (fn [output event]
+     (vec
+      (concat output (event-lines event options))))
+   []
+   events))
+
+(defn render-events
+  "Renders stored task events as plain text by default or ANSI when enabled."
+  ([events]
+   (render-events events {}))
+  ([events options]
+   (terminal/render
+    (events-lines events options)
+    options)))
+
+(defn observer
+  "Creates a report observer over committed std.work events.
+
+   The output sink is injected through :emit. ANSI styling is optional and
+   does not change the portable report document or event interpretation."
+  ([]
+   (observer {}))
+  ([options]
+   (work/observer
+    (fn [event]
+      (terminal/emit-lines!
+       (event-lines event options)
+       options)))))
+
+(defn replay!
+  "Replays stored events through the same projection as a live observer.
+
+   Returns the number of emitted lines."
+  ([events]
+   (replay! events {}))
+  ([events options]
+   (terminal/emit-lines!
+    (events-lines events options)
+    options)))

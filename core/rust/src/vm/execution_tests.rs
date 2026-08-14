@@ -947,6 +947,18 @@ fn defmutable_forms_use_reference_identity_and_settable_fields() {
 }
 
 #[test]
+fn mutable_field_set_inside_function_preserves_order_identity_and_result() {
+    assert_eq!(
+        eval("(do (def order []) (defmutable Cursor [x]) (defn replace! [cursor] (set! (field (do (set! order (conj order :receiver)) cursor) :x) (do (set! order (conj order :replacement)) 10))) (def cursor (Cursor 1)) [(replace! cursor) order (field cursor :x)])"),
+        "[10 [:receiver :replacement] 10]"
+    );
+    assert_eq!(
+        eval("(do (defmutable Cursor [x]) ((fn [cursor] (field cursor x)) (Cursor 7)))"),
+        "7"
+    );
+}
+
+#[test]
 fn variadic_and_multi_arity_issue_223() {
     assert_eq!(eval("((fn [left & more] left) 42 1 2)"), "42");
     assert_eq!(eval("((fn [left & more] more) 42 1 2)"), "(1 2)");

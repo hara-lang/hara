@@ -334,7 +334,7 @@ fn decode(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
 }
 
 fn standard_library_namespace(namespace: &str) -> bool {
-    ["std.", "code.", "lang."]
+    ["std.", "code.", "db.", "lang."]
         .iter()
         .any(|prefix| namespace.starts_with(prefix))
 }
@@ -494,6 +494,7 @@ mod tests {
             "Foundation artifact must execute macros before return: macro={first_macro:?}, return={first_return:?}"
         );
         let mut runtime = Runtime::core();
+        runtime.register_resource(source.resource, source.source);
         eval_bytecode_bundle(&mut runtime, &bytes).expect("load indexed foundation module");
         assert!(runtime.use_namespace("std.foundation"));
         assert_eq!(
@@ -695,6 +696,9 @@ mod tests {
             .collect::<Vec<_>>();
         let bytes = compile_bytecode_bundle(&sources).expect("compile eager modules");
         let mut runtime = Runtime::core();
+        for source in &sources {
+            runtime.register_resource(source.resource, source.source);
+        }
         eval_bytecode_bundle(&mut runtime, &bytes).expect("load eager modules");
         assert!(runtime.use_namespace("std.foundation.string"));
         assert_eq!(runtime.eval_native("(repeat \"x\" 3)").unwrap(), "\"xxx\"");

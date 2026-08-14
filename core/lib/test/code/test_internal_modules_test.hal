@@ -3,11 +3,10 @@
             [code.test.base.process :as process]
             [code.test.base.runtime :as runtime]
             [code.test.checker.common :as common]
+            [code.test.cli :as cli]
             [code.test.compile :as compile]
             [code.test.manage :as manage]
-            [code.test.task :as task]
             [code.test.work :as test-work]
-            [std.protocol.imatch :as match]
             [std.work :as work]))
 
 (def isolated-registry (atom {}))
@@ -33,7 +32,7 @@
       "code.test-internal-modules-test"
       "isolated fact")
      (fn? process/check)
-     (fn? task/process-test-args)
+     (fn? cli/process-run-args)
      (fn? executive/run:report)
      (manage/suite-settings 'missing)]
     [isolated-fact true true true {}])
@@ -49,8 +48,12 @@
    (test-check
     "checker and work ownership remain first-class without code.test"
     [(:pass
-      (match/match-value (common/exactly 42) 42))
+      (std.protocol.imatch/match-value (common/exactly 42) 42))
      (:op (work/work-spec test-work/+runner-work+))]
     [true :chain])])
 
-results
+(if (every? (fn [result] (:pass result)) results)
+  results
+  (throw
+   (ex-info "internal code.test module checks failed"
+            {:results results})))
