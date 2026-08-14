@@ -1,5 +1,5 @@
-use super::super::{compile, load};
 use super::super::super::source::SourceModule;
+use super::super::{compile, load};
 use super::support::{analyzed, fixture_modules, plan};
 use crate::core::Value;
 
@@ -19,9 +19,11 @@ fn rejects_missing_entrypoints_after_loading() {
     let build = analyzed(fixture_modules(), plan("app.main/start"));
     let compiled = compile::compile(&build).unwrap();
     let entrypoints = vec!["app.main/missing".into()];
-    assert!(load::validate_bundle(&compiled.bytes, &entrypoints)
-        .unwrap_err()
-        .contains("entrypoint is missing"));
+    let error = match load::validate_bundle(&compiled.bytes, &entrypoints) {
+        Ok(_) => panic!("missing production entrypoint unexpectedly loaded"),
+        Err(error) => error,
+    };
+    assert!(error.contains("entrypoint is missing"));
 }
 
 #[test]
@@ -32,9 +34,11 @@ fn rejects_non_function_entrypoints_after_loading() {
     )];
     let build = analyzed(modules, plan("app.main/start"));
     let compiled = compile::compile(&build).unwrap();
-    assert!(load::validate_bundle(&compiled.bytes, &build.plan.entrypoints)
-        .unwrap_err()
-        .contains("not invokable"));
+    let error = match load::validate_bundle(&compiled.bytes, &build.plan.entrypoints) {
+        Ok(_) => panic!("non-callable production entrypoint unexpectedly loaded"),
+        Err(error) => error,
+    };
+    assert!(error.contains("not invokable"));
 }
 
 #[test]

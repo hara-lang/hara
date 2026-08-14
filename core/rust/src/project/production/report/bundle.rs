@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct BundleSummary {
-    pub output_bytes: usize,
-    pub output_digest: String,
-    pub module_count: usize,
+pub(in crate::task::production) struct BundleSummary {
+    pub(in crate::task::production) output_bytes: usize,
+    pub(in crate::task::production) output_digest: String,
+    pub(in crate::task::production) module_count: usize,
 }

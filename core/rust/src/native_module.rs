@@ -181,6 +181,11 @@ fn from_abi(value: hara_abi::Value) -> Result<Value, String> {
                 .into_iter()
                 .collect(),
         ),
+        _ => {
+            return Err(
+                "native-module/value-unsupported: ABI value is runtime-only".into(),
+            )
+        }
     })
 }
 
