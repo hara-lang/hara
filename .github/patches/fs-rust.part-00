@@ -1,0 +1,355 @@
+diff --git a/core/rust/src/core.rs b/core/rust/src/core.rs
+index 9f58a64..6720633 100644
+--- a/core/rust/src/core.rs
++++ b/core/rust/src/core.rs
+@@ -213,8 +213,9 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
+     (
+         "File",
+         &[
+-            "parent", "join", "resolve", "read", "write", "exists?", "stat", "list", "walk",
+-            "mkdir", "delete",
++            "parent", "join", "resolve", "read", "write", "exists?", "stat", "entries",
++            "list", "walk", "mkdir", "delete", "copy", "move", "temp-file",
++            "temp-directory",
+         ],
+     ),
+     (
+@@ -4472,8 +4473,108 @@ fn file_error(operation: &str, error: FileError) -> String {
+     format!("{operation} failed: file/{}", error.code())
+ }
+ 
+-fn socket_error(operation: &str, error: SocketError) -> String {
+-    format!("{operation} failed: socket/{}", error.code())
++fn active_file_provider() -> Option<Rc<dyn FileProvider>> {
++    ACTIVE_FILE_PROVIDER.with(|active| active.borrow().clone())
++}
++
++fn rejected_file_effect(
++    operation: &str,
++    path: &str,
++    target: Option<&str>,
++    error: FileError,
++) -> Value {
++    let promise = Promise::new();
++    promise.reject_value(crate::file::file_error_value(operation, path, target, &error));
++    Value::Promise(promise)
++}
++
++fn file_effect(
++    operation: &str,
++    path: &str,
++    target: Option<&str>,
++    invoke: impl FnOnce(&dyn FileProvider) -> Result<Promise, FileError>,
++) -> Value {
++    let Some(provider) = active_file_provider() else {
++        return rejected_file_effect(operation, path, target, FileError::Denied);
++    };
++    match invoke(provider.as_ref()) {
++        Ok(promise) => Value::Promise(promise),
++        Err(error) => rejected_file_effect(operation, path, target, error),
++    }
++}
++
++fn file_option(options: &Value, name: &str) -> Option<Value> {
++    let key = Value::Keyword(name.into());
++    map_entries(options)?
++        .into_iter()
++        .find_map(|(candidate, value)| (candidate == key).then_some(value))
++}
++
++fn file_options_value(value: Value, operation: &str) -> Result<Value, String> {
++    match value {
++        Value::Nil => Ok(Value::Map(PMap::new())),
++        value if map_entries(&value).is_some() => Ok(value),
++        _ => Err(format!("{operation} options must be a map")),
++    }
++}
++
++fn file_bool_option(options: &Value, name: &str, default: bool, operation: &str) -> Result<bool, String> {
++    match file_option(options, name) {
++        None => Ok(default),
++        Some(Value::Bool(value)) => Ok(value),
++        Some(_) => Err(format!("{operation} :{name} must be boolean")),
++    }
++}
++
++fn file_string_option(options: &Value, name: &str, default: &str, operation: &str) -> Result<String, String> {
++    match file_option(options, name) {
++        None => Ok(default.into()),
++        Some(Value::String(value)) => Ok(value),
++        Some(_) => Err(format!("{operation} :{name} must be a string")),
++    }
++}
++
++fn file_write_options(options: &Value) -> Result<WriteOptions, String> {
++    let mode = match file_option(options, "mode") {
++        None => WriteMode::Create,
++        Some(Value::Keyword(value)) if value.as_str() == "create" => WriteMode::Create,
++        Some(Value::Keyword(value)) if value.as_str() == "replace" => WriteMode::Replace,
++        Some(Value::Keyword(value)) if value.as_str() == "append" => WriteMode::Append,
++        Some(_) => return Err("file/write :mode must be :create, :replace, or :append".into()),
++    };
++    Ok(WriteOptions {
++        mode,
++        parents: file_bool_option(options, "parents?", false, "file/write")?,
++    })
++}
++
++fn file_mkdir_options(options: &Value) -> Result<MkdirOptions, String> {
++    Ok(MkdirOptions {
++        parents: file_bool_option(options, "parents?", true, "file/mkdir")?,
++        exists_ok: file_bool_option(options, "exists-ok?", true, "file/mkdir")?,
++    })
++}
++
++fn file_delete_options(options: &Value) -> Result<DeleteOptions, String> {
++    Ok(DeleteOptions {
++        missing_ok: file_bool_option(options, "missing-ok?", false, "file/delete")?,
++    })
++}
++
++fn file_copy_options(options: &Value) -> Result<CopyOptions, String> {
++    Ok(CopyOptions {
++        replace: file_bool_option(options, "replace?", false, "file/copy")?,
++        parents: file_bool_option(options, "parents?", false, "file/copy")?,
++        preserve_modified: file_bool_option(options, "preserve-modified?", false, "file/copy")?,
++    })
++}
++
++fn file_move_options(options: &Value) -> Result<MoveOptions, String> {
++    Ok(MoveOptions {
++        replace: file_bool_option(options, "replace?", false, "file/move")?,
++        parents: file_bool_option(options, "parents?", false, "file/move")?,
++        atomic: file_bool_option(options, "atomic?", false, "file/move")?,
++    })
+ }
+ 
+ fn file_operation(
+@@ -4488,164 +4589,90 @@ fn file_operation(
+     let operation = operation.as_str();
+     match operation {
+         "file/parent" => {
+-            if forms.len() != 1 {
+-                return Err("file/parent expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/parent expects a path".into()),
+-            };
+-            Ok(std::path::Path::new(&path)
+-                .parent()
+-                .map(|parent| Value::String(parent.to_string_lossy().into_owned()))
+-                .unwrap_or(Value::Nil))
+-        }
+-        "file/join" => {
+-            if forms.len() != 2 {
+-                return Err("file/join expects a base and path".into());
+-            }
+-            let base = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/join expects a base and path".into()),
+-            };
+-            let path = match eval(&forms[1], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/join expects a base and path".into()),
+-            };
+-            Ok(Value::String(
+-                std::path::Path::new(&base)
+-                    .join(path)
+-                    .to_string_lossy()
+-                    .into_owned(),
+-            ))
++            if forms.len() != 1 { return Err("file/parent expects a path".into()); }
++            let Value::String(path) = eval(&forms[0], env)? else { return Err("file/parent expects a path".into()); };
++            crate::file::logical_parent(&path)
++                .map(|parent| parent.map(Value::String).unwrap_or(Value::Nil))
++                .map_err(|error| file_error(operation, error))
+         }
+-        "file/resolve" => {
+-            if forms.len() != 2 {
+-                return Err("file/resolve expects a root and path".into());
+-            }
+-            let root = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/resolve expects a root and path".into()),
+-            };
+-            let path = match eval(&forms[1], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/resolve expects a root and path".into()),
+-            };
+-            file_provider(operation)?
+-                .resolve(&root, &path)
++        "file/join" | "file/resolve" => {
++            if forms.len() != 2 { return Err(format!("{operation} expects a base and path")); }
++            let Value::String(base) = eval(&forms[0], env)? else { return Err(format!("{operation} expects a base and path")); };
++            let Value::String(path) = eval(&forms[1], env)? else { return Err(format!("{operation} expects a base and path")); };
++            crate::file::logical_resolve(&base, &path)
+                 .map(Value::String)
+                 .map_err(|error| file_error(operation, error))
+         }
+-        "file/read" => {
+-            if forms.len() != 1 {
+-                return Err("file/read expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/read expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .read(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
++        "file/read" | "file/exists?" | "file/stat" | "file/entries" | "file/list" | "file/walk" => {
++            if forms.len() != 1 { return Err(format!("{operation} expects a path")); }
++            let Value::String(path) = eval(&forms[0], env)? else { return Err(format!("{operation} expects a path")); };
++            Ok(file_effect(operation, &path, None, |provider| match operation {
++                "file/read" => provider.read(&path),
++                "file/exists?" => provider.exists(&path),
++                "file/stat" => provider.stat(&path),
++                "file/entries" => provider.entries(&path),
++                "file/list" => provider.list(&path),
++                "file/walk" => provider.walk(&path),
++                _ => unreachable!(),
++            }))
+         }
+         "file/write" => {
+-            if forms.len() != 2 {
+-                return Err("file/write expects a path and bytes".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/write expects a path and bytes".into()),
+-            };
++            if !(2..=3).contains(&forms.len()) { return Err("file/write expects a path, bytes, and optional options".into()); }
++            let Value::String(path) = eval(&forms[0], env)? else { return Err("file/write expects a path and bytes".into()); };
+             let bytes = match eval(&forms[1], env)? {
+                 Value::Bytes(value) => value,
+                 Value::ByteBuffer(value) => value.borrow().clone(),
+                 _ => return Err("file/write expects a path and bytes".into()),
+             };
+-            file_provider(operation)?
+-                .write(&path, bytes)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/exists?" => {
+-            if forms.len() != 1 {
+-                return Err("file/exists? expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/exists? expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .exists(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/stat" => {
+-            if forms.len() != 1 {
+-                return Err("file/stat expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/stat expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .stat(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/list" => {
+-            if forms.len() != 1 {
+-                return Err("file/list expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/list expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .list(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/walk" => {
+-            if forms.len() != 1 {
+-                return Err("file/walk expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/walk expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .walk(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/mkdir" => {
+-            if forms.len() != 1 {
+-                return Err("file/mkdir expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/mkdir expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .mkdir(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        "file/delete" => {
+-            if forms.len() != 1 {
+-                return Err("file/delete expects a path".into());
+-            }
+-            let path = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("file/delete expects a path".into()),
+-            };
+-            file_provider(operation)?
+-                .delete(&path)
+-                .map(Value::Promise)
+-                .map_err(|error| file_error(operation, error))
+-        }
+-        _ => unreachable!(),
+-    }
+-}
+-
+-fn socket_operation(
+-    operation: &str,
+-    forms: &[Form],
+-    env: &mut HashMap<String, Value>,
+-) -> Result<Value, String> {
+-    let operation = operation
+-        .strip_prefix("std.native.Socket/")
+-        .unwrap_or(operation);
+-    match operation {
+-        "connect" => {
+-            if forms.len() != 4 {
+-                return Err("socket/connect expects host, port, options, and callback".into());
+-            }
+-            let host = match eval(&forms[0], env)? {
+-                Value::String(value) => value,
+-                _ => return Err("socket/connect expects a host string".into()),
+-            };
+-            let port = match eval(&forms[1], env)? {
+-                Value::Number(value) if (1..=u16::MAX as i64).contains(&value) => value as u16,
+-                _ => return Err("socket/connect expects a valid port".into()),
+-            };
+-            let _options = eval(&forms[2], env)?;
+-            let callback = match eval(&forms[3], env)? {
+-                Value::Function(function) => function,
+-                _ => return Err("socket/connect expects a callback function".into()),
+-            };
+-            let callback = Rc::new(move |event: SocketEvent| {
+-                let (error, handle) = match event {
+-                    SocketEvent::Connected(handle) => (Value::Nil, Value::Number(handle as i64)),
+-                    SocketEvent::Failed(_, error) => (Value::String(error), Value::Nil),
+-                    _ => return,
+-                };
+-                let _ = call_function(&callback, vec![error, handle]);
+-            });
+-            socket_provider(operation)?
+-                .connect(&host, port, callback)
+-                .map(|handle| Value::Number(handle as i64))
+-                .map_err(|error| socket_error(operation, error))
+-        }
