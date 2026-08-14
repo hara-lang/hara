@@ -32,9 +32,57 @@ replace(
     '''old_resources = """(defn declared-resources [project]\n  (reduce\n   (fn [resources path]\n     (let [source (read-text path)\n           namespace (framework/namespace-name source)]\n       (if (nil? namespace)\n         (throw (ex-info (str path " does not declare an ns or ns+ namespace")\n                         {:path path}))\n         (conj resources {:resource/name namespace\n                          :resource/path path\n                          :resource/source source}))))\n   []\n   (files-in project (:project/source-paths project) ".hal")))\n"""\nnew_resources = """(defn declared-resources [project]\n  (:resources\n   (reduce\n    (fn [state path]\n      (let [source (read-text path)\n            namespace (framework/namespace-name source)]\n        (if (nil? namespace)\n          (throw (ex-info (str path " does not declare an ns or ns+ namespace")\n                          {:path path})))\n        (if (has? (:names state) namespace)\n          (throw (ex-info "duplicate namespace in effective project profile"\n                          {:type :duplicate-namespace\n                           :namespace namespace\n                           :paths [(get (:names state) namespace) path]})))\n        {:names (assoc (:names state) namespace path)\n         :resources\n         (conj (:resources state)\n               {:resource/name namespace\n                :resource/path path\n                :resource/source source})}))\n    {:names {} :resources []}\n    (files-in project (:project/source-paths project) ".hal"))))\n"""\nreplace_once(hal, old_resources, new_resources)''',
 )
 
-# The initial generator wrote raw regular-expression literals with every
-# backslash doubled. Collapse only the pattern argument of replace_regex calls;
-# replacement text and ordinary source literals must keep their escaping.
+# Make the three multiline source replacements robust to formatting drift.
+helper_definition = re.compile(
+    r'def replace_regex\(path: str, pattern: str, replacement: str\) -> None:\n.*?\n\n\n# ---------------------------------------------------------------------------',
+    re.S,
+)
+new_helper = '''def replace_regex(path: str, pattern: str, replacement: str) -> None:
+    file = Path(path)
+    source = file.read_text()
+    updated, count = re.subn(pattern, replacement, source, count=1, flags=re.S)
+    if count != 1:
+        if "PROJECT_FILE" in pattern:
+            start_marker = "      if (PROJECT_FILE.equals(descriptor.getFileName().toString())) {"
+            end_marker = "      if (!(form instanceof List"
+        elif "jvmDependencies" in pattern:
+            start_marker = "  private static java.util.List<JvmDependency> jvmDependencies("
+            end_marker = "  private static Set<String> capabilities"
+        elif path.endswith("HaraProjectTest.java"):
+            start_method = source.index(
+                "  public void parsesLeinStyleJvmDependenciesAndBuildPaths()"
+            )
+            start = source.rfind("  @Test", 0, start_method)
+            end_method = source.index(
+                "  public void requiresProjectNamespacesByConvention", start_method
+            )
+            end_marker = "  @Test" + chr(10) + "  public void requiresProjectNamespacesByConvention"
+            end = source.rfind("  @Test", 0, end_method)
+            if start < 0 or end < 0:
+                raise SystemExit(f"cannot locate JVM project test boundaries in {path}")
+            updated = source[:start] + replacement + source[end + len(end_marker):]
+            file.write_text(updated)
+            return
+        else:
+            raise SystemExit(
+                f"expected one regex match in {path}, found {count}: {pattern[:120]!r}"
+            )
+        start = source.index(start_marker)
+        end = source.index(end_marker, start)
+        updated = source[:start] + replacement + source[end + len(end_marker):]
+    file.write_text(updated)
+'''
+text, helper_count = helper_definition.subn(
+    lambda _: new_helper + chr(10) + chr(10) + '# ---------------------------------------------------------------------------',
+    text,
+    count=1,
+)
+if helper_count != 1:
+    raise SystemExit(f'expected one replace_regex helper, found {helper_count}')
+
+# The initial generator also wrote raw regular-expression literals with every
+# backslash doubled. Collapse only pattern arguments; structural fallbacks above
+# remain authoritative if a source formatter changes whitespace again.
 pattern_argument = re.compile(
     r"(replace_regex\(\s*[^,]+,\s*r''')(.*?)(''',)", re.S
 )
