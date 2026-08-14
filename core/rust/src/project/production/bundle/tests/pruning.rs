@@ -1,7 +1,7 @@
 use super::super::compile;
+use super::super::super::source::SourceModule;
 use super::support::{analyzed, fixture_modules, plan};
 use crate::core::Value;
-use crate::project::production::source::SourceModule;
 use crate::vm::decode_program;
 
 #[test]
