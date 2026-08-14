@@ -458,6 +458,9 @@ fn collect_hal(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String
     }
     for entry in fs::read_dir(directory).map_err(io)? {
         let path = entry.map_err(io)?.path();
+        if editor_artifact(&path) {
+            continue;
+        }
         if path.is_dir() {
             collect_hal(&path, output)?;
         } else if path.extension().and_then(|value| value.to_str()) == Some("hal") {
@@ -465,6 +468,12 @@ fn collect_hal(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String
         }
     }
     Ok(())
+}
+
+fn editor_artifact(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#')))
 }
 
 fn validate_empty_lock(path: &Path) -> Result<(), String> {

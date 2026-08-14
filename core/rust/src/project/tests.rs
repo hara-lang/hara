@@ -74,6 +74,20 @@ fn registers_project_sources_for_cross_file_requires() {
 }
 
 #[test]
+fn source_discovery_ignores_editor_artifacts() {
+    let root = temp("editor-artifacts");
+    fs::create_dir_all(root.join("src/demo")).unwrap();
+    fs::write(root.join("src/demo/core.hal"), "(ns demo.core)").unwrap();
+    fs::write(root.join("src/demo/.#core.hal"), "unreadable editor lock").unwrap();
+    fs::write(root.join("src/demo/#core.hal#"), "invalid editor backup").unwrap();
+    assert_eq!(
+        files_in(&root, &[PathBuf::from("src")]).unwrap(),
+        vec![root.join("src/demo/core.hal")]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn resolves_language_profiles_with_main_and_options_inheritance() {
     let root = temp("profiles");
     fs::create_dir_all(&root).unwrap();

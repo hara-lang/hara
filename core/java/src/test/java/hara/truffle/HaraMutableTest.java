@@ -110,7 +110,7 @@ public class HaraMutableTest {
       assertEquals(1L, cursor.getMember("x").asLong());
       cursor.putMember("x", 10L);
       assertEquals(10L, cursor.getMember("x").asLong());
-      assertThrows(IllegalArgumentException.class, () -> cursor.putMember("missing", 1L));
+      assertThrows(UnsupportedOperationException.class, () -> cursor.putMember("missing", 1L));
     }
   }
 }
