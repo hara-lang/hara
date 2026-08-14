@@ -1,0 +1,535 @@
+leError>;
+-    fn read(&self, path: &str) -> Result<Promise, FileError>;
+-    fn write(&self, path: &str, bytes: Vec<u8>) -> Result<Promise, FileError>;
+-    fn exists(&self, path: &str) -> Result<Promise, FileError>;
+-    fn stat(&self, path: &str) -> Result<Promise, FileError>;
+-    fn list(&self, path: &str) -> Result<Promise, FileError>;
+-    fn walk(&self, path: &str) -> Result<Promise, FileError>;
+-    fn mkdir(&self, path: &str) -> Result<Promise, FileError>;
+-    fn delete(&self, path: &str) -> Result<Promise, FileError>;
+-}
+-
+ pub type SocketHandle = u64;
+ pub type SocketCallback = Rc<dyn Fn(SocketEvent)>;
+ 
+@@ -5157,204 +5162,11 @@ pub trait SocketProvider {
+ use std::io::{Read, Write};
+ #[cfg(not(target_arch = "wasm32"))]
+ use std::net::{Shutdown, TcpListener, TcpStream};
+-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+-use std::path::{Path, PathBuf};
+ #[cfg(not(target_arch = "wasm32"))]
+ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+ #[cfg(not(target_arch = "wasm32"))]
+ use std::sync::{mpsc, Arc, Mutex};
+ 
+-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+-#[derive(Debug, Clone)]
+-pub struct NativeFileProvider {
+-    root: PathBuf,
+-}
+-
+-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+-impl NativeFileProvider {
+-    pub fn new(root: impl AsRef<Path>) -> Self {
+-        Self {
+-            root: root.as_ref().to_path_buf(),
+-        }
+-    }
+-
+-    fn scoped(&self, path: &str) -> Result<PathBuf, FileError> {
+-        let relative = Path::new(path);
+-        if relative.is_absolute() {
+-            return if relative == self.root || relative.strip_prefix(&self.root).is_ok() {
+-                Ok(relative.to_path_buf())
+-            } else {
+-                Err(FileError::Denied)
+-            };
+-        }
+-        if relative
+-            .components()
+-            .any(|component| matches!(component, std::path::Component::ParentDir))
+-        {
+-            return Err(FileError::Denied);
+-        }
+-        Ok(self.root.join(relative))
+-    }
+-}
+-
+-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+-impl FileProvider for NativeFileProvider {
+-    fn resolve(&self, root: &str, path: &str) -> Result<String, FileError> {
+-        if Path::new(root) != self.root {
+-            return Err(FileError::Denied);
+-        }
+-        self.scoped(path)
+-            .map(|path| path.to_string_lossy().into_owned())
+-    }
+-
+-    fn read(&self, path: &str) -> Result<Promise, FileError> {
+-        let path = self.scoped(path)?;
+-        let promise = Promise::new();
+-        match std::fs::read(path) {
+-            Ok(bytes) => {
+-                promise.resolve(Value::Bytes(bytes));
+-            }
+-            Err(error) => {
+-                promise.reject(error.to_string());
+-            }
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn write(&self, path: &str, bytes: Vec<u8>) -> Result<Promise, FileError> {
+-        let path = self.scoped(path)?;
+-        let promise = Promise::new();
+-        match std::fs::write(path, bytes) {
+-            Ok(()) => {
+-                promise.resolve(Value::Nil);
+-            }
+-            Err(error) => {
+-                promise.reject(error.to_string());
+-            }
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn exists(&self, path: &str) -> Result<Promise, FileError> {
+-        let path = self.scoped(path)?;
+-        let promise = Promise::new();
+-        promise.resolve(Value::Bool(path.exists()));
+-        Ok(promise)
+-    }
+-
+-    fn stat(&self, path: &str) -> Result<Promise, FileError> {
+-        let path = self.scoped(path)?;
+-        let promise = Promise::new();
+-        match std::fs::symlink_metadata(path) {
+-            Ok(metadata) => {
+-                let kind = if metadata.file_type().is_symlink() {
+-                    "symlink"
+-                } else if metadata.is_dir() {
+-                    "directory"
+-                } else {
+-                    "file"
+-                };
+-                promise.resolve(Value::Map(PMap::from_iter([
+-                    (Value::Keyword("type".into()), Value::Keyword(kind.into())),
+-                    (
+-                        Value::Keyword("size".into()),
+-                        Value::Number(i64::try_from(metadata.len()).unwrap_or(i64::MAX)),
+-                    ),
+-                ])));
+-            }
+-            Err(error) => {
+-                promise.reject(error.to_string());
+-            }
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn list(&self, path: &str) -> Result<Promise, FileError> {
+-        let path = self.scoped(path)?;
+-        let promise = Promise::new();
+-        match std::fs::read_dir(path) {
+-            Ok(entries) => {
+-                let mut names: Vec<String> = entries
+-                    .filter_map(|entry| entry.ok().map(|e| e.path().to_string_lossy().into_owned()))
+-                    .collect();
+-                names.sort();
+-                promise.resolve(Value::Array(Rc::new(RefCell::new(
+-                    names.into_iter().map(Value::String).collect(),
+-                ))));
+-            }
+-            Err(error) => {
+-                promise.reject(error.to_string());
+-            }
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn walk(&self, path: &str) -> Result<Promise, FileError> {
+-        let root = self.scoped(path)?;
+-        let promise = Promise::new();
+-        let mut pending = vec![root];
+-        let mut files = Vec::new();
+-        let mut failure = None;
+-        while let Some(current) = pending.pop() {
+-            match std::fs::symlink_metadata(&current) {
+-                Ok(metadata) if metadata.is_file() => {
+-                    files.push(current.to_string_lossy().into_owned());
+-                }
+-                Ok(metadata) if metadata.is_dir() => match std::fs::read_dir(&current) {
+-                    Ok(entries) => pending
+-                        .extend(entries.filter_map(|entry| entry.ok().map(|value| value.path()))),
+-                    Err(error) => {
+-                        failure = Some(error.to_string());
+-                        break;
+-                    }
+-                },
+-                Ok(_) => {}
+-                Err(error) => {
+-                    failure = Some(error.to_string());
+-                    break;
+-                }
+-            }
+-        }
+-        if let Some(error) = failure {
+-            promise.reject(error);
+-        } else {
+-            files.sort();
+-            promise.resolve(Value::Array(Rc::new(RefCell::new(
+-                files.into_iter().map(Value::String).collect(),
+-            ))));
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn mkdir(&self, path: &str) -> Result<Promise, FileError> {
+-        let path = self.scoped(path)?;
+-        let promise = Promise::new();
+-        match std::fs::create_dir_all(path) {
+-            Ok(()) => {
+-                promise.resolve(Value::Nil);
+-            }
+-            Err(error) => {
+-                promise.reject(error.to_string());
+-            }
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn delete(&self, path: &str) -> Result<Promise, FileError> {
+-        let path = self.scoped(path)?;
+-        let promise = Promise::new();
+-        match std::fs::remove_file(path) {
+-            Ok(()) => {
+-                promise.resolve(Value::Nil);
+-            }
+-            Err(error) => {
+-                promise.reject(error.to_string());
+-            }
+-        }
+-        Ok(promise)
+-    }
+-}
+-
+ #[cfg(not(target_arch = "wasm32"))]
+ #[derive(Clone)]
+ enum RawSocketEvent {
+@@ -5902,225 +5714,6 @@ impl ProviderRegistry {
+     }
+ }
+ 
+-#[derive(Debug, Clone)]
+-pub struct MemoryFileProvider {
+-    root: String,
+-    files: Rc<RefCell<HashMap<String, Vec<u8>>>>,
+-}
+-
+-impl MemoryFileProvider {
+-    pub fn new(root: impl Into<String>) -> Self {
+-        Self {
+-            root: root.into().trim_end_matches('/').to_string(),
+-            files: Rc::new(RefCell::new(HashMap::new())),
+-        }
+-    }
+-
+-    fn within_root(&self, path: &str) -> bool {
+-        path == self.root
+-            || path
+-                .strip_prefix(&self.root)
+-                .is_some_and(|rest| rest.starts_with('/'))
+-    }
+-
+-    pub fn insert(&self, path: &str, bytes: Vec<u8>) -> Result<(), FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        self.files.borrow_mut().insert(path.to_string(), bytes);
+-        Ok(())
+-    }
+-}
+-
+-impl FileProvider for MemoryFileProvider {
+-    fn resolve(&self, root: &str, path: &str) -> Result<String, FileError> {
+-        if root != self.root || path.starts_with('/') {
+-            return Err(FileError::Denied);
+-        }
+-        let mut result = self.root.clone();
+-        for segment in path.split('/') {
+-            match segment {
+-                "" | "." => {}
+-                ".." => return Err(FileError::Denied),
+-                segment if segment.contains('\0') => {
+-                    return Err(FileError::Invalid("path contains NUL".into()))
+-                }
+-                segment => {
+-                    result.push('/');
+-                    result.push_str(segment);
+-                }
+-            }
+-        }
+-        Ok(result)
+-    }
+-
+-    fn read(&self, path: &str) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        let promise = Promise::new();
+-        match self.files.borrow().get(path) {
+-            Some(bytes) => {
+-                promise.resolve(Value::Bytes(bytes.clone()));
+-            }
+-            None => {
+-                promise.reject("file not found");
+-            }
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn write(&self, path: &str, bytes: Vec<u8>) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        self.files.borrow_mut().insert(path.to_string(), bytes);
+-        let promise = Promise::new();
+-        promise.resolve(Value::Nil);
+-        Ok(promise)
+-    }
+-
+-    fn exists(&self, path: &str) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        let promise = Promise::new();
+-        let exists = path == self.root || self.files.borrow().contains_key(path);
+-        promise.resolve(Value::Bool(exists));
+-        Ok(promise)
+-    }
+-
+-    fn stat(&self, path: &str) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        let promise = Promise::new();
+-        let files = self.files.borrow();
+-        if let Some(bytes) = files.get(path) {
+-            promise.resolve(Value::Map(PMap::from_iter([
+-                (Value::Keyword("type".into()), Value::Keyword("file".into())),
+-                (
+-                    Value::Keyword("size".into()),
+-                    Value::Number(i64::try_from(bytes.len()).unwrap_or(i64::MAX)),
+-                ),
+-            ])));
+-        } else {
+-            let prefix = format!("{}/", path.trim_end_matches('/'));
+-            if path == self.root || files.keys().any(|candidate| candidate.starts_with(&prefix)) {
+-                promise.resolve(Value::Map(PMap::from_iter([
+-                    (
+-                        Value::Keyword("type".into()),
+-                        Value::Keyword("directory".into()),
+-                    ),
+-                    (Value::Keyword("size".into()), Value::Number(0)),
+-                ])));
+-            } else {
+-                promise.reject("file not found");
+-            }
+-        }
+-        Ok(promise)
+-    }
+-
+-    fn list(&self, path: &str) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        let prefix = if path == self.root {
+-            format!("{}/", self.root)
+-        } else {
+-            format!("{path}/")
+-        };
+-        let mut names: Vec<String> = self
+-            .files
+-            .borrow()
+-            .keys()
+-            .filter(|key| key.starts_with(&prefix) && !key[prefix.len()..].contains('/'))
+-            .cloned()
+-            .collect();
+-        names.sort();
+-        let promise = Promise::new();
+-        promise.resolve(Value::Array(Rc::new(RefCell::new(
+-            names.into_iter().map(Value::String).collect(),
+-        ))));
+-        Ok(promise)
+-    }
+-
+-    fn walk(&self, path: &str) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        let prefix = format!("{}/", path.trim_end_matches('/'));
+-        let mut names = self
+-            .files
+-            .borrow()
+-            .keys()
+-            .filter(|candidate| *candidate == path || candidate.starts_with(&prefix))
+-            .cloned()
+-            .collect::<Vec<_>>();
+-        names.sort();
+-        let promise = Promise::new();
+-        promise.resolve(Value::Array(Rc::new(RefCell::new(
+-            names.into_iter().map(Value::String).collect(),
+-        ))));
+-        Ok(promise)
+-    }
+-
+-    fn mkdir(&self, path: &str) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        let promise = Promise::new();
+-        promise.resolve(Value::Nil);
+-        Ok(promise)
+-    }
+-
+-    fn delete(&self, path: &str) -> Result<Promise, FileError> {
+-        if !self.within_root(path) {
+-            return Err(FileError::Denied);
+-        }
+-        let promise = Promise::new();
+-        if self.files.borrow_mut().remove(path).is_some() {
+-            promise.resolve(Value::Nil);
+-        } else {
+-            promise.reject("file not found");
+-        }
+-        Ok(promise)
+-    }
+-}
+-
+-#[derive(Debug, Default, Clone, Copy)]
+-pub struct UnsupportedFileProvider;
+-
+-impl FileProvider for UnsupportedFileProvider {
+-    fn resolve(&self, _root: &str, _path: &str) -> Result<String, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn read(&self, _path: &str) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn write(&self, _path: &str, _bytes: Vec<u8>) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn exists(&self, _path: &str) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn stat(&self, _path: &str) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn list(&self, _path: &str) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn walk(&self, _path: &str) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn mkdir(&self, _path: &str) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-    fn delete(&self, _path: &str) -> Result<Promise, FileError> {
+-        Err(FileError::Unsupported)
+-    }
+-}
+-
+ #[derive(Clone)]
+ pub struct LoopbackSocketProvider {
+     next_handle: Rc<Cell<SocketHandle>>,
+@@ -14111,10 +13704,15 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
+                         "file/write",
+                         "file/exists?",
+                         "file/stat",
++                        "file/entries",
+                         "file/list",
+                         "file/walk",
+                         "file/mkdir",
+                         "file/delete",
++                        "file/copy",
++                        "file/move",
++                        "file/temp-file",
++                        "file/temp-directory",
+                     ]
+                     .contains(&n.as_str()) =>
+                 {
+diff --git a/core/rust/src/file.rs b/core/rust/src/file.rs
+new file mode 100644
+index 0000000..4c21242
+--- /dev/null
++++ b/core/rust/src/file.rs
+@@ -0,0 +1,1000 @@
++//! Capability-backed logical filesystem providers.
++//!
++//! Public paths are always absolute paths in the mounted logical filesystem.
++//! Host paths are confined to provider implementations and never escape in
++//! return values or error data.
++
++use crate::core::{ExceptionInfo, Value};
++use crate::task::Promise;
++use std::cell::RefCell;
++use std::collections::{BTreeMap, HashMap};
++use std::rc::Rc;
++use std::sync::atomic::{AtomicU64, Ordering};
++use std::time::{SystemTime, UNIX_EPOCH};
++
++#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
++use std::fs::{self, File, OpenOptions};
++#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
++use std::io::Write;
++#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
++use std::path::{Path, PathBuf};
++
++static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
++
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum FileError {
++    NotFound,
++    AlreadyExists,
++    InvalidPath(String),
++    OutsideRoot,
++    Denied,
++    NotDirectory,
++    IsDirectory,
++    DirectoryNotEmpty,
++    PermissionDenied,
++    Unsupported,
++    Io(String),
++}
++
++impl FileError {
++    pub fn code(&self) -> &'static str {
++        match self {
++            Self::NotFound => "not-found",
++            Self::AlreadyExists => "already-exists",
++            Self::InvalidPath(_) => "invalid-path",
++            Self::OutsideRoot => "outside-root",
++            Self::Denied => "denied",
++            Self::NotDirectory => "not-directory",
++            Self::IsDirectory => "is-directory",
++            Self::DirectoryNotEmpty => "directory-not-empty",
++            Self::PermissionDenied => "permission-denied",
++            Self::Unsupported => "unsupported",
++            Self::Io(_) => "io",
++        }
++    }
++
++    pub fn message(&self) -> String {
++        match self {
++            Self::InvalidPath(message) | Self::Io(message) => message.clone(),
++            _ => format!("file/{}", self.code()),
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum FileType {
++    File,
++    Directory,
++    
