@@ -9,7 +9,8 @@ mod snapshot;
 pub use snapshot::{
     EvalBindingSnapshot, EvalErrorSnapshot, EvalFocusSnapshot, EvalFrameSnapshot,
     EvalObservationLimits, EvalObservationSnapshot, EvalObservationStatus, EvalObservedBoundary,
-    EvalObservedBoundaryKind, EvalPendingSnapshot, EvalPositionSnapshot, EvalSemanticSnapshot,
+    EvalObservedBoundaryKind, EvalPendingSnapshot, EvalPositionSnapshot, EvalSemanticCallSnapshot,
+    EvalSemanticEffectSnapshot, EvalSemanticErrorSnapshot, EvalSemanticSnapshot,
     EvalSourceSpanSnapshot, EvalValueSnapshot, INTERPRETER_LIVE_BOUNDARY_SCHEMA,
     INTERPRETER_LIVE_SNAPSHOT_SCHEMA,
 };
