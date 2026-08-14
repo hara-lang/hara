@@ -145,10 +145,59 @@ jobs:
           elif new_initializer not in production_source:
               raise SystemExit('failed-expansion UnitAnalysis initializer shape is unsupported')
           production_path.write_text(production_source)
+
+          java_test_path = Path(
+              'core/java/src/test/java/hara/truffle/HaraNativeTestRunnerTest.java'
+          )
+          java_source = java_test_path.read_text()
+          if 'import java.nio.file.Files;' not in java_source:
+              import_marker = 'import java.nio.file.Path;'
+              if java_source.count(import_marker) != 1:
+                  raise SystemExit('Java Path import is missing or ambiguous')
+              java_source = java_source.replace(
+                  import_marker,
+                  'import java.nio.file.Files;\nimport java.nio.file.Path;',
+              )
+
+          method_name = 'classifiesDirectFoundationResultVectors'
+          if method_name not in java_source:
+              insertion = r'''
+
+  @Test
+  public void classifiesDirectFoundationResultVectors() throws Exception {
+    Path file = Files.createTempFile("hara-direct-test-result-", ".hal");
+    try {
+      Files.writeString(file, "[(test-check \"direct result\" true true)]");
+      HaraNativeTestRunner.Result direct = HaraNativeTestRunner.runFile(ROOT, file);
+      assertTrue(direct.passed());
+      assertEquals(1, direct.facts());
+      assertEquals(1, direct.checks());
+      assertEquals(1, direct.passedChecks());
+      assertEquals(0, direct.failedChecks());
+
+      HaraNativeTestRunner.Result encoded =
+          HaraNativeTestRunner.parseResult(
+              file,
+              "\"[{:name \\\"encoded\\\" :actual true :expected true :pass true}]\"");
+      assertTrue(encoded.passed());
+      assertEquals(1, encoded.facts());
+      assertEquals(1, encoded.passedChecks());
+      assertEquals(0, encoded.failedChecks());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+'''
+              closing = java_source.rfind('\n}')
+              if closing < 0:
+                  raise SystemExit('Java test class closing brace was not found')
+              java_source = java_source[:closing] + insertion + java_source[closing:]
+          java_test_path.write_text(java_source)
           PY
           git add core/rust/standard-library.namespaces
           git add core/lib/test/std/foundation_test_primitives_test.hal
           git add core/rust/src/project/production.rs
+          git add core/java/src/test/java/hara/truffle/HaraNativeTestRunnerTest.java
 
           if git ls-files -u -- core/rust/assets/std.foundation.hbx | grep -q .; then
             git checkout --theirs -- core/rust/assets/std.foundation.hbx
@@ -207,13 +256,13 @@ jobs:
           cache: maven
           cache-dependency-path: core/java/pom.xml
 
-      - name: Run the direct-result Java compatibility test
+      - name: Run the focused Java direct-result compatibility test
         working-directory: core
         shell: bash
         run: |
           set -euo pipefail
           mvn -q --file java/pom.xml \
-            '-Dtest=MainTest#projectCommandsRunAndReportStandardTestResults' test
+            '-Dtest=HaraNativeTestRunnerTest#classifiesDirectFoundationResultVectors' test
 
       - name: Commit and push the reconciled merge
         shell: bash
