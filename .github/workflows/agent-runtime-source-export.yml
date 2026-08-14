@@ -71,6 +71,38 @@ jobs:
 
           git apply --check /tmp/runtime-closeout-current.patch
           git apply /tmp/runtime-closeout-current.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/rust/src/vm/bundle.rs")
+          source = path.read_text()
+          anchor = (
+              "        core::with_definition_origin(kernel::VarOrigin::HalFallback, || {\n"
+              "            runtime.eval_bytecode_artifact(&artifact)\n"
+              "        })\n"
+              "        .map_err(|error| format!(\"{}: bytecode execution: {error}\", source.resource))?;\n"
+              "        let source_digest: [u8; 32] = Sha256::digest(source.source.as_bytes()).into();\n"
+          )
+          replacement = (
+              "        core::with_definition_origin(kernel::VarOrigin::HalFallback, || {\n"
+              "            runtime.eval_bytecode_artifact(&artifact)\n"
+              "        })\n"
+              "        .map_err(|error| format!(\"{}: bytecode execution: {error}\", source.resource))?;\n"
+              "        runtime.loaded_resources.insert(source.resource.to_owned());\n"
+              "        runtime.namespace_registry.set_load_state(\n"
+              "            source.resource,\n"
+              "            kernel::NamespaceLoadState::Loaded,\n"
+              "        );\n"
+              "        runtime.namespace_registry.clear_load_failure(source.resource);\n"
+              "        runtime.namespace_registry.commit_module_revision(source.resource);\n"
+              "        let source_digest: [u8; 32] = Sha256::digest(source.source.as_bytes()).into();\n"
+          )
+          if source.count(anchor) != 1:
+              raise SystemExit("bundle compiler execution anchor did not match exactly once")
+          path.write_text(source.replace(anchor, replacement, 1))
+          PY
+
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
           rustfmt --edition 2021 \
