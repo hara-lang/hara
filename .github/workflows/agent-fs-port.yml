@@ -1,4 +1,4 @@
-name: Inspect portable filesystem port
+name: Bundle portable filesystem sources
 
 on:
   push:
@@ -7,94 +7,41 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  inspect:
+  bundle:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/std-native-file-portable-fs
-          fetch-depth: 0
-
-      - name: Inspect filesystem value and module plumbing
+      - name: Collect implementation context
         shell: bash
         run: |
-          set -uo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          def markers(path, needles, before=12, after=100):
-              p = Path(path)
-              if not p.exists():
-                  print(f'MISSING {path}')
-                  return
-              lines = p.read_text().splitlines()
-              print(f"\n===== {path} ({len(lines)} lines) =====")
-              for needle in needles:
-                  hits = [i for i, line in enumerate(lines) if needle in line]
-                  print(f"\n--- {needle!r}: {[i+1 for i in hits]} ---")
-                  for i in hits[:8]:
-                      for n in range(max(0, i-before), min(len(lines), i+after)):
-                          print(f"{n+1:6}: {lines[n]}")
-                      print('--- end hit ---')
-
-          def slices(path, ranges):
-              p = Path(path)
-              if not p.exists(): return
-              lines = p.read_text().splitlines()
-              print(f"\n===== {path} ({len(lines)} lines) =====")
-              for lo, hi in ranges:
-                  print(f"\n--- {lo}-{hi} ---")
-                  for n in range(max(1, lo), min(len(lines), hi)+1):
-                      print(f"{n:6}: {lines[n-1]}")
-
-          markers('core/rust/src/core.rs', [
-              'pub enum Value', 'enum Value', 'pub struct ExceptionInfo',
-              'ExceptionInfoMap', 'exception-info', 'ex-info',
-              'PromiseState::Rejected', 'promise_operation', '"std.native.Promise"',
-              '"File", &[', 'const NATIVE_TYPES', 'NativeFileProvider::new',
-              'fn keyword', 'fn map_get', 'fn value_to_map', 'Value::Map',
-          ], before=14, after=100)
-          slices('core/rust/src/core.rs', [(12140,12480),(15180,15320),(14080,14280)])
-          markers('core/java/src/main/java/hara/truffle/HaraContext.java', [
-              'private static final Map<String, List<String>> NATIVE_TYPES',
-              'Map.entry("File"', 'class HaraPromise', 'record HaraPromise',
-              'PromiseState', 'ExceptionInfoMap', 'exceptionInfo(', 'exceptionDataMap',
-              'definePromiseLibrary', 'installPromiseLibrary',
-          ], before=14, after=90)
-          PY
-
-          echo '===== Java promise/exception/filesystem files ====='
-          find core/java/src/main/java -type f | sort | rg -i '(promise|exception|file|mount)' || true
-          for file in $(find core/java/src/main/java -type f | sort | rg -i '(promise|exception|file|mount)' || true); do
-            echo "===== $file ====="
-            sed -n '1,320p' "$file"
-          done
-
-          echo '===== HAL promise/path/string building blocks ====='
-          find core/lib/src core/lib/test -type f -name '*.hal' | sort | rg '(promise|future|string|path|file|walk|array|map|collection|function)' | sed -n '1,180p' || true
-          for file in \
-            core/lib/src/std/foundation/promise.hal \
-            core/lib/src/std/foundation/future.hal \
-            core/lib/src/std/foundation/string.hal \
-            core/lib/src/std/foundation/array.hal \
-            core/lib/src/std/foundation/map.hal \
-            core/lib/src/std/config/common.hal \
-            core/lib/src/std/foundation.hal \
+          set -euo pipefail
+          mkdir -p /tmp/hara-fs-context
+          cp --parents \
+            core/rust/src/core.rs \
+            core/rust/src/lib.rs \
+            core/rust/Cargo.toml \
             core/rust/build.rs \
             core/rust/standard-library.namespaces \
-            core/Makefile; do
-            if [[ -f "$file" ]]; then
-              echo "===== $file ====="
-              sed -n '1,360p' "$file"
-            fi
-          done
-
-          echo '===== Promise usage examples ====='
-          rg -n --glob '*.hal' '(std\.foundation\.promise|promise/|\.then|catch|finally|await|future)' core/lib/src core/lib/test | sed -n '1,420p' || true
-          echo '===== Namespace registration/build ====='
-          rg -n 'standard-library\.namespaces|hal-src|core/lib/src|include_str|include_bytes|rerun-if-changed' core/rust core/Makefile scripts 2>/dev/null | sed -n '1,420p' || true
-          echo '===== Existing option-map parsing ====='
-          rg -n 'getKeyword\(|Keyword\.create\(|Value::Keyword|as_map|map.*get|options|opts' core/java/src/main/java/hara/truffle/HaraContext.java core/rust/src/core.rs | sed -n '1,360p' || true
+            core/java/pom.xml \
+            core/java/src/main/java/hara/truffle/HaraContext.java \
+            core/java/src/main/java/hara/truffle/NativeFileLibraryProvider.java \
+            core/lib/src/std/foundation.hal \
+            core/lib/src/std/foundation/promise.hal \
+            core/lib/src/std/foundation/string.hal \
+            core/lib/src/std/config/common.hal \
+            core/lib/test/std/foundation/file_test.hal \
+            core/Makefile \
+            /tmp/hara-fs-context
+          find core/java/src/test core/rust/tests core/lib/test -type f \( -iname '*file*' -o -iname '*promise*' -o -iname '*native*' \) -print0 2>/dev/null | xargs -0 -r cp --parents -t /tmp/hara-fs-context
+          find .github/workflows -maxdepth 1 -type f -print0 | xargs -0 cp --parents -t /tmp/hara-fs-context
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hara-fs-context
+          path: /tmp/hara-fs-context
+          if-no-files-found: error
+          retention-days: 1
