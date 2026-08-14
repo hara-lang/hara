@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
+import java.util.Set;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.Test;
@@ -20,6 +21,35 @@ public class FoundationFallbackDemandTest {
       assertTrue(name, FoundationFallbackDefinitions.isInitializationDependency(name));
     }
     assertFalse(FoundationFallbackDefinitions.defines("+"));
+  }
+
+  @Test
+  public void semanticDependencyPassSeesParsedCallLists() {
+    Set<String> special = Set.of("has?", "long");
+    assertTrue(
+        FoundationFallbackDefinitions.requiresInitialization(
+            HaraLanguage.readAll("(read-string \"12.5\")", "demand-test"),
+            symbol -> special.contains(symbol.getName())));
+    assertTrue(
+        FoundationFallbackDefinitions.requiresInitialization(
+            HaraLanguage.readAll("(long 1.9)", "demand-test"),
+            symbol -> special.contains(symbol.getName())));
+    assertTrue(
+        FoundationFallbackDefinitions.requiresInitialization(
+            HaraLanguage.readAll("(has? [10 20] 1)", "demand-test"),
+            symbol -> special.contains(symbol.getName())));
+    assertTrue(
+        FoundationFallbackDefinitions.requiresInitialization(
+            HaraLanguage.readAll("(assoc [1 2 3] 0 :x)", "demand-test"),
+            symbol -> special.contains(symbol.getName())));
+    assertTrue(
+        FoundationFallbackDefinitions.requiresInitialization(
+            HaraLanguage.readAll("(nth [10 20] 1)", "demand-test"),
+            symbol -> special.contains(symbol.getName())));
+    assertFalse(
+        FoundationFallbackDefinitions.requiresInitialization(
+            HaraLanguage.readAll("(+ 19 23)", "demand-test"),
+            symbol -> special.contains(symbol.getName())));
   }
 
   @Test
