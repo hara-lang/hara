@@ -1,13 +1,21 @@
 name: Lang JS, Python, and Lua runtime
 
 on:
-  pull_request:
+  push:
     branches: [main]
     paths:
+      - 'core/lib/src/code/deploy/runtime.hal'
       - 'core/lib/src/lang/**'
+      - 'core/lib/src/lib/docker.hal'
+      - 'core/lib/src/tool/runtime.hal'
+      - 'core/lib/src/tool/cli/identity.hal'
       - 'core/lib/src-lang/xt/lang/**'
       - 'core/lib/src/hara/runtime.hal'
+      - 'core/rust/hal-src/code/deploy/runtime.hal'
       - 'core/rust/hal-src/lang/**'
+      - 'core/rust/hal-src/lib/docker.hal'
+      - 'core/rust/hal-src/tool/runtime.hal'
+      - 'core/rust/hal-src/tool/cli/identity.hal'
       - 'core/rust/hal-src/xt/lang/**'
       - 'core/rust/hal-src/hara/runtime.hal'
       - 'core/rust/assets/std.foundation.hbx'
@@ -21,6 +29,49 @@ on:
       - 'core/spec/foundation-script-policy.json'
       - 'scripts/runtime/foundation_script_inventory.py'
       - 'scripts/runtime/foundation_script_inventory_test.py'
+      - 'scripts/runtime/foundation_script_result.py'
+      - 'scripts/runtime/foundation_script_result_test.py'
+      - 'scripts/runtime/foundation_target_snapshot.py'
+      - 'scripts/runtime/foundation_target_snapshot_test.py'
+      - 'scripts/runtime/process_static_object_audit.py'
+      - 'scripts/runtime/process_static_object_audit_test.py'
+      - 'scripts/runtime/run-foundation-script-tranche'
+      - 'scripts/runtime/run-hara-runtime-smoke'
+      - '.github/workflows/lang-runtime.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/lib/src/code/deploy/runtime.hal'
+      - 'core/lib/src/lang/**'
+      - 'core/lib/src/lib/docker.hal'
+      - 'core/lib/src/tool/runtime.hal'
+      - 'core/lib/src/tool/cli/identity.hal'
+      - 'core/lib/src-lang/xt/lang/**'
+      - 'core/lib/src/hara/runtime.hal'
+      - 'core/rust/hal-src/code/deploy/runtime.hal'
+      - 'core/rust/hal-src/lang/**'
+      - 'core/rust/hal-src/lib/docker.hal'
+      - 'core/rust/hal-src/tool/runtime.hal'
+      - 'core/rust/hal-src/tool/cli/identity.hal'
+      - 'core/rust/hal-src/xt/lang/**'
+      - 'core/rust/hal-src/hara/runtime.hal'
+      - 'core/rust/assets/std.foundation.hbx'
+      - 'core/rust/src/bin/hara-foundation-artifact.rs'
+      - 'core/lib/test-lang/lang/**'
+      - 'core/lib/test-lang/xt/lang/**'
+      - 'core/lib/test/hara/runtime_test.hal'
+      - 'core/lib/integration/hara/lang_bootstrap_probe.hal'
+      - 'core/lib/integration/hara/runtime_smoke.hal'
+      - 'core/spec/foundation-script-inventory.json'
+      - 'core/spec/foundation-script-policy.json'
+      - 'scripts/runtime/foundation_script_inventory.py'
+      - 'scripts/runtime/foundation_script_inventory_test.py'
+      - 'scripts/runtime/foundation_script_result.py'
+      - 'scripts/runtime/foundation_script_result_test.py'
+      - 'scripts/runtime/foundation_target_snapshot.py'
+      - 'scripts/runtime/foundation_target_snapshot_test.py'
+      - 'scripts/runtime/process_static_object_audit.py'
+      - 'scripts/runtime/process_static_object_audit_test.py'
       - 'scripts/runtime/run-foundation-script-tranche'
       - 'scripts/runtime/run-hara-runtime-smoke'
       - '.github/workflows/lang-runtime.yml'
@@ -34,17 +85,66 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  runtime-smoke:
+  script-inventory:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
+      - name: Read the pinned Foundation script revision
+        id: foundation-script
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          policy = json.loads(Path("core/spec/foundation-script-policy.json").read_text())
+          print(f"commit={policy['reference']['commit']}")
+          PY
+      - name: Check out the pinned Foundation reference
+        uses: actions/checkout@v4
+        with:
+          repository: zcaudate-xyz/foundation-base
+          ref: ${{ steps.foundation-script.outputs.commit }}
+          path: foundation-base
+          fetch-depth: 1
+      - name: Validate script evidence and canonical Process calls before runtime setup
+        run: |
+          test "$(git -C foundation-base rev-parse HEAD)" = "${{ steps.foundation-script.outputs.commit }}"
+          python3 scripts/runtime/foundation_script_inventory_test.py
+          python3 scripts/runtime/foundation_script_result_test.py
+          python3 scripts/runtime/foundation_target_snapshot_test.py
+          python3 scripts/runtime/process_static_object_audit_test.py
+          python3 scripts/runtime/process_static_object_audit.py
+          python3 scripts/runtime/foundation_script_inventory.py \
+            --reference foundation-base \
+            --check
+          python3 scripts/runtime/foundation_target_snapshot.py --ledger script
+
+  runtime-smoke:
+    needs: script-inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Read the pinned Foundation script revision
+        id: foundation-script
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          policy = json.loads(Path("core/spec/foundation-script-policy.json").read_text())
+          print(f"commit={policy['reference']['commit']}")
+          PY
       - name: Checkout pinned Foundation reference
         uses: actions/checkout@v4
         with:
           repository: zcaudate-xyz/foundation-base
-          ref: baa75aabd6a879753d7d5cb07271b1448271e7cb
+          ref: ${{ steps.foundation-script.outputs.commit }}
           path: foundation-base
           fetch-depth: 1
       - name: Checkout hara-specs-registry
@@ -68,6 +168,8 @@ jobs:
           lua -v
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+      - name: Check canonical and Rust HAL mirrors
+        run: python3 scripts/runtime/sync-rust-hal-src --check
       - name: Generate the current standard-library HBX bundle
         run: cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
       - name: Upload the generated standard-library HBX bundle
@@ -86,7 +188,19 @@ jobs:
         run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
       - name: Execute emitted JavaScript, Python, and Lua
         run: bash scripts/runtime/run-hara-runtime-smoke
-      - name: Validate Foundation script inventory and XTalk tranche
+      - name: Execute the Foundation XTalk tranche
         env:
           FOUNDATION_BASE_ROOT: foundation-base
+          FOUNDATION_SCRIPT_INVENTORY_VERIFIED: '1'
         run: bash scripts/runtime/run-foundation-script-tranche
+      - name: Record exact Foundation script conformance metadata
+        run: |
+          python3 scripts/runtime/foundation_script_result.py \
+            --reference foundation-base \
+            --output target/foundation-script-conformance.json
+      - name: Upload Foundation script conformance metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundation-script-conformance-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/foundation-script-conformance.json
+          if-no-files-found: error
