@@ -1,7 +1,6 @@
 use super::*;
 use crate::kernel::halc_trace::{
     HalcArtifactTrace, HalcTraceEvent, HalcTraceStatus, HalcTraceValue,
-    HALC_TRACE_SCHEME,
 };
 
 const SOURCE: &str = "(ns demo.schema) \
