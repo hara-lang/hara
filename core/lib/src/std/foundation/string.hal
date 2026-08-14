@@ -1,28 +1,8 @@
 ;; ==========================================================================
 ;; std.foundation.string — portable Unicode string operations.
 ;;
-;;                            string
-;;                               |
-;;       +-----------------------+-----------------------+
-;;       |                       |                       |
-;;       v                       v                       v
-;;   inspection              transformation           search
-;;   length/blank?           trim/case/pad           index-of
-;;   char-at                 replace/reverse         includes?
-;;       |                       |                       |
-;;       +-----------------------+-----------------------+
-;;                               |
-;;                               v
-;;                      std.native.String
-;;                               |
-;;                  +------------+------------+
-;;                  |                         |
-;;                  v                         v
-;;              UTF-8 bytes              formatting
-;;       encode-utf8/decode-utf8           to-fixed
-;;
-;; Indexes and lengths follow the portable native String contract. Canonical
-;; names appear first; compatibility spellings are thin HAL calls into them.
+;; Native methods provide the compact substrate. Higher-level coercion,
+;; identifier case conversion, indexed edits, and escaping remain portable HAL.
 ;; ==========================================================================
 (ns std.foundation.string
   (:config {:override [repeat reverse]}))
@@ -33,11 +13,13 @@
   [value]
   (String/length value))
 
-(defn ^{:schema [:fn [:str] :bool]}
+(defn ^{:schema [:fn [:any] :bool]}
   blank?
-  "Returns true when value is empty or contains only whitespace."
+  "Returns true when value is nil, empty, or contains only whitespace."
   [value]
-  (String/blank? value))
+  (if (nil? value)
+    true
+    (String/blank? value)))
 
 (defn ^{:schema [:fn [:str :str] :bool]}
   includes?
@@ -145,16 +127,53 @@
   (String/trim-right value))
 
 (defn ^{:schema [:fn [:str] :str]}
-  upper
+  trim-newlines
+  "Removes trailing newline and carriage-return characters from value."
+  [value]
+  (loop [end (length value)]
+    (if (= end 0)
+      ""
+      (let [character (char-at value (dec end))]
+        (if (or (= character "\n")
+                (= character "\r"))
+          (recur (dec end))
+          (slice value 0 end))))))
+
+(defn ^{:schema [:fn [:str] :str]}
+  upper-case
   "Returns value converted to uppercase."
   [value]
   (String/upper value))
 
 (defn ^{:schema [:fn [:str] :str]}
-  lower
+  lower-case
   "Returns value converted to lowercase."
   [value]
   (String/lower value))
+
+(defn ^{:schema [:fn [:str] :str]}
+  upper
+  "Compatibility alias for upper-case."
+  [value]
+  (upper-case value))
+
+(defn ^{:schema [:fn [:str] :str]}
+  lower
+  "Compatibility alias for lower-case."
+  [value]
+  (lower-case value))
+
+(defn ^{:schema [:fn [:str] :str]}
+  capital-case
+  "Uppercases the first character and lowercases the remainder."
+  [value]
+  (let [size (length value)]
+    (cond
+      (= size 0) ""
+      (= size 1) (upper-case value)
+      :else
+      (str (upper-case (slice value 0 1))
+           (lower-case (slice value 1))))))
 
 (defn ^{:schema [:fn [:str] :str]}
   capitalize
@@ -197,6 +216,178 @@
   "Decodes UTF-8 bytes into a string."
   [value]
   (String/decode-utf8 value))
+
+(defn- tag-value
+  [value]
+  (cond
+    (string? value)
+    value
+
+    (bytes? value)
+    (decode-utf8 value)
+
+    (keyword? value)
+    (let [prefix (namespace value)]
+      (if (nil? prefix)
+        (name value)
+        (str prefix "/" (name value))))
+
+    :else
+    (pr-str value)))
+
+(defn ^{:schema [:function [:fn [:any] :str]
+                            [:fn [:any & :any] :str]]}
+  tag
+  "Returns portable tag text and concatenates additional values without a separator."
+  ([value]
+   (tag-value value))
+  ([value & more]
+   (reduce
+    (fn [output item]
+      (str output (tag-value item)))
+    (tag-value value)
+    more)))
+
+(defn ^{:schema [:fn [:str :map] :str]}
+  escape
+  "Replaces each one-character string found in replacements."
+  [value replacements]
+  (loop [index 0
+         output ""]
+    (if (= index (length value))
+      output
+      (let [character (char-at value index)]
+        (recur
+         (inc index)
+         (str output
+              (if (has? replacements character)
+                (get replacements character)
+                character)))))))
+
+(defn ^{:schema [:fn [:str :str] :bool]}
+  caseless=
+  "Returns true when values are equal after lowercase conversion."
+  [left right]
+  (= (lower-case left)
+     (lower-case right)))
+
+(defn ^{:schema [:fn [:str :int :str] :str]}
+  replace-at
+  "Replaces the character at a portable Unicode index."
+  [value index replacement]
+  (str (slice value 0 index)
+       replacement
+       (slice value (inc index))))
+
+(defn ^{:schema [:fn [:str :int :str] :str]}
+  insert-at
+  "Inserts replacement at a portable Unicode index."
+  [value index replacement]
+  (str (slice value 0 index)
+       replacement
+       (slice value index)))
+
+(defn- identifier-separator?
+  [character]
+  (or (= character " ")
+      (= character "_")
+      (= character "-")))
+
+(defn- digit-character?
+  [character]
+  (includes? "0123456789" character))
+
+(defn- uppercase-character?
+  [character]
+  (and (not= (lower-case character)
+             (upper-case character))
+       (= character (upper-case character))))
+
+(defn- lowercase-or-digit-character?
+  [character]
+  (or (digit-character? character)
+      (and (not= (lower-case character)
+                 (upper-case character))
+           (= character (lower-case character)))))
+
+(defn- add-identifier-word
+  [words word]
+  (if (empty? word)
+    words
+    (conj words word)))
+
+(defn- identifier-words
+  [value]
+  (loop [index 0
+         words []
+         word ""
+         previous nil]
+    (if (= index (length value))
+      (add-identifier-word words word)
+      (let [character (char-at value index)
+            hump?
+            (and (not (nil? previous))
+                 (lowercase-or-digit-character? previous)
+                 (uppercase-character? character))]
+        (cond
+          (identifier-separator? character)
+          (recur (inc index)
+                 (add-identifier-word words word)
+                 ""
+                 nil)
+
+          hump?
+          (recur (inc index)
+                 (add-identifier-word words word)
+                 (lower-case character)
+                 character)
+
+          :else
+          (recur (inc index)
+                 words
+                 (str word (lower-case character))
+                 character))))))
+
+(defn ^{:schema [:fn [:str] :str]}
+  camel-case
+  "Converts spaces, underscores, hyphens, and camel humps to camelCase."
+  [value]
+  (let [words (identifier-words value)]
+    (if (empty? words)
+      ""
+      (reduce
+       (fn [output word]
+         (str output (capital-case word)))
+       (first words)
+       (rest words)))))
+
+(defn ^{:schema [:fn [:str] :str]}
+  pascal-case
+  "Converts spaces, underscores, hyphens, and camel humps to PascalCase."
+  [value]
+  (reduce
+   (fn [output word]
+     (str output (capital-case word)))
+   ""
+   (identifier-words value)))
+
+(defn ^{:schema [:fn [:str] :str]}
+  snake-case
+  "Converts spaces, hyphens, and camel humps to snake_case."
+  [value]
+  (join "_" (identifier-words value)))
+
+(defn ^{:schema [:fn [:str] :str]}
+  spear-case
+  "Converts spaces, underscores, and camel humps to spear-case."
+  [value]
+  (join "-" (identifier-words value)))
+
+(defn ^{:schema [:fn [:str] :str]}
+  dot-case
+  "Converts spaces, underscores, hyphens, and camel humps to dot.case."
+  [value]
+  (join "." (identifier-words value)))
 
 (defn ^{:schema [:fn [:num :int] :str]}
   to-fixed
