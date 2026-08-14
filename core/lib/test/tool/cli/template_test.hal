@@ -1,0 +1,112 @@
+(ns tool.cli.template-test
+  (:use code.test)
+  (:require [std.work :as work]
+            [tool.cli.handlers :as handlers]
+            [tool.cli.model :as model]
+            [tool.cli.template :as template]))
+
+(fact "template defaults are recursively applied by template type"
+  (do
+    (template/install-defaults!
+     :template-test
+     {:version 7
+      :main {:argcount 1}})
+    (let [definition
+          (template/normalise-definition
+           {:id :template-test/defaults
+            :template :template-test
+            :main {:fn (fn [input] (model/success input))}})
+          output [(:version definition)
+                  (get-in definition [:main :argcount])]]
+      (template/uninstall-defaults! :template-test)
+      output))
+  => [7 1])
+
+(fact "prepare main finish and validation retain stage order"
+  (let [stages (atom [])
+        handler
+        (template/handler
+         {:id :template-test/stages
+          :version 1
+          :prepare
+          (fn [request context]
+            (swap! stages conj :prepare)
+            (assoc request :prepared true))
+          :main
+          {:argcount 2
+           :fn
+           (fn [request context]
+             (swap! stages conj :main)
+             (model/success
+              {:prepared (:prepared request)}))}
+          :finish
+          (fn [result context]
+            (swap! stages conj :finish)
+            (assoc result
+                   :result/data
+                   (assoc (:result/data result)
+                          :finished true)))})
+        result (handler {})]
+    [(deref stages)
+     (:result/outcome result)
+     (:result/data result)])
+  => [[:prepare :main :finish]
+      :tool.cli.outcome/success
+      {:prepared true :finished true}])
+
+(fact "runtime injection is evaluated once per handler invocation"
+  (let [calls (atom 0)
+        handler
+        (template/handler
+         {:id :template-test/runtime
+          :version 1
+          :runtime-fn
+          (fn []
+            (swap! calls inc)
+            (work/local-runtime))
+          :main
+          {:argcount 1
+           :fn (fn [request] (model/success request))}})]
+    (handler {:value 1})
+    (handler {:value 2})
+    (deref calls))
+  => 2)
+
+(fact "template does not catch command exceptions"
+  (let [handler
+        (template/handler
+         {:id :template-test/exception
+          :version 1
+          :main
+          {:argcount 1
+           :fn
+           (fn [request]
+             (throw
+              (ex-info "template exception" {})))}})]
+    (try
+      (do (handler {}) false)
+      (catch Throwable error
+        true)))
+  => true)
+
+(fact "invalid result envelopes fail before leaving the template"
+  (let [handler
+        (template/handler
+         {:id :template-test/result
+          :version 1
+          :main {:argcount 1
+                 :fn (fn [request] {:invalid true})}})]
+    (try
+      (do (handler {}) false)
+      (catch Throwable error
+        true)))
+  => true)
+
+(fact "every closed-registry handler is template-produced"
+  (every?
+   template/handler?
+   (vals (handlers/registry)))
+  => true)
+
+(pr-str
+ (run {:namespace "tool.cli.template-test"}))

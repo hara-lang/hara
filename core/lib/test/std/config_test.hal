@@ -1,0 +1,137 @@
+(ns std.config-test
+  (:use code.test)
+  (:require [std.config :as config]
+            [std.config.resolve :as resolve]))
+
+(def fixture-root
+  (if (deref (File/exists?
+              "lib/test-fixtures/std-config"))
+    "lib/test-fixtures/std-config"
+    "core/lib/test-fixtures/std-config"))
+
+(fact "composition directives resolve portable values"
+  (config/resolve
+   {:endpoint
+    [:format ["http://%s:%s" "localhost" 8080]]
+    :message
+    [:str ["hello" [:env "SPACE" {:default " "}] "world"]]
+    :fallback
+    [:or [:env "MISSING"] "fallback"]
+    :selected
+    [:case [:env "PROFILE"]
+     "prod" :production
+     "dev" :development
+     :default :unknown]
+    :merged
+    [:merge :nested
+     {:service {:host "localhost"}}
+     {:service {:port 8080}}]}
+   {:env {"SPACE" " "
+          "PROFILE" "dev"}})
+  => {:endpoint "http://localhost:8080"
+      :message "hello world"
+      :fallback "fallback"
+      :selected :development
+      :merged {:service {:host "localhost"
+                         :port 8080}}})
+
+(fact "root parent project and global directives retain scope"
+  (do
+    (config/clear-session)
+    (config/swap-session assoc :profile :session)
+    (let [resolved
+          (config/resolve
+           {:name "root"
+            :nested
+            {:name "child"
+             :from-root [:root :name]
+             :from-parent [:parent :name]
+             :project [:project :project/id]
+             :global [:global :profile]}}
+           {:env {:profile :environment}
+            :project {:project/id 'demo
+                      :profile :project}})]
+      [resolved
+       (:profile
+        (config/global
+         :all
+         {:env {:profile :environment}
+          :project {:profile :project}}))]))
+  => [{:name "root"
+       :nested
+       {:name "child"
+        :from-root "root"
+        :from-parent "child"
+        :project 'demo
+        :global :session}}
+      :session])
+
+(fact "extension directives and content types can be installed"
+  (do
+    (config/register-directive!
+     :std.config-test/double
+     (fn [form context state]
+       (* 2 (nth form 1))))
+    (config/register-type!
+     :std.config-test/suffix
+     (fn [content] (str content "!")))
+    [(config/resolve [:std.config-test/double 21])
+     (resolve/resolve-content
+      "hello"
+      {:type :std.config-test/suffix})])
+  => [42 "hello!"])
+
+(fact "nested includes resolve from the including file before project root"
+  (config/load
+   "root.edn"
+   {:root fixture-root
+    :project {:project/id 'demo}
+    :env {"MODE" "test"}})
+  => {:name "root"
+      :child {:name "child"
+              :mode "test"
+              :deeper {:value 42}}
+      :json {:service {:port 8080}}
+      :text "hello from file\n"})
+
+(fact "include cycles report the complete include stack"
+  (let [data
+        (try
+          (do
+            (config/load "cycle-a.edn"
+                         {:root fixture-root})
+            nil)
+          (catch Throwable error
+            (ex-data error)))]
+    [(:error/type data)
+     (count (:include/stack data))
+     (str/ends-with?
+      (last (:include/stack data))
+      "cycle-a.edn")])
+  => [:std.config/include-cycle 3 true])
+
+(fact "missing files and deferred features remain structured errors"
+  (let [missing
+        (try
+          (do
+            (config/load "missing.edn"
+                         {:root fixture-root})
+            nil)
+          (catch Throwable error
+            (ex-data error)))
+        deferred
+        (try
+          (do
+            (config/resolve [:eval '(+ 1 2)])
+            nil)
+          (catch Throwable error
+            (ex-data error)))]
+    [(:error/type missing)
+     (:error/type deferred)
+     (:feature deferred)])
+  => [:std.config/missing-file
+      :std.config/unsupported-feature
+      :eval])
+
+(pr-str
+ (run {:namespace "std.config-test"}))
