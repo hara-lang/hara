@@ -11,6 +11,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Names whose complete Truffle semantics require the portable {@code std.foundation} startup.
@@ -51,8 +52,13 @@ final class FoundationFallbackDefinitions {
    * no valid portable behavior is skipped.
    */
   static boolean requiresInitialization(Object[] forms, HaraContext context) {
+    return requiresInitialization(forms, context::isSpecialSymbol);
+  }
+
+  static boolean requiresInitialization(
+      Object[] forms, Predicate<Symbol> specialSymbol) {
     for (Object form : forms) {
-      if (requiresInitialization(form, context)) return true;
+      if (requiresInitialization(form, specialSymbol)) return true;
     }
     return false;
   }
@@ -65,36 +71,37 @@ final class FoundationFallbackDefinitions {
     return NAMES;
   }
 
-  private static boolean requiresInitialization(Object value, HaraContext context) {
+  private static boolean requiresInitialization(
+      Object value, Predicate<Symbol> specialSymbol) {
     if (value instanceof Symbol symbol) {
       if (symbol.getNamespace() != null) return false;
       String name = symbol.getName();
       return INITIALIZATION_DEPENDENCIES.contains(name)
-          || (NAMES.contains(name) && context.isSpecialSymbol(symbol));
+          || (NAMES.contains(name) && specialSymbol.test(symbol));
     }
     if (value instanceof List<?> list) {
-      for (Object item : list) {
-        if (requiresInitialization(item, context)) return true;
+      for (int index = 0; index < list.count(); index++) {
+        if (requiresInitialization(list.nth(index), specialSymbol)) return true;
       }
       return false;
     }
     if (value instanceof IMapType<?, ?> map) {
       for (Object entryValue : map) {
         if (!(entryValue instanceof Map.Entry<?, ?> entry)) continue;
-        if (requiresInitialization(entry.getKey(), context)
-            || requiresInitialization(entry.getValue(), context)) return true;
+        if (requiresInitialization(entry.getKey(), specialSymbol)
+            || requiresInitialization(entry.getValue(), specialSymbol)) return true;
       }
       return false;
     }
     if (value instanceof ISetType<?> set) {
       for (Object item : set) {
-        if (requiresInitialization(item, context)) return true;
+        if (requiresInitialization(item, specialSymbol)) return true;
       }
       return false;
     }
     if (value instanceof ILinearType<?> linear) {
       for (Object item : linear) {
-        if (requiresInitialization(item, context)) return true;
+        if (requiresInitialization(item, specialSymbol)) return true;
       }
     }
     return false;
