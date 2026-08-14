@@ -31,6 +31,24 @@ jobs:
           test "$(git merge-base HEAD origin/main)" = "$(git rev-parse origin/main)"
           base64 --decode scripts/runtime/restore-valid-baseline-605.py.gz.b64 \
             | gzip --decompress > /tmp/restore-valid-baseline-605.py
+          echo 'b587986f4564bbe3a97bed9fb7620c9b8f6a325eae4b235d42782d4d1194f0fb  /tmp/restore-valid-baseline-605.py' | sha256sum -c -
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('/tmp/restore-valid-baseline-605.py')
+          source = path.read_text()
+          source, count = re.subn(
+              r'^ROOT = .*$',
+              'ROOT = pathlib.Path.cwd().resolve()',
+              source,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if count != 1:
+              raise SystemExit(f'expected exactly one ROOT assignment, replaced {count}')
+          path.write_text(source)
+          PY
           echo '29ab3a41cb24527d399c63de056bca06c00d4bc2e8e55364afba1f2511341b80  /tmp/restore-valid-baseline-605.py' | sha256sum -c -
           python3 /tmp/restore-valid-baseline-605.py
           python3 scripts/runtime/sync-rust-hal-src
