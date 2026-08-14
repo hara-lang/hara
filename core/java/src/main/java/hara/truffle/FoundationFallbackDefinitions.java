@@ -72,6 +72,12 @@ final class FoundationFallbackDefinitions {
       return INITIALIZATION_DEPENDENCIES.contains(name)
           || (NAMES.contains(name) && context.isSpecialSymbol(symbol));
     }
+    if (value instanceof List<?> list) {
+      for (Object item : list) {
+        if (requiresInitialization(item, context)) return true;
+      }
+      return false;
+    }
     if (value instanceof IMapType<?, ?> map) {
       for (Object entryValue : map) {
         if (!(entryValue instanceof Map.Entry<?, ?> entry)) continue;
