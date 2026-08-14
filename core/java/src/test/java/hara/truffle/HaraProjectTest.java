@@ -55,50 +55,87 @@ public class HaraProjectTest {
   }
 
   @Test
-  public void parsesLeinStyleJvmDependenciesAndBuildPaths() throws Exception {
+  public void parsesJvmRuntimeProfileAndMergesEffectivePaths() throws Exception {
     Path root = Files.createTempDirectory("hara-project-jvm");
     Files.writeString(
         root.resolve("project.edn"),
-        "{:project/id sample :project/capabilities #{:jvm/reflection} "
-            + ":jvm/dependencies [[org.apache.commons/commons-lang3 \"3.12.0\"]] "
-            + ":jvm/source-paths [\"java-src\"] :jvm/target-path \"build/classes\"}");
+        "{:project/id sample :project/source-paths [\"src\"] :project/test-paths [\"test\"] "
+            + ":project/extension-paths [\"extensions\"] :project/capabilities #{:jvm/reflection} "
+            + ":project/dependencies {\"hara:hara/base\" {:version \"^1.0.0\"}} "
+            + ":project/profiles {:production {:profile/language :hara}} "
+            + ":project/runtime-profiles {:jvm {"
+            + ":runtime/source-paths [\"src-jvm\"] :runtime/test-paths [\"test-jvm\"] "
+            + ":runtime/extension-paths [\"extensions-jvm\"] "
+            + ":runtime/native-source-paths [\"java-src\"] "
+            + ":runtime/target-path \"build/classes\" "
+            + ":runtime/dependencies {:hara {\"hara:hara/jvm\" {:version \"^1.0.0\"}} "
+            + ":maven {org.apache.commons/commons-lang3 {:version \"3.12.0\"}}}}}}}");
 
     HaraProject project = HaraProject.read(root.resolve("project.edn"));
 
+    assertEquals(
+        java.util.List.of(root.resolve("src"), root.resolve("src-jvm")),
+        project.sourcePaths());
+    assertEquals(
+        java.util.List.of(root.resolve("test"), root.resolve("test-jvm")),
+        project.testPaths());
+    assertEquals(
+        java.util.List.of(root.resolve("extensions"), root.resolve("extensions-jvm")),
+        project.extensionRoots());
     assertEquals(
         java.util.List.of("org.apache.commons:commons-lang3:3.12.0"),
         project.jvmDependencies().stream().map(HaraProject.JvmDependency::coordinate).toList());
     assertEquals(java.util.List.of(root.resolve("java-src")), project.jvmSourcePaths());
     assertEquals(root.resolve("build/classes"), project.jvmTargetPath());
+    assertEquals("^1.0.0", project.haraDependencies().get("hara:hara/base"));
+    assertEquals("^1.0.0", project.haraDependencies().get("hara:hara/jvm"));
     assertTrue(project.hasCapability("jvm/reflection"));
   }
 
   @Test
-  public void rejectsJvmDependencyRanges() throws Exception {
+  public void rejectsJvmMavenDependencyRanges() throws Exception {
     Path root = Files.createTempDirectory("hara-project-jvm-invalid");
     Path descriptor = root.resolve("project.edn");
     Files.writeString(
         descriptor,
-        "{:project/id sample :jvm/dependencies "
-            + "[[org.example/library \"[1,2)\"]]}");
+        "{:project/id sample :project/runtime-profiles {:jvm {:runtime/dependencies "
+            + "{:maven {org.example/library {:version \"[1,2)\"}}}}}}}");
 
     HaraException error =
         assertThrows(HaraException.class, () -> HaraProject.read(descriptor));
-    assertTrue(error.getMessage().contains("exact Maven version"));
+    assertTrue(error.getMessage().contains("exact version"));
   }
 
   @Test
-  public void rejectsDuplicateJvmDependencyCoordinates() throws Exception {
-    Path root = Files.createTempDirectory("hara-project-jvm-duplicate");
+  public void rejectsLegacyJvmKeysWithReplacement() throws Exception {
+    Path root = Files.createTempDirectory("hara-project-jvm-legacy");
     Path descriptor = root.resolve("project.edn");
     Files.writeString(
         descriptor,
-        "{:project/id sample :jvm/dependencies "
-            + "[[org.example/library \"1.0.0\"] [org.example/library \"2.0.0\"]]}");
+        "{:project/id sample :jvm/source-paths [\"java-src\"]}");
 
     HaraException error =
         assertThrows(HaraException.class, () -> HaraProject.read(descriptor));
-    assertTrue(error.getMessage().contains("duplicate JVM dependency"));
+    assertTrue(
+        error
+            .getMessage()
+            .contains(":project/runtime-profiles :jvm :runtime/native-source-paths"));
+  }
+
+  @Test
+  public void rejectsConflictingSharedAndJvmHaraRequirements() throws Exception {
+    Path root = Files.createTempDirectory("hara-project-jvm-hara-conflict");
+    Path descriptor = root.resolve("project.edn");
+    Files.writeString(
+        descriptor,
+        "{:project/id sample "
+            + ":project/dependencies {\"hara:hara/crypto\" {:version \"^1.0.0\"}} "
+            + ":project/runtime-profiles {:jvm {:runtime/dependencies {:hara "
+            + "{\"hara:hara/crypto\" {:version \"^2.0.0\"}}}}}}}");
+
+    HaraException error =
+        assertThrows(HaraException.class, () -> HaraProject.read(descriptor));
+    assertTrue(error.getMessage().contains("Conflicting Hara dependency requirements"));
   }
 
   @Test
