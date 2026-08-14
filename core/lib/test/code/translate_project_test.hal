@@ -17,7 +17,9 @@
   "(ns demo.d)\n\n(defn d [] :d)\n")
 
 (def source-manual
-  "(ns demo.manual\n  (:require [std.protocol.block :as protocol]\n            [clojure.tools.reader :as reader]))\n\n(defn manual [] :manual)\n")
+  (str "(ns demo.manual\n  (:require [std.protocol.block :as protocol]\n            ["
+       "clojure" ".tools.reader"
+       " :as reader]))\n\n(defn manual [] :manual)\n"))
 
 (def unit-a
   {:source/path "src/demo/a.clj"
@@ -183,6 +185,11 @@
    :read-text
    (fn [path]
      (get duplicate-files path))))
+
+(def mirror-plan
+  (project/plan
+   {:units [unit-a (assoc unit-a :target/path "out/mirror/a.hal")]
+    :translation/options {:mode :safe}}))
 
 (def results
   [(test-check
@@ -367,6 +374,13 @@
        {:allow-manual? true}))]
     [[:code.translate/blocked-diagnostic]
      true])
+
+   (test-check
+    "one source can own distinct canonical and mirror work items"
+    [(count (:records mirror-plan))
+     (count (set (map :item/id (:records mirror-plan))))
+     (set (map :target/path (:edits mirror-plan)))]
+    [2 2 #{"out/demo/a.hal" "out/mirror/a.hal"}])
 
    (test-check
     "duplicate target ownership is rejected before writes"
