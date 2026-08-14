@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""Require one canonical code.test work graph and direct committed events."""
+"""Require a Foundation-style code.test facade and one canonical work graph."""
 
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-EVENT_OWNER = ROOT / "core/lib/src/code/test.hal"
-FACADE = ROOT / "core/lib/src/code/test/work.hal"
-CANONICAL = [EVENT_OWNER, FACADE]
+FACADE = ROOT / "core/lib/src/code/test.hal"
+EVENT_OWNER = ROOT / "core/lib/src/code/test/work.hal"
+INTERNAL_ROOT = ROOT / "core/lib/src/code/test"
+
+CANONICAL = [FACADE] + sorted(
+    path for path in INTERNAL_ROOT.rglob("*.hal") if path.is_file()
+)
 MIRRORS = [
-    ROOT / "core/rust/hal-src/code/test.hal",
-    ROOT / "core/rust/hal-src/code/test/work.hal",
+    ROOT / "core/rust/hal-src" / path.relative_to(ROOT / "core/lib/src")
+    for path in CANONICAL
 ]
 AUDIT_ROOTS = [ROOT / "core/lib/src/code", ROOT / "core/lib/test/code"]
 AUDIT_FILES = [ROOT / "core/lib/test/std/platform_imatch_test.hal"]
@@ -18,7 +23,8 @@ RETIRED_PATHS = [
     ROOT / "core/lib/src/code/test/protocol.hal",
     ROOT / "core/rust/hal-src/code/test/protocol.hal",
 ]
-FORBIDDEN = [
+
+FORBIDDEN_RUNTIME = [
     "code.test.protocol",
     "(defn report-event",
     "(defn report!",
@@ -55,33 +61,65 @@ REQUIRED_EVENTS = [
     ":test/run-completed",
 ]
 REQUIRED_GRAPH = [
-    "(def +runner-work+ (fact-batch-work))",
+    "(def +runner-work+ (runner-work +default-revision+))",
     "code.test/fact-batch-items",
     "code.test/suite-scope",
     "code.test/fact-stop",
     "code.test/fact-cancel",
     "(defn resolve-subject-fact",
+    "(defn fact-batch-work",
+    "(defn run",
+    "(defn start",
 ]
 REQUIRED_FACADE = [
-    "(def fact-batch-work test/fact-batch-work)",
-    "(def cancel-unclaimed-fact test/cancel-unclaimed-fact)",
-    "(def run test/run)",
-    "(def start test/start)",
+    "(def check process/check)",
+    "(def register! runtime/register!)",
+    "(def run test-work/run)",
+    "(def start test-work/start)",
+    "(def +runner-work+ test-work/+runner-work+)",
+    "(defmacro fact",
+    "(defmacro fact:global",
+]
+FORBIDDEN_FACADE = [
+    "[std.work",
+    "(defstruct Matcher",
+    "(defstruct ThrownValue",
+    "(defstruct TimeoutValue",
+    "(def +registry+",
+    "(defn fact-registry-key",
+    "(defn assertion-forms",
+    "(def contains-in-form",
+    "(def just-in-form",
+    "(defn selector-match?",
+    "(defn result-counts",
+    "(defn fact-coordinate",
+    "(defn fact-batch-work",
+    "(defn runner-work",
+    "work/emit!",
+    "(work/step",
+    "(work/batch",
+]
+GRAPH_TOKENS = [
+    "code.test/fact-batch-items",
+    "code.test/suite-scope",
+    "code.test/fact-stop",
+    "code.test/fact-cancel",
 ]
 
 errors = []
+
 for path in RETIRED_PATHS:
     if path.exists():
         errors.append(f"retired code.test protocol facade exists: {path.relative_to(ROOT)}")
 
 paths = []
-for root in AUDIT_ROOTS:
-    if root.exists():
-        paths.extend(path for path in root.rglob("*.hal") if path.is_file())
+for audit_root in AUDIT_ROOTS:
+    if audit_root.exists():
+        paths.extend(path for path in audit_root.rglob("*.hal") if path.is_file())
 paths.extend(path for path in AUDIT_FILES if path.exists())
 for path in paths:
     source = path.read_text(encoding="utf-8")
-    for token in FORBIDDEN:
+    for token in FORBIDDEN_RUNTIME:
         if token in source:
             errors.append(
                 f"{path.relative_to(ROOT)} retains private test-runtime token {token!r}"
@@ -91,27 +129,67 @@ owner_source = EVENT_OWNER.read_text(encoding="utf-8")
 for token in REQUIRED_EVENTS + REQUIRED_GRAPH:
     if token not in owner_source:
         errors.append(f"{EVENT_OWNER.relative_to(ROOT)} is missing {token!r}")
+if re.search(r"\[code\.test(?:\s|\])", owner_source):
+    errors.append("code.test.work points back to the root facade")
 
 facade_source = FACADE.read_text(encoding="utf-8")
 for token in REQUIRED_FACADE:
     if token not in facade_source:
-        errors.append(f"{FACADE.relative_to(ROOT)} is missing alias {token!r}")
-for token in REQUIRED_EVENTS + ["work/emit!", "work/step", "work/batch"]:
+        errors.append(f"{FACADE.relative_to(ROOT)} is missing facade entry {token!r}")
+for token in FORBIDDEN_FACADE + REQUIRED_EVENTS + GRAPH_TOKENS:
     if token in facade_source:
-        errors.append(f"{FACADE.relative_to(ROOT)} duplicates canonical graph token {token!r}")
+        errors.append(f"{FACADE.relative_to(ROOT)} is not facade-only: found {token!r}")
+if re.search(r"^\(defn\s", facade_source, re.MULTILINE):
+    errors.append(f"{FACADE.relative_to(ROOT)} contains a function implementation")
+
+internal_sources = list(INTERNAL_ROOT.rglob("*.hal"))
+root_require = re.compile(r"\[code\.test(?:\s|\])")
+for path in internal_sources:
+    source = path.read_text(encoding="utf-8")
+    if root_require.search(source):
+        errors.append(f"{path.relative_to(ROOT)} requires the root code.test facade")
+    if path != EVENT_OWNER:
+        for token in REQUIRED_EVENTS + GRAPH_TOKENS:
+            if token in source:
+                errors.append(
+                    f"{path.relative_to(ROOT)} duplicates work-owned lifecycle token {token!r}"
+                )
+
+checker_source = (ROOT / "core/lib/src/code/test/checker/common.hal").read_text(
+    encoding="utf-8"
+)
+if "(extend-type Checker std.protocol.imatch/IMatch" not in checker_source:
+    errors.append("code.test.checker.common does not own the IMatch implementation")
+
+compile_source = (ROOT / "core/lib/src/code/test/compile.hal").read_text(
+    encoding="utf-8"
+)
+for token in [
+    "code.test.base.runtime/register!",
+    "code.test.base.process/check",
+]:
+    if token not in compile_source:
+        errors.append(f"code.test.compile does not emit qualified canonical call {token!r}")
 
 for canonical, mirror in zip(CANONICAL, MIRRORS):
-    if canonical.read_bytes() != mirror.read_bytes():
+    if not mirror.exists():
+        errors.append(f"HAL mirror is missing: {mirror.relative_to(ROOT)}")
+    elif canonical.read_bytes() != mirror.read_bytes():
         errors.append(
             f"HAL mirror differs: {canonical.relative_to(ROOT)} != {mirror.relative_to(ROOT)}"
         )
 
 inventory = ROOT / "core/rust/standard-library.namespaces"
-if inventory.exists() and "code.test.protocol" in inventory.read_text(encoding="utf-8").splitlines():
+if inventory.exists() and "code.test.protocol" in inventory.read_text(
+    encoding="utf-8"
+).splitlines():
     errors.append("retired code.test.protocol remains in the Rust namespace inventory")
 
 if errors:
     print("\n".join(errors), file=sys.stderr)
     raise SystemExit(1)
 
-print("code.test has one fact-batch graph, direct std.work events, and no ITest adapter surface")
+print(
+    "code.test is a curated facade; code.test.work owns one durable fact-batch graph "
+    "with direct std.work events and exact HAL mirrors"
+)

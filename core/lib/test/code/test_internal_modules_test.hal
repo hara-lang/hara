@@ -1,0 +1,56 @@
+(ns code.test-internal-modules-test
+  (:require [code.test.base.executive :as executive]
+            [code.test.base.process :as process]
+            [code.test.base.runtime :as runtime]
+            [code.test.checker.common :as common]
+            [code.test.compile :as compile]
+            [code.test.manage :as manage]
+            [code.test.task :as task]
+            [code.test.work :as test-work]
+            [std.protocol.imatch :as match]
+            [std.work :as work]))
+
+(def isolated-registry (atom {}))
+(def isolated-fact
+  {:namespace "code.test-internal-modules-test"
+   :name "isolated fact"
+   :function (fn [options] [])
+   :meta {}})
+(runtime/registry-register isolated-registry isolated-fact)
+
+(def compiled-form
+  (compile/fact-form
+   "compiled fact"
+   [1 (quote =>) 1]
+   {:test/namespace "code.test-internal-modules-test"}))
+(def compiled-source (pr-str compiled-form))
+
+(def results
+  [(test-check
+    "internal code.test modules load without the root facade"
+    [(runtime/registry-find
+      isolated-registry
+      "code.test-internal-modules-test"
+      "isolated fact")
+     (fn? process/check)
+     (fn? task/process-test-args)
+     (fn? executive/run:report)
+     (manage/suite-settings 'missing)]
+    [isolated-fact true true true {}])
+
+   (test-check
+    "fact compilation targets qualified canonical owners"
+    [(str/includes? compiled-source
+                    "code.test.base.runtime/register!")
+     (str/includes? compiled-source
+                    "code.test.base.process/check")]
+    [true true])
+
+   (test-check
+    "checker and work ownership remain first-class without code.test"
+    [(:pass
+      (match/match-value (common/exactly 42) 42))
+     (:op (work/work-spec test-work/+runner-work+))]
+    [true :chain])])
+
+results
