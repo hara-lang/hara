@@ -18,51 +18,67 @@ jobs:
           ref: agent/std-native-file-portable-fs
           fetch-depth: 0
 
-      - name: Inspect filesystem implementation and module layout
+      - name: Inspect filesystem promise and module contracts
         shell: bash
         run: |
           set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
-          def section(path, markers, before=20, after=120):
-              text = Path(path).read_text().splitlines()
-              print(f"\n===== {path} ({len(text)} lines) =====")
-              for marker in markers:
-                  hits = [i for i, line in enumerate(text) if marker in line]
-                  print(f"\n--- marker {marker!r}: {[i + 1 for i in hits]} ---")
-                  for i in hits:
-                      lo = max(0, i - before)
-                      hi = min(len(text), i + after)
-                      for n in range(lo, hi):
-                          print(f"{n + 1:6}: {text[n]}")
-                      print("--- end hit ---")
+          def slices(path, ranges):
+              lines = Path(path).read_text().splitlines()
+              print(f"\n===== {path} ({len(lines)} lines) =====")
+              for lo, hi in ranges:
+                  print(f"\n--- lines {lo}-{hi} ---")
+                  for n in range(max(1, lo), min(len(lines), hi) + 1):
+                      print(f"{n:6}: {lines[n-1]}")
 
-          section('core/rust/src/core.rs', [
-              'pub enum FileError',
-              'pub trait FileProvider',
-              'pub struct NativeFileProvider',
-              'pub struct MemoryFileProvider',
-              'pub struct UnsupportedFileProvider',
-              'fn install_file_library',
-              '"std.native.File"',
-              '"file/read"',
-          ], before=15, after=180)
-          section('core/java/src/main/java/hara/truffle/HaraContext.java', [
-              'void installFileLibrary',
-              'private void defineFileLibrary',
-              '"std.native.File"',
-              'file/read',
-          ], before=15, after=260)
+          def markers(path, needles, before=12, after=80):
+              lines = Path(path).read_text().splitlines()
+              print(f"\n===== markers in {path} =====")
+              for needle in needles:
+                  hits = [i for i, line in enumerate(lines) if needle in line]
+                  print(f"\n--- {needle!r}: {[i+1 for i in hits]} ---")
+                  for i in hits:
+                      for n in range(max(0, i-before), min(len(lines), i+after)):
+                          print(f"{n+1:6}: {lines[n]}")
+                      print('---')
+
+          slices('core/rust/src/core.rs', [(4420,4665),(4920,5050),(5150,5375),(5880,6130),(13980,14140)])
+          markers('core/rust/src/core.rs', [
+              'pub struct Promise', 'impl Promise', 'pub fn reject',
+              'fn file_error', 'fn file_provider', 'NATIVE_TYPES',
+              'MemoryFileProvider', 'NativeFileProvider', 'FileError::',
+              'Value::ExceptionInfo', 'ExceptionInfo {',
+          ], before=10, after=65)
+          slices('core/java/src/main/java/hara/truffle/HaraContext.java', [(1,120),(3200,3270),(3920,4160)])
+          markers('core/java/src/main/java/hara/truffle/HaraContext.java', [
+              'class HaraPromise', 'record HaraPromise', 'HaraPromise(',
+              'HaraException(', 'ExceptionInfo', 'Keyword.create("error/code")',
+              'requireFileIO', 'NATIVE_TYPES', '"File"',
+          ], before=10, after=60)
           PY
 
-          echo '===== filesystem-related files ====='
-          find core -type f \( -iname '*file*' -o -path '*std/fs*' -o -iname '*promise*' \) | sort
-          echo '===== HAL source layout ====='
-          find core/lib/src/std -maxdepth 3 -type f | sort | sed -n '1,240p'
-          echo '===== Rust embedded HAL layout ====='
-          find core/rust/hal-src -maxdepth 4 -type f 2>/dev/null | sort | sed -n '1,240p'
-          echo '===== specs candidates ====='
-          find . -type f \( -iname '*native*spec*' -o -iname '*foundation*spec*' -o -iname '*namespace*' -o -iname '*manifest*' \) | sort | sed -n '1,240p'
-          echo '===== build files ====='
-          find core -maxdepth 3 -type f \( -name 'pom.xml' -o -name 'Cargo.toml' -o -name 'Makefile' -o -name 'build.rs' \) -print | sort
+          for file in \
+            core/java/src/main/java/hara/truffle/HaraMountedFileSystem.java \
+            core/java/src/main/java/hara/truffle/HaraException.java \
+            core/java/src/main/java/hara/truffle/HaraPromise.java \
+            core/lib/src/std/foundation/promise.hal \
+            core/lib/src/std/foundation/string.hal \
+            core/lib/src/std/config/common.hal \
+            core/lib/src/std/foundation.hal \
+            core/rust/build.rs \
+            core/rust/standard-library.namespaces \
+            core/Makefile; do
+            if [[ -f "$file" ]]; then
+              echo "===== $file ====="
+              sed -n '1,260p' "$file"
+            fi
+          done
+
+          echo '===== Promise chaining and namespace examples ====='
+          rg -n --glob '*.hal' 'promise/(then|catch|all)|std\.foundation\.promise|\(ns std\.' core/lib/src core/lib/test | sed -n '1,320p'
+          echo '===== Native file tests and Rust provider tests ====='
+          rg -n 'FileProvider|NativeFileProvider|MemoryFileProvider|file/(read|write|stat|list|walk|mkdir|delete|resolve)' core/rust/src core/rust/tests core/java/src/test core/lib/test 2>/dev/null | sed -n '1,420p'
+          echo '===== Sync / validation scripts ====='
+          find scripts core -maxdepth 3 -type f | sort | rg 'sync|mirror|hal-src|standard-library|test-native|focused|library' | sed -n '1,260p'
