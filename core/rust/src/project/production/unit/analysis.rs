@@ -6,21 +6,21 @@ use std::collections::BTreeSet;
 /// definition unit. The compatibility projections on [`UnitAnalysis`] remain
 /// until the target generators consume this typed inventory directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct NativeRootInventory {
-    pub primitives: BTreeSet<String>,
-    pub methods: BTreeSet<String>,
-    pub dynamic_methods: BTreeSet<String>,
-    pub types: BTreeSet<String>,
-    pub protocols: BTreeSet<String>,
-    pub protocol_methods: BTreeSet<String>,
-    pub multimethods: BTreeSet<String>,
-    pub host_calls: BTreeSet<String>,
-    pub callbacks: BTreeSet<String>,
-    pub runtime_shims: BTreeSet<String>,
+pub(crate) struct NativeRootInventory {
+    pub(crate) primitives: BTreeSet<String>,
+    pub(crate) methods: BTreeSet<String>,
+    pub(crate) dynamic_methods: BTreeSet<String>,
+    pub(crate) types: BTreeSet<String>,
+    pub(crate) protocols: BTreeSet<String>,
+    pub(crate) protocol_methods: BTreeSet<String>,
+    pub(crate) multimethods: BTreeSet<String>,
+    pub(crate) host_calls: BTreeSet<String>,
+    pub(crate) callbacks: BTreeSet<String>,
+    pub(crate) runtime_shims: BTreeSet<String>,
 }
 
 impl NativeRootInventory {
-    pub fn extend(&mut self, other: &Self) {
+    pub(crate) fn extend(&mut self, other: &Self) {
         self.primitives.extend(other.primitives.iter().cloned());
         self.methods.extend(other.methods.iter().cloned());
         self.dynamic_methods
@@ -55,7 +55,7 @@ pub struct UnitAnalysis {
     pub compile_time_edges: BTreeSet<String>,
     pub namespace_edges: BTreeSet<String>,
     /// Typed root contract consumed by #553 runtime specialization.
-    pub native_roots: NativeRootInventory,
+    pub(crate) native_roots: NativeRootInventory,
     /// Compatibility projections retained for the existing 0-alpha report.
     pub native_primitives: BTreeSet<String>,
     pub native_types: BTreeSet<String>,
