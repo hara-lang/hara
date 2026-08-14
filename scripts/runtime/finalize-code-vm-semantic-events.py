@@ -34,3 +34,37 @@ replace_once(
     '''                let effect_target;
 ''',
 )
+
+replace_once(
+    "core/rust/src/fiber/coroutine/snapshot.rs",
+    '''        assert_eq!(first.kind, EvalObservedBoundaryKind::Continue);
+''',
+    '''        assert_eq!(first.kind, EvalObservedBoundaryKind::Semantic);
+''',
+)
+
+replace_once(
+    "core/rust/src/fiber/coroutine/snapshot.rs",
+    '''            .find(|semantic| semantic.focus.form == "(* 2 3)")
+            .expect("inner multiply boundary");
+''',
+    '''            .find(|semantic| {
+                semantic.focus.form == "(* 2 3)"
+                    && semantic
+                        .result
+                        .as_ref()
+                        .is_some_and(|result| result.display == "6")
+            })
+            .expect("inner multiply return boundary");
+''',
+)
+
+replace_once(
+    "core/rust/src/fiber/coroutine/snapshot.rs",
+    '''                semantic.rule == "form/return"
+                    && semantic.focus.form == "(* 2 3)"
+''',
+    '''                semantic.rule == "value/return"
+                    && semantic.focus.form == "(* 2 3)"
+''',
+)
