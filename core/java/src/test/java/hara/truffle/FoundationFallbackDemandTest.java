@@ -18,38 +18,31 @@ public class FoundationFallbackDemandTest {
     }
     for (String name : new String[] {"assoc", "nth", "read-string"}) {
       assertFalse(name, FoundationFallbackDefinitions.defines(name));
-      assertTrue(name, FoundationFallbackDefinitions.isInitializationDependency(name));
+      assertFalse(name, FoundationFallbackDefinitions.isInitializationDependency(name));
     }
     assertFalse(FoundationFallbackDefinitions.defines("+"));
   }
 
   @Test
-  public void semanticDependencyPassSeesParsedCallLists() {
-    Set<String> special = Set.of("has?", "long");
+  public void semanticDependencyPassOnlySeesPortableSpecialForms() {
+    Set<String> special = Set.of("when");
     assertTrue(
         FoundationFallbackDefinitions.requiresInitialization(
-            HaraLanguage.readAll("(read-string \"12.5\")", "demand-test"),
+            HaraLanguage.readAll("(when true 42)", "demand-test"),
             symbol -> special.contains(symbol.getName())));
-    assertTrue(
-        FoundationFallbackDefinitions.requiresInitialization(
-            HaraLanguage.readAll("(long 1.9)", "demand-test"),
-            symbol -> special.contains(symbol.getName())));
-    assertTrue(
-        FoundationFallbackDefinitions.requiresInitialization(
-            HaraLanguage.readAll("(has? [10 20] 1)", "demand-test"),
-            symbol -> special.contains(symbol.getName())));
-    assertTrue(
-        FoundationFallbackDefinitions.requiresInitialization(
-            HaraLanguage.readAll("(assoc [1 2 3] 0 :x)", "demand-test"),
-            symbol -> special.contains(symbol.getName())));
-    assertTrue(
-        FoundationFallbackDefinitions.requiresInitialization(
-            HaraLanguage.readAll("(nth [10 20] 1)", "demand-test"),
-            symbol -> special.contains(symbol.getName())));
-    assertFalse(
-        FoundationFallbackDefinitions.requiresInitialization(
-            HaraLanguage.readAll("(+ 19 23)", "demand-test"),
-            symbol -> special.contains(symbol.getName())));
+    for (String source :
+        new String[] {
+          "(read-string \"12.5\")",
+          "(assoc [1 2 3] 0 :x)",
+          "(nth [10 20] 1)",
+          "(+ 19 23)"
+        }) {
+      assertFalse(
+          source,
+          FoundationFallbackDefinitions.requiresInitialization(
+              HaraLanguage.readAll(source, "demand-test"),
+              symbol -> special.contains(symbol.getName())));
+    }
   }
 
   @Test
@@ -64,6 +57,21 @@ public class FoundationFallbackDemandTest {
                   HaraLanguage.ID,
                   "(do (defn local-successor [x] (+ x 1)) (local-successor 41))")
               .asLong());
+      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'map))").asBoolean());
+    }
+  }
+
+  @Test
+  public void javaBackedReaderAndTupleOperationsRemainOnTheLazyPath() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertTrue(
+          context
+              .eval(HaraLanguage.ID, "(= 12.5 (read-string \"12.5\"))")
+              .asBoolean());
+      assertEquals(
+          "[:x 2 3]",
+          context.eval(HaraLanguage.ID, "(str (assoc [1 2 3] 0 :x))").asString());
+      assertEquals(20L, context.eval(HaraLanguage.ID, "(nth [10 20] 1)").asLong());
       assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'map))").asBoolean());
     }
   }
@@ -107,8 +115,18 @@ public class FoundationFallbackDemandTest {
   @Test
   public void portableOverridesRestoreReaderNumericAndCollectionSemantics() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      assertEquals(12.5, context.eval(HaraLanguage.ID, "(read-string \"12.5\")").asDouble(), 0.0);
-      assertEquals(1L, context.eval(HaraLanguage.ID, "(long 1.9)").asLong());
+      assertTrue(
+          context
+              .eval(HaraLanguage.ID, "(= 12.5 (read-string \"12.5\"))")
+              .asBoolean());
+      assertEquals(
+          12.5,
+          context
+              .eval(HaraLanguage.ID, "(double (read-string \"12.5\"))")
+              .asDouble(),
+          0.0);
+      assertEquals(1L, context.eval(HaraLanguage.ID, "(long 1.0)").asLong());
+      assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long 1.9)"));
       assertEquals(
           "[:x 2 3]",
           context.eval(HaraLanguage.ID, "(str (assoc [1 2 3] 0 :x))").asString());

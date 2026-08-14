@@ -101,10 +101,21 @@ public class HaraLanguageTest {
   @Test
   public void readsDataWithoutEvaluatingIt() {
     try (Context context = context()) {
-      assertEquals(12.5, context.eval(HaraLanguage.ID, "(read-string \"12.5\")").asDouble(), 0.0);
+      assertTrue(
+          context
+              .eval(HaraLanguage.ID, "(= 12.5 (read-string \"12.5\"))")
+              .asBoolean());
+      assertEquals(
+          12.5,
+          context
+              .eval(HaraLanguage.ID, "(double (read-string \"12.5\"))")
+              .asDouble(),
+          0.0);
       assertEquals(
           "{:value [1 2.5]}",
-          context.eval(HaraLanguage.ID, "(read-string \"{:value [1 2.5]}\")").toString());
+          context
+              .eval(HaraLanguage.ID, "(pr-str (read-string \"{:value [1 2.5]}\"))")
+              .asString());
     }
   }
 
@@ -608,9 +619,11 @@ public class HaraLanguageTest {
   @Test
   public void convertsBetweenNumericRepresentationsExplicitly() {
     try (Context context = context()) {
-      assertEquals(1, context.eval(HaraLanguage.ID, "(long 1.9)").asLong());
-      assertEquals(-1, context.eval(HaraLanguage.ID, "(long -1.9)").asLong());
+      assertEquals(1, context.eval(HaraLanguage.ID, "(long 1.0)").asLong());
+      assertEquals(-1, context.eval(HaraLanguage.ID, "(long -1.0)").asLong());
       assertEquals(2.0, context.eval(HaraLanguage.ID, "(double 2)").asDouble(), 0.0);
+      assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long 1.9)"));
+      assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long -1.9)"));
       assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long ##NaN)"));
       assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long \"1\")"));
       assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "1N"));
@@ -2084,7 +2097,7 @@ public class HaraLanguageTest {
       PolyglotException bounds =
           assertThrows(
               PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(nth [1 2] 5)"));
-      assertTrue(bounds.getMessage().contains("IndexOutOfBounds"));
+      assertTrue(bounds.getMessage().contains("nth index out of bounds"));
       PolyglotException arity =
           assertThrows(
               PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(nth [1 2] 5 :d)"));
