@@ -73,8 +73,8 @@ final class FoundationFallbackDefinitions {
           || (NAMES.contains(name) && context.isSpecialSymbol(symbol));
     }
     if (value instanceof List<?> list) {
-      for (Object item : list) {
-        if (requiresInitialization(item, context)) return true;
+      for (int index = 0; index < list.count(); index++) {
+        if (requiresInitialization(list.nth(index), context)) return true;
       }
       return false;
     }
