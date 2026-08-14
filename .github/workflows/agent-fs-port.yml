@@ -40,6 +40,12 @@ jobs:
           path: hara-specs-registry
           fetch-depth: 1
 
+      - name: Place specification fixtures where Rust tests expect them
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -s ../hara-specs-registry hara/hara-specs-registry
+
       - name: Materialize implementation patch
         shell: bash
         run: |
@@ -48,11 +54,17 @@ jobs:
             | base64 -d \
             | gzip -d \
             > "$RUNNER_TEMP/fs-current-main.patch"
+          cat control/.github/patches/fs-current-main-overlay.part-* \
+            | base64 -d \
+            | gzip -d \
+            > "$RUNNER_TEMP/fs-current-main-overlay.patch"
           cd hara
           git apply --check "$RUNNER_TEMP/fs-current-main.patch"
           git apply "$RUNNER_TEMP/fs-current-main.patch"
           git apply --check ../control/.github/patches/fs-current-main-fix-01.patch
           git apply ../control/.github/patches/fs-current-main-fix-01.patch
+          git apply --check "$RUNNER_TEMP/fs-current-main-overlay.patch"
+          git apply "$RUNNER_TEMP/fs-current-main-overlay.patch"
           git diff --check
           git diff --stat
 
@@ -73,9 +85,18 @@ jobs:
         run: |
           set -euo pipefail
           cd hara
-          rustfmt --edition 2021 --check core/rust/src/file.rs
+          rustfmt --edition 2021 --check core/rust/src/file.rs core/rust/src/fiber.rs
           cargo check --manifest-path core/rust/Cargo.toml --lib
           cargo test --manifest-path core/rust/Cargo.toml file::tests --lib -- --nocapture
+          for test_name in \
+            session_kernel_mounts_preserve_state_and_enforce_lifetime \
+            runtime_routes_file_operations_through_provider_registry \
+            hara_file_operations_use_capability_providers \
+            memory_file_provider_exposes_one_logical_root_and_preserves_bytes \
+            unsupported_capabilities_fail_stably \
+            read_forms_uses_the_capability_gated_file_provider; do
+            cargo test --manifest-path core/rust/Cargo.toml "$test_name" --lib -- --exact --nocapture
+          done
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -91,7 +112,7 @@ jobs:
           set -euo pipefail
           cd hara/core
           mvn -B -Ptruffle --file java/pom.xml \
-            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
+            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest,MainTest \
             test
 
       - name: Run focused portable path tests
