@@ -7,8 +7,10 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 pub(super) struct Reachability {
     pub runtime_roots: BTreeSet<String>,
     pub runtime_closure: BTreeSet<String>,
+    pub runtime_unit_ids: BTreeSet<String>,
     pub compile_time_roots: BTreeSet<String>,
     pub compile_time_closure: BTreeSet<String>,
+    pub compile_time_unit_ids: BTreeSet<String>,
     pub retained_unit_ids: BTreeSet<String>,
     pub reasons: Vec<RetentionReason>,
 }
@@ -173,12 +175,15 @@ pub(super) fn compute(
         }
     }
 
+    let retained_unit_ids = runtime_units.union(&compile_units).cloned().collect();
     Reachability {
         runtime_roots,
         runtime_closure,
+        runtime_unit_ids: runtime_units,
         compile_time_roots,
         compile_time_closure,
-        retained_unit_ids: runtime_units.union(&compile_units).cloned().collect(),
+        compile_time_unit_ids: compile_units,
+        retained_unit_ids,
         reasons,
     }
 }
