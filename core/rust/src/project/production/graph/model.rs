@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 pub struct ModuleAnalysis {
     pub name: String,
     pub path: String,
+    pub namespace_form: String,
     pub digest: String,
     pub input_bytes: usize,
     pub dependencies: Vec<String>,
@@ -27,8 +28,10 @@ pub struct Analysis {
     pub units: Vec<UnitAnalysis>,
     pub runtime_roots: BTreeSet<String>,
     pub runtime_closure: BTreeSet<String>,
+    pub runtime_unit_ids: BTreeSet<String>,
     pub compile_time_roots: BTreeSet<String>,
     pub compile_time_closure: BTreeSet<String>,
+    pub compile_time_unit_ids: BTreeSet<String>,
     pub retained_unit_ids: BTreeSet<String>,
     pub removed_unit_ids: BTreeSet<String>,
     pub retained_vars: BTreeSet<String>,
@@ -53,6 +56,14 @@ impl Analysis {
 #[derive(Debug, Clone)]
 pub struct AnalysisOutput {
     pub analysis: Analysis,
+    pub report_path: std::path::PathBuf,
+    pub report_source: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildOutput {
+    pub analysis: Analysis,
+    pub bundle_path: Option<std::path::PathBuf>,
     pub report_path: std::path::PathBuf,
     pub report_source: String,
 }

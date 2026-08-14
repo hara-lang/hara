@@ -51,12 +51,14 @@ pub fn expand_top_level(
 }
 
 pub fn analyze_unit(runtime: &Runtime, seed: UnitSeed, plan: &BuildPlan) -> CompiledUnit {
+    let form_source = seed.form.to_string();
     let kind = unit_kind(&seed.form);
     let provides = provided_vars(&seed.form, &seed.module);
     let mut analysis = UnitAnalysis {
         id: seed.id,
         module: seed.module.clone(),
         index: seed.index,
+        form_source: form_source.clone(),
         kind,
         effect: Effect::Unknown,
         location: seed.location.clone(),
@@ -78,7 +80,7 @@ pub fn analyze_unit(runtime: &Runtime, seed: UnitSeed, plan: &BuildPlan) -> Comp
             &mut analysis.runtime_edges,
         );
     }
-    let program = match runtime.compile_bytecode(&seed.form.to_string()) {
+    let program = match runtime.compile_bytecode(&form_source) {
         Ok(program) => {
             scan_program(&program, &mut analysis);
             analysis.effect = classify_effect(&program, kind);

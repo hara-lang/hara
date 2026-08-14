@@ -1,3 +1,5 @@
+#[path = "report/bundle.rs"]
+mod bundle;
 #[path = "report/form.rs"]
 mod form;
 
@@ -14,11 +16,17 @@ use form::{
 pub const ANALYSIS_FORMAT: &str = "hara.production-analysis/0-alpha";
 pub const SHAKE_FORMAT: &str = "hara.production-shake/0-alpha";
 
-pub fn report_source(plan: &BuildPlan, analysis: &Analysis) -> String {
-    format!("{}\n", report_form(plan, analysis))
+pub(super) use bundle::BundleSummary;
+
+pub fn report_source(
+    plan: &BuildPlan,
+    analysis: &Analysis,
+    output: Option<&BundleSummary>,
+) -> String {
+    format!("{}\n", report_form(plan, analysis, output))
 }
 
-pub fn report_form(plan: &BuildPlan, analysis: &Analysis) -> Form {
+fn report_form(plan: &BuildPlan, analysis: &Analysis, output: Option<&BundleSummary>) -> Form {
     let dynamic_diagnostics = analysis
         .diagnostics
         .iter()
@@ -29,16 +37,16 @@ pub fn report_form(plan: &BuildPlan, analysis: &Analysis) -> Form {
                 || diagnostic.code.contains("load-string")
         })
         .map(diagnostic_form);
+    let status = if !analysis.succeeded() {
+        "analysis-failed"
+    } else if output.is_some() {
+        "bundle-complete"
+    } else {
+        "analysis-complete"
+    };
     map(vec![
         ("shake/format", string(SHAKE_FORMAT)),
-        (
-            "shake/status",
-            keyword(if analysis.succeeded() {
-                "analysis-complete"
-            } else {
-                "analysis-failed"
-            }),
-        ),
+        ("shake/status", keyword(status)),
         (
             "shake/project",
             map(vec![
@@ -95,7 +103,10 @@ pub fn report_form(plan: &BuildPlan, analysis: &Analysis) -> Form {
             "shake/sizes",
             map(vec![
                 ("input-bytes", number(analysis.input_bytes)),
-                ("output-bytes", nil()),
+                (
+                    "output-bytes",
+                    output.map_or_else(nil, |summary| number(summary.output_bytes)),
+                ),
             ]),
         ),
         (
@@ -103,7 +114,10 @@ pub fn report_form(plan: &BuildPlan, analysis: &Analysis) -> Form {
             map(vec![
                 ("algorithm", keyword("sha-256")),
                 ("input", string(&analysis.input_digest)),
-                ("output", nil()),
+                (
+                    "output",
+                    output.map_or_else(nil, |summary| string(&summary.output_digest)),
+                ),
             ]),
         ),
         (
@@ -111,6 +125,10 @@ pub fn report_form(plan: &BuildPlan, analysis: &Analysis) -> Form {
             map(vec![
                 ("bundle", string(&plan.output_bundle)),
                 ("report", string(&plan.output_report)),
+                (
+                    "module-count",
+                    output.map_or_else(nil, |summary| number(summary.module_count)),
+                ),
             ]),
         ),
         ("shake/analysis", analysis_form(analysis)),
@@ -134,6 +152,10 @@ fn analysis_form(analysis: &Analysis) -> Form {
             map(vec![
                 ("roots", symbols(&analysis.runtime_roots)),
                 ("closure", symbols(&analysis.runtime_closure)),
+                (
+                    "unit-ids",
+                    string_vector(analysis.runtime_unit_ids.iter().cloned()),
+                ),
             ]),
         ),
         (
@@ -141,6 +163,10 @@ fn analysis_form(analysis: &Analysis) -> Form {
             map(vec![
                 ("roots", symbols(&analysis.compile_time_roots)),
                 ("closure", symbols(&analysis.compile_time_closure)),
+                (
+                    "unit-ids",
+                    string_vector(analysis.compile_time_unit_ids.iter().cloned()),
+                ),
             ]),
         ),
         (

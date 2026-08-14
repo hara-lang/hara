@@ -52,8 +52,8 @@ fn emits_byte_identical_analysis_reports() {
     let build = plan("app.main/start");
     let first = analyze_modules(&build, modules.clone()).unwrap();
     let second = analyze_modules(&build, modules).unwrap();
-    let first = report::report_source(&build, &first);
-    let second = report::report_source(&build, &second);
+    let first = report::report_source(&build, &first, None);
+    let second = report::report_source(&build, &second, None);
     assert_eq!(first, second);
     let parsed = parse(&first).unwrap();
     assert!(parsed

@@ -1,10 +1,12 @@
-//! Deterministic Var-level production reachability analysis.
+//! Deterministic Var-level production reachability and HBX emission.
 //!
-//! This module deliberately stops before HBX emission. It parses and expands
-//! complete modules, derives canonical compiled global edges, computes
-//! separate compile-time and runtime closures, and writes the versioned shake
-//! report consumed by the pruned-bundle stage.
+//! Production analysis parses and expands complete modules before making any
+//! removal decision. Emission then compiles only the retained runtime units
+//! into the existing HBX0 container and validates the result through the
+//! minimal `Runtime::core()` loading path.
 
+#[path = "production/bundle.rs"]
+mod bundle;
 #[path = "production/graph.rs"]
 mod graph;
 #[path = "production/plan.rs"]
@@ -20,7 +22,7 @@ mod unit;
 #[path = "production/tests.rs"]
 mod tests;
 
-pub use graph::{Analysis, AnalysisOutput, ModuleAnalysis, RetentionReason};
+pub use graph::{Analysis, AnalysisOutput, BuildOutput, ModuleAnalysis, RetentionReason};
 pub use plan::BuildPlan;
 pub use report::{ANALYSIS_FORMAT, SHAKE_FORMAT};
 
@@ -29,12 +31,15 @@ use crate::kernel::{Form, GeneratedNamespaceConfig};
 use crate::lang::data::Symbol;
 use crate::project::Project;
 use crate::Runtime;
+use bundle::ProductionBuild;
 use graph::finish_analysis;
+use sha2::{Digest, Sha256};
 use source::{
     aggregate_digest, collect_embedded_modules, collect_project_modules,
     deterministic_module_order, Diagnostic, SourceLocation, SourceModule,
 };
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use unit::{Effect, UnitAnalysis};
@@ -67,16 +72,82 @@ pub fn analyze_and_write(project: &Project, plan_source: &str) -> Result<Analysi
     let plan = BuildPlan::parse(plan_source)?;
     let modules = collect_selected_modules(project, &plan)?;
     let analysis = analyze_modules(&plan, modules)?;
-    let report_source = report::report_source(&plan, &analysis);
+    let report_source = report::report_source(&plan, &analysis, None);
     let report_path = safe_output_path(&project.root, &plan.output_report)?;
-    if let Some(parent) = report_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
-    }
-    fs::write(&report_path, &report_source)
-        .map_err(|error| format!("cannot write {}: {error}", report_path.display()))?;
+    write_output(&report_path, report_source.as_bytes())?;
     Ok(AnalysisOutput {
         analysis,
+        report_path,
+        report_source,
+    })
+}
+
+pub fn build_and_write(project: &Project, plan_source: &str) -> Result<BuildOutput, String> {
+    let plan = BuildPlan::parse(plan_source)?;
+    let modules = collect_selected_modules(project, &plan)?;
+    let mut analysis = analyze_modules(&plan, modules)?;
+    let bundle_path = safe_output_path(&project.root, &plan.output_bundle)?;
+    let report_path = safe_output_path(&project.root, &plan.output_report)?;
+    if bundle_path == report_path {
+        return Err("production bundle and shake report paths must be distinct".into());
+    }
+
+    let mut compiled = None;
+    if analysis.succeeded() {
+        let build = ProductionBuild {
+            plan: plan.clone(),
+            analysis: analysis.clone(),
+        };
+        match bundle::compile::compile(&build) {
+            Ok(candidate) => compiled = Some(candidate),
+            Err(error) => push_bundle_diagnostic(
+                &mut analysis,
+                &plan,
+                "production/bundle-compile-failed",
+                "bundle-compile",
+                error,
+            ),
+        }
+    }
+    if let Some(candidate) = compiled.take() {
+        match bundle::load::validate_bundle(&candidate.bytes, &plan.entrypoints) {
+            Ok(_) => compiled = Some(candidate),
+            Err(error) => push_bundle_diagnostic(
+                &mut analysis,
+                &plan,
+                "production/bundle-load-failed",
+                "bundle-load",
+                error,
+            ),
+        }
+    }
+
+    let Some(compiled) = compiled else {
+        remove_stale_bundle(&bundle_path)?;
+        let report_source = report::report_source(&plan, &analysis, None);
+        write_output(&report_path, report_source.as_bytes())?;
+        return Ok(BuildOutput {
+            analysis,
+            bundle_path: None,
+            report_path,
+            report_source,
+        });
+    };
+
+    let summary = report::BundleSummary {
+        output_bytes: compiled.bytes.len(),
+        output_digest: sha256_hex(&compiled.bytes),
+        module_count: compiled.modules.len(),
+    };
+    let report_source = report::report_source(&plan, &analysis, Some(&summary));
+    write_output(&bundle_path, &compiled.bytes)?;
+    if let Err(error) = write_output(&report_path, report_source.as_bytes()) {
+        let _ = fs::remove_file(&bundle_path);
+        return Err(error);
+    }
+    Ok(BuildOutput {
+        analysis,
+        bundle_path: Some(bundle_path),
         report_path,
         report_source,
     })
@@ -176,10 +247,7 @@ fn analyze_modules(plan: &BuildPlan, mut modules: Vec<SourceModule>) -> Result<A
                 }
             };
             for seed in seeds {
-                predeclare_vars(
-                    &mut runtime,
-                    unit::raw_provided_vars(&seed.form, &seed.module),
-                );
+                predeclare_vars(&runtime, unit::raw_provided_vars(&seed.form, &seed.module));
                 let mut compiled = unit::analyze_unit(&runtime, seed, plan);
                 if let Err(error) = unit::execute_compile_time_unit(&mut runtime, &compiled) {
                     compiled.analysis.diagnostics.push(Diagnostic {
@@ -197,6 +265,7 @@ fn analyze_modules(plan: &BuildPlan, mut modules: Vec<SourceModule>) -> Result<A
         analyzed_modules.push(ModuleAnalysis {
             name: module.name.clone(),
             path: module.path.clone(),
+            namespace_form: module.namespace_form.clone(),
             digest: module.digest.clone(),
             input_bytes: module.source.len(),
             dependencies: module.dependencies.clone(),
@@ -250,7 +319,7 @@ fn prepare_runtime(runtime: &mut Runtime, modules: &[SourceModule]) -> Result<()
     Ok(())
 }
 
-fn predeclare_vars(runtime: &mut Runtime, vars: BTreeSet<String>) {
+fn predeclare_vars(runtime: &Runtime, vars: BTreeSet<String>) {
     for qualified in vars {
         let Some((namespace, name)) = qualified.rsplit_once('/') else {
             continue;
@@ -274,6 +343,7 @@ fn failed_expansion_unit(
         id: format!("{}:{index:05}:000", module.name),
         module: module.name.clone(),
         index: index * 1000,
+        form_source: form.to_string(),
         kind: unit::classify_unit_kind(form),
         effect: Effect::Unknown,
         location: location.clone(),
@@ -294,6 +364,53 @@ fn failed_expansion_unit(
     }
 }
 
+fn push_bundle_diagnostic(
+    analysis: &mut Analysis,
+    plan: &BuildPlan,
+    code: &str,
+    operation: &str,
+    message: String,
+) {
+    analysis.diagnostics.push(Diagnostic {
+        code: code.into(),
+        operation: operation.into(),
+        module: plan.main.clone(),
+        location: SourceLocation {
+            path: "project.edn".into(),
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 1,
+        },
+        message,
+    });
+}
+
+fn write_output(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
+    fs::write(path, bytes).map_err(|error| format!("cannot write {}: {error}", path.display()))
+}
+
+fn remove_stale_bundle(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        fs::remove_file(path)
+            .map_err(|error| format!("cannot remove stale {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut output, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    output
+}
+
 fn safe_output_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let relative = Path::new(relative);
     if relative.as_os_str().is_empty()
@@ -304,7 +421,7 @@ fn safe_output_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
             )
         })
     {
-        return Err("production report path must remain inside the project root".into());
+        return Err("production output path must remain inside the project root".into());
     }
     Ok(root.join(relative))
 }

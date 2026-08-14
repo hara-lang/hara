@@ -13,12 +13,20 @@ fn repeated_clean_compiles_are_byte_identical() {
         first
             .modules
             .iter()
-            .map(|module| (&module.resource, &module.namespace_form, &module.dependencies))
+            .map(|module| (
+                &module.resource,
+                &module.namespace_form,
+                &module.dependencies
+            ))
             .collect::<Vec<_>>(),
         second
             .modules
             .iter()
-            .map(|module| (&module.resource, &module.namespace_form, &module.dependencies))
+            .map(|module| (
+                &module.resource,
+                &module.namespace_form,
+                &module.dependencies
+            ))
             .collect::<Vec<_>>()
     );
 }

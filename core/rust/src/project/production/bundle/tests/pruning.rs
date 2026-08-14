@@ -1,7 +1,7 @@
+use super::super::super::source::SourceModule;
 use super::super::compile;
 use super::support::{analyzed, fixture_modules, plan};
 use crate::core::Value;
-use crate::project::production::source::SourceModule;
 use crate::vm::decode_program;
 
 #[test]
@@ -20,9 +20,10 @@ fn omits_unreachable_modules_and_vars_from_hbx() {
         .find(|module| module.resource == "app.lib")
         .unwrap();
     let program = decode_program(&lib.artifact).unwrap();
-    assert!(!program.constants.iter().any(
-        |value| matches!(value, Value::String(name) if name == "app.lib/unused-lib")
-    ));
+    assert!(!program
+        .constants
+        .iter()
+        .any(|value| matches!(value, Value::String(name) if name == "app.lib/unused-lib")));
     assert!(!compiled
         .bytes
         .windows("app.unused".len())
