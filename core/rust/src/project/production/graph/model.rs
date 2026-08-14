@@ -41,7 +41,7 @@ pub struct Analysis {
     pub reasons: Vec<RetentionReason>,
     pub diagnostics: Vec<Diagnostic>,
     /// Canonical typed roots retained for native and Wasm specialization.
-    pub native_roots: NativeRootInventory,
+    pub(crate) native_roots: NativeRootInventory,
     /// Compatibility projections retained for the 0-alpha shake report.
     pub native_primitives: BTreeSet<String>,
     pub native_types: BTreeSet<String>,
