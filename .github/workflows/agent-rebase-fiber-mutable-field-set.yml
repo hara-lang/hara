@@ -1,0 +1,61 @@
+name: Rebase and validate fiber mutable field set
+
+on:
+  push:
+    branches:
+      - agent/fiber-mutable-field-set
+
+permissions:
+  contents: write
+
+jobs:
+  rebase-test-publish:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Preserve the asserted patch script
+        run: cp .github/scripts/agent_rebase_fiber_mutable_field_set.py /tmp/agent_rebase_fiber_mutable_field_set.py
+
+      - name: Checkout Hara specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+
+      - name: Expose fixtures at both Rust include paths
+        shell: bash
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/../hara-specs-registry"
+          ln -s "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Rebuild the change from current main
+        shell: bash
+        run: |
+          git fetch origin main
+          git reset --hard origin/main
+          python /tmp/agent_rebase_fiber_mutable_field_set.py
+          cargo fmt --manifest-path core/rust/Cargo.toml
+          git checkout -- core/rust/src/hta.rs
+          git diff --check
+          changed=$(git diff --name-only)
+          test "$changed" = "core/rust/src/fiber.rs"
+
+      - name: Run focused fiber regressions
+        run: cargo test --manifest-path core/rust/Cargo.toml --lib mutable_field_set_place -- --nocapture
+
+      - name: Run complete fiber test module
+        run: cargo test --manifest-path core/rust/Cargo.toml --lib fiber::tests -- --nocapture
+
+      - name: Publish one clean commit
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core/rust/src/fiber.rs
+          git commit -m "fix(rust): support mutable field places in fiber set!"
+          git push --force-with-lease origin HEAD:${GITHUB_REF_NAME}
