@@ -82,7 +82,7 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
 
   @Override
   protected CallTarget parse(ParsingRequest request) {
-    currentContext().ensureEagerFallbacks();
+    HaraContext context = currentContext();
     Source source = request.getSource();
     if (source.hasBytes() || BYTECODE_MIME_TYPE.equals(source.getMimeType())) {
       try {
@@ -111,15 +111,19 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
               + ": "
               + detail);
     }
-    return HaraAnalyzer.compile(this, forms, sourceSection, currentContext());
+    if (FoundationFallbackDemand.requires(forms, context)) context.ensureEagerFallbacks();
+    return HaraAnalyzer.compile(this, forms, sourceSection, context);
   }
 
   static CallTarget compileHalc(Object[] forms, String sourceName) {
-    return FoundationHalcLowerer.compile(currentLanguage(), currentContext(), forms);
+    HaraContext context = currentContext();
+    if (FoundationFallbackDemand.requires(forms, context)) context.ensureEagerFallbacks();
+    return FoundationHalcLowerer.compile(currentLanguage(), context, forms);
   }
 
   static CallTarget compileHalc(HalcArtifact.Module module, String sourceName) {
     HaraContext context = currentContext();
+    if (FoundationFallbackDemand.requires(module.forms, context)) context.ensureEagerFallbacks();
     context.installHalcSchemas(module.schemas);
     return FoundationHalcLowerer.compile(currentLanguage(), context, module.forms);
   }
