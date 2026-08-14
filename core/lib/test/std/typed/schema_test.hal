@@ -47,4 +47,52 @@
    (schema/valid? [:tuple :keyword :int :str] [:age "42" "years"])]
   => [true false])
 
+^{:refer 'std.typed.schema/normalize
+  :id 'strict-canonical-normalization}
+(fact "canonicalizes aliases and unions while rejecting malformed known forms"
+  [(schema/normalize :integer)
+   (schema/normalize [:or :int [:or :str :int] :str])
+   (get-in (schema/normalize-result [:vector]) [:error :reason])
+   (get-in (schema/normalize-result [:vec :any]) [:error :reason])]
+  => [{:kind :primitive :name :int}
+      {:kind :union
+       :types [{:kind :primitive :name :int}
+               {:kind :primitive :name :str}]}
+      :invalid-arity
+      :unsupported-form])
+
+^{:refer 'std.typed.schema/assignable?
+  :id 'directional-numeric-assignment}
+(fact "distinguishes overlapping domains from directional assignment"
+  [(schema/assignable? :num :int)
+   (schema/assignable? :int :num)
+   (schema/compatible? :int :num)]
+  => [true false true])
+
+^{:refer 'std.typed.schema/resolve
+  :id 'cycle-safe-reference-resolution}
+(fact "qualifies and resolves named schemas without expanding recursive cycles"
+  (let [node (schema/normalize
+              [:map [:next '(var Node)]]
+              {:namespace 'demo})
+        definitions {'demo/Node node}]
+    [(schema/normalize '(var Customer) {:namespace 'demo})
+     (schema/resolve (schema/normalize '(var demo/Node)) definitions)])
+  => [{:kind :reference :name 'demo/Customer}
+      {:kind :map
+       :fields [{:name :next
+                 :type {:kind :reference :name 'demo/Node}}]}])
+
+
+^{:refer 'std.typed.schema/assignable?
+  :id 'function-variance}
+(fact "checks function inputs contravariantly and outputs covariantly"
+  [(schema/assignable? [:fn [:int] :num]
+                       [:fn [:num] :int])
+   (schema/assignable? [:fn [:num] :int]
+                       [:fn [:int] :num])
+   (schema/assignable? '[:fn [:int & :int] :num]
+                       '[:fn [:num & :num] :int])]
+  => [true false true])
+
 (pr-str (run '[std.typed.schema-test]))
