@@ -1,0 +1,201 @@
+ using canonical CLI options."
++  [& arguments]
++  (test-work/run (cli/process-run-args arguments)))
+diff --git a/core/rust/hal-src/code/test/cli.hal b/core/rust/hal-src/code/test/cli.hal
+index 546fc30..16a6b6b 100644
+--- a/core/rust/hal-src/code/test/cli.hal
++++ b/core/rust/hal-src/code/test/cli.hal
+@@ -74,6 +74,19 @@
+                        (assoc output :namespace [value])
+                        (assoc output key value))))))))))
+ 
++(defn print-options
++  "Returns the supported code.test print modes, or preserves an explicit mode."
++  ([] (print-options :help))
++  ([options]
++   (if (= options :help)
++     #{:help :current :default :disable :all}
++     options)))
++
++(defn process-run-args
++  "Returns canonical code.test execution options from command-line arguments."
++  [arguments]
++  (process-args (collapse-only arguments)))
++
+ (defn native-result-counts
+   [results]
+   (reduce
+diff --git a/core/rust/hal-src/code/test/task.hal b/core/rust/hal-src/code/test/task.hal
+deleted file mode 100644
+index e0cb0bb..0000000
+--- a/core/rust/hal-src/code/test/task.hal
++++ /dev/null
+@@ -1,59 +0,0 @@
+-;; Deprecated task-shaped entry names retained for callers while code.test
+-;; execution is owned by code.test.work.
+-(ns code.test.task
+-  (:require [code.test.cli :as cli]
+-            [code.test.work :as test-work]))
+-
+-(def run test-work/run)
+-(def run:current test-work/run)
+-(def run:test test-work/run)
+-(def run:load test-work/run)
+-(def run:unload test-work/run)
+-(def run-errored test-work/run)
+-
+-(defn resolve-files
+-  ([files] (resolve-files files nil))
+-  ([files project]
+-   (if (or (vector? files) (list? files) (set? files))
+-     (vec files)
+-     [files])))
+-
+-(defn run:interrupt [] true)
+-(defn run:report
+-  ([path] (test-work/run {:report path}))
+-  ([path options] (test-work/run (assoc options :report path)))
+-  ([path options project] (test-work/run (assoc options :report path))))
+-
+-(defn print-options
+-  ([] (print-options :help))
+-  ([options]
+-   (if (= options :help)
+-     #{:help :current :default :disable :all}
+-     options)))
+-
+-(defn legacy-test-options
+-  "Preserves the archived task CLI result shape while code.test.cli owns the
+-   canonical :namespace execution option."
+-  [options]
+-  (if (has? options :namespace)
+-    (assoc (dissoc options :namespace)
+-           :ns
+-           (:namespace options))
+-    options))
+-
+-(defn process-run-args
+-  "Returns the canonical options used by the public code.test facade."
+-  [arguments]
+-  (cli/process-args (cli/collapse-only arguments)))
+-
+-(defn process-test-args
+-  [arguments]
+-  (legacy-test-options (process-run-args arguments)))
+-
+-(defn main
+-  [& arguments]
+-  (test-work/run (process-run-args arguments)))
+-
+-(defn -main
+-  [& arguments]
+-  (test-work/run (process-test-args arguments)))
+diff --git a/core/rust/hal-src/std/lib/collection.hal b/core/rust/hal-src/std/lib/collection.hal
+index c34be8c..70777a4 100644
+--- a/core/rust/hal-src/std/lib/collection.hal
++++ b/core/rust/hal-src/std/lib/collection.hal
+@@ -5,32 +5,32 @@
+ (defn peek-first
+   "Returns the first value through IPeekFirst."
+   [collection]
+-  (std.protocol.ipeekfirst/peek-first collection))
++  (IPeekFirst/peek-first collection))
+ 
+ (defn peek-last
+   "Returns the last value through IPeekLast."
+   [collection]
+-  (std.protocol.ipeeklast/peek-last collection))
++  (IPeekLast/peek-last collection))
+ 
+ (defn pop-first
+   "Returns collection without its first value through IPopFirst."
+   [collection]
+-  (std.protocol.ipopfirst/pop-first collection))
++  (IPopFirst/pop-first collection))
+ 
+ (defn pop-last
+   "Returns collection without its last value through IPopLast."
+   [collection]
+-  (std.protocol.ipoplast/pop-last collection))
++  (IPopLast/pop-last collection))
+ 
+ (defn push-first
+   "Returns collection with value added at the front through IPushFirst."
+   [collection value]
+-  (std.protocol.ipushfirst/push-first collection value))
++  (IPushFirst/push-first collection value))
+ 
+ (defn push-last
+   "Returns collection with value added at the back through IPushLast."
+   [collection value]
+-  (std.protocol.ipushlast/push-last collection value))
++  (IPushLast/push-last collection value))
+ 
+ (defn deque?
+   "Returns true when value is a persistent deque."
+diff --git a/core/rust/hal-src/std/lib/simple.hal b/core/rust/hal-src/std/lib/simple.hal
+deleted file mode 100644
+index b21893a..0000000
+--- a/core/rust/hal-src/std/lib/simple.hal
++++ /dev/null
+@@ -1,3 +0,0 @@
+-(ns std.lib.simple)
+-
+-(defn foo [x] (inc x))
+diff --git a/core/rust/hal-src/std/test_helper.hal b/core/rust/hal-src/std/test_helper.hal
+deleted file mode 100644
+index 7081b1b..0000000
+--- a/core/rust/hal-src/std/test_helper.hal
++++ /dev/null
+@@ -1,24 +0,0 @@
+-(ns std.test-helper)
+-
+-(defn check
+-  "Returns a test result map."
+-  [name actual expected]
+-  {:name name
+-   :pass (= actual expected)
+-   :actual actual
+-   :expected expected})
+-
+-(defmacro check-error
+-  "Returns a passing result if `form` throws, failing otherwise."
+-  [name form]
+-  `(check ~name (try (do ~form false) (catch Exception e# true)) true))
+-
+-(defn passed?
+-  "True if a result map passed."
+-  [result]
+-  (:pass result))
+-
+-(defn print-results
+-  "Prints the result vector so the runner can parse it."
+-  [results]
+-  (pr-str results))
+diff --git a/core/rust/hal-src/tool/cli/template.hal b/core/rust/hal-src/tool/cli/template.hal
+index 5cab3b3..4cf3c98 100644
+--- a/core/rust/hal-src/tool/cli/template.hal
++++ b/core/rust/hal-src/tool/cli/template.hal
+@@ -243,8 +243,9 @@
+       (fn [request]
+         (std-work/run (runtime-fn) command-work request))
+       {:tool.cli.template/schema schema-id
+-       :tool.cli.template/definition definition
+-       :tool.cli.template/work command-work})))
++       :tool.cli.template/id (:id definition)
++       :tool.cli.template/version (:version definition)
++       :tool.cli.template/type (:template definition)})))
+ 
+ (defn handler?
+   [value]
+diff --git a/core/rust/src/lib.rs b/core/rust/src/lib.rs
+index 1afe15f..bd37d0d 100644
+--- a/core/rust/src/lib.rs
++++ b/core/rust/src/lib.rs
+@@ -5283,8 +5283,7 @@ mod tests {
+                                  [code.test.checker.collection :as collection] \
+                                  [code.test.checker.logic :as logic] \
+                                  [code.test.base.runtime :as runtime] \
+-                                 [code.test.compile.types :as types] \
+-                                 [code.test.task :as task])) \
++                          
