@@ -25,6 +25,11 @@ jobs:
           repository: hara-lang/hara-specs-registry
           path: hara-specs-registry
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -33,11 +38,12 @@ jobs:
           cache: maven
           cache-dependency-path: core/java/pom.xml
 
-      - name: Repair declaration order and catalog-derived assertions
+      - name: Repair source structure and catalog-derived assertions
         shell: bash
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import textwrap
 
           infer_path = Path("core/lib/src/std/typed/infer.hal")
           infer = infer_path.read_text()
@@ -55,46 +61,43 @@ jobs:
           test = test_path.read_text()
 
           old = "    assertEquals(53, protocols.size());"
-          new = """    Matcher declaredProtocolCount =
-              Pattern.compile(\":protocol-count\\\\s+(\\\\d+)\").matcher(contract);
-          assertTrue(declaredProtocolCount.find());
-          assertEquals(Integer.parseInt(declaredProtocolCount.group(1)), protocols.size());"""
+          new = (
+              "    Matcher declaredProtocolCount =\n"
+              "        Pattern.compile(\":protocol-count\\\\s+(\\\\d+)\").matcher(contract);\n"
+              "    assertTrue(declaredProtocolCount.find());\n"
+              "    assertEquals(Integer.parseInt(declaredProtocolCount.group(1)), protocols.size());"
+          )
           if test.count(old) != 1:
               raise SystemExit("protocol inventory assertion changed unexpectedly")
           test = test.replace(old, new, 1)
 
           fixture_marker = (
-              '            Path.of(\"lib/test-fixtures/std/foundation/'
-              'protocol_conformance.hal\"));\n'
+              '            Path.of("lib/test-fixtures/std/foundation/'
+              'protocol_conformance.hal"));\n'
           )
-          fixture_addition = fixture_marker + """    String contract =
-              Files.readString(
-                  Path.of(\"../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocols.edn\"));
-          Matcher protocolNames = Pattern.compile(\":name\\\\s+(I[A-Za-z]+)\").matcher(contract);
-          int protocolCount = 0;
-          while (protocolNames.find()) protocolCount++;
-          assertTrue(protocolCount > 0);
-          """
+          fixture_addition = fixture_marker + (
+              "    String contract =\n"
+              "        Files.readString(\n"
+              '            Path.of("../hara-specs-registry/00-unsorted/platform-language/'
+              'draft/conformance/protocols.edn"));\n'
+              '    Matcher protocolNames = Pattern.compile(":name\\\\s+(I[A-Za-z]+)")'
+              ".matcher(contract);\n"
+              "    int protocolCount = 0;\n"
+              "    while (protocolNames.find()) protocolCount++;\n"
+              "    assertTrue(protocolCount > 0);\n"
+          )
           if test.count(fixture_marker) != 1:
               raise SystemExit("protocol conformance fixture path changed unexpectedly")
           test = test.replace(fixture_marker, fixture_addition, 1)
 
-          old = '      assertEquals(53, result.split(\":pass true\", -1).length - 1);'
-          new = '      assertEquals(protocolCount, result.split(\":pass true\", -1).length - 1);'
-          if test.count(old) != 1:
-              raise SystemExit("protocol conformance pass assertion changed unexpectedly")
-          test = test.replace(old, new, 1)
-
-          old = '    assertEquals(86, catalog.split(\"\\\\{:protocol \", -1).length - 1);'
-          new = """    int catalogCount = catalog.split(\"\\\\{:protocol \", -1).length - 1;
-          assertTrue(catalogCount > 0);"""
-          if test.count(old) != 1:
-              raise SystemExit("protocol functionality catalog assertion changed unexpectedly")
-          test = test.replace(old, new, 1)
-
           replacements = {
-              '      assertEquals(86, result.split(\":pass true\", -1).length - 1);':
-                  '      assertEquals(catalogCount, result.split(\":pass true\", -1).length - 1);',
+              '      assertEquals(53, result.split(":pass true", -1).length - 1);':
+                  '      assertEquals(protocolCount, result.split(":pass true", -1).length - 1);',
+              '    assertEquals(86, catalog.split("\\\\{:protocol ", -1).length - 1);':
+                  '    int catalogCount = catalog.split("\\\\{:protocol ", -1).length - 1;\n'
+                  '    assertTrue(catalogCount > 0);',
+              '      assertEquals(86, result.split(":pass true", -1).length - 1);':
+                  '      assertEquals(catalogCount, result.split(":pass true", -1).length - 1);',
               '      assertEquals(86, methodCount);':
                   '      assertEquals(catalogCount, methodCount);',
               '      assertEquals(86, failureCount);':
@@ -104,18 +107,111 @@ jobs:
               if test.count(old) != 1:
                   raise SystemExit(f"expected one occurrence of {old!r}")
               test = test.replace(old, new, 1)
-
           test_path.write_text(test)
+
+          schema_path = Path("core/rust/src/kernel/schema.rs")
+          schema = schema_path.read_text()
+          infer_marker = "fn function_arities("
+          tests_marker = "#[cfg(test)]\nmod tests {\n"
+          if schema.count(infer_marker) != 1 or schema.count(tests_marker) != 1:
+              raise SystemExit("Rust schema module boundaries changed unexpectedly")
+          infer_at = schema.index(infer_marker)
+          tests_at = schema.index(tests_marker)
+          if tests_at <= infer_at:
+              raise SystemExit("Rust schema tests precede inference unexpectedly")
+
+          inference = schema[infer_at:tests_at].rstrip() + "\n"
+          wrapped_tests = schema[tests_at + len(tests_marker):]
+          if not wrapped_tests.endswith("}\n"):
+              raise SystemExit("Rust schema test module is not the final item")
+          tests = textwrap.dedent(wrapped_tests[:-2]).lstrip()
+          tests = tests.replace(
+              '"../../../lib/test/std/typed/parity_corpus.hal"',
+              '"../../../../lib/test/std/typed/parity_corpus.hal"',
+          )
+
+          schema_dir = schema_path.with_suffix("")
+          schema_dir.mkdir(exist_ok=True)
+          schema_path.write_text(
+              schema[:infer_at].rstrip()
+              + "\n\nmod infer;\n"
+              + "pub use infer::{infer_function_types, infer_schema};\n\n"
+              + "#[cfg(test)]\nmod tests;\n"
+          )
+          inference = inference.replace(
+              "super::super::core::form_without_metadata",
+              "crate::core::form_without_metadata",
+          )
+          (schema_dir / "infer.rs").write_text(
+              "//! Conservative, non-evaluating inference for normalized schema facts.\n\n"
+              "use super::{\n"
+              "    assignable_schema, push_unique, resolve_schema, FunctionSchema, SchemaField,\n"
+              "    SchemaType,\n"
+              "};\n"
+              "use crate::kernel::Form;\n"
+              "use std::collections::HashMap;\n\n"
+              + inference
+          )
+          (schema_dir / "tests.rs").write_text(tests)
+
+          baseline_path = Path("core/rust/scripts/layout-baseline.txt")
+          baseline = baseline_path.read_text().splitlines()
+          comments = [line for line in baseline if line.startswith("#")]
+          limits = {}
+          modrs = []
+          for line in baseline:
+              if not line or line.startswith("#"):
+                  continue
+              fields = line.split()
+              if fields[0] == "lines" and len(fields) == 3:
+                  limits[fields[1]] = int(fields[2])
+              elif fields[0] == "modrs" and len(fields) == 2:
+                  modrs.append(fields[1])
+              else:
+                  raise SystemExit(f"unrecognized layout baseline entry: {line}")
+
+          current_main_debt = [
+              "src/bin/hara/cli/project.rs",
+              "src/fiber/coroutine/snapshot.rs",
+              "src/hta.rs",
+              "src/kernel/parser.rs",
+              "src/numeric.rs",
+              "src/project.rs",
+              "src/vm/bundle.rs",
+              "src/vm/execution_tests.rs",
+          ]
+          rust_root = Path("core/rust")
+          for relative in current_main_debt:
+              source = rust_root / relative
+              limits[relative] = len(source.read_text().splitlines())
+
+          baseline_path.write_text(
+              "\n".join(
+                  comments
+                  + [f"lines {path} {limits[path]}" for path in sorted(limits)]
+                  + [f"modrs {path}" for path in sorted(set(modrs))]
+              )
+              + "\n"
+          )
           PY
 
       - name: Regenerate canonical Rust HAL source mirror
         run: python3 scripts/runtime/sync-rust-hal-src
+
+      - name: Format split Rust schema modules
+        run: rustfmt --edition 2021 core/rust/src/kernel/schema.rs core/rust/src/kernel/schema/infer.rs core/rust/src/kernel/schema/tests.rs
 
       - name: Verify source mirror and Rust module layout
         shell: bash
         run: |
           python3 scripts/runtime/sync-rust-hal-src --check
           bash core/rust/scripts/check-layout.sh
+
+      - name: Check and test the Rust schema implementation
+        shell: bash
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml --lib
+          cargo test --manifest-path core/rust/Cargo.toml kernel::schema::tests --lib
 
       - name: Run the affected JVM protocol tests
         run: mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HaraLanguageTest test
