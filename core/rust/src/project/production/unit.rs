@@ -13,7 +13,7 @@ mod program;
 #[path = "unit/provides.rs"]
 mod provides;
 
-pub use analysis::UnitAnalysis;
+pub use analysis::{NativeRootInventory, UnitAnalysis};
 pub use analyze::{analyze_unit, execute_compile_time_unit, expand_top_level};
 pub use kind::{Effect, UnitKind};
 pub use location::source_location;
