@@ -7,6 +7,6 @@ mod model;
 #[path = "graph/reachability.rs"]
 mod reachability;
 
-pub use super::unit::{Effect, UnitAnalysis, UnitKind};
+pub use super::unit::{Effect, NativeRootInventory, UnitAnalysis, UnitKind};
 pub use finalize::finish_analysis;
 pub use model::{Analysis, AnalysisOutput, BuildOutput, ModuleAnalysis, RetentionReason};
