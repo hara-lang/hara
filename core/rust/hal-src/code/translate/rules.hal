@@ -11,7 +11,53 @@
     :hara/path hara-path
     :note note}])
 
+(def +native-static-types+
+  ["Arr" "Bits" "Bytes" "Coroutine" "Crypto" "Edn" "Error" "File"
+   "Host" "Iter" "Json" "Kernel" "Maths" "Numbers" "OS" "Obj"
+   "Printer" "Process" "Promise" "Regex" "Runtime" "Socket" "String"
+   "UUID"])
+
+(defn native-static-dependency-rule
+  [type]
+  {:id (keyword (str "dependency/std-native-" type "-static"))
+   :kind :dependency-entry
+   :match {:text (str "std.native." type)}
+   :rewrite {:op :delete-parent}
+   :safety :safe
+   :priority 118
+   :message (str "Remove the invalid native dependency; " type
+                 " is a built-in static object.")
+   :evidence
+   (evidence "src/std/lib/foundation.clj"
+             "core/lib/src/std/foundation.hal"
+             "Built-in native static objects must not be required or namespace-aliased.")})
+
+(defn native-static-call-rule
+  [type]
+  {:id (keyword (str "native/std-native-" type))
+   :kind :token-prefix
+   :match {:text (str "std.native." type)}
+   :match/when {:not-parent-contains ":as"}
+   :rewrite {:op :replace-token-prefix :text type}
+   :safety :safe
+   :priority 119
+   :message (str "Use the built-in " type " static object directly.")
+   :evidence
+   (evidence "src/std/lib/foundation.clj"
+             "core/lib/src/std/foundation.hal"
+             "Native static objects are built into Hara rather than loaded as namespaces.")})
+
+(defn native-static-dependency-rules
+  []
+  (vec (map native-static-dependency-rule +native-static-types+)))
+
+(defn native-static-call-rules
+  []
+  (vec (map native-static-call-rule +native-static-types+)))
+
 (def +rules+
+  (vec
+   (concat
   [{:id :namespace/std-protocol-block
     :kind :token
     :match {:text "std.protocol.block"}
@@ -106,15 +152,11 @@
     :evidence (evidence "src/std/json.clj" "core/lib/src/std/foundation.hal"
                         "Native static objects are available without namespace dependencies.")}
 
-   {:id :dependency/std-native-json-static
-    :kind :dependency-entry
-    :match {:text "std.native.Json"}
-    :rewrite {:op :delete-parent}
-    :safety :safe
-    :priority 118
-    :message "Remove the invalid native JSON dependency; Json is a built-in static object."
-    :evidence (evidence "src/std/json.clj" "core/lib/src/std/foundation.hal"
-                        "Built-in native static objects must not be required or namespace-aliased.")}
+   ]
+
+  (native-static-dependency-rules)
+
+  [
 
    {:id :collection/map-keys
     :kind :token
@@ -367,16 +409,11 @@
     :evidence (evidence "src/std/json.clj" "core/lib/src/std/foundation.hal"
                         "Hara has one canonical JSON capability boundary.")}
 
-   {:id :native/std-native-json
-    :kind :token-prefix
-    :match {:text "std.native.Json"}
-    :match/when {:not-parent-contains ":as"}
-    :rewrite {:op :replace-token-prefix :text "Json"}
-    :safety :safe
-    :priority 119
-    :message "Use the built-in Json static object directly."
-    :evidence (evidence "src/std/json.clj" "core/lib/src/std/foundation.hal"
-                        "Json is a built-in native static object, not a requireable namespace.")}
+   ]
+
+  (native-static-call-rules)
+
+  [
 
    {:id :namespace/std-lib-foundation
     :kind :token
@@ -513,4 +550,4 @@
     :evidence
     (evidence "src/std/lib/zip.clj"
               "core/lib/src/std/lib/zip.hal"
-              "The portable zipper exposes display data instead of java.io.Writer integration.")}])
+              "The portable zipper exposes display data instead of java.io.Writer integration.")}])))

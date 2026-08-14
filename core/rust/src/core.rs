@@ -1387,6 +1387,10 @@ pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
             value.tag().get_name().into(),
             Box::new(value_to_form(value.form())?),
         )),
+        Value::Pointer(value) => Ok(Form::Tagged(
+            "ptr".into(),
+            Box::new(value_to_form(&Value::Map(value.descriptor()))?),
+        )),
         Value::List(values) => Ok(Form::List(
             values
                 .iter()
@@ -2095,6 +2099,35 @@ pub fn map_entries(value: &Value) -> Option<Vec<(Value, Value)>> {
     }
 }
 
+fn pointer_from_descriptor(descriptor: Value) -> Result<Value, String> {
+    let entries = map_entries(&descriptor)
+        .ok_or_else(|| "pointer expects one descriptor map".to_string())?;
+    let context_key = Value::Keyword(Keyword::from("context"));
+    let mut context = None;
+    let mut fields = Vec::new();
+    for (key, value) in entries {
+        if key == context_key {
+            if context.is_some() {
+                return Err("pointer descriptor contains duplicate :context".into());
+            }
+            context = match value {
+                Value::Keyword(context) => Some(context),
+                _ => return Err("pointer :context must be a keyword".into()),
+            };
+        } else {
+            if !matches!(key, Value::Keyword(_)) {
+                return Err("pointer descriptor fields must use keyword keys".into());
+            }
+            fields.push((key, value));
+        }
+    }
+    let context = context.ok_or_else(|| "pointer descriptor requires :context".to_string())?;
+    Ok(Value::Pointer(PPointer::new(
+        context,
+        fields.into_iter().collect(),
+    )))
+}
+
 /// Returns whether a value may leave the evaluator session as immutable HAL data.
 ///
 /// Session transfer is deliberately narrower than displayability. Functions,
@@ -2131,6 +2164,10 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         Value::Tuple(values) => values.iter().all(session_transferable),
         Value::Vector(values) => values.iter().all(session_transferable),
         Value::Struct(value) => value.ordered_values().into_iter().all(session_transferable),
+        Value::Pointer(value) => value
+            .fields()
+            .iter()
+            .all(|(key, value)| session_transferable(key) && session_transferable(value)),
         Value::ExceptionInfo(value) => {
             session_transferable(&value.data)
                 && value.cause.as_deref().map_or(true, session_transferable)
@@ -2141,7 +2178,6 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Promise(_)
         | Value::Atom(_)
         | Value::Recur(_)
-        | Value::Pointer(_)
         | Value::Function(_)
         | Value::Iterator(_)
         | Value::Var(_)
@@ -9722,6 +9758,9 @@ fn literal_value(form: &Form) -> Result<Value, String> {
         Form::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
         Form::Decimal(value) => Ok(Value::Decimal(value.clone())),
         Form::Regex(value) => Ok(Value::Regex(value.clone())),
+        Form::Tagged(tag, value) if tag == "ptr" => {
+            pointer_from_descriptor(literal_value(value)?)
+        }
         Form::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(
             Symbol::parse(tag),
             literal_value(value)?,
@@ -11068,6 +11107,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
         Form::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
         Form::Decimal(value) => Ok(Value::Decimal(value.clone())),
         Form::Regex(value) => Ok(Value::Regex(value.clone())),
+        Form::Tagged(tag, value) if tag == "ptr" => {
+            pointer_from_descriptor(literal_value(value)?)
+        }
         Form::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(
             Symbol::parse(tag),
             literal_value(value)?,
@@ -12738,7 +12780,13 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     Ok(Value::Promise(promise_chain(source, n, function)))
                 }
                 Form::Symbol(n) if n.starts_with("ns:") => eval_namespace_operation(n, fs, env),
-                Form::Symbol(n) if n == "keyword" || n == "symbol" || n == "pointer" => {
+                Form::Symbol(n) if n == "pointer" => {
+                    if fs.len() != 2 {
+                        return Err("pointer expects one descriptor map".into());
+                    }
+                    pointer_from_descriptor(eval(&fs[1], env)?)
+                }
+                Form::Symbol(n) if n == "keyword" || n == "symbol" => {
                     if fs.len() != 2 && fs.len() != 3 {
                         return Err(format!("{n} expects a name or namespace and name"));
                     }
@@ -12759,10 +12807,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         ("symbol", [name]) => Ok(Value::Symbol(Symbol::parse(name))),
                         ("symbol", [namespace, name]) => {
                             Ok(Value::Symbol(Symbol::create(Some(namespace), name)))
-                        }
-                        ("pointer", [name]) => Ok(Value::Pointer(PPointer::parse(name))),
-                        ("pointer", [namespace, name]) => {
-                            Ok(Value::Pointer(PPointer::create(Some(namespace), name)))
                         }
                         _ => unreachable!(),
                     }

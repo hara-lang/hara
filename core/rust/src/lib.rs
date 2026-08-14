@@ -4230,6 +4230,42 @@ mod tests {
             entry(inventory, "type-count"),
             &Form::Number(types.len() as i64)
         );
+        let Form::Map(source_resolution) = entry(&contract, "source-resolution") else {
+            panic!(":source-resolution must be a map")
+        };
+        assert!(matches!(
+            entry(source_resolution, "model"),
+            Form::Keyword(value) if value == "builtin-static-object"
+        ));
+        for field in ["namespace-dependency", "requireable", "aliasable"] {
+            assert_eq!(entry(source_resolution, field), &Form::Bool(false));
+        }
+        let Form::Map(translation) = entry(&contract, "translation-conformance") else {
+            panic!(":translation-conformance must be a map")
+        };
+        assert!(matches!(
+            entry(translation, "coverage"),
+            Form::Keyword(value) if value == "all-inventory-types"
+        ));
+        let Form::Vector(requirements) = entry(translation, "requirements") else {
+            panic!(":translation-conformance :requirements must be a vector")
+        };
+        for requirement in [
+            "inventory-is-closed",
+            "every-type-has-global-object",
+            "global-object-is-runtime-qualified-object",
+            "native-dependencies-are-rejected",
+            "aliased-calls-are-canonicalized",
+            "qualified-calls-are-canonicalized",
+            "translation-is-idempotent",
+        ] {
+            assert!(
+                requirements.iter().any(
+                    |value| matches!(value, Form::Keyword(name) if name == requirement)
+                ),
+                "missing native translation requirement: {requirement}"
+            );
+        }
 
         let mut specified = Vec::new();
         let mut direct_cases = Vec::new();
@@ -4323,6 +4359,22 @@ mod tests {
             })
             .collect::<Vec<(String, Vec<String>)>>();
         assert_eq!(specified, runtime_inventory);
+        let Form::Map(startup_visibility) = entry(&contract, "startup-visibility") else {
+            panic!(":startup-visibility must be a map")
+        };
+        let global_aliases = symbols(
+            entry(startup_visibility, "global-aliases"),
+            ":global-aliases",
+        );
+        assert_eq!(
+            global_aliases
+                .iter()
+                .collect::<std::collections::HashSet<_>>(),
+            specified
+                .iter()
+                .map(|(name, _)| name)
+                .collect::<std::collections::HashSet<_>>()
+        );
         assert_eq!(
             entry(inventory, "method-count"),
             &Form::Number(
@@ -4363,6 +4415,15 @@ mod tests {
                 .sum::<usize>()
         );
         let mut runtime = Runtime::new();
+        for (native_type, _) in &specified {
+            assert_eq!(
+                runtime
+                    .eval_text(&format!("(= {native_type} std.native.{native_type})"))
+                    .unwrap(),
+                "true",
+                "global native type object differs for {native_type}"
+            );
+        }
         assert_eq!(
             runtime
                 .eval_text(
@@ -5346,13 +5407,13 @@ mod tests {
         assert_eq!(runtime.eval_text("(get (cons 0 [1 2]) 2)").unwrap(), "2");
         assert_eq!(
             runtime
-                .eval_text("(pointer \"hara.core\" \"value\")")
+                .eval_text("#ptr {:context :kernel :id \"ROOT\"}")
                 .unwrap(),
-            "#\x27hara.core/value"
+            "#ptr {:context :kernel :id \"ROOT\"}"
         );
         assert_eq!(
             runtime
-                .eval_text("(type (pointer \"hara.core/value\"))")
+                .eval_text("(type (pointer {:context :test :refer tool.lint/lint-source :id lint-source}))")
                 .unwrap(),
             ":hara.type/pointer"
         );
@@ -7759,6 +7820,30 @@ mod tests {
                 .unwrap(),
             r#""(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] ))\n[std.foundation/map-keys std.foundation/prewalk-replace Json/read]""#
         );
+        assert_eq!(
+            runtime
+                .eval_text("(count code.translate.rule/+ruleset+)")
+                .unwrap(),
+            "90"
+        );
+        for (native_type, _) in core::NATIVE_TYPES {
+            let expression = format!(
+                r#"(let [output
+                         (get
+                          (code.translate.rule/translate-source
+                           "(ns demo (:require [std.native.{native_type} :as native]))\n[native/probe std.native.{native_type}/probe]"
+                           {{:mode :safe}})
+                          :output)]
+                     [(str/includes? output "{native_type}/probe")
+                      (str/includes? output "native/probe")
+                      (str/includes? output "std.native.")])"#
+            );
+            assert_eq!(
+                runtime.eval_text(&expression).unwrap(),
+                "[true false false]",
+                "native static translation failed for {native_type}"
+            );
+        }
     }
 
     #[test]

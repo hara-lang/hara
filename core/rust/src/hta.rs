@@ -39,6 +39,7 @@ const SORTED_SET: u8 = 30;
 const TAGGED: u8 = 31;
 const EXCEPTION_INFO: u8 = 32;
 const STRUCT: u8 = 33;
+const POINTER: u8 = 34;
 
 pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = MAGIC.to_vec();
@@ -250,6 +251,19 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
             encode_sequence(VECTOR, fields.iter(), output, depth)?;
             let values = value.ordered_values();
             encode_sequence(VECTOR, values.into_iter(), output, depth)?;
+        }
+        Value::Pointer(value) => {
+            output.push(POINTER);
+            encode_bare(
+                &Value::Keyword(value.context().clone()),
+                output,
+                depth + 1,
+            )?;
+            encode_bare(
+                &Value::Map(value.fields().clone()),
+                output,
+                depth + 1,
+            )?;
         }
         Value::Mutable(_) | Value::MutableType(_) => {
             return Err(
@@ -524,6 +538,17 @@ impl Reader<'_> {
                     )?,
                 )))
             }
+            POINTER => {
+                let Value::Keyword(context) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid pointer context".into());
+                };
+                let Value::Map(fields) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid pointer fields".into());
+                };
+                Ok(Value::Pointer(crate::lang::data::Pointer::new(
+                    context, fields,
+                )))
+            }
             _ => Err("hta/value-malformed: unknown value tag".into()),
         }
     }
@@ -594,6 +619,21 @@ mod tests {
         ));
         let decoded = decode(&encode(&tuple).unwrap()).unwrap();
         assert!(matches!(decoded, Value::Tuple(_)));
+    }
+
+    #[test]
+    fn pointers_round_trip_as_descriptors() {
+        let fields = vec![(
+            Value::Keyword("id".into()),
+            Value::String("ROOT".into()),
+        )]
+        .into_iter()
+        .collect();
+        let pointer = Value::Pointer(crate::lang::data::Pointer::new(
+            crate::lang::data::Keyword::from("kernel"),
+            fields,
+        ));
+        assert_eq!(decode(&encode(&pointer).unwrap()).unwrap(), pointer);
     }
 
     #[test]

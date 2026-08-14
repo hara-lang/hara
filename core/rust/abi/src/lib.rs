@@ -12,11 +12,43 @@ pub enum Value {
     String(String),
     Integer(i64),
     Float(f64),
+    Character(char),
+    BigInteger(String),
     Decimal(String),
+    Regex(String),
     Bytes(Vec<u8>),
     Keyword(String),
+    Symbol(String),
+    List(Vec<Value>),
     Vector(Vec<Value>),
+    Tuple(Vec<Value>),
+    Cons(Vec<Value>),
+    Queue(Vec<Value>),
+    Set(Vec<Value>),
+    OrderedSet(Vec<Value>),
+    SortedSet(Vec<Value>),
+    Map(Vec<(Value, Value)>),
+    OrderedMap(Vec<(Value, Value)>),
+    SortedMap(Vec<(Value, Value)>),
+    Trie(Vec<(String, Value)>),
     Record(RecordValue),
+    Tagged { tag: String, form: Box<Value> },
+    ExceptionInfo {
+        message: String,
+        data: Box<Value>,
+        cause: Option<Box<Value>>,
+    },
+    Struct {
+        name: String,
+        fields: Vec<String>,
+        values: Vec<Value>,
+    },
+    Pointer {
+        context: String,
+        fields: RecordValue,
+    },
+    /// A qualified binding identity. The bound value is never transferred.
+    VarRef(String),
 }
 
 pub type RecordValue = BTreeMap<String, Value>;
