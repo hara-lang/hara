@@ -22,6 +22,8 @@ AUDIT_FILES = [ROOT / "core/lib/test/std/platform_imatch_test.hal"]
 RETIRED_PATHS = [
     ROOT / "core/lib/src/code/test/protocol.hal",
     ROOT / "core/rust/hal-src/code/test/protocol.hal",
+    ROOT / "core/lib/src/code/test/task.hal",
+    ROOT / "core/rust/hal-src/code/test/task.hal",
 ]
 
 FORBIDDEN_RUNTIME = [
@@ -72,6 +74,7 @@ REQUIRED_GRAPH = [
     "(defn start",
 ]
 REQUIRED_FACADE = [
+    "[code.test.cli :as cli]",
     "(def check process/check)",
     "(def register! runtime/register!)",
     "(def run test-work/run)",
@@ -79,6 +82,9 @@ REQUIRED_FACADE = [
     "(def +runner-work+ test-work/+runner-work+)",
     "(defmacro fact",
     "(defmacro fact:global",
+    "(def print-options cli/print-options)",
+    "(def process-test-args cli/process-run-args)",
+    "(def -main executive/main)",
 ]
 FORBIDDEN_FACADE = [
     "[std.work",
@@ -98,6 +104,10 @@ FORBIDDEN_FACADE = [
     "work/emit!",
     "(work/step",
     "(work/batch",
+    "[code.test.task",
+    "task/print-options",
+    "task/process-run-args",
+    "task/main",
 ]
 GRAPH_TOKENS = [
     "code.test/fact-batch-items",
@@ -110,7 +120,7 @@ errors = []
 
 for path in RETIRED_PATHS:
     if path.exists():
-        errors.append(f"retired code.test protocol facade exists: {path.relative_to(ROOT)}")
+        errors.append(f"retired code.test namespace exists: {path.relative_to(ROOT)}")
 
 paths = []
 for audit_root in AUDIT_ROOTS:
@@ -161,6 +171,19 @@ checker_source = (ROOT / "core/lib/src/code/test/checker/common.hal").read_text(
 if "(extend-type Checker std.protocol.imatch/IMatch" not in checker_source:
     errors.append("code.test.checker.common does not own the IMatch implementation")
 
+cli_source = (ROOT / "core/lib/src/code/test/cli.hal").read_text(
+    encoding="utf-8"
+)
+for token in ["(defn print-options", "(defn process-run-args"]:
+    if token not in cli_source:
+        errors.append(f"code.test.cli does not own canonical adapter {token!r}")
+
+executive_source = (ROOT / "core/lib/src/code/test/base/executive.hal").read_text(
+    encoding="utf-8"
+)
+if "(defn main" not in executive_source:
+    errors.append("code.test.base.executive does not own the executable main adapter")
+
 compile_source = (ROOT / "core/lib/src/code/test/compile.hal").read_text(
     encoding="utf-8"
 )
@@ -180,16 +203,19 @@ for canonical, mirror in zip(CANONICAL, MIRRORS):
         )
 
 inventory = ROOT / "core/rust/standard-library.namespaces"
-if inventory.exists() and "code.test.protocol" in inventory.read_text(
-    encoding="utf-8"
-).splitlines():
-    errors.append("retired code.test.protocol remains in the Rust namespace inventory")
+if inventory.exists():
+    inventory_namespaces = inventory.read_text(encoding="utf-8").splitlines()
+    for retired in ["code.test.protocol", "code.test.task"]:
+        if retired in inventory_namespaces:
+            errors.append(
+                f"retired {retired} remains in the Rust namespace inventory"
+            )
 
 if errors:
     print("\n".join(errors), file=sys.stderr)
     raise SystemExit(1)
 
 print(
-    "code.test is a curated facade; code.test.work owns one durable fact-batch graph "
-    "with direct std.work events and exact HAL mirrors"
+    "code.test is a curated facade; code.test.work owns one durable fact-batch graph, "
+    "code.test.task is retired, and canonical HAL mirrors are exact"
 )

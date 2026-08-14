@@ -5284,8 +5284,7 @@ mod tests {
                                  [code.test.checker.collection :as collection] \
                                  [code.test.checker.logic :as logic] \
                                  [code.test.base.runtime :as runtime] \
-                                 [code.test.compile.types :as types] \
-                                 [code.test.task :as task])) \
+                                 [code.test.compile.types :as types])) \
                      (let [fact (types/Fact :core 'id 'probe nil nil \
                                             \"portable\" 1 1 nil nil \
                                             (fn [] 42) {})] \
@@ -5300,11 +5299,11 @@ mod tests {
                                            (fn [value] (= 1 (mod value 2)))))) \
                         (types/fact? fact) \
                         (fact) \
-                        (task/process-test-args \
+                        (test/process-test-args \
                          [\":only\" \"std\" \"code\"])])"
                 )
                 .unwrap(),
-            "[true true true true 42 {:ns [std code]}]"
+            "[true true true true 42 {:namespace [std code]}]"
         );
     }
 
@@ -8820,6 +8819,17 @@ mod tests {
                 .eval_text("(ILookup/lookup (IObjType/meta (quote ^{:doc \"quoted\"} [1])) :doc)")
                 .unwrap(),
             "\"quoted\""
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [handler (IObjType/with-meta (fn [value] value) {:handler/id :handler})] \
+                     [(ILookup/lookup (IObjType/meta handler) :handler/id) \
+                      (handler 42) \
+                      (fn? handler)])"
+                )
+                .unwrap(),
+            "[:handler 42 true]"
         );
     }
     #[test]

@@ -1029,6 +1029,11 @@ public final class HaraContext {
       return existing;
     }
     NamespaceLoadState state = namespaceStates.get(target);
+    if (state == NamespaceLoadState.LOADING
+        && target.equals(currentNamespace.name())
+        && existing != null) {
+      return existing;
+    }
     if (state == NamespaceLoadState.LOADING) {
       throw new HaraException("Cyclic namespace require: " + target);
     }
@@ -1113,6 +1118,7 @@ public final class HaraContext {
       // application HBC evaluated through the public artifact API still uses
       // BYTECODE origin and can define ordinary program Vars.
       definitionOrigin = HaraVar.Origin.HAL_FALLBACK;
+      currentNamespace = namespace(module.namespace());
       parseAndExecute(module.descriptor().namespaceForm(), module.descriptor().resource() + "#ns");
       HbcProgram program = module.program();
       currentNamespace = namespace(module.namespace());
@@ -2634,7 +2640,7 @@ public final class HaraContext {
     if (values.length != 3
         || !(HaraBox.unwrap(values[0]) instanceof String service)
         || !(HaraBox.unwrap(values[1]) instanceof String method)
-        || !(HaraBox.unwrap(values[2]) instanceof hara.lang.data.types.IVectorType<?> arguments)) {
+        || !(HaraBox.unwrap(values[2]) instanceof hara.lang.data.types.ILinearType<?> arguments)) {
       throw new HaraException(
           "std.native.Host/call expects service, method, and an argument vector");
     }

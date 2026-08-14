@@ -7,33 +7,48 @@ import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 import com.oracle.truffle.api.interop.TruffleObject;
+import hara.lang.protocol.Constant;
+import hara.lang.protocol.IMetadata;
+import hara.lang.protocol.IObjType;
 
 @ExportLibrary(InteropLibrary.class)
-public final class HaraFunction implements TruffleObject {
+public final class HaraFunction implements TruffleObject, IObjType {
   private final RootCallTarget callTarget;
   private final int minimumArity;
   private final boolean variadic;
   private final MaterializedFrame closure;
   private final HaraFunction[] overloads;
+  private final IMetadata metadata;
 
   public HaraFunction(
       RootCallTarget callTarget, int minimumArity, boolean variadic, MaterializedFrame closure) {
+    this(callTarget, minimumArity, variadic, closure, null, null);
+  }
+
+  public HaraFunction(HaraFunction[] overloads) {
+    this(null, -1, false, null, requireOverloads(overloads), null);
+  }
+
+  private HaraFunction(
+      RootCallTarget callTarget,
+      int minimumArity,
+      boolean variadic,
+      MaterializedFrame closure,
+      HaraFunction[] overloads,
+      IMetadata metadata) {
     this.callTarget = callTarget;
     this.minimumArity = minimumArity;
     this.variadic = variadic;
     this.closure = closure;
-    this.overloads = null;
+    this.overloads = overloads == null ? null : overloads.clone();
+    this.metadata = metadata;
   }
 
-  public HaraFunction(HaraFunction[] overloads) {
+  private static HaraFunction[] requireOverloads(HaraFunction[] overloads) {
     if (overloads.length == 0) {
       throw new IllegalArgumentException("A function must have at least one arity");
     }
-    this.callTarget = null;
-    this.minimumArity = -1;
-    this.variadic = false;
-    this.closure = null;
-    this.overloads = overloads.clone();
+    return overloads;
   }
 
   public RootCallTarget callTarget() {
@@ -71,6 +86,34 @@ public final class HaraFunction implements TruffleObject {
 
   public boolean variadic() {
     return variadic;
+  }
+
+  @Override
+  public Constant.ObjType getObjType() {
+    return Constant.ObjType.FUNCTION;
+  }
+
+  @Override
+  public IMetadata meta() {
+    return metadata;
+  }
+
+  @Override
+  public HaraFunction withMeta(IMetadata metadata) {
+    return this.metadata == metadata
+        ? this
+        : new HaraFunction(
+            callTarget, minimumArity, variadic, closure, overloads, metadata);
+  }
+
+  @Override
+  public long hashCalc(Constant.HashType hashType) {
+    return System.identityHashCode(this);
+  }
+
+  @Override
+  public String display() {
+    return toString();
   }
 
   @ExportMessage

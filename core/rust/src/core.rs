@@ -782,6 +782,8 @@ pub struct Function {
     fiber_native: Option<Rc<dyn Fn(Vec<Value>, Cont) -> Step>>,
     /// Arity clauses for multi-arity `defn`/`fn` dispatchers; empty otherwise.
     clauses: Vec<Rc<Function>>,
+    /// Runtime-neutral metadata attached through IObjType.
+    metadata: Option<Rc<Metadata>>,
     /// Whether this function is a macro expander.
     is_macro: bool,
 }
@@ -967,6 +969,7 @@ pub fn native_function(
         native: Some(Rc::new(callback)),
         fiber_native: None,
         clauses: Vec::new(),
+        metadata: None,
         is_macro: false,
     }))
 }
@@ -995,6 +998,7 @@ pub(crate) fn native_fixed_variadic_function(
         native: Some(Rc::new(callback)),
         fiber_native: None,
         clauses: Vec::new(),
+        metadata: None,
         is_macro: false,
     }))
 }
@@ -1015,6 +1019,7 @@ pub(crate) fn native_variadic_function(
         native: Some(Rc::new(callback)),
         fiber_native: None,
         clauses: Vec::new(),
+        metadata: None,
         is_macro: false,
     }))
 }
@@ -1040,6 +1045,7 @@ pub(crate) fn native_fiber_function(
         native: Some(Rc::new(callback)),
         fiber_native: Some(Rc::new(fiber_callback)),
         clauses: Vec::new(),
+        metadata: None,
         is_macro: false,
     }))
 }
@@ -7650,6 +7656,7 @@ fn value_metadata(value: &Value) -> Option<Rc<Metadata>> {
         Value::OrderedSet(value) => value.meta().cloned(),
         Value::SortedSet(value) => value.meta().cloned(),
         Value::Var(value) => value.hara_metadata(),
+        Value::Function(value) => value.metadata.clone(),
         Value::Struct(value) => value.metadata.clone(),
         Value::Mutable(value) => value.metadata.clone(),
         Value::NativeType(value) => value.metadata.clone(),
@@ -10691,6 +10698,10 @@ fn attach_optional_metadata(value: Value, metadata: Option<Rc<Metadata>>) -> Res
             value.set_hara_metadata(metadata);
             Value::Var(value)
         }
+        Value::Function(value) => Value::Function(Rc::new(Function {
+            metadata,
+            ..value.as_ref().clone()
+        })),
         Value::Struct(value) => Value::Struct(Rc::new(StructValue {
             ty: value.ty.clone(),
             values: value.values.clone(),
@@ -10902,6 +10913,7 @@ fn generated_function(
         native: None,
         fiber_native: None,
         clauses: Vec::new(),
+        metadata: None,
         is_macro: false,
     }))
 }
@@ -11198,6 +11210,7 @@ fn multi_arity_function(
             native: None,
             fiber_native: None,
             clauses: Vec::new(),
+            metadata: None,
             is_macro,
         }));
     }
@@ -11233,6 +11246,7 @@ pub(crate) fn arity_dispatcher(name: &str, functions: Vec<Rc<Function>>, is_macr
             call_function(&function, arguments)
         })),
         fiber_native: None,
+        metadata: None,
         is_macro,
     }))
 }
@@ -12335,6 +12349,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         native: None,
                         fiber_native: None,
                         clauses: Vec::new(),
+                        metadata: None,
                         is_macro: false,
                     })))
                 }
@@ -12390,6 +12405,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 native: None,
                                 fiber_native: None,
                                 clauses: Vec::new(),
+                                metadata: None,
                                 is_macro: false,
                             })),
                         ));
@@ -13521,6 +13537,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             native: None,
                             fiber_native: None,
                             clauses: Vec::new(),
+                            metadata: None,
                             is_macro: true,
                         }))
                     } else {
@@ -13585,6 +13602,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             native: None,
                             fiber_native: None,
                             clauses: Vec::new(),
+                            metadata: None,
                             is_macro: false,
                         }))
                     } else {
@@ -15112,6 +15130,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         native: None,
                         fiber_native: None,
                         clauses: Vec::new(),
+                        metadata: None,
                         is_macro: false,
                     })))
                 }

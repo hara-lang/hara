@@ -467,6 +467,37 @@ impl Compiler {
                                 self.collect_free(body, bound, free);
                             }
                         }
+                        "field" => {
+                            if let Some(receiver) = children.get(1) {
+                                self.collect_free(receiver, bound, free);
+                            }
+                        }
+                        "set!" => {
+                            if let Some(place) = children.get(1) {
+                                match place.form {
+                                    Form::List(parts)
+                                        if matches!(
+                                            parts.first(),
+                                            Some(Form::Symbol(operation)) if operation == "field"
+                                        ) =>
+                                    {
+                                        let place_children = self.list_children(
+                                            parts,
+                                            place.span,
+                                            place.children,
+                                        );
+                                        if let Some(receiver) = place_children.get(1) {
+                                            self.collect_free(receiver, bound, free);
+                                        }
+                                    }
+                                    Form::Symbol(_) => {}
+                                    _ => self.collect_free(place, bound, free),
+                                }
+                            }
+                            for replacement in &children[2..] {
+                                self.collect_free(replacement, bound, free);
+                            }
+                        }
                         "letfn" => {
                             let marked = bound.len();
                             let definitions =
