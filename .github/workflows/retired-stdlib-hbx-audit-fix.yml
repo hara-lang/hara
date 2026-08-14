@@ -53,29 +53,33 @@ jobs:
           if not all(marker in old_loop for marker in required_markers):
               raise SystemExit("unexpected hard-cut audit loop contents")
 
-          new_loop = '''    for full in tracked:
-              relative = full.relative_to(ROOT).as_posix()
-              if relative == HBX.as_posix():
-                  try:
-                      references = retired_module_references(full, RETIRED)
-                  except HbxFormatError as error:
-                      failures.append(f"cannot inspect HBX module table in {relative}: {error}")
-                  else:
-                      failures.extend(
-                          f"retired namespace remains embedded in HBX module table: {reference}"
-                          for reference in references
-                      )
-                  continue
-              try:
-                  data = full.read_bytes()
-              except OSError as error:
-                  failures.append(f"cannot read {relative}: {error}")
-                  continue
-              if not any(namespace.encode() in data for namespace in RETIRED):
-                  continue
-              if relative not in LEGACY_ALLOWLIST:
-                  names = [name for name in RETIRED if name.encode() in data]
-                  failures.append(f"live retired namespace reference in {relative}: {', '.join(names)}")'''
+          new_loop = "\n".join(
+              (
+                  "    for full in tracked:",
+                  "        relative = full.relative_to(ROOT).as_posix()",
+                  "        if relative == HBX.as_posix():",
+                  "            try:",
+                  "                references = retired_module_references(full, RETIRED)",
+                  "            except HbxFormatError as error:",
+                  "                failures.append(f\"cannot inspect HBX module table in {relative}: {error}\")",
+                  "            else:",
+                  "                failures.extend(",
+                  "                    f\"retired namespace remains embedded in HBX module table: {reference}\"",
+                  "                    for reference in references",
+                  "                )",
+                  "            continue",
+                  "        try:",
+                  "            data = full.read_bytes()",
+                  "        except OSError as error:",
+                  "            failures.append(f\"cannot read {relative}: {error}\")",
+                  "            continue",
+                  "        if not any(namespace.encode() in data for namespace in RETIRED):",
+                  "            continue",
+                  "        if relative not in LEGACY_ALLOWLIST:",
+                  "            names = [name for name in RETIRED if name.encode() in data]",
+                  "            failures.append(f\"live retired namespace reference in {relative}: {', '.join(names)}\")",
+              )
+          )
           source = source[:loop_start] + new_loop + source[loop_end:]
           path.write_text(source)
           Path(".github/workflows/retired-stdlib-hbx-audit-fix.yml").unlink()
