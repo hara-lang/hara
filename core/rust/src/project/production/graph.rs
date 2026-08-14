@@ -9,4 +9,6 @@ mod reachability;
 
 pub use super::unit::{Effect, UnitAnalysis, UnitKind};
 pub use finalize::finish_analysis;
-pub use model::{Analysis, AnalysisOutput, ModuleAnalysis, RetentionReason};
+pub use model::{
+    Analysis, AnalysisOutput, BuildOutput, ModuleAnalysis, RetentionReason,
+};

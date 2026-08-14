@@ -216,7 +216,7 @@ fn execute_host_action(
 #[cfg(feature = "bytecode-vm")]
 fn analyze_production(options: &Options, arguments: &[String]) -> Result<(), String> {
     if arguments.len() != 1 {
-        return Err("project production analysis requires one serialized build plan".into());
+        return Err("project production build requires one serialized build plan".into());
     }
     let start = options
         .project
@@ -224,15 +224,18 @@ fn analyze_production(options: &Options, arguments: &[String]) -> Result<(), Str
         .or_else(|| options.root.clone())
         .unwrap_or_else(|| PathBuf::from("."));
     let project = project::discover(&start)?;
-    let output = production::analyze_and_write(&project, &arguments[0])?;
+    let output = production::build_and_write(&project, &arguments[0])?;
     if output.analysis.succeeded() {
-        Err(format!(
-            "unavailable: production reachability analysis completed; pruned HBX emission is tracked by #552; report: {}",
-            output.report_path.display()
-        ))
+        let bundle = output
+            .bundle_path
+            .as_ref()
+            .ok_or("production build succeeded without a bundle path")?;
+        println!("production bundle: {}", bundle.display());
+        println!("shake report: {}", output.report_path.display());
+        Ok(())
     } else {
         Err(format!(
-            "production reachability analysis failed with {} diagnostic(s); report: {}",
+            "production build failed with {} diagnostic(s); report: {}",
             output.analysis.diagnostics.len(),
             output.report_path.display()
         ))

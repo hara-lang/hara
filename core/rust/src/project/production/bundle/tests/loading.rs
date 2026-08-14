@@ -1,7 +1,7 @@
 use super::super::{compile, load};
+use super::super::super::source::SourceModule;
 use super::support::{analyzed, fixture_modules, plan};
 use crate::core::Value;
-use crate::task::production::source::SourceModule;
 
 #[test]
 fn loads_with_runtime_core_and_invokes_every_entrypoint() {
@@ -12,6 +12,16 @@ fn loads_with_runtime_core_and_invokes_every_entrypoint() {
         load::invoke_zero_arity(&runtime, "app.main/start").unwrap(),
         Value::Number(42)
     ));
+}
+
+#[test]
+fn rejects_missing_entrypoints_after_loading() {
+    let build = analyzed(fixture_modules(), plan("app.main/start"));
+    let compiled = compile::compile(&build).unwrap();
+    let entrypoints = vec!["app.main/missing".into()];
+    assert!(load::validate_bundle(&compiled.bytes, &entrypoints)
+        .unwrap_err()
+        .contains("entrypoint is missing"));
 }
 
 #[test]

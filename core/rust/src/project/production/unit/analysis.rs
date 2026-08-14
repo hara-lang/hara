@@ -7,6 +7,10 @@ pub struct UnitAnalysis {
     pub id: String,
     pub module: String,
     pub index: usize,
+    /// Deterministic source for the macro-expanded top-level unit that was
+    /// analyzed. Production emission compiles this exact source instead of
+    /// reparsing or re-expanding the complete module.
+    pub form_source: String,
     pub kind: UnitKind,
     pub effect: Effect,
     pub location: SourceLocation,
