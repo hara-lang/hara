@@ -1,0 +1,54 @@
+(ns std.foundation-walk-test)
+
+(def post-order (atom []))
+(def pre-order (atom []))
+
+(def postwalk-value
+  (postwalk
+   (fn [value]
+     (swap! post-order conj value)
+     value)
+   [1 [2]]))
+
+(def prewalk-value
+  (prewalk
+   (fn [value]
+     (swap! pre-order conj value)
+     value)
+   [1 [2]]))
+
+(def tagged-form (with-meta '(+ 1 2) {:source :walk-test}))
+(def walked-tagged-form (prewalk identity tagged-form))
+
+(def results
+  [(test-check
+    "form? recognises persistent source forms only"
+    [(form? '(+ 1 2)) (form? '()) (form? [1 2]) (form? nil) (form? 1)]
+    [true true false false false])
+
+   (test-check
+    "prewalk and postwalk visit nested forms in their documented order"
+    [(deref pre-order) (deref post-order) prewalk-value postwalk-value]
+    [[[1 [2]] 1 [2] 2]
+     [1 2 [2] [1 [2]]]
+     [1 [2]]
+     [1 [2]]])
+
+   (test-check
+    "walking preserves metadata on persistent forms"
+    [(meta tagged-form) (meta walked-tagged-form) (= tagged-form walked-tagged-form)]
+    [{:source :walk-test} {:source :walk-test} true])
+
+   (test-check
+    "walk transforms map keys, map values, sets, lists, vectors, and scalars"
+    [(postwalk-replace {:a :b 1 2} {:a #{1} :nested '(1 [:a])})
+     (walk identity identity 42)]
+    [{:b #{2} :nested '(2 [:b])} 42])
+
+   (test-check
+    "replacement walks preserve false and nil replacement values"
+    [(prewalk-replace {:false false :nil nil} [:false :nil])
+     (postwalk-replace {:false false :nil nil} '(:false :nil))]
+    [[false nil] '(false nil)])])
+
+results

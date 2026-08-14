@@ -1,5 +1,5 @@
 (ns std.work-task-redirection-test
-  (:require [std.lib.test :as test]
+  (:require 
             [std.work :as work]
             [std.work.provider.inline :as inline]
             [std.work.provider.memory :as memory]
@@ -254,8 +254,36 @@
 (def _removed-defaults
   (task/uninstall-defaults! :example/legacy))
 
+(def ordered-completion-definition
+  (task/normalise-definition
+   {:id :example/ordered-completion
+    :item {:run (fn [value context] value)}
+    :report {:sections [:results]}
+    :return {:select :all :package :map}}))
+
+(def ordered-completion-bundle
+  (task/prepare-bundle
+   ordered-completion-definition
+   {:input {:task/params {}}
+    :items [{:item/id :first} {:item/id :second} {:item/id :third}]
+    :results
+    [{:item/id :third
+      :item/value {:item/id :third :item/index 2
+                   :status :return :data 3}}
+     {:item/id :first
+      :item/value {:item/id :first :item/index 0
+                   :status :return :data 1}}
+     {:item/id :second
+      :item/value {:item/id :second :item/index 1
+                   :status :return :data 2}}]}
+   {}))
+
+(def ordered-completion-report
+  (task/task-report ordered-completion-definition
+                    ordered-completion-bundle))
+
 (def results
-  [(test/check
+  [(test-check
     "provider descriptors expose explicit baseline and extension tiers"
     (vec
      (map
@@ -268,7 +296,7 @@
      [:std.work.store/v1 :baseline :memory]
      [:std.work.store/v1 :extension :postgres]])
 
-   (test/check
+   (test-check
     "report documents remain structured portable data"
     [(report/report? report-document)
      (:report/title report-document)
@@ -276,14 +304,14 @@
      (:section/entries (report/section-by-id report-document :summary))]
     [true "EXAMPLE" [] [{:items 3}]])
 
-   (test/check
+   (test-check
     "the task template compiles to an ordinary work graph"
     [(task/task-work? task-work)
      (:op (work/work-spec task-work))
      (:id (work/work-spec task-work))]
     [true :chain :example/task])
 
-   (test/check
+   (test-check
     "the task template lists, selects, runs, groups, aggregates, reports and packages"
     [(:items output)
      (vec (map (fn [record] (:data record)) (:results output)))
@@ -299,7 +327,7 @@
      :warning
      5])
 
-   (test/check
+   (test-check
     "task stage events are committed through the ordinary observer path"
     [(not (nil? (first (filter (fn [event] (= :task/run-started event)) task-events))))
      (not (nil? (first (filter (fn [event] (= :task/item-completed event)) task-events))))
@@ -307,12 +335,12 @@
      (not (nil? (first (filter (fn [event] (= :task/run-completed event)) task-events))))]
     [true true true true])
 
-   (test/check
+   (test-check
     "Foundation-style main functions adapt explicit arities one through four"
     main-arity-results
     [6 8 12 15])
 
-   (test/check
+   (test-check
     "typed defaults merge recursively before a task definition is compiled"
     [(:task/type normalised-legacy)
      (:params normalised-legacy)
@@ -323,18 +351,18 @@
      4
      "LEGACY TASK"])
 
-   (test/check
+   (test-check
     "task requests restore input, environment, lookup, params and additional arguments"
     [(:data (first (:results legacy-output)))
      (:item/display (first (:results legacy-output)))]
     [28 "value=28"])
 
-   (test/check
+   (test-check
     "Foundation-style item lists receive lookup and environment before selection"
     selector-output
     [["code.test" "code.test"]])
 
-   (test/check
+   (test-check
     "derived results are ordered canonically while report rows apply formatters"
     [(vec (map (fn [record] (:score record))
                (:results result-summary-output)))
@@ -349,7 +377,7 @@
       ["v3" "3 pts"]]
      "warning/0"])
 
-   (test/check
+   (test-check
     "summary finalisation, timings, and annotations are stable report data"
     [(:summary result-summary-output)
      (:annotations result-summary-output)
@@ -372,7 +400,17 @@
       ["v2" "2 pts"]
       ["v3" "3 pts"]]])
 
-   (test/check
+   (test-check
+    "reports preserve selected input order for out-of-order completion records"
+    [(vec (map (fn [record] (:item/id record))
+               (:records ordered-completion-bundle)))
+     (vec (map (fn [record] (:item/id record))
+               (:section/entries
+                (report/section-by-id ordered-completion-report :results))))]
+    [[:first :second :third]
+     [:first :second :third]])
+
+   (test-check
     "item and result output projections package map and vector returns faithfully"
     [map-package-output
      vector-package-output
@@ -383,7 +421,7 @@
      [[3 106] [1 102]]
      [3 1]])
 
-   (test/check
+   (test-check
     "the parity ledger advances result and summary behavior without hiding render work"
     [(task/feature-status :item/output)
      (task/feature-status :result/ignore-derived-format-order)
@@ -392,29 +430,35 @@
      (task/feature-status :summary/annotations)
      (task/feature-status :return/map-vector-packaging)
      (task/feature-status :report/plain-terminal-renderers)
-     (< 0 (count (task/incomplete-features)))]
+     (task/feature-status :execution/deterministic-report-order)
+     (task/feature-status :execution/random)
+     (count (task/incomplete-features))]
     [:implemented :implemented :implemented :implemented
-     :implemented :implemented :missing true])
+     :implemented :implemented :implemented :implemented
+     :intentional-change 0])
 
-   (test/check-error
-    "required additional arguments fail before item execution"
-    (work/run
+   (test-check "required additional arguments fail before item execution"
+    (try (do (work/run
      (work/local-runtime)
      legacy-work
      (task/request
       {:params {:scale 3
                 :offset 2
-                :bias 4}})))
+                :bias 4}})) false)
+         (catch Throwable error true))
+    true)
 
-   (test/check-error
-    "task definitions reject main argcounts outside one through four"
-    (task/template
+   (test-check "task definitions reject main argcounts outside one through four"
+    (try (do (task/template
      {:id :invalid/argcount
       :main {:argcount 5
-             :fn identity}}))
+             :fn identity}}) false)
+         (catch Throwable error true))
+    true)
 
-   (test/check-error
-    "task definitions cannot omit their executable item stage"
-    (task/template {:id :invalid/task}))])
+   (test-check "task definitions cannot omit their executable item stage"
+    (try (do (task/template {:id :invalid/task}) false)
+         (catch Throwable error true))
+    true)])
 
-(test/print-results results)
+results

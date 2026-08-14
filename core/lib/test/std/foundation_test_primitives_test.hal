@@ -1,0 +1,43 @@
+(ns std.foundation-test-primitives-test)
+
+(def evaluations (atom 0))
+(def passing (test-check "inner pass" {:a [1 2]} {:a [1 2]}))
+(def failing (test-check "inner fail" 1 2))
+(def thrown
+  (test-check
+   "inner throw"
+   (do
+     (swap! evaluations inc)
+     (throw (ex-info "boom" {:kind :test})))
+   :never))
+
+(def config-result (test-config {:session-scope :fresh}))
+
+(def results
+  [(test-check
+    "test-check returns portable passing and failing maps"
+    [(:pass passing) (:status passing) (:pass failing) (:actual failing) (:expected failing)]
+    [true nil false 1 2])
+
+   (test-check
+    "test-check captures thrown expressions and evaluates them once"
+    [(:pass thrown) (:status thrown) (:error thrown) (:error-data thrown)
+     (deref evaluations)]
+    [false :error "boom" {:kind :test} 1])
+
+   (test-check
+    "test-check compares nested collections"
+    (:pass passing)
+    true)
+
+   (test-check
+    "test-passed? follows the portable result contract"
+    [(test-passed? passing) (test-passed? failing) (test-passed? thrown)]
+    [true false false])
+
+   (test-check
+    "test-config validates options and remains evaluation-inert"
+    config-result
+    nil)])
+
+results

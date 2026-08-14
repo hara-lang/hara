@@ -46,8 +46,8 @@ public class MainTest {
               + "(defn main [] (Bridge/greeting)) (main)");
       Files.writeString(
           root.resolve("test/demo_app/main_test.hal"),
-          "(ns demo_app.main-test (:require [std.lib.test :as test])) "
-              + "(test/print-results [(test/check \"starter project runs\" true true)])");
+          "(ns demo_app.main-test) "
+              + "[(test-check \"starter project runs\" true true)]");
       ByteArrayOutputStream output = new ByteArrayOutputStream();
       ByteArrayOutputStream error = new ByteArrayOutputStream();
       PrintStream stdout = new PrintStream(output, true, StandardCharsets.UTF_8);

@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import org.junit.Test;
 
@@ -272,4 +273,30 @@ public final class HaraNativeTestRunnerTest {
     assertEquals(0, result.errors());
     assertEquals(0, result.timeouts());
   }
+
+  @Test
+  public void classifiesDirectFoundationResultVectors() throws Exception {
+    Path file = Files.createTempFile("hara-direct-test-result-", ".hal");
+    try {
+      Files.writeString(file, "[(test-check \"direct result\" true true)]");
+      HaraNativeTestRunner.Result direct = HaraNativeTestRunner.runFile(ROOT, file);
+      assertTrue(direct.passed());
+      assertEquals(1, direct.facts());
+      assertEquals(1, direct.checks());
+      assertEquals(1, direct.passedChecks());
+      assertEquals(0, direct.failedChecks());
+
+      HaraNativeTestRunner.Result encoded =
+          HaraNativeTestRunner.parseResult(
+              file,
+              "\"[{:name \\\"encoded\\\" :actual true :expected true :pass true}]\"");
+      assertTrue(encoded.passed());
+      assertEquals(1, encoded.facts());
+      assertEquals(1, encoded.passedChecks());
+      assertEquals(0, encoded.failedChecks());
+    } finally {
+      Files.deleteIfExists(file);
+    }
+  }
+
 }

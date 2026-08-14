@@ -41,9 +41,10 @@
    {:feature :item/pre-run-post :status :implemented}
    {:feature :item/output :status :implemented}
    {:feature :item/display :status :implemented}
-   {:feature :execution/random :status :missing}
+   {:feature :execution/random :status :intentional-change
+    :reason "Portable task templates preserve deterministic input order; random scheduling belongs to an execution provider or explicit caller input."}
    {:feature :execution/parallel :status :host-adapted}
-   {:feature :execution/deterministic-report-order :status :partial}
+   {:feature :execution/deterministic-report-order :status :implemented}
    {:feature :execution/cancellation :status :host-adapted}
    {:feature :execution/timeout :status :host-adapted}
    {:feature :result/warnings-errors-results :status :implemented}
@@ -612,11 +613,37 @@
                 annotations)]
     (normalise-annotations value)))
 
+(defn selected-order-completions
+  "Orders supplied completion records by their selected item index.
+
+   Providers may complete work out of order; portable reports remain stable
+   and preserve the selected input order. Records without an item index keep
+   their supplied relative position."
+  [completions]
+  (let [indexed
+        (map-indexed (fn [index completion] [index completion]) completions)]
+    (vec
+     (map
+      second
+      (sort-by
+       (fn [entry]
+         (let [supplied-index (first entry)
+               completion (second entry)
+               selected-index
+               (get-in completion [:item/value :item/index])]
+           [(if (nil? selected-index) supplied-index selected-index)
+            supplied-index]))
+       indexed)))))
+
 (defn prepare-bundle
   [definition batch context]
   (let [prepared (:input batch)
         params (or (:task/params prepared) {})
-        initial (result/summarise batch (result-options definition))
+        ordered-batch
+        (assoc batch
+               :results
+               (selected-order-completions (:results batch)))
+        initial (result/summarise ordered-batch (result-options definition))
         records (:records initial)
         derived
         (vec

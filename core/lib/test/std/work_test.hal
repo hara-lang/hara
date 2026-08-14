@@ -1,5 +1,5 @@
 (ns std.work-test
-  (:require [std.lib.test :as test]
+  (:require 
             [std.work :as work]
             [std.work.command :as command]
             [std.work.protocol :as protocol]))
@@ -258,7 +258,7 @@
               {:id "invalid-1"}))
 
 (def results
-  [(test/check
+  [(test-check
     "local work composes pure and checkpoint-capable leaves"
     [(work/run local-runtime local-pipeline 3)
      (event-count (work/observer-events local-observer)
@@ -267,14 +267,14 @@
       :path [:chain 2 :shape]}
      1])
 
-   (test/check
+   (test-check
     "node handlers extend runtimes without another protocol"
     (work/run custom-runtime
               (work/definition {:op :echo :id :custom})
               7)
     {:echo 7 :node :custom})
 
-   (test/check
+   (test-check
     "command templates compile to native work graphs"
     (let [spec (work/work-spec double-command)]
       [(get spec :op)
@@ -283,7 +283,7 @@
        (work/run (work/local-runtime) double-command 4)])
     [:chain 'double-command :step 8])
 
-   (test/check
+   (test-check
     "command batches forward runtime stop and cancel stages"
     (let [processed (atom 0)
           cancelled (atom 0)
@@ -321,7 +321,7 @@
        [(deref processed) (deref cancelled)]])
     [[1 2 -3] [2 1]])
 
-   (test/check
+   (test-check
     "durable recovery replays checkpoints and reruns pure work"
     [recovery-status-before
      (work/status recovery-runtime-after recovery-reference-after)
@@ -341,7 +341,7 @@
      1
      [:recovery-work 1 1 1]])
 
-   (test/check
+   (test-check
     "fork copies checkpoints before the selected boundary"
     [(work/status recovery-runtime-after fork-reference)
      (work/result recovery-runtime-after fork-reference)
@@ -355,7 +355,7 @@
      [1 3 3]
      1])
 
-   (test/check
+   (test-check
     "batch recovery uses stable item identities"
     [batch-status-before
      (work/status batch-runtime batch-reference-after)
@@ -375,7 +375,7 @@
      3
      2])
 
-   (test/check
+   (test-check
     "batch stop policy cancels unclaimed items and replays their checkpoints"
     [(:summary stop-result)
      [(deref stop-process-count) (deref stop-cancel-count)]
@@ -387,7 +387,7 @@
      [2 1]
      true])
 
-   (test/check
+   (test-check
     "idempotent starts return the existing run"
     [(work/status batch-runtime same-batch-reference)
      [(deref list-count)
@@ -395,24 +395,25 @@
       (deref framework-count)]]
     [:completed [1 1 2]])
 
-   (test/check-error
-    "run identities reject incompatible input"
-    (work/start batch-runtime
+   (test-check "run identities reject incompatible input"
+    (try (do (work/start batch-runtime
                 maintenance-work
                 {:project "other"}
-                {:id "batch-1"}))
+                {:id "batch-1"}) false)
+         (catch Throwable error true))
+    true)
 
-   (test/check
+   (test-check
     "durable collection work rejects positional item identity"
     [(work/status invalid-runtime invalid-reference)
      (count (work/checkpoints invalid-runtime invalid-reference))]
     [:failed 1])
 
-   (test/check
+   (test-check
     "only three public extension protocols are required"
     [(not (nil? protocol/IWork))
      (not (nil? protocol/IWorkRuntime))
      (not (nil? protocol/IWorkObserver))]
     [true true true])])
 
-(test/print-results results)
+results

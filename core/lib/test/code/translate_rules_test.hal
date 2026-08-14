@@ -1,13 +1,13 @@
 (ns code.translate-rules-test
   (:require [code.translate :as translate]
             [code.translate.rule :as rule]
-            [std.lib.test :as test]))
+            ))
 
 (def source
   "(ns demo.core\n  (:require [std.protocol.block :as protocol]\n            [std.block.navigate :as nav]\n            [std.lib.foundation :as foundation]\n            [clojure.tools.reader :as reader]))\n\n(definterface IThing (run []))\n(defmulti dispatch identity)\n")
 
 (def results
-  [(test/check "compiled rules retain safety and evidence totals"
+  [(test-check "compiled rules retain safety and evidence totals"
                [(translate/rules-summary)
                 (every? (fn [entry] (not (empty? (:evidence entry))))
                         translate/rules)
@@ -25,7 +25,7 @@
                  80 81 82 83 84 85 86 87 88 89
                  90 91 92 93 94 95 96 97 98]])
 
-   (test/check "automatic matcher conflicts are rejected"
+   (test-check "automatic matcher conflicts are rejected"
                (let [base (first translate/rules)
                      conflicting
                      (assoc
@@ -39,7 +39,7 @@
                      (ex-message error))))
                "Conflicting automatic Clojure to HAL rules")
 
-   (test/check "lint mode reports matches without rewriting"
+   (test-check "lint mode reports matches without rewriting"
                (let [result (translate/lint-source source)]
                  [(:output result)
                   (:changed result)
@@ -62,7 +62,7 @@
                  :code.translate/manual
                  :code.translate/manual]])
 
-   (test/check "safe mode applies only proven mechanical namespace moves"
+   (test-check "safe mode applies only proven mechanical namespace moves"
                (let [result (translate/translate-source source {:mode :safe})]
                  [(:output result)
                   (:changed result)
@@ -72,7 +72,7 @@
                 [:namespace/std-protocol-block
                  :namespace/std-block-navigation]])
 
-   (test/check "review mode applies reviewed consolidation rules"
+   (test-check "review mode applies reviewed consolidation rules"
                (let [result (translate/translate-source source {:mode :review})]
                  [(:output result)
                   (vec (map :rule/id (:rules/applied result)))])
@@ -81,7 +81,7 @@
                  :namespace/std-block-navigation
                  :namespace/std-lib-foundation]])
 
-   (test/check "manual constructs are never changed"
+   (test-check "manual constructs are never changed"
                (let [manual "(definterface IThing (run []))\n(defmulti dispatch identity)\n"
                      result (translate/translate-source manual {:mode :review})]
                  [(:output result)
@@ -93,7 +93,7 @@
                 0
                 [:code.translate/manual :code.translate/manual]])
 
-   (test/check "legacy test helpers require a semantic code.test recipe"
+   (test-check "legacy test helpers require a semantic code.test recipe"
                (let [legacy
                      "(ns demo-test (:require [std.lib.test :as test]))\n(test/check \"demo\" 1 1)\n"
                      result (translate/translate-source legacy {:mode :review})]
@@ -104,7 +104,7 @@
                 [:dependency/std-lib-test]
                 [:code.translate/manual]])
 
-   (test/check "collection and walk idioms resolve to their classified destinations"
+   (test-check "collection and walk idioms resolve to their classified destinations"
                (let [source
                      "(vector std.lib.collection/map-keys std.lib.collection/filter-vals std.lib.walk/prewalk-replace std.lib.walk/walk:find)"
                      result (translate/translate-source source {:mode :safe})]
@@ -120,7 +120,7 @@
                  :walk/core-prewalk
                  :walk/collection-search]])
 
-   (test/check "collection helper calls translate into shape-preserving pair compositions"
+   (test-check "collection helper calls translate into shape-preserving pair compositions"
                (let [source
                      "[(std.lib.collection/map-entries f m) (std.lib.collection/filter-keys p m) (std.lib.collection/filter-vals p m) (std.lib.collection/keep-vals f m) (std.lib.collection/keep-vals f p m)]"
                      result (translate/translate-source source {:mode :review})]
@@ -141,27 +141,27 @@
                  :collection/keep-vals-when]
                 true true true 1 1])
 
-   (test/check "namespace-family prefixes preserve dotted and qualified suffixes"
+   (test-check "namespace-family prefixes preserve dotted and qualified suffixes"
                (let [source "[std.db.node std.db.node/open std.lib.schema.check/value]"
                      result (translate/translate-source source {:mode :review})]
                  (:output result))
                "[db.node db.node/open db.schema.check/value]")
 
-   (test/check "host facade calls resolve to explicit native capability types"
+   (test-check "host facade calls resolve to explicit native capability types"
                (let [source
                      "[std.foundation.json/read std.foundation.file/read std.json/write std.native.Json/read]"
                      result (translate/translate-source source {:mode :safe})]
                  (:output result))
                "[Json/read File/read Json/write Json/read]")
 
-   (test/check "required namespace aliases participate in semantic rewrites"
+   (test-check "required namespace aliases participate in semantic rewrites"
                (let [source
                      "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] [std.native.Json :as json]))\n[c/map-keys walk/prewalk-replace json/read]"
                      result (translate/translate-source source {:mode :safe})]
                  (:output result))
                "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] ))\n[std.foundation/map-keys std.foundation/prewalk-replace Json/read]")
 
-   (test/check "supported translations are idempotent"
+   (test-check "supported translations are idempotent"
                (let [first-pass (translate/translate-source source {:mode :review})
                      second-pass
                      (translate/translate-source (:output first-pass)
@@ -175,7 +175,7 @@
                 false
                 0])
 
-   (test/check "rewrites preserve unrelated comments and whitespace"
+   (test-check "rewrites preserve unrelated comments and whitespace"
                (let [commented
                      "(ns demo.core\n  (:require [std.protocol.block  ; keep this alias\n             :as protocol]))\n"
                      result
@@ -183,7 +183,7 @@
                  (:output result))
                "(ns demo.core\n  (:require [std.block.protocol  ; keep this alias\n             :as protocol]))\n")
 
-   (test/check "native Hara output drops redundant Foundation refer-all entries"
+   (test-check "native Hara output drops redundant Foundation refer-all entries"
                (let [source
                      "(ns demo.core\n  (:require [std.foundation :refer :all]\n            [std.block :as block]))\n"
                      result (translate/translate-source source {:mode :safe})]
@@ -192,7 +192,7 @@
                ["(ns demo.core\n  (:require \n            [std.block :as block]))\n"
                 [:dependency/std-foundation-refer-all]])
 
-   (test/check "diagnostics retain file, range, path, and rule evidence"
+   (test-check "diagnostics retain file, range, path, and rule evidence"
                (let [result
                      (translate/lint-source
                       "(ns demo (:require [std.protocol.block :as protocol]))"
@@ -210,4 +210,4 @@
                  :source "std.protocol.block"}
                 true])])
 
-(test/print-results results)
+results
