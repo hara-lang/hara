@@ -1,5 +1,5 @@
 use super::super::source::{Diagnostic, SourceLocation};
-use super::UnitAnalysis;
+use super::super::unit::{NativeRootInventory, UnitAnalysis};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +40,9 @@ pub struct Analysis {
     pub removed_namespaces: BTreeSet<String>,
     pub reasons: Vec<RetentionReason>,
     pub diagnostics: Vec<Diagnostic>,
+    /// Canonical typed roots retained for native and Wasm specialization.
+    pub(crate) native_roots: NativeRootInventory,
+    /// Compatibility projections retained for the 0-alpha shake report.
     pub native_primitives: BTreeSet<String>,
     pub native_types: BTreeSet<String>,
     pub native_protocols: BTreeSet<String>,

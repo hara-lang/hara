@@ -2,7 +2,7 @@ use super::super::plan::BuildPlan;
 use super::index::{namespace_index, project_diagnostic, provider_index};
 use super::model::{Analysis, ModuleAnalysis};
 use super::reachability;
-use super::UnitAnalysis;
+use super::{NativeRootInventory, UnitAnalysis};
 use std::collections::BTreeSet;
 
 pub fn finish_analysis(
@@ -27,6 +27,7 @@ pub fn finish_analysis(
     let mut retained_vars = BTreeSet::new();
     let mut removed_vars = BTreeSet::new();
     let mut retained_namespaces = BTreeSet::new();
+    let mut native_roots = NativeRootInventory::default();
     let mut native_primitives = BTreeSet::new();
     let mut native_types = BTreeSet::new();
     let mut native_protocols = BTreeSet::new();
@@ -35,6 +36,7 @@ pub fn finish_analysis(
         if reachability.retained_unit_ids.contains(&unit.id) {
             retained_vars.extend(unit.provides.iter().cloned());
             retained_namespaces.insert(unit.module.clone());
+            native_roots.extend(&unit.native_roots);
             native_primitives.extend(unit.native_primitives.iter().cloned());
             native_types.extend(unit.native_types.iter().cloned());
             native_protocols.extend(unit.native_protocols.iter().cloned());
@@ -136,6 +138,7 @@ pub fn finish_analysis(
         removed_namespaces,
         reasons,
         diagnostics,
+        native_roots,
         native_primitives,
         native_types,
         native_protocols,
