@@ -90,36 +90,36 @@ public interface Num {
     return ops(x).combine(ops(y)).addP((Number) x, (Number) y);
   }
 
-  public static long and(long x, long y) {
-    return x & y;
+  public static Number and(long x, long y) {
+    return num(x & y);
   }
 
-  public static BigInteger and(long x, Object y) {
-    return and(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number and(long x, Object y) {
+    return and((Object) x, y);
   }
 
-  public static BigInteger and(Object x, long y) {
-    return and(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number and(Object x, long y) {
+    return and(x, (Object) y);
   }
 
-  public static BigInteger and(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).and(NumUtils.bitOpsCast(y));
+  public static Number and(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).and(NumUtils.bitOpsCast(y)));
   }
 
-  public static long andNot(long x, long y) {
-    return x & ~y;
+  public static Number andNot(long x, long y) {
+    return num(x & ~y);
   }
 
-  public static BigInteger andNot(long x, Object y) {
-    return andNot(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number andNot(long x, Object y) {
+    return andNot((Object) x, y);
   }
 
-  public static BigInteger andNot(Object x, long y) {
-    return andNot(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number andNot(Object x, long y) {
+    return andNot(x, (Object) y);
   }
 
-  public static BigInteger andNot(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).andNot(NumUtils.bitOpsCast(y));
+  public static Number andNot(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).andNot(NumUtils.bitOpsCast(y)));
   }
 
   // @WarnBoxedMath(false)
@@ -148,20 +148,20 @@ public interface Num {
     return (char[]) array;
   }
 
-  public static long clearBit(long x, long n) {
-    return x & ~(1L << n);
+  public static Number clearBit(long x, long n) {
+    return clearBit((Object) x, (Object) n);
   }
 
-  public static BigInteger clearBit(long x, Object y) {
-    return clearBit(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number clearBit(long x, Object y) {
+    return clearBit((Object) x, y);
   }
 
-  public static BigInteger clearBit(Object x, long y) {
-    return clearBit(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number clearBit(Object x, long y) {
+    return clearBit(x, (Object) y);
   }
 
-  public static BigInteger clearBit(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).clearBit(NumUtils.bitOpsCast(y).intValue());
+  public static Number clearBit(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).clearBit(NumUtils.bitIndex(y)));
   }
 
   public static int compare(Number x, Number y) {
@@ -198,7 +198,7 @@ public interface Num {
 
   public static Number divide(BigInteger n, BigInteger d) {
     if (d.equals(BigInteger.ZERO)) throw new ArithmeticException("Divide by zero");
-    return n.divide(d);
+    return NumUtils.normalizeInteger(n.divide(d));
   }
 
   public static BigDecimal canonicalDecimal(BigDecimal value) {
@@ -206,9 +206,7 @@ public interface Num {
   }
 
   public static BigInteger toBigInteger(Number value) {
-    if (value instanceof BigDecimal) return ((BigDecimal) value).toBigInteger();
-    if (value instanceof BigInteger) return (BigInteger) value;
-    return BigInteger.valueOf(value.longValue());
+    return NumUtils.toBigInteger(value);
   }
 
   public static BigDecimal toBigDecimal(Number value) {
@@ -308,23 +306,23 @@ public interface Num {
   }
 
   public static boolean equal(Number x, Number y) {
-    return category(x) == category(y) && ops(x).combine(ops(y)).eq(x, y);
+    return ops(x).combine(ops(y)).eq(x, y);
   }
 
-  public static long flipBit(long x, long n) {
-    return x ^ (1L << n);
+  public static Number flipBit(long x, long n) {
+    return flipBit((Object) x, (Object) n);
   }
 
-  public static BigInteger flipBit(long x, Object y) {
-    return flipBit(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number flipBit(long x, Object y) {
+    return flipBit((Object) x, y);
   }
 
-  public static BigInteger flipBit(Object x, long y) {
-    return flipBit(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number flipBit(Object x, long y) {
+    return flipBit(x, (Object) y);
   }
 
-  public static BigInteger flipBit(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).flipBit(NumUtils.bitOpsCast(y).intValue());
+  public static Number flipBit(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).flipBit(NumUtils.bitIndex(y)));
   }
 
   // @WarnBoxedMath(false)
@@ -552,6 +550,15 @@ public interface Num {
     return ops(x).combine(ops(y)).lte((Number) x, (Number) y);
   }
 
+  public static Number mod(Object x, Object y) {
+    Number remainder = remainder(x, y);
+    if (isZero(remainder)) return remainder;
+    if ((isNeg(remainder) && isPos(y)) || (isPos(remainder) && isNeg(y))) {
+      return addP(remainder, y);
+    }
+    return remainder;
+  }
+
   public static double minus(double x) {
     return -x;
   }
@@ -730,12 +737,12 @@ public interface Num {
     return ops(x).combine(ops(y)).multiplyP((Number) x, (Number) y);
   }
 
-  public static long not(long x) {
-    return ~x;
+  public static Number not(long x) {
+    return num(~x);
   }
 
-  public static BigInteger not(Object x) {
-    return NumUtils.bitOpsCast(x).not();
+  public static Number not(Object x) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).not());
   }
 
   public static Number num(double x) {
@@ -765,20 +772,20 @@ public interface Num {
     else return NumUtils.BIGINT_OPS;
   }
 
-  public static long or(long x, long y) {
-    return x | y;
+  public static Number or(long x, long y) {
+    return num(x | y);
   }
 
-  public static BigInteger or(long x, Object y) {
-    return or(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number or(long x, Object y) {
+    return or((Object) x, y);
   }
 
-  public static BigInteger or(Object x, long y) {
-    return or(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number or(Object x, long y) {
+    return or(x, (Object) y);
   }
 
-  public static BigInteger or(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).or(NumUtils.bitOpsCast(y));
+  public static Number or(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).or(NumUtils.bitOpsCast(y)));
   }
 
   public static double quotient(double n, double d) {
@@ -804,8 +811,10 @@ public interface Num {
     return quotient((double) x, y);
   }
 
-  public static long quotient(long x, long y) {
-    return x / y;
+  public static Number quotient(long x, long y) {
+    if (y == 0) throw new ArithmeticException("Divide by zero");
+    if (x == Long.MIN_VALUE && y == -1) return BigInteger.valueOf(x).negate();
+    return num(x / y);
   }
 
   public static Number quotient(long x, Object y) {
@@ -881,56 +890,56 @@ public interface Num {
     return ops(x).combine(yops).remainder((Number) x, (Number) y);
   }
 
-  public static long setBit(long x, long n) {
-    return x | (1L << n);
+  public static Number setBit(long x, long n) {
+    return setBit((Object) x, (Object) n);
   }
 
-  public static BigInteger setBit(long x, Object y) {
-    return setBit(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number setBit(long x, Object y) {
+    return setBit((Object) x, y);
   }
 
-  public static BigInteger setBit(Object x, long y) {
-    return setBit(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number setBit(Object x, long y) {
+    return setBit(x, (Object) y);
   }
 
-  public static BigInteger setBit(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).setBit(NumUtils.bitOpsCast(y).intValue());
+  public static Number setBit(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).setBit(NumUtils.bitIndex(y)));
   }
 
-  public static long shiftLeft(long x, long n) {
-    return x << n;
+  public static Number shiftLeft(long x, long n) {
+    return shiftLeft((Object) x, (Object) n);
   }
 
-  public static BigInteger shiftLeft(long x, Object y) {
-    return shiftLeft(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number shiftLeft(long x, Object y) {
+    return shiftLeft((Object) x, y);
   }
 
-  public static BigInteger shiftLeft(Object x, long y) {
-    return shiftLeft(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number shiftLeft(Object x, long y) {
+    return shiftLeft(x, (Object) y);
   }
 
-  public static BigInteger shiftLeft(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).shiftLeft(NumUtils.bitOpsCast(y).intValue());
+  public static Number shiftLeft(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).shiftLeft(NumUtils.bitIndex(y)));
   }
 
   public static int shiftLeftInt(int x, int n) {
     return x << n;
   }
 
-  public static long shiftRight(long x, long n) {
-    return x >> n;
+  public static Number shiftRight(long x, long n) {
+    return shiftRight((Object) x, (Object) n);
   }
 
-  public static BigInteger shiftRight(long x, Object y) {
-    return shiftRight(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number shiftRight(long x, Object y) {
+    return shiftRight((Object) x, y);
   }
 
-  public static BigInteger shiftRight(Object x, long y) {
-    return shiftRight(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number shiftRight(Object x, long y) {
+    return shiftRight(x, (Object) y);
   }
 
-  public static BigInteger shiftRight(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).shiftRight(NumUtils.bitOpsCast(y).intValue());
+  public static Number shiftRight(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).shiftRight(NumUtils.bitIndex(y)));
   }
 
   public static int shiftRightInt(int x, int n) {
@@ -943,19 +952,19 @@ public interface Num {
   }
 
   public static boolean testBit(long x, long n) {
-    return (x & (1L << n)) != 0;
+    return testBit((Object) x, (Object) n);
   }
 
   public static boolean testBit(long x, Object y) {
-    return testBit(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+    return testBit((Object) x, y);
   }
 
   public static boolean testBit(Object x, long y) {
-    return testBit(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+    return testBit(x, (Object) y);
   }
 
   public static boolean testBit(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).testBit(NumUtils.bitOpsCast(y).intValue());
+    return NumUtils.bitOpsCast(x).testBit(NumUtils.bitIndex(y));
   }
 
   public static int throwIntOverflow() {
@@ -1139,49 +1148,39 @@ public interface Num {
     return ops(x).combine(ops(y)).unchecked_multiply((Number) x, (Number) y);
   }
 
-  public static long unsignedShiftRight(long x, long n) {
-    return x >>> n;
+  public static Number unsignedShiftRight(long x, long n) {
+    return shiftRight(x, n);
   }
 
-  public static BigInteger unsignedShiftRight(long x, Object y) {
-    return unsignedShiftRight(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number unsignedShiftRight(long x, Object y) {
+    return shiftRight(x, y);
   }
 
-  public static BigInteger unsignedShiftRight(Object x, long y) {
-    return unsignedShiftRight(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number unsignedShiftRight(Object x, long y) {
+    return shiftRight(x, y);
   }
 
-  public static BigInteger unsignedShiftRight(Object x, Object y) {
-    // BigInteger doesn't have unsigned shift because it has no sign bit in the standard sense (it's
-    // arbitrary precision).
-    // Standard shiftRight is effectively arithmetic shift.
-    // For positive numbers, they are the same.
-    // For negative numbers, BigInteger semantics differ from Java's >>>.
-    // Given we are upscaling to BigInt, we likely want standard shiftRight behavior for "infinite"
-    // bits,
-    // or we need to simulate >>> by manipulating the bit count if we assume a fixed width (which we
-    // don't here).
-    // I will map it to shiftRight for now as it's the closest analogue in infinite precision.
-    return NumUtils.bitOpsCast(x).shiftRight(NumUtils.bitOpsCast(y).intValue());
+  public static Number unsignedShiftRight(Object x, Object y) {
+    return shiftRight(x, y);
   }
 
   public static int unsignedShiftRightInt(int x, int n) {
     return x >>> n;
   }
 
-  public static long xor(long x, long y) {
-    return x ^ y;
+  public static Number xor(long x, long y) {
+    return num(x ^ y);
   }
 
-  public static BigInteger xor(long x, Object y) {
-    return xor(BigInteger.valueOf(x), NumUtils.bitOpsCast(y));
+  public static Number xor(long x, Object y) {
+    return xor((Object) x, y);
   }
 
-  public static BigInteger xor(Object x, long y) {
-    return xor(NumUtils.bitOpsCast(x), BigInteger.valueOf(y));
+  public static Number xor(Object x, long y) {
+    return xor(x, (Object) y);
   }
 
-  public static BigInteger xor(Object x, Object y) {
-    return NumUtils.bitOpsCast(x).xor(NumUtils.bitOpsCast(y));
+  public static Number xor(Object x, Object y) {
+    return NumUtils.normalizeInteger(NumUtils.bitOpsCast(x).xor(NumUtils.bitOpsCast(y)));
   }
 }

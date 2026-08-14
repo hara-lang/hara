@@ -51,28 +51,24 @@ fn reports_delimited_errors_with_position() {
 #[test]
 fn matches_canonical_numbers_characters_and_duplicate_errors() {
     assert_eq!(
-        parse_forms("123 123.45 0xFF 2r1010").unwrap(),
+        parse_forms("123 123.45 0xFF 2r1010 9223372036854775808 1.2300e2").unwrap(),
         vec![
             Form::Number(123),
-            Form::Float(123.45),
+            Form::Decimal("123.45".into()),
             Form::Number(255),
-            Form::Number(10)
+            Form::Number(10),
+            Form::BigInteger("9223372036854775808".into()),
+            Form::Decimal("123".into()),
         ]
     );
     for unsupported in [
-        "9223372036854775808",
-        "123N",
-        "0N",
-        "+0N",
-        "-0N",
-        "1.2.3M",
-        "123.45M",
-        "0M",
-        "12xN",
+        "123N", "0N", "+0N", "-0N", "1.2.3M", "123.45M", "0M", "12xN",
     ] {
-        assert!(parse_forms(unsupported)
-            .unwrap_err()
-            .contains("Invalid number"));
+        let error = parse_forms(unsupported).unwrap_err();
+        assert!(
+            error.contains("Legacy numeric suffixes N and M are not supported"),
+            "{unsupported}: {error}"
+        );
     }
     assert_eq!(
         parse_forms("\\newline \\u03bb \\o377 \\( \\) \\[ \\] \\{ \\}").unwrap(),
@@ -163,11 +159,10 @@ fn expands_anonymous_function_reader_arguments() {
 }
 #[test]
 fn matches_extended_canonical_reader_categories() {
-    for unsupported in ["9223372036854775808"] {
-        assert!(parse_forms(unsupported)
-            .unwrap_err()
-            .contains("Invalid number"));
-    }
+    assert_eq!(
+        parse_forms("9223372036854775808").unwrap(),
+        vec![Form::BigInteger("9223372036854775808".into())]
+    );
     assert!(parse_forms("1/2")
         .unwrap_err()
         .contains("Ratios are not supported"));

@@ -18,6 +18,7 @@ use crate::lang::data::{
 };
 use crate::lang::hash::JavaHash;
 use crate::lang::protocol::{IDisplay, IMetadata, INamespaced, IToMutable, IToPersistent};
+use crate::numeric::{self, ArithmeticOp};
 pub use crate::task::{
     LocalPromiseProvider, Promise, PromiseProvider, PromiseRejection, PromiseState,
 };
@@ -1093,6 +1094,36 @@ pub(crate) fn basic_function_values() -> Vec<(&'static str, Value)> {
                 }
             }),
         ),
+        (
+            "integer?",
+            native_function("integer?", 1, |arguments| {
+                Ok(Value::Bool(numeric::is_integer_value(&arguments[0])))
+            }),
+        ),
+        (
+            "decimal?",
+            native_function("decimal?", 1, |arguments| {
+                Ok(Value::Bool(matches!(arguments[0], Value::Decimal(_))))
+            }),
+        ),
+        (
+            "quot",
+            native_function("quot", 2, |arguments| {
+                numeric::numeric_quotient(&arguments[0], &arguments[1])
+            }),
+        ),
+        (
+            "rem",
+            native_function("rem", 2, |arguments| {
+                apply_binary_primitive(Primitive::Remainder, &arguments[0], &arguments[1])
+            }),
+        ),
+        (
+            "mod",
+            native_function("mod", 2, |arguments| {
+                numeric::numeric_binary(ArithmeticOp::Modulo, &arguments[0], &arguments[1])
+            }),
+        ),
     ];
     for (name, primitive) in [
         ("+", Primitive::Add),
@@ -1100,7 +1131,6 @@ pub(crate) fn basic_function_values() -> Vec<(&'static str, Value)> {
         ("*", Primitive::Multiply),
         ("/", Primitive::Divide),
         ("%", Primitive::Remainder),
-        ("mod", Primitive::Remainder),
         ("=", Primitive::Equal),
         ("<", Primitive::Less),
         ("<=", Primitive::LessOrEqual),
@@ -1304,6 +1334,8 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "string?",
             "char?",
             "number?",
+            "integer?",
+            "decimal?",
             "long?",
             "double?",
             "boolean?",
@@ -2428,6 +2460,9 @@ impl PartialEq for Value {
         if let Some(equal) = set_equality(self, other) {
             return equal;
         }
+        if let Some(equal) = numeric::numeric_equal(self, other) {
+            return equal;
+        }
         match (self, other) {
             (Value::Number(a), Value::Number(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => {
@@ -2486,6 +2521,9 @@ impl PartialOrd for Value {
 }
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if let Some(ordering) = numeric::numeric_total_compare(self, other) {
+            return ordering;
+        }
         if self == other {
             return std::cmp::Ordering::Equal;
         }
@@ -2553,12 +2591,11 @@ impl Ord for Value {
 }
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        if let Some(hash) = numeric::numeric_hash(self) {
+            state.write_u64(hash as i64 as u64);
+            return;
+        }
         match self {
-            // Keep the hottest persistent-map key types allocation-free while
-            // still writing their Java-parity hash as one value. CHAMP's hash
-            // probe captures this write directly to preserve JVM iteration
-            // order instead of falling back to Rust's DefaultHasher.
-            Value::Number(value) => state.write_u64(crate::lang::hash::hash_long(*value) as u64),
             Value::Bool(value) => state.write_u64(crate::lang::hash::hash_bool(*value) as u64),
             Value::Nil => state.write_u64(0),
             _ => state.write_u64(self.stable_hash()),
@@ -2593,9 +2630,9 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Bool(v) => jh::hash_bool(*v) as i64,
             Self::Character(v) => jh::hash_char(*v) as i64,
             Self::String(v) => jh::java_string_hash(v) as i64,
-            Self::Number(v) => jh::hash_long(*v) as i64,
-            Self::Float(v) => jh::hash_double(*v) as i64,
-            Self::BigInteger(v) | Self::Decimal(v) => jh::canonical_decimal_str_hash(v) as i64,
+            Self::Number(_) | Self::Float(_) | Self::BigInteger(_) | Self::Decimal(_) => {
+                numeric::numeric_hash(self).expect("numeric value") as i64
+            }
             // Java hashes java.util.regex.Pattern by identity; hash the
             // pattern string instead (deterministic deviation).
             Self::Regex(v) => jh::java_string_hash(v) as i64,
@@ -2670,9 +2707,9 @@ impl Value {
             Self::Float(v) if v.is_nan() => "##NaN".into(),
             Self::Float(v) if *v == f64::INFINITY => "##Inf".into(),
             Self::Float(v) if *v == f64::NEG_INFINITY => "##-Inf".into(),
-            Self::Float(v) => v.to_string(),
-            Self::BigInteger(v) => format!("{v}N"),
-            Self::Decimal(v) => format!("{v}M"),
+            Self::Float(v) => format!("(double {v})"),
+            Self::BigInteger(v) => numeric::canonical_big_integer(v).unwrap_or_else(|_| v.clone()),
+            Self::Decimal(v) => crate::numeric::display_decimal(v).unwrap_or_else(|_| v.clone()),
             Self::Character('\n') => "\\newline".into(),
             Self::Character(' ') => "\\space".into(),
             Self::Character('\t') => "\\tab".into(),
@@ -4458,10 +4495,8 @@ fn socket_operation(
                     return Err("socket/connect expects a host, port, options, and callback".into())
                 }
             };
-            let port = match eval(&forms[1], env)? {
-                Value::Number(value) if value > 0 && value <= u16::MAX as i64 => value as u16,
-                _ => return Err("socket/connect expects a valid port".into()),
-            };
+            let port_value = eval(&forms[1], env)?;
+            let port = value_u16_integer(&port_value, "socket/connect", false)?;
             let _options = eval(&forms[2], env)?;
             let callback = match eval(&forms[3], env)? {
                 Value::Function(value) => value,
@@ -4490,10 +4525,8 @@ fn socket_operation(
                 Value::String(value) => value,
                 _ => return Err("socket/listen expects a host string".into()),
             };
-            let port = match eval(&forms[1], env)? {
-                Value::Number(value) if (0..=u16::MAX as i64).contains(&value) => value as u16,
-                _ => return Err("socket/listen expects a valid port".into()),
-            };
+            let port_value = eval(&forms[1], env)?;
+            let port = value_u16_integer(&port_value, "socket/listen", true)?;
             let _options = eval(&forms[2], env)?;
             let callback = match eval(&forms[3], env)? {
                 Value::Function(value) => value,
@@ -4547,10 +4580,8 @@ fn socket_operation(
             if forms.len() != 2 {
                 return Err("socket/send expects a socket connection and bytes".into());
             }
-            let socket = match eval(&forms[0], env)? {
-                Value::Number(value) if value >= 0 => value as SocketHandle,
-                _ => return Err("socket/send expects a socket connection and bytes".into()),
-            };
+            let socket_value = eval(&forms[0], env)?;
+            let socket = socket_handle(&socket_value, "socket/send")?;
             let bytes = match eval(&forms[1], env)? {
                 Value::Bytes(value) => value,
                 Value::ByteBuffer(value) => value.borrow().clone(),
@@ -4565,10 +4596,8 @@ fn socket_operation(
             if forms.len() != 1 {
                 return Err("socket/close expects a socket connection".into());
             }
-            let socket = match eval(&forms[0], env)? {
-                Value::Number(value) if value >= 0 => value as SocketHandle,
-                _ => return Err("socket/close expects a socket connection".into()),
-            };
+            let socket_value = eval(&forms[0], env)?;
+            let socket = socket_handle(&socket_value, "socket/close")?;
             socket_provider(operation)?
                 .close(socket)
                 .map(|()| Value::Nil)
@@ -4579,10 +4608,9 @@ fn socket_operation(
 }
 
 fn socket_handle(value: &Value, operation: &str) -> Result<SocketHandle, String> {
-    match value {
-        Value::Number(value) if *value >= 0 => Ok(*value as SocketHandle),
-        _ => Err(format!("{operation} expects a socket handle")),
-    }
+    value_u64_integer(value, operation)
+        .map(|value| value as SocketHandle)
+        .map_err(|_| format!("{operation} expects a socket handle"))
 }
 
 fn native_host_operation(
@@ -5999,7 +6027,7 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Nil => "nil",
         Value::Number(_) => "integer",
         Value::Float(_) => "float",
-        Value::BigInteger(_) => "big-integer",
+        Value::BigInteger(_) => "integer",
         Value::Decimal(_) => "decimal",
         Value::Character(_) => "character",
         Value::Regex(_) => "pattern",
@@ -6050,7 +6078,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Nil => "Nil",
         Value::Number(_) => "Integer",
         Value::Float(_) => "Float",
-        Value::BigInteger(_) => "BigInteger",
+        Value::BigInteger(_) => "Integer",
         Value::Decimal(_) => "Decimal",
         Value::Character(_) => "Character",
         Value::Regex(_) => "RegExp",
@@ -6216,7 +6244,7 @@ impl Primitive {
             "-" => Primitive::Subtract,
             "*" => Primitive::Multiply,
             "/" => Primitive::Divide,
-            "%" | "mod" => Primitive::Remainder,
+            "%" => Primitive::Remainder,
             "=" => Primitive::Equal,
             "<" => Primitive::Less,
             "<=" => Primitive::LessOrEqual,
@@ -6298,74 +6326,20 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
             if arguments.is_empty() {
                 return Err(format!("{op} expects arguments"));
             }
-            if arguments
-                .iter()
-                .any(|value| matches!(value, Value::Float(_)))
-            {
-                let mut values = arguments.iter().map(|value| match value {
-                    Value::Number(value) => Ok(*value as f64),
-                    Value::Float(value) => Ok(*value),
-                    _ => Err(format!("{op} expects numbers")),
-                });
-                let mut result = values.next().expect("non-empty arguments")?;
-                for value in values {
-                    let value = value?;
-                    result = match primitive {
-                        Primitive::Add => result + value,
-                        Primitive::Subtract => result - value,
-                        Primitive::Multiply => result * value,
-                        Primitive::Divide if value == 0.0 => return Err("division by zero".into()),
-                        Primitive::Divide => result / value,
-                        Primitive::Remainder if value == 0.0 => {
-                            return Err("division by zero".into())
-                        }
-                        Primitive::Remainder => result % value,
-                        _ => unreachable!(),
-                    };
+            if arguments.len() == 1 {
+                if primitive == Primitive::Subtract {
+                    return numeric::numeric_negate(&arguments[0]);
                 }
-                return Ok(Value::Float(result));
+                if !numeric::is_numeric_value(&arguments[0]) {
+                    return Err(format!("{op} expects numbers"));
+                }
+                return Ok(arguments[0].clone());
             }
-            let mut result = match &arguments[0] {
-                Value::Number(value) => *value,
-                _ => return Err(format!("{op} expects numbers")),
-            };
+            let mut result = arguments[0].clone();
             for argument in &arguments[1..] {
-                let value = match argument {
-                    Value::Number(value) => *value,
-                    _ => return Err(format!("{op} expects numbers")),
-                };
-                result = match primitive {
-                    Primitive::Add => result
-                        .checked_add(value)
-                        .ok_or_else(|| "integer overflow".to_string()),
-                    Primitive::Subtract => result
-                        .checked_sub(value)
-                        .ok_or_else(|| "integer overflow".to_string()),
-                    Primitive::Multiply => result
-                        .checked_mul(value)
-                        .ok_or_else(|| "integer overflow".to_string()),
-                    Primitive::Divide => {
-                        if value == 0 {
-                            Err("division by zero".into())
-                        } else {
-                            result
-                                .checked_div(value)
-                                .ok_or_else(|| "integer overflow".to_string())
-                        }
-                    }
-                    Primitive::Remainder => {
-                        if value == 0 {
-                            Err("division by zero".into())
-                        } else {
-                            result
-                                .checked_rem(value)
-                                .ok_or_else(|| "integer overflow".to_string())
-                        }
-                    }
-                    _ => unreachable!(),
-                }?;
+                result = apply_binary_primitive(primitive, &result, argument)?;
             }
-            Ok(Value::Number(result))
+            Ok(result)
         }
         Primitive::Equal => {
             if arguments.len() < 2 {
@@ -6383,23 +6357,22 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
             if arguments.len() < 2 {
                 return Err(format!("{op} expects at least two arguments"));
             }
-            let mut numbers = Vec::with_capacity(arguments.len());
-            for argument in arguments {
-                match argument {
-                    Value::Number(number) => numbers.push(*number as f64),
-                    Value::Float(number) => numbers.push(*number),
-                    _ => return Err(format!("{op} expects numbers")),
+            for pair in arguments.windows(2) {
+                let Some(ordering) = numeric::numeric_compare(&pair[0], &pair[1])? else {
+                    return Ok(Value::Bool(false));
+                };
+                let matches = match primitive {
+                    Primitive::Less => ordering == std::cmp::Ordering::Less,
+                    Primitive::LessOrEqual => ordering != std::cmp::Ordering::Greater,
+                    Primitive::Greater => ordering == std::cmp::Ordering::Greater,
+                    Primitive::GreaterOrEqual => ordering != std::cmp::Ordering::Less,
+                    _ => unreachable!(),
+                };
+                if !matches {
+                    return Ok(Value::Bool(false));
                 }
             }
-            Ok(Value::Bool(numbers.windows(2).all(
-                |pair| match primitive {
-                    Primitive::Less => pair[0] < pair[1],
-                    Primitive::Greater => pair[0] > pair[1],
-                    Primitive::LessOrEqual => pair[0] <= pair[1],
-                    Primitive::GreaterOrEqual => pair[0] >= pair[1],
-                    _ => unreachable!(),
-                },
-            )))
+            Ok(Value::Bool(true))
         }
         // The evaluator's structural collection/metadata arms, sharing the
         // same value-level functions and arity messages.
@@ -6575,54 +6548,47 @@ pub(crate) fn apply_binary_primitive(
     if let (Value::Number(left), Value::Number(right)) = (left, right) {
         return apply_binary_numbers(primitive, *left, *right);
     }
-    if matches!(left, Value::Number(_) | Value::Float(_))
-        && matches!(right, Value::Number(_) | Value::Float(_))
-        && matches!(
-            primitive,
-            Primitive::Add
-                | Primitive::Subtract
-                | Primitive::Multiply
-                | Primitive::Divide
-                | Primitive::Remainder
-                | Primitive::Less
-                | Primitive::LessOrEqual
-                | Primitive::Greater
-                | Primitive::GreaterOrEqual
-        )
-    {
-        let number = |value: &Value| match value {
-            Value::Number(value) => Ok(*value as f64),
-            Value::Float(value) => Ok(*value),
-            _ => Err(format!("{op} expects numbers")),
-        };
-        let left = number(left)?;
-        let right = number(right)?;
-        return Ok(match primitive {
-            Primitive::Add => Value::Float(left + right),
-            Primitive::Subtract => Value::Float(left - right),
-            Primitive::Multiply => Value::Float(left * right),
-            Primitive::Divide if right == 0.0 => return Err("division by zero".into()),
-            Primitive::Divide => Value::Float(left / right),
-            Primitive::Remainder if right == 0.0 => return Err("division by zero".into()),
-            Primitive::Remainder => Value::Float(left % right),
-            Primitive::Less => Value::Bool(left < right),
-            Primitive::LessOrEqual => Value::Bool(left <= right),
-            Primitive::Greater => Value::Bool(left > right),
-            Primitive::GreaterOrEqual => Value::Bool(left >= right),
-            _ => unreachable!(),
-        });
-    }
     match primitive {
+        Primitive::Equal => return Ok(Value::Bool(left == right)),
+        Primitive::Less
+        | Primitive::LessOrEqual
+        | Primitive::Greater
+        | Primitive::GreaterOrEqual => {
+            let Some(ordering) = numeric::numeric_compare(left, right)? else {
+                return Ok(Value::Bool(false));
+            };
+            return Ok(Value::Bool(match primitive {
+                Primitive::Less => ordering == std::cmp::Ordering::Less,
+                Primitive::LessOrEqual => ordering != std::cmp::Ordering::Greater,
+                Primitive::Greater => ordering == std::cmp::Ordering::Greater,
+                Primitive::GreaterOrEqual => ordering != std::cmp::Ordering::Less,
+                _ => unreachable!(),
+            }));
+        }
         Primitive::Add
         | Primitive::Subtract
         | Primitive::Multiply
         | Primitive::Divide
-        | Primitive::Remainder => Err(format!("{op} expects numbers")),
-        Primitive::Equal => Ok(Value::Bool(left == right)),
-        Primitive::Less
-        | Primitive::LessOrEqual
-        | Primitive::Greater
-        | Primitive::GreaterOrEqual => Err(format!("{op} expects numbers")),
+        | Primitive::Remainder => {
+            let operation = match primitive {
+                Primitive::Add => ArithmeticOp::Add,
+                Primitive::Subtract => ArithmeticOp::Subtract,
+                Primitive::Multiply => ArithmeticOp::Multiply,
+                Primitive::Divide => ArithmeticOp::Divide,
+                Primitive::Remainder => ArithmeticOp::Remainder,
+                _ => unreachable!(),
+            };
+            return numeric::numeric_binary(operation, left, right).map_err(|error| {
+                if error == "expected numeric values" {
+                    format!("{op} expects numbers")
+                } else {
+                    error
+                }
+            });
+        }
+        _ => {}
+    }
+    match primitive {
         Primitive::Get if matches!(left, Value::Bytes(_) | Value::ByteBuffer(_)) => {
             byte_get(left, right, None)
         }
@@ -6673,14 +6639,59 @@ pub(crate) fn apply_binary_numbers(
     right: i64,
 ) -> Result<Value, String> {
     let result = match primitive {
-        Primitive::Add => Value::Number(left.checked_add(right).ok_or("integer overflow")?),
-        Primitive::Subtract => Value::Number(left.checked_sub(right).ok_or("integer overflow")?),
-        Primitive::Multiply => Value::Number(left.checked_mul(right).ok_or("integer overflow")?),
+        Primitive::Add => match left.checked_add(right) {
+            Some(value) => Value::Number(value),
+            None => {
+                return numeric::numeric_binary(
+                    ArithmeticOp::Add,
+                    &Value::Number(left),
+                    &Value::Number(right),
+                )
+            }
+        },
+        Primitive::Subtract => match left.checked_sub(right) {
+            Some(value) => Value::Number(value),
+            None => {
+                return numeric::numeric_binary(
+                    ArithmeticOp::Subtract,
+                    &Value::Number(left),
+                    &Value::Number(right),
+                )
+            }
+        },
+        Primitive::Multiply => match left.checked_mul(right) {
+            Some(value) => Value::Number(value),
+            None => {
+                return numeric::numeric_binary(
+                    ArithmeticOp::Multiply,
+                    &Value::Number(left),
+                    &Value::Number(right),
+                )
+            }
+        },
         Primitive::Divide | Primitive::Remainder if right == 0 => {
             return Err("division by zero".into())
         }
-        Primitive::Divide => Value::Number(left.checked_div(right).ok_or("integer overflow")?),
-        Primitive::Remainder => Value::Number(left.checked_rem(right).ok_or("integer overflow")?),
+        Primitive::Divide => match left.checked_div(right) {
+            Some(value) => Value::Number(value),
+            None => {
+                return numeric::numeric_binary(
+                    ArithmeticOp::Divide,
+                    &Value::Number(left),
+                    &Value::Number(right),
+                )
+            }
+        },
+        Primitive::Remainder => match left.checked_rem(right) {
+            Some(value) => Value::Number(value),
+            None => {
+                return numeric::numeric_binary(
+                    ArithmeticOp::Remainder,
+                    &Value::Number(left),
+                    &Value::Number(right),
+                )
+            }
+        },
         Primitive::Equal => Value::Bool(left == right),
         Primitive::Less => Value::Bool(left < right),
         Primitive::LessOrEqual => Value::Bool(left <= right),
@@ -6717,7 +6728,7 @@ fn arithmetic(op: &str, args: &[Form], env: &mut HashMap<String, Value>) -> Resu
     let mut values = Vec::with_capacity(args.len());
     for form in args {
         let value = eval(form, env)?;
-        if !matches!(value, Value::Number(_) | Value::Float(_)) {
+        if !numeric::is_numeric_value(&value) {
             return Err(format!("{} expects numbers", primitive.operator()));
         }
         values.push(value);
@@ -6743,45 +6754,30 @@ fn bit_operation(
         .iter()
         .map(|form| eval(form, env))
         .collect::<Result<Vec<_>, _>>()?;
-    let integer = |value: &Value| match value {
-        Value::Number(value) => Ok(*value as i32),
-        _ => Err(format!("{op} expects integers")),
-    };
     match op {
         "bit-not" => {
             if values.len() != 1 {
                 return Err("bit-not expects one integer".into());
             }
-            Ok(Value::Number((!integer(&values[0])?) as i64))
+            numeric::bit_not(&values[0]).map_err(|_| "bit-not expects one integer".to_string())
         }
         "bit-and" | "bit-or" | "bit-xor" => {
             if values.len() != 2 {
                 return Err(format!("{op} expects two integers"));
             }
-            let a = integer(&values[0])?;
-            let b = integer(&values[1])?;
-            let result = match op {
-                "bit-and" => a & b,
-                "bit-or" => a | b,
-                _ => a ^ b,
-            };
-            Ok(Value::Number(result as i64))
+            numeric::bit_binary(op, &values[0], &values[1]).map_err(|error| {
+                if error == "expected an integer" {
+                    format!("{op} expects integers")
+                } else {
+                    error
+                }
+            })
         }
         "bit-shift-left" | "bit-shift-right" => {
             if values.len() != 2 {
                 return Err(format!("{op} expects an integer and distance"));
             }
-            let value = integer(&values[0])?;
-            let distance = match &values[1] {
-                Value::Number(distance) if (0..=31).contains(distance) => *distance as u32,
-                _ => return Err("distance must be in the range 0..31".into()),
-            };
-            let result = if op == "bit-shift-left" {
-                value.wrapping_shl(distance)
-            } else {
-                value.wrapping_shr(distance)
-            };
-            Ok(Value::Number(result as i64))
+            numeric::bit_shift(op == "bit-shift-left", &values[0], &values[1])
         }
         _ => Err(format!("unknown bit operation: {op}")),
     }
@@ -6799,48 +6795,23 @@ fn number_conversion(
         return Err(format!("{operation} expects one numeric value"));
     }
     let value = eval(&args[0], env)?;
-    match (operation, value) {
-        ("long", Value::Number(value)) => Ok(Value::Number(value)),
-        ("long", Value::Float(value))
-            if value.is_finite()
-                && value.trunc() >= i64::MIN as f64
-                && value.trunc() < -(i64::MIN as f64) =>
-        {
-            Ok(Value::Number(value.trunc() as i64))
-        }
-        ("double", Value::Number(value)) => Ok(Value::Float(value as f64)),
-        ("double", Value::Float(value)) => Ok(Value::Float(value)),
-        ("long" | "double", _) => Err(format!("{operation} cannot convert non-numeric value")),
+    match operation {
+        "long" => Ok(Value::Number(
+            numeric::to_i64_exact(&value).map_err(|error| format!("long: {error}"))?,
+        )),
+        "double" => Ok(Value::Float(
+            numeric::to_f64_explicit(&value).map_err(|error| format!("double: {error}"))?,
+        )),
         _ => Err(format!("unknown number conversion: {operation}")),
     }
 }
 
 fn numeric_to_f64(value: &Value, operation: &str) -> Result<f64, String> {
-    match value {
-        Value::Number(value) => Ok(*value as f64),
-        Value::Float(value) => Ok(*value),
-        Value::BigInteger(value) | Value::Decimal(value) => value
-            .parse::<f64>()
-            .map_err(|_| format!("{operation} expects a numeric value")),
-        _ => Err(format!("{operation} expects a numeric value")),
-    }
+    numeric::to_f64_explicit(value).map_err(|error| format!("{operation}: {error}"))
 }
 
 fn numeric_abs(value: Value) -> Result<Value, String> {
-    match value {
-        Value::Number(value) => match value.checked_abs() {
-            Some(value) => Ok(Value::Number(value)),
-            None => Err("integer overflow".into()),
-        },
-        Value::Float(value) => Ok(Value::Float(value.abs())),
-        Value::BigInteger(value) => Ok(Value::BigInteger(
-            value.strip_prefix('-').unwrap_or(&value).to_string(),
-        )),
-        Value::Decimal(value) => Ok(Value::Decimal(
-            value.strip_prefix('-').unwrap_or(&value).to_string(),
-        )),
-        _ => Err("abs expects a numeric value".into()),
-    }
+    numeric::numeric_abs(&value).map_err(|_| "abs expects a numeric value".to_string())
 }
 
 fn math_operation(
@@ -6959,10 +6930,22 @@ fn comparison(op: &str, args: &[Form], env: &mut HashMap<String, Value>) -> Resu
 }
 
 fn value_index(value: &Value) -> Result<usize, String> {
-    match value {
-        Value::Number(index) if *index >= 0 => Ok(*index as usize),
-        _ => Err("index must be a non-negative integer".into()),
+    numeric::to_usize_exact(value)
+        .map_err(|_| "index must be a non-negative host-sized integer".into())
+}
+
+fn value_u64_integer(value: &Value, operation: &str) -> Result<u64, String> {
+    numeric::to_u64_exact(value)
+        .map_err(|_| format!("{operation} expects a non-negative 64-bit integer"))
+}
+
+fn value_u16_integer(value: &Value, operation: &str, allow_zero: bool) -> Result<u16, String> {
+    let value =
+        numeric::to_u16_exact(value).map_err(|_| format!("{operation} expects a valid port"))?;
+    if !allow_zero && value == 0 {
+        return Err(format!("{operation} expects a valid port"));
     }
+    Ok(value)
 }
 
 fn value_to_metadata(value: &Value) -> Result<MetadataValue, String> {
@@ -7438,28 +7421,25 @@ fn protocol_deref(arguments: &[Value]) -> Result<Value, String> {
 }
 
 fn protocol_deref_timeout(arguments: &[Value]) -> Result<Value, String> {
-    match arguments {
-        [Value::Promise(promise), Value::Number(milliseconds), timeout] if *milliseconds >= 0 => {
-            match promise.wait_state_timeout(std::time::Duration::from_millis(*milliseconds as u64)) {
+    let [target, milliseconds, timeout] = arguments else {
+        return Err("IDerefTimeout/deref-timeout expects three arguments".into());
+    };
+    let milliseconds = value_u64_integer(milliseconds, "IDerefTimeout/deref-timeout")
+        .map_err(|_| "IDerefTimeout/deref-timeout expects non-negative milliseconds".to_string())?;
+    match target {
+        Value::Promise(promise) => {
+            match promise.wait_state_timeout(std::time::Duration::from_millis(milliseconds)) {
                 PromiseState::Fulfilled(value) => Ok(value),
                 PromiseState::Rejected(error) => Err(promise_rejection_error(error)),
                 PromiseState::Pending => Ok(timeout.clone()),
             }
         }
-        [Value::Atom(atom), Value::Number(milliseconds), _] if *milliseconds >= 0 => {
-            Ok(atom.deref_value())
-        }
-        [Value::Var(var), Value::Number(milliseconds), _] if *milliseconds >= 0 => {
-            Ok(var.deref_value())
-        }
-        [_, Value::Number(milliseconds), _] if *milliseconds < 0 => {
-            Err("IDerefTimeout/deref-timeout expects non-negative milliseconds".into())
-        }
-        [_, _, _] => Err(
+        Value::Atom(atom) => Ok(atom.deref_value()),
+        Value::Var(var) => Ok(var.deref_value()),
+        _ => Err(
             "IDerefTimeout/deref-timeout expects a dereferenceable value, milliseconds, and timeout value"
                 .into(),
         ),
-        _ => Err("IDerefTimeout/deref-timeout expects three arguments".into()),
     }
 }
 
@@ -13173,10 +13153,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() != 3 {
                         return Err("promise/delay expects milliseconds and a function".into());
                     }
-                    let millis = match eval(&fs[1], env)? {
-                        Value::Number(value) if value >= 0 => value as u64,
-                        _ => return Err("promise/delay expects non-negative milliseconds".into()),
-                    };
+                    let millis_value = eval(&fs[1], env)?;
+                    let millis =
+                        value_u64_integer(&millis_value, "promise/delay").map_err(|_| {
+                            "promise/delay expects non-negative milliseconds".to_string()
+                        })?;
                     let function = match eval(&fs[2], env)? {
                         Value::Function(function) => function,
                         _ => return Err("promise/delay expects milliseconds and a function".into()),
@@ -14029,9 +14010,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     let nums = fs[1..]
                         .iter()
-                        .map(|form| match eval(form, env)? {
-                            Value::Number(value) => Ok(value),
-                            _ => Err("iter-range bounds must be numbers".into()),
+                        .map(|form| {
+                            let value = eval(form, env)?;
+                            numeric::to_i64_exact(&value).map_err(|_| {
+                                "iter-range bounds must fit signed 64-bit integers".into()
+                            })
                         })
                         .collect::<Result<Vec<_>, String>>()?;
                     let (start, end) = match nums.as_slice() {
@@ -14049,9 +14032,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     let nums = fs[1..]
                         .iter()
-                        .map(|form| match eval(form, env)? {
-                            Value::Number(v) => Ok(v),
-                            _ => Err("range bounds must be numbers".into()),
+                        .map(|form| {
+                            let value = eval(form, env)?;
+                            numeric::to_i64_exact(&value)
+                                .map_err(|_| "range bounds must fit signed 64-bit integers".into())
                         })
                         .collect::<Result<Vec<_>, String>>()?;
                     let (start, end) = match nums.as_slice() {
@@ -14213,13 +14197,16 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() != 2 {
                         return Err(format!("{n} expects one number"));
                     }
-                    match eval(&fs[1], env)? {
-                        Value::Number(value) => value
-                            .checked_add(if n == "inc" { 1 } else { -1 })
-                            .map(Value::Number)
-                            .ok_or_else(|| "integer overflow".to_string()),
-                        _ => Err(format!("{n} expects a number")),
-                    }
+                    let value = eval(&fs[1], env)?;
+                    apply_binary_primitive(
+                        if n == "inc" {
+                            Primitive::Add
+                        } else {
+                            Primitive::Subtract
+                        },
+                        &value,
+                        &Value::Number(1),
+                    )
                 }
                 Form::Symbol(n) if n == "__map-transform" => {
                     if fs.len() != 3 {
@@ -14501,28 +14488,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         Some(_) => Err("apply expects a function".into()),
                         None => {
                             let name = builtin_name.unwrap();
-                            let numbers = arguments
-                                .iter()
-                                .map(|value| match value {
-                                    Value::Number(value) => Ok(*value),
-                                    _ => Err("apply arithmetic expects numbers".into()),
-                                })
-                                .collect::<Result<Vec<_>, String>>()?;
-                            if numbers.is_empty() {
-                                return Err("apply expects a function".into());
-                            }
-                            let result = numbers[1..].iter().try_fold(numbers[0], |a, b| {
-                                match name {
-                                    "+" => a.checked_add(*b),
-                                    "-" => a.checked_sub(*b),
-                                    "*" => a.checked_mul(*b),
-                                    "/" if *b == 0 => return Err("division by zero".into()),
-                                    "/" => a.checked_div(*b),
-                                    _ => return Err("apply expects a function".into()),
-                                }
-                                .ok_or_else(|| "integer overflow".to_string())
-                            })?;
-                            Ok(Value::Number(result))
+                            let primitive = Primitive::from_symbol(name)
+                                .ok_or_else(|| "apply expects a function".to_string())?;
+                            apply_primitive(primitive, &arguments)
                         }
                     }
                 }
@@ -14639,6 +14607,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "string?",
                         "char?",
                         "number?",
+                        "integer?",
+                        "decimal?",
                         "long?",
                         "double?",
                         "boolean?",
@@ -14684,8 +14654,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "pointer?" => matches!(value, Value::Pointer(_)),
                         "string?" => matches!(value, Value::String(_)),
                         "char?" => matches!(value, Value::Character(_)),
-                        "number?" => matches!(value, Value::Number(_) | Value::Float(_)),
-                        "long?" => matches!(value, Value::Number(_)),
+                        "number?" => numeric::is_numeric_value(&value),
+                        "integer?" => numeric::is_integer_value(&value),
+                        "decimal?" => matches!(value, Value::Decimal(_)),
+                        "long?" => numeric::to_i64_exact(&value).is_ok(),
                         "double?" => matches!(value, Value::Float(_)),
                         "boolean?" => matches!(value, Value::Bool(_)),
                         "fn?" => matches!(value, Value::Function(_)),
@@ -15035,8 +15007,21 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     result
                 }
-                Form::Symbol(n) if ["+", "-", "*", "/", "%", "mod"].contains(&n.as_str()) => {
-                    arithmetic(if n == "mod" { "%" } else { n }, &fs[1..], env)
+                Form::Symbol(n) if ["+", "-", "*", "/", "%"].contains(&n.as_str()) => {
+                    arithmetic(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if ["quot", "rem", "mod"].contains(&n.as_str()) => {
+                    if fs.len() != 3 {
+                        return Err(format!("{n} expects two numbers"));
+                    }
+                    let left = eval(&fs[1], env)?;
+                    let right = eval(&fs[2], env)?;
+                    match n.as_str() {
+                        "quot" => numeric::numeric_quotient(&left, &right),
+                        "rem" => apply_binary_primitive(Primitive::Remainder, &left, &right),
+                        "mod" => numeric::numeric_binary(ArithmeticOp::Modulo, &left, &right),
+                        _ => unreachable!(),
+                    }
                 }
                 _ => {
                     if let Form::Symbol(name) = &fs[0] {

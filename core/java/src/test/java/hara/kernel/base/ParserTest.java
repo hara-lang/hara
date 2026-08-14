@@ -3,6 +3,8 @@ package hara.kernel.base;
 import hara.lang.data.*;
 import org.junit.Test;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -13,24 +15,25 @@ public class ParserTest {
   @Test
   public void testReadStringNumber() {
     assertEquals(123L, Parser.LispReader.readString("123", null));
-    assertEquals(123.45, Parser.LispReader.readString("123.45", null));
+    assertEquals(new BigDecimal("123.45"), Parser.LispReader.readString("123.45", null));
     assertEquals(0xFFL, Parser.LispReader.readString("0xFF", null));
-    assertThrows(RuntimeException.class, () -> Parser.LispReader.readString("123N", null));
-    assertThrows(RuntimeException.class, () -> Parser.LispReader.readString("-0N", null));
-    assertThrows(
-        Parser.LispReader.ReaderException.class,
-        () -> Parser.LispReader.readString("123.45M", null));
-    assertThrows(
-        Parser.LispReader.ReaderException.class,
-        () -> Parser.LispReader.readString("9223372036854775808", null));
+    RuntimeException integerSuffix =
+        assertThrows(RuntimeException.class, () -> Parser.LispReader.readString("123N", null));
+    assertTrue(integerSuffix.getCause().getMessage().contains("Legacy numeric suffixes N and M"));
+    RuntimeException decimalSuffix =
+        assertThrows(RuntimeException.class, () -> Parser.LispReader.readString("123.45M", null));
+    assertTrue(decimalSuffix.getCause().getMessage().contains("Legacy numeric suffixes N and M"));
+    assertEquals(
+        new BigInteger("9223372036854775808"),
+        Parser.LispReader.readString("9223372036854775808", null));
   }
 
   @Test
   public void readableNumericPrintingPreservesLongAndDoubleCategories() {
     assertEquals("123", hara.lang.base.G.display(123L));
-    assertEquals("123.45", hara.lang.base.G.display(123.45));
+    assertEquals("(double 123.45)", hara.lang.base.G.display(123.45));
     assertEquals(123L, Parser.LispReader.readString("123", null));
-    assertEquals(123.45, Parser.LispReader.readString("123.45", null));
+    assertEquals(new BigDecimal("123.45"), Parser.LispReader.readString("123.45", null));
   }
 
   @Test

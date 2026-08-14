@@ -31,6 +31,7 @@ fn portable_codec_matches_the_runtime_codec_byte_for_byte() {
             Value::Vector(vec![Value::Bool(true), Value::Nil].into()),
         ),
         ("b", Value::Number(2)),
+        ("big", Value::BigInteger("9223372036854775808".into())),
         ("bytes", Value::Bytes(vec![0, 1, 255].into())),
         ("float", Value::Float(0.28)),
         ("keyword", Value::Keyword("profile.primary".into())),
@@ -42,6 +43,10 @@ fn portable_codec_matches_the_runtime_codec_byte_for_byte() {
             PortableValue::Vector(vec![PortableValue::Boolean(true), PortableValue::Nil]),
         ),
         ("b", PortableValue::Integer(2)),
+        (
+            "big",
+            PortableValue::BigInteger("9223372036854775808".into()),
+        ),
         ("bytes", PortableValue::Bytes(vec![0, 1, 255])),
         ("float", PortableValue::Float(0.28)),
         ("keyword", PortableValue::Keyword("profile.primary".into())),

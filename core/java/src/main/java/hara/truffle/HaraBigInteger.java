@@ -126,7 +126,7 @@ public final class HaraBigInteger implements TruffleObject {
   @ExportMessage
   @TruffleBoundary
   Object toDisplayString(boolean allowSideEffects) {
-    return value.toString() + "N";
+    return value.toString();
   }
 
   @TruffleBoundary
@@ -144,7 +144,7 @@ public final class HaraBigInteger implements TruffleObject {
   @TruffleBoundary
   @Override
   public String toString() {
-    return value.toString() + "N";
+    return value.toString();
   }
 
   @TruffleBoundary

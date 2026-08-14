@@ -242,7 +242,7 @@ public final class HalcSchema {
     if (form instanceof Byte || form instanceof Short || form instanceof Integer || form instanceof Long)
       return new Primitive("int");
     if (form instanceof Float || form instanceof Double) return new Primitive("float");
-    if (form instanceof java.math.BigInteger) return new Primitive("bigint");
+    if (form instanceof java.math.BigInteger) return new Primitive("int");
     if (form instanceof java.math.BigDecimal) return new Primitive("decimal");
     if (form instanceof Character) return new Primitive("char");
     if (form instanceof java.util.regex.Pattern) return new Primitive("regex");
@@ -307,7 +307,7 @@ public final class HalcSchema {
           pushJoined(operands, inferExpression(list.nth(index), environment));
         Type joined = join(operands);
         if (joined instanceof Primitive primitive
-            && List.of("int", "float", "bigint", "decimal").contains(primitive.name())) return joined;
+            && List.of("int", "float", "decimal").contains(primitive.name())) return joined;
         return new Primitive("number");
       }
       case "/": return new Primitive("number");

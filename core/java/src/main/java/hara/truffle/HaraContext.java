@@ -14,6 +14,7 @@ import hara.kernel.flavor.NativeFlavorRegistry;
 import hara.kernel.jvm.JvmFlavorProvider;
 import hara.lang.base.Iter;
 import hara.lang.base.Eq;
+import hara.lang.base.G;
 import hara.lang.base.primitive.Num;
 import hara.lang.base.iter.CloseableIterator;
 import hara.lang.data.Symbol;
@@ -1763,8 +1764,10 @@ public final class HaraContext {
     target.define("-", new VariadicBuiltin("-", values -> arithmetic("-", values)));
     target.define("*", new VariadicBuiltin("*", values -> arithmetic("*", values)));
     target.define("/", new VariadicBuiltin("/", values -> arithmetic("/", values)));
+    target.define("quot", new VariadicBuiltin("quot", values -> arithmetic("quot", values)));
+    target.define("rem", new VariadicBuiltin("rem", values -> arithmetic("rem", values)));
     target.define("mod", new VariadicBuiltin("mod", values -> arithmetic("mod", values)));
-    target.define("%", new VariadicBuiltin("%", values -> arithmetic("mod", values)));
+    target.define("%", new VariadicBuiltin("%", values -> arithmetic("rem", values)));
     target.define("compare", new VariadicBuiltin("compare", this::compareValues));
     target.define("=", new VariadicBuiltin("=", values -> compare("=", values)));
     target.define("not=", new VariadicBuiltin("not=", values -> compare("not=", values)));
@@ -1824,12 +1827,13 @@ public final class HaraContext {
         "string?",
         new UnaryBuiltin("string?", value -> HaraBox.unwrap(value) instanceof String));
     target.define(
-        "number?", new UnaryBuiltin("number?", value -> HaraBox.unwrap(value) instanceof Number));
-    target.define("long?", new UnaryBuiltin("long?", value -> {
-      Object raw = HaraBox.unwrap(value);
-      return raw instanceof Byte || raw instanceof Short || raw instanceof Integer
-          || raw instanceof Long;
-    }));
+        "number?", new UnaryBuiltin("number?", HaraNumericConversions::isNumeric));
+    target.define(
+        "integer?", new UnaryBuiltin("integer?", HaraNumericConversions::isInteger));
+    target.define(
+        "decimal?", new UnaryBuiltin("decimal?", HaraNumericConversions::isDecimal));
+    target.define(
+        "long?", new UnaryBuiltin("long?", HaraNumericConversions::fitsLong));
     target.define("double?", new UnaryBuiltin("double?", value -> {
       Object raw = HaraBox.unwrap(value);
       return raw instanceof Float || raw instanceof Double;
@@ -2372,11 +2376,8 @@ public final class HaraContext {
   }
 
   private static String displayText(Object unwrapped) {
-    if (unwrapped instanceof java.math.BigInteger) {
-      return unwrapped + "N";
-    }
-    if (unwrapped instanceof java.math.BigDecimal) {
-      return ((java.math.BigDecimal) unwrapped).toPlainString() + "M";
+    if (unwrapped instanceof Number) {
+      return G.display(unwrapped);
     }
     if (unwrapped instanceof IDisplay) {
       return ((IDisplay) unwrapped).display();
@@ -2513,7 +2514,11 @@ public final class HaraContext {
     bits.define("and", new VariadicBuiltin("std.native.Bits/and", values -> bitOperation("and", values)));
     bits.define("or", new VariadicBuiltin("std.native.Bits/or", values -> bitOperation("or", values)));
     bits.define("xor", new VariadicBuiltin("std.native.Bits/xor", values -> bitOperation("xor", values)));
-    bits.define("not", new UnaryBuiltin("std.native.Bits/not", value -> (long) ~int32(value, "bit-not")));
+    bits.define(
+        "not",
+        new UnaryBuiltin(
+            "std.native.Bits/not",
+            value -> Num.not(HaraNumericConversions.toInteger(value, "bit-not"))));
     bits.define(
         "shift-left", new VariadicBuiltin("std.native.Bits/shift-left", values -> bitShift(values, true)));
     bits.define(
@@ -2557,7 +2562,7 @@ public final class HaraContext {
 
     String type;
     if (raw == null || raw == HaraNull.SINGLETON) type = "Nil";
-    else if (raw instanceof HaraBigInteger || raw instanceof java.math.BigInteger) type = "BigInteger";
+    else if (raw instanceof HaraBigInteger || raw instanceof java.math.BigInteger) type = "Integer";
     else if (raw instanceof HaraDecimal || raw instanceof java.math.BigDecimal) type = "Decimal";
     else if (raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long) type = "Integer";
     else if (raw instanceof Float || raw instanceof Double) type = "Float";
@@ -3300,72 +3305,42 @@ public final class HaraContext {
     socket.define("close", new UnaryBuiltin("std.native.Socket/close", this::socketClose));
   }
 
-  private static int int32(Object value, String operation) {
-    Object input = HaraBox.unwrap(value);
-    if (!(input instanceof Number)) throw new HaraException(operation + " expects integers");
-    long number = ((Number) input).longValue();
-    if (number < Integer.MIN_VALUE || number > 0xffffffffL) {
-      throw new HaraException(operation + " expects a signed 32-bit value");
-    }
-    return (int) number;
-  }
-
   private static Object bitOperation(String operation, Object[] values) {
     if (values.length != 2) throw new HaraException("bit-" + operation + " expects two integers");
-    int left = int32(values[0], "bit-" + operation);
-    int right = int32(values[1], "bit-" + operation);
-    if ("and".equals(operation)) return (long) (left & right);
-    if ("or".equals(operation)) return (long) (left | right);
-    return (long) (left ^ right);
+    Object left = HaraNumericConversions.toInteger(values[0], "bit-" + operation);
+    Object right = HaraNumericConversions.toInteger(values[1], "bit-" + operation);
+    if ("and".equals(operation)) return Num.and(left, right);
+    if ("or".equals(operation)) return Num.or(left, right);
+    return Num.xor(left, right);
   }
 
   private static Object bitShift(Object[] values, boolean left) {
     String name = left ? "bit-shift-left" : "bit-shift-right";
     if (values.length != 2) throw new HaraException(name + " expects two integers");
-    int value = int32(values[0], name);
-    int distance = int32(values[1], name);
-    if (distance < 0 || distance > 31) {
-      throw new HaraException(name + " distance must be in the range 0..31");
-    }
-    return (long) (left ? value << distance : value >> distance);
+    Object value = HaraNumericConversions.toInteger(values[0], name);
+    int distance = HaraNumericConversions.toShiftDistance(values[1], name);
+    return left ? Num.shiftLeft(value, distance) : Num.shiftRight(value, distance);
   }
 
   private static Number numericValue(Object value, String operation) {
-    Object input = HaraBox.unwrap(value);
-    if (!(input instanceof Byte
-        || input instanceof Short
-        || input instanceof Integer
-        || input instanceof Long
-        || input instanceof Float
-        || input instanceof Double)) {
-      throw new HaraException(operation + " expects a numeric value");
-    }
-    return (Number) input;
+    return HaraNumericConversions.toNumber(value, operation);
   }
 
   private static Object numericAbs(Object value) {
     Number input = numericValue(value, "abs");
-    if (input instanceof Byte
-        || input instanceof Short
-        || input instanceof Integer
-        || input instanceof Long) {
-      long integer = input.longValue();
-      if (integer == Long.MIN_VALUE) throw new HaraException("integer overflow");
-      return Math.abs(integer);
-    }
-    return Math.abs(input.doubleValue());
+    return Num.isNeg(input) ? Num.minusP(input) : input;
   }
 
   private static UnaryBuiltin mathUnary(String operation, DoubleUnaryOperator implementation) {
     return new UnaryBuiltin(
         operation,
-        value -> implementation.applyAsDouble(numericValue(value, operation).doubleValue()));
+        value -> implementation.applyAsDouble(HaraNumericConversions.toDouble(value)));
   }
 
   private static Object mathBinary(String operation, Object[] values) {
     requireMethodArity(operation, values, 2);
-    double first = numericValue(values[0], operation).doubleValue();
-    double second = numericValue(values[1], operation).doubleValue();
+    double first = HaraNumericConversions.toDouble(values[0]);
+    double second = HaraNumericConversions.toDouble(values[1]);
     return "atan2".equals(operation) ? Math.atan2(first, second) : Math.pow(first, second);
   }
 
@@ -3404,11 +3379,11 @@ public final class HaraContext {
 
   private Object padString(Object[] values, boolean left) {
     String operation = left ? "str/pad-left" : "str/pad-right";
-    if (values.length != 3 || !(HaraBox.unwrap(values[1]) instanceof Number)) {
+    if (values.length != 3) {
       throw new HaraException(operation + " expects a string, length, and padding string");
     }
     String input = stringValue(values[0], operation);
-    int length = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int length = HaraNumericConversions.toInt(values[1], operation);
     String padding = stringValue(values[2], operation);
     int inputLength = codePointLength(input);
     if (padding.isEmpty() || inputLength >= length) return input;
@@ -3421,11 +3396,11 @@ public final class HaraContext {
   }
 
   private Object stringCharAt(Object[] values) {
-    if (values.length != 2 || !(HaraBox.unwrap(values[1]) instanceof Number)) {
+    if (values.length != 2) {
       throw new HaraException("str/char-at expects a string and index");
     }
     String input = stringValue(values[0], "str/char-at");
-    int index = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int index = HaraNumericConversions.toInt(values[1], "str/char-at");
     int length = codePointLength(input);
     if (index < 0 || index >= length) {
       throw new HaraException("str/char-at index out of bounds");
@@ -3466,7 +3441,9 @@ public final class HaraContext {
     }
     String input = stringValue(values[0], "str/index-of");
     String part = stringValue(values[1], "str/index-of");
-    int offset = values.length == 2 ? 0 : ((Number) HaraBox.unwrap(values[2])).intValue();
+    int offset = values.length == 2
+        ? 0
+        : HaraNumericConversions.toInt(values[2], "str/index-of");
     int length = codePointLength(input);
     if (offset < 0 || offset > length) return -1L;
     int charOffset = input.offsetByCodePoints(0, offset);
@@ -3479,9 +3456,9 @@ public final class HaraContext {
       throw new HaraException("str/slice expects a string, start, and optional end");
     }
     String input = stringValue(values[0], "str/slice");
-    int start = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int start = HaraNumericConversions.toInt(values[1], "str/slice");
     int end = values.length == 3
-        ? ((Number) HaraBox.unwrap(values[2])).intValue()
+        ? HaraNumericConversions.toInt(values[2], "str/slice")
         : codePointLength(input);
     int length = codePointLength(input);
     if (start < 0 || start > end || end > length) {
@@ -3492,19 +3469,17 @@ public final class HaraContext {
   }
 
   private Object stringToFixed(Object[] values) {
-    if (values.length != 2
-        || !(HaraBox.unwrap(values[0]) instanceof Number)
-        || !(HaraBox.unwrap(values[1]) instanceof Number)) {
+    if (values.length != 2 || !HaraNumericConversions.isNumeric(values[0])) {
       throw new HaraException("str/to-fixed expects a number and precision");
     }
-    int precision = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int precision = HaraNumericConversions.toInt(values[1], "str/to-fixed");
     if (precision < 0 || precision > 100) {
       throw new HaraException("str/to-fixed precision must be in the range 0..100");
     }
     return String.format(
         java.util.Locale.ROOT,
         "%." + precision + "f",
-        ((Number) HaraBox.unwrap(values[0])).doubleValue());
+        HaraNumericConversions.toDouble(values[0]));
   }
 
   private Object stringReplace(Object[] values) {
@@ -3528,11 +3503,11 @@ public final class HaraContext {
   }
 
   private Object stringRepeat(Object[] values) {
-    if (values.length != 2 || !(HaraBox.unwrap(values[1]) instanceof Number)) {
+    if (values.length != 2) {
       throw new HaraException("str/repeat expects a string and count");
     }
     String input = stringValue(values[0], "str/repeat");
-    int count = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int count = HaraNumericConversions.toInt(values[1], "str/repeat");
     if (count < 0) throw new HaraException("str/repeat count must be non-negative");
     return input.repeat(count);
   }
@@ -3560,7 +3535,7 @@ public final class HaraContext {
     int length = codePointLength(input);
     int offset = values.length == 2
         ? length
-        : ((Number) HaraBox.unwrap(values[2])).intValue();
+        : HaraNumericConversions.toInt(values[2], "str/last-index-of");
     if (offset < 0) return -1L;
     int charOffset = input.offsetByCodePoints(0, Math.min(offset, length));
     int result = input.lastIndexOf(part, charOffset);
@@ -3574,9 +3549,7 @@ public final class HaraContext {
   }
 
   private static int byteNumber(Object value, String operation) {
-    Object input = HaraBox.unwrap(value);
-    if (!(input instanceof Number)) throw new HaraException(operation + " expects a byte value");
-    long number = ((Number) input).longValue();
+    long number = HaraNumericConversions.toLong(value, operation);
     if (number < -128 || number > 255) {
       throw new HaraException(operation + " expects a value in the range -128..255");
     }
@@ -3588,7 +3561,7 @@ public final class HaraContext {
       throw new HaraException("bytes/get expects bytes, index, and optional fallback");
     }
     byte[] input = bytesValue(values[0], "bytes/get");
-    int index = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int index = HaraNumericConversions.toInt(values[1], "bytes/get");
     if (index < 0 || index >= input.length) {
       if (values.length == 3) return values[2];
       throw new HaraException("bytes/get index out of bounds: " + index);
@@ -3599,7 +3572,7 @@ public final class HaraContext {
   private Object bytesSet(Object[] values) {
     if (values.length != 3) throw new HaraException("bytes/set expects bytes, index, and value");
     byte[] input = bytesValue(values[0], "bytes/set");
-    int index = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int index = HaraNumericConversions.toInt(values[1], "bytes/set");
     if (index < 0 || index >= input.length) {
       throw new HaraException("bytes/set index out of bounds: " + index);
     }
@@ -3613,8 +3586,10 @@ public final class HaraContext {
       throw new HaraException("bytes/slice expects bytes, start, and optional end");
     }
     byte[] input = bytesValue(values[0], "bytes/slice");
-    int start = ((Number) HaraBox.unwrap(values[1])).intValue();
-    int end = values.length == 3 ? ((Number) HaraBox.unwrap(values[2])).intValue() : input.length;
+    int start = HaraNumericConversions.toInt(values[1], "bytes/slice");
+    int end = values.length == 3
+        ? HaraNumericConversions.toInt(values[2], "bytes/slice")
+        : input.length;
     if (start < 0 || end < start || end > input.length) {
       throw new HaraException("bytes/slice range is out of bounds");
     }
@@ -3754,10 +3729,10 @@ public final class HaraContext {
   }
 
   private Object promiseDelay(Object[] values) {
-    if (values.length != 2 || !(HaraBox.unwrap(values[0]) instanceof Number)) {
+    if (values.length != 2) {
       throw new HaraException("promise/delay expects milliseconds and a function");
     }
-    long millis = ((Number) HaraBox.unwrap(values[0])).longValue();
+    long millis = HaraNumericConversions.toLong(values[0], "promise/delay");
     if (millis < 0) throw new HaraException("promise/delay expects non-negative milliseconds");
     CompletableFuture<Object> future =
         CompletableFuture.supplyAsync(
@@ -3795,11 +3770,11 @@ public final class HaraContext {
 
   private Object socketConnect(Object[] values) {
     requireSocketIO("socket/connect");
-    if (values.length != 4 || !(HaraBox.unwrap(values[1]) instanceof Number)) {
+    if (values.length != 4) {
       throw new HaraException("socket/connect expects host, port, options, and callback");
     }
     String host = stringValue(values[0], "socket/connect");
-    int port = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int port = HaraNumericConversions.toInt(values[1], "socket/connect");
     if (port < 1 || port > 65535) throw new HaraException("socket/connect expects a valid port");
     Object callback = values[3];
     CompletableFuture.runAsync(
@@ -3835,11 +3810,11 @@ public final class HaraContext {
 
   private Object socketListen(Object[] values) {
     requireSocketIO("socket/listen");
-    if (values.length != 4 || !(HaraBox.unwrap(values[1]) instanceof Number)) {
+    if (values.length != 4) {
       throw new HaraException("socket/listen expects host, port, options, and callback");
     }
     String host = stringValue(values[0], "socket/listen");
-    int port = ((Number) HaraBox.unwrap(values[1])).intValue();
+    int port = HaraNumericConversions.toInt(values[1], "socket/listen");
     if (port < 0 || port > 65535) throw new HaraException("socket/listen expects a valid port");
     try {
       ServerSocket listener = new ServerSocket();
@@ -4278,9 +4253,7 @@ public final class HaraContext {
   }
 
   private static int arrayIndex(Object value, int size, boolean allowEnd, String operation) {
-    Object input = HaraBox.unwrap(value);
-    if (!(input instanceof Number)) throw new HaraException(operation + " expects a numeric index");
-    int index = ((Number) input).intValue();
+    int index = HaraNumericConversions.toInt(value, operation);
     if (index < 0 || index > size || (!allowEnd && index == size)) {
       throw new HaraException(operation + " index out of bounds: " + index);
     }
@@ -4302,8 +4275,9 @@ public final class HaraContext {
     if (values.length == 0) {
       throw new HaraException(operator + " expects at least one number");
     }
-    if (operator.equals("mod") && values.length != 2) {
-      throw new HaraException("mod expects two numbers");
+    if ((operator.equals("quot") || operator.equals("rem") || operator.equals("mod"))
+        && values.length != 2) {
+      throw new HaraException(operator + " expects two numbers");
     }
     for (Object value : values) {
       if (!(HaraBox.unwrap(value) instanceof Number)) {
@@ -4311,10 +4285,10 @@ public final class HaraContext {
       }
     }
     if (operator.equals("-") && values.length == 1) {
-      return requireL0Number(Num.minusP(values[0]));
+      return Num.minusP(values[0]);
     }
     if (operator.equals("/") && values.length == 1) {
-      return requireL0Number(Num.divide(1L, values[0]));
+      return Num.divide(1L, values[0]);
     }
     Object result = values[0];
     for (int i = 1; i < values.length; i++) {
@@ -4331,21 +4305,17 @@ public final class HaraContext {
         result = Num.multiplyP(result, value);
       } else if (operator.equals("/")) {
         result = Num.divide(result, value);
-      } else if (operator.equals("mod")) {
+      } else if (operator.equals("quot")) {
+        result = Num.quotient(result, value);
+      } else if (operator.equals("rem")) {
         result = Num.remainder(result, value);
+      } else if (operator.equals("mod")) {
+        result = Num.mod(result, value);
       } else {
         throw new HaraException("Unknown arithmetic operator: " + operator);
       }
     }
-    return requireL0Number(result);
-  }
-
-  private static Object requireL0Number(Object value) {
-    Object raw = HaraBox.unwrap(value);
-    if (raw instanceof java.math.BigInteger || raw instanceof java.math.BigDecimal) {
-      throw new HaraException("integer overflow");
-    }
-    return value;
+    return result;
   }
 
   @TruffleBoundary
@@ -5675,11 +5645,10 @@ public final class HaraContext {
     if (values.length < 1 || values.length > 2) {
       throw new HaraException("iter-range expects an end or start and end");
     }
-    if (!(values[0] instanceof Number) || (values.length == 2 && !(values[1] instanceof Number))) {
-      throw new HaraException("iter-range expects numeric bounds");
-    }
-    long start = values.length == 1 ? 0L : ((Number) values[0]).longValue();
-    long end = ((Number) values[values.length - 1]).longValue();
+    long start = values.length == 1
+        ? 0L
+        : HaraNumericConversions.toLong(values[0], "iter-range");
+    long end = HaraNumericConversions.toLong(values[values.length - 1], "iter-range");
     return Iter.range(start, end);
   }
 
@@ -5702,10 +5671,7 @@ public final class HaraContext {
 
   @TruffleBoundary
   private static int iterationCount(Object value, String name) {
-    if (!(value instanceof Number)) {
-      throw new HaraException(name + " expects a numeric count");
-    }
-    long count = ((Number) value).longValue();
+    long count = HaraNumericConversions.toLong(value, name);
     if (count < 0 || count > Integer.MAX_VALUE) {
       throw new HaraException(name + " count is out of bounds: " + count);
     }

@@ -495,13 +495,12 @@ public class HaraLanguageTest {
   }
 
   @Test
-  public void numericOverflowAndDivisionErrorsAreExplicit() {
+  public void numericPromotionAndDivisionErrorsAreExplicit() {
     try (Context context = context()) {
-      PolyglotException overflow =
-          assertThrows(
-              PolyglotException.class,
-              () -> context.eval(HaraLanguage.ID, "(+ 9223372036854775807 1)"));
-      assertTrue(overflow.getMessage().contains("overflow"));
+      assertEquals(
+          new java.math.BigInteger("9223372036854775808"),
+          context.eval(HaraLanguage.ID, "(+ 9223372036854775807 1)")
+              .as(java.math.BigInteger.class));
       PolyglotException divideByZero =
           assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(/ 1 0)"));
       assertTrue(divideByZero.getMessage().contains("Divide by zero"));

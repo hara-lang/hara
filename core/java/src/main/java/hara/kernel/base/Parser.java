@@ -13,6 +13,7 @@ import hara.lang.protocol.Constant;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
 
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -36,8 +37,9 @@ public interface Parser {
     static Pattern symbolPat = Pattern.compile("[:]?([\\D&&[^/]].*/)?(/|[\\D&&[^/]][^/]*)");
     static Pattern intPat =
         Pattern.compile(
-            "([-+]?)(?:(0)|([1-9][0-9]*)|0[xX]([0-9A-Fa-f]+)|0([0-7]+)|([1-9][0-9]?)[rR]([0-9A-Za-z]+)|0[0-9]+)(N)?");
-    static Pattern floatPat = Pattern.compile("([-+]?[0-9]+(\\.[0-9]*)?([eE][-+]?[0-9]+)?)(M)?");
+            "([-+]?)(?:(0)|([1-9][0-9]*)|0[xX]([0-9A-Fa-f]+)|0([0-7]+)|([1-9][0-9]?)[rR]([0-9A-Za-z]+)|0[0-9]+)");
+    static Pattern floatPat =
+        Pattern.compile("[-+]?[0-9]+(?:\\.[0-9]*)?(?:[eE][-+]?[0-9]+)?");
 
     static {
       macros['"'] = new StringReader();
@@ -283,6 +285,10 @@ public interface Parser {
       if (s.matches("[-+]?\\d+/\\d+")) {
         throw new Ex.Unsupported("Ratios are not supported");
       }
+      if (s.matches("[-+]?[0-9].*[NM]")) {
+        throw new Ex.Unsupported(
+            "Legacy numeric suffixes N and M are not supported: " + s);
+      }
       Object n = matchNumber(s);
       if (n == null) throw new NumberFormatException("Invalid number: " + s);
       return n;
@@ -347,27 +353,26 @@ public interface Parser {
     private static Number matchNumber(String s) {
       Matcher m = intPat.matcher(s);
       if (m.matches()) {
-        if (m.group(2) != null) {
-          if (m.group(8) != null) return null;
-          return Num.num(0);
-        }
-        boolean negate = (m.group(1).equals("-"));
+        if (m.group(2) != null) return Num.num(0);
+        boolean negate = m.group(1).equals("-");
         String n;
-        int radix = 10;
+        int radix;
         if ((n = m.group(3)) != null) radix = 10;
         else if ((n = m.group(4)) != null) radix = 16;
         else if ((n = m.group(5)) != null) radix = 8;
         else if ((n = m.group(7)) != null) radix = Integer.parseInt(m.group(6));
-        if (n == null) return null;
-        BigInteger bn = new BigInteger(n, radix);
-        if (negate) bn = bn.negate();
-        if (m.group(8) != null || bn.bitLength() >= 64) return null;
-        return Num.num(bn.longValue());
+        else return null;
+        BigInteger value = new BigInteger(n, radix);
+        if (negate) value = value.negate();
+        if (value.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) >= 0
+            && value.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) <= 0) {
+          return Num.num(value.longValue());
+        }
+        return value;
       }
       m = floatPat.matcher(s);
-      if (m.matches()) {
-        if (m.group(4) != null) return null;
-        return Double.parseDouble(s);
+      if (m.matches() && (s.indexOf('.') >= 0 || s.indexOf('e') >= 0 || s.indexOf('E') >= 0)) {
+        return Num.canonicalDecimal(new BigDecimal(s));
       }
       return null;
     }

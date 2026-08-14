@@ -226,7 +226,8 @@ public final class HaraJavaAdapters {
       return lookupValue((ILookup<?, ?>) function, values);
     }
     if (function instanceof ISequentialLookupType && values.length == 1) {
-      return ((ISequentialLookupType<?>) function).nth(((Number) values[0]).longValue());
+      return ((ISequentialLookupType<?>) function)
+          .nth(HaraNumericConversions.toLong(values[0], "IFn sequential lookup"));
     }
     if (function instanceof ISetType) {
       return setValue((ISetType<?>) function, values);
@@ -342,12 +343,13 @@ public final class HaraJavaAdapters {
     protocol.extendIntrinsic(
         INth.class,
         "nth",
-        (receiver, arguments) -> ((INth<?>) receiver).nth(((Number) arguments[0]).longValue()));
+        (receiver, arguments) -> ((INth<?>) receiver)
+            .nth(HaraNumericConversions.toLong(arguments[0], "INth/nth")));
     protocol.extendIntrinsic(
         byte[].class,
         "nth",
         (receiver, arguments) -> {
-          long index = ((Number) arguments[0]).longValue();
+          long index = HaraNumericConversions.toLong(arguments[0], "INth/nth");
           byte[] bytes = (byte[]) receiver;
           if (index < 0 || index >= bytes.length) {
             throw new HaraException("byte index out of bounds: " + index);
@@ -533,7 +535,8 @@ public final class HaraJavaAdapters {
         IHashCached.class,
         "hash-put",
         (receiver, arguments) -> {
-          ((IHashCached) receiver).hashPut(((Number) arguments[0]).longValue());
+          ((IHashCached) receiver)
+              .hashPut(HaraNumericConversions.toLong(arguments[0], "IHashCached/hash-put"));
           return receiver;
         });
   }
@@ -825,10 +828,10 @@ public final class HaraJavaAdapters {
   }
 
   private static Object lookupBytes(Object receiver, Object[] arguments) {
-    if (arguments.length < 1 || arguments.length > 2 || !(arguments[0] instanceof Number)) {
+    if (arguments.length < 1 || arguments.length > 2 || !HaraNumericConversions.isNumeric(arguments[0])) {
       throw new HaraException("ILookup/lookup on bytes expects an index and optional default");
     }
-    long index = ((Number) arguments[0]).longValue();
+    long index = HaraNumericConversions.toLong(arguments[0], "ILookup/lookup on bytes");
     byte[] bytes = (byte[]) receiver;
     if (index < 0 || index >= bytes.length) {
       return arguments.length == 2 ? arguments[1] : null;
@@ -837,11 +840,11 @@ public final class HaraJavaAdapters {
   }
 
   private static Object lookupTuple(Object receiver, Object[] arguments) {
-    if (arguments.length < 1 || arguments.length > 2 || !(arguments[0] instanceof Number)) {
+    if (arguments.length < 1 || arguments.length > 2 || !HaraNumericConversions.isNumeric(arguments[0])) {
       throw new HaraException("ILookup/lookup on a vector expects an index and optional default");
     }
     ILinearType<?> tuple = (ILinearType<?>) receiver;
-    long index = ((Number) arguments[0]).longValue();
+    long index = HaraNumericConversions.toLong(arguments[0], "ILookup/lookup on tuple");
     if (index < 0 || index >= tuple.count()) {
       return arguments.length == 2 ? arguments[1] : null;
     }
@@ -870,22 +873,7 @@ public final class HaraJavaAdapters {
   }
 
   private static Integer assocIndex(Object key) {
-    if (!(key instanceof Number)) {
-      throw new HaraException(
-          "assoc index must be a number, got: "
-              + (key instanceof IDisplay ? ((IDisplay) key).display() : String.valueOf(key)));
-    }
-    if (key instanceof Double || key instanceof Float) {
-      double value = ((Number) key).doubleValue();
-      if (value != Math.rint(value)) {
-        throw new HaraException("assoc index must be an integer, got: " + key);
-      }
-    }
-    long index = ((Number) key).longValue();
-    if (index < Integer.MIN_VALUE || index > Integer.MAX_VALUE) {
-      throw new HaraException("assoc index out of range: " + index);
-    }
-    return (int) index;
+    return HaraNumericConversions.toInt(key, "assoc index");
   }
 
   @SuppressWarnings("unchecked")
@@ -972,8 +960,11 @@ public final class HaraJavaAdapters {
   @SuppressWarnings("unchecked")
   private static Object derefTimeoutValue(
       IDerefTimeout<?> deref, Object milliseconds, Object timeoutValue) {
-    return ((IDerefTimeout<Object>) deref)
-        .derefTimeout(((Number) milliseconds).longValue(), timeoutValue);
+    long timeout = HaraNumericConversions.toLong(milliseconds, "IDerefTimeout/deref-timeout");
+    if (timeout < 0) {
+      throw new HaraException("IDerefTimeout/deref-timeout expects a non-negative timeout");
+    }
+    return ((IDerefTimeout<Object>) deref).derefTimeout(timeout, timeoutValue);
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
