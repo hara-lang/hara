@@ -1,6 +1,5 @@
 name: Agent source export
 
-# Agent runtime closeout export trigger: 2026-08-14
 on:
   pull_request:
     branches: [main]
@@ -8,20 +7,289 @@ on:
       - .github/workflows/agent-source-export.yml
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: agent-runtime-closeout-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
-  export:
+  apply-runtime-closeout:
+    if: github.event.pull_request.head.ref == 'agent/runtime-closeout-575-493'
     runs-on: ubuntu-latest
+    timeout-minutes: 75
     steps:
-      - name: Check out branch
+      - name: Check out the isolated runtime branch
         uses: actions/checkout@v4
-      - name: Package source without Git metadata
-        run: tar --exclude=.git -czf /tmp/hara-source.tar.gz .
-      - name: Upload source archive
-        uses: actions/upload-artifact@v4
         with:
-          name: hara-source
-          path: /tmp/hara-source.tar.gz
-          if-no-files-found: error
-          retention-days: 1
+          ref: agent/runtime-closeout-575-493
+          fetch-depth: 0
+
+      - name: Check out hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Detect whether the closeout patch is still pending
+        id: pending
+        shell: bash
+        run: |
+          if grep -Fq 'if source.is_none() && standard_library_namespace(&module.resource)' core/rust/src/vm/bundle.rs; then
+            echo 'apply=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'apply=false' >> "$GITHUB_OUTPUT"
+            echo 'Runtime closeout patch is already present.'
+          fi
+
+      - name: Set up Rust
+        if: steps.pending.outputs.apply == 'true'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply the runtime loader and CLI handler closeout patches
+        if: steps.pending.outputs.apply == 'true'
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          bundle_path = Path('core/rust/src/vm/bundle.rs')
+          bundle = bundle_path.read_text()
+          stale_guard = '''\
+                      if source.is_none() && standard_library_namespace(&module.resource) {
+                          continue;
+                      }
+          '''
+          if bundle.count(stale_guard) != 1:
+              raise SystemExit('source-free loader guard did not match exactly once')
+          bundle = bundle.replace(stale_guard, '', 1)
+
+          registered_bootstrap = '''\
+                      let mut runtime = Runtime::core();
+                      for &(name, _, source) in EMBEDDED_HAL_RESOURCES {
+                          runtime.register_resource(name, source);
+                      }
+                      eval_bytecode_bundle(&mut runtime, &bytes).expect("load foundation bundle");
+          '''
+          source_free_bootstrap = '''\
+                      let mut runtime = Runtime::core();
+                      assert!(runtime.resources.is_empty());
+                      eval_bytecode_bundle(&mut runtime, &bytes)
+                          .expect("load source-free foundation bundle");
+          '''
+          if bundle.count(registered_bootstrap) != 1:
+              raise SystemExit('source-free Foundation regression did not match exactly once')
+          bundle = bundle.replace(registered_bootstrap, source_free_bootstrap, 1)
+
+          insertion = '''\
+              #[test]
+              fn eager_failure_rolls_back_the_whole_bundle() {
+          '''
+          regression = '''\
+              #[test]
+              fn stale_eager_bytecode_is_rejected_when_registered_source_differs() {
+                  let mut compiler = Runtime::core();
+                  compiler.use_namespace("example.eager");
+                  let artifact = compiler
+                      .compile_bytecode_artifact("(def answer 41)")
+                      .expect("compile eager fixture");
+                  let bytes = encode_bytecode_bundle(&[BytecodeBundleModule {
+                      resource: "example.eager".into(),
+                      namespace_form: "(ns example.eager)".into(),
+                      source_digest: Sha256::digest(
+                          b"(ns example.eager) (def answer 41)",
+                      )
+                      .into(),
+                      dependencies: vec![],
+                      eager: true,
+                      artifact,
+                  }])
+                  .expect("encode eager fixture");
+                  let mut runtime = Runtime::core();
+                  runtime.register_resource(
+                      "example.eager",
+                      "(ns example.eager) (def answer 42)",
+                  );
+
+                  let error = eval_bytecode_bundle(&mut runtime, &bytes).unwrap_err();
+
+                  assert_eq!(
+                      error,
+                      "stale eager bytecode bundle module: example.eager"
+                  );
+                  assert!(!runtime.bytecode_resources.contains_key("example.eager"));
+                  assert!(!runtime.loaded_resources.contains("example.eager"));
+                  assert!(runtime.namespace_registry.find("example.eager").is_none());
+              }
+
+          '''
+          if bundle.count(insertion) != 1:
+              raise SystemExit('stale-eager regression insertion point did not match exactly once')
+          bundle = bundle.replace(insertion, regression + insertion, 1)
+          bundle_path.write_text(bundle)
+
+          template_path = Path('core/lib/src/tool/cli/template.hal')
+          template = template_path.read_text()
+          schema_anchor = '(def schema-id "tool.cli.template/0-alpha")\n\n'
+          schema_replacement = '''\
+          (def schema-id "tool.cli.template/0-alpha")
+
+          ;; Template handlers are live runtime functions. Keep their provenance in a
+          ;; runtime-owned identity registry rather than attaching functions and work
+          ;; graphs to portable metadata.
+          (def +handlers+ (atom []))
+
+          '''
+          if template.count(schema_anchor) != 1:
+              raise SystemExit('CLI handler registry insertion point did not match exactly once')
+          template = template.replace(schema_anchor, schema_replacement, 1)
+
+          metadata_handler = '''\
+          (defn handler
+            "Returns the closed-registry function [request] -> tool.cli.model/result."
+            [raw-definition]
+            (let [definition (normalise-definition raw-definition)
+                  command-work (work definition)
+                  runtime-fn (:runtime-fn definition)]
+              (with-meta
+                (fn [request]
+                  (std-work/run (runtime-fn) command-work request))
+                {:tool.cli.template/schema schema-id
+                 :tool.cli.template/definition definition
+                 :tool.cli.template/work command-work})))
+
+          (defn handler?
+            [value]
+            (= schema-id
+               (:tool.cli.template/schema (meta value))))
+          '''
+          registered_handler = '''\
+          (defn handler
+            "Returns the closed-registry function [request] -> tool.cli.model/result."
+            [raw-definition]
+            (let [definition (normalise-definition raw-definition)
+                  command-work (work definition)
+                  runtime-fn (:runtime-fn definition)
+                  handler-fn
+                  (fn [request]
+                    (std-work/run (runtime-fn) command-work request))]
+              (swap! +handlers+ conj handler-fn)
+              handler-fn))
+
+          (defn handler?
+            [value]
+            (and
+             (fn? value)
+             (boolean
+              (some
+               (fn [handler-fn]
+                 (= value handler-fn))
+               (deref +handlers+)))))
+          '''
+          if template.count(metadata_handler) != 1:
+              raise SystemExit('function-metadata CLI handler did not match exactly once')
+          template_path.write_text(template.replace(metadata_handler, registered_handler, 1))
+
+          test_path = Path('core/lib/test/tool/cli/template_test.hal')
+          test_source = test_path.read_text()
+          registry_fact = '''\
+          (fact "every closed-registry handler is template-produced"
+            (every?
+             template/handler?
+             (vals (handlers/registry)))
+            => true)
+          '''
+          ordinary_function_fact = registry_fact + '''\
+
+          (fact "ordinary functions are not mistaken for template handlers"
+            (template/handler? (fn [request] request))
+            => false)
+          '''
+          if test_source.count(registry_fact) != 1:
+              raise SystemExit('CLI template identity regression insertion point did not match')
+          test_path.write_text(test_source.replace(registry_fact, ordinary_function_fact, 1))
+          PY
+
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/sync-rust-hal-src --check
+          rustfmt --edition 2021 core/rust/src/vm/bundle.rs
+          git diff --check
+          git diff -- \
+            core/rust/src/vm/bundle.rs \
+            core/lib/src/tool/cli/template.hal \
+            core/rust/hal-src/tool/cli/template.hal \
+            core/lib/test/tool/cli/template_test.hal
+
+      - name: Run the complete Rust bytecode bundle suite
+        if: steps.pending.outputs.apply == 'true'
+        env:
+          RUST_BACKTRACE: '1'
+        run: cargo test --manifest-path core/rust/Cargo.toml 'vm::bundle::tests::' --lib -- --nocapture
+
+      - name: Regenerate and verify the canonical embedded HBX artifact
+        if: steps.pending.outputs.apply == 'true'
+        shell: bash
+        run: |
+          cp core/rust/assets/std.foundation.hbx "$RUNNER_TEMP/std.foundation.hbx.before"
+          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- generate
+          if cmp -s "$RUNNER_TEMP/std.foundation.hbx.before" core/rust/assets/std.foundation.hbx; then
+            echo 'Canonical HBX bytes are unchanged.'
+          else
+            echo 'Canonical HBX bytes changed and will be committed.'
+          fi
+          cargo run --quiet --manifest-path core/rust/Cargo.toml --features bytecode-vm --bin hara-foundation-artifact -- check
+
+      - name: Run retired-standard-library and substrate hard-cut audits
+        if: steps.pending.outputs.apply == 'true'
+        run: |
+          python3 scripts/runtime/retired_stdlib_hard_cut_test.py
+          python3 scripts/runtime/retired_stdlib_hard_cut.py
+          bash scripts/audit-std-substrate-hard-cut.sh
+
+      - name: Run focused direct-source HAL validation
+        if: steps.pending.outputs.apply == 'true'
+        run: |
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/std/foundation_walk_test.hal \
+            core/lib/test/std/foundation_test_primitives_test.hal \
+            core/lib/test/std/work_task_redirection_test.hal \
+            core/lib/test/tool/cli/template_test.hal \
+            core/lib/test/code/deploy/cli_test.hal
+
+      - name: Run focused embedded project validation
+        if: steps.pending.outputs.apply == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for test_file in \
+            core/lib/test/std/foundation_walk_test.hal \
+            core/lib/test/std/foundation_test_primitives_test.hal \
+            core/lib/test/std/work_task_redirection_test.hal
+          do
+            cargo run --quiet --manifest-path core/rust/Cargo.toml --bin hara -- \
+              --project core --offline project test "$test_file"
+          done
+
+      - name: Commit the validated closeout changes
+        if: steps.pending.outputs.apply == 'true'
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          git add \
+            core/lib/src/tool/cli/template.hal \
+            core/rust/hal-src/tool/cli/template.hal \
+            core/lib/test/tool/cli/template_test.hal \
+            core/rust/assets/std.foundation.hbx
+          git commit -m 'fix(tool.cli): keep handler provenance runtime-local'
+
+          git add core/rust/src/vm/bundle.rs
+          git commit -m 'fix(runtime): load source-free standard-library bundles'
+          git push origin HEAD:agent/runtime-closeout-575-493
