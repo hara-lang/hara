@@ -31,4 +31,9 @@ public final class HaraPostgresCompatibilityTest {
   public void runsManagedDbPostgresLifecycleFacade() throws Exception {
     assertSuite("lib/test/db/postgres_test.hal", 8, 8);
   }
+
+  @Test
+  public void runsDirectDatabaseProtocolSuite() throws Exception {
+    assertSuite("lib/test/db/protocol_test.hal", 3, 3);
+  }
 }
