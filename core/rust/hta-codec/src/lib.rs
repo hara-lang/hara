@@ -139,9 +139,7 @@ fn abi_to_immutable(value: &AbiValue) -> Value {
         AbiValue::Decimal(value) => Value::Decimal(value.clone()),
         AbiValue::Bytes(value) => Value::Bytes(value.clone()),
         AbiValue::Keyword(value) => Value::Keyword(value.clone()),
-        AbiValue::Vector(values) => {
-            Value::Vector(values.iter().map(abi_to_immutable).collect())
-        }
+        AbiValue::Vector(values) => Value::Vector(values.iter().map(abi_to_immutable).collect()),
         AbiValue::Record(values) => Value::Record(
             values
                 .iter()
@@ -415,9 +413,7 @@ impl Reader<'_> {
                 self.take(8)?.try_into().expect("eight bytes"),
             )))),
             CHARACTER => {
-                let scalar = u32::from_be_bytes(
-                    self.take(4)?.try_into().expect("four bytes"),
-                );
+                let scalar = u32::from_be_bytes(self.take(4)?.try_into().expect("four bytes"));
                 char::from_u32(scalar)
                     .map(Value::Character)
                     .ok_or_else(|| "hta/value-malformed: invalid character scalar".into())
@@ -532,7 +528,9 @@ impl Reader<'_> {
         {
             let mut record = BTreeMap::new();
             for (key, value) in entries {
-                let Value::Keyword(key) = key else { unreachable!() };
+                let Value::Keyword(key) = key else {
+                    unreachable!()
+                };
                 if record.insert(key.clone(), value).is_some() {
                     return Err(format!(
                         "hta/value-malformed: duplicate portable record key :{key}"
@@ -761,14 +759,7 @@ mod tests {
 
     #[test]
     fn runtime_only_tags_fail_closed() {
-        for tag in [
-            HANDLE,
-            NAMESPACE,
-            VAR,
-            ATOM,
-            ARRAY,
-            OBJECT,
-        ] {
+        for tag in [HANDLE, NAMESPACE, VAR, ATOM, ARRAY, OBJECT] {
             let bytes = [MAGIC.as_slice(), &[tag]].concat();
             assert!(decode(&bytes).unwrap_err().contains("runtime wire tag"));
             assert!(decode_canonical(&bytes, bytes.len())
