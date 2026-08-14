@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import pathlib
 import sys
+import tempfile
 import unittest
+
+from retired_stdlib_hbx import HbxFormatError, retired_module_references
 
 MODULE_PATH = pathlib.Path(__file__).with_name("retired_stdlib_hard_cut.py")
 SPEC = importlib.util.spec_from_file_location("retired_stdlib_hard_cut", MODULE_PATH)
@@ -90,6 +94,91 @@ collect_files() {
         self.assertIn(
             "core/spec/foundation-script-inventory.json", MODULE.LEGACY_ALLOWLIST
         )
+
+
+class HbxModuleTableTest(unittest.TestCase):
+    @staticmethod
+    def bundle(
+        modules: list[tuple[str, str, tuple[str, ...], bytes, bool]]
+    ) -> bytes:
+        def blob(value: bytes) -> bytes:
+            return len(value).to_bytes(4, "little") + value
+
+        payload = bytearray(len(modules).to_bytes(4, "little"))
+        for resource, namespace_form, dependencies, artifact, eager in modules:
+            payload.extend(blob(resource.encode()))
+            payload.extend(blob(namespace_form.encode()))
+            payload.extend(bytes(32))
+            payload.extend(len(dependencies).to_bytes(4, "little"))
+            for dependency in dependencies:
+                payload.extend(blob(dependency.encode()))
+            payload.append(int(eager))
+            payload.extend(blob(artifact))
+        encoded_payload = bytes(payload)
+        return b"HBX0" + hashlib.sha256(encoded_payload).digest() + encoded_payload
+
+    def references(self, data: bytes) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory) / "std.foundation.hbx"
+            path.write_bytes(data)
+            return retired_module_references(path, MODULE.RETIRED)
+
+    def test_legacy_spelling_inside_bytecode_is_not_a_module_reference(self) -> None:
+        data = self.bundle(
+            [
+                (
+                    "code.translate.rules",
+                    "(ns code.translate.rules)",
+                    (),
+                    b"migration literal: std.lib.walk and std.lib.test",
+                    False,
+                )
+            ]
+        )
+        self.assertEqual([], self.references(data))
+
+    def test_retired_resources_dependencies_and_namespace_forms_are_rejected(self) -> None:
+        data = self.bundle(
+            [
+                (
+                    "std.lib.walk",
+                    "(ns std.lib.walk)",
+                    (),
+                    b"",
+                    False,
+                ),
+                (
+                    "example.dependency",
+                    "(ns example.dependency (:require [std.lib.test :as test]))",
+                    ("std.lib.test",),
+                    b"",
+                    False,
+                ),
+                (
+                    "example.namespace-form",
+                    "(ns example.namespace-form (:require [std.lib.walk :as walk]))",
+                    (),
+                    b"",
+                    False,
+                ),
+            ]
+        )
+        self.assertEqual(
+            [
+                "example.dependency dependency std.lib.test",
+                "example.namespace-form namespace form std.lib.walk",
+                "resource std.lib.walk",
+            ],
+            self.references(data),
+        )
+
+    def test_corrupt_hbx_checksum_is_rejected(self) -> None:
+        data = bytearray(
+            self.bundle([("std.foundation", "(ns std.foundation)", (), b"", True)])
+        )
+        data[-1] ^= 1
+        with self.assertRaises(HbxFormatError):
+            self.references(bytes(data))
 
 
 if __name__ == "__main__":
