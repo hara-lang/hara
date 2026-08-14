@@ -3,7 +3,7 @@ use super::{Effect, UnitKind};
 use std::collections::BTreeSet;
 
 /// Canonical native/runtime roots discovered while compiling one expanded
-/// definition unit.  The compatibility projections on [`UnitAnalysis`] remain
+/// definition unit. The compatibility projections on [`UnitAnalysis`] remain
 /// until the target generators consume this typed inventory directly.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeRootInventory {
@@ -12,6 +12,7 @@ pub struct NativeRootInventory {
     pub dynamic_methods: BTreeSet<String>,
     pub types: BTreeSet<String>,
     pub protocols: BTreeSet<String>,
+    pub protocol_methods: BTreeSet<String>,
     pub multimethods: BTreeSet<String>,
     pub host_calls: BTreeSet<String>,
     pub callbacks: BTreeSet<String>,
