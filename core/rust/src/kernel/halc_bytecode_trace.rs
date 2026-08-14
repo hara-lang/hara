@@ -14,7 +14,7 @@ use super::halc_trace::{
     HalcTraceValue,
 };
 
-pub const HALC_BYTECODE_HANDOFF_STAGE: &str = "bytecode/handoff";
+pub const HALC_BYTECODE_HANDOFF_STAGE: &str = "handoff/bytecode";
 
 pub fn trace_halc_source_to_bytecode(
     id: impl Into<String>,
