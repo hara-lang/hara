@@ -569,9 +569,7 @@ fn collect_hal(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String
 fn editor_artifact(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
-        .is_some_and(|name| {
-            name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#'))
-        })
+        .is_some_and(|name| name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#')))
 }
 
 fn validate_empty_lock(path: &Path) -> Result<(), String> {
