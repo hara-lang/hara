@@ -18,6 +18,11 @@ fn stage<'a>(
         .unwrap_or_else(|| panic!("missing stage {name}"))
 }
 
+#[test]
+fn handoff_stage_matches_the_portable_halc_contract() {
+    assert_eq!(HALC_BYTECODE_HANDOFF_STAGE, "handoff/bytecode");
+}
+
 #[cfg(feature = "bytecode-vm")]
 #[test]
 fn records_a_validated_non_executing_bytecode_handoff() {

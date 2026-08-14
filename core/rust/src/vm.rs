@@ -20,6 +20,9 @@ pub mod artifact;
 pub mod bundle;
 #[path = "vm/compiler.rs"]
 pub mod compiler;
+#[cfg(feature = "code-vm-conformance")]
+#[path = "vm/conformance.rs"]
+pub mod conformance;
 #[path = "vm/disassemble.rs"]
 pub mod disassemble;
 #[path = "vm/error.rs"]
