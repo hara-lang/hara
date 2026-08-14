@@ -121,6 +121,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "current-namespace",
     "cycle",
     "dec",
+    "decimal?",
     "declare",
     "def",
     "defmacro",
@@ -164,10 +165,10 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "identity",
     "if",
     "inc",
+    "integer?",
     "instance?",
     "intern-var",
     "interleave",
-    "interpose",
     "interpose",
     "iter",
     "iter-close",
@@ -215,8 +216,6 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "map?",
     "mapcat",
     "merge",
-    "keep",
-    "mod",
     "neg?",
     "name",
     "namespace",
@@ -241,6 +240,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "pointer",
     "pos?",
     "pow",
+    "quot",
     "pr-str",
     "println",
     "promise",
@@ -261,6 +261,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "repeatedly",
     "require",
     "resolve",
+    "rem",
     "reset!",
     "rest",
     "reverse",
@@ -1459,18 +1460,19 @@ mod tests {
         let cases = [
             ("(long? 42)", Value::Bool(true)),
             ("(long? 42.5)", Value::Bool(false)),
-            ("(double? 42.5)", Value::Bool(true)),
-            ("(double? 42)", Value::Bool(false)),
+            ("(double? (double 42.5))", Value::Bool(true)),
+            ("(double? 42.5)", Value::Bool(false)),
+            ("(integer? 42)", Value::Bool(true)),
+            ("(integer? 9223372036854775808)", Value::Bool(true)),
+            ("(integer? 42.5)", Value::Bool(false)),
+            ("(decimal? 42.5)", Value::Bool(true)),
+            ("(number? 42.5)", Value::Bool(true)),
             ("(boolean? false)", Value::Bool(true)),
             ("(boolean? nil)", Value::Bool(false)),
         ];
         for (source, expected) in cases {
             let fiber = EvalFiber::start(source, HashMap::new()).unwrap();
             assert_eq!(fiber.state(), EvalFiberState::Completed(expected));
-        }
-        for unsupported in ["(integer? 42)", "(decimal? 42.5)"] {
-            let fiber = EvalFiber::start(unsupported, HashMap::new()).unwrap();
-            assert!(matches!(fiber.state(), EvalFiberState::Failed(_)));
         }
     }
 

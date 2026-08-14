@@ -11,6 +11,7 @@ pub enum Value {
     Boolean(bool),
     String(String),
     Integer(i64),
+    BigInteger(String),
     Float(f64),
     Decimal(String),
     Bytes(Vec<u8>),
@@ -52,7 +53,10 @@ pub enum ImmutableValue {
     SortedMap(Vec<(ImmutableValue, ImmutableValue)>),
     Trie(Vec<(String, ImmutableValue)>),
     Record(ImmutableRecordValue),
-    Tagged { tag: String, form: Box<ImmutableValue> },
+    Tagged {
+        tag: String,
+        form: Box<ImmutableValue>,
+    },
     ExceptionInfo {
         message: String,
         data: Box<ImmutableValue>,
@@ -184,6 +188,10 @@ mod tests {
             (
                 "rows".into(),
                 Value::Vector(vec![Value::Vector(vec![Value::Integer(1), Value::Nil])]),
+            ),
+            (
+                "big".into(),
+                Value::BigInteger("9223372036854775808".into()),
             ),
             ("numeric".into(), Value::Decimal("12.50".into())),
         ]));

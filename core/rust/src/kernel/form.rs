@@ -72,10 +72,12 @@ impl std::fmt::Display for Form {
             Self::Float(value) if value.is_nan() => "##NaN".into(),
             Self::Float(value) if *value == f64::INFINITY => "##Inf".into(),
             Self::Float(value) if *value == f64::NEG_INFINITY => "##-Inf".into(),
-            Self::Float(value) if value.fract() == 0.0 => format!("{value:.1}"),
-            Self::Float(value) => value.to_string(),
-            Self::BigInteger(value) => format!("{value}N"),
-            Self::Decimal(value) => format!("{value}M"),
+            Self::Float(value) if value.fract() == 0.0 => format!("(double {value:.1})"),
+            Self::Float(value) => format!("(double {value})"),
+            Self::BigInteger(value) => value.clone(),
+            Self::Decimal(value) => {
+                crate::numeric::display_decimal(value).unwrap_or_else(|_| value.clone())
+            }
             Self::Character('\n') => "\\newline".into(),
             Self::Character(' ') => "\\space".into(),
             Self::Character('\t') => "\\tab".into(),

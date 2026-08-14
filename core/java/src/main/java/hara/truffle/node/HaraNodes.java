@@ -1772,7 +1772,8 @@ public final class HaraNodes {
         try {
           return Math.addExact(asLong(leftValue), asLong(rightValue));
         } catch (ArithmeticException overflow) {
-          throw new HaraException("integer overflow", this);
+          CompilerDirectives.transferToInterpreterAndInvalidate();
+          return addPromoted(leftValue, rightValue);
         }
       }
       if (leftValue instanceof Number && rightValue instanceof Number) {
@@ -1797,8 +1798,13 @@ public final class HaraNodes {
     }
 
     @TruffleBoundary
+    private static Number addPromoted(Object left, Object right) {
+      return Num.addP(left, right);
+    }
+
+    @TruffleBoundary
     private static Number addGeneric(Object left, Object right) {
-      return Num.add(left, right);
+      return Num.addP(left, right);
     }
 
   }
@@ -1831,13 +1837,13 @@ public final class HaraNodes {
             try {
               return Math.subtractExact(left, right);
             } catch (ArithmeticException overflow) {
-              throw new HaraException("integer overflow");
+              return subtractPromoted(left, right);
             }
           case MULTIPLY:
             try {
               return Math.multiplyExact(left, right);
             } catch (ArithmeticException overflow) {
-              throw new HaraException("integer overflow");
+              return multiplyPromoted(left, right);
             }
           case DIVIDE:
             return divideLongs(left, right);
@@ -1846,6 +1852,16 @@ public final class HaraNodes {
           default:
             throw unsupportedOperator(this);
         }
+      }
+
+      @TruffleBoundary
+      private Number subtractPromoted(long left, long right) {
+        return Num.minusP(left, right);
+      }
+
+      @TruffleBoundary
+      private Number multiplyPromoted(long left, long right) {
+        return Num.multiplyP(left, right);
       }
 
       @TruffleBoundary
@@ -1862,9 +1878,9 @@ public final class HaraNodes {
       private Number applyGeneric(Object left, Object right) {
         switch (this) {
           case SUBTRACT:
-            return Num.minus(left, right);
+            return Num.minusP(left, right);
           case MULTIPLY:
-            return Num.multiply(left, right);
+            return Num.multiplyP(left, right);
           case DIVIDE:
             return Num.divide(left, right);
           case REMAINDER:

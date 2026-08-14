@@ -13,7 +13,7 @@ public interface BuiltinOps {
   @Module.Fn(name = "+")
   @Module.Reduce(type = INIT, init = ZERO)
   public static Number add(Number x, Number y) {
-    return Num.add(x, y);
+    return Num.addP(x, y);
   }
 
   @Module.Fn(name = "b&")
@@ -30,7 +30,7 @@ public interface BuiltinOps {
 
   @Module.Fn(name = "dec")
   public static Number dec(Number x) {
-    return Num.minus(x, 1);
+    return Num.minusP(x, 1);
   }
 
   @Module.Fn(name = "ceil")
@@ -50,7 +50,7 @@ public interface BuiltinOps {
 
   @Module.Fn(name = "abs")
   public static Number abs(Number x) {
-    return Num.isNeg(x) ? Num.minus(x) : x;
+    return Num.isNeg(x) ? Num.minusP(x) : x;
   }
 
   @Module.Fn(name = "/")
@@ -91,7 +91,7 @@ public interface BuiltinOps {
 
   @Module.Fn(name = "inc")
   public static Number inc(Number x) {
-    return Num.add(x, 1);
+    return Num.addP(x, 1);
   }
 
   @Module.Fn(name = "neg?")
@@ -124,13 +124,13 @@ public interface BuiltinOps {
   @Module.Fn(name = "-")
   @Module.Reduce(type = ARRAY, init = ZERO)
   public static Number minus(Number x, Number y) {
-    return Num.minus(x, y);
+    return Num.minusP(x, y);
   }
 
   @Module.Fn(name = "*")
   @Module.Reduce(type = INIT, init = ONE)
   public static Number multiply(Number x, Number y) {
-    return Num.multiply(x, y);
+    return Num.multiplyP(x, y);
   }
 
   @Module.Fn(name = "quot")
@@ -145,7 +145,7 @@ public interface BuiltinOps {
 
   @Module.Fn(name = "mod")
   public static Number mod(Number x, Number y) {
-    return Num.remainder(x, y);
+    return Num.mod(x, y);
   }
 
   @Module.Fn(name = "min")

@@ -119,6 +119,7 @@ fn to_abi(value: &Value) -> Result<hara_abi::Value, String> {
         Value::Nil => Abi::Nil,
         Value::Bool(value) => Abi::Boolean(*value),
         Value::Number(value) => Abi::Integer(*value),
+        Value::BigInteger(value) => Abi::BigInteger(value.clone()),
         Value::Float(value) => Abi::Float(*value),
         Value::Decimal(value) => Abi::Decimal(value.clone()),
         Value::String(value) => Abi::String(value.clone()),
@@ -161,6 +162,7 @@ fn from_abi(value: hara_abi::Value) -> Result<Value, String> {
         Abi::Nil => Value::Nil,
         Abi::Boolean(value) => Value::Bool(value),
         Abi::Integer(value) => Value::Number(value),
+        Abi::BigInteger(value) => Value::BigInteger(value),
         Abi::Float(value) => Value::Float(value),
         Abi::Decimal(value) => Value::Decimal(value),
         Abi::String(value) => Value::String(value),
@@ -240,14 +242,19 @@ mod tests {
             }))
             .unwrap();
         let Value::Promise(promise) = registry
-            .invoke("test.echo".into(), "echo".into(), vec![Value::Number(42)])
+            .invoke(
+                "test.echo".into(),
+                "echo".into(),
+                vec![Value::BigInteger("9223372036854775808".into())],
+            )
             .unwrap()
         else {
             panic!("promise")
         };
         assert!(matches!(
             promise.state(),
-            crate::core::PromiseState::Fulfilled(Value::Number(42))
+            crate::core::PromiseState::Fulfilled(Value::BigInteger(value))
+                if value == "9223372036854775808"
         ));
     }
 }

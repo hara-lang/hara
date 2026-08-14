@@ -80,6 +80,12 @@ public interface G {
     }
   }
 
+
+  public static String displayDecimal(BigDecimal value) {
+    String text = Num.canonicalDecimal(value).toPlainString();
+    return text.indexOf('.') >= 0 ? text : text + ".0";
+  }
+
   public static String displayBytes(byte[] value) {
     StringBuilder display = new StringBuilder("(bytes");
     for (byte element : value) {
@@ -107,11 +113,11 @@ public interface G {
       if (Double.isNaN(value)) return "##NaN";
       if (value == Double.POSITIVE_INFINITY) return "##Inf";
       if (value == Double.NEGATIVE_INFINITY) return "##-Inf";
-      return e.toString();
+      return "(double " + Double.toString(value) + ")";
     } else if (e instanceof BigInteger) {
-      return e.toString() + "N";
+      return e.toString();
     } else if (e instanceof BigDecimal) {
-      return e.toString() + "M";
+      return displayDecimal((BigDecimal) e);
     } else if (e instanceof Class) {
       return ((Class) e).getName();
     } else if (e instanceof java.util.List) {
@@ -198,6 +204,6 @@ public interface G {
     if (value instanceof BigInteger) {
       return Num.canonicalDecimal(new BigDecimal((BigInteger) value)).hashCode();
     }
-    return BigDecimal.valueOf(((Number) value).longValue()).hashCode();
+    return Num.canonicalDecimal(BigDecimal.valueOf(((Number) value).longValue())).hashCode();
   }
 }

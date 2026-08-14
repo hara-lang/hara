@@ -18,12 +18,11 @@ fn hot_arithmetic_branch_and_nested_loops_match_the_evaluator() {
 }
 
 #[test]
-fn hot_loop_errors_remain_interpreter_errors() {
-    let source = "(loop [i 0 x 1] (if (< i 100) (recur (+ i 1) (* x 1000000000)) x))";
-    let evaluator = Runtime::new().eval_native(source).unwrap_err();
-    let vm = eval_bytecode_native(source).unwrap_err();
-    assert!(evaluator.contains("integer overflow"));
-    assert!(vm.contains("integer overflow"));
+fn hot_loop_overflow_deopts_to_promoted_integer_arithmetic() {
+    let source = "(loop [i 0 x 1] (if (< i 30) (recur (+ i 1) (* x 1000000000)) x))";
+    agrees(source);
+    let value = eval_bytecode_native(source).unwrap();
+    assert!(value.len() > 200, "{value}");
 }
 
 #[test]
@@ -210,14 +209,15 @@ fn division_and_numeric_sequence_navigation_trace() {
 }
 
 #[test]
-fn divide_and_remainder_edge_errors_remain_interpreter_errors() {
-    for source in [
-        "(loop [i 0 x -9223372036854775808] (if (< i 100) (recur (+ i 1) (/ x -1)) x))",
-        "(loop [i 0 x -9223372036854775808] (if (< i 100) (recur (+ i 1) (mod x -1)) x))",
-    ] {
-        let evaluator = Runtime::new().eval_native(source).unwrap_err();
-        let vm = eval_bytecode_native(source).unwrap_err();
-        assert!(evaluator.contains("integer overflow"), "{evaluator}");
-        assert!(vm.contains("integer overflow"), "{vm}");
-    }
+fn divide_and_remainder_edges_deopt_to_exact_semantics() {
+    let division = "(loop [i 0 x -9223372036854775808] (if (< i 100) (recur (+ i 1) (/ x -1)) x))";
+    agrees(division);
+    assert_eq!(
+        eval_bytecode_native(division).unwrap(),
+        "-9223372036854775808"
+    );
+
+    let modulo = "(loop [i 0 x -9223372036854775808] (if (< i 100) (recur (+ i 1) (mod x -1)) x))";
+    agrees(modulo);
+    assert_eq!(eval_bytecode_native(modulo).unwrap(), "0");
 }
