@@ -18,6 +18,13 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
+      - name: Merge current main into validation branch
+        run: |
+          git config user.name "OpenAI Agent"
+          git config user.email "openai-agent@users.noreply.github.com"
+          git fetch origin main
+          git merge --no-edit origin/main
+
       - name: Reconstruct and apply focused patches
         run: |
           base64 --decode scripts/runtime/foundation-task-hard-cut.patch.gz.b64 | gzip --decompress > /tmp/foundation-task-hard-cut.patch
@@ -29,6 +36,11 @@ jobs:
           echo '699e1920af688f421316365051c89a77bb8ea335e3dae869ab1be63d88d3beef  /tmp/function-metadata-support.patch' | sha256sum -c -
           git apply --check /tmp/function-metadata-support.patch
           git apply /tmp/function-metadata-support.patch
+
+          base64 --decode scripts/runtime/bytecode-field-set-closure.patch.gz.b64 | gzip --decompress > /tmp/bytecode-field-set-closure.patch
+          echo 'bdf841454447cbb5fe15a954180ee1d8427bdf9c5a8ef4e6067bb6a07fbba67a  /tmp/bytecode-field-set-closure.patch' | sha256sum -c -
+          git apply --check /tmp/bytecode-field-set-closure.patch
+          git apply /tmp/bytecode-field-set-closure.patch
 
           sed -i '/^std\.lib\.simple$/d;/^std\.test-helper$/d' core/rust/standard-library.namespaces
 
@@ -62,6 +74,11 @@ jobs:
           python3 scripts/runtime/sync-rust-hal-src --check
           python3 scripts/runtime/check-code-test-work-events
           git diff --check
+
+      - name: Verify mutable field assignment inside bytecode closures
+        run: >-
+          cargo test --manifest-path core/rust/Cargo.toml --features bytecode-vm
+          vm::execution_tests::mutable_field_set_inside_function_preserves_order_identity_and_result -- --exact
 
       - name: Build bootstrap JVM and Truffle runner
         run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
@@ -162,6 +179,7 @@ jobs:
           rm .github/workflows/agent-foundation-task-hard-cut.yml
           rm scripts/runtime/foundation-task-hard-cut.patch.gz.b64
           rm scripts/runtime/function-metadata-support.patch.gz.b64
+          rm scripts/runtime/bytecode-field-set-closure.patch.gz.b64
           rm scripts/runtime/foundation-task-hard-cut.part00
           rm scripts/runtime/foundation-task-hard-cut.part01
           rm scripts/runtime/foundation-task-hard-cut.part02
