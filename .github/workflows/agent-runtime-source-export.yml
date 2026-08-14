@@ -42,9 +42,32 @@ jobs:
           components: rustfmt
 
       - name: Apply guarded closeout patch
+        shell: bash
         run: |
-          git apply --check scripts/runtime/runtime-closeout.patch
-          git apply scripts/runtime/runtime-closeout.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path("scripts/runtime/runtime-closeout.patch").read_text()
+          start_marker = "diff --git a/core/lib/src/std/dom/common.hal b/core/lib/src/std/dom/common.hal\n"
+          end_marker = "diff --git a/core/lib/src/tool/cli/template.hal b/core/lib/src/tool/cli/template.hal\n"
+          start = source.find(start_marker)
+          end = source.find(end_marker)
+          if start != 0 or end <= start:
+              raise SystemExit("unexpected std.dom closeout patch layout")
+
+          dom = Path("core/lib/src/std/dom/common.hal").read_text()
+          canonical = """(defn dom-field-set!
+            [dom key value]
+            (case key
+          """
+          if canonical not in dom:
+              raise SystemExit("current main does not contain the canonical native std.dom dispatcher")
+
+          Path("/tmp/runtime-closeout-current.patch").write_text(source[end:])
+          PY
+
+          git apply --check /tmp/runtime-closeout-current.patch
+          git apply /tmp/runtime-closeout-current.patch
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
           rustfmt --edition 2021 \
@@ -111,8 +134,6 @@ jobs:
           git add \
             core/rust/src/vm/compiler/functions.rs \
             core/rust/src/vm/execution_tests.rs \
-            core/lib/src/std/dom/common.hal \
-            core/rust/hal-src/std/dom/common.hal \
             core/rust/hal-src/code/test/base/executive.hal \
             core/lib/src/tool/cli/template.hal \
             core/rust/hal-src/tool/cli/template.hal \
