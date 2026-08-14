@@ -10,6 +10,7 @@ pub fn plan(entrypoint: &str) -> BuildPlan {
         language: "hara".into(),
         main: "app.main".into(),
         entrypoints: vec![entrypoint.into()],
+        default_entrypoint: entrypoint.into(),
         keep_vars: Vec::new(),
         keep_namespaces: Vec::new(),
         output_bundle: "target/demo-app-production.hbx".into(),

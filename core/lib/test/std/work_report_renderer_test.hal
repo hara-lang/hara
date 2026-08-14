@@ -1,9 +1,11 @@
 (ns std.work-report-renderer-test
-  (:require
-            [std.work.protocol :as protocol]
+  (:require [std.work.protocol :as protocol]
             [std.work.report :as report]
-            [std.work.report.plain :as plain]
-            [std.work.report.terminal :as terminal]))
+            [std.format.common :as common]
+            [std.format.table :as table]
+            [std.format.report :as format-report]
+            [std.format.terminal :as terminal]
+            [std.format :as format]))
 
 (def item-a
   {:item/id :alpha
@@ -114,7 +116,7 @@
 
 (def live-output (atom []))
 (def live-observer
-  (terminal/observer
+  (report/observer
    {:ansi false
     :emit
     (fn [text]
@@ -130,7 +132,7 @@
 
 (def replay-output (atom []))
 (def replay-count
-  (terminal/replay!
+  (report/replay!
    events
    {:ansi false
     :emit
@@ -138,21 +140,111 @@
       (swap! replay-output conj text))}))
 
 (def ansi-title
-  (first (terminal/render-lines document)))
+  (first
+   (terminal/render-lines
+    (format-report/report-lines document)
+    {:ansi true})))
+
+(def emitted-output (atom []))
+(def emitted-count
+  (terminal/emit-lines!
+   [(common/line "first" :success)
+    (common/line "second" :warning)]
+   {:emit
+    (fn [text]
+      (swap! emitted-output conj text))}))
+
+(def table-output
+  (vec
+   (map
+    (fn [entry]
+      (:line/text entry))
+    (table/table-lines
+     (report/section
+      :results
+      :table
+      rows
+      {:section/columns columns})))))
 
 (def results
   [(test-check
-    "plain reports render titles, progress, diagnostics, fixed-width tables, summaries, and annotations"
-    (plain/render document)
+    "common padding and truncation are Unicode aware"
+    [(common/truncate "λambda" 4)
+     (common/truncate "abcdef" 3)
+     (common/pad "λ" 3 :right)
+     (common/pad "x" 4 :center)]
+    ["λ..." "abc" "  λ" " x  "])
+
+   (test-check
+    "table formatting normalises columns, calculates widths, and aligns cells"
+    table-output
+    ["PATH      FUN  INS"
+     "--------  ---  ---"
+     "a.clj       2    3"
+     "b.clj       1    0"])
+
+   (test-check
+    "report formatting preserves complete plain report output"
+    [(format-report/report document)
+     (format/report document)]
+    [expected expected])
+
+   (test-check
+    "report section filters and empty-section policy remain portable"
+    [(format-report/report
+      document
+      {:include-sections [:summary]
+       :include-title false
+       :include-annotations false})
+     (format-report/report
+      (report/add-section
+       (report/document
+        :empty/report
+        {:title "EMPTY"
+         :profile {:sections [:errors]}})
+       (report/section :errors :diagnostics [])))
+     (format-report/report
+      (report/add-section
+       (report/document
+        :empty/report
+        {:title "EMPTY"
+         :profile {:sections [:errors]}})
+       (report/section :errors :diagnostics []))
+      {:include-empty true})]
+    [(str/join
+      "\n"
+      ["SUMMARY"
+       "Items: 2"
+       "Results: 2"
+       "Warnings: 1"
+       "Errors: 0"
+       "Cumulative: 7ms"
+       "Elapsed: 8ms"])
+     "EMPTY"
+     "EMPTY\n\nerrors"])
+
+   (test-check
+    "terminal rendering is plain by default and ANSI is opt-in"
+    [(terminal/render
+      [(common/line "ok" :success)])
+     (str/starts-with? ansi-title "\u001b[1;36m")
+     (str/ends-with? ansi-title "\u001b[0m")
+     (format/report document {:ansi false})]
+    ["ok" true true expected])
+
+   (test-check
+    "terminal emission returns counts and uses an injected sink"
+    [emitted-count
+     (deref emitted-output)]
+    [2 ["first" "second"]])
+
+   (test-check
+    "work event rendering preserves exact completed-report output"
+    (report/render-events events)
     expected)
 
    (test-check
-    "plain event replay produces the same task report as the completed document"
-    (plain/render-events events)
-    expected)
-
-   (test-check
-    "live terminal observers and stored-history replay use the same event projection"
+    "live observers and stored-history replay share one event projection"
     [(str/join "\n" (deref live-output))
      (str/join "\n" (deref replay-output))
      replay-count
@@ -162,45 +254,19 @@
      (count (deref replay-output))])
 
    (test-check
-    "terminal styling is a renderer option rather than report data"
-    [(str/starts-with? ansi-title "\u001b[1;36m")
-     (str/ends-with? ansi-title "\u001b[0m")
-     (terminal/render document {:ansi false})]
-    [true true expected])
-
-   (test-check
-    "column widths and alignment remain structured report configuration"
-    [(get-in
-      (report/section-by-id document :results)
-      [:section/columns 0 :width])
-     (plain/table-text
-      (plain/realised-columns columns rows)
-      (first rows))]
-    [8 "a.clj       2    3"])
-
-   (test-check
-    "plain truncation uses the portable string slice primitive"
-    [(plain/truncate "abcdef" 3)
-     (plain/truncate "abcdefgh" 6)]
-    ["abc" "abc..."])
-
-   (test-check
-    "empty sections are hidden unless explicitly requested"
-    [(plain/render
-      (report/add-section
-       (report/document
-        :empty/report
-        {:title "EMPTY"
-         :profile {:sections [:errors]}})
-       (report/section :errors :diagnostics [])))
-     (plain/render
-      (report/add-section
-       (report/document
-        :empty/report
-        {:title "EMPTY"
-         :profile {:sections [:errors]}})
-       (report/section :errors :diagnostics []))
-      {:include-empty true})]
-    ["EMPTY" "EMPTY\n\nerrors"])])
+    "facade exposes only the curated layered entry points"
+    [(fn? format/line)
+     (fn? format/value-text)
+     (fn? format/truncate)
+     (fn? format/pad)
+     (fn? format/table-lines)
+     (fn? format/report-lines)
+     (fn? format/report)
+     (fn? format/render-lines)
+     (fn? format/render)
+     (fn? format/emit-lines!)
+     (nil? (resolve 'std.lib.format/report))
+     (nil? (resolve 'std.work.report/terminal-observer))]
+    [true true true true true true true true true true true true])])
 
 results

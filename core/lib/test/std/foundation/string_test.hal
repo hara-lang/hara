@@ -8,6 +8,12 @@
    (fact "length-unicode"
      (str/length "hé")
      => 2)
+   (fact "blank-is-nil-aware"
+     [(str/blank? nil)
+      (str/blank? "")
+      (str/blank? " \n")
+      (str/blank? "x")]
+     => [true true true false])
    (fact "pad-left"
      (str/pad-left "x" 3 "0")
      => "00x")
@@ -29,7 +35,7 @@
    (fact "split-three"
      (nth (str/split "a,b,c" ",") 1)
      => "b")
-   (fact "join"
+   (fact "join-preserves-two-argument-contract"
      (str/join "," ["a" "b"])
      => "a,b")
    (fact "index-of"
@@ -38,12 +44,15 @@
    (fact "slice"
      (str/slice "hara" 1 3)
      => "ar")
-   (fact "upper"
-     (str/upper "hara")
-     => "HARA")
-   (fact "lower"
-     (str/lower "HARA")
-     => "hara")
+   (fact "canonical-case-names-and-aliases"
+     [(str/upper-case "hara")
+      (str/lower-case "HARA")
+      (str/upper "hara")
+      (str/lower "HARA")
+      (str/capital-case "hELLO")
+      (str/capital-case "")
+      (str/capital-case "λ")]
+     => ["HARA" "hara" "HARA" "hara" "Hello" "" "Λ"])
    (fact "to-fixed"
      (str/to-fixed 1.25 2)
      => "1.25")
@@ -71,8 +80,61 @@
    (fact "trim-right-multi"
      (str/trim-right "  a  ")
      => "  a")
+   (fact "trim-newlines-removes-only-trailing-line-breaks"
+     (str/trim-newlines "\n\n    hello   \r\n")
+     => "\n\n    hello   ")
    (fact "encode-utf8/decode-utf8 round-trip"
      (str/decode-utf8 (str/encode-utf8 "hé"))
-     => "hé")])
+     => "hé")
+   (fact "tag-preserves-strings-keywords-bytes-and-printable-values"
+     [(str/tag "hello")
+      (str/tag :hello)
+      (str/tag :ns/hello)
+      (str/tag (str/encode-utf8 "hé"))
+      (str/tag 'hello)
+      (str/tag 42)
+      (str/tag nil)
+      (str/tag [1 :a])]
+     => ["hello" "hello" "ns/hello" "hé"
+         "hello" "42" "nil" "[1 :a]"])
+   (fact "tag-concatenates-variadic-values"
+     (str/tag :a "/" :ns/b "/" 3)
+     => "a/ns/b/3")
+   (fact "escape-replaces-one-character-string-keys"
+     (str/escape "a\n\"" {"\n" "\\n"
+                           "\"" "\\\""})
+     => "a\\n\\\"")
+   (fact "caseless-equality"
+     [(str/caseless= "heLLo" "HellO")
+      (str/caseless= "hello" "world")]
+     => [true false])
+   (fact "indexed-edits-use-portable-unicode-indexes"
+     [(str/replace-at "hλra" 1 "a")
+      (str/insert-at "hλra" 2 "!")]
+     => ["hara" "hλ!ra"])
+   (fact "identifier-case-conversion-recognises-runs-and-camel-humps"
+     [(str/camel-case "hello__--  world")
+      (str/pascal-case "hello_world")
+      (str/snake-case "helloWorld")
+      (str/spear-case "hello_world")
+      (str/dot-case "hello-world")
+      (str/snake-case "version2Value")
+      (str/camel-case "")
+      (str/dot-case "")]
+     => ["helloWorld" "HelloWorld" "hello_world"
+         "hello-world" "hello.world" "version2_value" "" ""])
+   (fact "identifier-case-conversion-never-treats-pipe-as-a-separator"
+     [(str/camel-case "hello|world")
+      (str/snake-case "hello|World")
+      (str/dot-case "a|b")]
+     => ["hello|world" "hello|world" "a|b"])
+   (fact "excluded-foundation-base-string-helpers-remain-absent"
+     [(nil? (resolve 'str/joinl))
+      (nil? (resolve (symbol "str/|")))
+      (nil? (resolve 'str/truncate))
+      (nil? (resolve 'str/lines))
+      (nil? (resolve 'str/single-line))
+      (nil? (resolve 'str/filter-empty))]
+     => [true true true true true true])])
 
 (pr-str (run '[std.foundation.string-test]))
