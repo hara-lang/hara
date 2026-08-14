@@ -4,7 +4,7 @@ use super::super::source::{Diagnostic, SourceLocation};
 use super::dynamic::{canonical_symbol, collect_resolved_symbols, scan_dynamic_access};
 use super::program::{classify_effect, scan_program};
 use super::provides::{list_head, provided_vars, unit_kind, without_metadata};
-use crate::core::{self, Value};
+use crate::core;
 use crate::kernel::Form;
 use crate::vm::Program;
 use crate::Runtime;
@@ -66,6 +66,7 @@ pub fn analyze_unit(runtime: &Runtime, seed: UnitSeed, plan: &BuildPlan) -> Comp
         runtime_edges: BTreeSet::new(),
         compile_time_edges: seed.compile_time_edges,
         namespace_edges: BTreeSet::new(),
+        native_roots: Default::default(),
         native_primitives: BTreeSet::new(),
         native_types: BTreeSet::new(),
         native_protocols: BTreeSet::new(),

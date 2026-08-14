@@ -342,6 +342,7 @@ fn failed_expansion_unit(
         runtime_edges: BTreeSet::new(),
         compile_time_edges: BTreeSet::new(),
         namespace_edges: BTreeSet::new(),
+        native_roots: Default::default(),
         native_primitives: BTreeSet::new(),
         native_types: BTreeSet::new(),
         native_protocols: BTreeSet::new(),
