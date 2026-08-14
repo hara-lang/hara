@@ -1,0 +1,80 @@
+name: Truffle CLI startup evidence
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/hara'
+      - 'core/java/pom.xml'
+      - 'core/java/src/main/java/hara/truffle/**'
+      - 'scripts/runtime/truffle_cli_startup_benchmark.py'
+      - '.github/workflows/truffle-cli-startup-evidence.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: truffle-cli-startup-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Build the ordinary Truffle launcher
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Verify launcher result
+        run: test "$(core/hara eval '(+ 19 23)')" = "42"
+
+      - name: Prepare evidence directory
+        run: mkdir -p core/target
+
+      - name: Record built-in-only cold process startup
+        run: |
+          python3 scripts/runtime/truffle_cli_startup_benchmark.py \
+            --label builtin-only \
+            --expression '(+ 19 23)' \
+            --expected 42 \
+            --samples 20 \
+            --output core/target/truffle-cli-startup-builtin.csv \
+            | tee core/target/truffle-cli-startup-builtin.txt
+
+      - name: Record first-fallback cold process startup
+        run: |
+          python3 scripts/runtime/truffle_cli_startup_benchmark.py \
+            --label portable-fallback \
+            --expression '(if-not false 42)' \
+            --expected 42 \
+            --samples 10 \
+            --output core/target/truffle-cli-startup-fallback.csv \
+            | tee core/target/truffle-cli-startup-fallback.txt
+
+      - name: Upload startup evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: truffle-cli-startup
+          path: core/target/truffle-cli-startup-*
+          if-no-files-found: error
