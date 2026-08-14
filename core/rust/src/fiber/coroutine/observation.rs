@@ -150,8 +150,12 @@ mod tests {
         assert!(retained.same_identity(&promise));
 
         assert!(promise.resolve(Value::Number(42)));
-        let state = fiber.resume_observed(promise.state());
-        assert_eq!(state, EvalFiberState::Completed(Value::Number(42)));
+        let resumed = fiber.resume_observed(promise.state());
+        assert_eq!(resumed, EvalFiberState::Running);
+        assert!(fiber.observed_paused());
+
+        let completed = fiber.run_observed(16);
+        assert_eq!(completed, EvalFiberState::Completed(Value::Number(42)));
     }
 
     #[test]
