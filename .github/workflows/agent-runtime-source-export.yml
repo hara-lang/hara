@@ -55,6 +55,16 @@ jobs:
           if start != 0 or end <= start:
               raise SystemExit("unexpected std.dom closeout patch layout")
 
+          portable_some = """+    (some (fn [handler-fn] (identical? value handler-fn))
++          (deref +handlers+)))))
+"""
+          portable_reduce = """+    (reduce (fn [found handler-fn] (or found (identical? value handler-fn)))
++            false (deref +handlers+))))))
+"""
+          if source.count(portable_some) != 2:
+              raise SystemExit("portable CLI handler predicate did not match canonical and mirror hunks")
+          source = source.replace(portable_some, portable_reduce)
+
           dom = Path("core/lib/src/std/dom/common.hal").read_text()
           canonical = """(defn dom-field-set!
             [dom key value]
@@ -76,6 +86,18 @@ jobs:
             core/rust/src/vm/execution_tests.rs
           git diff --check
           git diff --stat
+
+      - name: Export patched source for exact local diagnosis
+        shell: bash
+        run: tar --exclude=.git --exclude=core/rust/target -czf /tmp/hara-runtime-patched.tar.gz .
+
+      - name: Upload patched source
+        uses: actions/upload-artifact@v4
+        with:
+          name: hara-runtime-patched-source
+          path: /tmp/hara-runtime-patched.tar.gz
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Run mutable-field closure regression
         run: cargo test --manifest-path core/rust/Cargo.toml 'vm::execution_tests::defmutable_forms_use_reference_identity_and_settable_fields' --lib -- --nocapture
