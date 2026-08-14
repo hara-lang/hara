@@ -1,0 +1,368 @@
+(ns code.manage.unit.structure
+  (:require [code.framework :as framework]))
+
+(def +fact-heads+
+  #{"fact" "h/fact" "code.test/fact"})
+
+(defn fact-head?
+  [head]
+  (or (has? +fact-heads+ head)
+      (str/ends-with? head "/fact")))
+
+(defn public-definitions
+  [analysis]
+  (vec
+   (filter
+    (fn [definition]
+      (:public definition))
+    (:definitions analysis))))
+
+(defn metadata-value
+  [form source]
+  (framework/merged-metadata
+   (framework/form-metadata source form)))
+
+(defn fact-record
+  [source path form commented]
+  (let [children (framework/semantic-children source form)
+        head (if (empty? children) nil (str (:value (first children))))]
+    (if (not (fact-head? head))
+      nil
+      (let [title-record (if (< 1 (count children)) (nth children 1) nil)
+            title (if (and title-record (string? (:value title-record)))
+                    (:value title-record)
+                    "")
+            metadata (framework/form-metadata source form)
+            meta (framework/merged-metadata metadata)
+            refer (or (:refer meta) (:ref meta))
+            full-start (:full-start form)
+            full-text (str/slice source full-start (:end form))]
+        {:path path
+         :line (:line form)
+         :column (:column form)
+         :head head
+         :title title
+         :refer (if refer (str refer) nil)
+         :added (:added meta)
+         :unchecked-allowed (= true (:unchecked meta))
+         :checked (framework/value-contains? (:value form) '=>)
+         :commented commented
+         :start (:start form)
+         :end (:end form)
+         :full-start full-start
+         :text (:text form)
+         :full-text full-text
+         :form form
+         :metadata metadata
+         :meta meta}))))
+
+(defn direct-facts
+  [source path forms commented]
+  (vec
+   (keep
+    (fn [form]
+      (fact-record source path form commented))
+    forms)))
+
+(defn facts-from-form
+  [source path form]
+  (if (= "comment" (framework/form-head source form))
+    (direct-facts
+     source
+     path
+     (framework/form-records-in source (:block form) (:start form))
+     true)
+    (let [fact (fact-record source path form false)]
+      (if fact [fact] []))))
+
+(defn facts-from-source
+  [source path]
+  (if (or (nil? source) (str/blank? source))
+    []
+    (let [analysis (framework/analyse-structure source)]
+      (reduce
+       (fn [output form]
+         (into output (facts-from-form source path form)))
+       []
+       (:form-records analysis)))))
+
+(defn facts-by-reference
+  "Last source-order duplicate wins, matching Foundation import semantics."
+  [facts]
+  (reduce
+   (fn [output fact]
+     (if (:refer fact)
+       (assoc output (:refer fact) fact)
+       output))
+   {}
+   facts))
+
+(defn source-reference
+  [namespace definition]
+  (str namespace "/" (:name definition)))
+
+(defn edit
+  [start end replacement]
+  {:start start :end end :replacement replacement})
+
+(defn apply-edits
+  "Applies non-overlapping source edits from right to left."
+  [source edits]
+  (reduce
+   (fn [output current]
+     (str
+      (str/slice output 0 (:start current))
+      (:replacement current)
+      (str/slice output (:end current) (str/length output))))
+   source
+   (reverse (sort-by :start edits))))
+
+(defn pair-index
+  [pairs pair]
+  (loop [index 0]
+    (if (= index (count pairs))
+      nil
+      (if (= pair (nth pairs index))
+        index
+        (recur (inc index))))))
+
+(defn pair-for
+  [metadata key]
+  (first
+   (filter
+    (fn [pair]
+      (= key (:key pair)))
+    (:pairs metadata))))
+
+(defn metadata-with-map
+  [definition]
+  (vec
+   (filter
+    (fn [entry]
+      (:map-record entry))
+    (:metadata definition))))
+
+(defn metadata-with-key
+  [definition key]
+  (vec
+   (filter
+    (fn [entry]
+      (pair-for entry key))
+    (:metadata definition))))
+
+(defn replace-added-edit
+  [metadata added]
+  (let [pair (pair-for metadata :added)
+        value-record (:value-record pair)]
+    (edit (:start value-record)
+          (:end value-record)
+          (pr-str added))))
+
+(defn append-added-edit
+  [metadata added]
+  (let [map-record (:map-record metadata)
+        insert (- (:end map-record) 1)]
+    (edit insert insert (str " :added " (pr-str added)))))
+
+(defn insert-added-edit
+  [definition added]
+  (edit (:name-start definition)
+        (:name-start definition)
+        (str "^{:added " (pr-str added) "} ")))
+
+(defn merge-added-edit
+  [definition added]
+  (if (nil? added)
+    nil
+    (let [existing (metadata-with-key definition :added)
+          maps (metadata-with-map definition)]
+      (cond
+        (not (empty? existing))
+        (replace-added-edit (last existing) added)
+
+        (not (empty? maps))
+        (append-added-edit (last maps) added)
+
+        :else
+        (insert-added-edit definition added)))))
+
+(defn remove-pair-edit
+  [metadata pair]
+  (let [pairs (:pairs metadata)
+        index (pair-index pairs pair)]
+    (if (= 1 (count pairs))
+      (let [record (:record metadata)]
+        (edit (:start record) (:end record) ""))
+      (if (= index 0)
+        (edit (:start (:key-record pair))
+              (:start (:key-record (nth pairs 1)))
+              "")
+        (edit (:end (:value-record (nth pairs (dec index))))
+              (:end (:value-record pair))
+              "")))))
+
+(defn remove-added-edits
+  [definition]
+  (vec
+   (map
+    (fn [metadata]
+      (remove-pair-edit metadata (pair-for metadata :added)))
+    (metadata-with-key definition :added))))
+
+(defn replace-docstring-edit
+  [definition title]
+  (if (:doc-record definition)
+    (edit (:doc-start definition)
+          (:doc-end definition)
+          (pr-str title))
+    (edit (:name-end definition)
+          (:name-end definition)
+          (str "\n  " (pr-str title)))))
+
+(defn remove-docstring-edit
+  [definition]
+  (if (:doc-record definition)
+    (edit (:name-end definition)
+          (:doc-end definition)
+          "")
+    nil))
+
+(defn definition-import-edits
+  [definition fact]
+  (vec
+   (filter
+    identity
+    [(replace-docstring-edit definition (:title fact))
+     (merge-added-edit definition (:added fact))])))
+
+(defn definition-purge-edits
+  [definition]
+  (vec
+   (concat
+    (filter identity [(remove-docstring-edit definition)])
+    (remove-added-edits definition))))
+
+(defn missing-findings
+  [unit analysis facts]
+  (let [namespace (:namespace analysis)
+        references (facts-by-reference facts)]
+    (vec
+     (keep
+      (fn [definition]
+        (let [refer (source-reference namespace definition)]
+          (if (nil? (get references refer))
+            {:path (:path unit)
+             :line (:line definition)
+             :column (:column definition)
+             :classification "M"
+             :kind :missing
+             :namespace namespace
+             :name (:name definition)
+             :refer refer
+             :message (str "missing fact for " refer)}
+            nil)))
+      (public-definitions analysis)))))
+
+(defn todo-findings
+  [facts]
+  (vec
+   (keep
+    (fn [fact]
+      (if (= "TODO" (:title fact))
+        {:path (:path fact)
+         :line (:line fact)
+         :column (:column fact)
+         :classification "T"
+         :kind :todo
+         :refer (:refer fact)
+         :message (str "TODO fact" (if (:refer fact) (str " for " (:refer fact)) ""))}
+        nil))
+    facts)))
+
+(defn unchecked-findings
+  [facts]
+  (vec
+   (keep
+    (fn [fact]
+      (if (and (not (:commented fact))
+               (not (:checked fact))
+               (not (:unchecked-allowed fact)))
+        {:path (:path fact)
+         :line (:line fact)
+         :column (:column fact)
+         :classification "N"
+         :kind :unchecked
+         :refer (:refer fact)
+         :message (str "fact has no => check"
+                       (if (:refer fact) (str " for " (:refer fact)) ""))}
+        nil))
+    facts)))
+
+(defn commented-findings
+  [facts]
+  (vec
+   (keep
+    (fn [fact]
+      (if (:commented fact)
+        {:path (:path fact)
+         :line (:line fact)
+         :column (:column fact)
+         :classification "C"
+         :kind :commented
+         :refer (:refer fact)
+         :message (str "fact is inside comment"
+                       (if (:refer fact) (str " for " (:refer fact)) ""))}
+        nil))
+    facts)))
+
+(defn runner-form?
+  [source form]
+  (let [head (framework/form-head source form)]
+    (or (= head "fact:global")
+        (= head "h/fact:global")
+        (= head "code.test/fact:global")
+        (and (= head "pr-str")
+             (str/includes? (:text form) "(run")))))
+
+(defn runner-index
+  [source]
+  (let [forms (:form-records (framework/analyse-structure source))
+        found
+        (reduce
+         (fn [index form]
+           (if (and (nil? index)
+                    (runner-form? source form))
+             (:full-start form)
+             index))
+         nil
+         forms)]
+    (if (nil? found)
+      (str/length source)
+      found)))
+
+(defn left-separator
+  [prefix]
+  (cond
+    (str/ends-with? prefix "\n\n") ""
+    (str/ends-with? prefix "\n") "\n"
+    (empty? prefix) ""
+    :else "\n\n"))
+
+(defn right-separator
+  [suffix]
+  (cond
+    (str/starts-with? suffix "\n\n") ""
+    (str/starts-with? suffix "\n") "\n"
+    (empty? suffix) "\n"
+    :else "\n\n"))
+
+(defn insert-before-runner
+  [source forms-text]
+  (let [index (runner-index source)
+        prefix (str/slice source 0 index)
+        suffix (str/slice source index (str/length source))]
+    (str prefix
+         (left-separator prefix)
+         forms-text
+         (right-separator suffix)
+         suffix)))
