@@ -46,19 +46,40 @@ jobs:
           cache-dependency-path: core/java/pom.xml
 
       - name: Apply the std.typed dependency-boundary repair
-        run: python3 .github/scripts/finish_std_typed.py
-
-      - name: Enforce the portable dependency boundary
         shell: bash
         run: |
-          if rg -n 'std\.block|block/' core/lib/src/std/typed; then
-            echo "std.typed must remain independent of std.block" >&2
-            exit 1
-          fi
-          if rg -n 'std\.foundation :refer :all' core/lib/src/std/typed; then
-            echo "std.typed must import only the Foundation operations it uses" >&2
-            exit 1
-          fi
+          python3 .github/scripts/finish_std_typed.py
+          python3 .github/scripts/finish_std_typed_v2.py
+
+      - name: Enforce the portable dependency graph
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          typed = Path("core/lib/src/std/typed")
+          sources = {path: path.read_text() for path in typed.glob("*.hal")}
+          leaks = [str(path) for path, text in sources.items()
+                   if "std.block" in text or "block/" in text]
+          if leaks:
+              raise SystemExit("std.typed depends on std.block: " + ", ".join(leaks))
+
+          infer = sources[typed / "infer.hal"]
+          expected_infer = "(:require [std.typed.schema :as schema])"
+          if expected_infer not in infer or "std.foundation" in infer:
+              raise SystemExit("std.typed.infer must directly require only std.typed.schema")
+
+          schema = sources[typed / "schema.hal"]
+          if "[std.foundation :refer :all :exclude [resolve]]" not in schema:
+              raise SystemExit("std.typed.schema must have exactly the portable Foundation dependency")
+          PY
+
+      - name: Run focused portable HAL tests
+        run: |
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/std/typed \
+            core/lib/test/tool/lint_schema_test.hal \
+            core/lib/test/tool/cli/lint_test.hal
 
       - name: Regenerate and verify the canonical Rust HAL source mirror
         shell: bash
@@ -78,13 +99,6 @@ jobs:
           cargo check --manifest-path core/rust/Cargo.toml --lib
           cargo test --manifest-path core/rust/Cargo.toml kernel::schema::tests --lib
 
-      - name: Run focused portable HAL tests
-        run: |
-          ./scripts/runtime/run-lib-tests \
-            core/lib/test/std/typed \
-            core/lib/test/tool/lint_schema_test.hal \
-            core/lib/test/tool/cli/lint_test.hal
-
       - name: Run the JVM schema parity tests
         run: mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HalcSchemaTest test
 
@@ -92,6 +106,7 @@ jobs:
         shell: bash
         run: |
           rm -f .github/scripts/finish_std_typed.py
+          rm -f .github/scripts/finish_std_typed_v2.py
           rm -f .github/workflows/agent-repair-std-typed-ci.yml
           rm -f .github/workflows/agent-finish-std-typed-ci.yml
           git config user.name "OpenAI Agent"
