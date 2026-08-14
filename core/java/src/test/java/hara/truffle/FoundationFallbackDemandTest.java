@@ -90,15 +90,11 @@ public class FoundationFallbackDemandTest {
   @Test
   public void selectiveNamespacePolicySurvivesLaterFallbackUse() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      context.eval(HaraLanguage.ID, "(ns startup-selective (:config {:expose [map count]}))");
-      assertEquals(
-          2L,
-          context
-              .eval(HaraLanguage.ID, "(count (map (fn [value] value) [1 2]))")
-              .asLong());
+      context.eval(HaraLanguage.ID, "(ns startup-selective (:config {:expose [inc]}))");
+      assertEquals(42L, context.eval(HaraLanguage.ID, "(inc 41)").asLong());
       PolyglotException missing =
-          assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "inc"));
-      assertTrue(missing.getMessage().contains("Unbound symbol: inc"));
+          assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "map"));
+      assertTrue(missing.getMessage().contains("Unbound symbol: map"));
     }
   }
 }
