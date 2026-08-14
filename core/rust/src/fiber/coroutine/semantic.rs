@@ -253,9 +253,7 @@ pub(in crate::core::fiber) fn record_error(
 }
 
 /// Publishes one queued semantic event without executing another continuation.
-pub(super) fn advance_pending(
-    environment: &Rc<RefCell<HashMap<String, Value>>>,
-) -> bool {
+pub(super) fn advance_pending(environment: &Rc<RefCell<HashMap<String, Value>>>) -> bool {
     let Some(context) = context_for(environment) else {
         return false;
     };

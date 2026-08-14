@@ -55,6 +55,9 @@ impl EvalFiber {
 
     /// Executes at most one retained production continuation boundary.
     pub fn step_observed(&mut self) -> EvalFiberState {
+        if semantic::advance_pending(&self.env) {
+            return self.state();
+        }
         if !matches!(self.state, EvalFiberState::Running) {
             return self.state();
         }
@@ -64,13 +67,16 @@ impl EvalFiber {
         };
         let step = semantic::with_active_context(&self.env, || resume(PromiseState::Pending));
         self.accept_observed(step);
+        semantic::advance_pending(&self.env);
         self.state()
     }
 
-    /// Runs up to `boundary_limit` observed continuation boundaries.
+    /// Runs up to `boundary_limit` evaluator or queued semantic boundaries.
     pub fn run_observed(&mut self, boundary_limit: usize) -> EvalFiberState {
         for _ in 0..boundary_limit {
-            if !matches!(self.state, EvalFiberState::Running) {
+            if !matches!(self.state, EvalFiberState::Running)
+                && semantic::pending_count(&self.env) == 0
+            {
                 break;
             }
             self.step_observed();
@@ -91,6 +97,7 @@ impl EvalFiber {
         self.state = EvalFiberState::Running;
         let step = semantic::with_active_context(&self.env, || resume(state));
         self.accept_observed(step);
+        semantic::advance_pending(&self.env);
         self.state()
     }
 
