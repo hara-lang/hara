@@ -1,0 +1,227 @@
+name: Named-value specification validation
+
+on:
+  push:
+    branches:
+      - agent/named-value-spec-validation
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout proposed specifications
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: agent/named-value-contract
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Expose the registry at every compile-time fixture path
+        shell: bash
+        run: |
+          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Fetch Rust dependencies
+        run: cargo fetch --manifest-path core/rust/Cargo.toml
+
+      - name: Isolate validation from known ABI adapter debt and select the new L0 cases
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_optional(path: Path, before: str, after: str) -> None:
+              source = path.read_text()
+              if before in source:
+                  path.write_text(source.replace(before, after, 1))
+
+          # The pinned extension and two host adapters still match an older
+          # hara-abi Value surface. These validation-only fallback arms do not
+          # affect named-value behavior; they merely let the current crate build.
+          for path in (Path.home() / ".cargo/git/checkouts").glob(
+              "hara-extensions-*/*/hara-runtime/modules/std-db-postgres/src/lib.rs"
+          ):
+              before = (
+                  "        Value::Bytes(_) => {\n"
+                  "            return Err(Error::new(\n"
+                  "                \"postgres/type-unsupported\",\n"
+                  "                \"bytes cannot be JSON\",\n"
+                  "            ))\n"
+                  "        }\n"
+                  "    })\n"
+                  "}\n"
+                  "fn json_abi"
+              )
+              after = (
+                  "        Value::Bytes(_) => {\n"
+                  "            return Err(Error::new(\n"
+                  "                \"postgres/type-unsupported\",\n"
+                  "                \"bytes cannot be JSON\",\n"
+                  "            ))\n"
+                  "        },\n"
+                  "        _ => {\n"
+                  "            return Err(Error::new(\n"
+                  "                \"postgres/type-unsupported\",\n"
+                  "                \"value cannot be JSON\",\n"
+                  "            ))\n"
+                  "        }\n"
+                  "    })\n"
+                  "}\n"
+                  "fn json_abi"
+              )
+              replace_optional(path, before, after)
+
+          path = Path("core/rust/src/native_module.rs")
+          before = (
+              "        Abi::Record(values) => Value::Map(\n"
+              "            values\n"
+              "                .into_iter()\n"
+              "                .map(|(key, value)| Ok((Value::String(key), from_abi(value)?)))\n"
+              "                .collect::<Result<Vec<_>, String>>()?\n"
+              "                .into_iter()\n"
+              "                .collect(),\n"
+              "        ),\n"
+              "    })\n"
+              "}\n\n"
+              "#[cfg(test)]"
+          )
+          after = (
+              "        Abi::Record(values) => Value::Map(\n"
+              "            values\n"
+              "                .into_iter()\n"
+              "                .map(|(key, value)| Ok((Value::String(key), from_abi(value)?)))\n"
+              "                .collect::<Result<Vec<_>, String>>()?\n"
+              "                .into_iter()\n"
+              "                .collect(),\n"
+              "        ),\n"
+              "        _ => return Err(\"native-module/value-unsupported: ABI value\".into()),\n"
+              "    })\n"
+              "}\n\n"
+              "#[cfg(test)]"
+          )
+          replace_optional(path, before, after)
+
+          path = Path("core/rust/hta-codec/src/lib.rs")
+          before = (
+              "        Value::Record(values) => encode_record(values, depth, output),\n"
+              "    }\n"
+              "}\n\n"
+              "fn encode_record"
+          )
+          after = (
+              "        Value::Record(values) => encode_record(values, depth, output),\n"
+              "        _ => Err(\"hta/value-unsupported: ABI value is not portable\".into()),\n"
+              "    }\n"
+              "}\n\n"
+              "fn encode_record"
+          )
+          replace_optional(path, before, after)
+
+          # The Rust L0 harness intentionally selects a curated set. Extend that
+          # selection for this validation run and honor setup forms like Java's
+          # complete corpus runner already does.
+          path = Path("core/rust/src/lib.rs")
+          source = path.read_text()
+          before = (
+              '            "error/finally-unwind",\n'
+              "        ];"
+          )
+          after = (
+              '            "error/finally-unwind",\n'
+              '            "protocol/mutable-extension",\n'
+              '            "named-value/constructors-same-unit",\n'
+              '            "named-value/defstruct-persistent-map",\n'
+              '            "named-value/defmutable-reference",\n'
+              '            "named-value/defmutable-evaluation-order",\n'
+              "        ];"
+          )
+          if source.count(before) != 1:
+              raise SystemExit("Rust L0 case selection no longer has the expected shape")
+          source = source.replace(before, after, 1)
+          before = (
+              '            let Form::Map(expect) = entry(case, "expect") else {\n'
+              '                panic!(":{id} expect must be a map")\n'
+              "            };\n"
+              "            let mut runtime = Runtime::new();"
+          )
+          after = (
+              '            let Form::Map(expect) = entry(case, "expect") else {\n'
+              '                panic!(":{id} expect must be a map")\n'
+              "            };\n"
+              "            let setup = case.iter().find_map(|(candidate, value)| match candidate {\n"
+              '                Form::Keyword(name) if name == "setup" => Some(value),\n'
+              "                _ => None,\n"
+              "            });\n"
+              "            let mut runtime = Runtime::new();\n"
+              "            if let Some(Form::String(setup)) = setup {\n"
+              "                runtime\n"
+              "                    .eval_text(setup)\n"
+              '                    .unwrap_or_else(|error| panic!(":{id} setup failed: {error}"));\n'
+              "            }"
+          )
+          if source.count(before) != 1:
+              raise SystemExit("Rust L0 execution block no longer has the expected shape")
+          path.write_text(source.replace(before, after, 1))
+          PY
+
+      - name: Run the proposed portable L0 named-value cases on the Rust evaluator
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --lib \
+            issue_133_cases_run_from_the_shared_l0_conformance_corpus -- --nocapture
+
+      - name: Run the complete proposed HBC corpus on evaluator and VM
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --lib \
+            vm::conformance_tests::bytecode_vm_conformance_corpus -- --nocapture
+
+      - name: Run Rust HTA codec tests
+        run: cargo test --manifest-path core/rust/Cargo.toml --lib hta::tests -- --nocapture
+
+  java:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout proposed specifications
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: agent/named-value-contract
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Run the complete proposed L0 corpus and named-value/HBC/HTA tests
+        working-directory: core
+        run: |
+          mvn -B -Ptruffle \
+            -Dtest=hara.truffle.HaraL0ConformanceTest,hara.truffle.HaraMutableTest,hara.truffle.HtaValueCodecTest,hara.truffle.bytecode.HbcCodecTest \
+            test --file java/pom.xml
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run browser and Node HTA codec tests
+        working-directory: core/rust/web
+        run: node --test hta.test.js hta.test.mjs
