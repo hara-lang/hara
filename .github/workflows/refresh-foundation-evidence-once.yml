@@ -1,0 +1,97 @@
+name: Refresh Foundation evidence once
+
+on:
+  push:
+    branches:
+      - agent/foundation-script-ci-enforcement
+    paths:
+      - '.github/workflows/refresh-foundation-evidence-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    if: github.repository == 'hara-lang/hara'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the exact branch head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Read pinned Foundation revisions
+        id: foundation
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          policy = json.loads(Path("core/spec/foundation-script-policy.json").read_text())
+          routes = json.loads(Path("core/spec/clj-hal-routes.json").read_text())
+          print(f"script_commit={policy['reference']['commit']}")
+          print(f"corpus_commit={routes['reference']['commit']}")
+          PY
+      - name: Check out the pinned Foundation script reference
+        uses: actions/checkout@v4
+        with:
+          repository: zcaudate-xyz/foundation-base
+          ref: ${{ steps.foundation.outputs.script_commit }}
+          path: foundation-base
+          fetch-depth: 1
+      - name: Fetch the pinned Foundation corpus reference
+        run: |
+          git -C foundation-base fetch --depth=1 origin "${{ steps.foundation.outputs.corpus_commit }}"
+          test "$(git -C foundation-base rev-parse '${{ steps.foundation.outputs.corpus_commit }}^{commit}')" = "${{ steps.foundation.outputs.corpus_commit }}"
+      - name: Refresh generated evidence on the current main snapshot
+        env:
+          TARGET_BASE: b9a33af359a216fc7c7585e9a7fa8bb717f54902
+        run: |
+          git rev-parse "$TARGET_BASE^{commit}"
+          git diff --quiet "$TARGET_BASE" -- core/lib/src-lang core/lib/test-lang
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          target_base = os.environ["TARGET_BASE"]
+          for name in (
+              "core/spec/foundation-script-policy.json",
+              "core/spec/clj-hal-routes.json",
+          ):
+              path = Path(name)
+              data = json.loads(path.read_text())
+              old = data["target"]["base_commit"]
+              needle = f'"base_commit": "{old}"'
+              replacement = f'"base_commit": "{target_base}"'
+              text = path.read_text()
+              if text.count(needle) != 1:
+                  raise SystemExit(f"cannot update exactly one target base in {name}")
+              path.write_text(text.replace(needle, replacement, 1))
+          PY
+          python3 scripts/runtime/foundation_script_inventory.py \
+            --reference foundation-base \
+            --write
+          python3 scripts/runtime/clj_hal_corpus.py \
+            --reference foundation-base \
+            --generate
+          python3 scripts/runtime/foundation_script_inventory.py \
+            --reference foundation-base \
+            --check
+          python3 scripts/runtime/clj_hal_corpus.py \
+            --reference foundation-base \
+            --check-generated \
+            --verify-reference
+      - name: Commit the deterministic refresh
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            core/spec/foundation-script-policy.json \
+            core/spec/foundation-script-inventory.json \
+            core/spec/clj-hal-routes.json \
+            core/spec/clj-hal-corpus.json
+          git diff --cached --stat
+          git diff --cached --quiet && exit 0
+          git commit -m "Refresh Foundation evidence on current main"
+          git push origin HEAD:agent/foundation-script-ci-enforcement
