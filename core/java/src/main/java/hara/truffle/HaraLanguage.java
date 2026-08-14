@@ -130,6 +130,7 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
 
   private static void ensureFoundationWhenDemanded(Object[] forms, HaraContext context) {
     if (foundationSensitiveNamespaceConfiguration(forms)
+        || FoundationFallbackDefinitions.requiresInitialization(forms, context)
         || FoundationFallbackDemand.requires(forms, context)) {
       context.ensureEagerFallbacks();
     }
