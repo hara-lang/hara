@@ -24,7 +24,7 @@ public final class HaraPostgresCompatibilityTest {
 
   @Test
   public void runsMergedPostgresConnectionProviderSuite() throws Exception {
-    assertSuite("lib/test/lib/postgres/connection_test.hal", 11, 11);
+    assertSuite("lib/test/db/postgres/connection_test.hal", 11, 11);
   }
 
   @Test
