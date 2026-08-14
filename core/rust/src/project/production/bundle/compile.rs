@@ -19,7 +19,7 @@ pub(super) fn compile(build: &ProductionBuild) -> Result<CompiledBundle, String>
         .filter(|unit| build.analysis.runtime_unit_ids.contains(&unit.id))
         .flat_map(|unit| unit.provides.iter().cloned())
         .collect::<BTreeSet<_>>();
-    super::super::predeclare_vars(&runtime, &provided);
+    super::super::predeclare_vars(&runtime, provided);
 
     // Namespace declarations must never fall back to source loading while the
     // pruned artifacts are being compiled. Every retained provider already has
