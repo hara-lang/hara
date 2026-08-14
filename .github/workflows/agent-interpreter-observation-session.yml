@@ -1,26 +1,26 @@
-name: Verify runtime-owned interpreter observation session
+name: Repair merged interpreter observation ownership
 
 on:
   push:
     branches:
-      - agent/code-vm-interpreter-observation-session
+      - agent/fix-interpreter-observation-main
 
 permissions:
   contents: write
 
 concurrency:
-  group: agent-interpreter-observation-session
+  group: agent-fix-interpreter-observation-main
   cancel-in-progress: true
 
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
-      - name: Check out branch
+      - name: Check out repair branch
         uses: actions/checkout@v4
         with:
-          ref: agent/code-vm-interpreter-observation-session
+          ref: agent/fix-interpreter-observation-main
           fetch-depth: 0
 
       - name: Configure Git and rebase onto main
@@ -32,8 +32,20 @@ jobs:
 
       - name: Move session ownership into hara-wasm
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('scripts/runtime/refactor-interpreter-observation-session.py')
+          source = path.read_text()
+          wrong = "key.as_str() == Some(name)"
+          right = "key.as_str() == name"
+          if source.count(wrong) != 1:
+              raise SystemExit('interpreter observation keyword comparison seam changed')
+          path.write_text(source.replace(wrong, right, 1))
+          PY
           python3 scripts/runtime/refactor-interpreter-observation-session.py
           rm scripts/runtime/refactor-interpreter-observation-session.py
+          rm .github/workflows/agent-interpreter-observation-session.yml
 
       - name: Checkout hara-specs-registry
         uses: actions/checkout@v4
@@ -59,27 +71,27 @@ jobs:
           rustfmt --edition 2021 --config skip_children=true \
             core/rust/interpreter-observation-raw/src/lib.rs
 
-      - name: Test live evaluator and session ownership
+      - name: Test live evaluator and runtime-owned session
         run: |
           cargo test --manifest-path core/rust/Cargo.toml \
             core::fiber::coroutine --lib
           cargo test --manifest-path core/rust/Cargo.toml \
             interpreter_observation --lib
-
-      - name: Test the thin native raw ABI
-        run: |
           cargo test --manifest-path \
             core/rust/interpreter-observation-raw/Cargo.toml
 
-      - name: Compile and build browser Wasm
+      - name: Verify native and browser feature sets
         run: |
+          cargo test --manifest-path core/rust/Cargo.toml --all-features
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --all-features --target wasm32-unknown-unknown
           cargo check --manifest-path \
             core/rust/interpreter-observation-raw/Cargo.toml \
             --target wasm32-unknown-unknown
           bash scripts/runtime/build-interpreter-observation-wasm
 
-      - name: Commit verified implementation
+      - name: Commit verified repair
         run: |
           git add -A
-          git commit -m "code.vm: own isolated interpreter observation sessions"
-          git push --force-with-lease origin HEAD:agent/code-vm-interpreter-observation-session
+          git commit -m "code.vm: integrate runtime-owned interpreter observation"
+          git push --force-with-lease origin HEAD:agent/fix-interpreter-observation-main
