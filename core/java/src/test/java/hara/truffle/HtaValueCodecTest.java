@@ -3,6 +3,7 @@ package hara.truffle;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 import hara.lang.data.Keyword;
 import java.util.Arrays;
@@ -83,6 +84,25 @@ public class HtaValueCodecTest {
     assertEquals(
         "hta/value-unsupported: mutable values are not serializable; use (into {} value)",
         error.getMessage());
+  }
+
+  @Test
+  public void immutableRuntimeCollectionsAndPointersRoundTrip() {
+    Object tuple = new hara.lang.data.Tuple.Tup2.L<>(null, Keyword.create("x"), 42L);
+    Object decodedTuple = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(tuple));
+    assertTrue(decodedTuple instanceof hara.lang.data.Tuple.Tup2<?, ?>);
+    assertEquals(42L, ((hara.lang.data.Tuple.Tup2<?, ?>) decodedTuple).B());
+
+    Object orderedSet = hara.lang.data.OrderedSet.Standard.from(null, "b", "a");
+    Object decodedSet = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(orderedSet));
+    assertTrue(decodedSet instanceof hara.lang.data.OrderedSet<?>);
+
+    java.util.Map<Object, Object> fields = new LinkedHashMap<>();
+    fields.put(Keyword.create("id"), "ROOT");
+    Object pointer = new hara.lang.context.Pointer(Keyword.create("kernel"), fields);
+    Object decodedPointer = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(pointer));
+    assertTrue(decodedPointer instanceof hara.lang.context.Pointer);
+    assertEquals(pointer, decodedPointer);
   }
 
 }

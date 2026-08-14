@@ -1,7 +1,7 @@
+use super::super::plan::BuildPlan;
 use super::index::{namespace_index, project_diagnostic, provider_index};
 use super::model::{Analysis, ModuleAnalysis};
 use super::reachability;
-use super::super::plan::BuildPlan;
 use super::UnitAnalysis;
 use std::collections::BTreeSet;
 

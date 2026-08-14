@@ -1,5 +1,7 @@
-pub trait IPointer<K, V> {
-    type Keys: IntoIterator<Item = K>;
-    fn pointer_keys(&self) -> Self::Keys;
-    fn pointer_value(&self, key: &K) -> Option<V>;
+/// Identifies the evaluator context that owns pointer resolution.
+///
+/// Pointer descriptor fields are accessed through the ordinary collection
+/// protocols; they are deliberately not duplicated here.
+pub trait IPointer<C> {
+    fn pointer_context(&self) -> C;
 }

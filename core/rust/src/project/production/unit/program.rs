@@ -40,7 +40,9 @@ pub(super) fn scan_program(program: &Program, analysis: &mut UnitAnalysis) {
                 }
                 Instruction::DefStruct { name, .. } | Instruction::DefMutable { name, .. } => {
                     if let Some(name) = string_constant(program, *name) {
-                        analysis.native_types.insert(qualify(&analysis.module, name));
+                        analysis
+                            .native_types
+                            .insert(qualify(&analysis.module, name));
                     }
                 }
                 Instruction::DefProtocol(index) | Instruction::ExtendType(index) => {

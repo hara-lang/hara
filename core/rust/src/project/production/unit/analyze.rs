@@ -1,9 +1,9 @@
 use super::super::graph::{Effect, UnitAnalysis, UnitKind};
+use super::super::plan::BuildPlan;
+use super::super::source::{Diagnostic, SourceLocation};
 use super::dynamic::{canonical_symbol, collect_resolved_symbols, scan_dynamic_access};
 use super::program::{classify_effect, scan_program};
 use super::provides::{list_head, provided_vars, unit_kind, without_metadata};
-use super::super::plan::BuildPlan;
-use super::super::source::{Diagnostic, SourceLocation};
 use crate::core::{self, Value};
 use crate::kernel::Form;
 use crate::vm::Program;
@@ -104,9 +104,7 @@ pub fn execute_compile_time_unit(
     compiled: &CompiledUnit,
 ) -> Result<(), String> {
     let eligible = match compiled.analysis.kind {
-        UnitKind::Macro | UnitKind::Registration => {
-            compiled.analysis.effect != Effect::Effectful
-        }
+        UnitKind::Macro | UnitKind::Registration => compiled.analysis.effect != Effect::Effectful,
         UnitKind::Definition => compiled.analysis.effect == Effect::Pure,
         UnitKind::Initializer => false,
     };
@@ -120,7 +118,6 @@ pub fn execute_compile_time_unit(
         .execute_compiled_bytecode_registry_value(program.clone())
         .map(|_| ())
 }
-
 
 fn expand_form(
     runtime: &Runtime,
@@ -207,4 +204,3 @@ fn flatten_top_level(form: Form, output: &mut Vec<Form>) {
     }
     output.push(form);
 }
-

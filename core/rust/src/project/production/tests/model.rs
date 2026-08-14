@@ -56,7 +56,9 @@ fn emits_byte_identical_analysis_reports() {
     let second = report::report_source(&build, &second);
     assert_eq!(first, second);
     let parsed = parse(&first).unwrap();
-    assert!(parsed.to_string().contains("hara.production-analysis/0-alpha"));
+    assert!(parsed
+        .to_string()
+        .contains("hara.production-analysis/0-alpha"));
 }
 
 #[test]

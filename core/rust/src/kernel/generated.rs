@@ -6,17 +6,7 @@ const LIBRARIES: &[(&str, &str, &str)] = &[
     ("string", "std.foundation.string", "str"),
     ("promise", "std.foundation.promise", "promise"),
     ("bytes", "std.foundation.bytes", "bytes"),
-    ("socket", "std.foundation.socket", "socket"),
-    ("file", "std.foundation.file", "file"),
     ("coroutine", "std.foundation.coroutine", "co"),
-    ("edn", "std.foundation.edn", "edn"),
-    ("json", "std.foundation.json", "json"),
-    ("set", "std.foundation.set", "set"),
-    ("pretty", "std.foundation.pretty", "pretty"),
-    ("host", "std.foundation.host", "host"),
-    ("kernel", "std.foundation.kernel", "kernel"),
-    ("os", "std.foundation.os", "os"),
-    ("crypto", "std.foundation.crypto", "crypto"),
 ];
 
 pub(crate) fn foundation_library_aliases() -> impl Iterator<Item = (&'static str, &'static str)> {
@@ -59,6 +49,7 @@ pub struct GeneratedNamespaceConfig {
     used_exclusions: HashMap<String, HashSet<String>>,
     builtins: Vec<String>,
     excluded_foundation: HashSet<String>,
+    exposed_foundation: Option<HashSet<String>>,
     blank: bool,
 }
 
@@ -80,6 +71,7 @@ impl GeneratedNamespaceConfig {
             used_exclusions: HashMap::new(),
             builtins: Vec::new(),
             excluded_foundation: HashSet::new(),
+            exposed_foundation: None,
             blank: false,
         }
     }
@@ -98,6 +90,8 @@ impl GeneratedNamespaceConfig {
         let mut uses = Vec::new();
         let mut builtins = Vec::new();
         let mut excluded_foundation = HashSet::new();
+        let mut exposed_foundation = None;
+        let mut override_seen = false;
         let mut blank = false;
         let mut intrinsics_seen = false;
         let mut config_seen = false;
@@ -119,6 +113,9 @@ impl GeneratedNamespaceConfig {
                         &values[1],
                         &mut builtins,
                         &mut blank,
+                        &mut excluded_foundation,
+                        &mut exposed_foundation,
+                        &mut override_seen,
                         &mut excluded,
                         &mut overrides,
                     )?;
@@ -139,12 +136,19 @@ impl GeneratedNamespaceConfig {
                 }
                 "require" => requires.extend(values[1..].iter().cloned()),
                 "use" => uses.extend(values[1..].iter().cloned()),
-                "refer-clojure" => {
-                    excluded_foundation.extend(parse_refer_clojure(values)?);
-                }
                 "flavor" | "import" => {}
                 other => return Err(format!("Unsupported ns clause: :{other}")),
             }
+        }
+
+        if blank && override_seen {
+            return Err(":config :blank true cannot be combined with :override".into());
+        }
+        if blank && exposed_foundation.is_some() {
+            return Err(":config :blank true cannot be combined with :expose".into());
+        }
+        if override_seen && exposed_foundation.is_some() {
+            return Err(":config :override cannot be combined with :expose".into());
         }
 
         for library in overrides.keys() {
@@ -158,6 +162,7 @@ impl GeneratedNamespaceConfig {
         let mut config = Self::default();
         config.builtins = builtins;
         config.excluded_foundation = excluded_foundation;
+        config.exposed_foundation = exposed_foundation;
         config.blank = blank;
         for native_type in NATIVE_TYPES {
             config.put_alias(native_type, &format!("std.native.{native_type}"))?;
@@ -204,6 +209,10 @@ impl GeneratedNamespaceConfig {
 
     pub fn excluded_foundation(&self) -> &HashSet<String> {
         &self.excluded_foundation
+    }
+
+    pub fn exposed_foundation(&self) -> Option<&HashSet<String>> {
+        self.exposed_foundation.as_ref()
     }
 
     pub fn blank(&self) -> bool {
@@ -467,6 +476,9 @@ fn parse_config(
     form: &Form,
     builtins: &mut Vec<String>,
     blank: &mut bool,
+    foundation_overrides: &mut HashSet<String>,
+    foundation_exposure: &mut Option<HashSet<String>>,
+    override_seen: &mut bool,
     excluded: &mut HashSet<String>,
     overrides: &mut HashMap<String, String>,
 ) -> Result<(), String> {
@@ -494,6 +506,47 @@ fn parse_config(
                     }
                     builtins.push(name.into());
                 }
+            }
+            "override" => {
+                *override_seen = true;
+                for item in vector(
+                    value,
+                    ":config :override expects a vector of unqualified symbols",
+                )? {
+                    let name = symbol(
+                        item,
+                        ":config :override expects a vector of unqualified symbols",
+                    )?;
+                    if qualified_symbol(name) {
+                        return Err(
+                            ":config :override expects a vector of unqualified symbols".into()
+                        );
+                    }
+                    if !foundation_overrides.insert(name.into()) {
+                        return Err(format!("Duplicate Foundation override: {name}"));
+                    }
+                }
+            }
+            "expose" => {
+                let mut exposed = HashSet::new();
+                for item in vector(
+                    value,
+                    ":config :expose expects a vector of unqualified symbols",
+                )? {
+                    let name = symbol(
+                        item,
+                        ":config :expose expects a vector of unqualified symbols",
+                    )?;
+                    if qualified_symbol(name) {
+                        return Err(
+                            ":config :expose expects a vector of unqualified symbols".into()
+                        );
+                    }
+                    if !exposed.insert(name.into()) {
+                        return Err(format!("Duplicate Foundation exposure: {name}"));
+                    }
+                }
+                *foundation_exposure = Some(exposed);
             }
             "intrinsics" => {
                 parse_intrinsics(value, excluded, overrides)?;
@@ -553,26 +606,6 @@ fn parse_intrinsics(
         }
     }
     Ok(())
-}
-
-pub(crate) fn validate_refer_clojure_clause(values: &[Form]) -> Result<(), String> {
-    parse_refer_clojure(values).map(|_| ())
-}
-
-fn parse_refer_clojure(values: &[Form]) -> Result<HashSet<String>, String> {
-    if values.len() != 3 || !matches!(&values[1], Form::Keyword(name) if name == "exclude") {
-        return Err(":refer-clojure expects :exclude and a vector of symbols".into());
-    }
-    let Form::Vector(symbols) = &values[2] else {
-        return Err(":refer-clojure expects :exclude and a vector of symbols".into());
-    };
-    symbols
-        .iter()
-        .map(|item| match item {
-            Form::Symbol(name) if !qualified_symbol(name) => Ok(name.clone()),
-            _ => Err(":refer-clojure :exclude expects unqualified symbols".into()),
-        })
-        .collect()
 }
 
 fn list<'a>(form: &'a Form, error: &str) -> Result<&'a [Form], String> {

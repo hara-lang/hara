@@ -3,61 +3,58 @@ package hara.lang.context;
 import hara.lang.data.Keyword;
 import hara.lang.protocol.Constant;
 import hara.lang.protocol.IApplicable;
+import hara.lang.protocol.ICount;
 import hara.lang.protocol.IContext;
 import hara.lang.protocol.IDeref;
+import hara.lang.protocol.IIter;
 import hara.lang.protocol.ILookup;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
 import hara.lang.protocol.IPointer;
 import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.function.Function;
+import java.util.Objects;
 
-/** A context-qualified value that can be invoked or transformed by its runtime. */
+/** An immutable context-qualified reference descriptor. */
 public final class Pointer
-    implements IPointer, IApplicable, IDeref<Object>, ILookup<Object, Object>, IObjType {
+    implements IPointer,
+        IApplicable,
+        IDeref<Object>,
+        ILookup<Object, Object>,
+        ICount,
+        IIter<Map.Entry<Object, Object>>,
+        IObjType {
   private final Object context;
-  private final Map<?, ?> values;
-  private final Function<Object, IContext> resolver;
+  private final Map<Object, Object> values;
+  private final IMetadata metadata;
 
-  public Pointer(Object context, Map<?, ?> values, ContextRegistry registry) {
-    this(context, values, (registry == null ? new ContextRegistry() : registry)::get);
+  public Pointer(Object context, Map<?, ?> values) {
+    this(context, values, null);
   }
 
-  public Pointer(Object context, Map<?, ?> values, Function<Object, IContext> resolver) {
+  private Pointer(Object context, Map<?, ?> values, IMetadata metadata) {
     if (context == null) throw new IllegalArgumentException("Context required");
     this.context = context;
-    this.values = values == null ? Collections.emptyMap() : values;
-    this.resolver = resolver == null ? ignored -> NullContext.INSTANCE : resolver;
+    Map<Object, Object> copied = new LinkedHashMap<>();
+    if (values != null) values.forEach(copied::put);
+    this.values = Collections.unmodifiableMap(copied);
+    this.metadata = metadata;
   }
 
   public Object context() {
     return context;
   }
 
-  public Map<?, ?> values() {
+  public Map<Object, Object> values() {
     return values;
-  }
-
-  public IContext runtime() {
-    return resolver.apply(context);
   }
 
   @Override
   public Object ptrContext() {
     return context;
-  }
-
-  @Override
-  public Iterable<?> ptrKeys() {
-    return values.keySet();
-  }
-
-  @Override
-  public Object ptrVal(Object key) {
-    return lookup(key);
   }
 
   @Override
@@ -92,6 +89,17 @@ public final class Pointer
     return (Iterator<Object>) (Iterator<?>) values.values().iterator();
   }
 
+  @Override
+  public long count() {
+    return values.size();
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  public Iterator<Map.Entry<Object, Object>> iter() {
+    return (Iterator<Map.Entry<Object, Object>>) (Iterator<?>) values.entrySet().iterator();
+  }
+
   private boolean containsKey(Object key) {
     return values.containsKey(key)
         || (key instanceof Keyword && values.containsKey(((Keyword) key).getName()));
@@ -99,49 +107,62 @@ public final class Pointer
 
   @Override
   public Object deref() {
-    return runtime().derefPtr(this);
+    throw new IllegalStateException("Pointer deref requires the active evaluator context");
   }
 
   @Override
   public Object applyIn(Object runtime, Object[] args) {
-    return resolve(runtime).invokePtr(this, args);
+    return requireRuntime(runtime).invokePtr(this, args);
   }
 
   @Override
   public Object transformIn(Object runtime, Object[] args) {
-    return resolve(runtime).transformInPtr(this, args);
+    return requireRuntime(runtime).transformInPtr(this, args);
   }
 
   @Override
   public Object transformOut(Object runtime, Object[] args, Object value) {
-    return resolve(runtime).transformOutPtr(this, value);
+    return requireRuntime(runtime).transformOutPtr(this, value);
   }
 
   @Override
   public IMetadata meta() {
-    return null;
+    return metadata;
   }
 
   @Override
   public IObjType withMeta(IMetadata meta) {
-    return this;
+    return metadata == meta ? this : new Pointer(context, values, meta);
   }
 
   @Override
   public long hashCalc(Constant.HashType type) {
-    return System.identityHashCode(this);
+    return Objects.hash(context, values);
   }
 
   @Override
   public String display() {
-    Object tags = runtime().tagsPtr(this);
-    Object displayed = runtime().displayPtr(this);
-    return "!" + context + (tags == null ? "" : String.valueOf(tags))
-        + (displayed == null ? " <no-context>" : "\n" + displayed);
+    Map<Object, Object> descriptor = new LinkedHashMap<>();
+    descriptor.put(Keyword.create("context"), context);
+    descriptor.putAll(values);
+    return "#ptr " + hara.lang.base.G.display(descriptor);
   }
 
-  private IContext resolve(Object runtime) {
-    return runtime instanceof IContext ? (IContext) runtime : resolver.apply(runtime == null ? context : runtime);
+  private IContext requireRuntime(Object runtime) {
+    if (runtime instanceof IContext) return (IContext) runtime;
+    throw new IllegalArgumentException("Pointer application requires an IContext runtime");
+  }
+
+  @Override
+  public boolean equals(Object other) {
+    return other instanceof Pointer pointer
+        && Objects.equals(context, pointer.context)
+        && Objects.equals(values, pointer.values);
+  }
+
+  @Override
+  public int hashCode() {
+    return Objects.hash(context, values);
   }
 
   @Override

@@ -1,6 +1,6 @@
+use super::super::plan::BuildPlan;
 use super::index::retain;
 use super::model::RetentionReason;
-use super::super::plan::BuildPlan;
 use super::{Effect, UnitAnalysis, UnitKind};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 

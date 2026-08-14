@@ -81,9 +81,10 @@ pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, 
         // own namespaces. Pin compilation to the module being emitted so
         // aliases become canonical globals owned by its declaration.
         runtime.use_namespace(source.resource);
-        let artifact = runtime
-            .compile_bytecode_artifact(body)
-            .map_err(|error| format!("{}: bytecode compilation: {error}", source.resource))?;
+        let artifact = core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
+            runtime.compile_bytecode_artifact(body)
+        })
+        .map_err(|error| format!("{}: bytecode compilation: {error}", source.resource))?;
         core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
             runtime.eval_bytecode_artifact(&artifact)
         })

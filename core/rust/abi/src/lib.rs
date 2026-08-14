@@ -12,6 +12,26 @@ pub enum Value {
     String(String),
     Integer(i64),
     Float(f64),
+    Decimal(String),
+    Bytes(Vec<u8>),
+    Keyword(String),
+    Vector(Vec<Value>),
+    Record(RecordValue),
+}
+
+pub type RecordValue = BTreeMap<String, Value>;
+
+/// The complete immutable Hara data profile used by HTA and durable stores.
+///
+/// This is intentionally separate from [`Value`], whose closed shape is the
+/// stable ABI accepted by existing native provider crates.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImmutableValue {
+    Nil,
+    Boolean(bool),
+    String(String),
+    Integer(i64),
+    Float(f64),
     Character(char),
     BigInteger(String),
     Decimal(String),
@@ -19,39 +39,39 @@ pub enum Value {
     Bytes(Vec<u8>),
     Keyword(String),
     Symbol(String),
-    List(Vec<Value>),
-    Vector(Vec<Value>),
-    Tuple(Vec<Value>),
-    Cons(Vec<Value>),
-    Queue(Vec<Value>),
-    Set(Vec<Value>),
-    OrderedSet(Vec<Value>),
-    SortedSet(Vec<Value>),
-    Map(Vec<(Value, Value)>),
-    OrderedMap(Vec<(Value, Value)>),
-    SortedMap(Vec<(Value, Value)>),
-    Trie(Vec<(String, Value)>),
-    Record(RecordValue),
-    Tagged { tag: String, form: Box<Value> },
+    List(Vec<ImmutableValue>),
+    Vector(Vec<ImmutableValue>),
+    Tuple(Vec<ImmutableValue>),
+    Cons(Vec<ImmutableValue>),
+    Queue(Vec<ImmutableValue>),
+    Set(Vec<ImmutableValue>),
+    OrderedSet(Vec<ImmutableValue>),
+    SortedSet(Vec<ImmutableValue>),
+    Map(Vec<(ImmutableValue, ImmutableValue)>),
+    OrderedMap(Vec<(ImmutableValue, ImmutableValue)>),
+    SortedMap(Vec<(ImmutableValue, ImmutableValue)>),
+    Trie(Vec<(String, ImmutableValue)>),
+    Record(ImmutableRecordValue),
+    Tagged { tag: String, form: Box<ImmutableValue> },
     ExceptionInfo {
         message: String,
-        data: Box<Value>,
-        cause: Option<Box<Value>>,
+        data: Box<ImmutableValue>,
+        cause: Option<Box<ImmutableValue>>,
     },
     Struct {
         name: String,
         fields: Vec<String>,
-        values: Vec<Value>,
+        values: Vec<ImmutableValue>,
     },
     Pointer {
         context: String,
-        fields: RecordValue,
+        fields: ImmutableRecordValue,
     },
     /// A qualified binding identity. The bound value is never transferred.
     VarRef(String),
 }
 
-pub type RecordValue = BTreeMap<String, Value>;
+pub type ImmutableRecordValue = BTreeMap<String, ImmutableValue>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {

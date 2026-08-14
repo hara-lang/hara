@@ -53,9 +53,10 @@ fn declared_namespace(source: &str, path: &Path) -> String {
 }
 
 fn standard_library_namespace(namespace: &str) -> bool {
-    ["std.", "code.", "lang."]
-        .iter()
-        .any(|prefix| namespace.starts_with(prefix))
+    namespace == "db"
+        || ["std.", "code.", "lang.", "db."]
+            .iter()
+            .any(|prefix| namespace.starts_with(prefix))
 }
 
 fn main() {

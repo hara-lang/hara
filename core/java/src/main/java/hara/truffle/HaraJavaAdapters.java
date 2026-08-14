@@ -81,7 +81,7 @@ public final class HaraJavaAdapters {
             "IApplicable",
             Map.of("apply-in", 3, "apply-default", 1, "transform-in", 3, "transform-out", 4)));
     installPointer(
-        context.defineProtocol("IPointer", Map.of("ptr-context", 1, "ptr-keys", 1, "ptr-val", 2)));
+        context.defineProtocol("IPointer", Map.of("ptr-context", 1)));
     installSpace(
         context.defineProtocol(
             "ISpace",
@@ -167,12 +167,6 @@ public final class HaraJavaAdapters {
   public static void installPointer(HaraProtocol protocol) {
     protocol.extend(
         IPointer.class, "ptr-context", (receiver, arguments) -> ((IPointer) receiver).ptrContext());
-    protocol.extend(
-        IPointer.class, "ptr-keys", (receiver, arguments) -> ((IPointer) receiver).ptrKeys());
-    protocol.extend(
-        IPointer.class,
-        "ptr-val",
-        (receiver, arguments) -> ((IPointer) receiver).ptrVal(arguments[0]));
   }
 
   public static void installSpace(HaraProtocol protocol) {

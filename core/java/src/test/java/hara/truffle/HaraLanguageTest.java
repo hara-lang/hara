@@ -1716,7 +1716,7 @@ public class HaraLanguageTest {
         Pattern.compile("\\(std\\.protocol\\.[a-z]+/[a-z?\\-]+\\s+fixture").matcher(source);
     int callCount = 0;
     while (calls.find()) callCount++;
-    assertEquals(103, callCount);
+    assertEquals(101, callCount);
     assertTrue(!source.contains("protocol-call"));
 
     try (Context context = context()) {
@@ -1734,7 +1734,7 @@ public class HaraLanguageTest {
     String catalog =
         Files.readString(
             Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn"));
-    assertEquals(88, catalog.split("\\{:protocol ", -1).length - 1);
+    assertEquals(86, catalog.split("\\{:protocol ", -1).length - 1);
     Matcher methodVars =
         Pattern.compile(
                 "(?m)^\\s*\\[?\\(protocol-case\\s+:[^\\s]+\\s+:[^\\s]+\\s+"
@@ -1744,7 +1744,7 @@ public class HaraLanguageTest {
     try (Context context = context()) {
       String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
-      assertEquals(88, result.split(":pass true", -1).length - 1);
+      assertEquals(86, result.split(":pass true", -1).length - 1);
 
       int methodCount = 0;
       while (methodVars.find()) {
@@ -1759,7 +1759,7 @@ public class HaraLanguageTest {
             methodVar + " returned an uncategorized arity error: " + error.getMessage(),
             error.getMessage().contains("protocol/arity"));
       }
-      assertEquals(88, methodCount);
+      assertEquals(86, methodCount);
 
       int failureCount = 0;
       for (String line : source.split("\\R")) {
@@ -1808,7 +1808,7 @@ public class HaraLanguageTest {
                 + uncategorizedError,
             categorizedCall != null);
       }
-      assertEquals(88, failureCount);
+      assertEquals(86, failureCount);
       assertTrue(
           context
               .eval(

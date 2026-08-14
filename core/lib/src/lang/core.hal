@@ -63,35 +63,15 @@
 ;; first local runtimes. No target process is started during bootstrap.
 (def +bootstrap+ (bootstrap!))
 
-(defstruct code-pointer-type [context fields])
-
 (defn code-pointer
   "Creates the portable language pointer rooted in a script definition Var."
   [context fields]
-  (lang.core/code-pointer-type context fields))
+  (std.foundation/pointer (assoc fields :context context)))
 
 (defn code-pointer?
   "Returns true when value is a lang.core code pointer."
   [value]
-  (instance? code-pointer-type value))
-
-(extend-type code-pointer-type std.protocol.ipointer/IPointer
-  (ptr-context [pointer]
-    (:context pointer))
-  (ptr-keys [pointer]
-    (keys (:fields pointer)))
-  (ptr-val [pointer key]
-    (get (:fields pointer) key)))
-
-(extend-type code-pointer-type std.protocol.ideref/IDeref
-  (deref [pointer]
-    (:fields pointer)))
-
-(extend-type code-pointer-type std.protocol.ilookup/ILookup
-  (lookup [pointer key]
-    (cond (= key :context) (:context pointer)
-          (= key :fields) (:fields pointer)
-          :else (get (:fields pointer) key))))
+  (pointer? value))
 
 (defn code-pointer-context
   "Returns the language context carried by pointer."
@@ -101,7 +81,7 @@
 (defn code-pointer-val
   "Returns one coordinate or source field carried by pointer."
   [pointer key]
-  (std.protocol.ipointer/ptr-val pointer key))
+  (get pointer key))
 
 (defn code-pointer-runtime
   "Resolves pointer against the latest live runtime for its script coordinate."
@@ -130,20 +110,6 @@
         (if (and (map? response) (has? response :value))
           (:value response)
           response)))))
-
-(extend-type code-pointer-type std.protocol.iapplicable/IApplicable
-  (apply-default [pointer]
-    (code-pointer-runtime pointer))
-  (apply-in [pointer selected-runtime args]
-    (code-pointer-invoke-in pointer selected-runtime args))
-  (transform-in [pointer selected-runtime args]
-    args)
-  (transform-out [pointer selected-runtime args value]
-    value))
-
-(extend-type code-pointer-type std.protocol.iinvokein/IInvokeIn
-  (invoke-in [pointer selected-runtime & args]
-    (code-pointer-invoke-in pointer selected-runtime args)))
 
 (defn script-context
   "Returns the Foundation language-context key used by script pointers."

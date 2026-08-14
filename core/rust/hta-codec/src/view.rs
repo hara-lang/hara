@@ -5,11 +5,12 @@
 //! exact nested value spans for hashing, storage, or later composition.
 
 use super::{
-    encode_value, ARRAY, ATOM, BIG_INTEGER, BYTES, CHARACTER, DECIMAL, F64, FALSE, HANDLE, I64,
-    KEYWORD, LIST, MAGIC, MAP, MAX_FRAME_BYTES, MAX_NESTING_DEPTH, NAMESPACE, NIL, OBJECT, REGEX,
-    SET, STRING, SYMBOL, TRUE, VAR, VECTOR,
+    encode_value, ARRAY, ATOM, BIG_INTEGER, BYTES, CHARACTER, CONS, DECIMAL, EXCEPTION_INFO, F64,
+    FALSE, HANDLE, I64, KEYWORD, LIST, MAGIC, MAP, MAX_FRAME_BYTES, MAX_NESTING_DEPTH, NAMESPACE,
+    NIL, OBJECT, ORDERED_MAP, ORDERED_SET, POINTER, QUEUE, REGEX, SET, SORTED_MAP, SORTED_SET,
+    STRING, STRUCT, SYMBOL, TAGGED, TRIE, TRUE, TUPLE, VAR, VAR_REF, VECTOR,
 };
-use hara_abi::Value as PortableValue;
+use hara_abi::ImmutableValue as PortableValue;
 use std::str;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +37,19 @@ pub enum Kind {
     BigInteger,
     Decimal,
     Regex,
+    Tuple,
+    Cons,
+    Queue,
+    OrderedMap,
+    SortedMap,
+    Trie,
+    OrderedSet,
+    SortedSet,
+    Tagged,
+    ExceptionInfo,
+    Struct,
+    Pointer,
+    VarRef,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +131,19 @@ impl<'a> ValueView<'a> {
             BIG_INTEGER => Kind::BigInteger,
             DECIMAL => Kind::Decimal,
             REGEX => Kind::Regex,
+            TUPLE => Kind::Tuple,
+            CONS => Kind::Cons,
+            QUEUE => Kind::Queue,
+            ORDERED_MAP => Kind::OrderedMap,
+            SORTED_MAP => Kind::SortedMap,
+            TRIE => Kind::Trie,
+            ORDERED_SET => Kind::OrderedSet,
+            SORTED_SET => Kind::SortedSet,
+            TAGGED => Kind::Tagged,
+            EXCEPTION_INFO => Kind::ExceptionInfo,
+            STRUCT => Kind::Struct,
+            POINTER => Kind::Pointer,
+            VAR_REF => Kind::VarRef,
             _ => unreachable!("validated ValueView always has a known tag"),
         }
     }
@@ -190,7 +217,9 @@ impl<'a> ValueView<'a> {
 
     pub fn items(&self) -> Result<Vec<ValueView<'a>>, String> {
         match self.bare[0] {
-            LIST | VECTOR | SET | ARRAY => sequence_items(self.bare),
+            LIST | VECTOR | SET | ARRAY | TUPLE | CONS | QUEUE | ORDERED_SET | SORTED_SET => {
+                sequence_items(self.bare)
+            }
             _ => Err(kind_error("sequence", self.kind())),
         }
     }
@@ -203,7 +232,7 @@ impl<'a> ValueView<'a> {
     }
 
     pub fn map_entries(&self) -> Result<Vec<(ValueView<'a>, ValueView<'a>)>, String> {
-        if self.bare[0] != MAP {
+        if !matches!(self.bare[0], MAP | ORDERED_MAP | SORTED_MAP | TRIE) {
             return Err(kind_error("map", self.kind()));
         }
         map_entries(self.bare)
@@ -337,9 +366,12 @@ fn scan_value(bytes: &[u8], start: usize, depth: usize) -> Result<usize, String>
             Ok(end)
         }
         BYTES => sized_range(bytes, cursor).map(|(_, end)| end),
-        LIST | VECTOR | ARRAY => scan_sequence(bytes, cursor, depth, false),
-        SET => scan_sequence(bytes, cursor, depth, true),
-        MAP => scan_map(bytes, cursor, depth),
+        LIST | VECTOR | ARRAY | TUPLE | CONS | QUEUE | ORDERED_SET => {
+            scan_sequence(bytes, cursor, depth, false)
+        }
+        SET | SORTED_SET => scan_sequence(bytes, cursor, depth, true),
+        MAP => scan_map(bytes, cursor, depth, true),
+        ORDERED_MAP | SORTED_MAP | TRIE => scan_map(bytes, cursor, depth, false),
         OBJECT => scan_object(bytes, cursor, depth),
         VAR => {
             let symbol_end = scan_value(bytes, cursor, depth + 1)?;
@@ -357,6 +389,54 @@ fn scan_value(bytes: &[u8], start: usize, depth: usize) -> Result<usize, String>
             str::from_utf8(&bytes[type_start..type_end])
                 .map_err(|_| "hta/value-malformed: invalid handle type".to_string())?;
             take_end(bytes, type_end, 8)
+        }
+        TAGGED => {
+            let tag_end = scan_value(bytes, cursor, depth + 1)?;
+            if bytes[cursor] != SYMBOL {
+                return Err("hta/value-malformed: invalid tagged literal tag".into());
+            }
+            scan_value(bytes, tag_end, depth + 1)
+        }
+        EXCEPTION_INFO => {
+            let message_end = scan_value(bytes, cursor, depth + 1)?;
+            if bytes[cursor] != STRING {
+                return Err("hta/value-malformed: invalid exception message".into());
+            }
+            let data_end = scan_value(bytes, message_end, depth + 1)?;
+            scan_value(bytes, data_end, depth + 1)
+        }
+        STRUCT => {
+            let name_end = scan_value(bytes, cursor, depth + 1)?;
+            if bytes[cursor] != STRING {
+                return Err("hta/value-malformed: invalid struct name".into());
+            }
+            let fields_end = scan_value(bytes, name_end, depth + 1)?;
+            if bytes[name_end] != VECTOR {
+                return Err("hta/value-malformed: invalid struct fields".into());
+            }
+            let values_end = scan_value(bytes, fields_end, depth + 1)?;
+            if bytes[fields_end] != VECTOR {
+                return Err("hta/value-malformed: invalid struct values".into());
+            }
+            Ok(values_end)
+        }
+        POINTER => {
+            let context_end = scan_value(bytes, cursor, depth + 1)?;
+            if bytes[cursor] != KEYWORD {
+                return Err("hta/value-malformed: invalid pointer context".into());
+            }
+            let fields_end = scan_value(bytes, context_end, depth + 1)?;
+            if bytes[context_end] != MAP {
+                return Err("hta/value-malformed: invalid pointer fields".into());
+            }
+            Ok(fields_end)
+        }
+        VAR_REF => {
+            let end = scan_value(bytes, cursor, depth + 1)?;
+            if bytes[cursor] != SYMBOL {
+                return Err("hta/value-malformed: invalid Var reference".into());
+            }
+            Ok(end)
         }
         _ => Err(format!("hta/value-malformed: unknown tag {tag}")),
     }
@@ -387,7 +467,12 @@ fn scan_sequence(
     Ok(cursor)
 }
 
-fn scan_map(bytes: &[u8], cursor: usize, depth: usize) -> Result<usize, String> {
+fn scan_map(
+    bytes: &[u8],
+    cursor: usize,
+    depth: usize,
+    canonical_order: bool,
+) -> Result<usize, String> {
     let (count, mut cursor) = read_len(bytes, cursor)?;
     if count > bytes.len().saturating_sub(cursor) / 2 {
         return Err("hta/value-malformed: impossible map length".into());
@@ -397,7 +482,7 @@ fn scan_map(bytes: &[u8], cursor: usize, depth: usize) -> Result<usize, String> 
         let key_start = cursor;
         cursor = scan_value(bytes, cursor, depth + 1)?;
         let key = &bytes[key_start..cursor];
-        if previous.is_some_and(|value| value >= key) {
+        if canonical_order && previous.is_some_and(|value| value >= key) {
             return Err("hta/value-noncanonical: map keys must be strictly ordered".into());
         }
         previous = Some(key);

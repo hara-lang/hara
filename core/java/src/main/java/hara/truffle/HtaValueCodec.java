@@ -43,7 +43,18 @@ public final class HtaValueCodec {
   private static final int BIG_INTEGER = 20;
   private static final int DECIMAL = 21;
   private static final int REGEX = 22;
+  private static final int TUPLE = 23;
+  private static final int CONS = 24;
+  private static final int QUEUE = 25;
+  private static final int ORDERED_MAP = 26;
+  private static final int SORTED_MAP = 27;
+  private static final int TRIE = 28;
+  private static final int ORDERED_SET = 29;
+  private static final int SORTED_SET = 30;
+  private static final int TAGGED = 31;
+  private static final int EXCEPTION_INFO = 32;
   private static final int STRUCT = 33;
+  private static final int POINTER = 34;
 
   private HtaValueCodec() {}
 
@@ -133,16 +144,49 @@ public final class HtaValueCodec {
       writeCollection(output, java.util.Arrays.asList(struct.type().fields()), depth + 1);
       output.write(VECTOR);
       writeCollection(output, java.util.Arrays.asList(struct.orderedValues()), depth + 1);
+    } else if (value instanceof hara.lang.context.Pointer pointer) {
+      output.write(POINTER);
+      write(output, pointer.context(), depth + 1);
+      writeMap(output, pointer.values().entrySet().iterator(), depth + 1);
+    } else if (value instanceof hara.lang.data.TaggedLiteral tagged) {
+      output.write(TAGGED);
+      write(output, tagged.tag(), depth + 1);
+      write(output, tagged.form(), depth + 1);
+    } else if (value instanceof hara.lang.base.Ex.Info info) {
+      output.write(EXCEPTION_INFO);
+      write(output, info.getMessage(), depth + 1);
+      write(output, info.getData(), depth + 1);
+      write(output, info.getCause(), depth + 1);
+    } else if (value instanceof hara.lang.data.OrderedMap<?, ?>) {
+      writeMap(output, ((IMapType<?, ?>) value).iterator(), depth, ORDERED_MAP, false);
+    } else if (value instanceof hara.lang.data.SortedMap<?, ?>) {
+      writeMap(output, ((IMapType<?, ?>) value).iterator(), depth, SORTED_MAP, false);
+    } else if (value instanceof hara.lang.data.Trie<?>) {
+      writeMap(output, ((IMapType<?, ?>) value).iterator(), depth, TRIE, false);
     } else if (value instanceof IMapType<?, ?>) {
       writeMap(output, ((IMapType<?, ?>) value).iterator(), depth);
     } else if (value instanceof Map<?, ?>) {
       writeMap(output, ((Map<?, ?>) value).entrySet().iterator(), depth);
+    } else if (value instanceof hara.lang.data.OrderedSet<?>) {
+      writeSet(output, ((ISetType<?>) value).iterator(), depth, ORDERED_SET, false);
+    } else if (value instanceof hara.lang.data.SortedSet<?>) {
+      writeSet(output, ((ISetType<?>) value).iterator(), depth, SORTED_SET, true);
     } else if (value instanceof ISetType<?>) {
       writeSet(output, ((ISetType<?>) value).iterator(), depth);
     } else if (value instanceof java.util.Set<?>) {
       writeSet(output, ((java.util.Set<?>) value).iterator(), depth);
     } else if (value instanceof hara.lang.data.List<?>) {
       output.write(LIST);
+      writeCollection(output, (ILinearType<?>) value, depth);
+    } else if (value instanceof hara.lang.data.Tuple.Tup0
+        || value instanceof hara.lang.data.Tuple.Tup1<?>) {
+      output.write(TUPLE);
+      writeCollection(output, (ILinearType<?>) value, depth);
+    } else if (value instanceof hara.lang.data.Cons<?>) {
+      output.write(CONS);
+      writeCollection(output, (ILinearType<?>) value, depth);
+    } else if (value instanceof hara.lang.data.Queue<?>) {
+      output.write(QUEUE);
       writeCollection(output, (ILinearType<?>) value, depth);
     } else if (value instanceof ILinearType<?>) {
       output.write(VECTOR);
@@ -159,15 +203,25 @@ public final class HtaValueCodec {
   }
 
   private static void writeSet(ByteArrayOutputStream output, Iterator<?> iterator, int depth) {
+    writeSet(output, iterator, depth, SET, true);
+  }
+
+  private static void writeSet(
+      ByteArrayOutputStream output, Iterator<?> iterator, int depth, int tag, boolean sort) {
     ArrayList<byte[]> encoded = new ArrayList<>();
     iterator.forEachRemaining(value -> encoded.add(encodeBare(value, depth + 1)));
-    encoded.sort(HtaValueCodec::compareUnsigned);
-    output.write(SET);
+    if (sort) encoded.sort(HtaValueCodec::compareUnsigned);
+    output.write(tag);
     writeInt(output, encoded.size());
     encoded.forEach(value -> writeRaw(output, value));
   }
 
   private static void writeMap(ByteArrayOutputStream output, Iterator<?> iterator, int depth) {
+    writeMap(output, iterator, depth, MAP, true);
+  }
+
+  private static void writeMap(
+      ByteArrayOutputStream output, Iterator<?> iterator, int depth, int tag, boolean sort) {
     ArrayList<Map.Entry<byte[], byte[]>> encoded = new ArrayList<>();
     iterator.forEachRemaining(
         item -> {
@@ -175,8 +229,8 @@ public final class HtaValueCodec {
           encoded.add(
               Map.entry(encodeBare(entry.getKey(), depth + 1), encodeBare(entry.getValue(), depth + 1)));
         });
-    encoded.sort((left, right) -> compareUnsigned(left.getKey(), right.getKey()));
-    output.write(MAP);
+    if (sort) encoded.sort((left, right) -> compareUnsigned(left.getKey(), right.getKey()));
+    output.write(tag);
     writeInt(output, encoded.size());
     encoded.forEach(
         entry -> {
@@ -297,10 +351,30 @@ public final class HtaValueCodec {
           return sequence(depth + 1, false);
         case VECTOR:
           return sequence(depth + 1, true);
+        case TUPLE:
+          return tuple(depth + 1);
+        case CONS:
+          return cons(depth + 1);
+        case QUEUE:
+          return hara.lang.data.Queue.Standard.from(null, sequenceArray(depth + 1, "queue"));
         case SET:
           return set(depth + 1);
+        case ORDERED_SET:
+          return hara.lang.data.OrderedSet.Standard.from(
+              null, sequenceArray(depth + 1, "ordered set"));
+        case SORTED_SET:
+          return hara.lang.data.SortedSet.Standard.from(
+              null, sequenceArray(depth + 1, "sorted set"));
         case MAP:
           return map(depth + 1);
+        case ORDERED_MAP:
+          return hara.lang.data.OrderedMap.Standard.from(
+              null, mapArray(depth + 1, "ordered map", false));
+        case SORTED_MAP:
+          return hara.lang.data.SortedMap.Standard.from(
+              null, mapArray(depth + 1, "sorted map", false));
+        case TRIE:
+          return trie(depth + 1);
         case HANDLE:
           String owner = text();
           String type = text();
@@ -308,8 +382,16 @@ public final class HtaValueCodec {
           return new HtaHandle(owner, type, input.getLong());
         case STRUCT:
           return struct(depth + 1);
+        case TAGGED:
+          Object tagValue = read(depth + 1);
+          if (!(tagValue instanceof Symbol)) throw malformed("invalid tagged literal tag");
+          return new hara.lang.data.TaggedLiteral((Symbol) tagValue, read(depth + 1));
+        case EXCEPTION_INFO:
+          return exceptionInfo(depth + 1);
+        case POINTER:
+          return pointer(depth + 1);
         default:
-          throw malformed("unknown value tag");
+          throw malformed("unknown value tag " + tag);
       }
     }
 
@@ -357,6 +439,103 @@ public final class HtaValueCodec {
       return vector
           ? hara.lang.data.Vector.Standard.from(null, values)
           : hara.lang.data.List.Standard.from(null, values);
+    }
+
+    private Object tuple(int depth) {
+      Object[] values = sequenceArray(depth, "tuple");
+      int size = values.length;
+      return switch (size) {
+        case 0 -> hara.lang.data.Tuple.Tup0.EMPTY;
+        case 1 -> new hara.lang.data.Tuple.Tup1.L<>(null, values[0]);
+        case 2 -> new hara.lang.data.Tuple.Tup2.L<>(null, values[0], values[1]);
+        case 3 -> new hara.lang.data.Tuple.Tup3.L<>(null, values[0], values[1], values[2]);
+        case 4 -> new hara.lang.data.Tuple.Tup4.L<>(null, values[0], values[1], values[2], values[3]);
+        case 5 -> new hara.lang.data.Tuple.Tup5.L<>(null, values[0], values[1], values[2], values[3], values[4]);
+        case 6 -> new hara.lang.data.Tuple.Tup6.L<>(null, values[0], values[1], values[2], values[3], values[4], values[5]);
+        case 7 -> new hara.lang.data.Tuple.Tup7.L<>(null, values[0], values[1], values[2], values[3], values[4], values[5], values[6]);
+        case 8 -> new hara.lang.data.Tuple.Tup8.L<>(null, values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]);
+        default -> throw malformed("tuple arity exceeds Java runtime maximum");
+      };
+    }
+
+    private Object cons(int depth) {
+      Object[] values = sequenceArray(depth, "cons");
+      if (values.length == 0) throw malformed("empty cons");
+      hara.lang.data.types.ILinkedType<Object> result = null;
+      for (int index = values.length - 1; index >= 0; index--) {
+        result = new hara.lang.data.Cons<>(null, values[index], result);
+      }
+      return result;
+    }
+
+    private Object[] sequenceArray(int depth, String kind) {
+      int size = size();
+      requireContainerItems(size, 1, kind);
+      Object[] values = new Object[size];
+      for (int index = 0; index < size; index++) values[index] = read(depth);
+      return values;
+    }
+
+    private Object[] mapArray(int depth, String kind, boolean requireStringKeys) {
+      int size = size();
+      requireContainerItems(size, 2, kind);
+      Object[] values = new Object[size * 2];
+      for (int index = 0; index < size; index++) {
+        Object key = read(depth);
+        if (requireStringKeys && !(key instanceof String)) {
+          throw malformed("invalid trie key");
+        }
+        values[index * 2] = key;
+        values[index * 2 + 1] = read(depth);
+      }
+      return values;
+    }
+
+    private Object trie(int depth) {
+      Object[] entries = mapArray(depth, "trie", true);
+      hara.lang.data.Trie<Object> result = new hara.lang.data.Trie.Standard<>();
+      for (int index = 0; index < entries.length; index += 2) {
+        result = result.assoc((String) entries[index], entries[index + 1]);
+      }
+      return result;
+    }
+
+    private Object pointer(int depth) {
+      Object context = read(depth);
+      if (!(context instanceof Keyword)) throw malformed("invalid pointer context");
+      Object fields = read(depth);
+      java.util.Map<Object, Object> descriptor = new LinkedHashMap<>();
+      if (fields instanceof java.util.Map<?, ?> map) {
+        map.forEach(descriptor::put);
+      } else if (fields instanceof IMapType<?, ?> map) {
+        Iterator<?> entries = map.iterator();
+        while (entries.hasNext()) {
+          Object item = entries.next();
+          if (!(item instanceof java.util.Map.Entry<?, ?> entry)) {
+            throw malformed("invalid pointer field entry");
+          }
+          descriptor.put(entry.getKey(), entry.getValue());
+        }
+      } else {
+        throw malformed("invalid pointer fields");
+      }
+      return new hara.lang.context.Pointer(context, descriptor);
+    }
+
+    private Object exceptionInfo(int depth) {
+      Object message = read(depth);
+      Object data = read(depth);
+      Object cause = read(depth);
+      if (!(message instanceof String)) throw malformed("invalid exception message");
+      if (!(data instanceof hara.lang.protocol.IMetadata)) {
+        throw malformed("invalid exception data");
+      }
+      Throwable throwable = cause instanceof Throwable ? (Throwable) cause : null;
+      if (cause != HaraNull.SINGLETON && throwable == null) {
+        throw malformed("invalid exception cause");
+      }
+      return new hara.lang.base.Ex.Info(
+          (String) message, (hara.lang.protocol.IMetadata) data, throwable);
     }
 
     private Object set(int depth) {

@@ -401,10 +401,7 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
             ("cancel", 1),
         ],
     ),
-    (
-        "IPointer",
-        &[("ptr-context", 1), ("ptr-keys", 1), ("ptr-val", 2)],
-    ),
+    ("IPointer", &[("ptr-context", 1)]),
     ("IPopFirst", &[("pop-first", 1)]),
     ("IPopLast", &[("pop-last", 1)]),
     ("IPushFirst", &[("push-first", 2)]),
@@ -727,6 +724,9 @@ pub struct Function {
     body: Vec<Form>,
     captured: Rc<RefCell<HashMap<String, Value>>>,
     pub name: Option<String>,
+    /// Namespace in which the function body was defined. Lazy aliases and
+    /// qualified Vars are resolved against this namespace when invoked.
+    namespace: Option<String>,
     native: Option<Rc<dyn Fn(Vec<Value>) -> Result<Value, String>>>,
     fiber_native: Option<Rc<dyn Fn(Vec<Value>, Cont) -> Step>>,
     /// Arity clauses for multi-arity `defn`/`fn` dispatchers; empty otherwise.
@@ -892,6 +892,12 @@ impl std::fmt::Debug for RuntimeAtom {
     }
 }
 
+fn function_definition_namespace() -> Option<String> {
+    namespace_registry()
+        .ok()
+        .map(|registry| registry.current().name().as_str().to_owned())
+}
+
 /// Builds a fixed-arity native callable for embedding-owned namespaces.
 pub fn native_function(
     name: &str,
@@ -906,6 +912,7 @@ pub fn native_function(
         body: Vec::new(),
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(name.into()),
+        namespace: function_definition_namespace(),
         native: Some(Rc::new(callback)),
         fiber_native: None,
         clauses: Vec::new(),
@@ -933,6 +940,7 @@ pub(crate) fn native_fixed_variadic_function(
         body: Vec::new(),
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(name.into()),
+        namespace: function_definition_namespace(),
         native: Some(Rc::new(callback)),
         fiber_native: None,
         clauses: Vec::new(),
@@ -952,6 +960,7 @@ pub(crate) fn native_variadic_function(
         body: Vec::new(),
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(name.into()),
+        namespace: function_definition_namespace(),
         native: Some(Rc::new(callback)),
         fiber_native: None,
         clauses: Vec::new(),
@@ -976,6 +985,7 @@ pub(crate) fn native_fiber_function(
         body: Vec::new(),
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(name.into()),
+        namespace: function_definition_namespace(),
         native: Some(Rc::new(callback)),
         fiber_native: Some(Rc::new(fiber_callback)),
         clauses: Vec::new(),
@@ -1136,19 +1146,24 @@ pub(crate) fn structural_function_value(name: impl Into<String>) -> Value {
 /// the implementations in `eval`, but exposes the names through real
 /// `std.foundation` Vars just as the JVM runtime does.  Syntax and namespace
 /// mutation forms deliberately remain structural and are never interned here.
-pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> {
+pub(crate) fn syntax_symbol(name: &str) -> bool {
     const SYNTAX_FORMS: &[&str] = &[
         ".",
         "binding",
+        "comment",
         "declare",
         "def",
         "defmacro",
         "defmethod",
         "defmulti",
+        "defmutable",
         "defn",
         "defn-",
+        "defprotocol",
+        "defstruct",
         "do",
         "extend-type",
+        "field",
         "fn",
         "fn*",
         "if",
@@ -1156,14 +1171,21 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
         "letfn",
         "loop",
         "ns",
+        "ns+",
+        "quote",
         "read-forms",
         "recur",
         "require",
         "set!",
+        "syntax-quote",
+        "throw",
         "try",
         "var",
     ];
+    SYNTAX_FORMS.contains(&name)
+}
 
+pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> {
     let maths_methods = NATIVE_TYPES
         .iter()
         .find_map(|(name, methods)| (*name == "Maths").then_some(*methods))
@@ -1173,7 +1195,7 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
         .iter()
         .copied()
         .filter(move |name| {
-            !SYNTAX_FORMS.contains(name)
+            !syntax_symbol(name)
                 && !name.contains('/')
                 && !name.starts_with("__")
                 && !maths_methods.contains(name)
@@ -1216,6 +1238,7 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "set?",
             "keyword?",
             "symbol?",
+            "pointer?",
             "string?",
             "char?",
             "number?",
@@ -2100,8 +2123,8 @@ pub fn map_entries(value: &Value) -> Option<Vec<(Value, Value)>> {
 }
 
 fn pointer_from_descriptor(descriptor: Value) -> Result<Value, String> {
-    let entries = map_entries(&descriptor)
-        .ok_or_else(|| "pointer expects one descriptor map".to_string())?;
+    let entries =
+        map_entries(&descriptor).ok_or_else(|| "pointer expects one descriptor map".to_string())?;
     let context_key = Value::Keyword(Keyword::from("context"));
     let mut context = None;
     let mut fields = Vec::new();
@@ -3100,6 +3123,11 @@ impl ProtocolRegistry {
         registry.register("std.protocol.icount/ICount", "count", protocol_count);
         registry.register("std.protocol.inth/INth", "nth", protocol_nth);
         registry.register("std.protocol.ilookup/ILookup", "lookup", protocol_lookup);
+        registry.register(
+            "std.protocol.ipointer/IPointer",
+            "ptr-context",
+            protocol_pointer_context,
+        );
         registry.register("std.protocol.ifind/IFind", "find", protocol_find);
         registry.register("std.protocol.iassoc/IAssoc", "assoc", protocol_assoc);
         registry.register("std.protocol.iconj/IConj", "conj", protocol_conj);
@@ -3196,6 +3224,31 @@ impl ProtocolRegistry {
             protocol_with_meta,
         );
         registry.register("std.protocol.ideref/IDeref", "deref", protocol_deref);
+        registry.register(
+            "std.protocol.iapplicable/IApplicable",
+            "apply-default",
+            protocol_apply_default,
+        );
+        registry.register(
+            "std.protocol.iapplicable/IApplicable",
+            "apply-in",
+            protocol_apply_in,
+        );
+        registry.register(
+            "std.protocol.iapplicable/IApplicable",
+            "transform-in",
+            protocol_transform_in,
+        );
+        registry.register(
+            "std.protocol.iapplicable/IApplicable",
+            "transform-out",
+            protocol_transform_out,
+        );
+        registry.register(
+            "std.protocol.iinvokein/IInvokeIn",
+            "invoke-in",
+            protocol_invoke_in,
+        );
         registry.register(
             "std.protocol.idereftimeout/IDerefTimeout",
             "deref-timeout",
@@ -6925,6 +6978,87 @@ fn protocol_lookup(arguments: &[Value]) -> Result<Value, String> {
     }
 }
 
+fn protocol_pointer_context(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Pointer(pointer)] => Ok(Value::Keyword(pointer.context().clone())),
+        _ => Err("IPointer/ptr-context expects one pointer".into()),
+    }
+}
+
+fn pointer_default(pointer: &PPointer) -> Result<Value, String> {
+    let resolver = vm_resolve_global("std.context.space/space:rt-current")?.deref_value();
+    call_value(resolver, vec![Value::Keyword(pointer.context().clone())])
+        .map_err(|error| format!("pointer/runtime-unavailable: {error}"))
+}
+
+fn pointer_context_call(
+    pointer: &PPointer,
+    runtime: Value,
+    operation: &str,
+    arguments: &[Value],
+) -> Result<Value, String> {
+    let mut call = vec![
+        runtime,
+        Value::Keyword(Keyword::from(operation)),
+        Value::Pointer(pointer.clone()),
+    ];
+    call.extend_from_slice(arguments);
+    protocol_call("std.protocol.icontext/IContext", "call", &call)
+}
+
+fn protocol_apply_default(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Pointer(pointer)] => pointer_default(pointer),
+        _ => Err("IApplicable/apply-default expects one pointer".into()),
+    }
+}
+
+fn linear_arguments(value: &Value) -> Result<Vec<Value>, String> {
+    match value {
+        Value::Vector(values) => Ok(values.iter().cloned().collect()),
+        Value::Tuple(values) => Ok(values.iter().cloned().collect()),
+        Value::List(values) => Ok(values.iter().cloned().collect()),
+        _ => Err("pointer invocation arguments must be sequential".into()),
+    }
+}
+
+fn protocol_apply_in(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Pointer(pointer), runtime, values] => pointer_context_call(
+            pointer,
+            runtime.clone(),
+            "pointer/invoke",
+            &linear_arguments(values)?,
+        ),
+        _ => Err("IApplicable/apply-in expects a pointer, runtime, and arguments".into()),
+    }
+}
+
+fn protocol_transform_in(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Pointer(_), _, values] => Ok(values.clone()),
+        _ => Err("IApplicable/transform-in expects a pointer, runtime, and arguments".into()),
+    }
+}
+
+fn protocol_transform_out(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Pointer(_), _, _, value] => Ok(value.clone()),
+        _ => {
+            Err("IApplicable/transform-out expects a pointer, runtime, arguments, and value".into())
+        }
+    }
+}
+
+fn protocol_invoke_in(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Pointer(pointer), runtime, rest @ ..] => {
+            pointer_context_call(pointer, runtime.clone(), "pointer/invoke", rest)
+        }
+        _ => Err("IInvokeIn/invoke-in expects a pointer and runtime".into()),
+    }
+}
+
 fn protocol_assoc(arguments: &[Value]) -> Result<Value, String> {
     if arguments.len() == 3 {
         collection_assoc(&arguments[0], &arguments[1], arguments[2].clone())
@@ -6981,6 +7115,12 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
                 .map(|(candidate, value)| pair_value(candidate, value))
                 .unwrap_or(Value::Nil))
         }
+        Value::Pointer(pointer) => Ok(pointer
+            .fields()
+            .iter()
+            .find(|(candidate, _)| *candidate == key)
+            .map(|(candidate, value)| pair_value(candidate.clone(), value.clone()))
+            .unwrap_or(Value::Nil)),
         Value::Object(values) => {
             let key = match key {
                 Value::String(value) => value.as_str(),
@@ -7040,6 +7180,7 @@ fn protocol_iter(arguments: &[Value]) -> Result<Value, String> {
                     | Value::OrderedMap(_)
                     | Value::SortedMap(_)
                     | Value::Trie(_)
+                    | Value::Pointer(_)
                     | Value::Set(_)
                     | Value::OrderedSet(_)
                     | Value::SortedSet(_)
@@ -7061,6 +7202,9 @@ fn protocol_deref(arguments: &[Value]) -> Result<Value, String> {
         [Value::Atom(atom)] => Ok(atom.deref_value()),
         [Value::Var(var)] => Ok(var.deref_value()),
         [Value::Promise(promise)] => promise_value_result(promise),
+        [Value::Pointer(pointer)] => {
+            pointer_context_call(pointer, pointer_default(pointer)?, "pointer/deref", &[])
+        }
         _ => Err("IDeref/deref has no implementation for this value".into()),
     }
 }
@@ -7520,6 +7664,7 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
                         | Value::ByteBuffer(_)
                         | Value::Array(_)
                         | Value::Object(_)
+                        | Value::Pointer(_)
                         | Value::Nil
                 )
         }
@@ -7533,6 +7678,7 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
                         | Value::ByteBuffer(_)
                         | Value::Array(_)
                         | Value::Object(_)
+                        | Value::Pointer(_)
                         | Value::Nil
                 )
         }
@@ -7553,16 +7699,27 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
                         | Value::SortedSet(_)
                         | Value::Vector(_)
                         | Value::Tuple(_)
+                        | Value::Pointer(_)
                 )
         }
-        "ILookup" => map_like || matches!(value, Value::Vector(_) | Value::Tuple(_)),
-        "IDeref" => matches!(value, Value::Atom(_) | Value::Promise(_) | Value::Var(_)),
+        "ILookup" => {
+            map_like
+                || matches!(
+                    value,
+                    Value::Vector(_) | Value::Tuple(_) | Value::Pointer(_)
+                )
+        }
+        "IDeref" => matches!(
+            value,
+            Value::Atom(_) | Value::Promise(_) | Value::Var(_) | Value::Pointer(_)
+        ),
         "IReset" => matches!(value, Value::Atom(_) | Value::Var(_)),
         "ICas" | "IWatch" => matches!(value, Value::Atom(_)),
         "IFn" => matches!(
             value,
-            Value::Function(_) | Value::StructType(_) | Value::MutableType(_)
+            Value::Function(_) | Value::StructType(_) | Value::MutableType(_) | Value::Pointer(_)
         ),
+        "IPointer" | "IApplicable" | "IInvokeIn" => matches!(value, Value::Pointer(_)),
         "IPair" => pair_parts(value).is_some(),
         _ => false,
     }
@@ -8598,6 +8755,11 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
             .into_iter()
             .map(|(key, value)| pair_value(key, value))
             .collect()),
+        Value::Pointer(pointer) => Ok(pointer
+            .fields()
+            .iter()
+            .map(|(key, value)| pair_value(key.clone(), value.clone()))
+            .collect()),
         value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(map_entries(&value)
                 .unwrap()
@@ -8641,6 +8803,7 @@ fn make_iterator(value: Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
+        | Value::Pointer(_)
         | Value::Set(_)
         | Value::OrderedSet(_)
         | Value::SortedSet(_)
@@ -8899,6 +9062,13 @@ fn collection_keys(value: &Value) -> Result<Value, String> {
                 .map(|field| named_field_key(field))
                 .collect(),
         )),
+        Value::Pointer(pointer) => Ok(Value::Vector(
+            pointer
+                .fields()
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect(),
+        )),
         _ => Err("keys expects a map, object, struct, or mutable value".into()),
     }
 }
@@ -8925,6 +9095,13 @@ fn collection_vals(value: &Value) -> Result<Value, String> {
             value.ordered_values().into_iter().cloned().collect(),
         )),
         Value::Mutable(value) => Ok(Value::Vector(value.ordered_values().into_iter().collect())),
+        Value::Pointer(pointer) => Ok(Value::Vector(
+            pointer
+                .fields()
+                .iter()
+                .map(|(_, value)| value.clone())
+                .collect(),
+        )),
         _ => Err("vals expects a map, object, struct, or mutable value".into()),
     }
 }
@@ -9044,6 +9221,7 @@ fn collection_count(value: &Value) -> Result<Value, String> {
         Value::Object(v) => v.borrow().len(),
         Value::Struct(v) => v.ty.fields.len(),
         Value::Mutable(v) => v.ty.fields.len(),
+        Value::Pointer(v) => v.fields().len(),
         Value::MutableCollection(collection) => {
             let borrowed = collection.borrow();
             let mutable = borrowed
@@ -9165,6 +9343,7 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
         Value::Mutable(value) => Ok(named_field_name(key)
             .and_then(|name| value.get(name))
             .unwrap_or(default)),
+        Value::Pointer(pointer) => Ok(pointer.get(key).cloned().unwrap_or(default)),
         _ => Err("get expects a collection".into()),
     }
 }
@@ -9758,9 +9937,7 @@ fn literal_value(form: &Form) -> Result<Value, String> {
         Form::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
         Form::Decimal(value) => Ok(Value::Decimal(value.clone())),
         Form::Regex(value) => Ok(Value::Regex(value.clone())),
-        Form::Tagged(tag, value) if tag == "ptr" => {
-            pointer_from_descriptor(literal_value(value)?)
-        }
+        Form::Tagged(tag, value) if tag == "ptr" => pointer_from_descriptor(literal_value(value)?),
         Form::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(
             Symbol::parse(tag),
             literal_value(value)?,
@@ -9809,6 +9986,7 @@ fn generated_function(
         body,
         captured: Rc::new(RefCell::new(captured)),
         name: None,
+        namespace: function_definition_namespace(),
         native: None,
         fiber_native: None,
         clauses: Vec::new(),
@@ -10104,6 +10282,7 @@ fn multi_arity_function(
             body: parts[1..].to_vec(),
             captured: Rc::new(RefCell::new(capture_environment(&parts[1..], captured))),
             name: Some(name.into()),
+            namespace: function_definition_namespace(),
             native: None,
             fiber_native: None,
             clauses: Vec::new(),
@@ -10130,6 +10309,7 @@ pub(crate) fn arity_dispatcher(name: &str, functions: Vec<Rc<Function>>, is_macr
         body: Vec::new(),
         captured: Rc::new(RefCell::new(HashMap::new())),
         name: Some(dispatch_name.clone()),
+        namespace: function_definition_namespace(),
         clauses,
         native: Some(Rc::new(move |arguments| {
             let function = select_clause(&functions, arguments.len()).ok_or_else(|| {
@@ -10171,6 +10351,21 @@ fn binding_value(env: &HashMap<String, Value>, name: &str) -> Option<Value> {
         })
 }
 
+fn foundation_fallback_omitted(env: &HashMap<String, Value>, name: &str) -> bool {
+    if name.contains('/') || env.contains_key(name) || syntax_symbol(name) {
+        return false;
+    }
+    let Ok(registry) = namespace_registry() else {
+        return false;
+    };
+    let local = crate::lang::data::Symbol::parse(name);
+    registry.current().resolve(&local).is_none()
+        && registry
+            .find("std.foundation")
+            .and_then(|foundation| foundation.resolve(&local))
+            .is_some()
+}
+
 fn binding_var(env: &mut HashMap<String, Value>, name: &str) -> Option<KernelVar<Value>> {
     match env.get(name) {
         Some(Value::Var(var)) => Some(var.clone()),
@@ -10209,6 +10404,12 @@ pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value
             protocol_arguments.extend(arguments);
             protocol_call("std.protocol.ifn/IFn", "invoke", &protocol_arguments)
         }
+        Value::Pointer(pointer) => pointer_context_call(
+            &pointer,
+            pointer_default(&pointer)?,
+            "pointer/invoke",
+            &arguments,
+        ),
         Value::Keyword(keyword) => match arguments.as_slice() {
             [target] => lookup(target, &Value::Keyword(keyword), Value::Nil),
             [target, fallback] => lookup(target, &Value::Keyword(keyword), fallback.clone()),
@@ -10271,6 +10472,13 @@ pub(crate) fn call_function(function: &Function, arguments: Vec<Value>) -> Resul
             )
         });
     }
+    let namespace_scope = namespace_registry().ok().and_then(|registry| {
+        function.namespace.as_ref().map(|namespace| {
+            let previous = registry.current().name().as_str().to_owned();
+            registry.set_current(namespace);
+            (registry, previous)
+        })
+    });
     let result = (|| {
         if function.variadic.is_none() && function.params.len() != arguments.len() {
             return Err(format!(
@@ -10316,6 +10524,9 @@ pub(crate) fn call_function(function: &Function, arguments: Vec<Value>) -> Resul
         }
         Ok(result)
     })();
+    if let Some((registry, previous)) = namespace_scope {
+        registry.set_current(previous);
+    }
     let result = result.map_err(append_trace);
     #[cfg(feature = "evaluation-journal")]
     evaluation_journal_exit(operation, function, result.as_ref().ok());
@@ -10859,12 +11070,43 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
     // orchestration layer.  The raw HTA evaluator executes forms directly in
     // an EvalFiber, so the core special form must still honor the one setting
     // that changes namespace construction itself.
-    let blank = crate::kernel::GeneratedNamespaceConfig::configure_with(clauses, |_| true)
-        .map(|config| config.blank())?;
-    if !blank {
+    let config = crate::kernel::GeneratedNamespaceConfig::configure_with(clauses, |_| true)?;
+    if !config.blank() {
         refer_startup_defaults(&registry, &name);
     }
     select_namespace_environment(&registry, env, &name);
+    let destination = registry.current();
+    let omitted = match config.exposed_foundation() {
+        Some(exposed) => destination
+            .mappings()
+            .into_iter()
+            .filter(|(local, var)| {
+                var.symbol().get_namespace() == Some("std.foundation")
+                    && !exposed.contains(local.as_str())
+            })
+            .map(|(local, _)| local.as_str().to_owned())
+            .collect::<Vec<_>>(),
+        None => config.excluded_foundation().iter().cloned().collect(),
+    };
+    for overridden in omitted {
+        let destination = registry.current();
+        let local = crate::lang::data::Symbol::parse(&overridden);
+        if destination
+            .resolve(&local)
+            .is_some_and(|var| var.symbol().get_namespace() == Some("std.foundation"))
+        {
+            destination.unmap(&local);
+            env.remove(&overridden);
+        }
+        let destination_name = destination.name().as_str().to_owned();
+        ACTIVE_MACROS.with(|active| {
+            if let Some(macros) = active.borrow().as_ref() {
+                macros
+                    .borrow_mut()
+                    .remove(&(destination_name, overridden.clone()));
+            }
+        });
+    }
     for clause in clauses {
         match clause {
             Form::List(clause_forms) if matches!(clause_forms.first(), Some(Form::Keyword(k)) if k == "require") =>
@@ -10882,40 +11124,7 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
                 // files (e.g. runtime-library activation declarations), they are
                 // metadata-only and can be ignored here.
             }
-            Form::List(clause_forms) if matches!(clause_forms.first(), Some(Form::Keyword(k)) if k == "refer-clojure") =>
-            {
-                crate::kernel::generated::validate_refer_clojure_clause(clause_forms)?;
-                let Form::Vector(excluded) = &clause_forms[2] else {
-                    unreachable!()
-                };
-                let destination = registry.current();
-                let destination_name = destination.name().as_str().to_owned();
-                for item in excluded {
-                    let Form::Symbol(name) = item else {
-                        unreachable!()
-                    };
-                    let local = crate::lang::data::Symbol::parse(name);
-                    if destination
-                        .resolve(&local)
-                        .is_some_and(|var| var.symbol().get_namespace() == Some("std.foundation"))
-                    {
-                        destination.unmap(&local);
-                        env.remove(name);
-                    }
-                    ACTIVE_MACROS.with(|active| {
-                        if let Some(macros) = active.borrow().as_ref() {
-                            macros
-                                .borrow_mut()
-                                .remove(&(destination_name.clone(), name.clone()));
-                        }
-                    });
-                }
-            }
-            _ => {
-                return Err(
-                    "unsupported ns clause (only :require and :refer-clojure are supported)".into(),
-                )
-            }
+            _ => return Err("unsupported ns clause in evaluator".into()),
         }
     }
     Ok(Value::Nil)
@@ -11107,9 +11316,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
         Form::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
         Form::Decimal(value) => Ok(Value::Decimal(value.clone())),
         Form::Regex(value) => Ok(Value::Regex(value.clone())),
-        Form::Tagged(tag, value) if tag == "ptr" => {
-            pointer_from_descriptor(literal_value(value)?)
-        }
+        Form::Tagged(tag, value) if tag == "ptr" => pointer_from_descriptor(literal_value(value)?),
         Form::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(
             Symbol::parse(tag),
             literal_value(value)?,
@@ -11153,7 +11360,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
         Form::Symbol(n) if n == "nil" => Ok(Value::Nil),
         Form::Symbol(n) if n == "true" => Ok(Value::Bool(true)),
         Form::Symbol(n) if n == "false" => Ok(Value::Bool(false)),
-        Form::Symbol(n) if n == "inc" || n == "dec" => {
+        Form::Symbol(n) if (n == "inc" || n == "dec") && !foundation_fallback_omitted(env, n) => {
             let op = if n == "inc" { "+" } else { "-" };
             let body = Form::List(vec![
                 Form::Symbol(op.into()),
@@ -11190,6 +11397,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 }
                 operator => operator,
             };
+            if let Form::Symbol(name) = operator {
+                if foundation_fallback_omitted(env, name) {
+                    return Err(format!("unbound symbol: {name}"));
+                }
+            }
             match operator {
                 Form::Symbol(n) if n == "fn" || n == "fn*" => {
                     if fs.len() < 3 {
@@ -11205,6 +11417,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         captured: Rc::new(RefCell::new(capture_environment(&body, env))),
                         body,
                         name: None,
+                        namespace: function_definition_namespace(),
                         native: None,
                         fiber_native: None,
                         clauses: Vec::new(),
@@ -11259,6 +11472,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 body: parts[2..].to_vec(),
                                 captured: captured.clone(),
                                 name: Some(name.clone()),
+                                namespace: function_definition_namespace(),
                                 native: None,
                                 fiber_native: None,
                                 clauses: Vec::new(),
@@ -11373,9 +11587,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err("special-symbol? expects one symbol".into());
                     }
                     match eval(&fs[1], env)? {
-                        Value::Symbol(value) => Ok(Value::Bool(
-                            fiber::CORE_SPECIAL_FORMS.contains(&value.as_str()),
-                        )),
+                        Value::Symbol(value) => Ok(Value::Bool(syntax_symbol(value.as_str()))),
                         _ => Err("special-symbol? expects a symbol".into()),
                     }
                 }
@@ -12385,6 +12597,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             captured: Rc::new(RefCell::new(capture_environment(&body, env))),
                             body,
                             name: Some(name.clone()),
+                            namespace: function_definition_namespace(),
                             native: None,
                             fiber_native: None,
                             clauses: Vec::new(),
@@ -12448,6 +12661,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             captured: Rc::new(RefCell::new(capture_environment(&body, env))),
                             body,
                             name: Some(name.clone()),
+                            namespace: function_definition_namespace(),
                             native: None,
                             fiber_native: None,
                             clauses: Vec::new(),
@@ -13934,6 +14148,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         body: vec![Form::Symbol("__constant".into())],
                         captured: Rc::new(RefCell::new(captured)),
                         name: None,
+                        namespace: function_definition_namespace(),
                         native: None,
                         fiber_native: None,
                         clauses: Vec::new(),
@@ -14166,6 +14381,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "set?",
                         "keyword?",
                         "symbol?",
+                        "pointer?",
                         "string?",
                         "char?",
                         "number?",
@@ -14210,6 +14426,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         ),
                         "keyword?" => matches!(value, Value::Keyword(_)),
                         "symbol?" => matches!(value, Value::Symbol(_)),
+                        "pointer?" => matches!(value, Value::Pointer(_)),
                         "string?" => matches!(value, Value::String(_)),
                         "char?" => matches!(value, Value::Character(_)),
                         "number?" => matches!(value, Value::Number(_) | Value::Float(_)),

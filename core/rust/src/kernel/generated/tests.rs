@@ -45,6 +45,51 @@ fn parses_config_clause_with_builtins_blank_and_intrinsics() {
 }
 
 #[test]
+fn config_override_omits_selected_foundation_vars() {
+    let config = GeneratedNamespaceConfig::configure(
+        &parse_forms("(:config {:override [compile pointer]})").unwrap(),
+    )
+    .unwrap();
+    assert!(config.excluded_foundation().contains("compile"));
+    assert!(config.excluded_foundation().contains("pointer"));
+    assert!(GeneratedNamespaceConfig::configure(
+        &parse_forms("(:config {:blank true :override [compile]})").unwrap()
+    )
+    .unwrap_err()
+    .contains("cannot be combined"));
+}
+
+#[test]
+fn config_expose_selects_an_exact_foundation_surface() {
+    let config = GeneratedNamespaceConfig::configure(
+        &parse_forms("(:config {:expose [map reduce]})").unwrap(),
+    )
+    .unwrap();
+    let exposed = config.exposed_foundation().unwrap();
+    assert!(exposed.contains("map"));
+    assert!(exposed.contains("reduce"));
+    assert!(GeneratedNamespaceConfig::configure(
+        &parse_forms("(:config {:override [map] :expose [reduce]})").unwrap()
+    )
+    .unwrap_err()
+    .contains("cannot be combined"));
+    assert!(GeneratedNamespaceConfig::configure(
+        &parse_forms("(:config {:blank true :expose []})").unwrap()
+    )
+    .unwrap_err()
+    .contains("cannot be combined"));
+}
+
+#[test]
+fn refer_clojure_is_not_a_hara_namespace_clause() {
+    assert!(GeneratedNamespaceConfig::configure(
+        &parse_forms("(:refer-clojure :exclude [compile])").unwrap()
+    )
+    .unwrap_err()
+    .contains("Unsupported ns clause: :refer-clojure"));
+}
+
+#[test]
 fn records_used_namespaces_for_runtime_referral() {
     let config = GeneratedNamespaceConfig::configure_with(
         &parse_forms("(:use code.test)").unwrap(),
@@ -92,6 +137,35 @@ fn coroutine_aliases_rewrite_to_fiber_control_forms() {
             .to_string(),
         "std.foundation.coroutine/await"
     );
+}
+
+#[test]
+fn only_portable_foundation_shorthands_are_automatic() {
+    let config = GeneratedNamespaceConfig::defaults();
+    let mut foundation_aliases: Vec<_> = config
+        .aliases()
+        .into_iter()
+        .filter(|(_, namespace)| namespace.starts_with("std.foundation."))
+        .collect();
+    foundation_aliases.sort();
+    assert_eq!(
+        foundation_aliases,
+        vec![
+            ("bytes".into(), "std.foundation.bytes".into()),
+            ("co".into(), "std.foundation.coroutine".into()),
+            ("promise".into(), "std.foundation.promise".into()),
+            ("str".into(), "std.foundation.string".into()),
+        ]
+    );
+
+    let rebound = GeneratedNamespaceConfig::configure_with(
+        &parse_forms("(:require [demo.kernel :as kernel])").unwrap(),
+        |target| target == "demo.kernel",
+    )
+    .unwrap();
+    assert!(rebound
+        .aliases()
+        .contains(&("kernel".into(), "demo.kernel".into())));
 }
 
 #[test]

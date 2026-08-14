@@ -7,7 +7,7 @@
 
 pub mod view;
 
-use hara_abi::Value;
+use hara_abi::{ImmutableValue as Value, Value as AbiValue};
 use std::collections::BTreeMap;
 
 pub const MAGIC: &[u8; 4] = b"HTA0";
@@ -37,9 +37,22 @@ const CHARACTER: u8 = 19;
 const BIG_INTEGER: u8 = 20;
 const DECIMAL: u8 = 21;
 const REGEX: u8 = 22;
+const TUPLE: u8 = 23;
+const CONS: u8 = 24;
+const QUEUE: u8 = 25;
+const ORDERED_MAP: u8 = 26;
+const SORTED_MAP: u8 = 27;
+const TRIE: u8 = 28;
+const ORDERED_SET: u8 = 29;
+const SORTED_SET: u8 = 30;
+const TAGGED: u8 = 31;
+const EXCEPTION_INFO: u8 = 32;
+const STRUCT: u8 = 33;
+const POINTER: u8 = 34;
+const VAR_REF: u8 = 35;
 
 /// Encode one portable value as an exact canonical HTA0 frame.
-pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
+pub fn encode_immutable(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = Vec::with_capacity(128);
     write(&mut output, MAGIC)?;
     encode_value(value, 0, &mut output)?;
@@ -52,7 +65,7 @@ pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
 /// vars, atoms, arrays, objects, characters, big integers, and regex values
 /// fail closed. HTA maps decode only when every key is a unique keyword, which
 /// maps directly to [`Value::Record`].
-pub fn decode(bytes: &[u8]) -> Result<Value, String> {
+pub fn decode_immutable(bytes: &[u8]) -> Result<Value, String> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err(format!(
             "hta/frame-too-large: {} exceeds {} bytes",
@@ -80,7 +93,7 @@ pub fn decode(bytes: &[u8]) -> Result<Value, String> {
 /// This is the generic provider boundary for small values. It deliberately does
 /// not read an object, compute a digest, select a provider, or interpret an
 /// application schema. Callers must verify immutable-object identity separately.
-pub fn decode_canonical(bytes: &[u8], max_bytes: usize) -> Result<Value, String> {
+pub fn decode_immutable_canonical(bytes: &[u8], max_bytes: usize) -> Result<Value, String> {
     if max_bytes == 0 || max_bytes > MAX_FRAME_BYTES {
         return Err(format!(
             "hta/maximum-invalid: requested maximum must be between 1 and {MAX_FRAME_BYTES} bytes"
@@ -94,12 +107,78 @@ pub fn decode_canonical(bytes: &[u8], max_bytes: usize) -> Result<Value, String>
         ));
     }
 
-    let value = decode(bytes)?;
-    let canonical = encode(&value)?;
+    let value = decode_immutable(bytes)?;
+    let canonical = encode_immutable(&value)?;
     if canonical != bytes {
         return Err("hta/frame-noncanonical: decoded value has different canonical bytes".into());
     }
     Ok(value)
+}
+
+/// Encode the stable provider ABI subset using the full immutable codec.
+pub fn encode(value: &AbiValue) -> Result<Vec<u8>, String> {
+    encode_immutable(&abi_to_immutable(value))
+}
+
+/// Decode only values representable by the stable provider ABI subset.
+pub fn decode(bytes: &[u8]) -> Result<AbiValue, String> {
+    immutable_to_abi(decode_immutable(bytes)?)
+}
+
+pub fn decode_canonical(bytes: &[u8], max_bytes: usize) -> Result<AbiValue, String> {
+    immutable_to_abi(decode_immutable_canonical(bytes, max_bytes)?)
+}
+
+fn abi_to_immutable(value: &AbiValue) -> Value {
+    match value {
+        AbiValue::Nil => Value::Nil,
+        AbiValue::Boolean(value) => Value::Boolean(*value),
+        AbiValue::String(value) => Value::String(value.clone()),
+        AbiValue::Integer(value) => Value::Integer(*value),
+        AbiValue::Float(value) => Value::Float(*value),
+        AbiValue::Decimal(value) => Value::Decimal(value.clone()),
+        AbiValue::Bytes(value) => Value::Bytes(value.clone()),
+        AbiValue::Keyword(value) => Value::Keyword(value.clone()),
+        AbiValue::Vector(values) => {
+            Value::Vector(values.iter().map(abi_to_immutable).collect())
+        }
+        AbiValue::Record(values) => Value::Record(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), abi_to_immutable(value)))
+                .collect(),
+        ),
+    }
+}
+
+fn immutable_to_abi(value: Value) -> Result<AbiValue, String> {
+    Ok(match value {
+        Value::Nil => AbiValue::Nil,
+        Value::Boolean(value) => AbiValue::Boolean(value),
+        Value::String(value) => AbiValue::String(value),
+        Value::Integer(value) => AbiValue::Integer(value),
+        Value::Float(value) => AbiValue::Float(value),
+        Value::Decimal(value) => AbiValue::Decimal(value),
+        Value::Bytes(value) => AbiValue::Bytes(value),
+        Value::Keyword(value) => AbiValue::Keyword(value),
+        Value::Vector(values) => AbiValue::Vector(
+            values
+                .into_iter()
+                .map(immutable_to_abi)
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Value::Record(values) => AbiValue::Record(
+            values
+                .into_iter()
+                .map(|(key, value)| Ok((key, immutable_to_abi(value)?)))
+                .collect::<Result<_, String>>()?,
+        ),
+        value => {
+            return Err(format!(
+                "hta/value-unsupported: immutable value is outside the provider ABI: {value:?}"
+            ))
+        }
+    })
 }
 
 fn encode_value(value: &Value, depth: usize, output: &mut Vec<u8>) -> Result<(), String> {
@@ -118,20 +197,146 @@ fn encode_value(value: &Value, depth: usize, output: &mut Vec<u8>) -> Result<(),
             push(output, F64)?;
             write(output, &value.to_bits().to_be_bytes())
         }
+        Value::Character(value) => {
+            push(output, CHARACTER)?;
+            write(output, &u32::from(*value).to_be_bytes())
+        }
+        Value::BigInteger(value) => write_sized(output, BIG_INTEGER, value.as_bytes()),
         Value::String(value) => write_sized(output, STRING, value.as_bytes()),
         Value::Bytes(value) => write_sized(output, BYTES, value),
         Value::Keyword(value) => write_sized(output, KEYWORD, value.as_bytes()),
         Value::Decimal(value) => write_sized(output, DECIMAL, value.as_bytes()),
-        Value::Vector(values) => {
-            push(output, VECTOR)?;
-            write_len(output, values.len())?;
-            for value in values {
-                encode_value(value, depth + 1, output)?;
-            }
-            Ok(())
+        Value::Regex(value) => write_sized(output, REGEX, value.as_bytes()),
+        Value::Symbol(value) => write_sized(output, SYMBOL, value.as_bytes()),
+        Value::List(values) => encode_sequence(LIST, values, depth, output),
+        Value::Vector(values) => encode_sequence(VECTOR, values, depth, output),
+        Value::Tuple(values) => encode_sequence(TUPLE, values, depth, output),
+        Value::Cons(values) => encode_sequence(CONS, values, depth, output),
+        Value::Queue(values) => encode_sequence(QUEUE, values, depth, output),
+        Value::Set(values) => encode_unordered_sequence(SET, values, depth, output),
+        Value::OrderedSet(values) => encode_sequence(ORDERED_SET, values, depth, output),
+        Value::SortedSet(values) => encode_unordered_sequence(SORTED_SET, values, depth, output),
+        Value::Map(values) => encode_map(MAP, values, depth, output, true),
+        Value::OrderedMap(values) => encode_map(ORDERED_MAP, values, depth, output, false),
+        Value::SortedMap(values) => encode_map(SORTED_MAP, values, depth, output, false),
+        Value::Trie(values) => {
+            let entries = values
+                .iter()
+                .map(|(key, value)| (Value::String(key.clone()), value.clone()))
+                .collect::<Vec<_>>();
+            encode_map(TRIE, &entries, depth, output, false)
         }
         Value::Record(values) => encode_record(values, depth, output),
+        Value::Tagged { tag, form } => {
+            push(output, TAGGED)?;
+            encode_value(&Value::Symbol(tag.clone()), depth + 1, output)?;
+            encode_value(form, depth + 1, output)
+        }
+        Value::ExceptionInfo {
+            message,
+            data,
+            cause,
+        } => {
+            push(output, EXCEPTION_INFO)?;
+            encode_value(&Value::String(message.clone()), depth + 1, output)?;
+            encode_value(data, depth + 1, output)?;
+            encode_value(cause.as_deref().unwrap_or(&Value::Nil), depth + 1, output)
+        }
+        Value::Struct {
+            name,
+            fields,
+            values,
+        } => {
+            if fields.len() != values.len() {
+                return Err("hta/value-invalid: struct arity mismatch".into());
+            }
+            push(output, STRUCT)?;
+            encode_value(&Value::String(name.clone()), depth + 1, output)?;
+            encode_value(
+                &Value::Vector(fields.iter().cloned().map(Value::String).collect()),
+                depth + 1,
+                output,
+            )?;
+            encode_value(&Value::Vector(values.clone()), depth + 1, output)
+        }
+        Value::Pointer { context, fields } => {
+            push(output, POINTER)?;
+            encode_value(&Value::Keyword(context.clone()), depth + 1, output)?;
+            encode_record(fields, depth + 1, output)
+        }
+        Value::VarRef(symbol) => {
+            push(output, VAR_REF)?;
+            encode_value(&Value::Symbol(symbol.clone()), depth + 1, output)
+        }
     }
+}
+
+fn encode_sequence(
+    tag: u8,
+    values: &[Value],
+    depth: usize,
+    output: &mut Vec<u8>,
+) -> Result<(), String> {
+    push(output, tag)?;
+    write_len(output, values.len())?;
+    for value in values {
+        encode_value(value, depth + 1, output)?;
+    }
+    Ok(())
+}
+
+fn encode_unordered_sequence(
+    tag: u8,
+    values: &[Value],
+    depth: usize,
+    output: &mut Vec<u8>,
+) -> Result<(), String> {
+    let mut encoded = Vec::with_capacity(values.len());
+    for value in values {
+        let mut bytes = Vec::new();
+        encode_value(value, depth + 1, &mut bytes)?;
+        encoded.push(bytes);
+    }
+    encoded.sort();
+    encoded.dedup();
+    push(output, tag)?;
+    write_len(output, encoded.len())?;
+    for value in encoded {
+        write(output, &value)?;
+    }
+    Ok(())
+}
+
+fn encode_map(
+    tag: u8,
+    values: &[(Value, Value)],
+    depth: usize,
+    output: &mut Vec<u8>,
+    canonical_order: bool,
+) -> Result<(), String> {
+    let mut entries = Vec::with_capacity(values.len());
+    for (key, value) in values {
+        let mut key_bytes = Vec::new();
+        encode_value(key, depth + 1, &mut key_bytes)?;
+        let mut value_bytes = Vec::new();
+        encode_value(value, depth + 1, &mut value_bytes)?;
+        entries.push((key_bytes, value_bytes));
+    }
+    if canonical_order {
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+    }
+    for pair in entries.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err("hta/value-invalid: duplicate map key".into());
+        }
+    }
+    push(output, tag)?;
+    write_len(output, entries.len())?;
+    for (key, value) in entries {
+        write(output, &key)?;
+        write(output, &value)?;
+    }
+    Ok(())
 }
 
 fn encode_record(
@@ -209,14 +414,81 @@ impl Reader<'_> {
             F64 => Ok(Value::Float(f64::from_bits(u64::from_be_bytes(
                 self.take(8)?.try_into().expect("eight bytes"),
             )))),
+            CHARACTER => {
+                let scalar = u32::from_be_bytes(
+                    self.take(4)?.try_into().expect("four bytes"),
+                );
+                char::from_u32(scalar)
+                    .map(Value::Character)
+                    .ok_or_else(|| "hta/value-malformed: invalid character scalar".into())
+            }
             STRING => Ok(Value::String(self.text()?)),
             BYTES => Ok(Value::Bytes(self.sized()?.to_vec())),
             KEYWORD => Ok(Value::Keyword(self.text()?)),
+            SYMBOL => Ok(Value::Symbol(self.text()?)),
+            BIG_INTEGER => Ok(Value::BigInteger(self.text()?)),
             DECIMAL => Ok(Value::Decimal(self.text()?)),
+            REGEX => Ok(Value::Regex(self.text()?)),
+            LIST => self.sequence(depth).map(Value::List),
             VECTOR => self.vector(depth),
-            MAP => self.record(depth),
-            tag @ (SYMBOL | LIST | SET | HANDLE | NAMESPACE | VAR | ATOM | ARRAY | OBJECT
-            | CHARACTER | BIG_INTEGER | REGEX) => Err(format!(
+            TUPLE => self.sequence(depth).map(Value::Tuple),
+            CONS => {
+                let values = self.sequence(depth)?;
+                if values.is_empty() {
+                    Err("hta/value-malformed: empty cons".into())
+                } else {
+                    Ok(Value::Cons(values))
+                }
+            }
+            QUEUE => self.sequence(depth).map(Value::Queue),
+            SET => self.sequence(depth).map(Value::Set),
+            ORDERED_SET => self.sequence(depth).map(Value::OrderedSet),
+            SORTED_SET => self.sequence(depth).map(Value::SortedSet),
+            MAP => self.map(depth, MAP),
+            ORDERED_MAP => self.map(depth, ORDERED_MAP),
+            SORTED_MAP => self.map(depth, SORTED_MAP),
+            TRIE => self.trie(depth),
+            TAGGED => {
+                let Value::Symbol(tag) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid tagged literal tag".into());
+                };
+                Ok(Value::Tagged {
+                    tag,
+                    form: Box::new(self.value(depth + 1)?),
+                })
+            }
+            EXCEPTION_INFO => {
+                let Value::String(message) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid exception message".into());
+                };
+                let data = Box::new(self.value(depth + 1)?);
+                let cause = match self.value(depth + 1)? {
+                    Value::Nil => None,
+                    value => Some(Box::new(value)),
+                };
+                Ok(Value::ExceptionInfo {
+                    message,
+                    data,
+                    cause,
+                })
+            }
+            STRUCT => self.structure(depth),
+            POINTER => {
+                let Value::Keyword(context) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid pointer context".into());
+                };
+                let Value::Record(fields) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid pointer fields".into());
+                };
+                Ok(Value::Pointer { context, fields })
+            }
+            VAR_REF => {
+                let Value::Symbol(symbol) = self.value(depth + 1)? else {
+                    return Err("hta/value-malformed: invalid Var reference".into());
+                };
+                Ok(Value::VarRef(symbol))
+            }
+            tag @ (HANDLE | NAMESPACE | VAR | ATOM | ARRAY | OBJECT) => Err(format!(
                 "hta/value-unsupported: runtime wire tag {tag} is not portable"
             )),
             tag => Err(format!("hta/value-malformed: unknown tag {tag}")),
@@ -224,6 +496,10 @@ impl Reader<'_> {
     }
 
     fn vector(&mut self, depth: usize) -> Result<Value, String> {
+        self.sequence(depth).map(Value::Vector)
+    }
+
+    fn sequence(&mut self, depth: usize) -> Result<Vec<Value>, String> {
         let len = self.len()?;
         if len > self.remaining() {
             return Err("hta/value-malformed: impossible sequence length".into());
@@ -232,32 +508,83 @@ impl Reader<'_> {
         for _ in 0..len {
             values.push(self.value(depth + 1)?);
         }
-        Ok(Value::Vector(values))
+        Ok(values)
     }
 
-    fn record(&mut self, depth: usize) -> Result<Value, String> {
+    fn entries(&mut self, depth: usize) -> Result<Vec<(Value, Value)>, String> {
         let len = self.len()?;
         if len > self.remaining() / 2 {
             return Err("hta/value-malformed: impossible map length".into());
         }
-        let mut values = BTreeMap::new();
+        let mut values = Vec::with_capacity(len);
         for _ in 0..len {
-            let key = match self.value(depth + 1)? {
-                Value::Keyword(key) => key,
-                _ => {
-                    return Err(
-                        "hta/value-unsupported: portable records require keyword keys".into(),
-                    )
-                }
-            };
-            let value = self.value(depth + 1)?;
-            if values.insert(key.clone(), value).is_some() {
-                return Err(format!(
-                    "hta/value-malformed: duplicate portable record key :{key}"
-                ));
-            }
+            values.push((self.value(depth + 1)?, self.value(depth + 1)?));
         }
-        Ok(Value::Record(values))
+        Ok(values)
+    }
+
+    fn map(&mut self, depth: usize, tag: u8) -> Result<Value, String> {
+        let entries = self.entries(depth)?;
+        if tag == MAP
+            && entries
+                .iter()
+                .all(|(key, _)| matches!(key, Value::Keyword(_)))
+        {
+            let mut record = BTreeMap::new();
+            for (key, value) in entries {
+                let Value::Keyword(key) = key else { unreachable!() };
+                if record.insert(key.clone(), value).is_some() {
+                    return Err(format!(
+                        "hta/value-malformed: duplicate portable record key :{key}"
+                    ));
+                }
+            }
+            return Ok(Value::Record(record));
+        }
+        match tag {
+            MAP => Ok(Value::Map(entries)),
+            ORDERED_MAP => Ok(Value::OrderedMap(entries)),
+            SORTED_MAP => Ok(Value::SortedMap(entries)),
+            _ => unreachable!(),
+        }
+    }
+
+    fn trie(&mut self, depth: usize) -> Result<Value, String> {
+        self.entries(depth)?
+            .into_iter()
+            .map(|(key, value)| match key {
+                Value::String(key) => Ok((key, value)),
+                _ => Err("hta/value-malformed: invalid trie key".into()),
+            })
+            .collect::<Result<Vec<_>, String>>()
+            .map(Value::Trie)
+    }
+
+    fn structure(&mut self, depth: usize) -> Result<Value, String> {
+        let Value::String(name) = self.value(depth + 1)? else {
+            return Err("hta/value-malformed: invalid struct name".into());
+        };
+        let Value::Vector(field_values) = self.value(depth + 1)? else {
+            return Err("hta/value-malformed: invalid struct fields".into());
+        };
+        let fields = field_values
+            .into_iter()
+            .map(|value| match value {
+                Value::String(value) => Ok(value),
+                _ => Err("hta/value-malformed: invalid struct field".into()),
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let Value::Vector(values) = self.value(depth + 1)? else {
+            return Err("hta/value-malformed: invalid struct values".into());
+        };
+        if fields.len() != values.len() {
+            return Err("hta/value-malformed: struct arity mismatch".into());
+        }
+        Ok(Value::Struct {
+            name,
+            fields,
+            values,
+        })
     }
 
     fn text(&mut self) -> Result<String, String> {
@@ -300,6 +627,18 @@ impl Reader<'_> {
 mod tests {
     use super::*;
 
+    fn encode(value: &Value) -> Result<Vec<u8>, String> {
+        encode_immutable(value)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Value, String> {
+        decode_immutable(bytes)
+    }
+
+    fn decode_canonical(bytes: &[u8], max_bytes: usize) -> Result<Value, String> {
+        decode_immutable_canonical(bytes, max_bytes)
+    }
+
     fn record(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
         Value::Record(
             entries
@@ -323,6 +662,35 @@ mod tests {
         assert_eq!(decode(&encoded).unwrap(), value);
         assert_eq!(encode(&decode(&encoded).unwrap()).unwrap(), encoded);
         assert_eq!(decode_canonical(&encoded, encoded.len()).unwrap(), value);
+    }
+
+    #[test]
+    fn immutable_hara_values_and_references_round_trip() {
+        let values = vec![
+            Value::Symbol("tool.lint/lint-source".into()),
+            Value::Character('雪'),
+            Value::BigInteger("123456789012345678901234567890".into()),
+            Value::Regex("^[a-z]+$".into()),
+            Value::List(vec![Value::Integer(1), Value::Integer(2)]),
+            Value::Tuple(vec![Value::Integer(1), Value::Integer(2)]),
+            Value::Queue(vec![Value::Integer(1), Value::Integer(2)]),
+            Value::Set(vec![Value::Keyword("a".into()), Value::Keyword("b".into())]),
+            Value::Map(vec![(Value::String("answer".into()), Value::Integer(42))]),
+            Value::Tagged {
+                tag: "demo/value".into(),
+                form: Box::new(Value::Integer(42)),
+            },
+            Value::Pointer {
+                context: "kernel".into(),
+                fields: [("id".into(), Value::String("ROOT".into()))]
+                    .into_iter()
+                    .collect(),
+            },
+            Value::VarRef("user/answer".into()),
+        ];
+        for value in values {
+            assert_eq!(decode(&encode(&value).unwrap()).unwrap(), value);
+        }
     }
 
     #[test]
@@ -372,13 +740,14 @@ mod tests {
     }
 
     #[test]
-    fn non_keyword_and_duplicate_record_keys_fail_closed() {
+    fn general_maps_accept_non_keyword_keys_and_records_reject_duplicates() {
         let mut non_keyword = MAGIC.to_vec();
         non_keyword.extend_from_slice(&[MAP, 0, 0, 0, 1]);
         non_keyword.extend_from_slice(&[STRING, 0, 0, 0, 1, b'a', NIL]);
-        assert!(decode(&non_keyword)
-            .unwrap_err()
-            .contains("portable records require keyword keys"));
+        assert_eq!(
+            decode(&non_keyword).unwrap(),
+            Value::Map(vec![(Value::String("a".into()), Value::Nil)])
+        );
 
         let mut duplicate = MAGIC.to_vec();
         duplicate.extend_from_slice(&[MAP, 0, 0, 0, 2]);
@@ -393,18 +762,12 @@ mod tests {
     #[test]
     fn runtime_only_tags_fail_closed() {
         for tag in [
-            SYMBOL,
-            LIST,
-            SET,
             HANDLE,
             NAMESPACE,
             VAR,
             ATOM,
             ARRAY,
             OBJECT,
-            CHARACTER,
-            BIG_INTEGER,
-            REGEX,
         ] {
             let bytes = [MAGIC.as_slice(), &[tag]].concat();
             assert!(decode(&bytes).unwrap_err().contains("runtime wire tag"));

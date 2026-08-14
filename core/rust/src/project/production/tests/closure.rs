@@ -64,7 +64,9 @@ fn separates_macro_and_runtime_closures() {
     assert!(analysis
         .compile_time_closure
         .contains("app.macros/identity-form"));
-    assert!(!analysis.runtime_closure.contains("app.macros/identity-form"));
+    assert!(!analysis
+        .runtime_closure
+        .contains("app.macros/identity-form"));
 }
 
 #[test]

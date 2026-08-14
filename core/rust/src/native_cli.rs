@@ -334,7 +334,7 @@ fn runtime(
     if allow_postgres {
         runtime
             .install_native_module(hara_db_postgres::module())
-            .expect("std.db.postgres native module must install once per runtime");
+            .expect("db.postgres native module must install once per runtime");
     }
     runtime
 }

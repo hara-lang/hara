@@ -105,33 +105,13 @@ public final class HaraContext {
           Map.entry("string", "std.foundation.string"),
           Map.entry("coroutine", "std.foundation.coroutine"),
           Map.entry("promise", "std.foundation.promise"),
-          Map.entry("bytes", "std.foundation.bytes"),
-          Map.entry("file", "std.foundation.file"),
-          Map.entry("socket", "std.foundation.socket"),
-          Map.entry("edn", "std.foundation.edn"),
-          Map.entry("json", "std.foundation.json"),
-          Map.entry("set", "std.foundation.set"),
-          Map.entry("pretty", "std.foundation.pretty"),
-          Map.entry("host", "std.foundation.host"),
-          Map.entry("kernel", "std.foundation.kernel"),
-          Map.entry("os", "std.foundation.os"),
-          Map.entry("crypto", "std.foundation.crypto"));
+          Map.entry("bytes", "std.foundation.bytes"));
   private static final Map<String, String> DEFAULT_LIBRARY_ALIASES =
       Map.ofEntries(
           Map.entry("string", "str"),
           Map.entry("coroutine", "co"),
           Map.entry("promise", "promise"),
-          Map.entry("bytes", "bytes"),
-          Map.entry("file", "file"),
-          Map.entry("socket", "socket"),
-          Map.entry("edn", "edn"),
-          Map.entry("json", "json"),
-          Map.entry("set", "set"),
-          Map.entry("pretty", "pretty"),
-          Map.entry("host", "host"),
-          Map.entry("kernel", "kernel"),
-          Map.entry("os", "os"),
-          Map.entry("crypto", "crypto"));
+          Map.entry("bytes", "bytes"));
   private static final Set<String> MARKER_METHOD_NAMES =
       Set.of(
           "get",
@@ -691,13 +671,21 @@ public final class HaraContext {
     configureNativeFlavor(declaration.structuralClauses);
     applyNamespaceRequires(declaration.structuralClauses);
     applyNamespaceUses(declaration.structuralClauses);
-    for (String name : declaration.excludedFoundation) {
-      currentNamespace.removeReferredVar(name);
-      Map<String, HaraMacro> namespaceMacros = macros.get(currentNamespace.name());
-      HaraMacro foundationMacro = macros.getOrDefault(FOUNDATION_NAMESPACE, Map.of()).get(name);
-      if (namespaceMacros != null && namespaceMacros.get(name) == foundationMacro) {
-        namespaceMacros.remove(name);
+    if (declaration.selectiveFoundation) {
+      for (String name : namespace(FOUNDATION_NAMESPACE).vars.keySet()) {
+        if (!declaration.exposedFoundation.contains(name)) removeFoundationRefer(name);
       }
+    } else {
+      for (String name : declaration.excludedFoundation) removeFoundationRefer(name);
+    }
+  }
+
+  private void removeFoundationRefer(String name) {
+    currentNamespace.removeReferredVar(name);
+    Map<String, HaraMacro> namespaceMacros = macros.get(currentNamespace.name());
+    HaraMacro foundationMacro = macros.getOrDefault(FOUNDATION_NAMESPACE, Map.of()).get(name);
+    if (namespaceMacros != null && namespaceMacros.get(name) == foundationMacro) {
+      namespaceMacros.remove(name);
     }
   }
 

@@ -1,6 +1,7 @@
 (ns std.foundation-test
   (:use code.test)
-  (:require [std.lib.test :as test]))
+  (:require [std.context.registry :as registry]
+            [std.lib.test :as test]))
 
 (defmacro env-line [] (:line &env))
 
@@ -177,6 +178,27 @@
      => [true true true])
    (fact "hygienic macro gensyms do not leak"
      [(hygienic 4) (hygienic 5)]
-     => [[4 4] [5 5]])])
+     => [[4 4] [5 5]])
+
+   (fact "pointers are first-class Foundation values"
+     (let [value (pointer {:context :null :answer 42})]
+       [(pointer? value)
+        (IPointer/ptr-context value)
+        (get value :answer)
+        (set (keys value))
+        (count value)
+        (= registry/+rt-null+ (IApplicable/apply-default value))])
+     => [true :null 42 #{:answer} 1 true])
+
+   (fact "pointer invocation uses native context protocols"
+     (let [value (pointer {:context :null})
+           direct (IApplicable/apply-in value registry/+rt-null+ [:a :b])
+           invoked (IInvokeIn/invoke-in value registry/+rt-null+ :a :b)]
+       [[(first direct) (= value (second direct)) (nth direct 2) (nth direct 3)]
+        [(first invoked) (= value (second invoked)) (nth invoked 2) (nth invoked 3)]
+        (IContext/call registry/+rt-null+ :c)])
+     => [[:pointer/invoke true :a :b]
+         [:pointer/invoke true :a :b]
+         [:c]])])
 
 (pr-str (run '[std.foundation-test]))

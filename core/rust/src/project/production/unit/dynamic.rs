@@ -154,12 +154,7 @@ fn scan_dynamic_children(
     }
 }
 
-fn collect_code_symbols(
-    runtime: &Runtime,
-    module: &str,
-    form: &Form,
-    analysis: &mut UnitAnalysis,
-) {
+fn collect_code_symbols(runtime: &Runtime, module: &str, form: &Form, analysis: &mut UnitAnalysis) {
     match form {
         Form::Symbol(name) => {
             if let Some(resolved) = resolve_existing_symbol(runtime, module, name) {

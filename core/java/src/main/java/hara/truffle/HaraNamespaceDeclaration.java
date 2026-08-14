@@ -22,6 +22,8 @@ final class HaraNamespaceDeclaration {
   final boolean blank;
   final java.util.List<Symbol> builtins;
   final Set<String> excludedFoundation;
+  final boolean selectiveFoundation;
+  final Set<String> exposedFoundation;
   final Set<String> excludedIntrinsics;
   final Map<String, String> intrinsicAliases;
   final Object[] structuralClauses;
@@ -31,6 +33,8 @@ final class HaraNamespaceDeclaration {
       boolean blank,
       java.util.List<Symbol> builtins,
       Set<String> excludedFoundation,
+      boolean selectiveFoundation,
+      Set<String> exposedFoundation,
       Set<String> excludedIntrinsics,
       Map<String, String> intrinsicAliases,
       Object[] structuralClauses) {
@@ -38,6 +42,8 @@ final class HaraNamespaceDeclaration {
     this.blank = blank;
     this.builtins = java.util.List.copyOf(builtins);
     this.excludedFoundation = Set.copyOf(excludedFoundation);
+    this.selectiveFoundation = selectiveFoundation;
+    this.exposedFoundation = Set.copyOf(exposedFoundation);
     this.excludedIntrinsics = Set.copyOf(excludedIntrinsics);
     this.intrinsicAliases = Map.copyOf(intrinsicAliases);
     this.structuralClauses = structuralClauses.clone();
@@ -50,8 +56,11 @@ final class HaraNamespaceDeclaration {
     }
     boolean configSeen = false;
     boolean blank = false;
+    boolean overrideSeen = false;
+    boolean exposeSeen = false;
     ArrayList<Symbol> builtins = new ArrayList<>();
     LinkedHashSet<String> excludedFoundation = new LinkedHashSet<>();
+    LinkedHashSet<String> exposedFoundation = new LinkedHashSet<>();
     LinkedHashSet<String> excluded = new LinkedHashSet<>();
     LinkedHashMap<String, String> aliases = new LinkedHashMap<>();
     ArrayList<Object> structural = new ArrayList<>();
@@ -77,7 +86,8 @@ final class HaraNamespaceDeclaration {
           if (!(entry.getKey() instanceof Keyword option) || option.getNamespace() != null) {
             throw new HaraException(":config keys must be unqualified keywords");
           }
-          if (!Set.of("blank", "builtins", "intrinsics").contains(option.getName())) {
+          if (!Set.of("blank", "builtins", "intrinsics", "override", "expose")
+              .contains(option.getName())) {
             throw new HaraException("Unsupported :config option: :" + option.getName());
           }
         }
@@ -90,6 +100,16 @@ final class HaraNamespaceDeclaration {
         }
         Object builtinValue = options.lookup(Keyword.create("builtins"));
         if (builtinValue != null) parseBuiltins(builtinValue, builtins);
+        Object overrideValue = options.lookup(Keyword.create("override"));
+        if (overrideValue != null) {
+          overrideSeen = true;
+          parseFoundationNames(overrideValue, "override", excludedFoundation);
+        }
+        Object exposeValue = options.lookup(Keyword.create("expose"));
+        if (exposeValue != null) {
+          exposeSeen = true;
+          parseFoundationNames(exposeValue, "expose", exposedFoundation);
+        }
         Object intrinsicValue = options.lookup(Keyword.create("intrinsics"));
         if (intrinsicValue != null) parseIntrinsics(intrinsicValue, excluded, aliases);
       } else if ("require".equals(clauseName)
@@ -97,8 +117,6 @@ final class HaraNamespaceDeclaration {
           || "flavor".equals(clauseName)
           || "import".equals(clauseName)) {
         structural.add(clause);
-      } else if ("refer-clojure".equals(clauseName)) {
-        parseReferClojure(clause, excludedFoundation);
       } else if ("intrinsics".equals(clauseName) || "builtins".equals(clauseName)) {
         throw new HaraException(":" + clauseName + " is valid only inside ns :config");
       } else {
@@ -111,21 +129,41 @@ final class HaraNamespaceDeclaration {
             "Intrinsic library cannot be both excluded and aliased: " + library);
       }
     }
+    if (blank && overrideSeen) {
+      throw new HaraException(":config :blank true cannot be combined with :override");
+    }
+    if (blank && exposeSeen) {
+      throw new HaraException(":config :blank true cannot be combined with :expose");
+    }
+    if (overrideSeen && exposeSeen) {
+      throw new HaraException(":config :override cannot be combined with :expose");
+    }
     return new HaraNamespaceDeclaration(
-        name, blank, builtins, excludedFoundation, excluded, aliases, structural.toArray());
+        name,
+        blank,
+        builtins,
+        excludedFoundation,
+        exposeSeen,
+        exposedFoundation,
+        excluded,
+        aliases,
+        structural.toArray());
   }
 
-  private static void parseReferClojure(List<?> clause, Set<String> excludedFoundation) {
-    if (clause.count() != 3
-        || !Keyword.create("exclude").equals(clause.nth(1))
-        || !(clause.nth(2) instanceof Vector<?> symbols)) {
-      throw new HaraException(":refer-clojure expects :exclude and a vector of symbols");
+  private static void parseFoundationNames(Object value, String option, Set<String> output) {
+    if (!(value instanceof Vector<?> symbols)) {
+      throw new HaraException(
+          ":config :" + option + " expects a vector of unqualified symbols");
     }
     for (Object item : symbols) {
       if (!(item instanceof Symbol symbol) || symbol.getNamespace() != null) {
-        throw new HaraException(":refer-clojure :exclude expects unqualified symbols");
+        throw new HaraException(
+            ":config :" + option + " expects a vector of unqualified symbols");
       }
-      excludedFoundation.add(symbol.getName());
+      if (!output.add(symbol.getName())) {
+        String label = "override".equals(option) ? "override" : "exposure";
+        throw new HaraException("Duplicate Foundation " + label + ": " + symbol.getName());
+      }
     }
   }
 

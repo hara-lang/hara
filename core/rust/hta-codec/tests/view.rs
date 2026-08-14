@@ -1,6 +1,6 @@
-use hara_abi::Value as PortableValue;
+use hara_abi::ImmutableValue as PortableValue;
 use hara_hta::view::{compose_record, compose_vector, Fragment, FrameView};
-use hara_hta::{encode, MAGIC};
+use hara_hta::{encode_immutable, MAGIC};
 use std::collections::BTreeMap;
 
 const NIL: u8 = 0;
@@ -287,7 +287,7 @@ fn portable_fragment_composition_matches_existing_record_encoding() {
     let mut record = BTreeMap::new();
     record.insert("a".to_string(), PortableValue::Integer(1));
     record.insert("z".to_string(), PortableValue::String("last".into()));
-    let existing = encode(&PortableValue::Record(record)).unwrap();
+    let existing = encode_immutable(&PortableValue::Record(record)).unwrap();
     let composed = compose_record([
         (
             "z".to_string(),

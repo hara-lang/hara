@@ -25,14 +25,14 @@ pub use plan::BuildPlan;
 pub use report::{ANALYSIS_FORMAT, SHAKE_FORMAT};
 
 use crate::core::Value;
-use crate::kernel::{GeneratedNamespaceConfig, Form};
+use crate::kernel::{Form, GeneratedNamespaceConfig};
 use crate::lang::data::Symbol;
 use crate::project::Project;
 use crate::Runtime;
 use graph::finish_analysis;
 use source::{
-    aggregate_digest, collect_embedded_modules, collect_project_modules, deterministic_module_order,
-    Diagnostic, SourceLocation, SourceModule,
+    aggregate_digest, collect_embedded_modules, collect_project_modules,
+    deterministic_module_order, Diagnostic, SourceLocation, SourceModule,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -82,7 +82,10 @@ pub fn analyze_and_write(project: &Project, plan_source: &str) -> Result<Analysi
     })
 }
 
-fn collect_selected_modules(project: &Project, plan: &BuildPlan) -> Result<Vec<SourceModule>, String> {
+fn collect_selected_modules(
+    project: &Project,
+    plan: &BuildPlan,
+) -> Result<Vec<SourceModule>, String> {
     let project_modules = collect_project_modules(project)?;
     let embedded_modules = collect_embedded_modules()?;
     let project_names = project_modules
@@ -94,7 +97,10 @@ fn collect_selected_modules(project: &Project, plan: &BuildPlan) -> Result<Vec<S
         .map(|module| (module.name.clone(), module))
         .collect::<BTreeMap<_, _>>();
     for module in project_modules {
-        if catalogue.insert(module.name.clone(), module.clone()).is_some() {
+        if catalogue
+            .insert(module.name.clone(), module.clone())
+            .is_some()
+        {
             return Err(format!(
                 "project namespace shadows an embedded production module: {}",
                 module.name
@@ -162,14 +168,18 @@ fn analyze_modules(plan: &BuildPlan, mut modules: Vec<SourceModule>) -> Result<A
             ) {
                 Ok(seeds) => seeds,
                 Err(error) => {
-                    let analysis = failed_expansion_unit(module, index, &form.form, location, error);
+                    let analysis =
+                        failed_expansion_unit(module, index, &form.form, location, error);
                     unit_ids.push(analysis.id.clone());
                     units.push(analysis);
                     continue;
                 }
             };
             for seed in seeds {
-                predeclare_vars(&mut runtime, unit::raw_provided_vars(&seed.form, &seed.module));
+                predeclare_vars(
+                    &mut runtime,
+                    unit::raw_provided_vars(&seed.form, &seed.module),
+                );
                 let mut compiled = unit::analyze_unit(&runtime, seed, plan);
                 if let Err(error) = unit::execute_compile_time_unit(&mut runtime, &compiled) {
                     compiled.analysis.diagnostics.push(Diagnostic {
@@ -223,14 +233,19 @@ fn prepare_runtime(runtime: &mut Runtime, modules: &[SourceModule]) -> Result<()
         let namespace_form = crate::kernel::parse(&module.namespace_form)
             .map_err(|error| format!("{}: {error}", module.path))?;
         let Form::List(values) = without_metadata(&namespace_form) else {
-            return Err(format!("{}: namespace declaration must be a list", module.path));
+            return Err(format!(
+                "{}: namespace declaration must be a list",
+                module.path
+            ));
         };
         let config = GeneratedNamespaceConfig::configure_with(&values[2..], |target| {
             available.contains(target)
                 || runtime.namespace_registry.find(target).is_some()
                 || runtime.resources.contains_key(target)
         })?;
-        runtime.generated_configs.insert(module.name.clone(), config);
+        runtime
+            .generated_configs
+            .insert(module.name.clone(), config);
     }
     Ok(())
 }

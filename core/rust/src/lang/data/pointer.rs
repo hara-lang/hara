@@ -118,18 +118,19 @@ mod tests {
 
     #[test]
     fn pointer_identity_is_structural_and_display_is_literal() {
-        let fields: Map<Value, Value> = vec![
-            (
-                Value::Keyword(Keyword::from("id")),
-                Value::String("ROOT".into()),
-            ),
-        ]
+        let fields: Map<Value, Value> = vec![(
+            Value::Keyword(Keyword::from("id")),
+            Value::String("ROOT".into()),
+        )]
         .into_iter()
         .collect();
         let left = Pointer::new(Keyword::from("kernel"), fields.clone());
         let right = Pointer::new(Keyword::from("kernel"), fields);
         assert_eq!(left, right);
-        assert_eq!(left.hash_calc(HashType::Rapid), right.hash_calc(HashType::Rapid));
+        assert_eq!(
+            left.hash_calc(HashType::Rapid),
+            right.hash_calc(HashType::Rapid)
+        );
         assert!(left.display().starts_with("#ptr {"));
         assert!(left.display().contains(":context :kernel"));
         assert!(left.display().contains(":id \"ROOT\""));

@@ -1,5 +1,5 @@
-use super::model::{project_location, RetentionReason};
 use super::super::source::Diagnostic;
+use super::model::{project_location, RetentionReason};
 use super::UnitAnalysis;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 

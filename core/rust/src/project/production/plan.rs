@@ -23,15 +23,9 @@ impl BuildPlan {
         let project_id = scalar(required(entries, "project/id")?, ":project/id")?;
         let project_version = string(required(entries, "project/version")?, ":project/version")?;
         let profile = identifier(required(entries, "profile/name")?, ":profile/name")?;
-        let language = identifier(
-            required(entries, "profile/language")?,
-            ":profile/language",
-        )?;
+        let language = identifier(required(entries, "profile/language")?, ":profile/language")?;
         let main = scalar(required(entries, "profile/main")?, ":profile/main")?;
-        let tree_shake = boolean(
-            required(entries, "build/tree-shake")?,
-            ":build/tree-shake",
-        )?;
+        let tree_shake = boolean(required(entries, "build/tree-shake")?, ":build/tree-shake")?;
         let entrypoints = symbol_vector(
             required(entries, "build/entrypoints")?,
             ":build/entrypoints",

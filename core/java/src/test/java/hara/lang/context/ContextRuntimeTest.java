@@ -67,13 +67,13 @@ public class ContextRuntimeTest {
   }
 
   @Test
-  public void pointersUseTheirOwningRuntimeResolver() {
+  public void pointersAreStructuralDescriptorsAndUseExplicitRuntimes() {
     CountingRuntime runtime = new CountingRuntime();
-    Pointer pointer =
-        new Pointer("test", Map.of("value", 42), ignored -> runtime);
-    assertSame(runtime, pointer.runtime());
-    assertEquals(42, pointer.deref());
-    assertEquals(3, pointer.applyIn(null, new Object[] {1, 2, 3}));
+    Pointer pointer = new Pointer("test", Map.of("value", 42));
+    assertEquals(new Pointer("test", Map.of("value", 42)), pointer);
+    assertEquals(42, pointer.lookup("value"));
+    assertEquals(1, pointer.count());
+    assertEquals(3, pointer.applyIn(runtime, new Object[] {1, 2, 3}));
   }
 
   private static final class CountingRuntime implements IContext, IComponent {
@@ -87,8 +87,9 @@ public class ContextRuntimeTest {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public Object derefPtr(hara.lang.protocol.IPointer pointer) {
-      return pointer.ptrVal("value");
+      return ((hara.lang.protocol.ILookup<Object, Object>) pointer).lookup("value");
     }
 
     @Override

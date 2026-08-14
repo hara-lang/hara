@@ -100,6 +100,22 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void onlyPortableFoundationShorthandsAreAutomatic() {
+    try (Context context = context()) {
+      assertEquals(
+          42,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns sample.kernel) (def value 42) "
+                      + "(ns app (:require [sample.kernel :as kernel])) kernel/value")
+              .asLong());
+      assertEquals("x", context.eval(HaraLanguage.ID, "(str \"x\")").asString());
+      assertErrorContains(context, "(json/read \"null\")", "Unbound symbol: json/read");
+    }
+  }
+
+  @Test
   public void referredVarsAreProtectedUnlessTheNamespaceDeclarationOmitsThem() {
     try (Context context = context()) {
       assertEquals(
@@ -107,8 +123,7 @@ public class HaraGeneratedLibrariesTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(ns app (:config {:blank true}) "
-                      + "(:require [std.foundation :refer :all :exclude [+]])) "
+                  "(ns app (:config {:override [+]})) "
                       + "(defn + [a b] 99) [(+ 1 2) (std.foundation/+ 1 2)]")
               .toString());
 
@@ -126,17 +141,43 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
-  public void referClojureExclusionsAlsoOmitRuntimeIntrinsics() {
+  public void configOverridesOmitSelectedFoundationVars() {
     try (Context context = context()) {
       assertEquals(
           42,
           context
               .eval(
                   HaraLanguage.ID,
-                  "(ns app.runtime (:refer-clojure :exclude [Runtime])) "
+                  "(ns app.runtime (:config {:override [Runtime]})) "
                       + "(defstruct Runtime [value]) "
                       + "(:value (app.runtime/Runtime 42))")
               .asLong());
+      assertErrorContains(
+          context,
+          "(ns legacy (:refer-clojure :exclude [Runtime]))",
+          "Unsupported ns clause: :refer-clojure");
+      assertErrorContains(
+          context,
+          "(ns contradictory (:config {:blank true :override [Runtime]}))",
+          "cannot be combined with :override");
+    }
+  }
+
+  @Test
+  public void configExposeSelectsOnlyNamedFoundationVars() {
+    try (Context context = context()) {
+      assertEquals(
+          42,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns exposed (:config {:expose [identity]})) (identity 42)")
+              .asLong());
+      assertErrorContains(context, "(count [1 2])", "Unbound symbol: count");
+      assertErrorContains(
+          context,
+          "(ns mixed (:config {:override [map] :expose [inc]}))",
+          "cannot be combined with :expose");
     }
   }
 

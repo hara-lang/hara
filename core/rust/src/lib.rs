@@ -793,10 +793,46 @@ impl Runtime {
         }
         #[cfg(feature = "bytecode-vm")]
         {
-            vm::eval_bytecode_bundle(self, include_bytes!("../assets/std.foundation.hbx"))?;
-            self.loaded_resources.insert("std.foundation".into());
-            for &name in EAGER_HAL_RESOURCES {
-                self.loaded_resources.insert(name.into());
+            let mut source_fallback = false;
+            match vm::eval_bytecode_bundle(self, include_bytes!("../assets/std.foundation.hbx")) {
+                Ok(()) => {
+                    self.loaded_resources.insert("std.foundation".into());
+                    for &name in EAGER_HAL_RESOURCES {
+                        self.loaded_resources.insert(name.into());
+                    }
+                }
+                Err(_) => {
+                    // A source checkout may legitimately be newer than its
+                    // tracked bytecode artifact while Foundation is being
+                    // changed. Keep the CLI usable so the canonical HAL can
+                    // validate itself and regenerate that artifact.
+                    let foundation =
+                        self.resources
+                            .get("std.foundation")
+                            .cloned()
+                            .ok_or_else(|| {
+                                "embedded HAL catalog is missing std.foundation".to_owned()
+                            })?;
+                    core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
+                        self.eval_text(&foundation)
+                    })?;
+                    self.install_structural_primitives_into("std.foundation");
+                    self.loaded_resources.insert("std.foundation".into());
+                    source_fallback = true;
+                }
+            }
+            if source_fallback {
+                for &name in EAGER_HAL_RESOURCES {
+                    let source = self
+                        .resources
+                        .get(name)
+                        .cloned()
+                        .ok_or_else(|| format!("embedded HAL catalog is missing {name}"))?;
+                    core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
+                        self.eval_text(&source)
+                    })?;
+                    self.loaded_resources.insert(name.into());
+                }
             }
         }
         #[cfg(not(feature = "bytecode-vm"))]
@@ -1189,18 +1225,30 @@ impl Runtime {
         } else {
             self.refer_foundation_into(name);
             let target = self.namespace_registry.find_or_create(name);
-            for excluded in config.excluded_foundation() {
-                let local = crate::lang::data::Symbol::parse(excluded);
+            let omitted = match config.exposed_foundation() {
+                Some(exposed) => target
+                    .mappings()
+                    .into_iter()
+                    .filter(|(local, var)| {
+                        var.symbol().get_namespace() == Some("std.foundation")
+                            && !exposed.contains(local.as_str())
+                    })
+                    .map(|(local, _)| local.as_str().to_owned())
+                    .collect::<Vec<_>>(),
+                None => config.excluded_foundation().iter().cloned().collect(),
+            };
+            for excluded in omitted {
+                let local = crate::lang::data::Symbol::parse(&excluded);
                 if target
                     .resolve(&local)
                     .is_some_and(|var| var.symbol().get_namespace() == Some("std.foundation"))
                 {
                     target.unmap(&local);
-                    self.env.remove(excluded);
+                    self.env.remove(&excluded);
                 }
                 self.macros
                     .borrow_mut()
-                    .remove(&(name.to_owned(), excluded.clone()));
+                    .remove(&(name.to_owned(), excluded));
             }
         }
         core::select_namespace_environment(&self.namespace_registry, &mut self.env, name);
@@ -3099,6 +3147,20 @@ mod tests {
     }
 
     #[test]
+    fn functions_resolve_lazy_globals_in_their_defining_namespace() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (ns example.function-a) (def answer 41) (defn read-answer [] answer) (ns example.function-b) (def answer 42) (example.function-a/read-answer))",
+                )
+                .unwrap(),
+            "41"
+        );
+        assert_eq!(runtime.current_namespace(), "example.function-b");
+    }
+
+    #[test]
     fn namespace_declaration_restores_declared_namespace_after_requires() {
         let mut runtime = Runtime::new();
         runtime.register_resource("example.required", "(ns example.required) (def answer 42)");
@@ -3551,7 +3613,7 @@ mod tests {
                 .iter()
                 .map(|(_, methods)| methods.len())
                 .sum::<usize>(),
-            103
+            101
         );
         let foundation = runtime
             .namespace_registry
@@ -3760,11 +3822,11 @@ mod tests {
         else {
             return;
         };
-        assert_eq!(catalog.matches("{:protocol ").count(), 88);
+        assert_eq!(catalog.matches("{:protocol ").count(), 86);
         let mut runtime = Runtime::new();
         let result = runtime.eval_text(source).unwrap();
         assert!(!result.contains(":pass false"), "{result}");
-        assert_eq!(result.matches(":pass true").count(), 88, "{result}");
+        assert_eq!(result.matches(":pass true").count(), 86, "{result}");
 
         let method_vars = source
             .lines()
@@ -3776,7 +3838,7 @@ mod tests {
                     .nth(2)
             })
             .collect::<Vec<_>>();
-        assert_eq!(method_vars.len(), 88);
+        assert_eq!(method_vars.len(), 86);
         for method_var in method_vars {
             let mut segments = method_var.split(['.', '/']);
             let protocol_namespace = segments.nth(2).expect("protocol namespace");
@@ -3814,7 +3876,7 @@ mod tests {
                 None
             })
             .collect::<Vec<_>>();
-        assert_eq!(failure_forms.len(), 88);
+        assert_eq!(failure_forms.len(), 86);
         for failure_form in failure_forms {
             let call = failure_form.replacen("unsupported", "(UnsupportedUseCase)", 1);
             let error = runtime.eval_text(&call).unwrap_err();
@@ -4260,9 +4322,9 @@ mod tests {
             "translation-is-idempotent",
         ] {
             assert!(
-                requirements.iter().any(
-                    |value| matches!(value, Form::Keyword(name) if name == requirement)
-                ),
+                requirements
+                    .iter()
+                    .any(|value| matches!(value, Form::Keyword(name) if name == requirement)),
                 "missing native translation requirement: {requirement}"
             );
         }
@@ -4862,7 +4924,7 @@ mod tests {
 
         assert_eq!(
             runtime
-                .eval_text("(ns project.app (:config {:blank true}) (:require [std.foundation :refer :all :exclude [identity]])) (def identity (fn [value] 7)) (identity 42)")
+                .eval_text("(ns project.app (:config {:override [identity]})) (def identity (fn [value] 7)) (identity 42)")
                 .unwrap(),
             "7"
         );
@@ -4876,6 +4938,25 @@ mod tests {
         assert_eq!(
             runtime.eval_text("(std.foundation/identity 42)").unwrap(),
             "42"
+        );
+        assert!(runtime
+            .eval_text("(ns legacy (:refer-clojure :exclude [identity]))")
+            .unwrap_err()
+            .contains("Unsupported ns clause: :refer-clojure"));
+    }
+
+    #[test]
+    fn config_expose_selects_only_named_foundation_vars() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text("(ns exposed (:config {:expose [identity]})) (identity 42)")
+                .unwrap(),
+            "42"
+        );
+        assert_eq!(
+            runtime.eval_text("(count [1 2])").unwrap_err(),
+            "unbound symbol: count"
         );
     }
 
@@ -5413,9 +5494,39 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text("(type (pointer {:context :test :refer tool.lint/lint-source :id lint-source}))")
+                .eval_text("(type (pointer {:context :test :refer 'tool.lint/lint-source :id 'lint-source}))")
                 .unwrap(),
             ":hara.type/pointer"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(get #ptr {:context :kernel :id \"ROOT\"} :id)")
+                .unwrap(),
+            "\"ROOT\""
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(count #ptr {:context :kernel :id \"ROOT\"})")
+                .unwrap(),
+            "1"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(std.protocol.ifind/find #ptr {:context :kernel :id \"ROOT\"} :id)")
+                .unwrap(),
+            "[:id \"ROOT\"]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(keys #ptr {:context :kernel :id \"ROOT\"})")
+                .unwrap(),
+            "[:id]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(vals #ptr {:context :kernel :id \"ROOT\"})")
+                .unwrap(),
+            "[\"ROOT\"]"
         );
         assert_eq!(
             runtime.eval_text("(type #sample [1 2])").unwrap(),

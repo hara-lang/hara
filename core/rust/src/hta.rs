@@ -254,16 +254,8 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
         }
         Value::Pointer(value) => {
             output.push(POINTER);
-            encode_bare(
-                &Value::Keyword(value.context().clone()),
-                output,
-                depth + 1,
-            )?;
-            encode_bare(
-                &Value::Map(value.fields().clone()),
-                output,
-                depth + 1,
-            )?;
+            encode_bare(&Value::Keyword(value.context().clone()), output, depth + 1)?;
+            encode_bare(&Value::Map(value.fields().clone()), output, depth + 1)?;
         }
         Value::Mutable(_) | Value::MutableType(_) => {
             return Err(
@@ -623,12 +615,9 @@ mod tests {
 
     #[test]
     fn pointers_round_trip_as_descriptors() {
-        let fields = vec![(
-            Value::Keyword("id".into()),
-            Value::String("ROOT".into()),
-        )]
-        .into_iter()
-        .collect();
+        let fields = vec![(Value::Keyword("id".into()), Value::String("ROOT".into()))]
+            .into_iter()
+            .collect();
         let pointer = Value::Pointer(crate::lang::data::Pointer::new(
             crate::lang::data::Keyword::from("kernel"),
             fields,
