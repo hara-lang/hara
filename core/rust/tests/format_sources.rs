@@ -1,14 +1,22 @@
-use hara_wasm::Runtime;
+use hara_wasm::SessionKernel;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const STRING: &str = "lib/src/std/foundation/string.hal";
-const COMMON: &str = "lib/src/std/format/common.hal";
-const TABLE: &str = "lib/src/std/format/table.hal";
-const REPORT: &str = "lib/src/std/format/report.hal";
-const TERMINAL: &str = "lib/src/std/format/terminal.hal";
-const FORMAT: &str = "lib/src/std/format.hal";
-const WORK_REPORT: &str = "lib/src/std/work/report.hal";
+type Resource = (&'static str, &'static str);
+
+const STRING: Resource = (
+    "std.foundation.string",
+    "lib/src/std/foundation/string.hal",
+);
+const COMMON: Resource = ("std.format.common", "lib/src/std/format/common.hal");
+const TABLE: Resource = ("std.format.table", "lib/src/std/format/table.hal");
+const REPORT: Resource = ("std.format.report", "lib/src/std/format/report.hal");
+const TERMINAL: Resource = (
+    "std.format.terminal",
+    "lib/src/std/format/terminal.hal",
+);
+const FORMAT: Resource = ("std.format", "lib/src/std/format.hal");
+const WORK_REPORT: Resource = ("std.work.report", "lib/src/std/work/report.hal");
 
 fn core_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -22,41 +30,44 @@ fn read_source(path: &str) -> String {
         .unwrap_or_else(|error| panic!("failed to read {path}: {error}"))
 }
 
-fn evaluate(paths: &[&str], tail: &str) -> Result<String, String> {
-    let mut source = String::new();
-    for path in paths {
-        source.push_str(&read_source(path));
-        source.push('\n');
+fn evaluate(resources: &[Resource], prelude: &str, tail: &str) -> Result<String, String> {
+    let mut kernel = SessionKernel::new();
+    for &(namespace, path) in resources {
+        kernel.register_resource(namespace, &read_source(path));
     }
-    source.push_str(tail);
-    let mut runtime = Runtime::new();
-    runtime.eval_native(&source)
+    kernel.eval("ROOT", &format!("{prelude}\n{tail}"))
+}
+
+fn assert_source(resources: &[Resource], namespace: &str) {
+    eprintln!("=== source-candidate:{namespace} ===");
+    let prelude = format!("(require [{namespace} :as candidate])");
+    evaluate(resources, &prelude, "nil")
+        .unwrap_or_else(|error| panic!("candidate {namespace} failed: {error}"));
 }
 
 fn assert_string_case(name: &str, tail: &str, expected: &str) {
     eprintln!("=== string-case:{name} ===");
-    let output = evaluate(&[STRING], tail)
-        .unwrap_or_else(|error| panic!("string case {name} failed: {error}"));
+    let output = evaluate(
+        &[STRING],
+        "(require [std.foundation.string :as str])",
+        tail,
+    )
+    .unwrap_or_else(|error| panic!("string case {name} failed: {error}"));
     assert_eq!(output, expected, "string case {name}");
 }
 
 #[test]
 fn every_changed_hal_source_evaluates_in_a_fresh_native_runtime() {
-    let candidates: &[&[&str]] = &[
-        &[STRING],
-        &[COMMON],
-        &[COMMON, TABLE],
-        &[COMMON, TABLE, REPORT],
-        &[TERMINAL],
-        &[COMMON, TABLE, REPORT, TERMINAL, FORMAT],
+    assert_source(&[STRING], STRING.0);
+    assert_source(&[COMMON], COMMON.0);
+    assert_source(&[COMMON, TABLE], TABLE.0);
+    assert_source(&[COMMON, TABLE, REPORT], REPORT.0);
+    assert_source(&[TERMINAL], TERMINAL.0);
+    assert_source(&[COMMON, TABLE, REPORT, TERMINAL, FORMAT], FORMAT.0);
+    assert_source(
         &[COMMON, TABLE, REPORT, TERMINAL, WORK_REPORT],
-    ];
-
-    for paths in candidates {
-        eprintln!("=== source-candidate:{paths:?} ===");
-        evaluate(paths, "nil")
-            .unwrap_or_else(|error| panic!("candidate {paths:?} failed: {error}"));
-    }
+        WORK_REPORT.0,
+    );
 }
 
 #[test]
@@ -64,90 +75,76 @@ fn portable_string_contract_is_exercised_inside_hal() {
     let cases = [
         (
             "tag-keywords",
-            r#"(= (std.foundation.string/tag :a "/" :ns/b) "a/ns/b")"#,
+            r#"(= (str/tag :a "/" :ns/b) "a/ns/b")"#,
             "true",
         ),
         (
             "tag-bytes",
-            r#"(= (std.foundation.string/tag
-                    (std.foundation.string/encode-utf8 "hé"))
-                   "hé")"#,
+            r#"(= (str/tag (str/encode-utf8 "hé")) "hé")"#,
             "true",
         ),
-        (
-            "tag-symbol",
-            r#"(= (std.foundation.string/tag 'hello) "hello")"#,
-            "true",
-        ),
-        (
-            "tag-nil",
-            r#"(= (std.foundation.string/tag nil) "nil")"#,
-            "true",
-        ),
-        ("blank-nil", "(std.foundation.string/blank? nil)", "true"),
+        ("tag-symbol", r#"(= (str/tag 'hello) "hello")"#, "true"),
+        ("tag-nil", r#"(= (str/tag nil) "nil")"#, "true"),
+        ("blank-nil", "(str/blank? nil)", "true"),
         (
             "trim-newlines",
-            r#"(= (std.foundation.string/trim-newlines "hello\r\n") "hello")"#,
+            r#"(= (str/trim-newlines "hello\r\n") "hello")"#,
             "true",
         ),
-        (
-            "caseless",
-            r#"(std.foundation.string/caseless= "heLLo" "HellO")"#,
-            "true",
-        ),
+        ("caseless", r#"(str/caseless= "heLLo" "HellO")"#, "true"),
         (
             "replace-at",
-            r#"(= (std.foundation.string/replace-at "hλra" 1 "a") "hara")"#,
+            r#"(= (str/replace-at "hλra" 1 "a") "hara")"#,
             "true",
         ),
         (
             "insert-at",
-            r#"(= (std.foundation.string/insert-at "hλra" 2 "!") "hλ!ra")"#,
+            r#"(= (str/insert-at "hλra" 2 "!") "hλ!ra")"#,
             "true",
         ),
         (
             "camel-case",
-            r#"(= (std.foundation.string/camel-case "hello__--  world") "helloWorld")"#,
+            r#"(= (str/camel-case "hello__--  world") "helloWorld")"#,
             "true",
         ),
         (
             "pascal-case",
-            r#"(= (std.foundation.string/pascal-case "hello_world") "HelloWorld")"#,
+            r#"(= (str/pascal-case "hello_world") "HelloWorld")"#,
             "true",
         ),
         (
             "snake-case",
-            r#"(= (std.foundation.string/snake-case "version2Value") "version2_value")"#,
+            r#"(= (str/snake-case "version2Value") "version2_value")"#,
             "true",
         ),
         (
             "spear-case",
-            r#"(= (std.foundation.string/spear-case "hello_world") "hello-world")"#,
+            r#"(= (str/spear-case "hello_world") "hello-world")"#,
             "true",
         ),
         (
             "dot-case",
-            r#"(= (std.foundation.string/dot-case "hello-world") "hello.world")"#,
+            r#"(= (str/dot-case "hello-world") "hello.world")"#,
             "true",
         ),
         (
             "pipe-is-ordinary",
-            r#"(= (std.foundation.string/snake-case "hello|World") "hello|world")"#,
+            r#"(= (str/snake-case "hello|World") "hello|world")"#,
             "true",
         ),
         (
             "upper-case",
-            r#"(= (std.foundation.string/upper-case "hara") "HARA")"#,
+            r#"(= (str/upper-case "hara") "HARA")"#,
             "true",
         ),
         (
             "lower-case",
-            r#"(= (std.foundation.string/lower-case "HARA") "hara")"#,
+            r#"(= (str/lower-case "HARA") "hara")"#,
             "true",
         ),
         (
             "capital-case",
-            r#"(= (std.foundation.string/capital-case "hELLO") "Hello")"#,
+            r#"(= (str/capital-case "hELLO") "Hello")"#,
             "true",
         ),
         (
@@ -176,6 +173,13 @@ fn portable_string_contract_is_exercised_inside_hal() {
 fn layered_formatting_and_work_event_projection_are_exact() {
     let output = evaluate(
         &[STRING, COMMON, TABLE, REPORT, TERMINAL, FORMAT, WORK_REPORT],
+        r#"
+(require [std.foundation.string :as str])
+(require [std.format :as format])
+(require [std.format.report :as format-report])
+(require [std.work.report :as report])
+(require [std.work.protocol :as protocol])
+"#,
         r#"
 (def item-a
   {:item/id :alpha
@@ -211,29 +215,29 @@ fn layered_formatting_and_work_event_projection_are_exact() {
    :elapsed 8})
 
 (def document
-  (std.work.report/complete
-   (std.work.report/add-section
-    (std.work.report/add-section
-     (std.work.report/add-section
-      (std.work.report/add-section
-       (std.work.report/document
+  (report/complete
+   (report/add-section
+    (report/add-section
+     (report/add-section
+      (report/add-section
+       (report/document
         :example/transform
         {:title "TRANSFORM CODE"
          :status :warning
          :annotations ["Done"]
          :profile
          {:sections [:items :warnings :results :summary]}})
-       (std.work.report/section
+       (report/section
         :items :progress [item-a item-b]
         {:section/title "ITEMS"}))
-      (std.work.report/section
+      (report/section
        :warnings :diagnostics [item-b]
        {:section/title "WARNINGS"}))
-     (std.work.report/section
+     (report/section
       :results :table rows
       {:section/title "RESULTS"
        :section/columns columns}))
-    (std.work.report/section
+    (report/section
      :summary :summary [summary]
      {:section/title "SUMMARY"
       :section/fields
@@ -241,7 +245,7 @@ fn layered_formatting_and_work_event_projection_are_exact() {
    :warning))
 
 (def expected
-  (std.foundation.string/join
+  (str/join
    "\n"
    ["TRANSFORM CODE"
     ""
@@ -278,16 +282,16 @@ fn layered_formatting_and_work_event_projection_are_exact() {
 
 (def emitted-output (atom []))
 (def emitted-count
-  (std.format/emit-lines!
-   [(std.format/line "first" :success)
-    (std.format/line "second" :warning)]
+  (format/emit-lines!
+   [(format/line "first" :success)
+    (format/line "second" :warning)]
    {:emit
     (fn [text]
       (swap! emitted-output conj text))}))
 
 (def live-output (atom []))
 (def live-observer
-  (std.work.report/observer
+  (report/observer
    {:ansi false
     :emit
     (fn [text]
@@ -296,14 +300,14 @@ fn layered_formatting_and_work_event_projection_are_exact() {
 (def _live-events
   (reduce
    (fn [count event]
-     (std.work.protocol/work-event live-observer event)
+     (protocol/work-event live-observer event)
      (inc count))
    0
    events))
 
 (def replay-output (atom []))
 (def replay-count
-  (std.work.report/replay!
+  (report/replay!
    events
    {:ansi false
     :emit
@@ -312,25 +316,25 @@ fn layered_formatting_and_work_event_projection_are_exact() {
 
 (def ansi-title
   (first
-   (std.format/render-lines
-    (std.format/report-lines document)
+   (format/render-lines
+    (format/report-lines document)
     {:ansi true})))
 
-[(= (std.format/report document) expected)
- (= (std.work.report/render-events events) expected)
+[(= (format/report document) expected)
+ (= (report/render-events events) expected)
  (= emitted-count 2)
  (= (deref emitted-output) ["first" "second"])
- (std.foundation.string/starts-with? ansi-title "\u001b[1;36m")
- (std.foundation.string/ends-with? ansi-title "\u001b[0m")
- (= (std.foundation.string/join "\n" (deref live-output)) expected)
- (= (std.foundation.string/join "\n" (deref replay-output)) expected)
+ (str/starts-with? ansi-title "\u001b[1;36m")
+ (str/ends-with? ansi-title "\u001b[0m")
+ (= (str/join "\n" (deref live-output)) expected)
+ (= (str/join "\n" (deref replay-output)) expected)
  (= replay-count (count (deref replay-output)))
- (= (std.format.report/report
+ (= (format-report/report
      document
      {:include-sections [:summary]
       :include-title false
       :include-annotations false})
-    (std.foundation.string/join
+    (str/join
      "\n"
      ["SUMMARY"
       "Items: 2"
