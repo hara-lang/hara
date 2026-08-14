@@ -9,6 +9,7 @@ fn plan(entrypoint: &str) -> BuildPlan {
         language: "hara".into(),
         main: "app.main".into(),
         entrypoints: vec![entrypoint.into()],
+        default_entrypoint: entrypoint.into(),
         keep_vars: Vec::new(),
         keep_namespaces: Vec::new(),
         output_bundle: "target/demo-app-production.hbx".into(),
@@ -79,4 +80,26 @@ fn retains_unknown_top_level_initializers_with_a_reason() {
     assert!(analysis.reasons.iter().any(|reason| {
         reason.code == "unknown-top-level-effect" && reason.unit_id.starts_with("app.main:")
     }));
+}
+
+#[test]
+fn canonicalizes_aliased_and_explicit_macro_refers_before_expansion() {
+    let modules = vec![
+        SourceModule::synthetic(
+            "app.macros",
+            "(ns app.macros)\n(defmacro aliased-form [value] value)\n(defmacro referred-form [value] value)\n",
+        ),
+        SourceModule::synthetic(
+            "app.main",
+            "(ns app.main (:require [app.macros :as macros :refer-macros [referred-form]]))\n(defn start [] [(macros/aliased-form 41) (referred-form 42)])\n",
+        ),
+    ];
+    let analysis = analyze_modules(&plan("app.main/start"), modules).unwrap();
+    assert!(analysis.succeeded(), "{:?}", analysis.diagnostics);
+    assert!(analysis
+        .compile_time_closure
+        .contains("app.macros/aliased-form"));
+    assert!(analysis
+        .compile_time_closure
+        .contains("app.macros/referred-form"));
 }

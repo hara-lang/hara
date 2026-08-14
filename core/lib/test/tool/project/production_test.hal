@@ -20,6 +20,7 @@
      :profile/build
      {:build/tree-shake true
       :build/entrypoints #{'app.main/worker 'app.main/start}
+      :build/default-entrypoint 'app.main/start
       :build/keep-vars #{'app.dynamic/handler}
       :build/keep-namespaces #{'app.plugins}}}}})
 
@@ -29,8 +30,9 @@
 [(test-check
    "production roots remain qualified Vars while profile main remains a namespace"
    [(:profile/main production-plan)
-    (:build/entrypoints production-plan)]
-   ['app.main ['app.main/start 'app.main/worker]])
+    (:build/entrypoints production-plan)
+    (:build/default-entrypoint production-plan)]
+   ['app.main ['app.main/start 'app.main/worker] 'app.main/start])
   (test-check
    "production artifact defaults are exact and deterministic"
    [(:build/output-bundle production-plan)
@@ -71,6 +73,54 @@
      [(= first-source second-source)
       (= report (edn/read first-source))])
    [true true])
+  (test-check
+   "a single production entrypoint becomes the default"
+   (get-in
+    (production/normalize-project
+     {:project/id 'single
+      :project/profiles
+      {:production
+       {:profile/language :hara
+        :profile/main 'app.main
+        :profile/build
+        {:build/tree-shake true
+         :build/entrypoints #{'app.main/start}}}}})
+    [:project/profiles :production :profile/build
+     :build/default-entrypoint])
+   'app.main/start)
+  (test-check
+   "multiple production entrypoints require an explicit default"
+   (try
+     (production/normalize-project
+      {:project/id 'ambiguous
+       :project/profiles
+       {:production
+        {:profile/language :hara
+         :profile/main 'app.main
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'app.main/start 'app.main/worker}}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "default-entrypoint is required")))
+   true)
+  (test-check
+   "the default entrypoint must be retained as an entrypoint"
+   (try
+     (production/normalize-project
+      {:project/id 'invalid-default
+       :project/profiles
+       {:production
+        {:profile/language :hara
+         :profile/main 'app.main
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'app.main/start}
+          :build/default-entrypoint 'app.main/missing}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "must name one of")))
+   true)
   (test-check
    "unqualified entrypoints are rejected before production analysis"
    (try

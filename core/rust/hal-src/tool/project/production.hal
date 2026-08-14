@@ -5,6 +5,7 @@
 (def +build-defaults+
   {:build/tree-shake false
    :build/entrypoints #{}
+   :build/default-entrypoint nil
    :build/keep-vars #{}
    :build/keep-namespaces #{}})
 
@@ -80,6 +81,12 @@
                          (get build :build/entrypoints #{})
                          ":build/entrypoints"
                          qualified-var-symbol)
+            requested-default-value (get build :build/default-entrypoint)
+            requested-default (if (nil? requested-default-value)
+                                nil
+                                (qualified-var-symbol
+                                 requested-default-value
+                                 ":build/default-entrypoint"))
             keep-vars (normalize-symbol-set
                        (get build :build/keep-vars #{})
                        ":build/keep-vars"
@@ -96,12 +103,27 @@
           (fail ":build/entrypoints must contain at least one qualified Var when tree-shaking is enabled"
                 {:build/tree-shake true})
           nil)
-        (merge build
-               +build-defaults+
-               {:build/tree-shake tree-shake
-                :build/entrypoints entrypoints
-                :build/keep-vars keep-vars
-                :build/keep-namespaces keep-namespaces})))))
+        (let [default-entrypoint
+              (cond
+                requested-default requested-default
+                (= 1 (count entrypoints)) (first entrypoints)
+                (and tree-shake (< 1 (count entrypoints)))
+                (fail ":build/default-entrypoint is required when multiple production entrypoints are declared"
+                      {:build/entrypoints entrypoints})
+                :else nil)]
+          (if (and default-entrypoint
+                   (not (has? entrypoints default-entrypoint)))
+            (fail ":build/default-entrypoint must name one of :build/entrypoints"
+                  {:build/default-entrypoint default-entrypoint
+                   :build/entrypoints entrypoints})
+            nil)
+          (merge build
+                 +build-defaults+
+                 {:build/tree-shake tree-shake
+                  :build/entrypoints entrypoints
+                  :build/default-entrypoint default-entrypoint
+                  :build/keep-vars keep-vars
+                  :build/keep-namespaces keep-namespaces}))))))
 
 (defn normalize-profile [name value]
   (if (not (map? value))
@@ -245,6 +267,7 @@
       :profile/main (:profile/main profile)
       :build/tree-shake true
       :build/entrypoints (sorted-symbols (:build/entrypoints build))
+      :build/default-entrypoint (:build/default-entrypoint build)
       :build/keep-vars (sorted-symbols (:build/keep-vars build))
       :build/keep-namespaces (sorted-symbols
                               (:build/keep-namespaces build))}
@@ -259,6 +282,7 @@
    :shake/language (:profile/language plan)
    :shake/main (:profile/main plan)
    :shake/entrypoints (:build/entrypoints plan)
+   :shake/default-entrypoint (:build/default-entrypoint plan)
    :shake/keep-vars (:build/keep-vars plan)
    :shake/keep-namespaces (:build/keep-namespaces plan)
    :shake/retained {:vars [] :namespaces []}

@@ -153,8 +153,8 @@ fn only_portable_foundation_shorthands_are_automatic() {
         vec![
             ("bytes".into(), "std.foundation.bytes".into()),
             ("co".into(), "std.foundation.coroutine".into()),
-            ("promise".into(), "std.foundation.promise".into()),
             ("pretty".into(), "std.foundation.pretty".into()),
+            ("promise".into(), "std.foundation.promise".into()),
             ("str".into(), "std.foundation.string".into()),
         ]
     );
@@ -194,4 +194,25 @@ fn native_aliases_are_universal_and_cannot_be_rebound() {
     )
     .unwrap_err()
     .contains("Namespace alias already refers to std.native.Iter"));
+}
+
+#[test]
+fn rewrites_explicit_macro_refers_only_for_macro_expansion() {
+    let config = GeneratedNamespaceConfig::configure_with(
+        &parse_forms("(:require [app.macros :as macros :refer [ordinary] :refer-macros [expand]])")
+            .unwrap(),
+        |target| target == "app.macros",
+    )
+    .unwrap();
+    let source = parse_forms("(expand (ordinary (macros/expand 42)))")
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        config.rewrite(source.clone()).to_string(),
+        "(expand (app.macros/ordinary (app.macros/expand 42)))"
+    );
+    assert_eq!(
+        config.rewrite_for_macroexpand(source).to_string(),
+        "(app.macros/expand (app.macros/ordinary (app.macros/expand 42)))"
+    );
 }
