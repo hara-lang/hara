@@ -7,9 +7,9 @@ pub(super) fn provider_index(units: &[UnitAnalysis]) -> BTreeMap<String, String>
     let mut output = BTreeMap::new();
     for unit in units {
         for provided in &unit.provides {
-            output
-                .entry(provided.clone())
-                .or_insert_with(|| unit.id.clone());
+            // Namespace evaluation is ordered. A later real definition must
+            // replace an earlier `declare` placeholder or deliberate rebind.
+            output.insert(provided.clone(), unit.id.clone());
         }
     }
     output
