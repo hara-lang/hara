@@ -50,7 +50,14 @@ async function receive(port, message) {
 
 async function instantiate(message) {
   const bytes = message.moduleBytes ?? await (await fetch(message.moduleUrl)).arrayBuffer();
-  instance = (await WebAssembly.instantiate(bytes, {})).instance;
+  instance = (await WebAssembly.instantiate(bytes, {
+    env: {
+      hara_random_fill(pointer, length) {
+        crypto.getRandomValues(new Uint8Array(instance.exports.memory.buffer, pointer, length));
+        return 0;
+      }
+    }
+  })).instance;
   for (const name of ["memory", "hta_abi_version", "hta_alloc", "hta_dealloc", "hta_start", "hta_next_event", "hta_deliver", "hta_cancel", "hta_drop_task", "hta_release"]) {
     if (!(name in instance.exports)) throw new Error(`hta/export-missing: ${name}`);
   }

@@ -61,7 +61,7 @@ public class HaraPgliteProcessExtensionTest {
       context.eval(
           HaraLanguage.ID,
           "(ns runtime-app (:require [std.db :as db] "
-              + "[std.lib.substrate :as substrate] "
+              + "[std.substrate :as substrate] "
               + "[std.db.node.runtime :as runtime] "
               + "[std.db.node.driver.pglite :as pglite-driver])) "
               + "(def runtime-config {:primary {:type :pglite :options {}}}) "

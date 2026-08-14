@@ -1,0 +1,82 @@
+(ns std.substrate.protocol-test
+  (:require [std.substrate :as substrate]
+            [std.substrate.protocol :as protocol]))
+
+(defstruct Fixture [id])
+
+(extend-type Fixture protocol/ISubstrateSpace
+  (get-space [node space-id] [space-id :get])
+  (create-space [node space-id opts] [space-id opts])
+  (ensure-space [node space-id opts] [space-id opts :ensure])
+  (remove-space [node space-id] space-id)
+  (list-spaces [node] ["space/test"])
+  (get-space-state [node space-id] {:space space-id})
+  (set-space-state [node space-id state] state)
+  (update-space-state [node space-id updater] (updater {:space space-id})))
+
+(extend-type Fixture protocol/ISubstrateService
+  (get-service [node service-id] service-id)
+  (set-service [node service-id service] service)
+  (remove-service [node service-id] service-id))
+
+(extend-type Fixture protocol/ISubstrateHandler
+  (register-handler [node action handler meta] [action meta])
+  (unregister-handler [node action] action)
+  (get-handler [node action] action)
+  (list-handlers [node] ["demo/echo"])
+  (register-trigger [node signal trigger meta] [signal meta])
+  (unregister-trigger [node signal] signal)
+  (get-trigger [node signal] signal)
+  (list-triggers [node] ["signal/out"]))
+
+(extend-type Fixture protocol/ISubstrateTransport
+  (attach-transport [node transport-id transport] [transport-id transport])
+  (detach-transport [node transport-id] transport-id)
+  (get-transport [node transport-id] transport-id)
+  (list-transports [node] ["peer/a"])
+  (send-transport [node transport-id value] [transport-id value])
+  (receive-frame [node value context] [value context]))
+
+(extend-type Fixture protocol/ISubstrateRequest
+  (request [node space-id action args meta] [space-id action args meta])
+  (receive-request [node value context] [value context])
+  (receive-response [node value] value)
+  (cancel-request [node request-id reason] [request-id reason])
+  (reject-pending [node reason] reason))
+
+(extend-type Fixture protocol/ISubstrateStream
+  (publish [node space-id signal data meta] [space-id signal data meta])
+  (receive-publish [node value context] [value context])
+  (subscribe [node space-id signal subscription-id meta]
+    [space-id signal subscription-id meta])
+  (unsubscribe [node space-id signal subscription-id meta]
+    [space-id signal subscription-id meta])
+  (list-subscriptions [node space-id signal] [space-id signal]))
+
+(def fixture (Fixture "fixture-1"))
+
+(def results
+  [(test-check "all substrate capability protocols dispatch"
+               [(protocol/get-space fixture "space/a")
+                (protocol/get-service fixture "cache")
+                (protocol/get-handler fixture "demo/echo")
+                (protocol/get-transport fixture "peer/a")
+                (protocol/request fixture "space/a" "demo/echo" [1] {})
+                (protocol/publish fixture "space/a" "signal/out" 42 {})]
+               [["space/a" :get]
+                "cache"
+                "demo/echo"
+                "peer/a"
+                ["space/a" "demo/echo" [1] {}]
+                ["space/a" "signal/out" 42 {}]])
+   (test-check "canonical SubstrateNode implements all capability protocols"
+               (let [node (substrate/node-create {:id "node/protocol"})]
+                 [(protocol/list-spaces node)
+                  (protocol/set-service node "cache" 42)
+                  (protocol/get-service node "cache")
+                  (count (protocol/list-handlers node))
+                  (protocol/list-transports node)
+                  (protocol/list-subscriptions node "space/a" "signal/out")])
+               [[] 42 42 8 [] []])])
+
+results

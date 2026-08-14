@@ -6,42 +6,106 @@
             [std.substrate.frame :as frame]
             [std.substrate.router :as router]))
 
+(def substrate-version "substrate.v1")
+(def frame-missing "__std.substrate.json/missing__")
+
+(defn frame-value
+  "Reads a wire field from a string- or keyword-keyed frame."
+  [value field]
+  (let [found (get value field frame-missing)]
+    (if (= found frame-missing)
+      (get value (keyword field) frame-missing)
+      found)))
+
+(defn frame-kind-name
+  [kind]
+  (if (keyword? kind) (name kind) kind))
+
 (defn frame-kind?
   "Returns true when kind is supported by the Foundation JSON wire format."
   [kind]
-  (or (= kind frame/KIND_REQUEST)
-      (= kind frame/KIND_RESPONSE)
-      (= kind frame/KIND_STREAM)
-      (= kind router/KIND_SUBSCRIBE)
-      (= kind router/KIND_UNSUBSCRIBE)))
+  (if (or (= kind frame/KIND_REQUEST)
+          (= kind frame/KIND_RESPONSE)
+          (= kind frame/KIND_STREAM)
+          (= kind router/KIND_SUBSCRIBE)
+          (= kind router/KIND_UNSUBSCRIBE)
+          (= kind "cancel")
+          (= kind "error"))
+    true
+    false))
 
 (defn valid-frame?
   "Validates a node or router event frame."
   [value]
   (if (not (map? value))
     false
-    (let [kind (get value "kind")
-          id (get value "id")
-          space (get value "space")
-          meta (get value "meta")]
+    (let [kind (frame-kind-name (frame-value value "kind"))
+          id (frame-value value "id")
+          space (frame-value value "space")
+          meta (frame-value value "meta")]
       (if (or (not (frame-kind? kind))
               (not (string? id))
-              (not (string? space))
-              (and (not (nil? meta))
+              (= id "")
+              (and (not (= space frame-missing))
+                   (not (nil? space))
+                   (not (string? space)))
+              (and (not (= meta frame-missing))
+                   (not (nil? meta))
                    (not (map? meta))))
         false
         (cond
           (= kind frame/KIND_REQUEST)
-          (and (string? (get value "action"))
-               (or (nil? (get value "args"))
-                   (vector? (get value "args"))))
+          (if (and (string? (frame-value value "action"))
+                   (let [args (frame-value value "args")]
+                     (or (= args frame-missing)
+                         (nil? args)
+                         (vector? args))))
+            true false)
 
           (= kind frame/KIND_RESPONSE)
-          (and (string? (get value "reply_to"))
-               (string? (get value "status")))
+          (if (and (string? (frame-value value "reply_to"))
+                   (string? (frame-kind-name (frame-value value "status"))))
+            true false)
+
+          (or (= kind frame/KIND_STREAM)
+              (= kind router/KIND_SUBSCRIBE)
+              (= kind router/KIND_UNSUBSCRIBE))
+          (if (string? (frame-value value "signal")) true false)
 
           :else
-          (string? (get value "signal")))))))
+          true)))))
+
+(defn wire-key
+  [key]
+  (if (keyword? key)
+    (name key)
+    (if (string? key)
+      key
+      (throw "substrate wire maps require string or keyword keys"))))
+
+(defn wire-scalar
+  [value]
+  (if (keyword? value) (name value) value))
+
+(defn wire-map-loop
+  [value map-keys index output]
+  (if (= index (count map-keys))
+    output
+    (let [key (nth map-keys index)]
+      (wire-map-loop value map-keys (inc index)
+                     (assoc output (wire-key key)
+                            (wire-scalar (get value key)))))))
+
+(defn wire-value
+  [value]
+  (if (map? value)
+    (wire-map-loop value (vec (keys value)) 0 {})
+    (wire-scalar value)))
+
+(defn optional-value
+  [value field]
+  (let [found (frame-value value field)]
+    (if (= found frame-missing) nil (wire-value found))))
 
 (defn normalize-error
   "Normalises arbitrary errors into plain JSON-safe maps."
@@ -67,15 +131,45 @@
     {"message" (str error)}))
 
 (defn normalize-frame
-  "Normalises a frame before JSON transport emission."
+  "Converts a canonical frame into the exact substrate.v1 browser wire map."
   [value]
   (if (not (map? value))
     value
-    (if (and (= frame/KIND_RESPONSE (get value "kind"))
-             (= frame/STATUS_ERROR (get value "status"))
-             (not (nil? (get value "error"))))
-      (assoc value "error" (normalize-error (get value "error")))
-      value)))
+    (let [kind (frame-kind-name (frame-value value "kind"))
+          status (frame-kind-name (frame-value value "status"))
+          version (frame-value value "version")
+          source (frame-value value "source")
+          target (frame-value value "target")
+          space (frame-value value "space")
+          meta (frame-value value "meta")
+          error (optional-value value "error")]
+      {"version" (if (= version frame-missing)
+                   substrate-version
+                   (wire-value version))
+       "kind" kind
+       "id" (frame-value value "id")
+       "source" (if (= source frame-missing) nil (wire-value source))
+       "target" (if (= target frame-missing) nil (wire-value target))
+       "space" (if (= space frame-missing) nil (wire-value space))
+       "meta" (if (= meta frame-missing) {} (wire-value meta))
+       "action" (optional-value value "action")
+       "args" (optional-value value "args")
+       "reply_to" (optional-value value "reply_to")
+       "status" (if (= status frame-missing) nil status)
+       "data" (optional-value value "data")
+       "error" (if (and (= kind frame/KIND_RESPONSE)
+                         (= status frame/STATUS_ERROR)
+                         (not (nil? error)))
+                  (normalize-error error)
+                  error)
+       "signal" (optional-value value "signal")
+       "cause" (optional-value value "cause")})))
+
+(defn frame-create
+  "Creates and normalises a substrate.v1 wire frame."
+  [kind id options]
+  (normalize-frame
+   (assoc (assoc (or options {}) :kind kind) :id id)))
 
 (defn encode-frame
   "Encodes a validated frame as JSON."
@@ -83,12 +177,13 @@
   (let [output (normalize-frame value)]
     (if (not (valid-frame? output))
       (throw (ex-info "invalid node json frame" {:frame output}))
-      (json/write output))))
+      (std.native.Json/write output))))
 
 (defn decode-frame
   "Decodes JSON text or validates a direct frame value."
   [input]
-  (let [output (if (string? input) (json/read input) input)]
+  (let [output (normalize-frame
+                (if (string? input) (std.native.Json/read input) input))]
     (if (not (valid-frame? output))
       (throw (ex-info "invalid node json frame" {:frame output}))
       output)))

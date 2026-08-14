@@ -11,6 +11,8 @@ mod json;
 mod kernel;
 #[path = "../../src/lang.rs"]
 mod lang;
+#[path = "../../src/numeric.rs"]
+mod numeric;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../../src/native_process.rs"]
 mod native_process;
@@ -25,6 +27,25 @@ use core::{EvalFiber, EvalFiberState, Promise, PromiseRejection, PromiseState, V
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
+
+#[cfg(target_arch = "wasm32")]
+mod wasm_random {
+    #[link(wasm_import_module = "env")]
+    extern "C" {
+        fn hara_random_fill(pointer: *mut u8, length: usize) -> i32;
+    }
+
+    fn fill(bytes: &mut [u8]) -> Result<(), getrandom::Error> {
+        let status = unsafe { hara_random_fill(bytes.as_mut_ptr(), bytes.len()) };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(getrandom::Error::UNSUPPORTED)
+        }
+    }
+
+    getrandom::register_custom_getrandom!(fill);
+}
 
 const FOUNDATION_RESOURCES: &[(&str, &str)] = &[
     (
@@ -43,6 +64,21 @@ const FOUNDATION_RESOURCES: &[(&str, &str)] = &[
         "std.foundation.pretty",
         include_str!("../../../lib/src/std/foundation/pretty.hal"),
     ),
+];
+
+const SUBSTRATE_RESOURCES: &[(&str, &str)] = &[
+    ("std.substrate.core", include_str!("../../../lib/src/std/substrate/core.hal")),
+    ("std.substrate.frame", include_str!("../../../lib/src/std/substrate/frame.hal")),
+    ("std.substrate.json", include_str!("../../../lib/src/std/substrate/json.hal")),
+    ("std.substrate.protocol", include_str!("../../../lib/src/std/substrate/protocol.hal")),
+    ("std.substrate.pubsub", include_str!("../../../lib/src/std/substrate/pubsub.hal")),
+    ("std.substrate.request", include_str!("../../../lib/src/std/substrate/request.hal")),
+    ("std.substrate.router", include_str!("../../../lib/src/std/substrate/router.hal")),
+    ("std.substrate.space", include_str!("../../../lib/src/std/substrate/space.hal")),
+    ("std.substrate.transport-memory", include_str!("../../../lib/src/std/substrate/transport_memory.hal")),
+    ("std.substrate.util", include_str!("../../../lib/src/std/substrate/util.hal")),
+    ("std.substrate.util-handlers", include_str!("../../../lib/src/std/substrate/util_handlers.hal")),
+    ("std.substrate", include_str!("../../../lib/src/std/substrate.hal")),
 ];
 
 #[no_mangle]
@@ -84,7 +120,7 @@ struct Session {
     /// Guest protocol declarations and extensions must survive across HTA
     /// evaluations just like namespace bindings.  The native runtime owns the
     /// same registry; without this raw WASM kernels could load frame helpers
-    /// but not the concrete `std.lib.substrate` node.
+    /// but not the concrete `std.substrate` node.
     protocols: core::ProtocolRegistry,
     macros: Rc<RefCell<HashMap<(String, String), Rc<core::Function>>>>,
     generated_configs: HashMap<String, kernel::GeneratedNamespaceConfig>,
@@ -2744,42 +2780,30 @@ mod tests {
     #[test]
     fn raw_kernels_run_the_shared_substrate_frame_fixture() {
         let mut runtime = Session::new();
-        runtime.resources.borrow_mut().insert(
-            "std.lib.substrate.frame".into(),
-            include_str!("../../../lib/src/std/lib/substrate/frame.hal").into(),
+        runtime.resources.borrow_mut().extend(
+            super::SUBSTRATE_RESOURCES.iter().map(|(name, source)| ((*name).into(), (*source).into())),
         );
         runtime
             .start_fiber(
                 1,
-                include_str!("../../../lib/test-fixtures/std/lib/substrate/frame_conformance.hal"),
+                include_str!("../../../lib/test-fixtures/std/substrate/frame_conformance.hal"),
             )
             .unwrap();
-        assert_eq!(
-            completion_value(&mut runtime, 1),
-            Value::String(
-                "{\"version\":\"substrate.v1\",\"kind\":\"request\",\"id\":\"req-1\",\"source\":\"client/a\",\"target\":\"server/b\",\"space\":\"workspace/main\",\"meta\":{\"trace\":\"trace-1\"},\"action\":\"math/add\",\"args\":[19,23],\"reply_to\":null,\"status\":null,\"data\":null,\"error\":null,\"signal\":null,\"cause\":null}".into(),
-            )
-        );
+        assert_eq!(completion_value(&mut runtime, 1).display(),
+            "[\"substrate.v1\" \"request\" \"req-1\" \"client/a\" \"server/b\" \"workspace/main\" {\"trace\" \"trace-1\"} \"math/add\" [19 23] nil nil nil nil nil nil]");
     }
 
     #[test]
     fn raw_kernels_run_atom_backed_substrate_request_stream_and_cancellation_lifecycle() {
         let mut runtime = Session::new();
-        runtime.resources.borrow_mut().extend([
-            (
-                "std.lib.substrate.protocol".into(),
-                include_str!("../../../lib/src/std/lib/substrate/protocol.hal").into(),
-            ),
-            (
-                "std.lib.substrate".into(),
-                include_str!("../../../lib/src/std/lib/substrate.hal").into(),
-            ),
-        ]);
+        runtime.resources.borrow_mut().extend(
+            super::SUBSTRATE_RESOURCES.iter().map(|(name, source)| ((*name).into(), (*source).into())),
+        );
         runtime
             .start_fiber(
                 1,
                 include_str!(
-                    "../../../lib/test-fixtures/std/lib/substrate/node_lifecycle_conformance.hal"
+                    "../../../lib/test-fixtures/std/substrate/node_lifecycle_conformance.hal"
                 ),
             )
             .unwrap();
