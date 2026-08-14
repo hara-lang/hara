@@ -1,0 +1,169 @@
+.template/schema schema-id
+-       :tool.cli.template/definition definition
+-       :tool.cli.template/work command-work})))
++       :tool.cli.template/id (:id definition)
++       :tool.cli.template/version (:version definition)
++       :tool.cli.template/type (:template definition)})))
+ 
+ (defn handler?
+   [value]
+diff --git a/core/lib/test/code/test_compatibility_test.hal b/core/lib/test/code/test_compatibility_test.hal
+index c8387d8..f2d661e 100644
+--- a/core/lib/test/code/test_compatibility_test.hal
++++ b/core/lib/test/code/test_compatibility_test.hal
+@@ -4,8 +4,8 @@
+             [code.test.checker.collection :as collection]
+             [code.test.checker.common :as common]
+             [code.test.checker.logic :as logic]
+-            [code.test.compile.types :as types]
+-            [code.test.task :as test-task]))
++            [code.test.cli :as cli]
++            [code.test.compile.types :as types]))
+ 
+ (fact "Foundation checker vocabulary composes"
+   (common/succeeded? (common/verify (common/exactly 42) 42))
+@@ -41,7 +41,7 @@
+       "#fact {:type :core :id fact-id :ns code.test-compatibility-test :desc \"portable fact\" :line 1}"])
+ 
+ (fact "Foundation code.test CLI selectors retain :only semantics"
+-  (test-task/process-test-args
++  (cli/process-run-args
+    [":only" "std" "code" ":parallel" "true"])
+   => {:namespace ['std 'code] :parallel true})
+ 
+diff --git a/core/lib/test/code/test_internal_modules_test.hal b/core/lib/test/code/test_internal_modules_test.hal
+index 5526cd7..8ab39c5 100644
+--- a/core/lib/test/code/test_internal_modules_test.hal
++++ b/core/lib/test/code/test_internal_modules_test.hal
+@@ -3,9 +3,9 @@
+             [code.test.base.process :as process]
+             [code.test.base.runtime :as runtime]
+             [code.test.checker.common :as common]
++            [code.test.cli :as cli]
+             [code.test.compile :as compile]
+             [code.test.manage :as manage]
+-            [code.test.task :as task]
+             [code.test.work :as test-work]
+             [std.protocol.imatch :as match]
+             [std.work :as work]))
+@@ -33,7 +33,7 @@
+       "code.test-internal-modules-test"
+       "isolated fact")
+      (fn? process/check)
+-     (fn? task/process-test-args)
++     (fn? cli/process-run-args)
+      (fn? executive/run:report)
+      (manage/suite-settings 'missing)]
+     [isolated-fact true true true {}])
+diff --git a/core/lib/test/code/test_support_test.hal b/core/lib/test/code/test_support_test.hal
+index 436eed0..d52c4bb 100644
+--- a/core/lib/test/code/test_support_test.hal
++++ b/core/lib/test/code/test_support_test.hal
+@@ -26,6 +26,16 @@
+      {:namespace ['code.test]
+       :timeout 25}])
+ 
++   (test-check
++    "public CLI adapters retain canonical namespace results"
++    [(cli/process-run-args
++      [":only" "std" "code" ":parallel" "true"])
++     (cli/print-options)
++     (cli/print-options :disable)]
++    [{:namespace ['std 'code] :parallel true}
++     #{:help :current :default :disable :all}
++     :disable])
++
+    (test-check
+     "native and code.test result aggregation are Hara-owned"
+     [(cli/result-counts [{:pass true} {:pass false}])
+diff --git a/core/lib/test/tool/cli/template_test.hal b/core/lib/test/tool/cli/template_test.hal
+index 1c04e80..3788d31 100644
+--- a/core/lib/test/tool/cli/template_test.hal
++++ b/core/lib/test/tool/cli/template_test.hal
+@@ -54,6 +54,27 @@
+       :tool.cli.outcome/success
+       {:prepared true :finished true}])
+ 
++(fact "handler metadata retains only data-safe provenance"
++  (let [handler
++        (template/handler
++         {:id :template-test/metadata
++          :version 9
++          :template :metadata-test
++          :main
++          {:argcount 1
++           :fn (fn [request] (model/success request))}})
++        metadata (meta handler)
++        result (handler {:value 42})]
++    [metadata
++     (template/handler? handler)
++     (:result/data result)])
++  => [{:tool.cli.template/schema "tool.cli.template/0-alpha"
++       :tool.cli.template/id :template-test/metadata
++       :tool.cli.template/version 9
++       :tool.cli.template/type :metadata-test}
++      true
++      {:value 42}])
++
+ (fact "runtime injection is evaluated once per handler invocation"
+   (let [calls (atom 0)
+         handler
+diff --git a/core/rust/hal-src/code/test.hal b/core/rust/hal-src/code/test.hal
+index 39dc1f0..2c39aed 100644
+--- a/core/rust/hal-src/code/test.hal
++++ b/core/rust/hal-src/code/test.hal
+@@ -12,9 +12,9 @@
+             [code.test.checker.collection :as collection]
+             [code.test.checker.common :as common]
+             [code.test.checker.logic :as logic]
++            [code.test.cli :as cli]
+             [code.test.compile :as compile]
+             [code.test.manage :as manage]
+-            [code.test.task :as task]
+             [code.test.work :as test-work]))
+ 
+ ;; Assertion vocabulary.
+@@ -110,6 +110,6 @@
+ (def run-errored executive/run-errored)
+ (def run:interrupt executive/run:interrupt)
+ (def run:report executive/run:report)
+-(def print-options task/print-options)
+-(def process-test-args task/process-run-args)
+-(def -main task/main)
++(def print-options cli/print-options)
++(def process-test-args cli/process-run-args)
++(def -main executive/main)
+diff --git a/core/rust/hal-src/code/test/base/executive.hal b/core/rust/hal-src/code/test/base/executive.hal
+index 6dad9e0..3e03a41 100644
+--- a/core/rust/hal-src/code/test/base/executive.hal
++++ b/core/rust/hal-src/code/test/base/executive.hal
+@@ -1,6 +1,7 @@
+ (ns code.test.base.executive
+   (:require [code.test.artifact :as artifact]
+             [code.test.base.runtime :as runtime]
++            [code.test.cli :as cli]
+             [code.test.work :as test-work]))
+ 
+ (def +latest+ artifact/+latest+)
+@@ -132,9 +133,11 @@
+   "Removes registered facts for selected namespaces without executing them."
+   ([] (run:unload :all))
+   ([selector-or-options]
+-   (let [namespaces (namespace-selection selector-or-options)]
+-     (doseq [namespace namespaces]
+-       (runtime/purge-facts namespace))
++   (let [namespaces (namespace-selection selector-or-options)
++         _ (reduce (fn [_ namespace]
++                     (runtime/purge-facts namespace))
++                   nil
++                   namespaces)]
+      namespaces)))
+ 
+ (defn run-errored
+@@ -158,3 +161,8 @@
+              (artifact/report-failed-facts report)))))
+   ([path options project]
+    (run:report path (assoc options :root (:root project)))))
++
++(defn main
++  "Runs code.test from command-line arguments
