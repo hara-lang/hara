@@ -1,4 +1,4 @@
-name: Export current filesystem development tree
+name: Validate portable filesystem implementation
 
 on:
   push:
@@ -9,32 +9,92 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: agent-fs-port-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  export:
+  validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout patch control branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/std-native-file-portable-fs
+          path: control
+          fetch-depth: 1
+
+      - name: Checkout current Hara main
+        uses: actions/checkout@v4
         with:
           ref: main
+          path: hara
           fetch-depth: 1
-      - name: Collect current implementation tree
+
+      - name: Checkout specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: main
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Materialize implementation patch
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/hara-current
-          cp -a \
-            core/lib \
-            core/rust \
-            core/java \
-            core/Makefile \
-            scripts/runtime \
-            .github/workflows/core-ci.yml \
-            .github/workflows/hal-source-mirror.yml \
-            /tmp/hara-current/
-          git rev-parse HEAD > /tmp/hara-current/MAIN_HEAD
-      - uses: actions/upload-artifact@v4
+          cat control/.github/patches/fs-current-main-dev.part-* \
+            | base64 -d \
+            | gzip -d \
+            > "$RUNNER_TEMP/fs-current-main.patch"
+          cd hara
+          git apply --check "$RUNNER_TEMP/fs-current-main.patch"
+          git apply "$RUNNER_TEMP/fs-current-main.patch"
+          git diff --check
+          git diff --stat
+
+      - name: Verify HAL source mirrors
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          cmp core/lib/src/std/fs.hal core/rust/hal-src/std/fs.hal
+          cmp core/lib/src/std/fs/path.hal core/rust/hal-src/std/fs/path.hal
+          cmp core/lib/src/std/fs/walk.hal core/rust/hal-src/std/fs/walk.hal
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check and test Rust filesystem provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          rustfmt --edition 2021 --check core/rust/src/file.rs
+          cargo check --manifest-path core/rust/Cargo.toml --lib
+          cargo test --manifest-path core/rust/Cargo.toml file::tests --lib -- --nocapture
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
         with:
-          name: hara-current-main-fs-tree
-          path: /tmp/hara-current
-          if-no-files-found: error
-          retention-days: 1
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: hara/core/java/pom.xml
+
+      - name: Test JVM filesystem provider and portable facade
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara/core
+          mvn -B -Ptruffle --file java/pom.xml \
+            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
+            test
+
+      - name: Run focused portable path tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          ./scripts/runtime/run-lib-tests core/lib/test/std/fs/path_test.hal
