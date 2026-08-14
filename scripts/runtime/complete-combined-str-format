@@ -1,58 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=$(pwd)
 LOG=/tmp/combined-str-format-v2.log
 exec > >(tee -a "$LOG") 2>&1
 
-HARA="$ROOT/core/rust/target/debug/hara"
-HARA_TEST="$ROOT/core/rust/target/debug/hara-test"
-COMMON="$ROOT/core/lib/src/std/format/common.hal"
-TABLE="$ROOT/core/lib/src/std/format/table.hal"
-REPORT="$ROOT/core/lib/src/std/format/report.hal"
-TERMINAL="$ROOT/core/lib/src/std/format/terminal.hal"
-
-evaluate() {
-  cat "$@" | (cd /tmp && "$HARA" --offline stdin)
-}
-
-run_test() {
-  local path=$1
-  (cd /tmp && "$HARA_TEST" --root "$ROOT/core" "$ROOT/$path")
-}
-
-echo '=== build candidate tools ==='
-cargo build --quiet \
-  --manifest-path core/rust/Cargo.toml \
-  --bin hara \
-  --bin hara-test
-
-echo '=== candidate evaluate string ==='
-evaluate "$ROOT/core/lib/src/std/foundation/string.hal"
-
-echo '=== candidate evaluate format.common ==='
-evaluate "$COMMON"
-
-echo '=== candidate evaluate format.table ==='
-evaluate "$COMMON" "$TABLE"
-
-echo '=== candidate evaluate format.report ==='
-evaluate "$COMMON" "$TABLE" "$REPORT"
-
-echo '=== candidate evaluate format.terminal ==='
-evaluate "$TERMINAL"
-
-echo '=== candidate evaluate format facade ==='
-evaluate "$COMMON" "$TABLE" "$REPORT" "$TERMINAL" \
-  "$ROOT/core/lib/src/std/format.hal"
-
-echo '=== candidate evaluate work.report ==='
-evaluate "$COMMON" "$TABLE" "$REPORT" "$TERMINAL" \
-  "$ROOT/core/lib/src/std/work/report.hal"
-
-echo '=== candidate focused tests ==='
-run_test core/lib/test/std/foundation/string_test.hal
-run_test core/lib/test/std/work_report_renderer_test.hal
+echo '=== candidate native source evaluation and focused contracts ==='
+cargo test --manifest-path core/rust/Cargo.toml --test format_sources
 
 echo '=== repair Rust numeric parity and work evidence ==='
 python3 - <<'PY'
@@ -129,31 +82,12 @@ echo '=== synchronize Rust HAL snapshots ==='
 python3 scripts/runtime/sync-rust-hal-src
 python3 scripts/runtime/sync-rust-hal-src --check
 
-echo '=== format and rebuild latest runtime ==='
+echo '=== format written Rust sources ==='
 cargo fmt --manifest-path core/rust/Cargo.toml --all
 cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
-cargo build --quiet \
-  --manifest-path core/rust/Cargo.toml \
-  --bin hara \
-  --bin hara-test
 
-echo '=== fresh-run canonical HAL sources ==='
-(cd /tmp && "$HARA" --offline run \
-  "$ROOT/core/lib/src/std/foundation/string.hal")
-for source in \
-  core/lib/src/std/format/common.hal \
-  core/lib/src/std/format/table.hal \
-  core/lib/src/std/format/report.hal \
-  core/lib/src/std/format/terminal.hal \
-  core/lib/src/std/format.hal \
-  core/lib/src/std/work/report.hal
-do
-  (cd /tmp && "$HARA" --offline run "$ROOT/$source")
-done
-
-echo '=== fresh focused HAL tests ==='
-run_test core/lib/test/std/foundation/string_test.hal
-run_test core/lib/test/std/work_report_renderer_test.hal
+echo '=== fresh native source evaluation and focused contracts ==='
+cargo test --manifest-path core/rust/Cargo.toml --test format_sources
 
 echo '=== validate hard cuts and public surface ==='
 test ! -e core/lib/src/std/work/report/plain.hal
@@ -194,6 +128,7 @@ git add \
   core/lib/test/std/work_report_renderer_test.hal \
   core/rust/src/core.rs \
   core/rust/src/numeric.rs \
+  core/rust/tests/format_sources.rs \
   core/rust/tests/string_to_fixed.rs \
   core/rust/hal-src \
   core/rust/standard-library.namespaces \
