@@ -1,4 +1,4 @@
-name: Diagnose PR 589 merge conflicts
+name: Resolve PR 589 conflicts
 
 on:
   push:
@@ -8,53 +8,173 @@ on:
       - .github/workflows/_resolve-pr-589.yml
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  diagnose:
+  resolve:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
         with:
           ref: codex/remove-retired-stdlib-modules
           fetch-depth: 0
 
-      - name: Collect three-way conflict inputs
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Merge current main and resolve conflicts by ownership
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main
+
           set +e
           git merge --no-commit --no-ff origin/main
           merge_status=$?
           set -e
 
-          mkdir -p conflict-artifact/base conflict-artifact/ours conflict-artifact/theirs
-          printf '%s\n' "$merge_status" > conflict-artifact/merge-status.txt
-          git status --short > conflict-artifact/status.txt
-          git diff --name-only --diff-filter=U > conflict-artifact/conflicts.txt
-          git rev-parse HEAD > conflict-artifact/head-sha.txt
-          git rev-parse origin/main > conflict-artifact/main-sha.txt
-          git merge-base HEAD origin/main > conflict-artifact/merge-base-sha.txt
+          actual_conflicts="$(git diff --name-only --diff-filter=U | sort)"
+          known_conflicts="$(cat <<'EOF' | sort
+          core/lib/test/std/block_navigation_test.hal
+          core/lib/test/std/block_test.hal
+          core/lib/test/std/work_command_test.hal
+          core/lib/test/std/work_receipt_test.hal
+          core/lib/test/std/work_report_renderer_test.hal
+          core/rust/assets/std.foundation.hbx
+          core/rust/src/bin/hara/cli/project.rs
+          core/rust/standard-library.namespaces
+          EOF
+          )"
+          unexpected="$(comm -13 <(printf '%s\n' "$known_conflicts") <(printf '%s\n' "$actual_conflicts"))"
+          if [[ -n "$unexpected" ]]; then
+            echo "Unexpected merge conflicts:" >&2
+            printf '%s\n' "$unexpected" >&2
+            exit 1
+          fi
+          if [[ "$merge_status" -ne 0 && -z "$actual_conflicts" ]]; then
+            echo "Merge failed without producing resolvable index conflicts" >&2
+            exit 1
+          fi
 
-          while IFS= read -r path; do
-            [ -n "$path" ] || continue
-            mkdir -p "conflict-artifact/base/$(dirname "$path")"
-            mkdir -p "conflict-artifact/ours/$(dirname "$path")"
-            mkdir -p "conflict-artifact/theirs/$(dirname "$path")"
-            git show ":1:$path" > "conflict-artifact/base/$path" 2>/dev/null || true
-            git show ":2:$path" > "conflict-artifact/ours/$path" 2>/dev/null || true
-            git show ":3:$path" > "conflict-artifact/theirs/$path" 2>/dev/null || true
-          done < conflict-artifact/conflicts.txt
+          take_theirs=(
+            core/lib/test/std/block_navigation_test.hal
+            core/lib/test/std/block_test.hal
+            core/lib/test/std/work_command_test.hal
+            core/lib/test/std/work_receipt_test.hal
+            core/lib/test/std/work_report_renderer_test.hal
+          )
+          for path in "${take_theirs[@]}"; do
+            if git ls-files -u -- "$path" | grep -q .; then
+              git checkout --theirs -- "$path"
+              git add "$path"
+            fi
+          done
 
-          echo "Merge status: $merge_status"
-          echo "Conflicting paths:"
-          cat conflict-artifact/conflicts.txt
+          if git ls-files -u -- core/rust/src/bin/hara/cli/project.rs | grep -q .; then
+            git checkout --ours -- core/rust/src/bin/hara/cli/project.rs
+            git add core/rust/src/bin/hara/cli/project.rs
+          fi
 
-      - uses: actions/upload-artifact@v4
+          if git ls-files -u -- core/rust/standard-library.namespaces | grep -q .; then
+            git checkout --theirs -- core/rust/standard-library.namespaces
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('core/rust/standard-library.namespaces')
+          retired = {'std.lib.test', 'std.lib.walk'}
+          lines = path.read_text().splitlines()
+          lines = [line for line in lines if line not in retired]
+          path.write_text('\n'.join(lines) + '\n')
+          required = {'code.vm.conformance', 'std.substrate.protocol'}
+          missing = required - set(lines)
+          if missing:
+              raise SystemExit(f'missing current-main namespaces: {sorted(missing)}')
+          forbidden = retired | {
+              'std.lib.substrate',
+              'std.lib.substrate.frame',
+              'std.lib.substrate.protocol',
+              'std.context',
+          }
+          present = forbidden & set(lines)
+          if present:
+              raise SystemExit(f'forbidden namespaces remain: {sorted(present)}')
+          PY
+          git add core/rust/standard-library.namespaces
+
+          if git ls-files -u -- core/rust/assets/std.foundation.hbx | grep -q .; then
+            git checkout --theirs -- core/rust/assets/std.foundation.hbx
+            git add core/rust/assets/std.foundation.hbx
+          fi
+
+          if [[ -n "$(git diff --name-only --diff-filter=U)" ]]; then
+            echo "Unresolved conflicts remain:" >&2
+            git diff --name-only --diff-filter=U >&2
+            exit 1
+          fi
+
+          git rm .github/workflows/_resolve-pr-589.yml
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/sync-rust-hal-src --check
+
+      - name: Regenerate and verify the Foundation HBX
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm \
+            --bin hara-foundation-artifact -- generate
+          cargo run --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm \
+            --bin hara-foundation-artifact -- check
+
+      - name: Run retired-module audits
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/runtime/retired_stdlib_hard_cut_test.py
+          python3 scripts/runtime/retired_stdlib_hard_cut.py
+          python3 scripts/runtime/sync-rust-hal-src --check
+
+      - name: Run focused Rust and HAL tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/rust/Cargo.toml --bin hara cli::project
+          bash scripts/runtime/run-lib-tests \
+            core/lib/test/std/foundation_test.hal \
+            core/lib/test/std/foundation_walk_test.hal \
+            core/lib/test/std/foundation_test_primitives_test.hal \
+            core/lib/test/std/block_navigation_test.hal \
+            core/lib/test/std/block_test.hal \
+            core/lib/test/std/work_command_test.hal \
+            core/lib/test/std/work_receipt_test.hal \
+            core/lib/test/std/work_report_renderer_test.hal \
+            core/lib/test/std/work_task_redirection_test.hal
+
+      - uses: actions/setup-java@v4
         with:
-          name: pr-589-conflicts
-          path: conflict-artifact
-          if-no-files-found: error
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Run the direct-result Java compatibility test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mvn -q -f core/java/pom.xml \
+            '-Dtest=MainTest#projectCommandsRunAndReportStandardTestResults' test
+
+      - name: Commit and push the reconciled merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git diff --name-only --diff-filter=U)"
+          git diff --check
+          python3 scripts/runtime/sync-rust-hal-src --check
+          python3 scripts/runtime/retired_stdlib_hard_cut.py
+          git add -A
+          git status --short
+          git commit -m "Merge main and resolve retired stdlib conflicts"
+          git push origin HEAD:codex/remove-retired-stdlib-modules
