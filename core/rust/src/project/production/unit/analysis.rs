@@ -19,6 +19,25 @@ pub struct NativeRootInventory {
     pub runtime_shims: BTreeSet<String>,
 }
 
+impl NativeRootInventory {
+    pub fn extend(&mut self, other: &Self) {
+        self.primitives.extend(other.primitives.iter().cloned());
+        self.methods.extend(other.methods.iter().cloned());
+        self.dynamic_methods
+            .extend(other.dynamic_methods.iter().cloned());
+        self.types.extend(other.types.iter().cloned());
+        self.protocols.extend(other.protocols.iter().cloned());
+        self.protocol_methods
+            .extend(other.protocol_methods.iter().cloned());
+        self.multimethods
+            .extend(other.multimethods.iter().cloned());
+        self.host_calls.extend(other.host_calls.iter().cloned());
+        self.callbacks.extend(other.callbacks.iter().cloned());
+        self.runtime_shims
+            .extend(other.runtime_shims.iter().cloned());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitAnalysis {
     pub id: String,
