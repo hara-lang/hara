@@ -1,18 +1,13 @@
 (ns code.manage.unit.template
   (:config {:override [task]})
   (:require [std.work :as work]
-            [std.work.command :as command]
-            [std.work.command.task :as task-command]))
+            [std.work.template.task :as task-template]))
 
 (def schema-id "code.manage.task/0-alpha")
 
 (defn operation-id
   [operation]
   (keyword (str "code.manage/" (name operation))))
-
-(defn tasklet-id
-  [operation]
-  (keyword (str "code.manage.tasklet/" (name operation))))
 
 (defn code-unit?
   [value]
@@ -76,38 +71,43 @@
       "code.manage tasklets support one or two arguments"
       {:argcount argcount}))))
 
+(defn result-record
+  [item]
+  (if (and (map? item) (has? item :item/value))
+    (:item/value item)
+    item))
+
 (defn batch-records
   [batch]
   (vec
-   (map
-    (fn [item]
-      (:item/value item))
-    (:results batch))))
+   (map result-record
+        (or (:results batch)
+            (:records batch)
+            []))))
 
-(defn summarise
-  [operation batch]
-  (let [records (batch-records batch)]
-    {:operation operation
-     :count (count records)
-     :results
-     (count
-      (filter
-       (fn [record]
-         (= :return (:status record)))
-       records))
-     :warnings
-     (count
-      (filter
-       (fn [record]
-         (= :warn (:status record)))
-       records))
-     :errors
-     (count
-      (filter
-       (fn [record]
-         (or (= :error (:status record))
-             (= :critical (:status record))))
-       records))}))
+(defn legacy-item
+  [record]
+  {:item/id (:item/id record)
+   :item/value record})
+
+(defn legacy-input-item
+  [record]
+  {:item/id (:item/id record)
+   :item/value (:item/input record)})
+
+(defn legacy-batch
+  [bundle]
+  (let [records (vec (:records bundle))]
+    (assoc
+     (assoc bundle
+            :items (vec (map legacy-input-item records)))
+     :results (vec (map legacy-item records)))))
+
+(defn finalise-summary
+  [operation summary records results]
+  (assoc
+   (assoc summary :operation operation)
+   :count (:items summary)))
 
 (defn assert-task!
   [config]
@@ -128,8 +128,16 @@
               {:operation (:operation config)})))
   config)
 
+(task-template/install-defaults!
+ :code.manage
+ {:execution {:order :input
+              :parallel false}
+  :return {:select :all
+           :package :map}})
+
 (defn task
-  "Composes one public code.manage task around its atomic tasklet function."
+  "Composes one public code.manage task through std.work.template.task while
+   retaining the atomic tasklet and compatibility metadata."
   [raw-config]
   (let [config (assert-task! raw-config)
         operation (:operation config)
@@ -138,65 +146,82 @@
         tasklet (get-in config [:main :fn])
         tasklet-symbol (get-in config [:main :symbol])
         argcount (or (get-in config [:main :argcount]) 2)
-        defaults (or (:params config) {})
-        process
-        (task-command/tasklet
-         {:id (tasklet-id operation)
-          :version version
-          :input
-          (fn [subject context]
-            (tasklet-subject-unit subject))
-          :item-key
-          (fn [unit]
-            (or (:path unit)
-                (:namespace unit)
-                (:name unit)))
-          :run
-          (fn [unit context]
-            (invoke-tasklet
-             tasklet
-             argcount
-             unit
-             (tasklet-subject-options
-              (:command/subject context))))})]
-    (command/batch
-     {:id id
-      :version version
-      :task/schema schema-id
-      :task/operation operation
-      :task/tasklet tasklet-symbol}
-     {:list
-      (work/pure
-       {:id :code.manage/list-units
-        :version version}
-       (fn [input context]
-         (let [options
-               (task-input-options input defaults)]
-           (vec
-            (map
-             (fn [unit]
-               (task-item unit options))
-             (task-input-units input))))))
-      :process process
-      :summarise
-      (work/pure
-       {:id :code.manage/summarise
-        :version version}
-       (fn [batch context]
-         (summarise operation batch)))})))
+        defaults (or (:params config) {})]
+    (let [definition
+          {:id id
+           :version version
+           :type :code.manage
+           :params defaults
+           :metadata
+           {:code.manage/schema schema-id
+            :code.manage/operation operation
+            :code.manage/tasklet tasklet-symbol}
+           :item
+           {:list-mode :input-context
+            :list
+            (fn [input context]
+              (let [options (task-input-options input defaults)]
+                (vec
+                 (map
+                  (fn [unit]
+                    (task-item unit options))
+                  (task-input-units input)))))
+            :run
+            (fn [subject context]
+              (invoke-tasklet
+               tasklet
+               argcount
+               (tasklet-subject-unit subject)
+               (tasklet-subject-options subject)))}
+           :summary
+           {:finalise
+            (fn [summary records results]
+              (finalise-summary operation summary records results))}
+           :return {:select :all
+                    :package :map}}
+          compiled (task-template/template definition)
+          normalised (:template/definition
+                      (work/work-spec compiled))]
+      (work/chain
+       {:id id
+        :version version
+        :template/schema task-template/schema-id
+        :template/definition normalised
+        :code.manage/schema schema-id
+        :code.manage/operation operation
+        :code.manage/tasklet tasklet-symbol}
+       [compiled
+        (work/pure
+         {:id (keyword
+               (str "code.manage/"
+                    (name operation)
+                    "-legacy-result"))
+          :version version}
+         (fn [bundle context]
+           (legacy-batch bundle)))]))))
+
+(defn task-definition
+  [work-value]
+  (:template/definition (work/work-spec work-value)))
 
 (defn task?
   [work-value]
   (= schema-id
-     (:task/schema (work/work-spec work-value))))
+     (get-in
+      (task-definition work-value)
+      [:metadata :code.manage/schema])))
 
 (defn task-operation
   [work-value]
-  (:task/operation (work/work-spec work-value)))
+  (get-in
+   (task-definition work-value)
+   [:metadata :code.manage/operation]))
 
 (defn tasklet-reference
   [work-value]
-  (:task/tasklet (work/work-spec work-value)))
+  (get-in
+   (task-definition work-value)
+   [:metadata :code.manage/tasklet]))
 
 (defn run-task
   ([task-value input]
