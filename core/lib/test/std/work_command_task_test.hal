@@ -1,5 +1,5 @@
 (ns std.work-command-task-test
-  (:require [std.lib.test :as test]
+  (:require
             [std.work :as work]
             [std.work.command :as command]
             [std.work.command.task :as task]
@@ -127,7 +127,7 @@
     (work/observer-events observer))))
 
 (def results
-  [(test/check
+  [(test-check
     "a unit task command compiles to an ordinary work leaf"
     [(task/task-work? unit-work)
      (:op (work/work-spec unit-work))
@@ -135,7 +135,7 @@
      (:command/schema (work/work-spec unit-work))]
     [true :step :example/unit "std.work.command.task/0-alpha"])
 
-   (test/check
+   (test-check
     "direct unit execution owns pre, run, post, output, display and result normalisation"
     direct-result
     {:item/id 1
@@ -145,19 +145,19 @@
      :item/prepared 2
      :item/display "value=6"})
 
-   (test/check
+   (test-check
     "command.batch expands the exact unit without changing its item result"
     batch-item-result
     direct-result)
 
-   (test/check
+   (test-check
     "the task template delegates its process stage to the reusable unit command"
     [(task/task-work? template-unit-work)
      (:command/schema (work/work-spec template-unit-work))
      (first template-bulk-result)]
     [true "std.work.command.task/0-alpha" template-direct-result])
 
-   (test/check
+   (test-check
     "prepared subjects can project input and metadata while remaining available to the run function"
     subject-result
     {:item/id 2
@@ -169,7 +169,7 @@
      :item/prepared 2
      :item/display 5})
 
-   (test/check
+   (test-check
     "direct and bulk execution emit the unit lifecycle exactly once"
     [(event-count direct-observer :task/item-started)
      (event-count direct-observer :task/item-completed)
@@ -177,7 +177,7 @@
      (event-count batch-observer :task/item-completed)]
     [1 1 1 1])
 
-   (test/check
+   (test-check
     "warning results remain data and emit the warning event"
     [(:item/id warning-result)
      (:status warning-result)
@@ -185,16 +185,14 @@
      (event-count warning-observer :task/item-warning)]
     [7 :warn 7 1])
 
-   (test/check
+   (test-check
     "unit failures are normalised as command errors by default"
     [(:item/id recorded-error)
      (:status recorded-error)
      (string? (:error recorded-error))]
     [9 :error true])
 
-   (test/check-error
-    "the explicit fail policy leaves failure ownership with std.work"
-    (work/run
+   (test-check "the explicit fail policy leaves failure ownership with std.work" (try (do (work/run
      (work/local-runtime)
      (task/unit
       {:id :example/failing
@@ -203,14 +201,10 @@
        (fn [value context]
          (throw
           (ex-info "unit failure" {:value value})))})
-     11))
+     11) false) (catch Throwable test_error__ true)) true)
 
-   (test/check-error
-    "unit task commands require an id"
-    (task/unit {:run (fn [value context] value)}))
+   (test-check "unit task commands require an id" (try (do (task/unit {:run (fn [value context] value)}) false) (catch Throwable test_error__ true)) true)
 
-   (test/check-error
-    "unit task commands require a run function"
-    (task/unit {:id :invalid/unit}))])
+   (test-check "unit task commands require a run function" (try (do (task/unit {:id :invalid/unit}) false) (catch Throwable test_error__ true)) true)])
 
-(test/print-results results)
+results
