@@ -111,21 +111,61 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
               + ": "
               + detail);
     }
-    if (FoundationFallbackDemand.requires(forms, context)) context.ensureEagerFallbacks();
+    ensureFoundationWhenDemanded(forms, context);
     return HaraAnalyzer.compile(this, forms, sourceSection, context);
   }
 
   static CallTarget compileHalc(Object[] forms, String sourceName) {
     HaraContext context = currentContext();
-    if (FoundationFallbackDemand.requires(forms, context)) context.ensureEagerFallbacks();
+    ensureFoundationWhenDemanded(forms, context);
     return FoundationHalcLowerer.compile(currentLanguage(), context, forms);
   }
 
   static CallTarget compileHalc(HalcArtifact.Module module, String sourceName) {
     HaraContext context = currentContext();
-    if (FoundationFallbackDemand.requires(module.forms, context)) context.ensureEagerFallbacks();
+    ensureFoundationWhenDemanded(module.forms, context);
     context.installHalcSchemas(module.schemas);
     return FoundationHalcLowerer.compile(currentLanguage(), context, module.forms);
+  }
+
+  private static void ensureFoundationWhenDemanded(Object[] forms, HaraContext context) {
+    if (foundationSensitiveNamespaceConfiguration(forms)
+        || FoundationFallbackDemand.requires(forms, context)) {
+      context.ensureEagerFallbacks();
+    }
+  }
+
+  /**
+   * A later lazy load refreshes ordinary namespaces with all Foundation Vars. Materialize before
+   * applying selective exposure or override configuration so the declaration can remove exactly
+   * the bindings it intends and a later evaluation cannot reintroduce them.
+   */
+  @SuppressWarnings("rawtypes")
+  private static boolean foundationSensitiveNamespaceConfiguration(Object[] forms) {
+    Keyword config = Keyword.create("config");
+    Keyword override = Keyword.create("override");
+    Keyword expose = Keyword.create("expose");
+    for (Object form : forms) {
+      if (!(form instanceof hara.lang.data.List<?> declaration)
+          || declaration.count() == 0
+          || !(declaration.nth(0) instanceof hara.lang.data.Symbol operator)
+          || operator.getNamespace() != null
+          || !("ns".equals(operator.getName()) || "ns+".equals(operator.getName()))) {
+        continue;
+      }
+      int start = "ns".equals(operator.getName()) ? 2 : 1;
+      for (int index = start; index < declaration.count(); index++) {
+        if (!(declaration.nth(index) instanceof hara.lang.data.List<?> clause)
+            || clause.count() != 2
+            || !config.equals(clause.nth(0))
+            || !(clause.nth(1) instanceof hara.lang.data.types.IMapType<?, ?> options)) {
+          continue;
+        }
+        hara.lang.data.types.IMapType raw = options;
+        if (raw.lookup(override) != null || raw.lookup(expose) != null) return true;
+      }
+    }
+    return false;
   }
 
   static Object[] readAll(String source, String sourceName) {
