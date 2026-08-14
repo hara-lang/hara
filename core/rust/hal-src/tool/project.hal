@@ -116,11 +116,173 @@
    :project/source-paths :project/test-paths :project/extension-paths
    :project/capabilities])
 
+
+(def +legacy-runtime-keys+
+  {:jvm/source-paths
+   [:project/runtime-profiles :jvm :runtime/native-source-paths]
+   :jvm/dependencies
+   [:project/runtime-profiles :jvm :runtime/dependencies :maven]
+   :jvm/target-path
+   [:project/runtime-profiles :jvm :runtime/target-path]})
+
+(defn reject-legacy-runtime-keys
+  [document]
+  (let [legacy-key
+        (if (has? document :jvm/source-paths)
+          :jvm/source-paths
+          (if (has? document :jvm/dependencies)
+            :jvm/dependencies
+            (if (has? document :jvm/target-path)
+              :jvm/target-path
+              nil)))]
+    (if legacy-key
+      (let [replacement (get +legacy-runtime-keys+ legacy-key)]
+        (throw
+         (ex-info
+          (str "project.edn " legacy-key
+               " is no longer supported; use " replacement)
+          {:type :legacy-runtime-key
+           :key legacy-key
+           :replacement replacement})))
+      document)))
+
+(defn- runtime-path-vector
+  [container key label]
+  (let [value (or (get container key) [])]
+    (if (vector? value)
+      value
+      (throw
+       (ex-info
+        (str label " must be a vector of project-relative path strings")
+        {:type :invalid-runtime-profile
+         :key key
+         :value value})))))
+
+(defn- runtime-map
+  [value label]
+  (let [value (or value {})]
+    (if (map? value)
+      value
+      (throw
+       (ex-info
+        (str label " must be a map")
+        {:type :invalid-runtime-profile
+         :value value})))))
+
+(defn runtime-profile
+  [document runtime]
+  (if-not (or (= runtime :jvm) (= runtime :rust))
+    (throw
+     (ex-info
+      (str "unsupported project runtime profile " runtime)
+      {:type :invalid-runtime-profile
+       :runtime runtime})))
+  (let [profiles (runtime-map (:project/runtime-profiles document)
+                              ":project/runtime-profiles")
+        profile (or (get profiles runtime) {})]
+    (runtime-map profile (str ":project/runtime-profiles " runtime))))
+
+(defn- merge-runtime-hara-dependencies
+  [shared additions runtime]
+  (reduce
+   (fn [output [coordinate declaration]]
+     (if (and (has? output coordinate)
+              (not= (get output coordinate) declaration))
+       (throw
+        (ex-info
+         (str "conflicting Hara dependency requirements for " coordinate
+              " in runtime profile " runtime)
+         {:type :runtime-profile-conflict
+          :runtime runtime
+          :coordinate coordinate
+          :shared (get output coordinate)
+          :runtime-requirement declaration}))
+       (assoc output coordinate declaration)))
+   shared
+   additions))
+
+(defn resolve-runtime-profile
+  [document runtime]
+  (let [document (reject-legacy-runtime-keys document)
+        profile (runtime-profile document runtime)
+        dependency-groups
+        (runtime-map (:runtime/dependencies profile)
+                     (str ":runtime/dependencies for " runtime))
+        shared-hara
+        (runtime-map (:project/dependencies document)
+                     ":project/dependencies")
+        runtime-hara
+        (runtime-map (:hara dependency-groups)
+                     (str ":runtime/dependencies :hara for " runtime))
+        maven
+        (runtime-map (:maven dependency-groups)
+                     (str ":runtime/dependencies :maven for " runtime))]
+    {:runtime runtime
+     :source-paths
+     (vec (concat
+           (runtime-path-vector document
+                                :project/source-paths
+                                ":project/source-paths")
+           (runtime-path-vector profile
+                                :runtime/source-paths
+                                ":runtime/source-paths")))
+     :test-paths
+     (vec (concat
+           (runtime-path-vector document
+                                :project/test-paths
+                                ":project/test-paths")
+           (runtime-path-vector profile
+                                :runtime/test-paths
+                                ":runtime/test-paths")))
+     :extension-paths
+     (vec (concat
+           (runtime-path-vector document
+                                :project/extension-paths
+                                ":project/extension-paths")
+           (runtime-path-vector profile
+                                :runtime/extension-paths
+                                ":runtime/extension-paths")))
+     :native-source-paths
+     (runtime-path-vector profile
+                          :runtime/native-source-paths
+                          ":runtime/native-source-paths")
+     :target-path (:runtime/target-path profile)
+     :hara-dependencies
+     (merge-runtime-hara-dependencies shared-hara runtime-hara runtime)
+     :maven-dependencies maven}))
+
+(defn select-runtime
+  [document runtime]
+  (let [resolved (resolve-runtime-profile document runtime)]
+    (assoc document
+           :project/runtime runtime
+           :project/source-paths (:source-paths resolved)
+           :project/test-paths (:test-paths resolved)
+           :project/extension-paths (:extension-paths resolved)
+           :project/native-source-paths (:native-source-paths resolved)
+           :project/runtime-target-path (:target-path resolved)
+           :project/dependencies (:hara-dependencies resolved)
+           :project/maven-dependencies (:maven-dependencies resolved))))
+
+(defn- validate-runtime-profiles
+  [document]
+  (let [document (reject-legacy-runtime-keys document)
+        profiles (runtime-map (:project/runtime-profiles document)
+                              ":project/runtime-profiles")]
+    (reduce
+     (fn [output runtime]
+       (do
+         (resolve-runtime-profile document runtime)
+         output))
+     document
+     (keys profiles))))
+
 (defn missing-keys [document]
   (vec (filter (fn [key] (not (has? document key))) +required-keys+)))
 
 (defn validate [document]
-  (let [missing (missing-keys document)]
+  (let [document (validate-runtime-profiles document)
+        missing (missing-keys document)]
     (cond
       (not (map? document))
       (throw (ex-info "project.edn must be an EDN map" {}))
@@ -134,11 +296,16 @@
 (defn read-text [path]
   (str/decode-utf8 (deref (File/read path))))
 
-(defn read-project [manifest-path]
-  (let [document (validate (Edn/read (read-text manifest-path)))]
-    (assoc document
-           :project/root (File/parent manifest-path)
-           :project/manifest-path manifest-path)))
+(defn read-project
+  ([manifest-path] (read-project manifest-path {}))
+  ([manifest-path options]
+   (let [document (validate (Edn/read (read-text manifest-path)))
+         project (assoc document
+                        :project/root (File/parent manifest-path)
+                        :project/manifest-path manifest-path)]
+     (if (:runtime options)
+       (select-runtime project (:runtime options))
+       project))))
 
 (defn start-directory [path]
   (let [metadata (deref (File/stat path))]
@@ -174,18 +341,27 @@
        files))))
 
 (defn declared-resources [project]
-  (reduce
-   (fn [resources path]
-     (let [source (read-text path)
-           namespace (framework/namespace-name source)]
-       (if (nil? namespace)
-         (throw (ex-info (str path " does not declare an ns or ns+ namespace")
-                         {:path path}))
-         (conj resources {:resource/name namespace
-                          :resource/path path
-                          :resource/source source}))))
-   []
-   (files-in project (:project/source-paths project) ".hal")))
+  (:resources
+   (reduce
+    (fn [state path]
+      (let [source (read-text path)
+            namespace (framework/namespace-name source)]
+        (if (nil? namespace)
+          (throw (ex-info (str path " does not declare an ns or ns+ namespace")
+                          {:path path})))
+        (if (has? (:names state) namespace)
+          (throw (ex-info "duplicate namespace in effective project profile"
+                          {:type :duplicate-namespace
+                           :namespace namespace
+                           :paths [(get (:names state) namespace) path]})))
+        {:names (assoc (:names state) namespace path)
+         :resources
+         (conj (:resources state)
+               {:resource/name namespace
+                :resource/path path
+                :resource/source source})}))
+    {:names {} :resources []}
+    (files-in project (:project/source-paths project) ".hal"))))
 
 (defn register-resources! [project]
   (reduce

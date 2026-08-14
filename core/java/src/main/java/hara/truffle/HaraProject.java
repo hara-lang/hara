@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Iterator;
 import java.util.Map;
@@ -31,6 +32,7 @@ final class HaraProject {
   private final java.util.List<Path> sourcePaths;
   private final java.util.List<Path> testPaths;
   private final java.util.List<Path> extensionPaths;
+  private final Map<String, String> haraDependencies;
   private final java.util.List<JvmDependency> jvmDependencies;
   private final java.util.List<Path> jvmSourcePaths;
   private final Path jvmTargetPath;
@@ -51,6 +53,7 @@ final class HaraProject {
       java.util.List<Path> sourcePaths,
       java.util.List<Path> testPaths,
       java.util.List<Path> extensionPaths,
+      Map<String, String> haraDependencies,
       java.util.List<JvmDependency> jvmDependencies,
       java.util.List<Path> jvmSourcePaths,
       Path jvmTargetPath,
@@ -63,6 +66,7 @@ final class HaraProject {
     this.sourcePaths = java.util.List.copyOf(sourcePaths);
     this.testPaths = java.util.List.copyOf(testPaths);
     this.extensionPaths = java.util.List.copyOf(extensionPaths);
+    this.haraDependencies = Map.copyOf(haraDependencies);
     this.jvmDependencies = java.util.List.copyOf(jvmDependencies);
     this.jvmSourcePaths = java.util.List.copyOf(jvmSourcePaths);
     this.jvmTargetPath = jvmTargetPath;
@@ -91,44 +95,49 @@ final class HaraProject {
             || !(lookup(options, "project/id") instanceof Symbol projectName)) {
           throw new HaraException("project.edn expects a map with :project/id");
         }
+        rejectLegacyRuntimeKeys(options, PROJECT_FILE);
         Path root = descriptor.toAbsolutePath().normalize().getParent();
+        java.util.List<Path> sharedSourcePaths =
+            paths(
+                root,
+                lookup(options, "project/source-paths"),
+                "project/source-paths",
+                java.util.List.of("src"),
+                PROJECT_FILE);
+        java.util.List<Path> sharedTestPaths =
+            paths(
+                root,
+                lookup(options, "project/test-paths"),
+                "project/test-paths",
+                java.util.List.of("test"),
+                PROJECT_FILE);
+        java.util.List<Path> sharedExtensionPaths =
+            paths(
+                root,
+                lookup(options, "project/extension-paths"),
+                "project/extension-paths",
+                java.util.List.of("extensions"),
+                PROJECT_FILE);
+        RuntimeProfile runtime = runtimeProfile(root, options, "jvm", PROJECT_FILE);
+        Map<String, String> sharedHara =
+            haraDependencies(lookup(options, "project/dependencies"), PROJECT_FILE);
+        Map<String, String> effectiveHara =
+            mergeHaraDependencies(sharedHara, runtime.haraDependencies(), "jvm");
         return new HaraProject(
             root,
             descriptor,
             projectName,
             lookup(options, "project/version") instanceof String value ? value : null,
             lookup(options, "project/main") instanceof Symbol value ? value : null,
-            paths(
-                root,
-                lookup(options, "project/source-paths"),
-                "project/source-paths",
-                java.util.List.of("src"),
-                PROJECT_FILE),
-            paths(
-                root,
-                lookup(options, "project/test-paths"),
-                "project/test-paths",
-                java.util.List.of("test"),
-                PROJECT_FILE),
-            paths(
-                root,
-                lookup(options, "project/extension-paths"),
-                "project/extension-paths",
-                java.util.List.of("extensions"),
-                PROJECT_FILE),
-            jvmDependencies(lookup(options, "jvm/dependencies"), PROJECT_FILE),
-            paths(
-                root,
-                lookup(options, "jvm/source-paths"),
-                "jvm/source-paths",
-                java.util.List.of("src-java"),
-                PROJECT_FILE),
-            path(
-                root,
-                lookup(options, "jvm/target-path"),
-                "jvm/target-path",
-                "target/classes",
-                PROJECT_FILE),
+            mergePaths(sharedSourcePaths, runtime.sourcePaths()),
+            mergePaths(sharedTestPaths, runtime.testPaths()),
+            mergePaths(sharedExtensionPaths, runtime.extensionPaths()),
+            effectiveHara,
+            runtime.mavenDependencies(),
+            runtime.nativeSourcePaths(),
+            runtime.targetPath() == null
+                ? root.resolve("target/jvm/classes")
+                : runtime.targetPath(),
             capabilities(lookup(options, "project/capabilities"), PROJECT_FILE));
       }
       if (!(form instanceof List<?> list)
@@ -160,6 +169,7 @@ final class HaraProject {
               java.util.List.of("test"),
               LEGACY_PROJECT_FILE),
           java.util.List.of(root.resolve("extensions")),
+          Map.of(),
           java.util.List.of(),
           java.util.List.of(),
           root.resolve("target/classes"),
@@ -284,6 +294,12 @@ final class HaraProject {
           || !version.matches(
               "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:[-+][0-9A-Za-z.-]+)?$"))
         throw new HaraException("project.edn :project/version is not SemVer");
+      rejectLegacyRuntimeKeys(options, PROJECT_FILE);
+      RuntimeProfile runtime = runtimeProfile(root, options, "jvm", PROJECT_FILE);
+      mergeHaraDependencies(
+          haraDependencies(lookup(options, "project/dependencies"), PROJECT_FILE),
+          runtime.haraDependencies(),
+          "jvm");
       Object dependencies = lookup(options, "project/dependencies");
       if (dependencies != null && !(dependencies instanceof IMapType<?, ?>))
         throw new HaraException("project.edn :project/dependencies must be a map");
@@ -318,6 +334,10 @@ final class HaraProject {
     return testPaths;
   }
 
+  Map<String, String> haraDependencies() {
+    return haraDependencies;
+  }
+
   java.util.List<JvmDependency> jvmDependencies() {
     return jvmDependencies;
   }
@@ -340,6 +360,184 @@ final class HaraProject {
 
   Path extensionRoot() {
     return extensionPaths.isEmpty() ? root.resolve("extensions") : extensionPaths.get(0);
+  }
+
+
+  private record RuntimeProfile(
+      java.util.List<Path> sourcePaths,
+      java.util.List<Path> testPaths,
+      java.util.List<Path> extensionPaths,
+      java.util.List<Path> nativeSourcePaths,
+      Path targetPath,
+      Map<String, String> haraDependencies,
+      java.util.List<JvmDependency> mavenDependencies) {}
+
+  private static RuntimeProfile runtimeProfile(
+      Path root, IMapType<?, ?> project, String runtime, String descriptor) {
+    Object declaredProfiles = lookup(project, "project/runtime-profiles");
+    if (declaredProfiles == null) {
+      return new RuntimeProfile(
+          java.util.List.of(),
+          java.util.List.of(),
+          java.util.List.of(),
+          java.util.List.of(),
+          null,
+          Map.of(),
+          java.util.List.of());
+    }
+    if (!(declaredProfiles instanceof IMapType<?, ?> profiles)) {
+      throw new HaraException(descriptor + " :project/runtime-profiles must be a map");
+    }
+    Object declaredProfile = lookup(profiles, runtime);
+    if (declaredProfile == null) {
+      return new RuntimeProfile(
+          java.util.List.of(),
+          java.util.List.of(),
+          java.util.List.of(),
+          java.util.List.of(),
+          null,
+          Map.of(),
+          java.util.List.of());
+    }
+    if (!(declaredProfile instanceof IMapType<?, ?> profile)) {
+      throw new HaraException(
+          descriptor + " :project/runtime-profiles :" + runtime + " must be a map");
+    }
+    Object declaredDependencies = lookup(profile, "runtime/dependencies");
+    IMapType<?, ?> dependencyGroups;
+    if (declaredDependencies == null) {
+      dependencyGroups = null;
+    } else if (declaredDependencies instanceof IMapType<?, ?> map) {
+      dependencyGroups = map;
+    } else {
+      throw new HaraException(
+          descriptor + " :runtime/dependencies for :" + runtime + " must be a map");
+    }
+    Object target = lookup(profile, "runtime/target-path");
+    return new RuntimeProfile(
+        paths(
+            root,
+            lookup(profile, "runtime/source-paths"),
+            "runtime/source-paths",
+            java.util.List.of(),
+            descriptor),
+        paths(
+            root,
+            lookup(profile, "runtime/test-paths"),
+            "runtime/test-paths",
+            java.util.List.of(),
+            descriptor),
+        paths(
+            root,
+            lookup(profile, "runtime/extension-paths"),
+            "runtime/extension-paths",
+            java.util.List.of(),
+            descriptor),
+        paths(
+            root,
+            lookup(profile, "runtime/native-source-paths"),
+            "runtime/native-source-paths",
+            java.util.List.of(),
+            descriptor),
+        target == null
+            ? null
+            : path(root, target, "runtime/target-path", null, descriptor),
+        haraDependencies(
+            dependencyGroups == null ? null : lookup(dependencyGroups, "hara"), descriptor),
+        mavenDependencies(
+            dependencyGroups == null ? null : lookup(dependencyGroups, "maven"), descriptor));
+  }
+
+  private static java.util.List<Path> mergePaths(
+      java.util.List<Path> shared, java.util.List<Path> runtime) {
+    ArrayList<Path> paths = new ArrayList<>(shared);
+    paths.addAll(runtime);
+    return java.util.List.copyOf(paths);
+  }
+
+  private static Map<String, String> mergeHaraDependencies(
+      Map<String, String> shared, Map<String, String> runtime, String profile) {
+    LinkedHashMap<String, String> dependencies = new LinkedHashMap<>(shared);
+    for (Map.Entry<String, String> entry : runtime.entrySet()) {
+      String existing = dependencies.get(entry.getKey());
+      if (existing != null && !existing.equals(entry.getValue())) {
+        throw new HaraException(
+            "Conflicting Hara dependency requirements for "
+                + entry.getKey()
+                + " in :"
+                + profile
+                + ": "
+                + existing
+                + " and "
+                + entry.getValue());
+      }
+      dependencies.put(entry.getKey(), entry.getValue());
+    }
+    return Map.copyOf(dependencies);
+  }
+
+  private static Map<String, String> haraDependencies(Object value, String descriptor) {
+    if (value == null) return Map.of();
+    if (!(value instanceof IMapType<?, ?> entries)) {
+      throw new HaraException(descriptor + " Hara dependencies must be a map");
+    }
+    LinkedHashMap<String, String> dependencies = new LinkedHashMap<>();
+    Iterator<?> iterator = entries.iterator();
+    while (iterator.hasNext()) {
+      Map.Entry<?, ?> entry = (Map.Entry<?, ?>) iterator.next();
+      String coordinate = haraCoordinate(entry.getKey(), descriptor);
+      if (!(entry.getValue() instanceof IMapType<?, ?> declaration)
+          || !(lookup(declaration, "version") instanceof String version)
+          || version.isBlank()) {
+        throw new HaraException(
+            descriptor + " Hara dependency " + coordinate + " requires :version");
+      }
+      if (dependencies.put(coordinate, version) != null) {
+        throw new HaraException(descriptor + " duplicate Hara dependency " + coordinate);
+      }
+    }
+    return Map.copyOf(dependencies);
+  }
+
+  private static String haraCoordinate(Object value, String descriptor) {
+    String coordinate;
+    if (value instanceof Symbol symbol) {
+      coordinate = symbol.display();
+    } else if (value instanceof String text) {
+      coordinate = text;
+    } else {
+      throw new HaraException(descriptor + " Hara dependency coordinates must be symbols or strings");
+    }
+    if (coordinate.startsWith("official:")) {
+      coordinate = "hara:" + coordinate.substring("official:".length());
+    } else if (!coordinate.contains(":")) {
+      coordinate = "hara:" + coordinate;
+    }
+    if (!coordinate.matches("[a-z0-9_.-]+:[a-z0-9_.-]+/[a-z0-9_.-]+")) {
+      throw new HaraException(descriptor + " invalid Hara dependency coordinate " + coordinate);
+    }
+    return coordinate;
+  }
+
+  private static void rejectLegacyRuntimeKeys(IMapType<?, ?> options, String descriptor) {
+    for (Map.Entry<String, String> legacy :
+        Map.of(
+                "jvm/source-paths",
+                ":project/runtime-profiles :jvm :runtime/native-source-paths",
+                "jvm/dependencies",
+                ":project/runtime-profiles :jvm :runtime/dependencies :maven",
+                "jvm/target-path",
+                ":project/runtime-profiles :jvm :runtime/target-path")
+            .entrySet()) {
+      if (lookup(options, legacy.getKey()) != null) {
+        throw new HaraException(
+            descriptor
+                + " :"
+                + legacy.getKey()
+                + " is no longer supported; use "
+                + legacy.getValue());
+      }
+    }
   }
 
   @SuppressWarnings("rawtypes")
@@ -388,19 +586,18 @@ final class HaraProject {
     return path;
   }
 
-  private static java.util.List<JvmDependency> jvmDependencies(Object value, String descriptor) {
+  private static java.util.List<JvmDependency> mavenDependencies(
+      Object value, String descriptor) {
     if (value == null) return java.util.List.of();
-    if (!(value instanceof ILinearType<?> entries)) {
-      throw new HaraException(descriptor + " :jvm/dependencies expects a vector");
+    if (!(value instanceof IMapType<?, ?> entries)) {
+      throw new HaraException(descriptor + " runtime Maven dependencies must be a map");
     }
     ArrayList<JvmDependency> dependencies = new ArrayList<>();
     LinkedHashSet<String> ids = new LinkedHashSet<>();
-    for (Object valueEntry : entries) {
-      if (!(valueEntry instanceof ILinearType<?> entry) || entry.count() != 2) {
-        throw new HaraException(
-            descriptor + " :jvm/dependencies entries must be [group/artifact \"version\"]");
-      }
-      Object idValue = entry.nth(0);
+    Iterator<?> iterator = entries.iterator();
+    while (iterator.hasNext()) {
+      Map.Entry<?, ?> entry = (Map.Entry<?, ?>) iterator.next();
+      Object idValue = entry.getKey();
       String id;
       if (idValue instanceof Symbol symbol) {
         id = symbol.display();
@@ -408,18 +605,19 @@ final class HaraProject {
         id = text.replace(':', '/');
       } else {
         throw new HaraException(
-            descriptor + " :jvm/dependencies coordinates must be symbols or strings");
+            descriptor + " Maven dependency coordinates must be symbols or strings");
       }
       if (!id.matches("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")) {
-        throw new HaraException(descriptor + " invalid JVM dependency coordinate " + id);
+        throw new HaraException(descriptor + " invalid Maven dependency coordinate " + id);
       }
-      if (!(entry.nth(1) instanceof String version)
+      if (!(entry.getValue() instanceof IMapType<?, ?> declaration)
+          || !(lookup(declaration, "version") instanceof String version)
           || !version.matches("[A-Za-z0-9][A-Za-z0-9._+-]*")) {
         throw new HaraException(
-            descriptor + " JVM dependency " + id + " requires an exact Maven version");
+            descriptor + " Maven dependency " + id + " requires an exact version");
       }
       if (!ids.add(id)) {
-        throw new HaraException(descriptor + " duplicate JVM dependency " + id);
+        throw new HaraException(descriptor + " duplicate Maven dependency " + id);
       }
       dependencies.add(new JvmDependency(id, version));
     }

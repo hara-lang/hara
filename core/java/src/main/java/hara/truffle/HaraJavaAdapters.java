@@ -270,6 +270,8 @@ public final class HaraJavaAdapters {
         (receiver, arguments) -> {
           return assocValue((IAssoc<?, ?>) receiver, arguments);
         });
+    protocol.extendIntrinsic(Tuple.Tup0.class, "assoc", HaraJavaAdapters::assocTuple);
+    protocol.extendIntrinsic(Tuple.Tup1.class, "assoc", HaraJavaAdapters::assocTuple);
   }
 
   public static void installCount(HaraProtocol protocol) {
@@ -296,6 +298,8 @@ public final class HaraJavaAdapters {
         IFind.class,
         "find",
         (receiver, arguments) -> findValue((IFind<?, ?>) receiver, arguments[0]));
+    protocol.extendIntrinsic(Tuple.Tup0.class, "find", HaraJavaAdapters::findTuple);
+    protocol.extendIntrinsic(Tuple.Tup1.class, "find", HaraJavaAdapters::findTuple);
   }
 
   public static void installEquality(HaraProtocol protocol) {
@@ -343,8 +347,14 @@ public final class HaraJavaAdapters {
     protocol.extendIntrinsic(
         INth.class,
         "nth",
-        (receiver, arguments) -> ((INth<?>) receiver)
-            .nth(HaraNumericConversions.toLong(arguments[0], "INth/nth")));
+        (receiver, arguments) -> {
+          long index = HaraNumericConversions.toLong(arguments[0], "INth/nth");
+          try {
+            return ((INth<?>) receiver).nth(index);
+          } catch (IndexOutOfBoundsException | java.util.NoSuchElementException error) {
+            throw new HaraException("nth index out of bounds: " + index);
+          }
+        });
     protocol.extendIntrinsic(
         byte[].class,
         "nth",
@@ -356,6 +366,10 @@ public final class HaraJavaAdapters {
           }
           return bytes[(int) index];
         });
+    // Compact vectors implement INth directly, but use a more specific non-intrinsic adapter so
+    // the specialized collection node preserves the shared bounds diagnostic.
+    protocol.extend(Tuple.Tup0.class, "nth", HaraJavaAdapters::nthTuple);
+    protocol.extend(Tuple.Tup1.class, "nth", HaraJavaAdapters::nthTuple);
   }
 
   public static void installEmpty(HaraProtocol protocol) {
@@ -874,7 +888,53 @@ public final class HaraJavaAdapters {
     }
   }
 
+  private static Object assocTuple(Object receiver, Object[] arguments) {
+    ILinearType<?> tuple = (ILinearType<?>) receiver;
+    int index = assocIndex(arguments[0]);
+    int count = Math.toIntExact(tuple.count());
+    if (index < 0 || index > count) {
+      throw new HaraException("assoc index out of bounds: " + index);
+    }
+    Object[] values = new Object[count + (index == count ? 1 : 0)];
+    for (int item = 0; item < count; item++) values[item] = tuple.nth(item);
+    values[index] = arguments[1];
+    Object result =
+        values.length <= 8
+            ? hara.kernel.builtin.BuiltinStruct.tuple(values)
+            : hara.lang.data.Vector.Standard.from(null, values);
+    if (receiver instanceof IObjType source && result instanceof IObjType target) {
+      result = target.withMeta(source.meta());
+    }
+    return result;
+  }
+
+  private static Object findTuple(Object receiver, Object[] arguments) {
+    Object key = arguments[0];
+    if (!HaraNumericConversions.isNumeric(key)) return null;
+    long index;
+    try {
+      index = HaraNumericConversions.toLong(key, "IFind/find on tuple");
+    } catch (HaraException error) {
+      return null;
+    }
+    ILinearType<?> tuple = (ILinearType<?>) receiver;
+    if (index < 0 || index >= tuple.count()) return null;
+    return new Tuple.Tup2.L<>(null, index, tuple.nth(index));
+  }
+
+  private static Object nthTuple(Object receiver, Object[] arguments) {
+    long index = HaraNumericConversions.toLong(arguments[0], "INth/nth");
+    try {
+      return ((ILinearType<?>) receiver).nth(index);
+    } catch (IndexOutOfBoundsException | java.util.NoSuchElementException error) {
+      throw new HaraException("nth index out of bounds: " + index);
+    }
+  }
+
   private static Integer assocIndex(Object key) {
+    if (!HaraNumericConversions.isNumeric(key)) {
+      throw new HaraException("assoc index must be a number");
+    }
     return HaraNumericConversions.toInt(key, "assoc index");
   }
 

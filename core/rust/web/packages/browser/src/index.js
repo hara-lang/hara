@@ -13,6 +13,9 @@ function asResourceEntries(resources) {
 }
 
 function createApi(runtime) {
+  const loadWholeWasm = (artifact) =>
+    instantiateWholeWasm(artifact, wasmBindings.WholeWasmHost);
+
   return Object.freeze({
     eval(source) {
       return runtime.eval(String(source));
@@ -35,12 +38,15 @@ function createApi(runtime) {
     evalBytecode(artifact) {
       return runtime.evalBytecodeArtifact(artifact);
     },
+    loadWholeWasm(artifact) {
+      return loadWholeWasm(artifact);
+    },
     async compileWholeWasm(source) {
       if (typeof runtime.compileWholeWasmArtifact !== "function") {
         throw new Error("whole-Wasm compilation requires @hara-lang/browser/full");
       }
       const artifact = runtime.compileWholeWasmArtifact(String(source));
-      return instantiateWholeWasm(artifact, wasmBindings.WholeWasmHost);
+      return loadWholeWasm(artifact);
     },
     raw: runtime,
     dispose() {

@@ -177,7 +177,7 @@ public final class HaraNativeTestRunnerTest {
   public void runsPortablePostgresConnectionProvider() throws Exception {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
-            ROOT, ROOT.resolve("lib/test/lib/postgres/connection_test.hal"));
+            ROOT, ROOT.resolve("lib/test/db/postgres/connection_test.hal"));
 
     assertTrue(result.failureMessage(), result.passed());
     assertEquals(11, result.facts());

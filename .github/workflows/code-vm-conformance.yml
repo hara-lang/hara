@@ -1,0 +1,92 @@
+name: Code VM cross-runtime conformance
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/assets/code-vm-conformance.edn'
+      - 'core/rust/src/vm/conformance**'
+      - 'core/rust/src/bin/hara-code-vm-conformance.rs'
+      - 'core/java/src/main/java/hara/truffle/CodeVmConformance*.java'
+      - 'core/java/src/main/java/hara/truffle/EvaluationJournal.java'
+      - 'core/java/src/test/java/hara/truffle/CodeVmConformanceTest.java'
+      - 'scripts/runtime/compare-code-vm-runtime-reports.py'
+      - '.github/workflows/code-vm-conformance.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/assets/code-vm-conformance.edn'
+      - 'core/rust/src/vm/conformance**'
+      - 'core/rust/src/bin/hara-code-vm-conformance.rs'
+      - 'core/java/src/main/java/hara/truffle/CodeVmConformance*.java'
+      - 'core/java/src/main/java/hara/truffle/EvaluationJournal.java'
+      - 'core/java/src/test/java/hara/truffle/CodeVmConformanceTest.java'
+      - 'scripts/runtime/compare-code-vm-runtime-reports.py'
+      - '.github/workflows/code-vm-conformance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-vm-conformance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  runtime-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Produce the Rust production report
+        run: |
+          mkdir -p "$RUNNER_TEMP/code-vm"
+          cargo run --quiet --manifest-path core/rust/Cargo.toml \
+            --features code-vm-conformance \
+            --bin hara-code-vm-conformance -- report \
+            > "$RUNNER_TEMP/code-vm/rust.json"
+
+      - name: Test the Truffle production runner
+        run: |
+          mvn -B --no-transfer-progress -Ptruffle \
+            -Dtest=CodeVmConformanceTest \
+            test --file core/java/pom.xml
+
+      - name: Produce the Truffle production report
+        env:
+          MAVEN_OPTS: -Djansi.force=false
+        run: |
+          mvn -q --no-transfer-progress -Dstyle.color=never -Ptruffle \
+            -Dexec.mainClass=hara.truffle.CodeVmConformance \
+            -Dexec.args=report \
+            -Dhara.codeVmReport="$RUNNER_TEMP/code-vm/truffle.json" \
+            exec:java --file core/java/pom.xml
+          test -s "$RUNNER_TEMP/code-vm/truffle.json"
+
+      - name: Compare Rust and Truffle interpreter outcomes
+        run: |
+          python3 scripts/runtime/compare-code-vm-runtime-reports.py \
+            "$RUNNER_TEMP/code-vm/rust.json" \
+            "$RUNNER_TEMP/code-vm/truffle.json"

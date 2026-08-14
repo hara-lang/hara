@@ -25,15 +25,7 @@ import java.util.function.Predicate;
 final class FoundationFallbackDefinitions {
   private static final String RESOURCE = "std/foundation.hal";
   private static final Set<String> NAMES = load();
-  private static final Set<String> INITIALIZATION_DEPENDENCIES =
-      Set.of(
-          // Reader registration turns decimal text into the exact numeric value rather than
-          // leaving the parsed representation as an interop map.
-          "read-string",
-          // These optimized collection operations dispatch through protocol implementations
-          // installed while Foundation starts, including compact Tuple receivers.
-          "assoc",
-          "nth");
+  private static final Set<String> INITIALIZATION_DEPENDENCIES = Set.of();
 
   private FoundationFallbackDefinitions() {}
 

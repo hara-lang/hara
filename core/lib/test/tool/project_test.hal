@@ -56,4 +56,88 @@
               {:build/tree-shake true
                :build/entrypoints #{'demo.main/start}
                :build/keep-vars #{}
-               :build/keep-namespaces #{}})]
+               :build/keep-namespaces #{}})
+ (test-check "runtime profiles merge shared and JVM-specific collections"
+  (project/resolve-runtime-profile
+   {:project/source-paths ["src"]
+    :project/test-paths ["test"]
+    :project/extension-paths ["extensions"]
+    :project/dependencies
+    {"hara:hara/base" {:version "^1.0.0"}}
+    :project/runtime-profiles
+    {:jvm
+     {:runtime/source-paths ["src-jvm"]
+      :runtime/test-paths ["test-jvm"]
+      :runtime/extension-paths ["extensions-jvm"]
+      :runtime/native-source-paths ["src-java"]
+      :runtime/target-path "target/jvm/classes"
+      :runtime/dependencies
+      {:maven
+       {"org.postgresql/postgresql" {:version "42.7.7"}}}}}}
+   :jvm)
+  {:runtime :jvm
+   :source-paths ["src" "src-jvm"]
+   :test-paths ["test" "test-jvm"]
+   :extension-paths ["extensions" "extensions-jvm"]
+   :native-source-paths ["src-java"]
+   :target-path "target/jvm/classes"
+   :hara-dependencies
+   {"hara:hara/base" {:version "^1.0.0"}}
+   :maven-dependencies
+   {"org.postgresql/postgresql" {:version "42.7.7"}}})
+
+ (test-check "runtime selection preserves build profiles and merges Hara dependencies"
+  (let [selected
+        (project/select-runtime
+         {:project/source-paths ["src"]
+          :project/test-paths []
+          :project/extension-paths []
+          :project/dependencies
+          {"hara:hara/base" {:version "^1.0.0"}}
+          :project/profiles
+          {:production {:profile/language :hara}}
+          :project/runtime-profiles
+          {:rust
+           {:runtime/source-paths ["src-rust"]
+            :runtime/dependencies
+            {:hara
+             {"hara:hara/crypto" {:version "^1.0.0"}}}}}}
+         :rust)]
+    [(:project/runtime selected)
+     (:project/source-paths selected)
+     (:project/dependencies selected)
+     (:project/profiles selected)])
+  [:rust
+   ["src" "src-rust"]
+   {"hara:hara/base" {:version "^1.0.0"}
+    "hara:hara/crypto" {:version "^1.0.0"}}
+   {:production {:profile/language :hara}}])
+
+ (test-check "legacy JVM keys report their runtime-profile replacement"
+  (try
+    (do
+      (project/resolve-runtime-profile
+       {:jvm/source-paths ["src-java"]}
+       :jvm)
+      nil)
+    (catch Throwable error
+      (:replacement (ex-data error))))
+  [:project/runtime-profiles :jvm :runtime/native-source-paths])
+
+ (test-check "shared and runtime Hara requirements fail closed on conflict"
+  (try
+    (do
+      (project/resolve-runtime-profile
+       {:project/dependencies
+        {"hara:hara/crypto" {:version "^1.0.0"}}
+        :project/runtime-profiles
+        {:rust
+         {:runtime/dependencies
+          {:hara
+           {"hara:hara/crypto" {:version "^2.0.0"}}}}}}
+       :rust)
+      nil)
+    (catch Throwable error
+      (:coordinate (ex-data error))))
+  "hara:hara/crypto")
+]

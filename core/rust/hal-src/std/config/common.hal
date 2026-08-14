@@ -1,0 +1,187 @@
+(ns std.config.common)
+
+(def deferred-directives
+  #{:properties :eval :resource})
+
+(def deferred-types
+  #{:key :gpg :gpg.public :yaml :toml
+    :properties :eval :resource})
+
+(defn merge-nested
+  "Recursively merges maps with later values taking precedence."
+  [left right]
+  (reduce
+   (fn [output entry]
+     (let [key (nth entry 0)
+           value (nth entry 1)
+           current (get output key)]
+       (assoc output
+              key
+              (if (and (map? current) (map? value))
+                (merge-nested current value)
+                value))))
+   (or left {})
+   (or right {})))
+
+(defn merge-all
+  [values]
+  (reduce merge-nested {} values))
+
+(defn unsupported-feature
+  "Creates the structured error used for deliberately deferred Foundation
+   features."
+  [feature category]
+  (ex-info
+   (str "Unsupported portable configuration feature: " feature)
+   {:error/type :std.config/unsupported-feature
+    :feature feature
+    :feature/category category
+    :feature/status :host-adapted}))
+
+(defn assert-portable-options!
+  [options]
+  (if (:secured options)
+    (throw
+     (unsupported-feature :secured-content :security)))
+  (let [type (:type options)]
+    (if (has? deferred-types type)
+      (throw
+       (unsupported-feature type :type))))
+  options)
+
+(defn read-text
+  [path]
+  (str/decode-utf8 (deref (File/read path))))
+
+(defn absolute-path?
+  [path]
+  (and (string? path)
+       (or (str/starts-with? path "/")
+           (and (> (str/length path) 2)
+                (= ":" (str/char-at path 1))))))
+
+(defn candidate-paths
+  "Returns include candidates in contract order: including file directory,
+   project root, then the path as supplied."
+  [path context]
+  (if (absolute-path? path)
+    [path]
+    (let [parent (:config/parent context)
+          root (or (:root context)
+                   (:project/root (:project context))
+                   (:project/root (:config/project context)))]
+      (vec
+       (distinct
+        (filter
+         (fn [candidate]
+           (and candidate (not (str/blank? (str candidate)))))
+         [(if parent (File/join parent path) nil)
+          (if root (File/join root path) nil)
+          path]))))))
+
+(defn first-existing
+  [paths]
+  (first
+   (filter
+    (fn [path]
+      (deref (File/exists? path)))
+    paths)))
+
+(defn resolve-file
+  [path context]
+  (let [candidates (candidate-paths path context)
+        found (first-existing candidates)]
+    (if found
+      found
+      (throw
+       (ex-info
+        (str "Configuration file does not exist: " path)
+        {:error/type :std.config/missing-file
+         :path path
+         :candidates candidates
+         :include/stack (vec (or (:config/include-stack context) []))})))))
+
+(defn extension-type
+  [path default-type]
+  (cond
+    (str/ends-with? path ".json") :json
+    (str/ends-with? path ".edn") :edn
+    :else default-type))
+
+(defn path-parts
+  [value]
+  (cond
+    (vector? value) value
+    (list? value) (vec value)
+    (keyword? value)
+    (vec
+     (map keyword
+          (str/split (name value) ".")))
+    (symbol? value)
+    (vec
+     (map keyword
+          (str/split (str value) ".")))
+    (string? value)
+    (vec
+     (map keyword
+          (str/split value ".")))
+    :else [value]))
+
+(defn compatible-get
+  [value key]
+  (if (not (map? value))
+    nil
+    (if (has? value key)
+      (get value key)
+      (cond
+        (keyword? key) (get value (name key))
+        (string? key) (get value (keyword key))
+        :else nil))))
+
+(defn compatible-get-in
+  [value path]
+  (reduce
+   (fn [current key]
+     (compatible-get current key))
+   value
+   (path-parts path)))
+
+(defn select-content
+  [content selection]
+  (let [content (if (:in selection)
+                  (compatible-get-in content (:in selection))
+                  content)
+        content (if (:exclude selection)
+                  (apply dissoc content (:exclude selection))
+                  content)]
+    (if (:keys selection)
+      (select-keys content (:keys selection))
+      content)))
+
+(defn contains-value?
+  [values target]
+  (reduce
+   (fn [found value]
+     (or found (= value target)))
+   false
+   values))
+
+(defn replace-first
+  [source token replacement]
+  (let [index (str/index-of source token)]
+    (if (nil? index)
+      source
+      (str
+       (str/slice source 0 index)
+       replacement
+       (str/slice source (+ index (str/length token)))))))
+
+(defn format-values
+  "Portable subset of Foundation format used by configuration documents. Each
+   %s placeholder consumes one value."
+  [template values]
+  (reduce
+   (fn [output value]
+     (replace-first output "%s" (str value)))
+   (str template)
+   values))

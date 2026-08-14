@@ -1,5 +1,6 @@
 (ns code.test.base.executive
   (:require [code.test.artifact :as artifact]
+            [code.test.base.runtime :as runtime]
             [code.test.work :as test-work]))
 
 (def +latest+ artifact/+latest+)
@@ -82,15 +83,61 @@
 (defn eval-namespace [namespace]
   (test-work/run {:namespace namespace}))
 
-;; Public facade adapters preserve the existing code.test entrypoint behavior.
+;; Public facade adapters preserve distinct Foundation workflow entry points
+;; while delegating native execution to the canonical code.test.work graph.
 (defn run:current
   ([] (test-work/run {:namespace (current-namespace)}))
   ([options]
    (test-work/run (assoc options :namespace (current-namespace)))))
 
-(def run:test test-work/run)
-(def run:load test-work/run)
-(def run:unload test-work/run)
+(defn run:test
+  "Evaluates facts already registered in the native test runtime."
+  ([] (test-work/run {}))
+  ([selector-or-options]
+   (test-work/run selector-or-options)))
+
+(defn namespace-selection
+  [selector-or-options]
+  (let [selection
+        (if (map? selector-or-options)
+          (:namespace selector-or-options)
+          selector-or-options)]
+    (cond
+      (or (nil? selection) (= :all selection))
+      (vec
+       (distinct
+        (map (fn [fact] (:namespace fact))
+             (runtime/tests))))
+
+      (or (vector? selection)
+          (list? selection)
+          (set? selection))
+      (vec selection)
+
+      :else [selection])))
+
+(defn run:load
+  "Resolves the namespace load workflow at the native host boundary. HAL
+   definitions are already loaded by the runtime, so this returns the resolved
+   namespaces without evaluating their tests."
+  ([] (run:load :all))
+  ([selector-or-options]
+   (vec
+    (map
+     (fn [namespace]
+       (load-namespace namespace {} {} {}))
+     (namespace-selection selector-or-options)))))
+
+(defn run:unload
+  "Removes registered facts for selected namespaces without executing them."
+  ([] (run:unload :all))
+  ([selector-or-options]
+   (let [namespaces (namespace-selection selector-or-options)
+         _ (reduce (fn [_ namespace]
+                     (runtime/purge-facts namespace))
+                   nil
+                   namespaces)]
+     namespaces)))
 
 (defn run-errored
   ([] (run-errored {}))

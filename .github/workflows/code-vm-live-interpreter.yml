@@ -1,0 +1,64 @@
+name: Code VM live interpreter
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/src/fiber.rs'
+      - 'core/rust/src/fiber/**'
+      - 'notes/issue-403-live-evaluator-fiber.md'
+      - '.github/workflows/code-vm-live-interpreter.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/src/fiber.rs'
+      - 'core/rust/src/fiber/**'
+      - 'notes/issue-403-live-evaluator-fiber.md'
+      - '.github/workflows/code-vm-live-interpreter.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-vm-live-interpreter-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  observed-fiber:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Check touched Rust formatting
+        run: |
+          rustfmt --edition 2021 --check \
+            core/rust/src/fiber/coroutine.rs \
+            core/rust/src/fiber/coroutine/observation.rs
+
+      - name: Test live evaluator boundaries
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            core::fiber::coroutine::observation --lib
+
+      - name: Compile live evaluator for browser Wasm
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib
