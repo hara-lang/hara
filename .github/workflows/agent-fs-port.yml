@@ -1,4 +1,4 @@
-name: Bundle portable filesystem sources
+name: Validate portable filesystem port
 
 on:
   push:
@@ -10,23 +10,29 @@ permissions:
   contents: read
 
 jobs:
-  bundle:
+  rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/std-native-file-portable-fs
-      - name: Collect implementation context
+          fetch-depth: 0
+      - name: Apply staged Rust filesystem patch
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p /tmp/hara-fs-tree
-          cp -a core/lib core/rust/src core/rust/tests core/rust/Cargo.toml core/rust/build.rs core/rust/standard-library.namespaces core/java/src core/java/pom.xml core/Makefile scripts/runtime /tmp/hara-fs-tree/
-          if [[ -d specs ]]; then cp -a specs /tmp/hara-fs-tree/; fi
-          if [[ -d .github/workflows ]]; then mkdir -p /tmp/hara-fs-tree/.github && cp -a .github/workflows /tmp/hara-fs-tree/.github/; fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hara-fs-tree
-          path: /tmp/hara-fs-tree
-          if-no-files-found: error
-          retention-days: 1
+          base64 -d .github/patches/fs-rust.patch.gz.b64 | gzip -d > /tmp/fs-rust.patch
+          git apply --check /tmp/fs-rust.patch
+          git apply /tmp/fs-rust.patch
+          git diff --stat
+      - name: Format and compile Rust library
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path core/rust/Cargo.toml
+          cargo check --manifest-path core/rust/Cargo.toml --lib
+      - name: Test filesystem providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/rust/Cargo.toml file::tests --lib -- --nocapture
