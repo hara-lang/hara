@@ -1,8 +1,10 @@
 (ns tool.lint.analyze
   (:require [std.block :as block]
+            [std.typed.infer :as infer]
             [std.typed.schema :as schema]
             [tool.lint.model :as model]
             [tool.lint.profile :as profile]
+            [tool.lint.schema :as lint-schema]
             [tool.project :as project]))
 
 (defn code-children [value]
@@ -29,6 +31,39 @@
         index
         (recur (inc index))))))
 
+(defn metadata-map
+  [metadata-block]
+  (if (and metadata-block (= :meta (block/tag metadata-block)))
+    (let [child (first (code-children metadata-block))
+          value (when child (block/value child))]
+      (cond
+        (map? value) value
+        (keyword? value) {value true}
+        (symbol? value) {:tag value}
+        :else {}))
+    {}))
+
+(defn annotated-top-level-forms
+  [root]
+  (loop [remaining (code-children root)
+         metadata {}
+         metadata-block nil
+         output []]
+    (if (empty? remaining)
+      output
+      (let [current (first remaining)]
+        (if (= :meta (block/tag current))
+          (recur (vec (rest remaining))
+                 (merge metadata (metadata-map current))
+                 current
+                 output)
+          (recur (vec (rest remaining))
+                 {}
+                 nil
+                 (conj output {:form current
+                               :metadata metadata
+                               :metadata-block metadata-block})))))))
+
 (defn parse-require-entry
   [entry]
   (if (vector? entry)
@@ -43,7 +78,11 @@
               (recur (vec (drop 2 remaining)) value refers)
 
               (= option :refer)
-              (recur (vec (drop 2 remaining)) alias (into refers value))
+              (recur (vec (drop 2 remaining))
+                     alias
+                     (if (or (vector? value) (list? value) (set? value))
+                       (into refers value)
+                       refers))
 
               :else
               (recur (vec (rest remaining)) alias refers))))))
@@ -57,7 +96,7 @@
                               (or (= head 'ns) (= head 'ns+))))
                           (code-children root)))]
     (if (nil? ns-block)
-      {:name nil :aliases {} :refers #{}}
+      {:name nil :aliases {} :refers #{} :refer-map {} :requires []}
       (let [form (block/value ns-block)
             name (second form)
             clauses (drop 2 form)
@@ -78,58 +117,168 @@
          :refers (reduce (fn [output requirement]
                            (into output (:refers requirement)))
                          #{} requirements)
-         :requires (vec (map :namespace requirements))}))))
+         :refer-map
+         (reduce
+          (fn [output requirement]
+            (reduce (fn [acc referred]
+                      (assoc acc referred
+                             (symbol (str (:namespace requirement))
+                                     (name referred))))
+                    output
+                    (:refers requirement)))
+          {} requirements)
+         :requires (vec (map (fn [requirement] (:namespace requirement)) requirements))}))))
 
-(defn parameter-counts
-  [definition]
+(defn parameter-layout
+  [parameters]
+  (let [values (code-children parameters)]
+    (loop [remaining values fixed []]
+      (if (empty? remaining)
+        {:fixed fixed :rest nil}
+        (let [current (block/value (first remaining))]
+          (if (= '& current)
+            {:fixed fixed
+             :rest (when (second remaining)
+                     (block/value (second remaining)))}
+            (recur (vec (rest remaining))
+                   (conj fixed current))))))))
+
+(defn direct-function-arity
+  [children name-index]
+  (let [tail (vec (drop (inc name-index) children))
+        parameters (first-vector-block tail)]
+    (when parameters
+      (let [parameter-index (block-index children parameters)]
+        {:parameters parameters
+         :layout (parameter-layout parameters)
+         :body (vec (drop (inc parameter-index) children))}))))
+
+(defn clause-function-arity
+  [clause]
+  (when (= :list (block/tag clause))
+    (let [children (code-children clause)
+          parameters (first children)]
+      (when (and parameters (= :vector (block/tag parameters)))
+        {:parameters parameters
+         :layout (parameter-layout parameters)
+         :body (vec (rest children))}))))
+
+(defn function-arities
+  [definition name-block]
   (let [children (code-children definition)
-        vectors (filter (fn [child] (= :vector (block/tag child))) children)
-        direct (first vectors)]
+        name-index (block-index children name-block)
+        direct (direct-function-arity children name-index)]
     (if direct
-      (let [values (vec (map block/value (code-children direct)))
-            amp-index (loop [index 0]
-                        (if (= index (count values))
-                          nil
-                          (if (= '& (nth values index))
-                            index
-                            (recur (inc index)))))]
-        {:arities (if amp-index #{} #{(count values)})
-         :minimum amp-index
-         :variadic (not (nil? amp-index))})
-      {:arities #{} :minimum nil :variadic false})))
+      [direct]
+      (vec
+       (filter identity
+               (map clause-function-arity
+                    (vec (drop (inc name-index) children))))))))
+
+(defn signature-from-arities
+  [arities]
+  (let [layouts (vec (map (fn [arity] (:layout arity)) arities))
+        exact (into #{} (map (fn [layout] (count (:fixed layout)))
+                             (filter (fn [layout] (nil? (:rest layout))) layouts)))
+        minimums (vec (map (fn [layout] (count (:fixed layout)))
+                           (filter (fn [layout] (:rest layout)) layouts)))]
+    {:arities exact
+     :minimums minimums
+     :variadic (not (empty? minimums))
+     :layouts layouts}))
+
+(defn inline-metadata
+  [children name-index]
+  (reduce
+   (fn [state value]
+     (if (= :meta (block/tag value))
+       {:metadata (merge (:metadata state) (metadata-map value))
+        :schema-block (if (has? (metadata-map value) :schema)
+                        value
+                        (:schema-block state))}
+       state))
+   {:metadata {} :schema-block nil}
+   (vec (take name-index (drop 1 children)))))
+
+(defn definition-initializer
+  [children name-index]
+  (let [tail (vec (filter (fn [value] (not= :meta (block/tag value)))
+                          (drop (inc name-index) children)))]
+    (cond
+      (empty? tail) nil
+      (and (string? (block/value (first tail))) (> (count tail) 1))
+      (second tail)
+      :else (first tail))))
 
 (defn definition-info
-  [definition namespace]
-  (let [children (code-children definition)
+  [entry ns-info]
+  (let [definition (:form entry)
+        children (code-children definition)
         head (if (empty? children) nil (block/value (first children)))]
     (if (has? '#{def defn defn- defmacro declare} head)
       (let [name-block (first-symbol-block (vec (rest children)))
             definition-name (if name-block (block/value name-block) nil)]
         (if definition-name
-          {:name definition-name
-           :qualified (if namespace
-                        (symbol (str namespace) (name definition-name))
-                        definition-name)
-           :kind (if (= head 'defmacro) :macro
-                   (if (or (= head 'defn) (= head 'defn-)) :function :var))
-           :visibility (if (= head 'defn-) :private :public)
-           :signature (parameter-counts definition)
-           :block name-block
-           :form definition}
+          (let [name-index (block-index children name-block)
+                inline (inline-metadata children name-index)
+                metadata (merge (:metadata entry) (:metadata inline))
+                schema-block (or (:schema-block inline)
+                                 (when (has? (:metadata entry) :schema)
+                                   (:metadata-block entry)))
+                kind (if (= head 'defmacro) :macro
+                       (if (or (= head 'defn) (= head 'defn-))
+                         :function
+                         :var))
+                arities (if (= kind :function)
+                          (function-arities definition name-block)
+                          [])]
+            {:name definition-name
+             :qualified (if (:name ns-info)
+                          (symbol (str (:name ns-info)) (name definition-name))
+                          definition-name)
+             :kind kind
+             :visibility (if (= head 'defn-) :private :public)
+             :signature (signature-from-arities arities)
+             :arities arities
+             :initializer (when (= kind :var)
+                            (definition-initializer children name-index))
+             :metadata metadata
+             :has-schema (has? metadata :schema)
+             :schema-surface (get metadata :schema)
+             :schema-block schema-block
+             :schema-context {:namespace (:name ns-info)
+                              :aliases (:aliases ns-info)
+                              :refer-map (:refer-map ns-info)}
+             :namespace-info ns-info
+             :block name-block
+             :form definition})
           nil))
       nil)))
 
+
+(defn parse-source*
+  [source options]
+  (let [parser (resolve 'std.block/parse-source)]
+    (if parser
+      (parser source options)
+      {:block (block/parse-root source)
+       :diagnostics []})))
+
 (defn scan-source
   [source options]
-  (let [parsed (block/parse-source source options)
+  (let [parsed (parse-source* source options)
         root (:block parsed)
         ns-info (namespace-info root)
+        entries (annotated-top-level-forms root)
+        file (or (:file options) "<memory>")
         definitions (vec
                      (filter identity
-                             (map (fn [form]
-                                    (definition-info form (:name ns-info)))
-                                  (code-children root))))]
-    {:document {:file (or (:file options) "<memory>")
+                             (map (fn [entry]
+                                    (let [definition (definition-info entry ns-info)]
+                                      (when definition
+                                        (assoc definition :file file))))
+                                  entries)))]
+    {:document {:file file
                 :source source
                 :root root}
      :namespace ns-info
@@ -153,6 +302,7 @@
   (cond
     (nil? value) :nil
     (boolean? value) :bool
+    (integer? value) :int
     (number? value) :num
     (string? value) :str
     (keyword? value) :keyword
@@ -195,22 +345,82 @@
             (into findings (:findings (analyze-block value context))))
           [] values))
 
-(defn arity-finding
-  [call head-block arguments context]
-  (let [head (block/value head-block)
-        local-signature (get (:signatures context) head)
+(defn signature-accepts-count?
+  [signature argument-count]
+  (or (nil? signature)
+      (= :variadic (:arities signature))
+      (has? (:arities signature) argument-count)
+      (any? (fn [minimum] (<= minimum argument-count))
+            (:minimums signature))
+      (and (:variadic signature)
+           (:minimum signature)
+           (<= (:minimum signature) argument-count))))
+
+(defn profile-arity-finding
+  [call head arguments context]
+  (let [local-signature (get (:signatures context) head)
         core-signature (get (get-in context [:profile :signatures]) head)
         signature (or local-signature core-signature)
-        count (count arguments)]
-    (if (or (nil? signature)
-            (= :variadic (:arities signature))
-            (has? (:arities signature) count)
-            (and (:variadic signature)
-                 (<= (:minimum signature) count)))
+        argument-count (count arguments)]
+    (if (signature-accepts-count? signature argument-count)
       []
       [(model/finding call :tool.lint/invalid-arity :error
-                      (str "invalid arity for " head ": " count)
+                      (str "invalid arity for " head ": " argument-count)
                       :tool.source-analysis/arity)])))
+
+(defn inference-context
+  [context]
+  {:namespace (:namespace context)
+   :aliases (:aliases context)
+   :refer-map (:refer-map context)
+   :locals (:local-types context)
+   :functions (merge (get-in context [:schema-index :inferred-functions])
+                     (get-in context [:schema-index :functions]))
+   :values (get-in context [:schema-index :values])})
+
+(defn schema-call-findings
+  [call head arguments context]
+  (let [contract (lint-schema/function-contract
+                  (:schema-index context)
+                  head
+                  {:namespace (:namespace context)
+                   :aliases (:aliases context)
+                   :refer-map (:refer-map context)})]
+    (if (or (nil? contract) (schema/unknown? contract))
+      nil
+      (let [arity (schema/matching-arity contract (count arguments))]
+        (if (nil? arity)
+          (vec
+           (filter identity
+                   [(lint-schema/schema-finding
+                     call
+                     :tool.lint/schema-arity-mismatch
+                     (str "schema arity mismatch for " head
+                          ": " (count arguments) " arguments")
+                     (:options context)
+                     :tool.source-analysis/schema-call-arity)]))
+          (loop [index 0
+                 remaining arguments
+                 findings []]
+            (if (empty? remaining)
+              findings
+              (let [argument (first remaining)
+                    expected (schema/expected-argument arity index)
+                    actual (infer/infer-block argument (inference-context context))
+                    finding
+                    (when (and expected
+                               (not (schema/unknown? actual))
+                               (not (schema/assignable-normal? expected actual)))
+                      (lint-schema/schema-finding
+                       argument
+                       :tool.lint/schema-argument-mismatch
+                       (str "schema argument " (inc index) " for " head
+                            " expects " expected ", inferred " actual)
+                       (:options context)
+                       :tool.source-analysis/schema-argument))]
+                (recur (inc index)
+                       (vec (rest remaining))
+                       (if finding (conj findings finding) findings))))))))))
 
 (defn type-findings
   [arguments signature]
@@ -221,8 +431,8 @@
         (if (= index (count arguments))
           findings
           (let [argument (nth arguments index)
-                      expected-type (nth expected (min index (dec (count expected))))
-                      actual-type (literal-type (block/value argument))]
+                expected-type (nth expected (min index (dec (count expected))))
+                actual-type (literal-type (block/value argument))]
             (recur (inc index)
                    (if (or (= actual-type :unknown)
                            (schema/compatible? expected-type actual-type))
@@ -239,18 +449,23 @@
   [value children context]
   (let [bindings (second children)
         body (vec (drop 2 children))]
-    (if (not= :vector (block/tag bindings))
-      {:findings [(model/finding bindings :tool.lint/invalid-binding :error
+    (if (or (nil? bindings) (not= :vector (block/tag bindings)))
+      {:findings [(model/finding (or bindings value)
+                                 :tool.lint/invalid-binding :error
                                  "let bindings must be a vector"
                                  :tool.source-analysis/binding-shape)]
        :type :unknown}
       (let [pairs (code-children bindings)
             result
-            (loop [remaining pairs locals (:locals context) findings []]
+            (loop [remaining pairs
+                   locals (:locals context)
+                   local-types (:local-types context)
+                   findings []]
               (if (empty? remaining)
-                {:locals locals :findings findings}
+                {:locals locals :local-types local-types :findings findings}
                 (if (= 1 (count remaining))
                   {:locals locals
+                   :local-types local-types
                    :findings (conj findings
                                    (model/finding (first remaining)
                                                   :tool.lint/invalid-binding
@@ -259,33 +474,112 @@
                                                   :tool.source-analysis/binding-shape))}
                   (let [binding (first remaining)
                         initializer (second remaining)
-                        checked (analyze-block initializer
-                                               (assoc context :locals locals))]
+                        nested-context (assoc context
+                                              :locals locals
+                                              :local-types local-types)
+                        checked (analyze-block initializer nested-context)
+                        symbols (binding-symbols binding)
+                        inferred (infer/infer-block initializer
+                                                    (inference-context nested-context))
+                        next-types (reduce (fn [output symbol]
+                                             (assoc output symbol inferred))
+                                           local-types symbols)]
                     (recur (vec (drop 2 remaining))
-                           (into locals (binding-symbols binding))
+                           (into locals symbols)
+                           next-types
                            (into findings (:findings checked)))))))]
         {:findings (into (:findings result)
-                         (analyze-sequence body
-                                           (assoc context :locals (:locals result))))
+                         (analyze-sequence
+                          body
+                          (assoc context
+                                 :locals (:locals result)
+                                 :local-types (:local-types result))))
          :type :unknown}))))
+
+(defn contract-arity-for-layout
+  [contract layout]
+  (when (schema/function-schema? contract)
+    (first
+     (filter
+      (fn [arity]
+        (and (= (count (:fixed layout))
+                (count (get-in arity [:inputs :fixed])))
+             (= (nil? (:rest layout))
+                (nil? (get-in arity [:inputs :rest])))))
+      (schema/project-arities-normal contract)))))
+
+(defn analyze-one-arity
+  [arity context contract]
+  (let [parameters (:parameters arity)
+        layout (:layout arity)
+        symbols (binding-symbols parameters)
+        contract-arity (contract-arity-for-layout contract layout)
+        fixed-types (if contract-arity
+                      (get-in contract-arity [:inputs :fixed])
+                      (vec (map (fn [_] (schema/unknown)) (:fixed layout))))
+        types
+        (loop [names (:fixed layout)
+               remaining fixed-types
+               output (:local-types context)]
+          (if (or (empty? names) (empty? remaining))
+            output
+            (let [parameter (first names)]
+              (recur (vec (rest names))
+                     (vec (rest remaining))
+                     (if (symbol? parameter)
+                       (assoc output parameter (first remaining))
+                       output)))))
+        types (if (and (:rest layout) (symbol? (:rest layout)))
+                (assoc types (:rest layout)
+                       {:kind :vector
+                        :item (or (get-in contract-arity [:inputs :rest])
+                                  (schema/unknown))})
+                types)]
+    (analyze-sequence (:body arity)
+                      (assoc context
+                             :locals (into (:locals context) symbols)
+                             :local-types types))))
+
+(defn anonymous-arities
+  [value children]
+  (let [name-block (when (and (second children)
+                              (symbol? (block/value (second children))))
+                     (second children))
+        name-index (if name-block 1 0)
+        direct (direct-function-arity children name-index)]
+    (if direct
+      [direct]
+      (vec (filter identity
+                   (map clause-function-arity
+                        (vec (drop (inc name-index) children))))))))
 
 (defn analyze-fn-like
   [value children context]
-  (let [parameters (first-vector-block (vec (rest children)))
-        body-start (if parameters
-                     (inc (block-index children parameters))
-                     (count children))
-        body (vec (drop body-start children))]
-    (if (nil? parameters)
+  (let [head (block/value (first children))
+        definition (when (has? '#{defn defn- defmacro} head)
+                     (get (:definition-by-form context) value))
+        arities (if definition
+                  (:arities definition)
+                  (anonymous-arities value children))
+        contract (when definition
+                   (get-in context [:schema-index :functions (:qualified definition)]))]
+    (if (empty? arities)
       {:findings [(model/finding value :tool.lint/invalid-binding :error
                                  "function requires a parameter vector"
                                  :tool.source-analysis/binding-shape)]
        :type :fn}
-      {:findings (analyze-sequence
-                  body
-                  (assoc context :locals
-                         (into (:locals context) (binding-symbols parameters))))
+      {:findings (reduce (fn [output arity]
+                           (into output (analyze-one-arity arity context contract)))
+                         [] arities)
        :type :fn})))
+
+(defn definition-tail
+  [children]
+  (let [name-block (first-symbol-block (vec (rest children)))
+        name-index (when name-block (block-index children name-block))]
+    (if name-index
+      (vec (drop (inc name-index) children))
+      [])))
 
 (defn analyze-list
   [value context]
@@ -302,29 +596,37 @@
       (has? '#{fn defn defn- defmacro} head)
       (analyze-fn-like value children context)
       (= head 'def)
-      {:findings (analyze-sequence (vec (drop 2 children)) context) :type :any}
+      {:findings (analyze-sequence
+                  (vec (filter (fn [child] (not= :meta (block/tag child)))
+                               (definition-tail children)))
+                  context)
+       :type :any}
       :else
       (let [head-findings
             (if (and (symbol? head) (not (resolved-symbol? head context)))
               [(unresolved-finding head-block context)] [])
             argument-findings (analyze-sequence arguments context)
-            arity-findings (if (symbol? head)
-                             (arity-finding value head-block arguments context)
-                             [])
-            signature (if (symbol? head)
+            schema-findings (when (symbol? head)
+                              (schema-call-findings value head arguments context))
+            profile-arity (if (and (symbol? head) (nil? schema-findings))
+                            (profile-arity-finding value head arguments context)
+                            [])
+            signature (if (and (symbol? head) (nil? schema-findings))
                         (get (get-in context [:profile :signatures]) head)
                         nil)]
         {:findings (vec (concat head-findings
                                 argument-findings
-                                arity-findings
+                                (or schema-findings [])
+                                profile-arity
                                 (type-findings arguments signature)))
          :type (or (:return signature) :unknown)}))))
 
 (defn analyze-block
   [value context]
   (cond
-    (block/error? value) {:findings [] :type :unknown}
-    (block/token? value)
+    (= :error (block/type value)) {:findings [] :type :unknown}
+    (= :meta (block/tag value)) {:findings [] :type :any}
+    (= :token (block/type value))
     (let [form (block/value value)]
       {:findings (if (and (symbol? form)
                           (not (resolved-symbol? form context)))
@@ -352,36 +654,84 @@
            {:seen #{} :findings []}
            definitions)))
 
+(defn value-schema-findings
+  [definitions index context options]
+  (vec
+   (filter
+    identity
+    (map
+     (fn [definition]
+       (let [contract (lint-schema/value-contract index (:qualified definition))
+             initializer (:initializer definition)]
+         (when (and contract initializer (not (schema/unknown? contract)))
+           (let [actual (infer/infer-block initializer (inference-context context))]
+             (when (and (not (schema/unknown? actual))
+                        (not (schema/assignable-normal? contract actual)))
+               (lint-schema/schema-finding
+                (:block definition)
+                :tool.lint/schema-value-mismatch
+                (str "schema for " (:qualified definition)
+                     " does not accept inferred initializer " actual)
+                options
+                :tool.source-analysis/schema-value))))))
+     definitions))))
+
 (defn analyze-scan
   [scan options]
   (let [definitions (:definitions scan)
-        names (into #{} (map :name definitions))
+        names (into #{} (map (fn [definition] (:name definition)) definitions))
         signatures (reduce (fn [output definition]
                              (assoc output (:name definition) (:signature definition)))
                            {} definitions)
         ns-info (:namespace scan)
+        index (:schema-index options)
         context {:profile (or (:profile options) profile/+profile+)
                  :namespace (:name ns-info)
                  :aliases (:aliases ns-info)
                  :refers (:refers ns-info)
+                 :refer-map (:refer-map ns-info)
                  :known-namespaces (or (:known-namespaces options) #{})
                  :definitions names
                  :signatures signatures
-                 :locals #{}}
+                 :definition-by-form (reduce (fn [output definition]
+                                               (assoc output (:form definition) definition))
+                                             {} definitions)
+                 :schema-index index
+                 :options options
+                 :locals #{}
+                 :local-types {}}
         forms (code-children (get-in scan [:document :root]))
         file (get-in scan [:document :file])
+        schema-findings (if index
+                          (lint-schema/file-findings index file)
+                          [])
+        initializer-findings (if index
+                               (value-schema-findings definitions index context options)
+                               [])
         findings (vec
                   (map (fn [finding] (assoc finding :file file))
                        (concat (:reader-findings scan)
                                (duplicate-findings definitions)
+                               schema-findings
+                               initializer-findings
                                (analyze-sequence forms context))))]
-    (assoc scan :findings findings)))
+    (assoc scan
+           :findings findings
+           :schema-index (when index (lint-schema/public-index index)))))
 
 (defn analyze-source
   ([source] (analyze-source source {}))
   ([source options]
-   (analyze-scan (scan-source source options) options)))
+   (let [scan (scan-source source options)
+         built (if (:schema-index-built options)
+                 (:schema-index options)
+                 (lint-schema/build-schema-index [scan] options))]
+     (analyze-scan scan
+                   (assoc options
+                          :schema-index built
+                          :schema-index-built true)))))
 
 (defn analyze-file
-  [path options]
-  (analyze-source (project/read-text path) (assoc options :file path)))
+  ([path] (analyze-file path {}))
+  ([path options]
+   (analyze-source (project/read-text path) (assoc options :file path))))

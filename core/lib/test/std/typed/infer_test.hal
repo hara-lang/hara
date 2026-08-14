@@ -1,0 +1,50 @@
+(ns std.typed.infer-test
+  (:use code.test)
+  (:require [std.block :as block]
+            [std.typed.infer :as infer]
+            [std.typed.schema :as schema]))
+
+(defn source-form [source]
+  (first (filter block/code?
+                 (block/children (block/parse-string source)))))
+
+^{:refer 'std.typed.infer/infer-block
+  :id 'literal-local-and-branch-inference}
+(fact "infers literals, locals, collections, let and branch joins"
+  [(infer/infer-block (source-form "1"))
+   (infer/infer-block (source-form "[1 \"two\"]"))
+   (infer/infer-block (source-form "(let [x 1] (+ x 2))"))
+   (infer/infer-block (source-form "(if true 1 \"two\")"))
+   (infer/infer-block (source-form "(if true 1)"))]
+  => [{:kind :primitive :name :int}
+      {:kind :vector
+       :item {:kind :union
+              :types [{:kind :primitive :name :int}
+                      {:kind :primitive :name :str}]}}
+      {:kind :primitive :name :int}
+      {:kind :union
+       :types [{:kind :primitive :name :int}
+               {:kind :primitive :name :str}]}
+      {:kind :union
+       :types [{:kind :primitive :name :int}
+               {:kind :primitive :name :nil}]}])
+
+^{:refer 'std.typed.infer/infer-block
+  :id 'unknown-suppresses-joins}
+(fact "propagates unknown through joins and arithmetic"
+  [(schema/unknown?
+    (infer/infer-block (source-form "(if true missing 1)")))
+   (schema/unknown?
+    (infer/infer-block (source-form "(+ missing 1)")))]
+  => [true true])
+
+^{:refer 'std.typed.infer/infer-block
+  :id 'known-call-results}
+(fact "projects return facts from known function contracts"
+  (infer/infer-block
+   (source-form "(label 1)")
+   {:namespace 'demo
+    :functions {'demo/label (schema/normalize [:fn [:int] :str])}})
+  => {:kind :primitive :name :str})
+
+(pr-str (run '[std.typed.infer-test]))

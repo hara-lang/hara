@@ -1,6 +1,5 @@
 (ns tool.cli.lint
-  (:require
-            [std.work :as work]
+  (:require [std.work :as work]
             [tool.cli.model :as model]
             [tool.lint :as lint]
             [tool.lint.model :as lint-model]
@@ -10,36 +9,78 @@
 
 (defn parse-arguments
   [arguments]
-  (loop [remaining arguments format :text paths []]
+  (loop [remaining arguments format :text schema-mode nil paths []]
     (if (empty? remaining)
-      {:format format :paths paths}
-      (if (= "--format" (first remaining))
-        (if (< (count remaining) 2)
-          (throw (ex-info "lint --format requires text or edn" {}))
-          (let [selected (keyword (second remaining))]
-            (if (or (= selected :text) (= selected :edn))
-              (recur (vec (drop 2 remaining)) selected paths)
-              (throw (ex-info "lint --format requires text or edn" {})))))
-        (recur (vec (rest remaining)) format (conj paths (first remaining)))))))
+      {:format format :schema-mode schema-mode :paths paths}
+      (let [argument (first remaining)]
+        (cond
+          (= "--format" argument)
+          (if (< (count remaining) 2)
+            (throw (ex-info "lint --format requires text or edn" {}))
+            (let [selected (keyword (second remaining))]
+              (if (has? #{:text :edn} selected)
+                (recur (vec (drop 2 remaining)) selected schema-mode paths)
+                (throw (ex-info "lint --format requires text or edn" {})))))
+
+          (= "--schema-mode" argument)
+          (if (< (count remaining) 2)
+            (throw (ex-info "lint --schema-mode requires off, warn, or error" {}))
+            (let [selected (keyword (second remaining))]
+              (if (has? #{:off :warn :error} selected)
+                (recur (vec (drop 2 remaining)) format selected paths)
+                (throw (ex-info "lint --schema-mode requires off, warn, or error" {})))))
+
+          :else
+          (recur (vec (rest remaining)) format schema-mode
+                 (conj paths argument)))))))
+
+(defn lint-options
+  [parsed]
+  (if (:schema-mode parsed)
+    {:schema-mode (:schema-mode parsed)}
+    {}))
 
 (defn lint-target
-  [path]
+  [path options]
   (let [metadata (deref (file/stat path))]
     (if (= :directory (:type metadata))
-      (lint/lint-project (project/discover path))
-      (let [findings (report/sort-findings (lint/lint-file path))]
+      (lint/lint-project (project/discover path) options)
+      (let [findings (report/sort-findings (lint/lint-file path options))]
         {:profile profile/+profile+
+         :schema-index nil
          :documents []
          :findings findings
          :summary (lint-model/summarize findings)}))))
 
+(defn merge-schema-indexes
+  [results]
+  (let [indexes (vec (filter identity
+                             (map (fn [result] (:schema-index result)) results)))]
+    (when (not (empty? indexes))
+      {:definitions (reduce (fn [output index]
+                              (merge output (:definitions index)))
+                            {} indexes)
+       :values (reduce (fn [output index]
+                         (merge output (:values index)))
+                       {} indexes)
+       :functions (reduce (fn [output index]
+                            (merge output (:functions index)))
+                          {} indexes)
+       :inferred-functions
+       (reduce (fn [output index]
+                 (merge output (:inferred-functions index)))
+               {} indexes)
+       :mode (:mode (first indexes))})))
+
 (defn combine-results
   [results]
-  (let [findings (report/sort-findings
+  (let [results (vec results)
+        findings (report/sort-findings
                   (reduce (fn [output result]
                             (into output (:findings result)))
                           [] results))]
     {:profile profile/+profile+
+     :schema-index (merge-schema-indexes results)
      :documents (reduce (fn [output result]
                           (into output (:documents result)))
                         [] results)
@@ -49,11 +90,13 @@
 (defn execute
   [request]
   (let [parsed (parse-arguments (:request/arguments request))
+        options (lint-options parsed)
         cwd (or (:request/cwd request) (os/cwd))
         paths (:paths parsed)
         result (if (empty? paths)
-                 (lint/lint-project (project/discover cwd))
-                 (combine-results (map lint-target paths)))
+                 (lint/lint-project (project/discover cwd) options)
+                 (combine-results
+                  (map (fn [path] (lint-target path options)) paths)))
         findings (:findings result)
         output (if (= :edn (:format parsed))
                  (str (pr-str (report/edn findings profile/+profile+)) "\n")

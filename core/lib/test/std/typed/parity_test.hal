@@ -1,0 +1,124 @@
+(ns std.typed.parity-test
+  (:use code.test)
+  (:require [std.block :as block]
+            [std.typed.infer :as infer]
+            [std.typed.parity-corpus :as corpus]
+            [std.typed.schema :as schema]))
+
+(defn join-strings
+  [separator values]
+  (reduce (fn [output value]
+            (if (empty? output)
+              value
+              (str output separator value)))
+          ""
+          values))
+
+(declare canonical-string)
+
+(defn canonical-arity
+  [arity]
+  (str "fn(fixed=["
+       (join-strings "," (map canonical-string (get-in arity [:inputs :fixed])))
+       "],rest="
+       (if (get-in arity [:inputs :rest])
+         (canonical-string (get-in arity [:inputs :rest]))
+         "none")
+       ",output=" (canonical-string (:output arity)) ")"))
+
+(defn canonical-string
+  [value]
+  (let [kind (:kind value)]
+    (cond
+      (= kind :primitive)
+      (str "primitive(" (pr-str (:name value)) ")")
+
+      (= kind :reference)
+      (str "reference(" (:name value) ")")
+
+      (= kind :union)
+      (str "union["
+           (join-strings "," (map canonical-string (:types value)))
+           "]")
+
+      (= kind :vector)
+      (str "vector(" (canonical-string (:item value)) ")")
+
+      (= kind :tuple)
+      (str "tuple["
+           (join-strings "," (map canonical-string (:items value)))
+           "]")
+
+      (= kind :map)
+      (str "map["
+           (join-strings
+            ","
+            (map (fn [field]
+                   (str (pr-str (:name field)) "="
+                        (canonical-string (:type field))))
+                 (:fields value)))
+           "]")
+
+      (= kind :fn) (canonical-arity value)
+
+      (= kind :function)
+      (str "function["
+           (join-strings "," (map canonical-arity (:arities value)))
+           "]")
+
+      (= kind :enum)
+      (str "enum[" (join-strings "," (map pr-str (:values value))) "]")
+
+      (= kind :unknown) "unknown"
+      :else (str "unsupported(" (pr-str value) ")"))))
+
+(defn source-form
+  [source]
+  (first (filter block/code?
+                 (block/children (block/parse-string source)))))
+
+(defn source-value
+  [source]
+  (block/value (source-form source)))
+
+(defn run-case
+  [case]
+  (let [operation (first case)]
+    (cond
+      (= operation :normalize)
+      (canonical-string (schema/normalize (source-value (nth case 2))))
+
+      (= operation :error)
+      (get-in (schema/normalize-result (source-value (nth case 2))) [:error :reason])
+
+      (= operation :assignable)
+      (schema/assignable? (source-value (nth case 2))
+                          (source-value (nth case 3)))
+
+      (= operation :compatible)
+      (schema/compatible? (source-value (nth case 2))
+                          (source-value (nth case 3)))
+
+      (= operation :infer)
+      (canonical-string (infer/infer-block (source-form (nth case 2))))
+
+      (= operation :infer-call)
+      (canonical-string
+       (infer/infer-block
+        (source-form (nth case 2))
+        {:functions {(symbol (nth case 3))
+                     (schema/normalize (source-value (nth case 4)))}}))
+
+      :else :unknown-case)))
+
+(defn expected-case
+  [case]
+  (last case))
+
+^{:refer 'std.typed.schema/normalize
+  :id 'shared-runtime-parity-corpus}
+(fact "matches the canonical std.typed parity corpus"
+  (vec (map run-case corpus/+cases+))
+  => (vec (map expected-case corpus/+cases+)))
+
+(pr-str (run '[std.typed.parity-test]))
