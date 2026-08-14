@@ -199,7 +199,6 @@ pub(crate) fn test_project(options: &Options, args: &[String]) -> Result<(), Str
         if options.allow_process {
             runtime.install_native_process_provider();
         }
-        runtime.eval_native(include_str!("../../../../hal-src/std/lib/test.hal"))?;
         let evaluated = runtime.eval_native(&source)?;
         match test_results(&evaluated) {
             Ok((file_passed, file_failed)) => {
@@ -230,29 +229,76 @@ pub(crate) fn test_project(options: &Options, args: &[String]) -> Result<(), Str
 }
 
 fn test_results(value: &str) -> Result<(usize, usize), String> {
-    let Form::String(source) = parse(value)? else {
-        return Err("test file must finish with test/print-results".into());
+    let parsed = parse(value)?;
+    let result = match parsed {
+        Form::String(source) => parse(&source)?,
+        value => value,
     };
-    let Form::Vector(results) = parse(&source)? else {
-        return Err("test/print-results must return a vector".into());
+
+    match result {
+        Form::Map(entries) => code_test_results(&entries),
+        Form::Vector(results) | Form::List(results) => native_test_results(results),
+        _ => {
+            Err("test file must return a code.test/run summary or native test result vector".into())
+        }
+    }
+}
+
+fn code_test_results(entries: &[(Form, Form)]) -> Result<(usize, usize), String> {
+    let status = map_get(entries, "status")
+        .and_then(keyword)
+        .ok_or("code.test/run result is missing :status")?;
+    let counts = match map_get(entries, "counts") {
+        Some(Form::Map(values)) => values,
+        _ => return Err("code.test/run result is missing :counts".into()),
     };
+    let passed = map_number(counts, "passed", 0);
+    let mut failed = map_number(counts, "failed", 0)
+        + map_number(counts, "error", 0)
+        + map_number(counts, "timeout", 0);
+    if status != "passed" && failed == 0 {
+        failed = 1;
+    }
+    Ok((passed, failed))
+}
+
+fn native_test_results(results: Vec<Form>) -> Result<(usize, usize), String> {
     let mut passed = 0;
     let mut failed = 0;
     for result in results {
         let Form::Map(entries) = result else {
-            return Err("test result must be a map".into());
+            return Err("native test result must be a map".into());
         };
-        let pass = entries
-            .iter()
-            .find(|(key, _)| matches!(key, Form::Keyword(name) if name == "pass"))
-            .map(|(_, value)| value);
-        match pass {
+        match map_get(&entries, "pass") {
             Some(Form::Bool(true)) => passed += 1,
             Some(Form::Bool(false)) => failed += 1,
-            _ => return Err("test result is missing boolean :pass".into()),
+            _ => return Err("native test result is missing boolean :pass".into()),
         }
     }
     Ok((passed, failed))
+}
+
+fn map_get<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
+    entries
+        .iter()
+        .find_map(|(candidate, value)| match candidate {
+            Form::Keyword(name) if name == key => Some(value),
+            _ => None,
+        })
+}
+
+fn map_number(entries: &[(Form, Form)], key: &str, fallback: usize) -> usize {
+    match map_get(entries, key) {
+        Some(Form::Number(value)) if *value >= 0 => *value as usize,
+        _ => fallback,
+    }
+}
+
+fn keyword(form: &Form) -> Option<&str> {
+    match form {
+        Form::Keyword(value) => Some(value),
+        _ => None,
+    }
 }
 
 fn hal_string(value: &str) -> String {

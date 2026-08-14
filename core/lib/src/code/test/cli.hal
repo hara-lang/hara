@@ -74,24 +74,52 @@
                        (assoc output :namespace [value])
                        (assoc output key value))))))))))
 
+(defn native-result-counts
+  [results]
+  (reduce
+   (fn [counts result]
+     (let [pass (:pass result)]
+       (cond
+         (= true pass) (update counts :passed inc)
+         (= false pass) (update counts :failed inc)
+         :else
+         (throw (ex-info "native test result is missing boolean :pass" {})))))
+   {:passed 0 :failed 0}
+   results))
+
+(defn code-test-result-counts
+  [summary]
+  (let [status (:status summary)
+        counts (:counts summary)]
+    (if (not (keyword? status))
+      (throw (ex-info "code.test/run result is missing :status" {}))
+      nil)
+    (if (not (map? counts))
+      (throw (ex-info "code.test/run result is missing :counts" {}))
+      nil)
+    (let [passed (or (:passed counts) 0)
+          failed (+ (or (:failed counts) 0)
+                    (or (:error counts) 0)
+                    (or (:timeout counts) 0))]
+      {:passed passed
+       :failed (if (and (not= status :passed) (= failed 0)) 1 failed)})))
+
 (defn result-counts
-  "Validates one test/print-results value and returns its pass counts."
+  "Returns pass counts for :native vectors and :code.test summary maps."
   [value]
-  (if (not (string? value))
-    (throw (ex-info "test file must finish with test/print-results" {}))
-    (let [results (edn/read value)]
-      (if (not (vector? results))
-        (throw (ex-info "test/print-results must return a vector" {}))
-        (reduce
-         (fn [counts result]
-           (let [pass (:pass result)]
-             (cond
-               (= true pass) (update counts :passed inc)
-               (= false pass) (update counts :failed inc)
-               :else
-               (throw (ex-info "test result is missing boolean :pass" {})))))
-         {:passed 0 :failed 0}
-         results)))))
+  (let [result (if (string? value) (Edn/read value) value)]
+    (cond
+      (or (vector? result) (list? result))
+      (native-result-counts result)
+
+      (map? result)
+      (code-test-result-counts result)
+
+      :else
+      (throw
+       (ex-info
+        "test file must return a code.test/run summary or native test result vector"
+        {})))))
 
 (defn absolute-path [cwd path]
   (if (str/starts-with? path "/") path (file/join cwd path)))
