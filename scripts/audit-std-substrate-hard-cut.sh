@@ -39,7 +39,11 @@ if ! diff -qr core/lib/src/std/substrate core/rust/hal-src/std/substrate; then
   failed=1
 fi
 
-protocols=$(rg -o '^\(defprotocol [A-Za-z0-9_-]+' core/lib/src/std/substrate/protocol.hal | cut -d ' ' -f 2)
+# Ubuntu's base runner does not promise ripgrep. Keep this audit dependent only
+# on the POSIX/GNU tools already used elsewhere in the script, and preserve an
+# empty result so the explicit contract error below remains authoritative.
+protocols=$(grep -oE '^\(defprotocol [A-Za-z0-9_-]+' \
+  core/lib/src/std/substrate/protocol.hal | cut -d ' ' -f 2 || true)
 if [[ -z "$protocols" ]] || grep -Ev '^ISubstrate[A-Za-z0-9_-]+$' <<<"$protocols"; then
   echo "Every canonical substrate protocol must begin with ISubstrate." >&2
   failed=1
