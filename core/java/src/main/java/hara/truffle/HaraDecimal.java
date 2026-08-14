@@ -6,6 +6,7 @@ import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.interop.UnknownIdentifierException;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
+import hara.lang.base.G;
 import hara.lang.base.primitive.Num;
 import java.math.BigDecimal;
 
@@ -62,7 +63,7 @@ public final class HaraDecimal implements TruffleObject {
   @ExportMessage
   @TruffleBoundary
   Object toDisplayString(boolean allowSideEffects) {
-    return value.toPlainString() + "M";
+    return G.displayDecimal(value);
   }
 
   @TruffleBoundary
@@ -80,6 +81,6 @@ public final class HaraDecimal implements TruffleObject {
   @TruffleBoundary
   @Override
   public String toString() {
-    return value.toPlainString() + "M";
+    return G.displayDecimal(value);
   }
 }

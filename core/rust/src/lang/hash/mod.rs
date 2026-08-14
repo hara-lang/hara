@@ -170,25 +170,11 @@ pub fn hash_bytes(bytes: &[u8]) -> i32 {
     h
 }
 
-/// `G.hashValue(Long)` = `BigDecimal.valueOf(n).hashCode()`.
-/// NOTE: the Java long path does NOT strip trailing zeros (unlike the
-/// Double/BigInteger/BigDecimal paths which go through `canonicalDecimal`),
-/// so in Java `hashValue(100L) = 3100` while `hashValue(100.0) = 29`.
+/// Canonical integer hash. Integer representation is not observable, so the
+/// compact `i64` path uses the same canonical decimal hash as arbitrary
+/// integers, exact decimals, and equal finite doubles.
 pub fn hash_long(n: i64) -> i32 {
-    if n == 0 {
-        return 0;
-    }
-    let mag = n.unsigned_abs();
-    if mag < (1u64 << 63) {
-        let temp = ((mag >> 32) as i32)
-            .wrapping_mul(31)
-            .wrapping_add(mag as u32 as i32);
-        return 31i32.wrapping_mul(if n < 0 { temp.wrapping_neg() } else { temp });
-    }
-    // Long.MIN_VALUE is BigDecimal's INFLATED sentinel. Mirror the two-word
-    // BigInteger hash directly without allocating its temporary word vector.
-    let magnitude_hash = (mag >> 32) as u32 as i32;
-    31i32.wrapping_mul(magnitude_hash.wrapping_mul(-31))
+    canonical_decimal_str_hash(&n.to_string())
 }
 
 /// `G.hashValue(Double)`:
@@ -638,14 +624,12 @@ mod tests {
 
     #[test]
     fn cross_type_numeric_equality() {
-        // Holds in Java for values without trailing zeros.
+        // Numeric representations share one equality/hash domain.
         assert_eq!(hash_long(1), hash_double(1.0));
         assert_eq!(hash_long(1), canonical_decimal_str_hash("1"));
         assert_eq!(hash_long(1), canonical_decimal_str_hash("1.0"));
         assert_eq!(hash_double(2.5), canonical_decimal_str_hash("2.50"));
-        // Does NOT hold in Java for trailing-zero integers: the Long path
-        // skips canonicalDecimal stripping.
-        assert_ne!(hash_long(100), hash_double(100.0));
+        assert_eq!(hash_long(100), hash_double(100.0));
         assert_eq!(hash_double(100.0), canonical_decimal_str_hash("100"));
         assert_eq!(hash_double(100.0), canonical_decimal_str_hash("100.0"));
     }

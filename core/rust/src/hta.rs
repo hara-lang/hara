@@ -727,10 +727,7 @@ mod tests {
         assert_eq!(var.deref_value(), Value::Nil);
         let encoded = encode(&Value::Var(var.clone())).unwrap();
         assert_eq!(encoded[4], VAR_REF);
-        assert_eq!(
-            encoded,
-            b"HTA0\x23\x07\x00\x00\x00\x12example.lib/answer"
-        );
+        assert_eq!(encoded, b"HTA0\x23\x07\x00\x00\x00\x12example.lib/answer");
     }
 
     #[test]

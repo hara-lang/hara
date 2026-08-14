@@ -20,6 +20,11 @@ public class NumUtils {
     return value.signum() == 0 ? BigDecimal.ZERO : value.stripTrailingZeros();
   }
 
+  public static Number normalizeInteger(BigInteger value) {
+    if (value.bitLength() < Long.SIZE) return Long.valueOf(value.longValue());
+    return value;
+  }
+
   public static BigDecimal toBigDecimal(Object x) {
     if (x instanceof BigDecimal) return normalizeDecimal((BigDecimal) x);
     else if (x instanceof BigInteger) return new BigDecimal((BigInteger) x);
@@ -31,7 +36,15 @@ public class NumUtils {
 
   public static BigInteger toBigInteger(Object x) {
     if (x instanceof BigInteger) return (BigInteger) x;
-    else return BigInteger.valueOf(((Number) x).longValue());
+    if (x instanceof BigDecimal) return ((BigDecimal) x).toBigIntegerExact();
+    if (x instanceof Double || x instanceof Float) {
+      double value = ((Number) x).doubleValue();
+      if (!Double.isFinite(value)) {
+        throw new ArithmeticException("non-finite floating-point value is not an integer");
+      }
+      return BigDecimal.valueOf(value).toBigIntegerExact();
+    }
+    return BigInteger.valueOf(((Number) x).longValue());
   }
 
   public static int throwIntOverflow() {
@@ -107,7 +120,14 @@ public class NumUtils {
     if (xc == Long.class || xc == Integer.class || xc == Short.class || xc == Byte.class)
       return BigInteger.valueOf(((Number) x).longValue());
     else if (x instanceof BigInteger) return (BigInteger) x;
-    // no bignums, no decimals
-    throw new IllegalArgumentException("bit operation not supported for: " + xc);
+    throw new IllegalArgumentException("bit operation requires an integer: " + xc.getName());
+  }
+
+  public static int bitIndex(Object value) {
+    BigInteger index = bitOpsCast(value);
+    if (index.signum() < 0 || index.bitLength() > 31) {
+      throw new IllegalArgumentException("bit index is out of range: " + index);
+    }
+    return index.intValue();
   }
 }

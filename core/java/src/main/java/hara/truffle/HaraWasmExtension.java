@@ -222,13 +222,22 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
       arguments.add((Boolean) input ? 1 : 0);
       return;
     }
-    if (!(input instanceof Number)) throw typeError(export, type);
-    Number number = (Number) input;
-    if ("i32".equals(type)) arguments.add(number.intValue());
-    else if ("i64".equals(type)) arguments.add(number.longValue());
-    else if ("f32".equals(type)) arguments.add(number.floatValue());
-    else if ("f64".equals(type)) arguments.add(number.doubleValue());
-    else throw new HaraException("extension/abi-type-unsupported: " + type);
+    if (!HaraNumericConversions.isNumeric(input)) throw typeError(export, type);
+    String operation = "extension/abi " + manifest.namespace() + "/" + export;
+    if ("i32".equals(type)) {
+      arguments.add(HaraNumericConversions.toInt(input, operation));
+    } else if ("i64".equals(type)) {
+      arguments.add(HaraNumericConversions.toLong(input, operation));
+    } else if ("f32".equals(type)) {
+      double converted = HaraNumericConversions.toDouble(input);
+      float narrowed = (float) converted;
+      if (!Float.isFinite(narrowed)) throw typeError(export, type);
+      arguments.add(narrowed);
+    } else if ("f64".equals(type)) {
+      arguments.add(HaraNumericConversions.toDouble(input));
+    } else {
+      throw new HaraException("extension/abi-type-unsupported: " + type);
+    }
   }
 
   private Object result(String type, Value value, String export) {
@@ -423,10 +432,10 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
   }
 
   private static long number(List<Object> values, int index, String field) {
-    if (values.size() <= index || !(values.get(index) instanceof Number)) {
+    if (values.size() <= index || !HaraNumericConversions.isNumeric(values.get(index))) {
       throw new HaraException("hta/event-malformed: " + field);
     }
-    return ((Number) values.get(index)).longValue();
+    return HaraNumericConversions.toLong(values.get(index), "hta/event " + field);
   }
 
   private static String string(Object value, String field) {

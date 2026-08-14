@@ -135,6 +135,7 @@ fn abi_to_immutable(value: &AbiValue) -> Value {
         AbiValue::Boolean(value) => Value::Boolean(*value),
         AbiValue::String(value) => Value::String(value.clone()),
         AbiValue::Integer(value) => Value::Integer(*value),
+        AbiValue::BigInteger(value) => Value::BigInteger(value.clone()),
         AbiValue::Float(value) => Value::Float(*value),
         AbiValue::Decimal(value) => Value::Decimal(value.clone()),
         AbiValue::Bytes(value) => Value::Bytes(value.clone()),
@@ -155,6 +156,7 @@ fn immutable_to_abi(value: Value) -> Result<AbiValue, String> {
         Value::Boolean(value) => AbiValue::Boolean(value),
         Value::String(value) => AbiValue::String(value),
         Value::Integer(value) => AbiValue::Integer(value),
+        Value::BigInteger(value) => AbiValue::BigInteger(value),
         Value::Float(value) => AbiValue::Float(value),
         Value::Decimal(value) => AbiValue::Decimal(value),
         Value::Bytes(value) => AbiValue::Bytes(value),
@@ -651,6 +653,7 @@ mod tests {
         let value = record([
             ("a", Value::Vector(vec![Value::Boolean(true), Value::Nil])),
             ("b", Value::Integer(2)),
+            ("big", Value::BigInteger("9223372036854775808".into())),
             ("bytes", Value::Bytes(vec![0, 1, 255])),
             ("decimal", Value::Decimal("1.2500".into())),
             ("float", Value::Float(0.28)),

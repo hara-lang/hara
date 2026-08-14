@@ -1,6 +1,10 @@
 package hara.kernel.builtin;
 
 import hara.kernel.base.Module;
+import hara.lang.base.NumUtils;
+
+import java.math.BigDecimal;
+import java.math.BigInteger;
 
 @SuppressWarnings({"unchecked", "rawtypes"})
 @Module.Ns(name = "global", tag = "check")
@@ -27,9 +31,29 @@ public interface BuiltinCheck {
     return !isTruthy(value);
   }
 
+  @Module.Fn(name = "integer?", complete = true)
+  public static <TYPE> boolean isInteger(TYPE x) {
+    return x instanceof Byte
+        || x instanceof Short
+        || x instanceof Integer
+        || x instanceof Long
+        || x instanceof BigInteger;
+  }
+
+  @Module.Fn(name = "decimal?", complete = true)
+  public static <TYPE> boolean isDecimal(TYPE x) {
+    return x instanceof BigDecimal;
+  }
+
   @Module.Fn(name = "long?", complete = true)
   public static <TYPE> boolean isLong(TYPE x) {
-    return x instanceof Byte || x instanceof Short || x instanceof Integer || x instanceof Long;
+    if (!(x instanceof Number)) return false;
+    try {
+      NumUtils.toBigInteger(x).longValueExact();
+      return true;
+    } catch (ArithmeticException | IllegalArgumentException error) {
+      return false;
+    }
   }
 
   @Module.Fn(name = "double?", complete = true)

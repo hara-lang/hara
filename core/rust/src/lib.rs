@@ -30,6 +30,7 @@ pub mod native_link;
 pub mod native_module;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_process;
+mod numeric;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package;
 #[cfg(not(target_arch = "wasm32"))]
@@ -4160,9 +4161,10 @@ mod tests {
         for source in ["123N", "1.20M"] {
             assert!(runtime.eval_text(source).is_err(), "{source}");
         }
-        for unsupported in ["9223372036854775808"] {
-            assert!(runtime.eval_text(unsupported).is_err(), "{unsupported}");
-        }
+        assert_eq!(
+            runtime.eval_text("9223372036854775808").unwrap(),
+            "9223372036854775808"
+        );
         assert_eq!(runtime.eval_text("(= ##NaN ##NaN)").unwrap(), "true");
         assert_eq!(runtime.eval_text("'#demo [1 2]").unwrap(), "#demo[1 2]");
         assert_eq!(runtime.eval_text("()").unwrap(), "()");
@@ -8392,16 +8394,51 @@ mod tests {
     }
 
     #[test]
-    fn increment_and_decrement_report_integer_overflow_without_panicking() {
+    fn integer_arithmetic_promotes_without_exposing_representation() {
         let mut runtime = Runtime::new();
         assert_eq!(
-            runtime.eval_text("(inc 9223372036854775807)").unwrap_err(),
-            "integer overflow"
+            runtime.eval_text("(inc 9223372036854775807)").unwrap(),
+            "9223372036854775808"
         );
         assert_eq!(
-            runtime.eval_text("(dec -9223372036854775808)").unwrap_err(),
-            "integer overflow"
+            runtime.eval_text("(dec -9223372036854775808)").unwrap(),
+            "-9223372036854775809"
         );
+        assert_eq!(
+            runtime
+                .eval_text("(* 9223372036854775808 9223372036854775808)")
+                .unwrap(),
+            "85070591730234615865843651857942052864"
+        );
+        assert_eq!(
+            runtime.eval_text("(integer? 9223372036854775808)").unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
+    fn exact_decimals_and_explicit_doubles_have_distinct_syntax() {
+        let mut runtime = Runtime::new();
+        assert_eq!(runtime.eval_text("(+ 0.1 0.2)").unwrap(), "0.3");
+        assert_eq!(runtime.eval_text("(/ 1.0 8.0)").unwrap(), "0.125");
+        assert_eq!(
+            runtime.eval_text("(/ 1.0 3.0)").unwrap_err(),
+            "non-terminating decimal division"
+        );
+        assert_eq!(runtime.eval_text("(double 1.5)").unwrap(), "(double 1.5)");
+    }
+
+    #[test]
+    fn arbitrary_integer_bits_and_checked_long_conversion_are_stable() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.eval_text("(bit-shift-left 1 80)").unwrap(),
+            "1208925819614629174706176"
+        );
+        assert!(runtime
+            .eval_text("(long 9223372036854775808)")
+            .unwrap_err()
+            .contains("outside signed 64-bit range"));
     }
 
     #[test]

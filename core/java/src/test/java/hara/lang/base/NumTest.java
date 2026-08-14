@@ -36,10 +36,13 @@ public class NumTest {
   public void testDivide() {
     assertEquals(2.0, (double) Num.divide(6.0, 3.0), 0.0);
     assertEquals(2L, Num.divide(5L, 2L));
-    assertEquals(BigInteger.valueOf(2), Num.divide(BigInteger.valueOf(5), BigInteger.valueOf(2)));
-    assertEquals(
-        new BigDecimal("0.3333333333333333333333333333333333"),
-        Num.divide(BigDecimal.ONE, BigDecimal.valueOf(3)));
+    assertEquals(2L, Num.divide(BigInteger.valueOf(5), BigInteger.valueOf(2)));
+    assertEquals(new BigDecimal("0.125"), Num.divide(BigDecimal.ONE, BigDecimal.valueOf(8)));
+    ArithmeticException nonTerminating =
+        assertThrows(
+            ArithmeticException.class,
+            () -> Num.divide(BigDecimal.ONE, BigDecimal.valueOf(3)));
+    assertEquals("non-terminating decimal division", nonTerminating.getMessage());
   }
 
   @Test
@@ -74,12 +77,16 @@ public class NumTest {
   public void testInc() {
     assertEquals(3L, Num.inc(2L));
     assertEquals(3.0, (double) Num.inc(2.0), 0.0);
+    assertEquals(
+        BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE), Num.incP(Long.MAX_VALUE));
   }
 
   @Test
   public void testDec() {
     assertEquals(1L, Num.dec(2L));
     assertEquals(1.0, (double) Num.dec(2.0), 0.0);
+    assertEquals(
+        BigInteger.valueOf(Long.MIN_VALUE).subtract(BigInteger.ONE), Num.decP(Long.MIN_VALUE));
   }
 
   @Test
@@ -91,6 +98,8 @@ public class NumTest {
   @Test
   public void testRemainder() {
     assertEquals(1L, Num.remainder(7L, 3L));
+    assertEquals(-2L, Num.remainder(-5L, 3L));
+    assertEquals(1L, Num.mod(-5L, 3L));
     assertEquals(1.0, (double) Num.remainder(7.0, 3.0), 0.0);
   }
 

@@ -235,7 +235,7 @@ public final class EvaluationJournal {
   private static String type(Object value) {
     if (value == null) return "nil";
     if (value instanceof Boolean) return "boolean";
-    if (value instanceof BigInteger) return "big-integer";
+    if (value instanceof BigInteger) return "integer";
     if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return "integer";
     if (value instanceof BigDecimal) return "decimal";
     if (value instanceof Float || value instanceof Double) return "float";

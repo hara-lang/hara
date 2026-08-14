@@ -72,9 +72,8 @@ fn literals() {
     assert_eq!(eval("42"), "42");
     assert_eq!(eval("-7"), "-7");
     assert_eq!(eval("1.5"), "1.5");
-    // `Value::display` renders whole floats without a trailing fraction,
-    // matching the existing evaluator's output.
-    assert_eq!(eval("2.0"), "2");
+    assert_eq!(eval("2.0"), "2.0");
+    assert_eq!(eval("(double 2.0)"), "(double 2)");
     assert_eq!(eval("\"hello\""), "\"hello\"");
     assert_eq!(eval(":hara/name"), ":hara/name");
     assert_eq!(eval("\\a"), "\\a");
@@ -260,18 +259,9 @@ fn arithmetic_errors() {
     assert_eval_error("(/ 1 0)", "division by zero [line 1, column 1]");
     assert_eval_error("(% 1 0)", "division by zero [line 1, column 1]");
     assert_eval_error("(mod 1 0)", "division by zero [line 1, column 1]");
-    assert_eval_error(
-        "(+ 9223372036854775807 1)",
-        "integer overflow [line 1, column 1]",
-    );
-    assert_eval_error(
-        "(- -9223372036854775808 1)",
-        "integer overflow [line 1, column 1]",
-    );
-    assert_eval_error(
-        "(* 9223372036854775807 2)",
-        "integer overflow [line 1, column 1]",
-    );
+    assert_eq!(eval("(+ 9223372036854775807 1)"), "9223372036854775808");
+    assert_eq!(eval("(- -9223372036854775808 1)"), "-9223372036854775809");
+    assert_eq!(eval("(* 9223372036854775807 2)"), "18446744073709551614");
     assert_eval_error("(+ 1 \"a\")", "+ expects numbers [line 1, column 1]");
     assert_eq!(eval("(+ 1 1.5)"), "2.5");
     // `mod` reports its operator as `%`, matching the evaluator.
@@ -310,8 +300,12 @@ fn equality() {
     assert_eq!(eval("(= :a :a)"), "true");
     assert_eq!(eval("(= \\a \\a)"), "true");
     assert_eq!(eval("(= 1.5 1.5)"), "true");
-    // Number and Float are distinct values, matching the evaluator.
-    assert_eq!(eval("(= 1 1.0)"), "false");
+    assert_eq!(eval("(= 1 1.0)"), "true");
+    assert_eq!(eval("(= 1 9223372036854775808)"), "false");
+    assert_eq!(
+        eval("(= 9223372036854775808 9223372036854775808.0)"),
+        "true"
+    );
 }
 
 #[test]

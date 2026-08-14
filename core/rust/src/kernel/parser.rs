@@ -472,8 +472,35 @@ impl<'a> Parser<'a> {
         }
         let numeric = body.chars().next().is_some_and(|ch| ch.is_ascii_digit());
         if numeric {
+            use crate::numeric::{parse_integer_digits, CanonicalInteger, ExactDecimal};
+
+            if token.ends_with(['N', 'M']) {
+                return self.error(format!(
+                    "Legacy numeric suffixes N and M are not supported: {token}"
+                ));
+            }
             let negative = token.starts_with('-');
-            if let Some((radix_text, digits)) = body.split_once(['r', 'R']) {
+            let integer_form = |integer: CanonicalInteger| match integer {
+                CanonicalInteger::Small(value) => Form::Number(value),
+                CanonicalInteger::Big(value) => Form::BigInteger(value),
+            };
+            if body.contains(['.', 'e', 'E']) {
+                let decimal = ExactDecimal::parse(&token).map_err(|_| ParseError {
+                    message: format!("Invalid number: {token}"),
+                    position: self.reader.position(),
+                })?;
+                return Ok(Form::Decimal(decimal.to_storage_string().map_err(
+                    |_| ParseError {
+                        message: format!("Invalid number: {token}"),
+                        position: self.reader.position(),
+                    },
+                )?));
+            }
+            let parsed = if let Some(hex) =
+                body.strip_prefix("0x").or_else(|| body.strip_prefix("0X"))
+            {
+                parse_integer_digits(hex, 16, negative)
+            } else if let Some((radix_text, digits)) = body.split_once(['r', 'R']) {
                 let radix = radix_text.parse::<u32>().map_err(|_| ParseError {
                     message: format!("Invalid number: {token}"),
                     position: self.reader.position(),
@@ -481,42 +508,28 @@ impl<'a> Parser<'a> {
                 if !(2..=36).contains(&radix) {
                     return self.error(format!("Radix out of range: {radix}"));
                 }
-                if let Some(digit) = digits.chars().find(|digit| digit.to_digit(radix).is_none()) {
-                    return self.error(format!("Invalid digit {digit} under radix {radix}"));
-                }
                 if digits.is_empty() {
                     return self.error(format!("Invalid number: {token}"));
                 }
-            }
-            let parsed =
-                if let Some(hex) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-                    i64::from_str_radix(hex, 16)
-                        .ok()
-                        .map(|value| Form::Number(if negative { -value } else { value }))
-                } else if token.ends_with(['N', 'M']) {
+                if let Some(digit) = digits.chars().find(|digit| digit.to_digit(radix).is_none()) {
+                    return self.error(format!("Invalid digit {digit} under radix {radix}"));
+                }
+                parse_integer_digits(digits, radix, negative)
+            } else if body.len() > 1
+                && body.starts_with('0')
+                && body.chars().all(|ch| ch.is_ascii_digit())
+            {
+                if body.chars().any(|ch| !('0'..='7').contains(&ch)) {
                     None
-                } else if let Some((radix, digits)) = body.split_once(['r', 'R']) {
-                    radix
-                        .parse::<u32>()
-                        .ok()
-                        .filter(|radix| (2..=36).contains(radix))
-                        .and_then(|radix| i64::from_str_radix(digits, radix).ok())
-                        .map(|value| Form::Number(if negative { -value } else { value }))
-                } else if body.len() > 1
-                    && body.starts_with('0')
-                    && body.chars().all(|ch| ch.is_ascii_digit())
-                {
-                    body.chars()
-                        .all(|ch| ('0'..='7').contains(&ch))
-                        .then(|| i64::from_str_radix(body, 8).ok())
-                        .flatten()
-                        .map(|value| Form::Number(if negative { -value } else { value }))
-                } else if body.contains(['.', 'e', 'E']) {
-                    token.parse::<f64>().ok().map(Form::Float)
                 } else {
-                    token.parse::<i64>().ok().map(Form::Number)
-                };
-            return parsed.ok_or_else(|| ParseError {
+                    parse_integer_digits(body, 8, negative)
+                }
+            } else if body.chars().all(|ch| ch.is_ascii_digit()) {
+                parse_integer_digits(body, 10, negative)
+            } else {
+                None
+            };
+            return parsed.map(integer_form).ok_or_else(|| ParseError {
                 message: format!("Invalid number: {token}"),
                 position: self.reader.position(),
             });

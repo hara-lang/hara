@@ -212,7 +212,7 @@ fn infer_expression(form: &Form, environment: &mut HashMap<String, SchemaType>) 
         Form::Bool(_) => SchemaType::Primitive("bool".into()),
         Form::Number(_) => SchemaType::Primitive("int".into()),
         Form::Float(_) => SchemaType::Primitive("float".into()),
-        Form::BigInteger(_) => SchemaType::Primitive("bigint".into()),
+        Form::BigInteger(_) => SchemaType::Primitive("int".into()),
         Form::Decimal(_) => SchemaType::Primitive("decimal".into()),
         Form::Character(_) => SchemaType::Primitive("char".into()),
         Form::Regex(_) => SchemaType::Primitive("regex".into()),
@@ -288,7 +288,7 @@ fn infer_list(items: &[Form], environment: &mut HashMap<String, SchemaType>) -> 
             );
             match operands {
                 SchemaType::Primitive(name)
-                    if matches!(name.as_str(), "int" | "float" | "bigint" | "decimal") =>
+                    if matches!(name.as_str(), "int" | "float" | "decimal") =>
                 {
                     SchemaType::Primitive(name)
                 }
