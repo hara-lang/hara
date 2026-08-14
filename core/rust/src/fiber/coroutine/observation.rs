@@ -24,15 +24,8 @@ impl EvalFiber {
         let env = Rc::new(RefCell::new(env));
         let execution_env = env.clone();
         let forms = Rc::new(forms);
-        let resume: Resume = Box::new(move |_| {
-            forms_cps(
-                forms,
-                0,
-                Value::Nil,
-                execution_env,
-                Box::new(Step::Done),
-            )
-        });
+        let resume: Resume =
+            Box::new(move |_| forms_cps(forms, 0, Value::Nil, execution_env, Box::new(Step::Done)));
         Ok(Self {
             env,
             pending: None,
@@ -112,9 +105,8 @@ impl EvalFiber {
             Step::Yield(_, _) => {
                 self.resume = None;
                 self.pending = None;
-                self.state = EvalFiberState::Failed(
-                    "coroutine/yield used outside of a coroutine".into(),
-                );
+                self.state =
+                    EvalFiberState::Failed("coroutine/yield used outside of a coroutine".into());
             }
         }
     }
@@ -150,8 +142,7 @@ mod tests {
         let promise = Promise::new();
         let mut env = HashMap::new();
         env.insert("pending-value".into(), Value::Promise(promise.clone()));
-        let mut fiber =
-            EvalFiber::start_observed("(Coroutine/await pending-value)", env).unwrap();
+        let mut fiber = EvalFiber::start_observed("(Coroutine/await pending-value)", env).unwrap();
 
         fiber.run_observed(16);
         assert_eq!(fiber.state(), EvalFiberState::Suspended);
