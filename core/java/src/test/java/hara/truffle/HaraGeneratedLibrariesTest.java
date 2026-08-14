@@ -100,6 +100,13 @@ public class HaraGeneratedLibrariesTest {
                       + "(vector? [1 2 3 4 5 6 7 8 9]) (pair? (vector 1 2)) "
                       + "(pair? (list 1 2))]")
               .toString());
+      assertEquals(
+          "[true 2 :missing]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(lookupable? [1 2]) (get [1 2] 1) (get [] 0 :missing)]")
+              .toString());
     }
   }
 

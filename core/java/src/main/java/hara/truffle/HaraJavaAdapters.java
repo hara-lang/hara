@@ -10,6 +10,7 @@ import hara.lang.data.Keyword;
 import hara.lang.data.List;
 import hara.lang.data.Symbol;
 import hara.lang.data.TaggedLiteral;
+import hara.lang.data.Tuple;
 import hara.lang.protocol.*;
 import java.util.Arrays;
 import java.util.Iterator;
@@ -248,6 +249,8 @@ public final class HaraJavaAdapters {
           }
           return lookupValue((ILookup<?, ?>) receiver, arguments);
         });
+    protocol.extendIntrinsic(Tuple.Tup0.class, "lookup", HaraJavaAdapters::lookupTuple);
+    protocol.extendIntrinsic(Tuple.Tup1.class, "lookup", HaraJavaAdapters::lookupTuple);
     protocol.extendIntrinsic(byte[].class, "lookup", HaraJavaAdapters::lookupBytes);
     protocol.extendNilIntrinsic(
         "lookup",
@@ -831,6 +834,18 @@ public final class HaraJavaAdapters {
       return arguments.length == 2 ? arguments[1] : null;
     }
     return bytes[(int) index];
+  }
+
+  private static Object lookupTuple(Object receiver, Object[] arguments) {
+    if (arguments.length < 1 || arguments.length > 2 || !(arguments[0] instanceof Number)) {
+      throw new HaraException("ILookup/lookup on a vector expects an index and optional default");
+    }
+    ILinearType<?> tuple = (ILinearType<?>) receiver;
+    long index = ((Number) arguments[0]).longValue();
+    if (index < 0 || index >= tuple.count()) {
+      return arguments.length == 2 ? arguments[1] : null;
+    }
+    return tuple.nth(index);
   }
 
   @SuppressWarnings("unchecked")

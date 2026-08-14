@@ -36,28 +36,8 @@ const FOUNDATION_RESOURCES: &[(&str, &str)] = &[
         include_str!("../../../lib/src/std/foundation/bytes.hal"),
     ),
     (
-        "std.foundation.crypto",
-        include_str!("../../../lib/src/std/foundation/crypto.hal"),
-    ),
-    (
         "std.foundation.coroutine",
         include_str!("../../../lib/src/std/foundation/coroutine.hal"),
-    ),
-    (
-        "std.foundation.file",
-        include_str!("../../../lib/src/std/foundation/file.hal"),
-    ),
-    (
-        "std.foundation.host",
-        include_str!("../../../lib/src/std/foundation/host.hal"),
-    ),
-    (
-        "std.foundation.socket",
-        include_str!("../../../lib/src/std/foundation/socket.hal"),
-    ),
-    (
-        "std.foundation.set",
-        include_str!("../../../lib/src/std/foundation/set.hal"),
     ),
     (
         "std.foundation.pretty.engine",
@@ -66,10 +46,6 @@ const FOUNDATION_RESOURCES: &[(&str, &str)] = &[
     (
         "std.foundation.pretty",
         include_str!("../../../lib/src/std/foundation/pretty.hal"),
-    ),
-    (
-        "std.foundation.kernel",
-        include_str!("../../../lib/src/std/foundation/kernel.hal"),
     ),
 ];
 
@@ -224,43 +200,8 @@ impl Session {
         for (name, var) in native_string.mappings() {
             string.map_var(name, var);
         }
-        let os = namespaces.find_or_create("std.foundation.os");
-        for (native_type, methods) in [
-            (
-                "OS",
-                &[
-                    ("platform", "platform"),
-                    ("arch", "arch"),
-                    ("cwd", "cwd"),
-                    ("env", "env"),
-                    ("getenv", "getenv"),
-                ][..],
-            ),
-            (
-                "Process",
-                &[
-                    ("spawn", "spawn"),
-                    ("instance?", "process?"),
-                    ("alive?", "process-alive?"),
-                    ("write", "process-write"),
-                    ("close-input", "process-close-input"),
-                    ("stdout", "process-stdout"),
-                    ("stderr", "process-stderr"),
-                    ("wait", "process-wait"),
-                    ("kill", "process-kill"),
-                ][..],
-            ),
-        ] {
-            let native = namespaces.find_or_create(format!("std.native.{native_type}"));
-            for &(method, facade) in methods {
-                let var = native
-                    .resolve(&lang::data::Symbol::parse(method))
-                    .expect("native OS facade method");
-                os.map_var(lang::data::Symbol::parse(facade), var);
-            }
-        }
         let native_json = namespaces.find_or_create("std.native.Json");
-        let json_read = native_json.intern(
+        native_json.intern(
             "read",
             core::native_function("std.native.Json/read", 1, |arguments| {
                 match arguments.as_slice() {
@@ -269,13 +210,13 @@ impl Session {
                 }
             }),
         );
-        let json_write = native_json.intern(
+        native_json.intern(
             "write",
             core::native_function("std.native.Json/write", 1, |arguments| {
                 json::write(&arguments[0]).map(Value::String)
             }),
         );
-        let json_pretty = native_json.intern(
+        native_json.intern(
             "pretty",
             core::native_function("std.native.Json/pretty", 2, |arguments| {
                 if core::map_entries(&arguments[1]).is_none() {
@@ -284,12 +225,8 @@ impl Session {
                 json::write_pretty(&arguments[0]).map(Value::String)
             }),
         );
-        let json_namespace = namespaces.find_or_create("std.foundation.json");
-        json_namespace.map_var(lang::data::Symbol::parse("read"), json_read);
-        json_namespace.map_var(lang::data::Symbol::parse("write"), json_write);
-        json_namespace.map_var(lang::data::Symbol::parse("pretty"), json_pretty);
         let native_edn = namespaces.find_or_create("std.native.Edn");
-        let edn_read = native_edn.intern(
+        native_edn.intern(
             "read",
             core::native_function("std.native.Edn/read", 1, |arguments| {
                 match arguments.as_slice() {
@@ -298,17 +235,15 @@ impl Session {
                 }
             }),
         );
-        let edn_namespace = namespaces.find_or_create("std.foundation.edn");
-        edn_namespace.map_var(lang::data::Symbol::parse("read"), edn_read);
-        edn_namespace.intern(
+        native_edn.intern(
             "write",
-            core::native_function("edn/write", 1, |arguments| {
+            core::native_function("std.native.Edn/write", 1, |arguments| {
                 Ok(Value::String(arguments[0].display()))
             }),
         );
-        edn_namespace.intern(
+        native_edn.intern(
             "pretty",
-            core::native_function("edn/pretty", 2, |arguments| {
+            core::native_function("std.native.Edn/pretty", 2, |arguments| {
                 if core::map_entries(&arguments[1]).is_none() {
                     return Err("edn/pretty expects an options map".into());
                 }
@@ -2447,11 +2382,7 @@ mod tests {
             "session/eval",
             vec![
                 Value::String("files".into()),
-                Value::String(
-                    "(do (require [std.foundation.file :as file]) \
-                     (file/write \"/note.bin\" (bytes 1 2 3)))"
-                        .into(),
-                ),
+                Value::String("(File/write \"/note.bin\" (bytes 1 2 3))".into()),
             ],
         )
         .unwrap();
@@ -2490,13 +2421,14 @@ mod tests {
     #[test]
     fn portable_type_descriptors_are_available_in_raw_wasm() {
         for source in [
-            "(if (= (type nil) :hara.type/nil) 42 0)",
-            "(if (= (type :key) :hara.type/keyword) 42 0)",
-            "(if (= (type (symbol \"hara/name\")) :hara.type/symbol) 42 0)",
-            "(if (= (type []) :hara.type/tuple) 42 0)",
-            "(if (= (type (vector)) :hara.type/vector) 42 0)",
-            "(if (= (type {}) :hara.type/ordered-map) 42 0)",
-            "(if (= (type (ns:create (quote example))) :hara.type/namespace) 42 0)",
+            "(if (= (type nil) :hara/Nil) 42 0)",
+            "(if (= (type :key) :hara/Keyword) 42 0)",
+            "(if (= (type (symbol \"hara/name\")) :hara/Symbol) 42 0)",
+            "(if (= (type []) :hara/Vector) 42 0)",
+            "(if (= (type (vector)) :hara/Vector) 42 0)",
+            "(if (= (type {}) :hara/HashMap) 42 0)",
+            "(if (= (type (ns:create (quote example))) :hara/Namespace) 42 0)",
+            "(if (= [(tuple? []) (tuple? [1 2 3 4 5 6 7 8 9])] [true false]) 42 0)",
         ] {
             assert_eq!(evaluate(source), Ok(42), "{source}");
         }
@@ -2696,10 +2628,10 @@ mod tests {
                 .iter()
                 .map(|(_, methods)| methods.len())
                 .sum::<usize>(),
-            198
+            200
         );
         let mut runtime = Session::new();
-        assert!(runtime.env.contains_key("edn/write"));
+        assert!(runtime.env.contains_key("Edn/write"));
         assert!(runtime.env.contains_key("ICount"));
         for native_type in [
             "Maths",
@@ -2730,28 +2662,25 @@ mod tests {
             assert!(runtime.env.contains_key(native_type), "{native_type}");
         }
         runtime
-            .start_fiber(
-                1,
-                "(ns example.json) (std.foundation.json/write {\"answer\" 42})",
-            )
+            .start_fiber(1, "(ns example.json) (Json/write {\"answer\" 42})")
             .unwrap();
         assert_eq!(
             completion_value(&mut runtime, 1),
             Value::String("{\"answer\":42}".into())
         );
         runtime
-            .start_fiber(2, "(std.foundation.edn/read \"{:answer 42}\")")
+            .start_fiber(2, "(Edn/read \"{:answer 42}\")")
             .unwrap();
         assert_eq!(completion_value(&mut runtime, 2).display(), "{:answer 42}");
         runtime
-            .start_fiber(3, "(std.foundation.json/pretty {\"answer\" 42} {})")
+            .start_fiber(3, "(Json/pretty {\"answer\" 42} {})")
             .unwrap();
         assert_eq!(
             completion_value(&mut runtime, 3),
             Value::String("{\n  \"answer\": 42\n}".into())
         );
         runtime
-            .start_fiber(4, "(std.foundation.edn/pretty {:answer 42} {})")
+            .start_fiber(4, "(Edn/pretty {:answer 42} {})")
             .unwrap();
         assert_eq!(
             completion_value(&mut runtime, 4),
@@ -2771,7 +2700,7 @@ mod tests {
             completion_value(&mut runtime, 5).display(),
             "[\"bad input\" {:kind :invalid}]"
         );
-        runtime.start_fiber(6, "(edn/write {:answer 42})").unwrap();
+        runtime.start_fiber(6, "(Edn/write {:answer 42})").unwrap();
         assert_eq!(
             completion_value(&mut runtime, 6),
             Value::String("{:answer 42}".into())

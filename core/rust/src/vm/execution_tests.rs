@@ -89,12 +89,15 @@ fn literals() {
 fn dynamic_collections_and_short_circuit_forms() {
     assert_eq!(eval("(let [x 19 y 23] [x y])"), "[19 23]");
     assert_eq!(
-        eval("[(type []) (vector? []) (tuple? []) (pair? [1 2]) \
+        eval(
+            "[(type []) (vector? []) (tuple? []) (pair? [1 2]) \
                (type [1 2 3 4 5 6 7 8]) (tuple? [1 2 3 4 5 6 7 8]) \
                (type [1 2 3 4 5 6 7 8 9]) (vector? [1 2 3 4 5 6 7 8 9]) \
-               (tuple? [1 2 3 4 5 6 7 8 9]) (pair? (vector 1 2))]"),
+               (tuple? [1 2 3 4 5 6 7 8 9]) (pair? (vector 1 2))]"
+        ),
         "[:hara/Vector true true true :hara/Vector true :hara/Vector true false false]"
     );
+    assert_eq!(eval("[(get [1 2] 1) (get [] 0 :missing)]"), "[2 :missing]");
     assert_eq!(eval("(let [x 42] {:answer x})"), "{:answer 42}");
     assert_eq!(eval("(let [x 42] #{x 1})"), "#{42 1}");
     assert_eq!(eval("(and true 42)"), "42");
