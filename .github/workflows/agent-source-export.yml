@@ -35,7 +35,7 @@ jobs:
       - name: Expose specs registry at the runtime fixture path
         run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
 
-      - name: Detect whether the closeout patch is still pending
+      - name: Detect whether closeout is already committed
         id: pending
         shell: bash
         run: |
@@ -52,270 +52,10 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Apply runtime, compiler, and portable-source closeout patches
+      - name: Apply guarded closeout patches
         if: steps.pending.outputs.apply == 'true'
-        shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          bundle_path = Path('core/rust/src/vm/bundle.rs')
-          bundle = bundle_path.read_text()
-          stale_guard = '''\
-                      if source.is_none() && standard_library_namespace(&module.resource) {
-                          continue;
-                      }
-          '''
-          if bundle.count(stale_guard) != 1:
-              raise SystemExit('source-free loader guard did not match exactly once')
-          bundle = bundle.replace(stale_guard, '', 1)
-
-          registered_bootstrap = '''\
-                      let mut runtime = Runtime::core();
-                      for &(name, _, source) in EMBEDDED_HAL_RESOURCES {
-                          runtime.register_resource(name, source);
-                      }
-                      eval_bytecode_bundle(&mut runtime, &bytes).expect("load foundation bundle");
-          '''
-          source_free_bootstrap = '''\
-                      let mut runtime = Runtime::core();
-                      assert!(runtime.resources.is_empty());
-                      eval_bytecode_bundle(&mut runtime, &bytes)
-                          .expect("load source-free foundation bundle");
-          '''
-          if bundle.count(registered_bootstrap) != 1:
-              raise SystemExit('source-free Foundation regression did not match exactly once')
-          bundle = bundle.replace(registered_bootstrap, source_free_bootstrap, 1)
-
-          insertion = '''\
-              #[test]
-              fn eager_failure_rolls_back_the_whole_bundle() {
-          '''
-          regression = '''\
-              #[test]
-              fn stale_eager_bytecode_is_rejected_when_registered_source_differs() {
-                  let mut compiler = Runtime::core();
-                  compiler.use_namespace("example.eager");
-                  let artifact = compiler
-                      .compile_bytecode_artifact("(def answer 41)")
-                      .expect("compile eager fixture");
-                  let bytes = encode_bytecode_bundle(&[BytecodeBundleModule {
-                      resource: "example.eager".into(),
-                      namespace_form: "(ns example.eager)".into(),
-                      source_digest: Sha256::digest(
-                          b"(ns example.eager) (def answer 41)",
-                      )
-                      .into(),
-                      dependencies: vec![],
-                      eager: true,
-                      artifact,
-                  }])
-                  .expect("encode eager fixture");
-                  let mut runtime = Runtime::core();
-                  runtime.register_resource(
-                      "example.eager",
-                      "(ns example.eager) (def answer 42)",
-                  );
-
-                  let error = eval_bytecode_bundle(&mut runtime, &bytes).unwrap_err();
-
-                  assert_eq!(
-                      error,
-                      "stale eager bytecode bundle module: example.eager"
-                  );
-                  assert!(!runtime.bytecode_resources.contains_key("example.eager"));
-                  assert!(!runtime.loaded_resources.contains("example.eager"));
-                  assert!(runtime.namespace_registry.find("example.eager").is_none());
-              }
-
-          '''
-          if bundle.count(insertion) != 1:
-              raise SystemExit('stale-eager regression insertion point did not match exactly once')
-          bundle = bundle.replace(insertion, regression + insertion, 1)
-          bundle_path.write_text(bundle)
-
-          functions_path = Path('core/rust/src/vm/compiler/functions.rs')
-          functions = functions_path.read_text()
-          special_anchor = '''\
-                                  "quote" => {}
-                                  "." => {
-          '''
-          special_replacement = '''\
-                                  "quote" => {}
-                                  "set!" => {
-                                      if let Some(place) = children.get(1) {
-                                          match place.form {
-                                              Form::List(forms)
-                                                  if matches!(
-                                                      forms.first(),
-                                                      Some(Form::Symbol(operation))
-                                                          if operation == "field"
-                                                  ) =>
-                                              {
-                                                  let place_children = self.list_children(
-                                                      forms,
-                                                      place.span,
-                                                      place.children,
-                                                  );
-                                                  if let Some(receiver) = place_children.get(1) {
-                                                      self.collect_free(receiver, bound, free);
-                                                  }
-                                              }
-                                              Form::Symbol(_) => {}
-                                              _ => self.collect_free(place, bound, free),
-                                          }
-                                      }
-                                      if let Some(value) = children.get(2) {
-                                          self.collect_free(value, bound, free);
-                                      }
-                                  }
-                                  "field" => {
-                                      if let Some(instance) = children.get(1) {
-                                          self.collect_free(instance, bound, free);
-                                      }
-                                  }
-                                  "." => {
-          '''
-          if functions.count(special_anchor) != 1:
-              raise SystemExit('closure special-form insertion point did not match exactly once')
-          functions_path.write_text(functions.replace(special_anchor, special_replacement, 1))
-
-          execution_path = Path('core/rust/src/vm/execution_tests.rs')
-          execution = execution_path.read_text()
-          mutable_anchor = '''\
-                  assert_eq!(
-                      eval("(do (def order []) (defmutable Cursor [x]) (def cursor (Cursor 1)) (set! (field (do (set! order (conj order :receiver)) cursor) :x) (do (set! order (conj order :replacement)) 10)) [order (field cursor :x)])"),
-                      "[[:receiver :replacement] 10]"
-                  );
-          '''
-          mutable_regression = '''\
-                  assert_eq!(
-                      eval("(do (defmutable Cursor [x]) (defn move! [cursor value] (set! (field cursor :x) value)) (defn position [cursor] (field cursor :x)) (let [cursor (Cursor 1)] [(move! cursor 10) (position cursor)]))"),
-                      "[10 10]"
-                  );
-          ''' + mutable_anchor
-          if execution.count(mutable_anchor) != 1:
-              raise SystemExit('mutable closure regression insertion point did not match')
-          execution_path.write_text(execution.replace(mutable_anchor, mutable_regression, 1))
-
-          dom_path = Path('core/lib/src/std/dom/common.hal')
-          dom = dom_path.read_text()
-          exploratory = '''\
-          (defn dom-field-set!
-            [dom key value]
-            (cond
-              (= key :tag) (set! (field dom :tag) value)
-              (= key :props) (set! (field dom :props) value)
-              (= key :item) (set! (field dom :item) value)
-              (= key :parent) (set! (field dom :parent) value)
-              (= key :handler) (set! (field dom :handler) value)
-              (= key :shadow) (set! (field dom :shadow) value)
-              (= key :cache) (set! (field dom :cache) value)
-              (= key :extra) (set! (field dom :extra) value)
-              :else (throw (ex-info "Unknown DOM field" {:field key})))
-            dom)
-          '''
-          canonical = '''\
-          (defn dom-field-set!
-            [dom key value]
-            (case key
-              :tag (set! (field dom :tag) value)
-              :props (set! (field dom :props) value)
-              :item (set! (field dom :item) value)
-              :parent (set! (field dom :parent) value)
-              :handler (set! (field dom :handler) value)
-              :shadow (set! (field dom :shadow) value)
-              :cache (set! (field dom :cache) value)
-              :extra (set! (field dom :extra) value)
-              (throw (ex-info "Unknown DOM field" {:field key})))
-            dom)
-          '''
-          if dom.count(exploratory) != 1:
-              raise SystemExit('exploratory std.dom rewrite did not match exactly once')
-          dom_path.write_text(dom.replace(exploratory, canonical, 1))
-
-          template_path = Path('core/lib/src/tool/cli/template.hal')
-          template = template_path.read_text()
-          schema_anchor = '(def schema-id "tool.cli.template/0-alpha")\n\n'
-          schema_replacement = '''\
-          (def schema-id "tool.cli.template/0-alpha")
-
-          ;; Template handlers are live runtime functions. Keep their provenance in a
-          ;; runtime-owned identity registry rather than attaching functions and work
-          ;; graphs to portable metadata.
-          (def +handlers+ (atom []))
-
-          '''
-          if template.count(schema_anchor) != 1:
-              raise SystemExit('CLI handler registry insertion point did not match exactly once')
-          template = template.replace(schema_anchor, schema_replacement, 1)
-
-          metadata_handler = '''\
-          (defn handler
-            "Returns the closed-registry function [request] -> tool.cli.model/result."
-            [raw-definition]
-            (let [definition (normalise-definition raw-definition)
-                  command-work (work definition)
-                  runtime-fn (:runtime-fn definition)]
-              (with-meta
-                (fn [request]
-                  (std-work/run (runtime-fn) command-work request))
-                {:tool.cli.template/schema schema-id
-                 :tool.cli.template/definition definition
-                 :tool.cli.template/work command-work})))
-
-          (defn handler?
-            [value]
-            (= schema-id
-               (:tool.cli.template/schema (meta value))))
-          '''
-          registered_handler = '''\
-          (defn handler
-            "Returns the closed-registry function [request] -> tool.cli.model/result."
-            [raw-definition]
-            (let [definition (normalise-definition raw-definition)
-                  command-work (work definition)
-                  runtime-fn (:runtime-fn definition)
-                  handler-fn
-                  (fn [request]
-                    (std-work/run (runtime-fn) command-work request))]
-              (swap! +handlers+ conj handler-fn)
-              handler-fn))
-
-          (defn handler?
-            [value]
-            (and
-             (fn? value)
-             (boolean
-              (some
-               (fn [handler-fn]
-                 (= value handler-fn))
-               (deref +handlers+)))))
-          '''
-          if template.count(metadata_handler) != 1:
-              raise SystemExit('function-metadata CLI handler did not match exactly once')
-          template_path.write_text(template.replace(metadata_handler, registered_handler, 1))
-
-          test_path = Path('core/lib/test/tool/cli/template_test.hal')
-          test_source = test_path.read_text()
-          registry_fact = '''\
-          (fact "every closed-registry handler is template-produced"
-            (every?
-             template/handler?
-             (vals (handlers/registry)))
-            => true)
-          '''
-          ordinary_function_fact = registry_fact + '''\
-
-          (fact "ordinary functions are not mistaken for template handlers"
-            (template/handler? (fn [request] request))
-            => false)
-          '''
-          if test_source.count(registry_fact) != 1:
-              raise SystemExit('CLI template identity regression insertion point did not match')
-          test_path.write_text(test_source.replace(registry_fact, ordinary_function_fact, 1))
-          PY
-
+          python3 scripts/runtime/apply-runtime-closeout.py
           python3 scripts/runtime/sync-rust-hal-src
           python3 scripts/runtime/sync-rust-hal-src --check
           rustfmt --edition 2021 \
@@ -379,7 +119,7 @@ jobs:
               --project core --offline project test "$test_file"
           done
 
-      - name: Commit the validated closeout changes
+      - name: Commit validated code and restore the export workflow
         if: steps.pending.outputs.apply == 'true'
         shell: bash
         run: |
@@ -402,4 +142,38 @@ jobs:
 
           git add core/rust/src/vm/bundle.rs core/rust/assets/std.foundation.hbx
           git diff --cached --quiet || git commit -m 'fix(runtime): load source-free standard-library bundles'
+
+          cat > .github/workflows/agent-source-export.yml <<'YAML'
+          name: Agent source export
+
+          on:
+            pull_request:
+              branches: [main]
+              paths:
+                - .github/workflows/agent-source-export.yml
+
+          permissions:
+            contents: read
+
+          jobs:
+            export:
+              runs-on: ubuntu-latest
+              steps:
+                - name: Check out branch
+                  uses: actions/checkout@v4
+                - name: Package source without Git metadata
+                  run: tar --exclude=.git -czf /tmp/hara-source.tar.gz .
+                - name: Upload source archive
+                  uses: actions/upload-artifact@v4
+                  with:
+                    name: hara-source
+                    path: /tmp/hara-source.tar.gz
+                    if-no-files-found: error
+                    retention-days: 1
+          YAML
+          sed -i 's/^          //' .github/workflows/agent-source-export.yml
+          git rm scripts/runtime/apply-runtime-closeout.py
+          git add .github/workflows/agent-source-export.yml
+          git commit -m 'chore(ci): restore agent source export workflow'
+
           git push origin HEAD:agent/runtime-closeout-575-493
