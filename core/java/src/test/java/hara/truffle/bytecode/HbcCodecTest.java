@@ -15,6 +15,8 @@ import hara.truffle.bytecode.HbcProgram.Instruction;
 import hara.truffle.bytecode.HbcProgram.Opcode;
 import hara.truffle.bytecode.HbcProgram.Primitive;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.nio.ByteBuffer;
@@ -349,6 +351,62 @@ public class HbcCodecTest {
       org.graalvm.polyglot.Value result = context.eval(source);
       assertTrue(result.hasHashEntries() || result.hasMembers());
     }
+  }
+
+  @Test
+  public void portableMachineKeepsCompactTuplesBehindTheVectorSurface() throws Exception {
+    List<Object> constants =
+        new ArrayList<>(List.of("type", "vector?", "tuple?", "pair?"));
+    for (long value = 1; value <= 9; value++) constants.add(value);
+
+    List<Instruction> code = new ArrayList<>();
+    appendVectorCall(code, 0, 0);
+    appendVectorCall(code, 1, 0);
+    appendVectorCall(code, 2, 0);
+    appendVectorCall(code, 3, 2);
+    appendVectorCall(code, 0, 8);
+    appendVectorCall(code, 2, 8);
+    appendVectorCall(code, 0, 9);
+    appendVectorCall(code, 1, 9);
+    appendVectorCall(code, 2, 9);
+    code.add(new Instruction(Opcode.BUILD_VECTOR, 9, 0, 0));
+    code.add(Instruction.of(Opcode.RETURN));
+
+    Function entry =
+        new Function(
+            null,
+            false,
+            0,
+            false,
+            0,
+            0,
+            18,
+            code,
+            new ArrayList<>(Collections.nCopies(code.size(), null)),
+            List.of());
+    HbcProgram program = new HbcProgram(constants, List.of(), List.of(entry), 0);
+    Source source =
+        Source.newBuilder(
+                HaraLanguage.ID,
+                ByteSequence.create(HbcCodec.encode(program)),
+                "vector-surface.hbc")
+            .mimeType(HaraLanguage.BYTECODE_MIME_TYPE)
+            .build();
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[:hara/Vector true true true :hara/Vector true :hara/Vector true false]",
+          context.eval(source).toString());
+    }
+  }
+
+  private static void appendVectorCall(
+      List<Instruction> code, int builtinConstant, int vectorCount) {
+    code.add(new Instruction(Opcode.BUILTIN_VALUE, builtinConstant, 0, 0));
+    for (int index = 0; index < vectorCount; index++) {
+      code.add(new Instruction(Opcode.CONSTANT, 4 + index, 0, 0));
+    }
+    code.add(new Instruction(Opcode.BUILD_VECTOR, vectorCount, 0, 0));
+    code.add(new Instruction(Opcode.CALL, 1, 0, 0));
   }
 
   @Test

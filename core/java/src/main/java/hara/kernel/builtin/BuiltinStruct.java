@@ -149,6 +149,12 @@ public interface BuiltinStruct {
         return new Tup4.L(null, xs[0], xs[1], xs[2], xs[3]);
       case 5:
         return new Tup5.L(null, xs[0], xs[1], xs[2], xs[3], xs[4]);
+      case 6:
+        return new Tup6.L(null, xs[0], xs[1], xs[2], xs[3], xs[4], xs[5]);
+      case 7:
+        return new Tup7.L(null, xs[0], xs[1], xs[2], xs[3], xs[4], xs[5], xs[6]);
+      case 8:
+        return new Tup8.L(null, xs[0], xs[1], xs[2], xs[3], xs[4], xs[5], xs[6], xs[7]);
       default:
         throw new Ex.Arity(xs.length, "");
     }

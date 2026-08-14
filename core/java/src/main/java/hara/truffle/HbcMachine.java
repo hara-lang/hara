@@ -209,13 +209,18 @@ public final class HbcMachine {
                   names,
                   instruction.opcode() == HbcProgram.Opcode.DEF_MUTABLE));
         }
-        case BUILD_VECTOR ->
-            stack.add(hara.lang.data.Vector.Standard.from(null, popArguments(stack, index(instruction.first()))));
+        case BUILD_VECTOR -> {
+          Object[] values = popArguments(stack, index(instruction.first()));
+          stack.add(
+              values.length <= 8
+                  ? hara.kernel.builtin.BuiltinStruct.tuple(values)
+                  : hara.lang.data.Vector.Standard.from(null, values));
+        }
         case BUILD_LIST ->
             stack.add(hara.lang.data.List.Standard.from(null, popArguments(stack, index(instruction.first()))));
         case BUILD_MAP ->
             stack.add(
-                hara.lang.data.OrderedMap.Standard.from(
+                hara.lang.data.Map.Standard.from(
                     null, popArguments(stack, index(instruction.first()) * 2)));
         case BUILD_SET ->
             stack.add(
@@ -489,7 +494,12 @@ public final class HbcMachine {
 
   private static HaraType defineNamedType(
       HaraContext context, String name, String[] fields, boolean mutable) {
-    HaraType type = mutable ? new HaraMutableType(name, fields) : new HaraType(name, fields);
+    String qualifiedName =
+        name.indexOf('/') >= 0 ? name : context.currentNamespaceName() + "/" + name;
+    HaraType type =
+        mutable
+            ? new HaraMutableType(qualifiedName, fields)
+            : new HaraType(qualifiedName, fields);
     context.define(Symbol.create(name), type);
     context.define(
         Symbol.create("->" + name),

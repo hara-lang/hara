@@ -36,19 +36,19 @@ public final class HaraStruct
         ICount,
         Iterable<Map.Entry<Object, Object>> {
   private final HaraType type;
-  private final hara.lang.data.Map.Standard<Object, Object> values;
+  private final hara.lang.data.OrderedMap.Standard<Object, Object> values;
 
   public HaraStruct(HaraType type, Object[] orderedValues) {
     this(type, fromOrderedValues(type, orderedValues, null));
   }
 
   private HaraStruct(
-      HaraType type, hara.lang.data.Map.Standard<Object, Object> values) {
+      HaraType type, hara.lang.data.OrderedMap.Standard<Object, Object> values) {
     this.type = type;
     this.values = values;
   }
 
-  private static hara.lang.data.Map.Standard<Object, Object> fromOrderedValues(
+  private static hara.lang.data.OrderedMap.Standard<Object, Object> fromOrderedValues(
       HaraType type, Object[] orderedValues, IMetadata metadata) {
     String[] fields = type.fields();
     if (orderedValues.length != fields.length) {
@@ -63,7 +63,7 @@ public final class HaraStruct
       entries[index * 2] = Keyword.create(fields[index]);
       entries[index * 2 + 1] = orderedValues[index];
     }
-    return hara.lang.data.Map.Standard.from(metadata, entries);
+    return hara.lang.data.OrderedMap.Standard.from(metadata, entries);
   }
 
   public Object read(String field) throws UnknownIdentifierException {
@@ -87,7 +87,7 @@ public final class HaraStruct
     return ordered;
   }
 
-  hara.lang.data.Map.Standard<Object, Object> asMap() {
+  hara.lang.data.OrderedMap.Standard<Object, Object> asMap() {
     return values;
   }
 
@@ -98,7 +98,7 @@ public final class HaraStruct
 
   @Override
   public HaraStruct withMeta(IMetadata metadata) {
-    hara.lang.data.Map.Standard<Object, Object> updated = values.withMeta(metadata);
+    hara.lang.data.OrderedMap.Standard<Object, Object> updated = values.withMeta(metadata);
     return updated == values ? this : new HaraStruct(type, updated);
   }
 

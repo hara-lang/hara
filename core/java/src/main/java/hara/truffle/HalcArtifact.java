@@ -354,8 +354,14 @@ final class HalcArtifact {
     if (value instanceof hara.lang.data.List<?> list) {
       return hara.lang.data.List.Standard.from(list.meta(), canonicalizeLinear(list, namespace, aliases, definitions, localReferences));
     }
-    if (value instanceof hara.lang.data.Vector<?> vector) {
-      return hara.lang.data.Vector.Standard.from(vector.meta(), canonicalizeLinear(vector, namespace, aliases, definitions, localReferences));
+    if (value instanceof ILinearType<?> vector && "[".equals(vector.startString())) {
+      Object[] canonical =
+          canonicalizeLinear(vector, namespace, aliases, definitions, localReferences);
+      Object sequence =
+          canonical.length <= 8
+              ? hara.kernel.builtin.BuiltinStruct.tuple(canonical)
+              : hara.lang.data.Vector.Standard.from(null, canonical);
+      return ((IObjType) sequence).withMeta(((IObjType) vector).meta());
     }
     if (value instanceof IMapType<?, ?> map) {
       Object[] entries = new Object[Math.toIntExact(map.count() * 2)];
@@ -416,7 +422,8 @@ final class HalcArtifact {
           continue;
         }
         for (int specIndex = 1; specIndex < clause.count(); specIndex++) {
-          if (!(clause.nth(specIndex) instanceof hara.lang.data.Vector<?> spec)
+          if (!(clause.nth(specIndex) instanceof ILinearType<?> spec)
+              || !"[".equals(spec.startString())
               || spec.count() < 3
               || !(spec.nth(0) instanceof Symbol target)) {
             continue;
@@ -474,6 +481,11 @@ final class HalcArtifact {
       output.writeByte(LIST);
       writeLinear(output, list);
       writeMetadata(output, list);
+    } else if (value instanceof hara.lang.data.Tuple.Tup0
+        || value instanceof hara.lang.data.Tuple.Tup1<?>) {
+      output.writeByte(VECTOR);
+      writeLinear(output, (ILinearType<?>) value);
+      writeMetadata(output, (IObjType) value);
     } else if (value instanceof hara.lang.data.Vector<?> vector) {
       output.writeByte(VECTOR);
       writeLinear(output, vector);
@@ -530,7 +542,12 @@ final class HalcArtifact {
       }
       case VECTOR -> {
         Object[] values = readValues(input);
-        yield withMetadata(hara.lang.data.Vector.Standard.from(null, values), readMetadata(input));
+        IMetadata metadata = readMetadata(input);
+        Object sequence =
+            values.length <= 8
+                ? hara.kernel.builtin.BuiltinStruct.tuple(values)
+                : hara.lang.data.Vector.Standard.from(null, values);
+        yield withMetadata((IObjType) sequence, metadata);
       }
       case MAP -> {
         Object[] entries = readEntries(input);

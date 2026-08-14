@@ -1,7 +1,7 @@
 package hara.truffle;
 
 /** Lazy Java implementation of {@code std.foundation.bytes}. */
-public final class StdFoundationBytesLibraryProvider implements HaraLibraryProvider {
+public final class BytesLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() { return "std.foundation.bytes"; }
 

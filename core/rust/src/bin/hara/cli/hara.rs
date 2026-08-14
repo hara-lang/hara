@@ -44,8 +44,8 @@ fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
         .map(|path| format!("{:?}", path.to_string_lossy()))
         .unwrap_or_else(|| "nil".into());
     let source = format!(
-        "(do (require [std.foundation.edn :as edn] [tool.cli.main :as main] [tool.cli.handlers :as handlers] [tool.cli.model :as model]) \
-         (try (main/run (edn/read {:?}) {:?} \
+        "(do (require [tool.cli.main :as main] [tool.cli.handlers :as handlers] [tool.cli.model :as model]) \
+         (try (main/run (std.native.Edn/read {:?}) {:?} \
           {{:runtime/id :native :runtime/cwd {:?} :runtime/project {} :runtime/capabilities {}}} \
           (handlers/registry)) \
           (catch Throwable error \

@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import json
+import importlib.util
+from importlib.machinery import SourceFileLoader
 import os
 from pathlib import Path
 import subprocess
@@ -14,6 +16,15 @@ HERE = Path(__file__).resolve().parent
 SOURCE_GATE = HERE / "hara-source-gate"
 SHELL_GATE = HERE / "hara-shell-edit-gate"
 SYNC_GATE = HERE / "sync-source-gates"
+
+
+def load_source_gate():
+    spec = importlib.util.spec_from_loader(
+        "hara_source_gate", SourceFileLoader("hara_source_gate", str(SOURCE_GATE))
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class GateTests(unittest.TestCase):
@@ -167,6 +178,16 @@ class GateTests(unittest.TestCase):
         body = json.loads(result.stdout)
         self.assertEqual(body["decision"], "block")
         self.assertIn("native-failure", body["reason"])
+
+    def test_tool_project_candidate_does_not_bootstrap_through_project(self):
+        source = self.root / "core" / "lib" / "src" / "tool" / "project.hal"
+        source.parent.mkdir(parents=True)
+        source.write_text("(ns tool.project)\n")
+        (self.root / "core" / "project.edn").write_text("{}\n")
+        gate = load_source_gate()
+        self.assertIsNone(gate.project_root(source, self.root))
+        sibling = source.parent / "other.hal"
+        self.assertEqual(gate.project_root(sibling, self.root), self.root / "core")
 
     def test_kimi_denial_uses_exit_two(self):
         result = self.source(self.payload("Write", {

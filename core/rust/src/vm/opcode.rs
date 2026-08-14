@@ -138,10 +138,10 @@ pub enum Instruction {
         name: u32,
         count: u8,
     },
-    /// Pops `count` values and constructs a vector in source order.
+    /// Pops `count` values and constructs a compact tuple, upgrading to a vector above arity 8.
     BuildVector(u16),
     /// Pops `pairs * 2` alternating keys and values and constructs an
-    /// insertion-ordered map.
+    /// persistent hash map.
     BuildMap(u16),
     /// Pops `count` values and constructs an insertion-ordered set.
     BuildSet(u16),

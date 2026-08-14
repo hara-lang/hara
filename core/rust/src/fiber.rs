@@ -644,8 +644,13 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
                             }),
                         ),
                     },
+                    Ok(Value::Pointer(pointer)) => {
+                        k(pointer_default(&pointer).and_then(|runtime| {
+                            pointer_context_call(&pointer, runtime, "pointer/deref", &[])
+                        }))
+                    }
                     Ok(value) => k(Err(format!(
-                        "deref expects a var, atom, or promise, got {}",
+                        "deref expects a var, atom, promise, or pointer, got {}",
                         value.display()
                     ))),
                     Err(e) => k(Err(e)),

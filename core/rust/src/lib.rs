@@ -75,18 +75,9 @@ const EAGER_HAL_RESOURCES: &[&str] = &[
     "std.foundation.string",
     "std.foundation.promise",
     "std.foundation.bytes",
-    "std.foundation.crypto",
     "std.foundation.coroutine",
-    "std.foundation.file",
-    "std.foundation.host",
-    "std.foundation.socket",
-    "std.foundation.os",
-    "std.foundation.edn",
-    "std.foundation.json",
-    "std.foundation.set",
     "std.foundation.pretty.engine",
     "std.foundation.pretty",
-    "std.foundation.kernel",
 ];
 
 fn ignore_socket_event(_event: core::SocketEvent) {}
@@ -2468,8 +2459,7 @@ mod tests {
             kernel
                 .eval(
                     "alpha",
-                    "(do (require [std.foundation.file :as file]) \
-                     (deref (file/write \"/workspace/shared.bin\" (bytes 7 8))))",
+                    "(deref (std.native.File/write \"/workspace/shared.bin\" (bytes 7 8)))",
                 )
                 .unwrap(),
             "nil"
@@ -2478,8 +2468,7 @@ mod tests {
             kernel
                 .eval(
                     "beta",
-                    "(do (require [std.foundation.file :as file]) \
-                     (deref (file/exists? \"/workspace/shared.bin\")))",
+                    "(deref (std.native.File/exists? \"/workspace/shared.bin\"))",
                 )
                 .unwrap(),
             "true"
@@ -2488,9 +2477,8 @@ mod tests {
             kernel
                 .eval(
                     "alpha",
-                    "(do (require [std.foundation.file :as file]) \
-                     (deref (file/write \"/workspace/source.hal\" \
-                       (str/encode-utf8 \"(+ 19 23)\"))))",
+                    "(deref (std.native.File/write \"/workspace/source.hal\" \
+                       (str/encode-utf8 \"(+ 19 23)\")))",
                 )
                 .unwrap(),
             "nil"
@@ -2499,9 +2487,8 @@ mod tests {
             kernel
                 .eval(
                     "beta",
-                    "(do (require [std.foundation.file :as file]) \
-                     (str/decode-utf8 \
-                       (deref (file/read \"/workspace/source.hal\"))))",
+                    "(str/decode-utf8 \
+                       (deref (std.native.File/read \"/workspace/source.hal\")))",
                 )
                 .unwrap(),
             "\"(+ 19 23)\""
@@ -3064,11 +3051,11 @@ mod tests {
     }
 
     #[test]
-    fn foundation_host_routes_calls_to_the_native_host_type() {
+    fn native_host_routes_calls_without_a_facade() {
         let mut runtime = Runtime::new();
         let error = runtime
             .eval_text(
-                "(ns user (:require [std.foundation.host :as host])) (deref (host/call \"browser.dom\" \"set-text\" \"#sel\" \"hi\"))",
+                "(deref (std.native.Host/call \"browser.dom\" \"set-text\" [\"#sel\" \"hi\"]))",
             )
             .unwrap_err();
         assert!(
@@ -3078,11 +3065,11 @@ mod tests {
     }
 
     #[test]
-    fn host_modules_route_through_the_foundation_wrapper() {
+    fn host_modules_route_through_the_native_type() {
         let mut runtime = Runtime::new();
         runtime.register_resource(
             "host.browser.dom",
-            "(ns host.browser.dom (:require [std.foundation.host :as host])) (defn set-text [selector text] (host/call \"browser.dom\" \"set-text\" selector text))",
+            "(ns host.browser.dom) (defn set-text [selector text] (std.native.Host/call \"browser.dom\" \"set-text\" [selector text]))",
         );
         let error = runtime
             .eval_text(
@@ -3328,19 +3315,17 @@ mod tests {
     }
 
     #[test]
-    fn strict_json_and_pretty_libraries_match_the_portable_contract() {
+    fn strict_native_json_matches_the_portable_contract() {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
-                .eval_text(
-                    "(std.foundation.json/read \"[null,true,-2,\\\"x\\\",[3],{\\\"a\\\":4}]\")"
-                )
+                .eval_text("(std.native.Json/read \"[null,true,-2,\\\"x\\\",[3],{\\\"a\\\":4}]\")")
                 .unwrap(),
             "[nil true -2 \"x\" [3] {\"a\" 4}]"
         );
         assert_eq!(
             runtime
-                .eval_text("(std.foundation.json/write {\"a\" 1 \"b\" [true nil]})")
+                .eval_text("(std.native.Json/write {\"a\" 1 \"b\" [true nil]})")
                 .unwrap(),
             "\"{\\\"a\\\":1,\\\"b\\\":[true,null]}\""
         );
@@ -3350,16 +3335,16 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text("(std.foundation.json/pretty {\"a\" 1} {})")
+                .eval_text("(std.native.Json/pretty {\"a\" 1} {})")
                 .unwrap(),
             "\"{\\n  \\\"a\\\": 1\\n}\""
         );
         assert!(runtime
-            .eval_text("(std.foundation.json/pretty {\"a\" 1} nil)")
+            .eval_text("(std.native.Json/pretty {\"a\" 1} nil)")
             .unwrap_err()
             .contains("options map"));
         assert!(runtime
-            .eval_text("(std.foundation.json/read \"1.5\")")
+            .eval_text("(std.native.Json/read \"1.5\")")
             .unwrap_err()
             .contains("signed 64-bit integers"));
         assert_eq!(
@@ -3371,40 +3356,30 @@ mod tests {
     }
 
     #[test]
-    fn restricted_edn_library_reads_and_writes_without_evaluation() {
+    fn restricted_native_edn_reads_and_writes_without_evaluation() {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
-                .eval_text(
-                    "(do (require 'std.foundation.edn) \
-                     (std.foundation.edn/read \"{:a [1 2] :b #{:x}}\"))"
-                )
+                .eval_text("(std.native.Edn/read \"{:a [1 2] :b #{:x}}\")")
                 .unwrap(),
             "{:a [1 2] :b #{:x}}"
         );
         assert_eq!(
             runtime
                 .eval_text(
-                    "(do (require 'std.foundation.edn) \
-                     [(std.foundation.edn/write {:a [1 2]}) \
-                      (std.foundation.edn/pretty [:a 1] {})])"
+                    "[(std.native.Edn/write {:a [1 2]}) \
+                      (std.native.Edn/pretty [:a 1] {})]"
                 )
                 .unwrap(),
             "[\"{:a [1 2]}\" \"[:a 1]\"]"
         );
         assert!(runtime
-            .eval_text(
-                "(do (require 'std.foundation.edn) \
-                 (std.foundation.edn/pretty [:a 1] nil))"
-            )
+            .eval_text("(std.native.Edn/pretty [:a 1] nil)")
             .unwrap_err()
             .contains("options map"));
         assert_eq!(
             runtime
-                .eval_text(
-                    "(do (require 'std.foundation.edn) \
-                     (std.foundation.edn/read \"(+ 1 2)\"))"
-                )
+                .eval_text("(std.native.Edn/read \"(+ 1 2)\")")
                 .unwrap(),
             "(+ 1 2)"
         );
@@ -3431,10 +3406,7 @@ mod tests {
         for source in ["1/2", "1 2"] {
             let escaped = source.replace('\\', "\\\\").replace('"', "\\\"");
             assert!(runtime
-                .eval_text(&format!(
-                    "(do (require 'std.foundation.edn) \
-                     (std.foundation.edn/read \"{escaped}\"))"
-                ))
+                .eval_text(&format!("(std.native.Edn/read \"{escaped}\")"))
                 .is_err());
         }
     }
@@ -5482,7 +5454,7 @@ mod tests {
         assert_eq!(runtime.eval_text("(cons 0 [1 2])").unwrap(), "(0 1 2)");
         assert_eq!(
             runtime.eval_text("(type (cons 0 [1 2]))").unwrap(),
-            ":hara.type/cons"
+            ":hara/Cons"
         );
         assert_eq!(runtime.eval_text("(count (cons 0 [1 2]))").unwrap(), "3");
         assert_eq!(runtime.eval_text("(get (cons 0 [1 2]) 2)").unwrap(), "2");
@@ -5496,7 +5468,7 @@ mod tests {
             runtime
                 .eval_text("(type (pointer {:context :test :refer 'tool.lint/lint-source :id 'lint-source}))")
                 .unwrap(),
-            ":hara.type/pointer"
+            ":hara/Pointer"
         );
         assert_eq!(
             runtime
@@ -5529,8 +5501,26 @@ mod tests {
             "[\"ROOT\"]"
         );
         assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (require 'std.context.space) (deref #ptr {:context :null :id \"ROOT\"}))"
+                )
+                .unwrap(),
+            "[:pointer/deref #ptr {:context :null :id \"ROOT\"}]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(#ptr {:context :null :id \"ROOT\"} 1 2)")
+                .unwrap(),
+            "[:pointer/invoke #ptr {:context :null :id \"ROOT\"} 1 2]"
+        );
+        assert!(runtime
+            .eval_text("#ptr {:id \"ROOT\"}")
+            .unwrap_err()
+            .contains("pointer descriptor requires :context"));
+        assert_eq!(
             runtime.eval_text("(type #sample [1 2])").unwrap(),
-            ":hara.type/tagged-literal"
+            ":hara/TaggedLiteral"
         );
         assert_eq!(runtime.eval_text("(ILookup/lookup (IObjType/meta (IObjType/with-meta (cons 0 [1]) {:doc \"cons\"})) :doc)").unwrap(), "\"cons\"");
     }
@@ -6456,25 +6446,26 @@ mod tests {
     fn portable_type_descriptors_cover_named_and_collection_values() {
         let mut runtime = Runtime::new();
         for (source, expected) in [
-            ("nil", ":hara.type/nil"),
-            (":key", ":hara.type/keyword"),
-            ("(symbol \"hara/name\")", ":hara.type/symbol"),
-            ("[]", ":hara.type/tuple"),
-            ("(list)", ":hara.type/list"),
-            ("(queue)", ":hara.type/queue"),
-            ("(vector)", ":hara.type/vector"),
-            ("(hash-map)", ":hara.type/hash-map"),
-            ("{}", ":hara.type/ordered-map"),
-            ("(sorted-map)", ":hara.type/sorted-map"),
-            ("(trie)", ":hara.type/trie"),
-            ("(hash-set)", ":hara.type/hash-set"),
-            ("#{}", ":hara.type/ordered-set"),
-            ("(sorted-set)", ":hara.type/sorted-set"),
-            ("(bytes)", ":hara.type/byte-buffer"),
-            ("(array)", ":hara.type/array"),
-            ("(object)", ":hara.type/object"),
-            ("(atom 0)", ":hara.type/atom"),
-            ("(ns:create (quote example))", ":hara.type/namespace"),
+            ("nil", ":hara/Nil"),
+            (":key", ":hara/Keyword"),
+            ("(symbol \"hara/name\")", ":hara/Symbol"),
+            ("[]", ":hara/Vector"),
+            ("(list)", ":hara/List"),
+            ("(queue)", ":hara/Queue"),
+            ("(vector)", ":hara/Vector"),
+            ("(hash-map)", ":hara/HashMap"),
+            ("{}", ":hara/HashMap"),
+            ("(sorted-map)", ":hara/SortedMap"),
+            ("(trie)", ":hara/Trie"),
+            ("(hash-set)", ":hara/HashSet"),
+            ("#{}", ":hara/OrderedSet"),
+            ("(sorted-set)", ":hara/SortedSet"),
+            ("(bytes)", ":hara/ByteBuffer"),
+            ("(array)", ":hara/Array"),
+            ("(object)", ":hara/Object"),
+            ("(atom 0)", ":hara/Atom"),
+            ("(ns:create (quote example))", ":hara/Namespace"),
+            ("#\"x\"", ":hara/RegExp"),
         ] {
             assert_eq!(
                 runtime.eval_text(&format!("(type {source})")).unwrap(),
@@ -6483,7 +6474,33 @@ mod tests {
         }
         assert_eq!(
             runtime.eval_text("(type (type []))").unwrap(),
-            ":hara.type/keyword"
+            ":hara/Keyword"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("[(type [1 2 3 4 5 6 7 8]) (type [1 2 3 4 5 6 7 8 9])]")
+                .unwrap(),
+            "[:hara/Vector :hara/Vector]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns geometry) (defstruct Point [x y]) (defmutable Cursor [x y]) \
+                     [(type (Point 1 2)) (type (Cursor 1 2)) (type Point) (type Cursor)]",
+                )
+                .unwrap(),
+            "[:geometry/Point :geometry/Cursor :hara/StructType :hara/MutableType]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(vector? []) (tuple? []) (pair? [1 2]) \
+                     (tuple? [1 2 3 4 5 6 7 8]) (tuple? [1 2 3 4 5 6 7 8 9]) \
+                     (vector? [1 2 3 4 5 6 7 8 9]) (pair? (vector 1 2)) \
+                     (pair? (list 1 2))]",
+                )
+                .unwrap(),
+            "[true true true true false true false false]"
         );
         assert!(runtime
             .eval_text("(type)")
@@ -7903,7 +7920,7 @@ mod tests {
                       (map-entry? (IFind/find {:a 1} :a))]",
                 )
                 .unwrap(),
-            "[:hara.type/tuple true :hara.type/tuple true]"
+            "[:hara/Vector true :hara/Vector true]"
         );
     }
 
@@ -8185,14 +8202,12 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(do \
-                       (require [std.foundation.set :as set]) \
-                       [(set/union #{1 2} #{2 3}) \
-                        (set/intersection #{1 2 3} #{2 3 4} #{3 5}) \
-                        (set/difference #{1 2 3} #{2} #{3}) \
-                        (set/subset? #{1 2} #{1 2 3}) \
-                        (set/superset? #{1 2 3} #{1 2}) \
-                        (set/select odd? #{1 2 3 4})])"
+                    "[(union #{1 2} #{2 3}) \
+                        (intersection #{1 2 3} #{2 3 4} #{3 5}) \
+                        (difference #{1 2 3} #{2} #{3}) \
+                        (subset? #{1 2} #{1 2 3}) \
+                        (superset? #{1 2 3} #{1 2}) \
+                        (set (filter odd? #{1 2 3 4}))]"
                 )
                 .unwrap(),
             "[#{1 2 3} #{3} #{1} true true #{1 3}]"

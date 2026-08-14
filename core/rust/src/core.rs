@@ -63,7 +63,7 @@ pub struct MutableType {
 #[derive(Debug, Clone)]
 pub struct StructValue {
     pub ty: Rc<StructType>,
-    pub values: PMap<Value, Value>,
+    pub values: POrderedMap<Value, Value>,
     pub metadata: Option<Rc<Metadata>>,
 }
 
@@ -244,7 +244,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &["load-string", "macroexpand-1", "gensym", "var-sym"],
     ),
     ("Printer", &["p", "println"]),
-    ("Edn", &["read", "read-forms"]),
+    ("Edn", &["read", "read-forms", "write", "pretty"]),
     ("Json", &["read", "write", "pretty"]),
     ("Host", &["call", "describe", "capabilities", "capability?"]),
     ("Regex", &["instance?"]),
@@ -621,7 +621,7 @@ impl StructValue {
             .fields
             .iter()
             .zip(values)
-            .fold(PMap::new(), |values, (field, value)| {
+            .fold(POrderedMap::new(), |values, (field, value)| {
                 values.assoc_value(named_field_key(field), value)
             });
         Ok(Self {
@@ -1232,6 +1232,7 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "disj",
             "list?",
             "vector?",
+            "tuple?",
             "sequential?",
             "map?",
             "map-entry?",
@@ -3915,10 +3916,7 @@ fn os_operation(
     forms: &[Form],
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
-    let operation = operation
-        .strip_prefix("std.foundation.os/")
-        .or_else(|| operation.strip_prefix("os/"))
-        .unwrap_or(operation);
+    let operation = operation.strip_prefix("os/").unwrap_or(operation);
     let operation = operation
         .strip_prefix("std.native.OS/")
         .unwrap_or(operation);
@@ -4098,6 +4096,11 @@ fn file_operation(
     forms: &[Form],
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
+    let operation = operation
+        .strip_prefix("std.native.File/")
+        .map(|method| format!("file/{method}"))
+        .unwrap_or_else(|| operation.to_owned());
+    let operation = operation.as_str();
     match operation {
         "file/parent" => {
             if forms.len() != 1 {
@@ -5867,6 +5870,58 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
     }
 }
 
+fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
+    let builtin = match value {
+        Value::Nil => "Nil",
+        Value::Number(_) => "Integer",
+        Value::Float(_) => "Float",
+        Value::BigInteger(_) => "BigInteger",
+        Value::Decimal(_) => "Decimal",
+        Value::Character(_) => "Character",
+        Value::Regex(_) => "RegExp",
+        Value::Tagged(_) => "TaggedLiteral",
+        Value::Bool(_) => "Boolean",
+        Value::String(_) => "String",
+        Value::Keyword(_) => "Keyword",
+        Value::Symbol(_) => "Symbol",
+        Value::Pointer(_) => "Pointer",
+        Value::Function(_) => "Function",
+        Value::Bytes(_) => "Bytes",
+        Value::ByteBuffer(_) => "ByteBuffer",
+        Value::Array(_) => "Array",
+        Value::Object(_) => "Object",
+        Value::Promise(_) => "Promise",
+        Value::Atom(_) => "Atom",
+        Value::Recur(_) => "Recur",
+        Value::List(_) => "List",
+        Value::Cons(_) => "Cons",
+        Value::Queue(_) => "Queue",
+        Value::Tuple(_) => "Vector",
+        Value::Vector(_) => "Vector",
+        Value::MutableCollection(_) => "MutableCollection",
+        Value::Map(_) => "HashMap",
+        Value::OrderedMap(_) => "OrderedMap",
+        Value::SortedMap(_) => "SortedMap",
+        Value::Trie(_) => "Trie",
+        Value::Set(_) => "HashSet",
+        Value::OrderedSet(_) => "OrderedSet",
+        Value::SortedSet(_) => "SortedSet",
+        Value::Iterator(_) => "Iterator",
+        Value::Var(_) => "Var",
+        Value::Namespace(_) => "Namespace",
+        Value::Extension(_) => "Extension",
+        Value::StructType(_) => "StructType",
+        Value::Struct(value) => return Keyword::parse(&value.ty.name),
+        Value::MutableType(_) => "MutableType",
+        Value::Mutable(value) => return Keyword::parse(&value.ty.name),
+        Value::Protocol(_) => "Protocol",
+        Value::NativeType(_) => "NativeType",
+        Value::Coroutine(_) => "Coroutine",
+        Value::ExceptionInfo(_) => "Error",
+    };
+    Keyword::create(Some("hara"), builtin)
+}
+
 pub fn receiver_category(value: &Value) -> &'static str {
     match value {
         Value::Nil => "nil",
@@ -7081,8 +7136,6 @@ fn pair_parts(value: &Value) -> Option<(Value, Value)> {
             values.get(0).unwrap().clone(),
             values.get(1).unwrap().clone(),
         )),
-        Value::Vector(values) if values.len() == 2 => Some((values[0].clone(), values[1].clone())),
-        Value::List(values) if values.len() == 2 => Some((values[0].clone(), values[1].clone())),
         _ => None,
     }
 }
@@ -9531,7 +9584,7 @@ fn collection_dissoc(value: &Value, keys: &[Value]) -> Result<Value, String> {
                     values = values.dissoc_value(&named_field_key(name));
                 }
             }
-            Ok(Value::Map(values))
+            Ok(Value::OrderedMap(Box::new(values)))
         }
         Value::MutableCollection(collection) => {
             let mut collection_value = collection.borrow_mut();
@@ -9886,7 +9939,7 @@ fn eval_collection_constructor(
 }
 
 fn vector_literal(values: Vec<Value>) -> Result<Value, String> {
-    if values.len() <= 5 {
+    if values.len() <= 8 {
         Ok(Value::Tuple(Box::new(PTuple::from_values(values)?)))
     } else {
         Ok(Value::Vector(values.into()))
@@ -9901,11 +9954,11 @@ pub(crate) fn vm_build_map(values: Vec<Value>) -> Result<Value, String> {
     if values.len() % 2 != 0 {
         return Err("map construction requires key/value pairs".into());
     }
-    Ok(Value::OrderedMap(Box::new(POrderedMap::from_iter(
+    Ok(Value::Map(PMap::from_iter(
         values
             .chunks_exact(2)
             .map(|pair| (pair[0].clone(), pair[1].clone())),
-    ))))
+    )))
 }
 
 pub(crate) fn vm_build_set(values: Vec<Value>) -> Result<Value, String> {
@@ -9960,12 +10013,12 @@ fn literal_value(form: &Form) -> Result<Value, String> {
         Form::List(values) => Ok(Value::List(
             values.iter().map(literal_value).collect::<Result<_, _>>()?,
         )),
-        Form::Map(values) => Ok(Value::OrderedMap(Box::new(
+        Form::Map(values) => Ok(Value::Map(
             values
                 .iter()
                 .map(|(k, v)| Ok((literal_value(k)?, literal_value(v)?)))
                 .collect::<Result<_, String>>()?,
-        ))),
+        )),
     }
 }
 
@@ -10644,7 +10697,7 @@ fn syntax_quote_value(form: &Form, env: &mut HashMap<String, Value>) -> Result<V
         }
         Form::List(values) => syntax_quote_collection(values, false, env),
         Form::Vector(values) => syntax_quote_collection(values, true, env),
-        Form::Map(values) => Ok(Value::OrderedMap(Box::new(
+        Form::Map(values) => Ok(Value::Map(
             values
                 .iter()
                 .map(|(key, value)| {
@@ -10656,7 +10709,7 @@ fn syntax_quote_value(form: &Form, env: &mut HashMap<String, Value>) -> Result<V
                 .collect::<Result<Vec<_>, String>>()?
                 .into_iter()
                 .collect(),
-        ))),
+        )),
         _ => literal_value(form),
     }
 }
@@ -11217,10 +11270,7 @@ fn eval_basic_object_form(
                 return Err("type expects one value".into());
             }
             let value = eval(&forms[1], env)?;
-            Ok(Value::Keyword(Keyword::create(
-                Some("hara.type"),
-                portable_type_name(&value),
-            )?))
+            Ok(Value::Keyword(portable_type_keyword(&value)?))
         }
         "compare" => {
             if forms.len() != 3 {
@@ -11335,12 +11385,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
         Form::List(fs) if matches!(fs.first(), Some(Form::Symbol(name)) if name == "comment") => {
             Ok(Value::Nil)
         }
-        Form::Map(values) => Ok(Value::OrderedMap(Box::new(
+        Form::Map(values) => Ok(Value::Map(
             values
                 .iter()
                 .map(|(key, value)| Ok((eval(key, env)?, eval(value, env)?)))
                 .collect::<Result<_, String>>()?,
-        ))),
+        )),
         Form::Set(values) => Ok(Value::OrderedSet(Box::new(
             unique_values(
                 values
@@ -11918,8 +11968,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                     .into(),
                             ),
                         },
+                        Value::Pointer(pointer) => pointer_context_call(
+                            &pointer,
+                            pointer_default(&pointer)?,
+                            "pointer/deref",
+                            &[],
+                        ),
                         value => Err(format!(
-                            "deref expects a var, atom, or promise, got {}",
+                            "deref expects a var, atom, promise, or pointer, got {}",
                             value.display()
                         )),
                     }
@@ -13163,8 +13219,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "os/process-wait",
                         "os/process-kill",
                     ]
-                    .contains(&n.as_str())
-                        || n.starts_with("std.foundation.os/") =>
+                    .contains(&n.as_str()) =>
                 {
                     os_operation(n, &fs[1..], env)
                 }
@@ -13184,6 +13239,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     ]
                     .contains(&n.as_str()) =>
                 {
+                    file_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.File/") => {
                     file_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n == "str" => {
@@ -13949,6 +14007,23 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         _ => Err(format!("{n} expects a string")),
                     }
                 }
+                Form::Symbol(n) if n == "std.native.Edn/write" => {
+                    if fs.len() != 2 {
+                        return Err("std.native.Edn/write expects one value".into());
+                    }
+                    Ok(Value::String(eval(&fs[1], env)?.display()))
+                }
+                Form::Symbol(n) if n == "std.native.Edn/pretty" => {
+                    if fs.len() != 3 {
+                        return Err("std.native.Edn/pretty expects a value and options map".into());
+                    }
+                    let value = eval(&fs[1], env)?;
+                    let options = eval(&fs[2], env)?;
+                    if map_entries(&options).is_none() {
+                        return Err("edn/pretty expects an options map".into());
+                    }
+                    Ok(Value::String(value.display()))
+                }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Error/")
                         && ["new", "message", "class"]
@@ -14375,6 +14450,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if [
                         "list?",
                         "vector?",
+                        "tuple?",
                         "sequential?",
                         "map?",
                         "map-entry?",
@@ -14401,6 +14477,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             matches!(value, Value::List(_) | Value::Cons(_) | Value::Queue(_))
                         }
                         "vector?" => matches!(value, Value::Vector(_) | Value::Tuple(_)),
+                        "tuple?" => matches!(value, Value::Tuple(_)),
                         "sequential?" => matches!(
                             value,
                             Value::List(_)

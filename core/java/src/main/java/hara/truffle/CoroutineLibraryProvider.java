@@ -1,7 +1,7 @@
 package hara.truffle;
 
 /** Optional Java implementation of std.foundation.coroutine. */
-public final class StdFoundationCoroutineLibraryProvider implements HaraLibraryProvider {
+public final class CoroutineLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
     return "std.foundation.coroutine";

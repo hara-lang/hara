@@ -48,17 +48,8 @@ const IMPLICIT_FOUNDATION_NAMESPACES: &[&str] = &[
     "std.foundation",
     "std.foundation.bytes",
     "std.foundation.coroutine",
-    "std.foundation.crypto",
-    "std.foundation.edn",
-    "std.foundation.file",
-    "std.foundation.host",
-    "std.foundation.json",
-    "std.foundation.kernel",
-    "std.foundation.os",
     "std.foundation.pretty",
     "std.foundation.promise",
-    "std.foundation.set",
-    "std.foundation.socket",
     "std.foundation.string",
 ];
 

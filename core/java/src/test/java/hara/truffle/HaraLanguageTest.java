@@ -31,6 +31,50 @@ public class HaraLanguageTest {
   }
 
   @Test
+  public void pointersAreCanonicalDescriptorsWithContextDispatch() {
+    try (Context context = context()) {
+      assertEquals(
+          "[true :test \"ROOT\" 1 [:id \"ROOT\"]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(pointer? (pointer {:context :test :id \"ROOT\"})) "
+                      + " (IPointer/ptr-context #ptr {:context :test :id \"ROOT\"}) "
+                      + " (get #ptr {:context :test :id \"ROOT\"} :id) "
+                      + " (count #ptr {:context :test :id \"ROOT\"}) "
+                      + " (find #ptr {:context :test :id \"ROOT\"} :id)]")
+              .toString());
+      assertEquals(
+          "[:pointer/deref true \"ROOT\"]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (require 'std.context.registry) "
+                      + " (let [result (deref #ptr {:context :null :id \"ROOT\"})] "
+                      + "  [(first result) (pointer? (second result)) (get (second result) :id)]))")
+              .toString());
+      assertEquals(
+          "[:pointer/invoke true \"ROOT\" 1 2]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [result (#ptr {:context :null :id \"ROOT\"} 1 2)] "
+                      + " [(first result) (pointer? (second result)) "
+                      + "  (get (second result) :id) (nth result 2) (nth result 3)])")
+              .toString());
+
+      for (String source :
+          new String[] {
+            "#ptr {:id \"ROOT\"}",
+            "#ptr {:context \"test\" :id \"ROOT\"}",
+            "#ptr {:context :test \"id\" \"ROOT\"}"
+          }) {
+        assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, source));
+      }
+    }
+  }
+
+  @Test
   public void supportsVariadicDissocAndBoxedPromiseDeref() {
     try (Context context = context()) {
       assertEquals(

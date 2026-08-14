@@ -193,10 +193,16 @@ public final class HaraNodes {
         for (Object item : list) append(output, item, values, gensyms);
         return hara.lang.data.List.Standard.from(metadata(list), output.toArray());
       }
-      if (value instanceof hara.lang.data.Vector<?> vector) {
+      if (value instanceof ILinearType<?> vector
+          && !(value instanceof hara.lang.data.List)
+          && "[".equals(vector.startString())) {
         ArrayList<Object> output = new ArrayList<>();
         for (Object item : vector) append(output, item, values, gensyms);
-        return hara.lang.data.Vector.Standard.from(metadata(vector), output.toArray());
+        Object sequence =
+            output.size() <= 8
+                ? BuiltinStruct.tuple(output.toArray())
+                : hara.lang.data.Vector.Standard.from(null, output.toArray());
+        return ((IObjType) sequence).withMeta(metadata(vector));
       }
       if (value instanceof ISetType<?> set) {
         ArrayList<Object> output = new ArrayList<>();
@@ -909,9 +915,7 @@ public final class HaraNodes {
     @Override
     public Object execute(VirtualFrame frame) {
       Object receiver = HaraBox.unwrap(value.execute(frame));
-      HaraVar protocolVar = HaraLanguage.currentContext(this).resolve(Symbol.create("IDeref"));
-      HaraProtocol protocol = (HaraProtocol) protocolVar.get();
-      return protocol.invoke("deref", receiver, new Object[0]);
+      return HaraLanguage.currentContext(this).invokeProtocol("IDeref", "deref", receiver);
     }
   }
 
@@ -1231,10 +1235,12 @@ public final class HaraNodes {
           return true;
         }
         if (value instanceof HaraStruct struct) {
-          return typeName.equals(struct.type().name());
+          String actual = struct.type().name();
+          return typeName.equals(actual) || actual.endsWith("/" + typeName);
         }
         if (value instanceof HaraMutable mutable) {
-          return typeName.equals(mutable.type().name());
+          String actual = mutable.type().name();
+          return typeName.equals(actual) || actual.endsWith("/" + typeName);
         }
         if ("Number".equals(typeName)) return value instanceof Number;
         if ("String".equals(typeName)) return value instanceof String;

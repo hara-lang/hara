@@ -1,10 +1,10 @@
 package hara.truffle;
 
-/** Portable HAL implementation of {@code std.foundation.edn}. */
-public final class StdFoundationEdnLibraryProvider implements HaraLibraryProvider {
+/** Eager native implementation of {@code std.native.Edn}. */
+public final class NativeEdnLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
-    return "std.foundation.edn";
+    return "std.native.Edn";
   }
 
   @Override

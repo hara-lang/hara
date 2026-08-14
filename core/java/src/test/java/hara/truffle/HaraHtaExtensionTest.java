@@ -40,8 +40,7 @@ public class HaraHtaExtensionTest {
                   HaraLanguage.ID,
                   "(ns app (:require [tool.runtime.wasm :as runtime])) "
                       + "(deref (runtime/eval "
-                      + "\"(ns user (:require [std.foundation.host :as host])) "
-                      + "(host/call \\\"crypto.hash.sha256\\\" \\\"digest\\\" (bytes 97 98 99))\"))");
+                      + "\"(std.native.Host/call \\\"crypto.hash.sha256\\\" \\\"digest\\\" [(bytes 97 98 99)])\"))");
           assertTrue(digest.hasArrayElements());
           assertEquals(32, digest.getArraySize());
           assertEquals((byte) 0xba, digest.getArrayElement(0).asByte());
@@ -60,8 +59,7 @@ public class HaraHtaExtensionTest {
                     .eval(
                         HaraLanguage.ID,
                         "(ns app (:require [tool.runtime.wasm :as runtime])) "
-                            + "(deref (runtime/eval \"(ns user (:require [std.foundation.host :as host])) "
-                            + "(+ 10 (count (deref (host/call \\\"crypto.hash.sha256\\\" \\\"digest\\\" (bytes 97 98 99)))))\"))")
+                            + "(deref (runtime/eval \"(+ 10 (count (deref (std.native.Host/call \\\"crypto.hash.sha256\\\" \\\"digest\\\" [(bytes 97 98 99)]))))\"))")
                     .asLong()));
   }
 
@@ -76,8 +74,7 @@ public class HaraHtaExtensionTest {
                     .eval(
                         HaraLanguage.ID,
                         "(ns app (:require [tool.runtime.wasm :as runtime])) "
-                            + "(deref (runtime/eval \"(ns user (:require [std.foundation.host :as host])) "
-                            + "(try (deref (host/call \\\"denied\\\" \\\"call\\\")) (catch error 42))\"))")
+                            + "(deref (runtime/eval \"(try (deref (std.native.Host/call \\\"denied\\\" \\\"call\\\" [])) (catch error 42))\"))")
                     .asLong()));
   }
 

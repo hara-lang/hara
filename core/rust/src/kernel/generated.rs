@@ -651,8 +651,8 @@ pub(crate) fn normalize_namespace(value: &str) -> &str {
         "hara.lib.string" => "std.foundation.string",
         "hara.lib.promise" => "std.foundation.promise",
         "hara.lib.bytes" => "std.foundation.bytes",
-        "hara.lib.socket" => "std.foundation.socket",
-        "hara.lib.file" => "std.foundation.file",
+        "hara.lib.socket" => "std.native.Socket",
+        "hara.lib.file" => "std.native.File",
         value => value,
     }
 }

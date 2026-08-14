@@ -614,7 +614,7 @@ impl Compiler {
             // is structural across concrete sequential/map/set types.  Do
             // not intern collection literals in the Value-keyed constant
             // pool: `[]` may otherwise alias an earlier `()`, and the HTA
-            // constant codec canonicalizes ordered maps and sets. Literal
+            // constant codec canonicalizes collection values. Literal
             // vectors use a non-interned constant; dynamic collections are
             // built in bytecode so concrete type and order remain intact.
             Form::Vector(values) => {
@@ -636,11 +636,9 @@ impl Compiler {
                 Ok(())
             }
             Form::Map(entries) => {
-                // HTA canonicalization sorts map keys and intentionally does
-                // not encode the concrete ordered-map representation. Map
-                // literals therefore cannot enter the HBC constant pool:
-                // BuildMap is what preserves source insertion order across
-                // Rust and Truffle runtimes.
+                // HTA canonicalization sorts hash-map keys. Map literals stay
+                // out of the HBC constant pool so runtime construction remains
+                // identical across Rust and Truffle runtimes.
                 if entries.len() > usize::from(u16::MAX) {
                     return Err(CompileError::new(
                         CompileErrorKind::Limit,

@@ -99,9 +99,9 @@ public class HtaValueCodecTest {
 
     java.util.Map<Object, Object> fields = new LinkedHashMap<>();
     fields.put(Keyword.create("id"), "ROOT");
-    Object pointer = new hara.lang.context.Pointer(Keyword.create("kernel"), fields);
+    Object pointer = new hara.lang.data.Pointer(Keyword.create("kernel"), fields);
     Object decodedPointer = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(pointer));
-    assertTrue(decodedPointer instanceof hara.lang.context.Pointer);
+    assertTrue(decodedPointer instanceof hara.lang.data.Pointer);
     assertEquals(pointer, decodedPointer);
   }
 

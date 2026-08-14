@@ -1,7 +1,7 @@
 package hara.truffle;
 
 /** Eager optimized implementation of the canonical Hara core namespace. */
-public final class StdFoundationLibraryProvider implements HaraLibraryProvider {
+public final class FoundationLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
     return "std.foundation";

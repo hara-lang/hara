@@ -1,7 +1,7 @@
 package hara.truffle;
 
 /** Lazy Java implementation of {@code std.foundation.string}. */
-public final class StdFoundationStringLibraryProvider implements HaraLibraryProvider {
+public final class StringLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() { return "std.foundation.string"; }
 

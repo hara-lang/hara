@@ -33,14 +33,14 @@ pub(crate) fn is_process(value: &Value) -> bool {
     matches!(
         value,
         Value::Extension(value)
-            if value.provider == "std.foundation.os" && value.type_name == "Process"
+            if value.provider == "std.native.Process" && value.type_name == "Process"
     )
 }
 
 fn handle(value: &Value, operation: &str) -> Result<u64, String> {
     match value {
         Value::Extension(value)
-            if value.provider == "std.foundation.os" && value.type_name == "Process" =>
+            if value.provider == "std.native.Process" && value.type_name == "Process" =>
         {
             Ok(value.handle)
         }
@@ -107,7 +107,7 @@ pub(crate) fn spawn(
         handle
     });
     Ok(Value::Extension(ExtensionValue {
-        provider: "std.foundation.os".into(),
+        provider: "std.native.Process".into(),
         type_name: "Process".into(),
         handle,
     }))

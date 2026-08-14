@@ -93,9 +93,13 @@ final class FoundationHalcLowerer {
       case "quote" -> lowerQuote(list);
       case "syntax-quote" -> lowerSyntaxQuote(list);
       case "if" -> lowerIf(list);
+      case "cond" -> lowerCond(list);
+      case "and" -> lowerShortCircuit(list, true);
+      case "or" -> lowerShortCircuit(list, false);
       case "let" -> lowerLet(list);
       case "loop" -> lowerLoop(list);
       case "recur" -> lowerRecur(list);
+      case "throw" -> lowerThrow(list);
       case "fn" -> lowerFn(list);
       case "def" -> lowerDef(list);
       case "defn" -> lowerDefn(list);
@@ -137,7 +141,12 @@ final class FoundationHalcLowerer {
     if (form instanceof ILinearType<?> linear) {
       HaraExpressionNode[] nodes = new HaraExpressionNode[(int) linear.count()];
       for (int index = 0; index < nodes.length; index++) nodes[index] = lower(linear.nth(index));
-      return new HaraNodes.CollectionLiteral(HaraNodes.CollectionLiteral.Kind.VECTOR, nodes);
+      HaraNodes.CollectionLiteral.Kind kind =
+          form instanceof hara.lang.data.Tuple.Tup0
+                  || form instanceof hara.lang.data.Tuple.Tup1<?>
+              ? HaraNodes.CollectionLiteral.Kind.TUPLE
+              : HaraNodes.CollectionLiteral.Kind.VECTOR;
+      return new HaraNodes.CollectionLiteral(kind, nodes);
     }
     return null;
   }
@@ -187,12 +196,19 @@ final class FoundationHalcLowerer {
       }
       return hara.lang.data.List.Standard.from(list.meta(), output.toArray());
     }
-    if (value instanceof hara.lang.data.Vector<?> vector) {
+    if (value instanceof ILinearType<?> vector
+        && !(value instanceof hara.lang.data.List)
+        && "[".equals(vector.startString())) {
       ArrayList<Object> output = new ArrayList<>();
       for (Object item : vector) {
         output.add(syntaxQuoteTemplate(item, unquotes, autoGensyms));
       }
-      return hara.lang.data.Vector.Standard.from(vector.meta(), output.toArray());
+      Object sequence =
+          output.size() <= 8
+              ? hara.kernel.builtin.BuiltinStruct.tuple(output.toArray())
+              : hara.lang.data.Vector.Standard.from(null, output.toArray());
+      return ((hara.lang.protocol.IObjType) sequence)
+          .withMeta(((hara.lang.protocol.IObjType) vector).meta());
     }
     if (value instanceof ISetType<?> set) {
       ArrayList<Object> output = new ArrayList<>();
@@ -229,6 +245,32 @@ final class FoundationHalcLowerer {
         lower(form.nth(1)),
         lower(form.nth(2)),
         form.count() == 4 ? lower(form.nth(3)) : new HaraNodes.Literal(null));
+  }
+
+  private HaraExpressionNode lowerCond(List<?> form) {
+    if (form.count() == 1) return new HaraNodes.Literal(null);
+    if ((form.count() & 1) == 0) fail("cond expects test/expression pairs");
+    HaraExpressionNode result = new HaraNodes.Literal(null);
+    for (int index = (int) form.count() - 2; index >= 1; index -= 2) {
+      result = new HaraNodes.If(lower(form.nth(index)), lower(form.nth(index + 1)), result);
+    }
+    return result;
+  }
+
+  private HaraExpressionNode lowerShortCircuit(List<?> form, boolean conjunction) {
+    if (form.count() == 1) {
+      return new HaraNodes.Literal(conjunction ? Boolean.TRUE : null);
+    }
+    HaraExpressionNode[] expressions = new HaraExpressionNode[(int) form.count() - 1];
+    for (int index = 1; index < form.count(); index++) {
+      expressions[index - 1] = lower(form.nth(index));
+    }
+    return new HaraNodes.ShortCircuit(conjunction, expressions);
+  }
+
+  private HaraExpressionNode lowerThrow(List<?> form) {
+    requireCount(form, 2, "throw");
+    return new HaraNodes.Throw(lower(form.nth(1)));
   }
 
   private HaraExpressionNode lowerLet(List<?> form) {

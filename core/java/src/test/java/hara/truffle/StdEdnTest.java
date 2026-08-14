@@ -15,39 +15,34 @@ public class StdEdnTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.foundation.edn)"
-                      + " (std.foundation.edn/read \"{:a [1 2] :b #{:x}}\"))")
+                  "(std.native.Edn/read \"{:a [1 2] :b #{:x}}\")")
               .toString());
       assertEquals(
           "{:a [1 2]}",
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.foundation.edn)"
-                      + " (std.foundation.edn/write {:a [1 2]}))")
+                  "(std.native.Edn/write {:a [1 2]})")
               .asString());
       assertEquals(
           "[:a 1]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.foundation.edn)"
-                      + " (std.foundation.edn/pretty [:a 1] {}))")
+                  "(std.native.Edn/pretty [:a 1] {})")
               .asString());
       assertThrows(
           RuntimeException.class,
           () ->
               context.eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.foundation.edn)"
-                      + " (std.foundation.edn/pretty [:a 1] nil))"));
+                  "(std.native.Edn/pretty [:a 1] nil)"));
       assertEquals(
           "(+ 1 2)",
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.foundation.edn)"
-                      + " (std.foundation.edn/read \"(+ 1 2)\"))")
+                  "(std.native.Edn/read \"(+ 1 2)\")")
               .toString());
       assertEquals(
           "[\"bad input\" {:kind :invalid}]",
@@ -80,17 +75,16 @@ public class StdEdnTest {
             () ->
                 context.eval(
                     HaraLanguage.ID,
-                    "(do (require 'std.foundation.edn)"
-                        + " (std.foundation.edn/read \""
+                    "(std.native.Edn/read \""
                         + source
-                        + "\"))"));
+                        + "\")"));
       }
       assertThrows(
           RuntimeException.class,
           () ->
               context.eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.foundation.edn) (std.foundation.edn/read \"1N\"))"));
+                  "(std.native.Edn/read \"1N\")"));
     }
   }
 }

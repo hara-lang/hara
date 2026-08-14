@@ -3,7 +3,6 @@ package hara.truffle;
 import hara.lang.data.Keyword;
 import hara.lang.data.List;
 import hara.lang.data.Symbol;
-import hara.lang.data.Vector;
 import hara.lang.data.types.IMapType;
 import hara.lang.data.types.ILinearType;
 import java.util.ArrayList;
@@ -151,7 +150,7 @@ final class HaraNamespaceDeclaration {
   }
 
   private static void parseFoundationNames(Object value, String option, Set<String> output) {
-    if (!(value instanceof Vector<?> symbols)) {
+    if (!(value instanceof ILinearType<?> symbols) || !"[".equals(symbols.startString())) {
       throw new HaraException(
           ":config :" + option + " expects a vector of unqualified symbols");
     }
@@ -168,7 +167,7 @@ final class HaraNamespaceDeclaration {
   }
 
   private static void parseBuiltins(Object value, java.util.List<Symbol> output) {
-    if (!(value instanceof Vector<?> vector)) {
+    if (!(value instanceof ILinearType<?> vector) || !"[".equals(vector.startString())) {
       throw new HaraException(":config :builtins expects a vector of symbols");
     }
     LinkedHashSet<String> seen = new LinkedHashSet<>();
@@ -203,7 +202,8 @@ final class HaraNamespaceDeclaration {
     }
     Object excludeValue = ((IMapType) options).lookup(Keyword.create("exclude"));
     if (excludeValue != null) {
-      if (!(excludeValue instanceof Vector<?> vector)) {
+      if (!(excludeValue instanceof ILinearType<?> vector)
+          || !"[".equals(vector.startString())) {
         throw new HaraException(":config :intrinsics :exclude expects a vector");
       }
       for (Object item : vector) {

@@ -94,7 +94,8 @@ public final class HalcSchema {
       }
       return new Reference(target.display());
     }
-    if (!(schema instanceof hara.lang.data.Vector<?> vector) || vector.count() == 0) {
+    ILinearType<?> vector = vector(schema);
+    if (vector == null || vector.count() == 0) {
       return new Unknown(schema);
     }
     if (!(vector.nth(0) instanceof Keyword head)) return new Unknown(schema);
@@ -118,7 +119,8 @@ public final class HalcSchema {
         }
         List<Function> arities = new ArrayList<>();
         for (Object argument : arguments) {
-          if (!(argument instanceof hara.lang.data.Vector<?> function)) {
+          ILinearType<?> function = vector(argument);
+          if (function == null) {
             throw invalid(":function members must be :fn schemas");
           }
           arities.add(normalizeFunction(function));
@@ -145,7 +147,7 @@ public final class HalcSchema {
       if (!(definition.nth(1) instanceof Symbol name)) continue;
       int parametersAt = -1;
       for (int index = 2; index < definition.count(); index++) {
-        if (definition.nth(index) instanceof hara.lang.data.Vector<?>) {
+        if (vector(definition.nth(index)) != null) {
           parametersAt = index;
           break;
         }
@@ -156,7 +158,7 @@ public final class HalcSchema {
         for (int index = 2; index < definition.count(); index++) {
           if (!(definition.nth(index) instanceof hara.lang.data.List<?> clause)
               || clause.count() < 2
-              || !(clause.nth(0) instanceof hara.lang.data.Vector<?>)) continue;
+              || vector(clause.nth(0)) == null) continue;
           Object[] single = new Object[Math.toIntExact(clause.count()) + 2];
           single[0] = definition.nth(0);
           single[1] = definition.nth(1);
@@ -171,8 +173,7 @@ public final class HalcSchema {
         if (!arities.isEmpty()) inferred.put(qualified, new FunctionType(arities));
         continue;
       }
-      hara.lang.data.Vector<?> parameters =
-          (hara.lang.data.Vector<?>) definition.nth(parametersAt);
+      ILinearType<?> parameters = vector(definition.nth(parametersAt));
       Function declared = matchingArity(
           resolve(declarations.get(qualified), definitions), parameters);
       Map<String, Type> environment = new HashMap<>();
@@ -249,7 +250,8 @@ public final class HalcSchema {
     if (form instanceof Keyword) return new Primitive("keyword");
     if (form instanceof Symbol symbol)
       return environment.getOrDefault(symbol.getName(), unknown());
-    if (form instanceof hara.lang.data.Vector<?> vector) {
+    ILinearType<?> vector = vector(form);
+    if (vector != null) {
       List<Type> members = new ArrayList<>();
       for (int index = 0; index < vector.count(); index++)
         pushJoined(members, inferExpression(vector.nth(index), environment));
@@ -287,7 +289,8 @@ public final class HalcSchema {
       }
       case "let": {
         Map<String, Type> nested = new HashMap<>(environment);
-        if (list.count() > 1 && list.nth(1) instanceof hara.lang.data.Vector<?> bindings) {
+        ILinearType<?> bindings = list.count() > 1 ? vector(list.nth(1)) : null;
+        if (bindings != null) {
           for (int index = 0; index + 1 < bindings.count(); index += 2) {
             if (bindings.nth(index) instanceof Symbol name)
               nested.put(name.getName(), inferExpression(bindings.nth(index + 1), nested));
@@ -358,7 +361,8 @@ public final class HalcSchema {
   private static Type normalizeMap(List<Object> arguments) {
     List<Field> fields = new ArrayList<>();
     for (Object argument : arguments) {
-      if (!(argument instanceof hara.lang.data.Vector<?> pair) || pair.count() != 2) {
+      ILinearType<?> pair = vector(argument);
+      if (pair == null || pair.count() != 2) {
         throw invalid(":map schema fields must be [name type] pairs");
       }
       fields.add(new Field(pair.nth(0), normalize(pair.nth(1))));
@@ -372,7 +376,8 @@ public final class HalcSchema {
         || !"fn".equals(head.getName())) {
       throw invalid(":fn schema must be [:fn [inputs ...] output]");
     }
-    if (!(function.nth(1) instanceof hara.lang.data.Vector<?> inputs)) {
+    ILinearType<?> inputs = vector(function.nth(1));
+    if (inputs == null) {
       throw invalid(":fn schema inputs must be a vector");
     }
     List<Type> fixed = new ArrayList<>();
@@ -404,6 +409,12 @@ public final class HalcSchema {
     List<Object> output = new ArrayList<>(Math.toIntExact(input.count()) - start);
     for (int index = start; index < input.count(); index++) output.add(input.nth(index));
     return output;
+  }
+
+  private static ILinearType<?> vector(Object value) {
+    return value instanceof ILinearType<?> linear && "[".equals(linear.startString())
+        ? linear
+        : null;
   }
 
   private static void requireCount(String head, List<Object> arguments, int expected) {

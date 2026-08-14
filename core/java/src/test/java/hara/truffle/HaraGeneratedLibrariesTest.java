@@ -31,7 +31,7 @@ public class HaraGeneratedLibrariesTest {
       assertTrue(context.eval(HaraLanguage.ID, "(not (uuid? :a))").asBoolean());
       assertTrue(context.eval(HaraLanguage.ID, "(not (regexp? :a))").asBoolean());
       assertTrue(context.eval(HaraLanguage.ID, "(fn? (fn [value] value))").asBoolean());
-      assertTrue(context.eval(HaraLanguage.ID, "(not (fn? :a))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(fn? :a)").asBoolean());
     }
   }
 
@@ -47,7 +47,7 @@ public class HaraGeneratedLibrariesTest {
                       + "(map-entry? (first {:a 1}))]")
               .toString());
       assertEquals(
-          ":hara.type/tuple",
+          ":hara/Vector",
           context.eval(HaraLanguage.ID, "(type (first {:a 1}))").toString());
       assertEquals(
           "[false true]",
@@ -61,6 +61,45 @@ public class HaraGeneratedLibrariesTest {
                       + "[before (satisfies? Ready (Box 1))]")
               .toString());
       assertErrorContains(context, "(collection? [])", "Unbound symbol");
+    }
+  }
+
+  @Test
+  public void portableTypeReturnsCanonicalAndNamedKeywords() {
+    try (Context context = context()) {
+      assertEquals(
+          "[:hara/Nil :hara/Integer :hara/Float :hara/String :hara/Keyword "
+              + ":hara/Symbol :hara/Vector :hara/Vector :hara/HashMap "
+              + ":hara/OrderedSet :hara/Pointer :hara/Function :hara/Atom :hara/Vector "
+              + ":hara/Vector :hara/Vector :hara/RegExp]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(type nil) (type 1) (type 1.5) (type \"x\") (type :x) "
+                      + "(type 'x) (type []) (type (vector)) (type {}) "
+                      + "(type #{}) (type #ptr {:context :kernel}) (type (fn [x] x)) "
+                      + "(type (atom 0)) (std.foundation/type []) "
+                      + "(type [1 2 3 4 5 6 7 8]) (type [1 2 3 4 5 6 7 8 9]) "
+                      + "(type #\"x\")]")
+              .toString());
+      assertEquals(
+          "[:geometry/Point :geometry/Cursor :hara/StructType :hara/MutableType]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns geometry) (defstruct Point [x y]) (defmutable Cursor [x y]) "
+                      + "[(type (Point 1 2)) (type (Cursor 1 2)) (type Point) (type Cursor)]")
+              .toString());
+      assertEquals(
+          "[true true true true false true false false]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(vector? []) (tuple? []) (pair? [1 2]) "
+                      + "(tuple? [1 2 3 4 5 6 7 8]) (tuple? [1 2 3 4 5 6 7 8 9]) "
+                      + "(vector? [1 2 3 4 5 6 7 8 9]) (pair? (vector 1 2)) "
+                      + "(pair? (list 1 2))]")
+              .toString());
     }
   }
 

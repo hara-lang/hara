@@ -92,31 +92,26 @@ public class ParserTest {
   @Test
   public void testReadStringVector() {
     Object result = Parser.LispReader.readString("[1 2 3]", null);
-    // Vectors <= 5 elements might be Tuples if not handled carefully, but
-    // Parser.VectorReader
-    // checks size > 5
-    // Parser.java: if (list.size() > 5) return vector(list); else return
-    // tuple(list.toArray());
-    // So [1 2 3] is a Tuple.
-    assertTrue(result instanceof hara.lang.data.types.ILinearType);
+    assertTrue(result instanceof hara.lang.data.Tuple.Tup1);
     hara.lang.data.types.ILinearType v = (hara.lang.data.types.ILinearType) result;
     assertEquals(3, v.count());
   }
 
   @Test
   public void testReadStringVectorLarge() {
-    Object result = Parser.LispReader.readString("[1 2 3 4 5 6]", null);
-    // > 5 elements -> Vector
+    Object compact = Parser.LispReader.readString("[1 2 3 4 5 6 7 8]", null);
+    assertTrue(compact instanceof hara.lang.data.Tuple.Tup8);
+    Object result = Parser.LispReader.readString("[1 2 3 4 5 6 7 8 9]", null);
     assertTrue(result instanceof Vector);
     Vector v = (Vector) result;
-    assertEquals(6, v.count());
+    assertEquals(9, v.count());
   }
 
   @Test
   public void testReadStringMap() {
     Object result = Parser.LispReader.readString("{:a 1 :b 2}", null);
-    assertTrue(result instanceof OrderedMap);
-    OrderedMap map = (OrderedMap) result;
+    assertTrue(result instanceof hara.lang.data.Map);
+    hara.lang.data.Map map = (hara.lang.data.Map) result;
     assertEquals(2, map.count());
     assertEquals(1L, map.lookup(Keyword.create("a")));
     assertEquals(2L, map.lookup(Keyword.create("b")));

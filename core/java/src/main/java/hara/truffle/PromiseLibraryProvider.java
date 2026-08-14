@@ -1,7 +1,7 @@
 package hara.truffle;
 
 /** Lazy Java implementation of {@code std.foundation.promise}. */
-public final class StdFoundationPromiseLibraryProvider implements HaraLibraryProvider {
+public final class PromiseLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() { return "std.foundation.promise"; }
 

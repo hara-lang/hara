@@ -595,6 +595,13 @@ public interface Parser {
         Object tag = matchSymbol(token);
         if (!(tag instanceof Symbol)) throw new Ex.Runtime("Invalid reader tag: " + token);
         Object form = read(r, true, null, true, opts);
+        if ("ptr".equals(((Symbol) tag).display())) {
+          try {
+            return Pointer.fromDescriptor(form);
+          } catch (IllegalArgumentException error) {
+            throw new Ex.Runtime(error.getMessage());
+          }
+        }
         return new TaggedLiteral((Symbol) tag, form);
       }
     }
@@ -682,9 +689,11 @@ public interface Parser {
         ArrayList<Object> rewritten = rewriteAnonymousValues(values, id);
         return List.Standard.from(formMeta(form), rewritten.toArray());
       }
-      if (form instanceof Vector<?> values) {
+      if (form instanceof ILinearType<?> values && "[".equals(values.startString())) {
         ArrayList<Object> rewritten = rewriteAnonymousValues(values, id);
-        return Vector.Standard.from(formMeta(form), rewritten.toArray());
+        return rewritten.size() <= 8
+            ? ((IObjType) tuple(rewritten.toArray())).withMeta(formMeta(form))
+            : Vector.Standard.from(formMeta(form), rewritten.toArray());
       }
       if (form instanceof IMapType<?, ?> map) {
         ArrayList<Object> entries = new ArrayList<>();
@@ -693,7 +702,9 @@ public interface Parser {
           entries.add(rewriteAnonymousArguments(entry.getKey(), id));
           entries.add(rewriteAnonymousArguments(entry.getValue(), id));
         }
-        return BuiltinStruct.orderedMap(entries);
+        return form instanceof OrderedMap
+            ? BuiltinStruct.orderedMap(entries)
+            : BuiltinStruct.hashMap(entries);
       }
       if (form instanceof ISetType<?> values) {
         return BuiltinStruct.orderedSet(rewriteAnonymousValues(values, id));
@@ -781,13 +792,13 @@ public interface Parser {
       @Override
       public ILinearType apply(Reader r, Map opts) {
         ArrayList list = readDelimitedList(']', r, true, opts);
-        return vector(list);
+        return list.size() <= 8 ? tuple(list.toArray()) : vector(list);
       }
     }
 
-    public static class MapReader implements BiFunction<Reader, Map, OrderedMap> {
+    public static class MapReader implements BiFunction<Reader, Map, hara.lang.data.Map> {
       @Override
-      public OrderedMap apply(Reader r, Map opts) {
+      public hara.lang.data.Map apply(Reader r, Map opts) {
         ArrayList list = readDelimitedList('}', r, true, opts);
 
         if ((list.size() & 1) == 1) {
@@ -803,7 +814,7 @@ public interface Parser {
           keys.add(key);
         }
 
-        return BuiltinStruct.orderedMap(list);
+        return BuiltinStruct.hashMap(list);
       }
     }
 

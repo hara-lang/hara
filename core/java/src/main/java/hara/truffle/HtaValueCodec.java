@@ -144,7 +144,7 @@ public final class HtaValueCodec {
       writeCollection(output, java.util.Arrays.asList(struct.type().fields()), depth + 1);
       output.write(VECTOR);
       writeCollection(output, java.util.Arrays.asList(struct.orderedValues()), depth + 1);
-    } else if (value instanceof hara.lang.context.Pointer pointer) {
+    } else if (value instanceof hara.lang.data.Pointer pointer) {
       output.write(POINTER);
       write(output, pointer.context(), depth + 1);
       writeMap(output, pointer.values().entrySet().iterator(), depth + 1);
@@ -519,7 +519,7 @@ public final class HtaValueCodec {
       } else {
         throw malformed("invalid pointer fields");
       }
-      return new hara.lang.context.Pointer(context, descriptor);
+      return new hara.lang.data.Pointer(context, descriptor);
     }
 
     private Object exceptionInfo(int depth) {

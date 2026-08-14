@@ -379,7 +379,8 @@ final class HaraAnalyzer {
     if (form instanceof ILinearType<?>) {
       ILinearType<?> linear = (ILinearType<?>) form;
       HaraNodes.CollectionLiteral.Kind kind =
-          form instanceof hara.lang.data.Tuple
+          form instanceof hara.lang.data.Tuple.Tup0
+                  || form instanceof hara.lang.data.Tuple.Tup1<?>
               ? HaraNodes.CollectionLiteral.Kind.TUPLE
               : form instanceof hara.lang.data.Queue
                   ? HaraNodes.CollectionLiteral.Kind.QUEUE
@@ -438,12 +439,19 @@ final class HaraAnalyzer {
       }
       return hara.lang.data.List.Standard.from(list.meta(), output.toArray());
     }
-    if (value instanceof hara.lang.data.Vector<?> vector) {
+    if (value instanceof ILinearType<?> vector
+        && !(value instanceof hara.lang.data.List)
+        && "[".equals(vector.startString())) {
       ArrayList<Object> output = new ArrayList<>();
       for (Object item : vector) {
         output.add(syntaxQuoteTemplate(item, unquotes, autoGensyms));
       }
-      return hara.lang.data.Vector.Standard.from(vector.meta(), output.toArray());
+      Object sequence =
+          output.size() <= 8
+              ? hara.kernel.builtin.BuiltinStruct.tuple(output.toArray())
+              : hara.lang.data.Vector.Standard.from(null, output.toArray());
+      return ((hara.lang.protocol.IObjType) sequence)
+          .withMeta(((hara.lang.protocol.IObjType) vector).meta());
     }
     if (value instanceof ISetType<?> set) {
       ArrayList<Object> output = new ArrayList<>();
@@ -1434,8 +1442,10 @@ final class HaraAnalyzer {
 
     HaraType type =
         mutable
-            ? new HaraMutableType(symbol.getName(), fieldNames)
-            : new HaraType(symbol.getName(), fieldNames);
+            ? new HaraMutableType(
+                context.currentNamespaceName() + "/" + symbol.getName(), fieldNames)
+            : new HaraType(
+                context.currentNamespaceName() + "/" + symbol.getName(), fieldNames);
     HaraExpressionNode typeDefinition =
         new HaraNodes.DefineGlobal(symbol, new HaraNodes.Literal(type));
 

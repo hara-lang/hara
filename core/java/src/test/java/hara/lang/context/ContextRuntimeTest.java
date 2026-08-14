@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import hara.lang.data.Pointer;
 import hara.lang.protocol.IComponent;
 import hara.lang.protocol.IContext;
 import hara.lang.protocol.IMetadata;
@@ -69,11 +70,18 @@ public class ContextRuntimeTest {
   @Test
   public void pointersAreStructuralDescriptorsAndUseExplicitRuntimes() {
     CountingRuntime runtime = new CountingRuntime();
-    Pointer pointer = new Pointer("test", Map.of("value", 42));
-    assertEquals(new Pointer("test", Map.of("value", 42)), pointer);
-    assertEquals(42, pointer.lookup("value"));
+    Pointer pointer =
+        new Pointer(
+            hara.lang.data.Keyword.create("test"),
+            Map.of(hara.lang.data.Keyword.create("value"), 42));
+    assertEquals(
+        new Pointer(
+            hara.lang.data.Keyword.create("test"),
+            Map.of(hara.lang.data.Keyword.create("value"), 42)),
+        pointer);
+    assertEquals(42, pointer.lookup(hara.lang.data.Keyword.create("value")));
     assertEquals(1, pointer.count());
-    assertEquals(3, pointer.applyIn(runtime, new Object[] {1, 2, 3}));
+    assertEquals(5, pointer.applyIn(runtime, new Object[] {1, 2, 3}));
   }
 
   private static final class CountingRuntime implements IContext, IComponent {
