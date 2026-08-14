@@ -1,10 +1,15 @@
 use crate::core::{Promise, PromiseState, Value};
+use crate::kernel::{NamespaceRegistry, VarOrigin};
+use crate::lang::data::{OrderedMap, Vector};
+use crate::lang::protocol::INamespaced;
 
 use super::{
     evidence, fresh_registry, trace_id, BytecodeObservationSession, BytecodeSessionError,
     BytecodeSessionStatus, Machine, SessionMetrics, VmError,
 };
 use crate::vm::machine::observation::MachineSnapshot;
+
+const GLOBAL_SNAPSHOT_LIMIT: usize = 64;
 
 impl BytecodeObservationSession {
     pub fn snapshot(&self) -> Result<MachineSnapshot, BytecodeSessionError> {
@@ -16,8 +21,15 @@ impl BytecodeObservationSession {
     }
 
     pub fn snapshot_value(&self) -> Result<Value, BytecodeSessionError> {
-        self.snapshot()
-            .map(|snapshot| evidence::snapshot_value(&snapshot, &self.source_id))
+        let snapshot = self.snapshot()?;
+        let value = evidence::snapshot_value(&snapshot, &self.source_id);
+        Ok(with_global_state(
+            value,
+            global_state_value(
+                &self.registry,
+                self.observation_limits.display_chars,
+            ),
+        ))
     }
 
     pub fn step(&mut self) -> Result<Value, BytecodeSessionError> {
@@ -207,4 +219,119 @@ fn cancel_pending(promise: Option<Promise>) {
 
 fn write_json(value: &Value) -> Result<String, BytecodeSessionError> {
     crate::json::write(value).map_err(BytecodeSessionError::new)
+}
+
+fn with_global_state(snapshot: Value, globals: Value) -> Value {
+    match snapshot {
+        Value::OrderedMap(fields) => Value::OrderedMap(Box::new(
+            (*fields).assoc_value_owned(Value::String("globals".into()), globals),
+        )),
+        value => value,
+    }
+}
+
+fn global_state_value(
+    registry: &NamespaceRegistry<Value>,
+    display_chars: usize,
+) -> Value {
+    let current = registry.current();
+    let namespace = current.name().as_str().to_owned();
+    let mut bindings = current
+        .mappings()
+        .into_iter()
+        .filter_map(|(_, var)| {
+            (var.symbol().get_namespace() == Some(namespace.as_str())).then(|| {
+                let metadata = var.metadata();
+                let symbol = var.symbol().as_str().to_owned();
+                let value = object([
+                    ("symbol", string(&symbol)),
+                    ("dynamic", Value::Bool(var.is_dynamic())),
+                    ("macro", Value::Bool(var.is_macro())),
+                    ("origin", string(origin_keyword(metadata.origin))),
+                    (
+                        "value",
+                        global_value_snapshot(&var.deref_value(), display_chars),
+                    ),
+                ]);
+                (symbol, value)
+            })
+        })
+        .collect::<Vec<_>>();
+    bindings.sort_by(|left, right| left.0.cmp(&right.0));
+    let omitted = bindings.len().saturating_sub(GLOBAL_SNAPSHOT_LIMIT);
+    let retained = bindings
+        .into_iter()
+        .take(GLOBAL_SNAPSHOT_LIMIT)
+        .map(|(_, value)| value);
+
+    object([
+        ("namespace", string(namespace)),
+        ("scope", string("current-namespace-owned")),
+        ("bindings", vector(retained)),
+        ("omitted", integer(omitted)),
+        ("limit", integer(GLOBAL_SNAPSHOT_LIMIT)),
+    ])
+}
+
+fn global_value_snapshot(value: &Value, display_chars: usize) -> Value {
+    let kind = match value {
+        Value::Number(_) | Value::BigInteger(_) => "integer",
+        Value::Float(_) => "float",
+        Value::Decimal(_) => "decimal",
+        Value::Character(_) => "character",
+        Value::Bool(_) => "boolean",
+        Value::String(_) => "string",
+        Value::Keyword(_) => "keyword",
+        Value::Symbol(_) => "symbol",
+        Value::Promise(_) => "promise",
+        Value::Function(_) => "function",
+        Value::Var(_) => "var",
+        Value::Nil => "nil",
+        _ => "value",
+    };
+    let (display, truncated) = bounded_display(value.display(), display_chars);
+    object([
+        ("kind", string(kind)),
+        ("display", string(display)),
+        ("truncated", Value::Bool(truncated)),
+    ])
+}
+
+fn bounded_display(display: String, limit: usize) -> (String, bool) {
+    let mut chars = display.chars();
+    let mut bounded = chars.by_ref().take(limit).collect::<String>();
+    let truncated = chars.next().is_some();
+    if truncated {
+        bounded.push('…');
+    }
+    (bounded, truncated)
+}
+
+fn origin_keyword(origin: VarOrigin) -> &'static str {
+    match origin {
+        VarOrigin::Source => "source",
+        VarOrigin::HalFallback => "hal-fallback",
+        VarOrigin::RustLibrary => "rust-library",
+        VarOrigin::RuntimePrimitive => "runtime-primitive",
+    }
+}
+
+fn object<const N: usize>(fields: [(&str, Value); N]) -> Value {
+    Value::OrderedMap(Box::new(OrderedMap::from_iter(
+        fields
+            .into_iter()
+            .map(|(key, value)| (Value::String(key.into()), value)),
+    )))
+}
+
+fn vector(values: impl IntoIterator<Item = Value>) -> Value {
+    Value::Vector(Vector::from_iter(values))
+}
+
+fn string(value: impl Into<String>) -> Value {
+    Value::String(value.into())
+}
+
+fn integer(value: usize) -> Value {
+    Value::Number(i64::try_from(value).unwrap_or(i64::MAX))
 }
