@@ -23,7 +23,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .agent/code-manage-payload.part-* | base64 --decode > /tmp/code-manage-payload.tar.gz
+          python - <<'PY'
+          import base64
+          import glob
+          import hashlib
+          from pathlib import Path
+
+          alphabet = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+          payload = "".join(Path(path).read_text() for path in sorted(glob.glob(".agent/code-manage-payload.part-*")))
+          filtered = "".join(character for character in payload if character in alphabet)
+          archive = base64.b64decode(filtered)
+          digest = hashlib.sha256(archive).hexdigest()
+          print(f"payload characters={len(payload)} filtered={len(filtered)} sha256={digest}")
+          expected = "ea3ba768a902e805f2d0ecdc90bade209bf6285a6789e67b18239beedf603c7b"
+          if digest != expected:
+              raise SystemExit(f"payload checksum mismatch: expected {expected}, got {digest}")
+          Path("/tmp/code-manage-payload.tar.gz").write_bytes(archive)
+          PY
           tar -xzf /tmp/code-manage-payload.tar.gz -C .
           rm -rf .agent
       - name: Commit generated tree
