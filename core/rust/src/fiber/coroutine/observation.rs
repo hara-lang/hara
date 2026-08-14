@@ -12,7 +12,7 @@ use super::super::*;
 impl EvalFiber {
     /// Creates a live evaluator paused before the first production CPS step.
     pub fn start_observed(source: &str, env: HashMap<String, Value>) -> Result<Self, String> {
-        let forms = parse_forms(source)?;
+        let forms = parse_forms(source).map_err(|error| error.to_string())?;
         Self::start_forms_observed(forms, env)
     }
 
