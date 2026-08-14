@@ -39,14 +39,16 @@ fn rejects_escaping_source_paths() {
 }
 
 #[test]
-fn creates_and_validates_an_empty_lock() {
+fn creates_and_validates_an_empty_runtime_lock_section() {
     let root = temp("lock");
     let project = new_app(&root, "lock-app").unwrap();
     let lock = sync_lock(&project, LockMode::Default).unwrap();
-    assert_eq!(
-        fs::read_to_string(&lock).unwrap(),
-        "{:lock/format \"0.0.0-alpha\" :packages {}}\n"
-    );
+    let source = fs::read_to_string(&lock).unwrap();
+    assert!(source.contains(":runtime-sections"));
+    assert!(source.contains(":rust {:runtime :rust"));
+    assert!(source.contains(&runtime_declaration_digest(&project)));
+    assert!(source.contains(":packages {}"));
+    assert!(source.contains(":maven {}"));
     sync_lock(&project, LockMode::Frozen).unwrap();
     fs::remove_dir_all(root).unwrap();
 }
@@ -240,5 +242,102 @@ fn runtime_namespace_alternatives_are_isolated_but_effective_duplicates_fail() {
     assert!(register_sources(&project, &mut runtime)
         .unwrap_err()
         .contains("duplicate namespace demo.adapter"));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn locked_modes_reject_absent_incomplete_and_stale_runtime_sections() {
+    let root = temp("runtime-lock-validation");
+    let project = new_app(&root, "runtime-lock-app").unwrap();
+    let lock = root.join("project.lock.edn");
+
+    fs::write(
+        &lock,
+        "{:lock/format \"0.0.0-alpha\" :runtime-sections {} :packages {}}\n",
+    )
+    .unwrap();
+    assert!(sync_lock(&project, LockMode::Locked)
+        .unwrap_err()
+        .contains("active :rust lock section is absent"));
+
+    fs::write(
+        &lock,
+        format!(
+            "{{:lock/format \"0.0.0-alpha\" :runtime-sections {{:rust {{:runtime :rust :declaration-digest \"{}\" :packages {{}}}}}} :packages {{}}}}\n",
+            runtime_declaration_digest(&project)
+        ),
+    )
+    .unwrap();
+    assert!(sync_lock(&project, LockMode::Frozen)
+        .unwrap_err()
+        .contains("incomplete: :maven must be a map"));
+
+    sync_lock(&project, LockMode::Default).unwrap();
+    let manifest = root.join("project.edn");
+    let changed = fs::read_to_string(&manifest).unwrap().replace(
+        ":project/source-paths [\"src\"]",
+        ":project/source-paths [\"src-next\"]",
+    );
+    fs::write(&manifest, changed).unwrap();
+    let changed_project = read(&root).unwrap();
+    assert!(sync_lock(&changed_project, LockMode::Locked)
+        .unwrap_err()
+        .contains("stale: declaration digest differs"));
+    sync_lock(&changed_project, LockMode::Default).unwrap();
+    sync_lock(&changed_project, LockMode::Frozen).unwrap();
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn active_runtime_sync_preserves_inactive_sections() {
+    let root = temp("runtime-lock-preserve");
+    let project = new_app(&root, "runtime-lock-preserve-app").unwrap();
+    let lock = root.join("project.lock.edn");
+    let inactive = ":jvm {:runtime :jvm :declaration-digest \"sha256:keep-jvm\" :packages {\"org.example/library\" {:version \"1.0.0\"}} :maven {\"org.example/library\" {:version \"1.0.0\"}}}";
+    fs::write(
+        &lock,
+        format!(
+            "{{:lock/format \"0.0.0-alpha\" :runtime-sections {{{inactive} :rust {{:runtime :rust :declaration-digest \"sha256:replace-rust\" :packages {{}} :maven {{}}}}}} :packages {{}}}}\n"
+        ),
+    )
+    .unwrap();
+
+    sync_lock(&project, LockMode::Offline).unwrap();
+    let source = fs::read_to_string(&lock).unwrap();
+    assert!(source.contains(inactive));
+    assert!(source.contains(&runtime_declaration_digest(&project)));
+    assert!(!source.contains("sha256:replace-rust"));
+    assert!(!root.read_dir().unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .ends_with(".tmp")));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn runtime_declaration_digest_is_stable_and_profile_sensitive() {
+    let root = temp("runtime-lock-digest");
+    fs::create_dir_all(&root).unwrap();
+    let manifest = root.join("project.edn");
+    fs::write(
+        &manifest,
+        "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [\"src\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{} :project/runtime-profiles {:rust {:runtime/source-paths [\"src-rust\"]}}}",
+    )
+    .unwrap();
+    let first = read(&root).unwrap();
+    assert_eq!(
+        runtime_declaration_digest(&first),
+        runtime_declaration_digest(&read(&root).unwrap())
+    );
+    fs::write(
+        &manifest,
+        "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [\"src\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{} :project/runtime-profiles {:rust {:runtime/source-paths [\"src-rust-next\"]}}}",
+    )
+    .unwrap();
+    assert_ne!(
+        runtime_declaration_digest(&first),
+        runtime_declaration_digest(&read(&root).unwrap())
+    );
     fs::remove_dir_all(root).unwrap();
 }
