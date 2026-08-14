@@ -1,4 +1,4 @@
-name: Export applied portable filesystem port
+name: Export current filesystem development tree
 
 on:
   push:
@@ -10,36 +10,31 @@ permissions:
   contents: read
 
 jobs:
-  rust:
+  export:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: agent/std-native-file-portable-fs
-          fetch-depth: 0
-      - name: Apply staged Rust filesystem patch
+          ref: main
+          fetch-depth: 1
+      - name: Collect current implementation tree
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d .github/patches/fs-rust.patch.gz.b64 | gzip -d > /tmp/fs-rust.patch
-          base64 -d .github/patches/fs-rust-fix.patch.gz.b64 | gzip -d > /tmp/fs-rust-fix.patch
-          git apply --check /tmp/fs-rust.patch
-          git apply /tmp/fs-rust.patch
-          git apply --check /tmp/fs-rust-fix.patch
-          git apply /tmp/fs-rust-fix.patch
-          cargo fmt --manifest-path core/rust/Cargo.toml
-          cargo check --manifest-path core/rust/Cargo.toml --lib
-      - name: Collect applied sources
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/hara-fs-applied/core/rust/src
-          cp core/rust/src/core.rs /tmp/hara-fs-applied/core/rust/src/core.rs
-          cp core/rust/src/file.rs /tmp/hara-fs-applied/core/rust/src/file.rs
-          cp core/rust/src/lib.rs /tmp/hara-fs-applied/core/rust/src/lib.rs
+          mkdir -p /tmp/hara-current
+          cp -a \
+            core/lib \
+            core/rust \
+            core/java \
+            core/Makefile \
+            scripts/runtime \
+            .github/workflows/core-ci.yml \
+            .github/workflows/hal-source-mirror.yml \
+            /tmp/hara-current/
+          git rev-parse HEAD > /tmp/hara-current/MAIN_HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: hara-fs-applied-rust
-          path: /tmp/hara-fs-applied
+          name: hara-current-main-fs-tree
+          path: /tmp/hara-current
           if-no-files-found: error
           retention-days: 1
