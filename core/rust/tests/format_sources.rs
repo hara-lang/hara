@@ -33,6 +33,13 @@ fn evaluate(paths: &[&str], tail: &str) -> Result<String, String> {
     runtime.eval_native(&source)
 }
 
+fn assert_string_case(name: &str, tail: &str, expected: &str) {
+    eprintln!("=== string-case:{name} ===");
+    let output = evaluate(&[STRING], tail)
+        .unwrap_or_else(|error| panic!("string case {name} failed: {error}"));
+    assert_eq!(output, expected, "string case {name}");
+}
+
 #[test]
 fn every_changed_hal_source_evaluates_in_a_fresh_native_runtime() {
     let candidates: &[&[&str]] = &[
@@ -46,6 +53,7 @@ fn every_changed_hal_source_evaluates_in_a_fresh_native_runtime() {
     ];
 
     for paths in candidates {
+        eprintln!("=== source-candidate:{paths:?} ===");
         evaluate(paths, "nil")
             .unwrap_or_else(|error| panic!("candidate {paths:?} failed: {error}"));
     }
@@ -53,40 +61,115 @@ fn every_changed_hal_source_evaluates_in_a_fresh_native_runtime() {
 
 #[test]
 fn portable_string_contract_is_exercised_inside_hal() {
-    let output = evaluate(
-        &[STRING],
-        r#"
-[(= (std.foundation.string/tag :a "/" :ns/b) "a/ns/b")
- (= (std.foundation.string/tag
-     (std.foundation.string/encode-utf8 "hé"))
-    "hé")
- (= (std.foundation.string/tag 'hello) "hello")
- (= (std.foundation.string/tag nil) "nil")
- (std.foundation.string/blank? nil)
- (= (std.foundation.string/trim-newlines "hello\r\n") "hello")
- (std.foundation.string/caseless= "heLLo" "HellO")
- (= (std.foundation.string/replace-at "hλra" 1 "a") "hara")
- (= (std.foundation.string/insert-at "hλra" 2 "!") "hλ!ra")
- (= (std.foundation.string/camel-case "hello__--  world") "helloWorld")
- (= (std.foundation.string/pascal-case "hello_world") "HelloWorld")
- (= (std.foundation.string/snake-case "version2Value") "version2_value")
- (= (std.foundation.string/spear-case "hello_world") "hello-world")
- (= (std.foundation.string/dot-case "hello-world") "hello.world")
- (= (std.foundation.string/snake-case "hello|World") "hello|world")
- (= (std.foundation.string/upper-case "hara") "HARA")
- (= (std.foundation.string/lower-case "HARA") "hara")
- (= (std.foundation.string/capital-case "hELLO") "Hello")
- (nil? (resolve 'std.foundation.string/joinl))
- (nil? (resolve (symbol "std.foundation.string/|")))
- (nil? (resolve 'std.foundation.string/truncate))]
-"#,
-    )
-    .expect("portable string contract should evaluate");
+    let cases = [
+        (
+            "tag-keywords",
+            r#"(= (std.foundation.string/tag :a "/" :ns/b) "a/ns/b")"#,
+            "true",
+        ),
+        (
+            "tag-bytes",
+            r#"(= (std.foundation.string/tag
+                    (std.foundation.string/encode-utf8 "hé"))
+                   "hé")"#,
+            "true",
+        ),
+        (
+            "tag-symbol",
+            r#"(= (std.foundation.string/tag 'hello) "hello")"#,
+            "true",
+        ),
+        (
+            "tag-nil",
+            r#"(= (std.foundation.string/tag nil) "nil")"#,
+            "true",
+        ),
+        ("blank-nil", "(std.foundation.string/blank? nil)", "true"),
+        (
+            "trim-newlines",
+            r#"(= (std.foundation.string/trim-newlines "hello\r\n") "hello")"#,
+            "true",
+        ),
+        (
+            "caseless",
+            r#"(std.foundation.string/caseless= "heLLo" "HellO")"#,
+            "true",
+        ),
+        (
+            "replace-at",
+            r#"(= (std.foundation.string/replace-at "hλra" 1 "a") "hara")"#,
+            "true",
+        ),
+        (
+            "insert-at",
+            r#"(= (std.foundation.string/insert-at "hλra" 2 "!") "hλ!ra")"#,
+            "true",
+        ),
+        (
+            "camel-case",
+            r#"(= (std.foundation.string/camel-case "hello__--  world") "helloWorld")"#,
+            "true",
+        ),
+        (
+            "pascal-case",
+            r#"(= (std.foundation.string/pascal-case "hello_world") "HelloWorld")"#,
+            "true",
+        ),
+        (
+            "snake-case",
+            r#"(= (std.foundation.string/snake-case "version2Value") "version2_value")"#,
+            "true",
+        ),
+        (
+            "spear-case",
+            r#"(= (std.foundation.string/spear-case "hello_world") "hello-world")"#,
+            "true",
+        ),
+        (
+            "dot-case",
+            r#"(= (std.foundation.string/dot-case "hello-world") "hello.world")"#,
+            "true",
+        ),
+        (
+            "pipe-is-ordinary",
+            r#"(= (std.foundation.string/snake-case "hello|World") "hello|world")"#,
+            "true",
+        ),
+        (
+            "upper-case",
+            r#"(= (std.foundation.string/upper-case "hara") "HARA")"#,
+            "true",
+        ),
+        (
+            "lower-case",
+            r#"(= (std.foundation.string/lower-case "HARA") "hara")"#,
+            "true",
+        ),
+        (
+            "capital-case",
+            r#"(= (std.foundation.string/capital-case "hELLO") "Hello")"#,
+            "true",
+        ),
+        (
+            "joinl-absent",
+            "(nil? (resolve 'std.foundation.string/joinl))",
+            "true",
+        ),
+        (
+            "pipe-helper-absent",
+            r#"(nil? (resolve (symbol "std.foundation.string/|")))"#,
+            "true",
+        ),
+        (
+            "truncate-absent",
+            "(nil? (resolve 'std.foundation.string/truncate))",
+            "true",
+        ),
+    ];
 
-    assert_eq!(
-        output,
-        "[true true true true true true true true true true true true true true true true true true true true true]"
-    );
+    for (name, tail, expected) in cases {
+        assert_string_case(name, tail, expected);
+    }
 }
 
 #[test]
