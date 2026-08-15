@@ -29,13 +29,37 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Inspect Result receiver-category anchors
-        run: |
-          grep -n -B 20 -A 8 'Value::ExceptionInfo(_) => "error"' core/rust/src/core.rs || true
-
       - name: Reconstruct and apply native Result bootstrap
         run: |
           cat .github/scripts/native-result-bootstrap.b64.* | base64 --decode > .github/scripts/implement_native_result_bootstrap.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('.github/scripts/implement_native_result_bootstrap.py')
+          text = path.read_text()
+          old = '''    text = replace_once(
+                  text,
+                  '        Value::ExceptionInfo(_) => "error",',
+                  '        Value::Result(_) => "result",\n        Value::ExceptionInfo(_) => "error",',
+                  "Rust Result receiver category",
+              )'''
+          new = '''    text = replace_in_function(
+                  text,
+                  "pub(crate) fn portable_type_name",
+                  '        Value::ExceptionInfo(_) => "error",',
+                  '        Value::Result(_) => "result",\n        Value::ExceptionInfo(_) => "error",',
+                  "Rust Result portable type name",
+              )
+              text = replace_in_function(
+                  text,
+                  "pub fn receiver_category",
+                  '        Value::ExceptionInfo(_) => "error",',
+                  '        Value::Result(_) => "result",\n        Value::ExceptionInfo(_) => "error",',
+                  "Rust Result receiver category",
+              )'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one ambiguous Result anchor block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
           python3 .github/scripts/implement_native_result_bootstrap.py
 
       - name: Format Rust sources
