@@ -4,20 +4,23 @@
 (def ^:private +refer-prefix+ "^{:refer ")
 
 (defn public-symbols
-  "Returns stable public function and macro symbols owned by namespace-symbol."
+  "Returns stable public test seams owned by namespace-symbol."
   [namespace-symbol]
-  (vec
-   (sort-by
-    str
-    (keep
-     (fn [entry]
-       (let [local-symbol (first entry)
-             variable-symbol (symbol (str namespace-symbol) (name local-symbol))
-             metadata (meta (second entry))]
-         (when (and (not (:private metadata))
-                    (or (:arglists metadata) (:macro metadata)))
-           variable-symbol)))
-     (ns-publics namespace-symbol)))))
+  (let [namespace-name (str namespace-symbol)
+        seam-namespace (or (str/starts-with? namespace-name "std.native.")
+                           (str/starts-with? namespace-name "std.protocol."))]
+    (vec
+     (sort-by
+      str
+      (keep
+       (fn [entry]
+         (let [local-symbol (first entry)
+               variable-symbol (symbol namespace-name (name local-symbol))
+               metadata (meta (second entry))]
+           (when (and (not (:private metadata))
+                      (or seam-namespace (:arglists metadata) (:macro metadata)))
+             variable-symbol)))
+       (ns-publics namespace-symbol))))))
 
 (defn- declaration-prefix
   [line]
@@ -30,7 +33,8 @@
   "Orders public symbols by defn/defmacro appearance in definition-source."
   [namespace-symbol definition-source]
   (let [public (public-symbols namespace-symbol)
-        by-name (into {} (map (fn [symbol] [(name symbol) symbol]) public))]
+        find-public (fn [candidate-name]
+                      (first (filter (fn [symbol] (= (name symbol) candidate-name)) public)))]
     (loop [lines (vec (str/split-lines definition-source))
            pending false
            output []]
@@ -41,8 +45,8 @@
               remainder (when prefix (str/trim (str/slice line (str/length prefix))))
               inline-name (when (and remainder (not (str/starts-with? remainder "^")))
                             (first (str/split remainder " ")))
-              candidate (or (get by-name inline-name)
-                            (when pending (get by-name line)))]
+              candidate (or (find-public inline-name)
+                            (when pending (find-public line)))]
           (recur (vec (rest lines))
                  (and (or pending prefix) (not candidate))
                  (if candidate (conj output candidate) output)))))))

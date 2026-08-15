@@ -17,7 +17,7 @@ std.foundation.string
 
 `core/rust/standard-library.namespaces` is authoritative for loadable standard-library namespace membership. A source file, test fixture, automatic alias, or native object does not become a public namespace merely because it is present in the repository or visible to an evaluator.
 
-The root `std.foundation` namespace owns the portable value layer: composition, collections, sequence operations, set algebra, metadata, references, macros, structural traversal, and the small language-level helpers automatically referred into ordinary namespaces.
+The root `std.foundation` namespace owns the portable value layer: composition, collections, sequence operations, set algebra, metadata, references, macros, structural traversal, regular-expression helpers, and the small language-level helpers automatically referred into ordinary namespaces. Regular-expression ownership remains root-level: `regexp`, `re-pattern`, `re-find`, `re-matches`, `re-replace`, and `re-split` are portable HAL functions, while `regexp?` remains a kernel-installed root predicate.
 
 The five child namespaces provide separately aliased portable/native-backed library surfaces:
 
@@ -31,7 +31,7 @@ The five child namespaces provide separately aliased portable/native-backed libr
 
 ## Native static objects
 
-The schema-v2 API manifest records native static objects separately from loadable namespaces. The current cross-profile runtime configuration includes objects such as `Edn`, `Json`, `Crypto`, `File`, `Socket`, `Host`, and `Kernel`, backed by `std.native.*` runtime identities. They are available without requiring file-backed `std.native.*` namespaces.
+The schema-v2 API manifest records native static objects separately from loadable namespaces. The current cross-profile runtime configuration includes objects such as `Edn`, `Json`, `Regex`, `Crypto`, `File`, `Socket`, `Host`, and `Kernel`, backed by `std.native.*` runtime identities. They are available without requiring file-backed `std.native.*` namespaces.
 
 For example:
 
