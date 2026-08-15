@@ -667,6 +667,7 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
                 Box::new(move |r| match r {
                     Ok(Value::Var(x)) => k(Ok(x.deref_value())),
                     Ok(Value::Atom(x)) => k(Ok(x.deref_value())),
+                    Ok(Value::Result(result)) => k(result.deref_value()),
                     Ok(Value::Promise(p)) => match p.state() {
                         PromiseState::Fulfilled(x) => k(Ok(x)),
                         PromiseState::Rejected(e) => {
