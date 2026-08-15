@@ -1,5 +1,6 @@
 package hara.truffle;
 
+import hara.lang.base.Reduced;
 import hara.lang.data.types.IDepsType;
 import hara.lang.data.types.ISequentialLookupType;
 import hara.lang.data.types.ISequentialType;
@@ -654,13 +655,17 @@ public final class HaraJavaAdapters {
         IReduce.class,
         "reduce",
         (receiver, arguments) -> {
+          Object result;
           if (arguments.length == 1) {
-            return ((IReduce) receiver).reduce(arguments[0]);
+            result = ((IReduce) receiver).reduce(arguments[0]);
+          } else if (arguments.length == 2) {
+            result = ((IReduce) receiver).reduce(arguments[0], arguments[1]);
+          } else {
+            throw new HaraException(
+                "IReduce/reduce expects a function and optional initial value");
           }
-          if (arguments.length == 2) {
-            return ((IReduce) receiver).reduce(arguments[0], arguments[1]);
-          }
-          throw new HaraException("IReduce/reduce expects a function and optional initial value");
+          result = HaraBox.unwrap(result);
+          return Reduced.isReduced(result) ? Reduced.unreduced(result) : result;
         });
     protocol.extendDefault(
         "reduce",
@@ -669,22 +674,28 @@ public final class HaraJavaAdapters {
             throw new HaraException("IReduce/reduce expects a function and optional initial value");
           }
           Iterator<?> iterator = hara.lang.base.Iter.iter(receiver);
-          Object accumulator;
-          if (arguments.length == 2) {
-            accumulator = arguments[1];
-          } else {
-            if (!iterator.hasNext()) {
-              throw new HaraException("IReduce/reduce cannot reduce an empty value without init");
+          try {
+            Object accumulator;
+            if (arguments.length == 2) {
+              accumulator = arguments[1];
+            } else {
+              if (!iterator.hasNext()) {
+                throw new HaraException(
+                    "IReduce/reduce cannot reduce an empty value without init");
+              }
+              accumulator = iterator.next();
             }
-            accumulator = iterator.next();
+            while (iterator.hasNext()) {
+              accumulator =
+                  HaraBox.unwrap(
+                      context.invokeCallable(
+                          arguments[0], new Object[] {accumulator, iterator.next()}));
+              if (Reduced.isReduced(accumulator)) return Reduced.unreduced(accumulator);
+            }
+            return accumulator;
+          } finally {
+            hara.lang.base.Iter.close(iterator);
           }
-          while (iterator.hasNext()) {
-            accumulator =
-                HaraBox.unwrap(
-                    context.invokeCallable(
-                        arguments[0], new Object[] {accumulator, iterator.next()}));
-          }
-          return accumulator;
         });
   }
 

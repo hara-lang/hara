@@ -18,7 +18,7 @@ use crate::lang::data::{
 };
 use crate::lang::hash::JavaHash;
 use crate::lang::protocol::{
-    IDisplay, IMetadata, INamespaced, IPopFirst, IPopLast, IToMutable, IToPersistent,
+    IDisplay, IEmpty, IMetadata, INamespaced, IPopFirst, IPopLast, IToMutable, IToPersistent,
 };
 use crate::numeric::{self, ArithmeticOp};
 pub use crate::task::{
@@ -300,6 +300,16 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ("UUID", &["instance?"]),
     ("Error", &["new", "message", "class"]),
     (
+        "Base",
+        &[
+            "reduce-in",
+            "reduced",
+            "reduced?",
+            "unreduced",
+            "append-at-count",
+        ],
+    ),
+    (
         "Iter",
         &[
             "iter",
@@ -309,6 +319,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "iter-next?",
             "iter-next",
             "iter-close",
+            "iter-concat",
             "iter-map",
             "iter-filter",
             "iter-take-while",
@@ -1942,6 +1953,7 @@ enum IteratorGenerator {
     Mapcat(Rc<Function>, Value, Option<Value>),
     Keep(Rc<Function>, Value),
     Prepend(Option<Value>, Value),
+    Concat(Vec<Value>, usize),
     Zip(Vec<Value>),
     Interleave(Vec<Value>, usize),
     Partition(Value, usize, bool),
@@ -1956,6 +1968,14 @@ pub struct IteratorState {
     seq: bool,
     lookahead: Option<Value>,
     generator: Option<IteratorGenerator>,
+}
+
+fn close_iterator_source(value: &Value) {
+    if let Value::Iterator(iterator) = value {
+        if let Ok(mut state) = iterator.try_borrow_mut() {
+            state.close();
+        }
+    }
 }
 
 impl IteratorState {
@@ -2016,22 +2036,34 @@ impl IteratorState {
                 }
                 IteratorGenerator::Take(source, remaining) => {
                     if *remaining == 0 {
+                        close_iterator_source(source);
                         self.closed = true;
                         Ok(None)
                     } else {
                         *remaining -= 1;
-                        iterator_try_next(source)
+                        let value = iterator_try_next(source)?;
+                        if value.is_none() {
+                            close_iterator_source(source);
+                            self.closed = true;
+                        }
+                        Ok(value)
                     }
                 }
                 IteratorGenerator::Drop(source, remaining) => {
                     while *remaining > 0 {
                         if iterator_try_next(source)?.is_none() {
+                            close_iterator_source(source);
                             self.closed = true;
                             return Ok(None);
                         }
                         *remaining -= 1;
                     }
-                    iterator_try_next(source)
+                    let value = iterator_try_next(source)?;
+                    if value.is_none() {
+                        close_iterator_source(source);
+                        self.closed = true;
+                    }
+                    Ok(value)
                 }
                 IteratorGenerator::Cycle(source, cache, index, exhausted) => {
                     if *index < cache.len() {
@@ -2054,6 +2086,7 @@ impl IteratorState {
                                 Ok(Some(value))
                             }
                             None => {
+                                close_iterator_source(source);
                                 *exhausted = true;
                                 if cache.is_empty() {
                                     self.closed = true;
@@ -2068,18 +2101,21 @@ impl IteratorState {
                 }
                 IteratorGenerator::TakeWhile(function, source) => {
                     let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
                         self.closed = true;
                         return Ok(None);
                     };
                     if call_function(function, vec![value.clone()])?.truthy() {
                         Ok(Some(value))
                     } else {
+                        close_iterator_source(source);
                         self.closed = true;
                         Ok(None)
                     }
                 }
                 IteratorGenerator::DropWhile(function, source, started) => loop {
                     let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
                         self.closed = true;
                         break Ok(None);
                     };
@@ -2090,6 +2126,7 @@ impl IteratorState {
                 },
                 IteratorGenerator::Map(function, source, spread) => {
                     let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
                         self.closed = true;
                         return Ok(None);
                     };
@@ -2107,6 +2144,7 @@ impl IteratorState {
                 }
                 IteratorGenerator::Filter(function, source) => loop {
                     let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
                         self.closed = true;
                         break Ok(None);
                     };
@@ -2118,10 +2156,14 @@ impl IteratorState {
                     if let Some(iterator) = pending {
                         match iterator_try_next(iterator)? {
                             Some(value) => break Ok(Some(value)),
-                            None => *pending = None,
+                            None => {
+                                close_iterator_source(iterator);
+                                *pending = None;
+                            }
                         }
                     }
                     let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
                         self.closed = true;
                         break Ok(None);
                     };
@@ -2129,6 +2171,7 @@ impl IteratorState {
                 },
                 IteratorGenerator::Keep(function, source) => loop {
                     let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
                         self.closed = true;
                         break Ok(None);
                     };
@@ -2141,12 +2184,33 @@ impl IteratorState {
                     if let Some(value) = head.take() {
                         Ok(Some(value))
                     } else {
-                        iterator_try_next(source)
+                        let value = iterator_try_next(source)?;
+                        if value.is_none() {
+                            close_iterator_source(source);
+                            self.closed = true;
+                        }
+                        Ok(value)
                     }
+                }
+                IteratorGenerator::Concat(sources, index) => {
+                    while *index < sources.len() {
+                        match iterator_try_next(&sources[*index])? {
+                            Some(value) => return Ok(Some(value)),
+                            None => {
+                                close_iterator_source(&sources[*index]);
+                                *index += 1;
+                            }
+                        }
+                    }
+                    self.closed = true;
+                    Ok(None)
                 }
                 IteratorGenerator::Zip(sources) => {
                     for source in sources.iter() {
                         if !matches!(iterator_has_next(source)?, Value::Bool(true)) {
+                            for source in sources.iter() {
+                                close_iterator_source(source);
+                            }
                             self.closed = true;
                             return Ok(None);
                         }
@@ -2154,6 +2218,9 @@ impl IteratorState {
                     let mut values = Vec::new();
                     for source in sources.iter() {
                         let Some(value) = iterator_try_next(source)? else {
+                            for source in sources.iter() {
+                                close_iterator_source(source);
+                            }
                             self.closed = true;
                             return Ok(None);
                         };
@@ -2169,6 +2236,9 @@ impl IteratorState {
                     if *index == 0 {
                         for source in sources.iter() {
                             if !matches!(iterator_has_next(source)?, Value::Bool(true)) {
+                                for source in sources.iter() {
+                                    close_iterator_source(source);
+                                }
                                 self.closed = true;
                                 return Ok(None);
                             }
@@ -2176,6 +2246,9 @@ impl IteratorState {
                     }
                     let source = &sources[*index];
                     let Some(value) = iterator_try_next(source)? else {
+                        for source in sources.iter() {
+                            close_iterator_source(source);
+                        }
                         self.closed = true;
                         return Ok(None);
                     };
@@ -2188,6 +2261,7 @@ impl IteratorState {
                         match iterator_try_next(source)? {
                             Some(value) => values.push(value),
                             None => {
+                                close_iterator_source(source);
                                 self.closed = true;
                                 if values.is_empty() || !*all {
                                     return Ok(None);
@@ -2221,8 +2295,42 @@ impl IteratorState {
         Ok(Some(value))
     }
     fn close(&mut self) {
+        if self.closed {
+            self.lookahead = None;
+            return;
+        }
         self.closed = true;
         self.lookahead = None;
+        if let Some(generator) = &self.generator {
+            match generator {
+                IteratorGenerator::Constant(_)
+                | IteratorGenerator::Repeated(_)
+                | IteratorGenerator::Iterate(_, _) => {}
+                IteratorGenerator::Take(source, _)
+                | IteratorGenerator::Drop(source, _)
+                | IteratorGenerator::Cycle(source, _, _, _)
+                | IteratorGenerator::TakeWhile(_, source)
+                | IteratorGenerator::DropWhile(_, source, _)
+                | IteratorGenerator::Map(_, source, _)
+                | IteratorGenerator::Filter(_, source)
+                | IteratorGenerator::Keep(_, source)
+                | IteratorGenerator::Prepend(_, source)
+                | IteratorGenerator::Partition(source, _, _) => close_iterator_source(source),
+                IteratorGenerator::Mapcat(_, source, pending) => {
+                    close_iterator_source(source);
+                    if let Some(pending) = pending {
+                        close_iterator_source(pending);
+                    }
+                }
+                IteratorGenerator::Concat(sources, _)
+                | IteratorGenerator::Zip(sources)
+                | IteratorGenerator::Interleave(sources, _) => {
+                    for source in sources {
+                        close_iterator_source(source);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2505,6 +2613,32 @@ fn collection_to_persistent(value: &Value) -> Result<Value, String> {
         MutableCollection::Queue(values) => Value::Queue(Box::new(values.to_persistent())),
         MutableCollection::Vector(values) => Value::Vector(values.to_persistent()),
     })
+}
+
+fn protocol_to_mutable(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Extension(receiver)] => extension_protocol_call(
+            receiver,
+            "std.protocol.itomutable/IToMutable",
+            "to-mutable",
+            arguments,
+        ),
+        [value] => collection_to_mutable(value),
+        _ => Err("IToMutable/to-mutable expects one value".into()),
+    }
+}
+
+fn protocol_to_persistent(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::Extension(receiver)] => extension_protocol_call(
+            receiver,
+            "std.protocol.itopersistent/IToPersistent",
+            "to-persistent",
+            arguments,
+        ),
+        [value] => collection_to_persistent(value),
+        _ => Err("IToPersistent/to-persistent expects one value".into()),
+    }
 }
 
 impl PartialEq for Value {
@@ -3253,6 +3387,16 @@ impl ProtocolRegistry {
                 _ => false,
             };
         }
+        if let Value::Extension(receiver) = value {
+            return protocol.methods.keys().all(|method| {
+                self.extension_methods.borrow().contains_key(&(
+                    receiver.provider.clone(),
+                    receiver.type_name.clone(),
+                    protocol_name.clone(),
+                    method.clone(),
+                ))
+            });
+        }
         if let Value::Struct(receiver) = value {
             return protocol.methods.keys().all(|method| {
                 self.guest_methods.borrow().contains_key(&(
@@ -3447,6 +3591,16 @@ impl ProtocolRegistry {
         registry.register("std.protocol.ireset/IReset", "reset", protocol_reset);
         registry.register("std.protocol.icas/ICas", "cas", protocol_cas);
         registry.register("std.protocol.ireduce/IReduce", "reduce", protocol_reduce);
+        registry.register(
+            "std.protocol.itomutable/IToMutable",
+            "to-mutable",
+            protocol_to_mutable,
+        );
+        registry.register(
+            "std.protocol.itopersistent/IToPersistent",
+            "to-persistent",
+            protocol_to_persistent,
+        );
         registry.register(
             "std.protocol.ipromise/IPromise",
             "state",
@@ -7572,6 +7726,14 @@ fn pair_parts(value: &Value) -> Option<(Value, Value)> {
             values.get(0).unwrap().clone(),
             values.get(1).unwrap().clone(),
         )),
+        Value::Vector(values) if values.len() == 2 => Some((
+            values.get(0).unwrap().clone(),
+            values.get(1).unwrap().clone(),
+        )),
+        Value::List(values) if values.len() == 2 => Some((
+            values.get(0).unwrap().clone(),
+            values.get(1).unwrap().clone(),
+        )),
         _ => None,
     }
 }
@@ -7744,8 +7906,80 @@ fn protocol_cas(arguments: &[Value]) -> Result<Value, String> {
     }
 }
 
+const REDUCED_TAG_NAMESPACE: &str = "hara.internal";
+const REDUCED_TAG_NAME: &str = "reduced";
+
+fn reduced_value(value: Value) -> Value {
+    Value::Tagged(Box::new(PTaggedLiteral::new(
+        Symbol::create(Some(REDUCED_TAG_NAMESPACE), REDUCED_TAG_NAME),
+        value,
+    )))
+}
+
+fn reduced_value_ref(value: &Value) -> Option<&Value> {
+    match value {
+        Value::Tagged(tagged)
+            if tagged.tag().get_namespace() == Some(REDUCED_TAG_NAMESPACE)
+                && tagged.tag().get_name() == REDUCED_TAG_NAME =>
+        {
+            Some(tagged.form())
+        }
+        _ => None,
+    }
+}
+
+fn is_reduced_value(value: &Value) -> bool {
+    reduced_value_ref(value).is_some()
+}
+
+fn unreduced_value(value: Value) -> Value {
+    match value {
+        Value::Tagged(tagged)
+            if tagged.tag().get_namespace() == Some(REDUCED_TAG_NAMESPACE)
+                && tagged.tag().get_name() == REDUCED_TAG_NAME =>
+        {
+            tagged.into_form()
+        }
+        value => value,
+    }
+}
+
+fn reduce_iterator(
+    function: &Rc<Function>,
+    initial: Option<Value>,
+    source: Value,
+    operation: &str,
+) -> Result<Value, String> {
+    let iterator = make_iterator(source)?;
+    let result = (|| {
+        let mut accumulator = initial;
+        while let Some(value) = iterator_try_next(&iterator)? {
+            let next = match accumulator {
+                Some(current) => call_function(function, vec![current, value])?,
+                None => value,
+            };
+            if is_reduced_value(&next) {
+                return Ok(unreduced_value(next));
+            }
+            accumulator = Some(next);
+        }
+        accumulator.ok_or_else(|| format!("{operation} cannot reduce an empty value without init"))
+    })();
+    let close = iterator_close(&iterator);
+    match result {
+        Err(error) => {
+            let _ = close;
+            Err(error)
+        }
+        Ok(value) => {
+            close?;
+            Ok(value)
+        }
+    }
+}
+
 fn protocol_reduce(arguments: &[Value]) -> Result<Value, String> {
-    let (source, function, mut accumulator) = match arguments {
+    let (source, function, accumulator) = match arguments {
         [source, Value::Function(function), initial] => (source, function, Some(initial.clone())),
         [source, Value::Function(function)] => (source, function, None),
         _ => {
@@ -7754,14 +7988,102 @@ fn protocol_reduce(arguments: &[Value]) -> Result<Value, String> {
             )
         }
     };
-    let iterator = make_iterator(source.clone())?;
-    while let Some(value) = iterator_try_next(&iterator)? {
-        accumulator = Some(match accumulator {
-            Some(current) => call_function(function, vec![current, value])?,
-            None => value,
-        });
+    reduce_iterator(function, accumulator, source.clone(), "IReduce/reduce")
+}
+
+fn foundation_protocol_descriptor(name: &str) -> Option<GuestProtocol> {
+    FOUNDATION_PROTOCOLS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(protocol, methods)| GuestProtocol {
+            name: builtin_protocol_name(protocol),
+            methods: methods
+                .iter()
+                .map(|(method, arity)| ((*method).to_owned(), *arity))
+                .collect(),
+        })
+}
+
+fn satisfies_foundation_protocol(name: &str, value: &Value) -> bool {
+    foundation_protocol_descriptor(name)
+        .is_some_and(|protocol| protocol_satisfies(&protocol, value))
+}
+
+fn base_reduce_in(arguments: &[Value]) -> Result<Value, String> {
+    let [initial, Value::Function(function), source] = arguments else {
+        return Err("Base/reduce-in expects an initial value, function, and source".into());
+    };
+    let converted = satisfies_foundation_protocol("IToMutable", initial);
+    let accumulator = if converted {
+        protocol_call(
+            "std.protocol.itomutable/IToMutable",
+            "to-mutable",
+            std::slice::from_ref(initial),
+        )?
+    } else {
+        initial.clone()
+    };
+    let output = reduce_iterator(
+        function,
+        Some(accumulator),
+        source.clone(),
+        "Base/reduce-in",
+    )?;
+    if converted && satisfies_foundation_protocol("IToPersistent", &output) {
+        protocol_call(
+            "std.protocol.itopersistent/IToPersistent",
+            "to-persistent",
+            std::slice::from_ref(&output),
+        )
+    } else {
+        Ok(output)
     }
-    accumulator.ok_or_else(|| "IReduce/reduce cannot reduce an empty value without init".into())
+}
+
+fn base_append_at_count(arguments: &[Value]) -> Result<Value, String> {
+    let [collection, item] = arguments else {
+        return Err("Base/append-at-count expects a collection and value".into());
+    };
+    match collection {
+        Value::MutableCollection(collection) => {
+            let mut borrowed = collection.borrow_mut();
+            let mutable = borrowed
+                .as_mut()
+                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
+            if let MutableCollection::List(values) = mutable {
+                values.push_last(item.clone());
+                return Ok(Value::MutableCollection(collection.clone()));
+            }
+            drop(borrowed);
+            protocol_conj(arguments)
+        }
+        Value::List(values) => Ok(Value::List(values.push_last(item.clone()))),
+        _ => protocol_conj(arguments),
+    }
+}
+
+fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String> {
+    let operation = operation
+        .strip_prefix("std.native.Base/")
+        .or_else(|| operation.strip_prefix("Base/"))
+        .unwrap_or(operation);
+    match operation {
+        "reduce-in" => base_reduce_in(values),
+        "reduced" => match values {
+            [value] => Ok(reduced_value(value.clone())),
+            _ => Err("Base/reduced expects one value".into()),
+        },
+        "reduced?" => match values {
+            [value] => Ok(Value::Bool(is_reduced_value(value))),
+            _ => Err("Base/reduced? expects one value".into()),
+        },
+        "unreduced" => match values {
+            [value] => Ok(unreduced_value(value.clone())),
+            _ => Err("Base/unreduced expects one value".into()),
+        },
+        "append-at-count" => base_append_at_count(values),
+        _ => Err(format!("unknown Base operation: {operation}")),
+    }
 }
 
 fn protocol_promise_state(arguments: &[Value]) -> Result<Value, String> {
@@ -8064,6 +8386,12 @@ fn protocol_conj(arguments: &[Value]) -> Result<Value, String> {
     let collection = &arguments[0];
     let item = &arguments[1];
     match collection {
+        Value::Extension(receiver) => extension_protocol_call(
+            receiver,
+            "std.protocol.iconj/IConj",
+            "conj",
+            arguments,
+        ),
         Value::MutableCollection(collection) => {
             let mut borrowed = collection.borrow_mut();
             let mutable = borrowed
@@ -8110,6 +8438,23 @@ fn protocol_conj(arguments: &[Value]) -> Result<Value, String> {
                 }
             }
             Ok(Value::MutableCollection(collection.clone()))
+        }
+        Value::Array(values) => {
+            values.borrow_mut().push(item.clone());
+            Ok(Value::Array(values.clone()))
+        }
+        Value::Object(values) => {
+            let (key, value) = pair_parts(item)
+                .ok_or_else(|| "IConj/conj object expects a two-element entry".to_string())?;
+            let key = marker_key(&key, "IConj/conj object")?;
+            let mut output = values.borrow_mut();
+            if let Some((_, current)) = output.iter_mut().find(|(candidate, _)| candidate == &key) {
+                *current = value;
+            } else {
+                output.push((key, value));
+            }
+            drop(output);
+            Ok(Value::Object(values.clone()))
         }
         Value::Tuple(values) => tuple_push_last(values, item.clone()),
         Value::Vector(values) => {
@@ -8215,8 +8560,26 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
             | Value::Tuple(_)
             | Value::Vector(_)
     );
+    let mutable_convertible = matches!(
+        value,
+        Value::Map(_)
+            | Value::OrderedMap(_)
+            | Value::SortedMap(_)
+            | Value::Trie(_)
+            | Value::Set(_)
+            | Value::OrderedSet(_)
+            | Value::SortedSet(_)
+            | Value::List(_)
+            | Value::Queue(_)
+            | Value::Vector(_)
+    );
     match name {
-        "IColl" | "IConj" | "IEmpty" => persistent_collection,
+        "IColl" => persistent_collection,
+        "IConj" | "IEmpty" => {
+            persistent_collection || matches!(value, Value::Array(_) | Value::Object(_))
+        }
+        "IToMutable" => mutable_convertible,
+        "IToPersistent" => matches!(value, Value::MutableCollection(_)),
         "IIter" | "IReduce" => {
             persistent_collection
                 || matches!(
@@ -9490,6 +9853,19 @@ fn iterator_interleave(values: Vec<Value>) -> Result<Value, String> {
     ))))
 }
 
+fn iterator_concat(values: Vec<Value>) -> Result<Value, String> {
+    let sources = values
+        .into_iter()
+        .map(|value| match value {
+            Value::Iterator(iterator) => Ok(Value::Iterator(iterator)),
+            value => make_iterator(value),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Value::Iterator(Rc::new(RefCell::new(
+        IteratorState::generated(IteratorGenerator::Concat(sources, 0)),
+    ))))
+}
+
 fn iterator_zip(values: Vec<Value>) -> Result<Value, String> {
     let sources = values
         .into_iter()
@@ -9751,17 +10127,24 @@ fn collection_empty_value(value: Value) -> Result<Value, String> {
             &[Value::Extension(receiver.clone())],
         ),
         Value::Nil => Ok(Value::Nil),
-        Value::List(_) => Ok(Value::List(PList::new())),
-        Value::Cons(_) | Value::Queue(_) => Ok(Value::List(PList::new())),
-        Value::Deque(_) => Ok(Value::Deque(Box::new(PDeque::new()))),
-        Value::Vector(_) | Value::Tuple(_) => Ok(Value::Vector(PVector::new())),
-        Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) => {
-            Ok(Value::OrderedMap(Box::new(POrderedMap::new())))
-        }
-        Value::PriorityMap(_) => Ok(Value::PriorityMap(Box::new(PPriorityMap::new()))),
-        Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => {
-            Ok(Value::OrderedSet(Box::new(POrderedSet::new())))
-        }
+        Value::Array(_) => Ok(Value::Array(Rc::new(RefCell::new(Vec::new())))),
+        Value::Object(_) => Ok(Value::Object(Rc::new(RefCell::new(Vec::new())))),
+        Value::List(values) => Ok(Value::List(values.empty())),
+        Value::Cons(values) => Ok(Value::List(
+            PList::new().with_meta(values.meta().cloned()),
+        )),
+        Value::Queue(values) => Ok(Value::Queue(Box::new(values.empty()))),
+        Value::Deque(values) => Ok(Value::Deque(Box::new(values.empty()))),
+        Value::Vector(values) => Ok(Value::Vector(values.empty())),
+        Value::Tuple(values) => Ok(Value::Tuple(Box::new(values.empty()))),
+        Value::Map(values) => Ok(Value::Map(values.empty())),
+        Value::OrderedMap(values) => Ok(Value::OrderedMap(Box::new(values.empty()))),
+        Value::SortedMap(values) => Ok(Value::SortedMap(Box::new(values.empty()))),
+        Value::Trie(values) => Ok(Value::Trie(Box::new(values.empty()))),
+        Value::PriorityMap(values) => Ok(Value::PriorityMap(Box::new(values.empty()))),
+        Value::Set(values) => Ok(Value::Set(values.empty())),
+        Value::OrderedSet(values) => Ok(Value::OrderedSet(Box::new(values.empty()))),
+        Value::SortedSet(values) => Ok(Value::SortedSet(Box::new(values.empty()))),
         Value::Struct(value) => Ok(Value::Struct(Rc::new(StructValue::from_values(
             value.ty.clone(),
             vec![Value::Nil; value.ty.fields.len()],
@@ -14433,15 +14816,17 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         Ok(result)
                     }
                 }
-                Form::Symbol(n) if n == "concat" => {
-                    if fs.len() < 2 {
-                        return Err("concat expects collections".into());
+                Form::Symbol(n) if n == "iter-concat" || n == "concat" => {
+                    let collections = fs[1..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let result = iterator_concat(collections)?;
+                    if n == "concat" {
+                        iterator_seq(result)
+                    } else {
+                        Ok(result)
                     }
-                    let mut values = Vec::new();
-                    for form in &fs[1..] {
-                        values.extend(iterator_values(eval(form, env)?)?);
-                    }
-                    iterator_seq(iterator_from_values(values))
                 }
                 Form::Symbol(n) if n == "iter-range" => {
                     if fs.len() != 2 && fs.len() != 3 {
@@ -14573,6 +14958,13 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     .contains(&n.as_str()) =>
                 {
                     bit_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Base/") => {
+                    let values = fs[1..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    native_base_values(n, &values)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Bits/")
@@ -14785,18 +15177,40 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         );
                     }
                     let function = eval(&fs[1], env)?;
-                    let mut values = iterator_values(eval(&fs[fs.len() - 1], env)?)?.into_iter();
-                    let mut result = if fs.len() == 4 {
-                        eval(&fs[2], env)?
-                    } else if let Some(first) = values.next() {
-                        first
+                    let initial = if fs.len() == 4 {
+                        Some(eval(&fs[2], env)?)
                     } else {
-                        return call_value(function, Vec::new());
+                        None
                     };
-                    for value in values {
-                        result = call_value(function.clone(), vec![result, value])?;
+                    let iterator = make_iterator(eval(&fs[fs.len() - 1], env)?)?;
+                    let result = (|| {
+                        let mut accumulator = match initial {
+                            Some(value) => value,
+                            None => match iterator_try_next(&iterator)? {
+                                Some(value) => value,
+                                None => return call_value(function.clone(), Vec::new()),
+                            },
+                        };
+                        while let Some(value) = iterator_try_next(&iterator)? {
+                            accumulator =
+                                call_value(function.clone(), vec![accumulator, value])?;
+                            if is_reduced_value(&accumulator) {
+                                return Ok(unreduced_value(accumulator));
+                            }
+                        }
+                        Ok(accumulator)
+                    })();
+                    let close = iterator_close(&iterator);
+                    match result {
+                        Err(error) => {
+                            let _ = close;
+                            Err(error)
+                        }
+                        Ok(value) => {
+                            close?;
+                            Ok(value)
+                        }
                     }
-                    Ok(result)
                 }
                 Form::Symbol(n) if n == "reduce-kv" => {
                     if fs.len() != 4 {
@@ -14805,12 +15219,32 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     let function = eval(&fs[1], env)?;
                     let mut result = eval(&fs[2], env)?;
                     let source = eval(&fs[3], env)?;
-                    let entries = map_entries(&source)
-                        .ok_or_else(|| "reduce-kv expects a map".to_string())?;
-                    for (key, value) in entries {
-                        result = call_value(function.clone(), vec![result, key, value])?;
+                    if map_entries(&source).is_none() {
+                        return Err("reduce-kv expects a map".into());
                     }
-                    Ok(result)
+                    let iterator = make_iterator(source)?;
+                    let reduction = (|| {
+                        while let Some(entry) = iterator_try_next(&iterator)? {
+                            let (key, value) = pair_parts(&entry)
+                                .ok_or_else(|| "reduce-kv expects map entries".to_string())?;
+                            result = call_value(function.clone(), vec![result, key, value])?;
+                            if is_reduced_value(&result) {
+                                return Ok(unreduced_value(result));
+                            }
+                        }
+                        Ok(result)
+                    })();
+                    let close = iterator_close(&iterator);
+                    match reduction {
+                        Err(error) => {
+                            let _ = close;
+                            Err(error)
+                        }
+                        Ok(value) => {
+                            close?;
+                            Ok(value)
+                        }
+                    }
                 }
                 Form::Symbol(n) if n == "constantly" => {
                     if fs.len() != 2 {

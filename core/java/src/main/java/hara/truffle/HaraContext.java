@@ -13,6 +13,7 @@ import hara.kernel.flavor.NativeFlavorProvider;
 import hara.kernel.flavor.NativeFlavorRegistry;
 import hara.kernel.jvm.JvmFlavorProvider;
 import hara.lang.base.Iter;
+import hara.lang.base.Reduced;
 import hara.lang.base.Eq;
 import hara.lang.base.G;
 import hara.lang.base.primitive.Num;
@@ -28,7 +29,10 @@ import hara.lang.protocol.IDeref;
 import hara.lang.protocol.IDerefTimeout;
 import hara.lang.protocol.IDisplay;
 import hara.lang.protocol.ICount;
+import hara.lang.protocol.IConj;
 import hara.lang.protocol.ICons;
+import hara.lang.protocol.IEmpty;
+import hara.lang.protocol.IPushLast;
 import hara.truffle.bytecode.HbcProgram;
 import hara.lang.protocol.INth;
 import hara.lang.protocol.IPromise;
@@ -178,10 +182,14 @@ public final class HaraContext {
           Map.entry("UUID", java.util.List.of("instance?")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
+              "Base",
+              java.util.List.of(
+                  "reduce-in", "reduced", "reduced?", "unreduced", "append-at-count")),
+          Map.entry(
               "Iter",
               java.util.List.of(
                   "iter", "iter?", "iter-finite?", "iter-materialize",
-                  "iter-next?", "iter-next", "iter-close",
+                  "iter-next?", "iter-next", "iter-close", "iter-concat",
                   "iter-map", "iter-filter", "iter-take-while", "iter-drop-while",
                   "iter-mapcat", "iter-keep", "iter-interpose", "iter-interleave",
                   "iter-every?", "iter-any?", "iter-take", "iter-drop", "iter-zip",
@@ -262,6 +270,7 @@ public final class HaraContext {
     installNativeLibraries();
     collectBuiltins(FOUNDATION_NAMESPACE, () -> libraryLoader.installEagerJava(this));
     hideIteratorImplementationBindings();
+    hideBaseImplementationBindings();
     for (String namespace : bytecodeLibrary.namespaces()) {
       namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
     }
@@ -440,6 +449,16 @@ public final class HaraContext {
               "new", "ex-info",
               "message", "ex-message",
               "class", "ex-class"));
+      installNativeExportGroup(
+          "Base",
+          exports,
+          NATIVE_TYPES.get("Base"),
+          Map.of(
+              "reduce-in", "__base-reduce-in",
+              "reduced", "__base-reduced",
+              "reduced?", "__base-reduced?",
+              "unreduced", "__base-unreduced",
+              "append-at-count", "__base-append-at-count"));
       installNativeExportGroup("Iter", exports, NATIVE_TYPES.get("Iter"), Map.of());
       return;
     }
@@ -466,6 +485,12 @@ public final class HaraContext {
             name.startsWith("iter-")
                 && !name.equals("iter-next?")
                 && !name.equals("iter-next"));
+  }
+
+  /** Keeps runtime value/collection primitives available through Base only. */
+  private void hideBaseImplementationBindings() {
+    HaraNamespace foundation = namespace(FOUNDATION_NAMESPACE);
+    foundation.vars.keySet().removeIf(name -> name.startsWith("__base-"));
   }
 
   private void installNativeExportGroup(
@@ -2099,7 +2124,7 @@ public final class HaraContext {
     target.define("iter-next?", new UnaryBuiltin("iter-next?", this::iterHasNext));
     target.define("iter-next", new UnaryBuiltin("iter-next", this::iterNext));
     target.define("iter-close", new UnaryBuiltin("iter-close", this::iterClose));
-    target.define("concat", new VariadicBuiltin("concat", this::concatIterators));
+    target.define("iter-concat", new VariadicBuiltin("iter-concat", this::concatIterators));
     target.define("iter-map", new VariadicBuiltin("iter-map", this::iterMap));
     target.define("iter-filter", new VariadicBuiltin("iter-filter", this::iterFilter));
     target.define("iter-take-while", new VariadicBuiltin("iter-take-while", this::iterTakeWhile));
@@ -2126,6 +2151,20 @@ public final class HaraContext {
     target.define("iter-constantly", new UnaryBuiltin("iter-constantly", Iter::constantly));
     target.define("iter-repeatedly", new UnaryBuiltin("iter-repeatedly", this::iterRepeatedly));
     target.define("iter-iterate", new VariadicBuiltin("iter-iterate", this::iterIterate));
+    target.define(
+        "__base-reduce-in", new VariadicBuiltin("Base/reduce-in", this::baseReduceIn));
+    target.define(
+        "__base-reduced",
+        new UnaryBuiltin("Base/reduced", value -> Reduced.mark(HaraBox.unwrap(value))));
+    target.define(
+        "__base-reduced?",
+        new UnaryBuiltin("Base/reduced?", value -> Reduced.isReduced(HaraBox.unwrap(value))));
+    target.define(
+        "__base-unreduced",
+        new UnaryBuiltin("Base/unreduced", value -> Reduced.unreduced(HaraBox.unwrap(value))));
+    target.define(
+        "__base-append-at-count",
+        new VariadicBuiltin("Base/append-at-count", this::baseAppendAtCount));
     target.define("alter-var-root", new VariadicBuiltin("alter-var-root", this::alterVarRoot));
     target.define("apply", new VariadicBuiltin("apply", this::applyFunction));
     target.define(
@@ -2340,23 +2379,28 @@ public final class HaraContext {
     requireMethodArity("reduce-kv", values, 3);
     Object result = values[1];
     Iterator<?> iterator = (Iterator<?>) iterValue(values[2]);
-    while (iterator.hasNext()) {
-      Object entry = iterator.next();
-      Object key;
-      Object value;
-      if (entry instanceof java.util.Map.Entry<?, ?> mapEntry) {
-        key = mapEntry.getKey();
-        value = mapEntry.getValue();
-      } else if (entry instanceof hara.lang.protocol.IPair<?, ?> pair) {
-        key = pair.getKey();
-        value = pair.getValue();
-      } else {
-        key = protocolCall("INth", "nth", new Object[] {entry, 0L});
-        value = protocolCall("INth", "nth", new Object[] {entry, 1L});
+    try {
+      while (iterator.hasNext()) {
+        Object entry = iterator.next();
+        Object key;
+        Object value;
+        if (entry instanceof java.util.Map.Entry<?, ?> mapEntry) {
+          key = mapEntry.getKey();
+          value = mapEntry.getValue();
+        } else if (entry instanceof hara.lang.protocol.IPair<?, ?> pair) {
+          key = pair.getKey();
+          value = pair.getValue();
+        } else {
+          key = protocolCall("INth", "nth", new Object[] {entry, 0L});
+          value = protocolCall("INth", "nth", new Object[] {entry, 1L});
+        }
+        result = HaraBox.unwrap(invokeCallable(values[0], new Object[] {result, key, value}));
+        if (Reduced.isReduced(result)) return Reduced.unreduced(result);
       }
-      result = HaraBox.unwrap(invokeCallable(values[0], new Object[] {result, key, value}));
+      return result;
+    } finally {
+      Iter.close(iterator);
     }
-    return result;
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
@@ -5406,6 +5450,50 @@ public final class HaraContext {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
+  private Object baseReduceIn(Object[] values) {
+    requireMethodArity("Base/reduce-in", values, 3);
+    Object initial = HaraBox.unwrap(values[0]);
+    Object function = values[1];
+    Object sourceValue = values[2];
+    boolean converted = protocolSatisfies("IToMutable", initial);
+    Object accumulator =
+        converted
+            ? HaraBox.unwrap(
+                protocolCall("IToMutable", "to-mutable", new Object[] {initial}))
+            : initial;
+    Iterator source = (Iterator) iterValue(sourceValue);
+    try {
+      while (source.hasNext()) {
+        accumulator =
+            HaraBox.unwrap(
+                invokeCallable(function, new Object[] {accumulator, source.next()}));
+        if (Reduced.isReduced(accumulator)) {
+          accumulator = Reduced.unreduced(accumulator);
+          break;
+        }
+      }
+    } finally {
+      Iter.close(source);
+    }
+    if (converted && protocolSatisfies("IToPersistent", accumulator)) {
+      return protocolCall(
+          "IToPersistent", "to-persistent", new Object[] {accumulator});
+    }
+    return accumulator;
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private Object baseAppendAtCount(Object[] values) {
+    requireMethodArity("Base/append-at-count", values, 2);
+    Object collection = HaraBox.unwrap(values[0]);
+    Object item = HaraBox.unwrap(values[1]);
+    if (collection instanceof hara.lang.data.List<?> && collection instanceof IPushLast pushLast) {
+      return pushLast.pushLast(item);
+    }
+    return protocolCall("IConj", "conj", new Object[] {collection, item});
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
   private Object concatIterators(Object[] values) {
     return Iter.concat(Iter.map((Iterator) Iter.objects(values), value -> Iter.iter(value)));
   }
@@ -5723,7 +5811,8 @@ public final class HaraContext {
         accumulator = source.next();
       }
       while (source.hasNext()) {
-        accumulator = invokeCallable(function, new Object[] {accumulator, source.next()});
+        accumulator = HaraBox.unwrap(invokeCallable(function, new Object[] {accumulator, source.next()}));
+        if (Reduced.isReduced(accumulator)) return Reduced.unreduced(accumulator);
       }
       return accumulator;
     } finally {
@@ -6275,7 +6364,8 @@ public final class HaraContext {
     }
   }
 
-  private static final class HaraArray extends ArrayList<Object> implements ICount, INth<Object> {
+  private static final class HaraArray extends ArrayList<Object>
+      implements ICount, INth<Object>, IEmpty, IConj<Object> {
     private HaraArray() {}
 
     private HaraArray(Object[] values) {
@@ -6293,6 +6383,17 @@ public final class HaraContext {
         throw new HaraException("nth index out of bounds: " + index);
       }
       return get((int) index);
+    }
+
+    @Override
+    public HaraArray empty() {
+      return new HaraArray();
+    }
+
+    @Override
+    public HaraArray conj(Object value) {
+      add(value);
+      return this;
     }
   }
 
@@ -6337,7 +6438,10 @@ public final class HaraContext {
     }
   }
 
-  private static final class HaraObject extends LinkedHashMap<String, Object> {
+  private static final class HaraObject extends LinkedHashMap<String, Object>
+      implements IEmpty, IConj<Object> {
+    private HaraObject() {}
+
     private HaraObject(Object[] values) {
       if ((values.length & 1) != 0) {
         throw new HaraException("object expects an even number of string key/value arguments");
@@ -6349,6 +6453,29 @@ public final class HaraContext {
 
     private HaraObject(HaraObject source) {
       super(source);
+    }
+
+    @Override
+    public HaraObject empty() {
+      return new HaraObject();
+    }
+
+    @Override
+    public HaraObject conj(Object value) {
+      Object entry = HaraBox.unwrap(value);
+      Object key;
+      Object item;
+      if (entry instanceof java.util.Map.Entry<?, ?> mapEntry) {
+        key = mapEntry.getKey();
+        item = mapEntry.getValue();
+      } else if (entry instanceof hara.lang.protocol.IPair<?, ?> pair) {
+        key = pair.getKey();
+        item = pair.getValue();
+      } else {
+        throw new HaraException("IConj/conj object expects a two-element entry");
+      }
+      put(objectKey(key, "IConj/conj object"), item);
+      return this;
     }
   }
 
