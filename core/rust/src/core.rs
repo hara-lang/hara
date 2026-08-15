@@ -312,6 +312,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "result?",
             "success?",
             "error?",
+            "timeout?",
             "status",
             "data",
             "error-value",
@@ -7531,7 +7532,8 @@ fn native_result_operation(
             let (timeout, context) = result_synchronize_options(options)?;
             native_result::synchronize_value(value, timeout, context)
         }
-        "result?" | "success?" | "error?" | "status" | "data" | "error-value" | "context" => {
+        "result?" | "success?" | "error?" | "timeout?" | "status" | "data" | "error-value"
+        | "context" => {
             if forms.len() != 1 {
                 return Err(format!("std.native.Result/{operation} expects one value"));
             }
@@ -7540,7 +7542,7 @@ fn native_result_operation(
                 return Ok(Value::Bool(matches!(value, Value::Result(_))));
             }
             let Value::Result(result) = value else {
-                if matches!(operation, "success?" | "error?") {
+                if matches!(operation, "success?" | "error?" | "timeout?") {
                     return Ok(Value::Bool(false));
                 }
                 return Err(format!("std.native.Result/{operation} expects a Result"));
@@ -7548,6 +7550,7 @@ fn native_result_operation(
             Ok(match operation {
                 "success?" => Value::Bool(result.is_success()),
                 "error?" => Value::Bool(result.is_error()),
+                "timeout?" => Value::Bool(result.is_timeout()),
                 "status" => result.status_value(),
                 "data" => result.data.clone(),
                 "error-value" => result.error_value(),
