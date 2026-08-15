@@ -301,6 +301,11 @@ public class HbcCodecTest {
       assertEquals("HARA", context.eval(HaraLanguage.ID, "(std.foundation.string/upper \"hara\")").asString());
       assertEquals(42L, context.eval(HaraLanguage.ID, "(std.foundation/if-not false 42)").asLong());
       assertEquals(
+          6L,
+          context
+              .eval(HaraLanguage.ID, "(std.foundation/cond-> 1 true inc true (* 3))")
+              .asLong());
+      assertEquals(
           "[1 2]",
           context
               .eval(HaraLanguage.ID, "(do (ns hbx.referral) (vector 1 2))")

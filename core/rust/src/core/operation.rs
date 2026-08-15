@@ -898,6 +898,58 @@ fn iterator_seq(value: Value) -> Result<Value, String> {
     }
 }
 
+fn transform_like(source: &Value, result: Value) -> Result<Value, String> {
+    match source {
+        Value::Seq(template) => match iterator_seq(result)? {
+            Value::Seq(sequence) => Ok(Value::Seq(Box::new(
+                sequence.with_meta(template.meta().cloned()),
+            ))),
+            empty => Ok(empty),
+        },
+        Value::Iterator(_) => Ok(result),
+        _ => {
+            let values = iterator_to_vec(result)?;
+            Ok(match source {
+                Value::List(template) => Value::List(
+                    values
+                        .into_iter()
+                        .collect::<PList<_>>()
+                        .with_meta(template.meta().cloned()),
+                ),
+                Value::Cons(template) => Value::List(
+                    values
+                        .into_iter()
+                        .collect::<PList<_>>()
+                        .with_meta(template.meta().cloned()),
+                ),
+                Value::Queue(template) => Value::Queue(Box::new(
+                    values
+                        .into_iter()
+                        .collect::<PQueue<_>>()
+                        .with_meta(template.meta().cloned()),
+                )),
+                Value::Deque(template) => Value::Deque(Box::new(
+                    values
+                        .into_iter()
+                        .collect::<PDeque<_>>()
+                        .with_meta(template.meta().cloned()),
+                )),
+                Value::Tuple(template) if values.len() <= 8 => Value::Tuple(Box::new(
+                    PTuple::from_values(values)?
+                        .with_meta(template.meta().cloned()),
+                )),
+                Value::Vector(template) => Value::Vector(
+                    values
+                        .into_iter()
+                        .collect::<PVector<_>>()
+                        .with_meta(template.meta().cloned()),
+                ),
+                _ => Value::Vector(values.into()),
+            })
+        }
+    }
+}
+
 struct RuntimeSeqSource {
     source: Value,
     finished: bool,
@@ -994,6 +1046,21 @@ fn iterator_interleave(values: Vec<Value>) -> Result<Value, String> {
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Value::Iterator(Rc::new(RefCell::new(
         IteratorState::generated(IteratorGenerator::Interleave(sources, 0)),
+    ))))
+}
+
+fn iterator_interpose(separator: Value, value: Value) -> Result<Value, String> {
+    let source = match value {
+        Value::Iterator(iterator) => Value::Iterator(iterator),
+        value => make_iterator(value)?,
+    };
+    Ok(Value::Iterator(Rc::new(RefCell::new(
+        IteratorState::generated(IteratorGenerator::Interpose(
+            source,
+            separator,
+            true,
+            None,
+        )),
     ))))
 }
 
@@ -1777,5 +1844,3 @@ fn unique_values(values: Vec<Value>) -> Vec<Value> {
     }
     unique
 }
-
-

@@ -63,6 +63,16 @@
   hash-set "Creates a persistent set from values." [& values] (apply Base/hash-set values))
 (defn ^{:inline true :schema [:fn [:any] :atom]}
   atom "Creates an atom containing value." [value] (Base/atom value))
+(defn ^{:schema [:fn [:fn & :any] :any]}
+  stream
+  "Creates a lazy asynchronous pull stream from a coroutine body and its initial arguments."
+  [function & arguments]
+  (apply Stream/generate function arguments))
+(defn ^{:schema [:fn [:any] :bool]}
+  stream?
+  "Returns true when value implements the native stream contract."
+  [value]
+  (satisfies? std.protocol.istream/IStream value))
 (defn ^{:inline true :schema [:fn [:map] :any]}
   pointer "Creates a context pointer from descriptor." [descriptor] (Base/pointer descriptor))
 (defn ^{:inline true
@@ -713,6 +723,20 @@
       (with-meta output (meta template))
       output)))
 
+(defn- ^{:schema [:fn [:any :any] :any]}
+  transform-like
+  "Keeps Seq transformations frozen and lazy, Iterator transformations
+   consumptive and lazy, and persistent collection transformations eager."
+  [template values]
+  (cond (seq? template)
+        (let [output (seq values)]
+          (if (and (not (nil? output))
+                   (not (nil? (meta template))))
+            (with-meta output (meta template))
+            output))
+        (iter? template) values
+        :else (collect-like template values)))
+
 (defn ^{:schema [:function [:fn [] :any]
                             [:fn [:num] :any]
                             [:fn [:num :num] :any]]}
@@ -723,11 +747,13 @@
   ([end] (seq (Iter/iter-range end)))
   ([start end] (seq (Iter/iter-range start end))))
 
-(defn- ^{:schema [:fn [:any :any] :vector]}
+(defn- ^{:schema [:fn [:any :any] :any]}
   materialize-groups
-  "Materializes partition groups as a vector of collections shaped like template."
+  "Transforms partition groups using template's lazy or eager result mode."
   [template groups]
-  (mapv (fn [group] (collect-like template group)) groups))
+  (transform-like
+   template
+   (Iter/iter-map (fn [group] (collect-like template group)) groups)))
 
 (defn ^{:schema [:function [:fn [:any] :any]
                             [:fn [:num :any] :any]]}
@@ -751,108 +777,122 @@
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :any]]}
   take-while
-  "Unary form returns an iterator transform; collection form eagerly
-   materializes items while predicate holds."
-  ([predicate] (partial Iter/iter-take-while predicate))
+  "Returns a source-sensitive transform, or transforms items while predicate holds."
+  ([predicate]
+   (fn [value]
+     (transform-like value (Iter/iter-take-while predicate value))))
   ([predicate value]
-   (collect-like value (Iter/iter-take-while predicate value))))
+   (transform-like value (Iter/iter-take-while predicate value))))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :any]]}
   drop-while
-  "Unary form returns an iterator transform; collection form eagerly
-   materializes after dropping items while predicate holds."
-  ([predicate] (partial Iter/iter-drop-while predicate))
+  "Returns a source-sensitive transform, or drops items while predicate holds."
+  ([predicate]
+   (fn [value]
+     (transform-like value (Iter/iter-drop-while predicate value))))
   ([predicate value]
-   (collect-like value (Iter/iter-drop-while predicate value))))
+   (transform-like value (Iter/iter-drop-while predicate value))))
 
 (defn ^{:schema [:function [:fn [:num] :fn]
                             [:fn [:num :any] :any]]}
   partition-all
-  "Partitions value into groups of at most amount items; unary form returns a
-   transform."
-  ([amount] (partial Iter/iter-partition-all amount))
+  "Returns a source-sensitive transform, or partitions value into groups of
+   at most amount items."
+  ([amount]
+   (fn [value]
+     (materialize-groups value (Iter/iter-partition-all amount value))))
   ([amount value]
    (materialize-groups value (Iter/iter-partition-all amount value))))
 
 (defn ^{:schema [:function [:fn [:num] :fn]
                             [:fn [:num :any] :any]]}
   partition
-  "Partitions value into groups of exactly amount items; unary form returns a
-   transform."
-  ([amount] (partial Iter/iter-partition amount))
+  "Returns a source-sensitive transform, or partitions value into groups of
+   exactly amount items."
+  ([amount]
+   (fn [value]
+     (materialize-groups value (Iter/iter-partition amount value))))
   ([amount value]
    (materialize-groups value (Iter/iter-partition amount value))))
 
 (defn ^{:schema [:function [:fn [:any] :fn]
                             [:fn [:any :any] :any]]}
   interpose
-  "Unary form returns an iterator transform; collection form eagerly inserts
-   separator between items."
-  ([separator] (partial Iter/iter-interpose separator))
+  "Returns a source-sensitive transform, or inserts separator between items."
+  ([separator]
+   (fn [value]
+     (transform-like value (Iter/iter-interpose separator value))))
   ([separator value]
-   (collect-like value (Iter/iter-interpose separator value))))
+   (transform-like value (Iter/iter-interpose separator value))))
 
 (defn ^{:schema [:fn [:any & :any] :any]}
   interleave
-  "Eagerly returns the first items of each source, then the second items, and
-   so on, stopping at the shortest source."
+  "Returns alternating source items, stopping at the shortest source. The first
+   source controls result mode."
   [value & values]
-  (collect-like value
-                      (apply Iter/iter-interleave (concat [value] values))))
+  (transform-like value
+                  (apply Iter/iter-interleave (concat [value] values))))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any & :any] :any]]}
   map
-  "Unary form returns an iterator transform. Otherwise eagerly maps function
-   over one or more sources into a vector, stopping at the shortest."
-  ([function] (partial Iter/iter-map function))
+  "Returns a source-sensitive transform, or maps function over one or more
+   sources. The first source controls result mode."
+  ([function]
+   (fn [value]
+     (transform-like value (Iter/iter-map function value))))
   ([function value & rest]
-   (collect-like value
-                     (apply Iter/iter-map function (concat [value] rest)))))
+   (transform-like value
+                   (apply Iter/iter-map function (concat [value] rest)))))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :any]]}
   filter
-  "Unary form returns an iterator transform; collection form eagerly keeps
-   items for which predicate returns true."
-  ([predicate] (partial Iter/iter-filter predicate))
+  "Returns a source-sensitive transform, or keeps matching items."
+  ([predicate]
+   (fn [value]
+     (transform-like value (Iter/iter-filter predicate value))))
   ([predicate value]
-   (collect-like value (Iter/iter-filter predicate value))))
+   (transform-like value (Iter/iter-filter predicate value))))
 
 (defn ^{:schema [:function [:fn [:num] :fn]
                             [:fn [:num :any] :any]]}
   take
-  "Unary form returns an iterator transform; collection form eagerly returns
-   the first amount items."
-  ([amount] (partial Iter/iter-take amount))
-  ([amount value] (collect-like value (Iter/iter-take amount value))))
+  "Returns a source-sensitive transform, or the first amount items."
+  ([amount]
+   (fn [value]
+     (transform-like value (Iter/iter-take amount value))))
+  ([amount value] (transform-like value (Iter/iter-take amount value))))
 
 (defn ^{:schema [:function [:fn [:num] :fn]
                             [:fn [:num :any] :any]]}
   drop
-  "Unary form returns an iterator transform; collection form eagerly returns
-   all but the first amount items."
-  ([amount] (partial Iter/iter-drop amount))
-  ([amount value] (collect-like value (Iter/iter-drop amount value))))
+  "Returns a source-sensitive transform, or all but the first amount items."
+  ([amount]
+   (fn [value]
+     (transform-like value (Iter/iter-drop amount value))))
+  ([amount value] (transform-like value (Iter/iter-drop amount value))))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :any]]}
   mapcat
-  "Unary form returns an iterator transform; collection form eagerly maps and
-   concatenates."
-  ([function] (partial Iter/iter-mapcat function))
+  "Returns a source-sensitive transform, or maps and concatenates."
+  ([function]
+   (fn [value]
+     (transform-like value (Iter/iter-mapcat function value))))
   ([function value]
-   (collect-like value (Iter/iter-mapcat function value))))
+   (transform-like value (Iter/iter-mapcat function value))))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :any]]}
   keep
-  "Unary form returns an iterator transform; collection form eagerly returns
-   non-nil mapped results."
-  ([function] (partial Iter/iter-keep function))
+  "Returns a source-sensitive transform, or keeps non-nil mapped results."
+  ([function]
+   (fn [value]
+     (transform-like value (Iter/iter-keep function value))))
   ([function value]
-   (collect-like value (Iter/iter-keep function value))))
+   (transform-like value (Iter/iter-keep function value))))
 
 (defn ^{:schema [:fn [:any] :any]}
   cycle
@@ -861,16 +901,16 @@
 
 (defn ^{:schema [:fn [:any & :any] :any]}
   zip
-  "Eagerly returns tuples of the items of each source in parallel, stopping at
-   the shortest source."
+  "Returns tuples of source items in parallel, stopping at the shortest source.
+   The first source controls result mode."
   [value & values]
-  (collect-like value
-                      (apply Iter/iter-zip (concat [value] values))))
+  (transform-like value
+                  (apply Iter/iter-zip (concat [value] values))))
 
 (defn ^{:schema [:fn [:any] :any]}
   partition-pair
-  "Eagerly returns value partitioned into pairs."
-  [value] (collect-like value (Iter/iter-partition-pair value)))
+  "Returns value partitioned into pairs using its source result mode."
+  [value] (transform-like value (Iter/iter-partition-pair value)))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :bool]]}
@@ -1328,6 +1368,146 @@
                        entry-value))))
           value-map)))
     maps))
+
+(defn merge-nested
+  "Recursively merges maps from left to right. Later non-map values replace
+   earlier values."
+  [& maps]
+  (apply merge-with
+         (fn [& values]
+           (if (every? (fn [value] (or (map? value) (nil? value))) values)
+             (apply merge-nested values)
+             (last values)))
+         maps))
+
+(defn dissoc-in
+  "Removes the value at path and prunes empty parent maps."
+  [value-map path]
+  (let [path-key (first path)
+        remaining (rest path)]
+    (if (empty? remaining)
+      (dissoc value-map path-key)
+      (let [nested (dissoc-in (or (get value-map path-key) {}) remaining)]
+        (if (empty? nested)
+          (dissoc value-map path-key)
+          (assoc value-map path-key nested))))))
+
+(defn transpose
+  "Returns a map with its keys and values exchanged. Later duplicate values win."
+  [value-map]
+  (reduce-in {}
+             (fn [output entry]
+               (assoc output (val entry) (key entry)))
+             value-map))
+
+(defn find-at
+  "Returns the index of the first value matched by predicate, or -1."
+  [predicate values]
+  (let [it (iter values)]
+    (loop [index 0]
+      (if (iter-next? it)
+        (if (predicate (iter-next it))
+          index
+          (recur (inc index)))
+        -1))))
+
+(defn insert-at
+  "Returns a vector with one or more values inserted at index."
+  [values index value & more]
+  (vec (concat (take index values)
+               [value]
+               more
+               (drop index values))))
+
+(defn remove-at
+  "Returns values without count items beginning at index. Count defaults to one."
+  ([values index]
+   (remove-at values index 1))
+  ([values index count]
+   (let [result (concat (take index values) (drop (+ index count) values))]
+     (if (vector? values) (vec result) result))))
+
+(defn qualified-keys
+  "Returns entries whose keyword keys are qualified, optionally by namespace."
+  ([value-map]
+   (qualified-keys value-map nil))
+  ([value-map qualifier]
+   (let [qualifier-values (if (nil? qualifier)
+                            nil
+                            (if (coll? qualifier) qualifier [qualifier]))
+         qualifiers (if qualifier-values
+                      (set (map (fn [value]
+                                  (if (or (keyword? value) (symbol? value))
+                                    (name value)
+                                    (str value)))
+                                qualifier-values))
+                      nil)]
+     (reduce-in (empty value-map)
+                (fn [output entry]
+                  (let [entry-key (key entry)
+                        key-namespace (if (keyword? entry-key)
+                                        (namespace entry-key)
+                                        nil)]
+                    (if (and key-namespace
+                             (or (nil? qualifiers)
+                                 (has? qualifiers key-namespace)))
+                      (assoc output entry-key (val entry))
+                      output)))
+                value-map))))
+
+(defn unqualified-keys
+  "Returns entries whose keyword keys are unqualified."
+  [value-map]
+  (reduce-in (empty value-map)
+             (fn [output entry]
+               (let [entry-key (key entry)]
+                 (if (and (keyword? entry-key)
+                          (nil? (namespace entry-key)))
+                   (assoc output entry-key (val entry))
+                   output)))
+             value-map))
+
+(defn qualify-keys
+  "Qualifies unqualified keyword keys with qualifier."
+  [value-map qualifier]
+  (let [qualifier-name (if (or (keyword? qualifier) (symbol? qualifier))
+                         (name qualifier)
+                         (str qualifier))]
+    (map-keys (fn [entry-key]
+                (if (and (keyword? entry-key)
+                         (nil? (namespace entry-key)))
+                  (keyword qualifier-name (name entry-key))
+                  entry-key))
+              value-map)))
+
+(defn unqualify-keys
+  "Removes namespaces from keyword keys, optionally only for qualifier."
+  ([value-map]
+   (map-keys (fn [entry-key]
+               (if (keyword? entry-key)
+                 (keyword (name entry-key))
+                 entry-key))
+             value-map))
+  ([value-map qualifier]
+   (let [qualifier-name (if (or (keyword? qualifier) (symbol? qualifier))
+                          (name qualifier)
+                          (str qualifier))]
+     (map-keys (fn [entry-key]
+                 (if (and (keyword? entry-key)
+                          (= qualifier-name (namespace entry-key)))
+                   (keyword (name entry-key))
+                   entry-key))
+               value-map))))
+
+(defn flatten-nested
+  "Returns the non-collection leaves of a nested collection."
+  [value]
+  (if (coll? value)
+    (reduce-in []
+               (fn [output item]
+                 (into output (flatten-nested item)))
+               value)
+    [value]))
 
 (defn ^{:schema [:fn [:fn :any] :map]}
   group-by

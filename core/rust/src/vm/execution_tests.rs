@@ -188,6 +188,28 @@ fn runtime_bytecode_defmacro_registers_and_expands() {
 }
 
 #[test]
+fn bytecode_variadic_macro_forwards_rest_to_helper_in_order() {
+    let mut runtime = Runtime::core();
+    runtime.prepare_foundation_bytecode();
+    assert_eq!(
+        runtime.eval_bytecode_native(
+            "(defn third-form [forms] (first (rest (rest forms))))"
+        ),
+        Ok("#'user/third-form".into())
+    );
+    assert_eq!(
+        runtime.eval_bytecode_native(
+            "(defmacro choose-third [& forms] (third-form forms))"
+        ),
+        Ok("<fn>".into())
+    );
+    assert_eq!(
+        runtime.eval_bytecode_native("(choose-third nil nil (+ 19 23))"),
+        Ok("42".into())
+    );
+}
+
+#[test]
 fn foundation_source_compiles_to_bytecode() {
     let source = crate::EMBEDDED_HAL_RESOURCES
         .iter()
@@ -1067,13 +1089,17 @@ fn global_form_errors_issue_223() {
         "(do (defstruct P [x]) (instance? 42 1))",
         "instance? expects a struct or mutable type",
     );
-    // Referred foundation Vars are protected; declare is forward visibility only.
-    let message = Runtime::new()
-        .compile_bytecode("(do (defn count [n] 42) (count 5))")
-        .expect_err("referred foundation Var must be protected");
-    assert!(
-        message.contains("Cannot replace referred Var without ns omission: count"),
-        "{message}"
+    // Definitions are namespace-owned and may shadow automatically referred Vars.
+    let mut runtime = Runtime::new();
+    assert_eq!(
+        runtime
+            .eval_bytecode_artifact(
+                &runtime
+                    .compile_bytecode_artifact("(do (defn identity [n] 42) (identity 5))")
+                    .unwrap(),
+            )
+            .unwrap(),
+        "42"
     );
     // Uninitialized let-style errors keep their shape.
     let (_, message) = compile_error("(fn [a &] a)");

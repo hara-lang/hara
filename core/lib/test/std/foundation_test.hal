@@ -244,8 +244,11 @@
 ^{:refer std.foundation/first}
 (Test/run
  [{:name "peeks without changing collection semantics"
-   :test (fn [] [(f/first [1 2]) (f/first [])])
-   :expected [1 nil]}])
+   :test (fn [] [(f/first [1 2])
+                 (f/first [])
+                 (f/first '())
+                 (f/first (vec []))])
+   :expected [1 nil nil nil]}])
 
 ^{:refer std.foundation/second}
 (Test/run [])
@@ -259,8 +262,11 @@
 ^{:refer std.foundation/last}
 (Test/run
  [{:name "peeks at the final collection item"
-   :test (fn [] [(f/last [1 2]) (f/last [])])
-   :expected [2 nil]}])
+   :test (fn [] [(f/last [1 2])
+                 (f/last [])
+                 (f/last '())
+                 (f/last (vec []))])
+   :expected [2 nil nil nil]}])
 
 ^{:refer std.foundation/reverse}
 (Test/run [])
@@ -340,7 +346,38 @@
 (Test/run [])
 
 ^{:refer std.foundation/drop}
-(Test/run [])
+(Test/run
+ [{:name "keeps Seq pipelines lazy and reusable"
+   :test (fn []
+           (let [output (f/drop 1 (f/iterate f/inc 0))]
+             [(f/seq? output)
+              (f/first output)
+              (f/first output)
+              (f/first (f/rest output))]))
+   :expected [true 1 1 2]}
+  {:name "keeps Iterator pipelines lazy and consumptive"
+   :test (fn []
+           (let [output (f/drop 1 (f/iter [1 2 3]))]
+             [(f/iter? output)
+              (f/iter-next output)
+              (f/iter-next output)]))
+   :expected [true 2 3]}
+  {:name "preserves eager persistent collection behavior"
+   :test (fn []
+           [(f/drop 1 [1 2 3])
+            (f/drop 1 '(a b c d))])
+   :expected [[2 3] (quote (b c d))]}
+  {:name "supports the original lazy thread-last pipeline"
+   :test (fn []
+           (->> (f/iterate f/inc 0)
+                (f/drop 1)
+                (f/take-while (fn [value] (< value 5)))
+                (f/filter (fn [value] (= 0 (mod value 2))))
+                (f/first)))
+   :expected 2}
+  {:name "preserves list order"
+   :test (fn [] (f/drop 1 '(a b c d)))
+   :expected '(b c d)}])
 
 ^{:refer std.foundation/mapcat}
 (Test/run [])
@@ -517,6 +554,82 @@
 ^{:refer std.foundation/merge-with}
 (Test/run [])
 
+^{:refer std.foundation/merge-nested}
+(Test/run
+ [{:name "merges nested maps from left to right"
+   :test (fn [] (f/merge-nested {:a {:b {:c 1 :d 2}}}
+                                {:a {:b {:c 3}}}
+                                {:e 4}))
+   :expected {:a {:b {:c 3 :d 2}} :e 4}}
+  {:name "replaces nested maps with later scalar values"
+   :test (fn [] (f/merge-nested {:a {:b {:c 3}}} {:a {:b 3}}))
+   :expected {:a {:b 3}}}])
+
+^{:refer std.foundation/dissoc-in}
+(Test/run
+ [{:name "removes a nested value and empty parents"
+   :test (fn [] (f/dissoc-in {:a {:b {:c 1}} :x 2} [:a :b :c]))
+   :expected {:x 2}}])
+
+^{:refer std.foundation/transpose}
+(Test/run
+ [{:name "exchanges map keys and values"
+   :test (fn [] (f/transpose {:a 1 :b 2 :c 3}))
+   :expected {1 :a 2 :b 3 :c}}])
+
+^{:refer std.foundation/find-at}
+(Test/run
+ [{:name "returns the first matching index"
+   :test (fn [] [(f/find-at even? [1 3 4 6])
+                 (f/find-at keyword? [1 2])])
+   :expected [2 -1]}])
+
+^{:refer std.foundation/insert-at}
+(Test/run
+ [{:name "inserts one or more values at an index"
+   :test (fn [] (f/insert-at [:a :b] 1 :x :y))
+   :expected [:a :x :y :b]}])
+
+^{:refer std.foundation/remove-at}
+(Test/run
+ [{:name "removes one or more values at an index"
+   :test (fn [] [(f/remove-at [:a :b :c :d] 2)
+                 (f/remove-at [:a :b :c :d] 1 2)])
+   :expected [[:a :b :d] [:a :d]]}])
+
+^{:refer std.foundation/qualified-keys}
+(Test/run
+ [{:name "selects qualified keys with an optional namespace"
+   :test (fn [] [(f/qualified-keys {:a 1 :ns/b 2 :other/c 3})
+                 (f/qualified-keys {:a 1 :ns/b 2 :other/c 3} :ns)])
+   :expected [{:ns/b 2 :other/c 3} {:ns/b 2}]}])
+
+^{:refer std.foundation/unqualified-keys}
+(Test/run
+ [{:name "selects unqualified keyword keys"
+   :test (fn [] (f/unqualified-keys {:a 1 :ns/b 2 "c" 3}))
+   :expected {:a 1}}])
+
+^{:refer std.foundation/qualify-keys}
+(Test/run
+ [{:name "qualifies unqualified keyword keys"
+   :test (fn [] (f/qualify-keys {:a 1 :other/b 2} :ns))
+   :expected {:ns/a 1 :other/b 2}}])
+
+^{:refer std.foundation/unqualify-keys}
+(Test/run
+ [{:name "unqualifies every keyword or one namespace"
+   :test (fn [] [(f/unqualify-keys {:a 1 :ns/b 2 :other/c 3})
+                 (f/unqualify-keys {:a 1 :ns/b 2 :other/c 3} :ns)])
+   :expected [{:a 1 :b 2 :c 3}
+              {:a 1 :b 2 :other/c 3}]}])
+
+^{:refer std.foundation/flatten-nested}
+(Test/run
+ [{:name "returns nested collection leaves"
+   :test (fn [] (f/flatten-nested [1 2 [3 [4 5]]]))
+   :expected [1 2 3 4 5]}])
+
 ^{:refer std.foundation/group-by}
 (Test/run [])
 
@@ -620,10 +733,16 @@
 (Test/run [])
 
 ^{:refer std.foundation/cond->}
-(Test/run [])
+(Test/run
+ [{:name "threads every matching clause pair"
+   :test (fn [] (f/cond-> 1 true inc true (* 3)))
+   :expected 6}])
 
 ^{:refer std.foundation/cond->>}
-(Test/run [])
+(Test/run
+ [{:name "threads every matching clause pair last"
+   :test (fn [] (f/cond->> 1 true inc true (* 3)))
+   :expected 6}])
 
 ^{:refer std.foundation/with-ns}
 (Test/run [])

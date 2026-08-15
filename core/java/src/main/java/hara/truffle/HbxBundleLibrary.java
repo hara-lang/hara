@@ -17,6 +17,7 @@ final class HbxBundleLibrary {
   static final String RESOURCE = "std.foundation.hbx";
   private static final Set<String> SOURCE_OVERRIDES =
       Set.of(
+          "std.foundation",
           "code.test",
           "code.test.artifact",
           "code.test.base.context",

@@ -314,7 +314,7 @@ fn callable_var_namespace_cases_match_shared_spec() {
         "namespace/callable-var-precedence",
         "namespace/callable-var-lexical-shadow",
         "namespace/callable-var-late-binding",
-        "namespace/referred-var-protected",
+        "namespace/referred-var-shadowed",
     ] {
         let case = cases
             .iter()

@@ -79,7 +79,9 @@ namespace or alias, then unbound-symbol error.
 or `nil` at end-of-stream. Only one pull may be pending. Closing is idempotent
 and a closed stream produces `nil`.
 
-`std.lib.stream/generate` is the package-tier constructor. It owns a private
+`std.foundation/stream` is the ordinary language constructor over
+`Stream/generate`, and `std.foundation/stream?` recognises the native stream
+contract. The constructor owns a private
 coroutine, supplies constructor arguments only on its first resume, exposes
 yielded values one at a time, and discards the coroutine's final return value.
 Because `nil` denotes EOF, yielding `nil` rejects the pull with
@@ -88,7 +90,7 @@ pull and close the stream. The namespace is deliberately absent from the
 Foundation bootstrap bundle.
 
 Foundation iterators are synchronous: `iter-next` either returns immediately
-or the iterator is exhausted. `std.lib.stream/from-iterator` is the explicit
+or the iterator is exhausted. `std.stream.async/from-iterator` is the explicit
 one-way bridge into Promise-based pulling. `unfold` accepts a direct or
 promised step result of `[item next-state]`, with `nil` ending the stream.
 `map`, `filter`, and `take` are lazy managed streams; `reduce` and `collect`
@@ -100,6 +102,10 @@ separate write operation; for example, a WebSocket exposes inbound messages as
 a stream and outbound messages through `WebSocket/send`. Stream, coroutine,
 and transport handles are worker-local and cannot cross session, HTA, snapshot,
 or worker serialization boundaries.
+
+The `std.stream.duplex` Hara namespace is the public facade over the native
+Duplex value; it owns construction, recognition, receive, send, and close
+forwarding while preserving the worker-local native representation.
 
 Connected processes and sockets expose this composition directly.
 `Process/duplex` receives stdout byte chunks and sends stdin byte chunks;

@@ -465,8 +465,45 @@ public final class HaraJavaAdapters {
 
   public static void installCons(HaraProtocol protocol) {
     protocol.extend(
+        hara.lang.data.Seq.class,
+        "cons",
+        (receiver, arguments) -> consValue((ICons<?>) receiver, arguments[0]));
+    protocol.extend(
+        hara.lang.data.Cons.class,
+        "cons",
+        (receiver, arguments) -> consValue((ICons<?>) receiver, arguments[0]));
+    protocol.extend(
+        hara.lang.data.Deque.class,
+        "cons",
+        (receiver, arguments) -> consValue((ICons<?>) receiver, arguments[0]));
+    protocol.extend(
+        hara.lang.data.Queue.class,
+        "cons",
+        (receiver, arguments) -> consSequential((ISequentialType<?>) receiver, arguments[0]));
+    protocol.extend(
+        List.class,
+        "cons",
+        (receiver, arguments) -> consSequential((ISequentialType<?>) receiver, arguments[0]));
+    protocol.extend(
+        hara.lang.data.Vector.class,
+        "cons",
+        (receiver, arguments) -> consSequential((ISequentialType<?>) receiver, arguments[0]));
+    protocol.extend(
+        Tuple.Tup0.class,
+        "cons",
+        (receiver, arguments) -> consSequential((ISequentialType<?>) receiver, arguments[0]));
+    protocol.extend(
+        Tuple.Tup1.class,
+        "cons",
+        (receiver, arguments) -> consSequential((ISequentialType<?>) receiver, arguments[0]));
+    protocol.extend(
+        ISequentialType.class,
+        "cons",
+        (receiver, arguments) -> consSequential((ISequentialType<?>) receiver, arguments[0]));
+    protocol.extend(
         ICons.class, "cons", (receiver, arguments) -> consValue((ICons<?>) receiver, arguments[0]));
-    protocol.extendNil("cons", (receiver, arguments) -> List.Standard.from(null, arguments[0]));
+    protocol.extendNil(
+        "cons", (receiver, arguments) -> new hara.lang.data.Cons<>(null, arguments[0], null));
   }
 
   public static void installDissoc(HaraProtocol protocol) {
@@ -1106,6 +1143,13 @@ public final class HaraJavaAdapters {
   @SuppressWarnings("unchecked")
   private static Object consValue(ICons<?> cons, Object value) {
     return ((ICons<Object>) cons).cons(value);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static Object consSequential(ISequentialType<?> sequential, Object value) {
+    hara.lang.data.Seq<Object> tail =
+        hara.lang.data.Seq.create(((ISequentialType<Object>) sequential).iterator());
+    return new hara.lang.data.Cons<>(null, value, tail);
   }
 
   @SuppressWarnings("unchecked")

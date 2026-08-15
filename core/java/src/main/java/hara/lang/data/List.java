@@ -69,7 +69,7 @@ public interface List<E> extends IVectorType<E> {
 
     @Override
     public Standard<E> conj(E v) {
-      return pushLast(v);
+      return pushFirst(v);
     }
 
     @Override
@@ -242,7 +242,7 @@ public interface List<E> extends IVectorType<E> {
     }
 
     public static <E> Mutable<E> into(Mutable<E> coll, Iterator<E> it) {
-      return Iter.reduce(it, coll, (m, e) -> (Mutable<E>) m.conj(e));
+      return Iter.reduce(it, coll, (m, e) -> m.pushLast(e));
     }
 
     // Helper for resizing
@@ -321,7 +321,7 @@ public interface List<E> extends IVectorType<E> {
 
     @Override
     public Mutable<E> conj(E v) {
-      return pushLast(v);
+      return pushFirst(v);
     }
 
     @Override
@@ -330,7 +330,7 @@ public interface List<E> extends IVectorType<E> {
     }
 
     public Mutable<E> conjAll(Iterator<E> it) {
-      return Iter.reduce(it, this, (m, e) -> (Mutable<E>) m.conj(e));
+      return Iter.reduce(it, this, (m, e) -> m.pushLast(e));
     }
 
     public Standard<E> toPersistentRaw() {

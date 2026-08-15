@@ -283,7 +283,11 @@ public class HaraLanguageTest {
     try (Context context = context()) {
       context.eval(HaraLanguage.ID, "(load-resource \"std/foundation.hal\")");
       assertTrue(context.eval(HaraLanguage.ID, "(vector? (map inc [1 2 3]))").asBoolean());
-      assertTrue(context.eval(HaraLanguage.ID, "(iter? ((map inc) [1 2 3]))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(vector? ((map inc) [1 2 3]))").asBoolean());
+      assertTrue(
+          context.eval(HaraLanguage.ID, "(seq? ((map inc) (seq [1 2 3])))").asBoolean());
+      assertTrue(
+          context.eval(HaraLanguage.ID, "(iter? ((map inc) (iter [1 2 3])))").asBoolean());
       assertEquals(2, context.eval(HaraLanguage.ID, "(first (map inc [1 2 3]))").asLong());
       assertEquals(2, context.eval(HaraLanguage.ID, "(first ((map inc) [1 2 3]))").asLong());
       assertEquals(2, context.eval(HaraLanguage.ID, "(first ((map inc) (seq [1 2 3])))").asLong());
@@ -296,6 +300,15 @@ public class HaraLanguageTest {
       assertEquals(
           3,
           context.eval(HaraLanguage.ID, "(first ((comp (map inc) (map inc)) [1 2 3]))").asLong());
+      assertEquals(
+          2,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(->> (iterate inc 0) (drop 1) "
+                      + "(take-while (fn [value] (< value 5))) "
+                      + "(filter (fn [value] (= 0 (mod value 2)))) first)")
+              .asLong());
       assertTrue(context.eval(HaraLanguage.ID, "(nil? (rest [1]))").asBoolean());
       assertEquals(
           "[true false 1 1 2 [1 2 3] [1 2 3]]",
@@ -2344,12 +2357,32 @@ public class HaraLanguageTest {
     try (Context context = context()) {
       assertEquals(1, context.eval(HaraLanguage.ID, "(first [1 2 3])").asLong());
       assertTrue(context.eval(HaraLanguage.ID, "(first [])").isNull());
+      assertTrue(context.eval(HaraLanguage.ID, "(first '())").isNull());
+      assertTrue(context.eval(HaraLanguage.ID, "(first (vec []))").isNull());
       assertTrue(context.eval(HaraLanguage.ID, "(first nil)").isNull());
       assertEquals(2, context.eval(HaraLanguage.ID, "(first (rest [1 2 3]))").asLong());
       assertTrue(context.eval(HaraLanguage.ID, "(rest [1])").isNull());
       assertTrue(context.eval(HaraLanguage.ID, "(rest [])").isNull());
       assertTrue(context.eval(HaraLanguage.ID, "(rest nil)").isNull());
       assertEquals(3, context.eval(HaraLanguage.ID, "(first (rest (rest [1 2 3])))").asLong());
+    }
+  }
+
+  @Test
+  public void consUsesOneSequenceRepresentationForCompactAndTreeVectors() {
+    try (Context context = context()) {
+      assertEquals(
+          "[:std.native.Cons (0 1 2) :std.native.Cons (0 1 2)]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [compact [1 2] tree (vec [1 2])] "
+                      + "[(type (cons 0 compact)) (cons 0 compact) "
+                      + " (type (cons 0 tree)) (cons 0 tree)])")
+              .toString());
+      assertEquals(
+          ":std.native.List",
+          context.eval(HaraLanguage.ID, "(type ((fn [& rest] rest) 1 2))").toString());
     }
   }
 

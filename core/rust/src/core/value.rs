@@ -1385,6 +1385,7 @@ enum IteratorGenerator {
     Concat(Vec<Value>, usize),
     Zip(Vec<Value>),
     Interleave(Vec<Value>, usize),
+    Interpose(Value, Value, bool, Option<Value>),
     Partition(Value, usize, bool),
 }
 
@@ -1691,6 +1692,26 @@ impl IteratorState {
                     *index = (*index + 1) % sources.len();
                     Ok(Some(value))
                 }
+                IteratorGenerator::Interpose(source, separator, first, pending) => {
+                    if let Some(value) = pending.take() {
+                        return Ok(Some(value));
+                    }
+                    match iterator_try_next(source)? {
+                        None => {
+                            close_iterator_source(source);
+                            self.closed = true;
+                            Ok(None)
+                        }
+                        Some(value) if *first => {
+                            *first = false;
+                            Ok(Some(value))
+                        }
+                        Some(value) => {
+                            *pending = Some(value);
+                            Ok(Some(separator.clone()))
+                        }
+                    }
+                }
                 IteratorGenerator::Partition(source, amount, all) => {
                     let mut values = Vec::new();
                     for _ in 0..*amount {
@@ -1752,6 +1773,7 @@ impl IteratorState {
                 | IteratorGenerator::Filter(_, source)
                 | IteratorGenerator::Keep(_, source)
                 | IteratorGenerator::Prepend(_, source)
+                | IteratorGenerator::Interpose(source, _, _, _)
                 | IteratorGenerator::Partition(source, _, _) => close_iterator_source(source),
                 IteratorGenerator::Mapcat(_, source, pending) => {
                     close_iterator_source(source);
@@ -2609,5 +2631,4 @@ impl Value {
         self.java_hash(crate::lang::hash::DEFAULT_HASH) as u64
     }
 }
-
 

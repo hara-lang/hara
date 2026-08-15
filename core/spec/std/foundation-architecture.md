@@ -15,7 +15,7 @@ std.foundation.promise
 std.foundation.string
 ```
 
-`core/rust/bootstrap.namespaces` is authoritative for the Foundation namespaces embedded in production Java and Rust runtimes. The broader `standard-library.namespaces` catalog remains development/package input; membership there does not make a source part of the bootstrap. A source file, test fixture, automatic alias, or native object does not become a public namespace merely because it is present in the repository or visible to an evaluator.
+`core/rust/bootstrap.namespaces` selects the Foundation source namespaces embedded in production Java and Rust runtimes. Within each selected namespace, the canonical `.hal` source owns its public Vars: evaluating a public definition interns it in that namespace, and bytecode generation discovers the same definitions from source. Inventories and generated manifests describe that surface; they do not gate individual symbols. The broader `standard-library.namespaces` catalog remains development/package input, so membership there alone does not make a source part of the bootstrap.
 
 The root `std.foundation` namespace owns the portable value layer: composition, collections, sequence operations, set algebra, metadata, references, macros, structural traversal, regular-expression helpers, and the small language-level helpers automatically referred into ordinary namespaces. Regular-expression ownership remains root-level: `regexp`, `re-pattern`, `re-find`, `re-matches`, `re-replace`, and `re-split` are portable HAL functions, while `regexp?` remains a kernel-installed root predicate.
 

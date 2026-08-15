@@ -102,7 +102,7 @@ public final class HaraRootNode extends RootNode {
     if (variadic) {
       Object[] rest = new Object[actualArity - minimumArity];
       System.arraycopy(arguments, minimumArity + argumentOffset, rest, 0, rest.length);
-      frame.setObject(parameterSlots[minimumArity], BuiltinStruct.vector(rest));
+      frame.setObject(parameterSlots[minimumArity], BuiltinStruct.list(rest));
     }
 
     long journalOperation = EvaluationJournal.enter(frameLabel(), arguments, argumentOffset);

@@ -1,9 +1,9 @@
-(ns std.lib.stream
+(ns std.stream.async
   (:config {:override [map filter take reduce]}))
 
 (defstruct ManagedStream [inner source closed])
 
-(defn- close-value [value]
+(defn close-value [value]
   (try
     (IClose/close value)
     (catch Throwable error nil)))
@@ -21,20 +21,9 @@
         (close-value (:inner stream))
         (close-value (:source stream))))))
 
-(defn- managed [inner source]
+(defn managed [inner source]
   (ManagedStream inner source (atom false)))
 
-(defn ^{:inline true :schema [:fn [:fn & :any] :any]}
-  generate
-  "Creates a lazy asynchronous pull stream from a coroutine body and its initial arguments."
-  [function & arguments]
-  (apply Stream/generate function arguments))
-
-(defn ^{:inline true :schema [:fn [:any] :bool]}
-  stream?
-  "Returns true when value implements the native stream contract."
-  [value]
-  (satisfies? std.protocol.istream/IStream value))
 
 (defn ^{:inline true :schema [:fn [:any] :promise]}
   next
@@ -52,7 +41,7 @@
   "Creates an asynchronous stream from step and seed. Step returns nil,
    [item next-state], or a promise of either."
   [step seed]
-  (generate
+  (stream
     (fn []
       (loop [state seed]
         (let [result (co/await (promise/from (step state)))]
@@ -67,7 +56,7 @@
   [value]
   (let [iterator (iter value)]
     (managed
-      (generate
+      (stream
         (fn []
           (try
             (loop []
@@ -83,7 +72,7 @@
   "Lazily applies synchronous function to every asynchronous stream item."
   [function source]
   (managed
-    (generate
+    (stream
       (fn []
         (try
           (loop []
@@ -100,7 +89,7 @@
   "Lazily retains asynchronous stream items satisfying predicate."
   [predicate source]
   (managed
-    (generate
+    (stream
       (fn []
         (try
           (loop []
@@ -117,7 +106,7 @@
   "Lazily returns at most count items and then closes its source."
   [count source]
   (managed
-    (generate
+    (stream
       (fn []
         (try
           (if (< 0 count)
@@ -135,7 +124,7 @@
           (finally (close-value source)))))
     source))
 
-(defn- reduce-next [function result source]
+(defn reduce-next [function result source]
   (promise/then
     (next source)
     (fn [value]
@@ -150,7 +139,7 @@
     (reduce-next function initial source)
     (fn [] (close-value source))))
 
-(defn- collect-next [source result]
+(defn collect-next [source result]
   (promise/then
     (next source)
     (fn [value]
@@ -164,3 +153,5 @@
   (promise/finally
     (collect-next source [])
     (fn [] (close-value source))))
+
+

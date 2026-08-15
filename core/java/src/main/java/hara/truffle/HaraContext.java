@@ -393,6 +393,10 @@ public final class HaraContext {
     if (eagerFallbacksLoaded || eagerFallbacksLoading) return;
     eagerFallbacksLoading = true;
     try {
+      // The canonical Foundation root is source-owned. Load its generated HALC
+      // before child modules so every public source definition is interned;
+      // the HBX inventory selects modules but never gates individual Vars.
+      requiredNamespace(FOUNDATION_NAMESPACE);
       if (bytecodeLibrary.available()) {
         for (HbxBundleLibrary.Module module : bytecodeLibrary.eagerModules()) {
           requiredNamespace(module.namespace());
@@ -1516,7 +1520,8 @@ public final class HaraContext {
   void declareCurrent(Symbol symbol) {
     HaraVar existing = currentNamespace.lookup(symbol.getName());
     if (existing != null && !currentNamespace.name().equals(existing.namespaceName())) {
-      throw protectedReferredVar(symbol, existing);
+      currentNamespace.removeReferredVar(symbol.getName());
+      existing = null;
     }
     if (existing == null) {
       currentNamespace.define(
@@ -1538,7 +1543,7 @@ public final class HaraContext {
   public void requireOwnedCurrent(Symbol symbol) {
     HaraVar existing = resolve(symbol);
     if (existing != null && !currentNamespace.name().equals(existing.namespaceName())) {
-      throw protectedReferredVar(symbol, existing);
+      currentNamespace.removeReferredVar(symbol.getName());
     }
   }
 
@@ -2687,11 +2692,11 @@ public final class HaraContext {
             Object[] arguments = new Object[inputs.length + 1];
             arguments[0] = function;
             System.arraycopy(inputs, 0, arguments, 1, inputs.length);
-            return iterMap(arguments);
+            return transformLike(inputs[0], iterMap(arguments));
           });
     }
     if (values.length < 2) throw new HaraException("map expects a function and collections");
-    return materializeVector(iterMap(values));
+    return transformLike(values[1], iterMap(values));
   }
 
   Object materializeVector(Object values) {
@@ -2701,6 +2706,20 @@ public final class HaraContext {
     return hara.lang.data.Vector.Standard.from(null, output.toArray());
   }
 
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  Object transformLike(Object source, Object values) {
+    Object unwrapped = HaraBox.unwrap(source);
+    if (unwrapped instanceof hara.lang.data.Seq sequence) {
+      Object output = seqValue(new Object[] {values});
+      if (output instanceof hara.lang.data.Seq result && sequence.meta() != null) {
+        return result.withMeta(sequence.meta());
+      }
+      return output;
+    }
+    if (unwrapped instanceof Iterator<?>) return values;
+    return materializeVector(values);
+  }
+
   Object partitionValues(Object[] values, boolean includePartial) {
     if (values.length == 1) {
       Object amount = values[0];
@@ -2708,39 +2727,41 @@ public final class HaraContext {
           includePartial ? "partition-all" : "partition",
           input -> {
             Object partitioned = iterPartition(new Object[] {amount, input}, includePartial);
-            return partitioned;
+            return transformLike(input, partitioned);
           });
     }
     requireMethodArity(includePartial ? "partition-all" : "partition", values, 2);
-    return materializeVector(iterPartition(values, includePartial));
+    return transformLike(values[1], iterPartition(values, includePartial));
   }
 
   Object filterValues(Object[] values) {
     if (values.length == 1) {
       Object predicate = values[0];
       return new UnaryBuiltin(
-          "filter", input -> iterFilter(new Object[] {predicate, input}));
+          "filter", input -> transformLike(input, iterFilter(new Object[] {predicate, input})));
     }
     requireMethodArity("filter", values, 2);
-    return materializeVector(iterFilter(values));
+    return transformLike(values[1], iterFilter(values));
   }
 
   Object takeValues(Object[] values) {
     if (values.length == 1) {
       Object amount = values[0];
-      return new UnaryBuiltin("take", input -> iterTake(new Object[] {amount, input}));
+      return new UnaryBuiltin(
+          "take", input -> transformLike(input, iterTake(new Object[] {amount, input})));
     }
     requireMethodArity("take", values, 2);
-    return materializeVector(iterTake(values));
+    return transformLike(values[1], iterTake(values));
   }
 
   Object dropValues(Object[] values) {
     if (values.length == 1) {
       Object amount = values[0];
-      return new UnaryBuiltin("drop", input -> iterDrop(new Object[] {amount, input}));
+      return new UnaryBuiltin(
+          "drop", input -> transformLike(input, iterDrop(new Object[] {amount, input})));
     }
     requireMethodArity("drop", values, 2);
-    return materializeVector(iterDrop(values));
+    return transformLike(values[1], iterDrop(values));
   }
 
   Object removeValues(Object[] values) {

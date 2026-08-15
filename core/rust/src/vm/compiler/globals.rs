@@ -134,24 +134,7 @@ impl Compiler {
         Ok(())
     }
 
-    fn require_owned_global(&self, name: &str, span: &Span) -> Result<(), CompileError> {
-        let referred = crate::core::namespace_registry()
-            .ok()
-            .and_then(|registry| {
-                let current = registry
-                    .find(&self.namespace)
-                    .unwrap_or_else(|| registry.current());
-                current
-                    .resolve(&crate::lang::data::Symbol::parse(name))
-                    .map(|var| var.symbol().get_namespace() != Some(current.name().as_str()))
-            })
-            .unwrap_or(false);
-        if referred {
-            return Err(unsupported(
-                format!("Cannot replace referred Var without ns omission: {name}"),
-                span.start,
-            ));
-        }
+    fn require_owned_global(&self, _name: &str, _span: &Span) -> Result<(), CompileError> {
         Ok(())
     }
 

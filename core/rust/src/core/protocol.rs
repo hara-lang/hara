@@ -1199,6 +1199,10 @@ fn protocol_cons(arguments: &[Value]) -> Result<Value, String> {
             item.clone(),
             values.clone(),
         )))),
+        Value::Queue(values) => Ok(Value::Cons(Box::new(PCons::new(
+            item.clone(),
+            values.iter().cloned().collect(),
+        )))),
         Value::Deque(values) => Ok(Value::Deque(Box::new(values.push_first(item.clone())))),
         Value::Nil => Ok(Value::Cons(Box::new(PCons::new(
             item.clone(),
@@ -1774,5 +1778,4 @@ fn promise_chain(source: Promise, operation: &str, function: Rc<Function>) -> Pr
     }));
     output
 }
-
 

@@ -1,0 +1,38 @@
+(ns std.stream.mailbox-test
+  (:require [std.stream.mailbox :as mailbox]))
+
+(Test/run
+ [{:name "delivers queued values in FIFO order including nil"
+   :test (fn []
+           (let [box (mailbox/create 3)]
+             (mailbox/offer box :first)
+             (mailbox/offer box nil)
+             [(deref (mailbox/take box))
+              (deref (mailbox/take box))]))
+   :expected [{:value :first} {:value nil}]}
+  {:name "delivers directly to a pending waiter"
+   :test (fn []
+           (let [box (mailbox/create 1)
+                 waiting (mailbox/take box)]
+             (mailbox/offer box :ready)
+             (deref waiting)))
+   :expected {:value :ready}}
+  {:name "enforces bounded capacity"
+   :test (fn []
+           (let [box (mailbox/create 1)]
+             (mailbox/offer box :first)
+             (try
+               (do (mailbox/offer box :second) nil)
+               (catch Throwable error (:error/type (ex-data error))))))
+   :expected :stream.mailbox/overflow}
+  {:name "drains queued values and closes idempotently"
+   :test (fn []
+           (let [box (mailbox/create 3)]
+             (mailbox/offer box 1)
+             (mailbox/offer box 2)
+             [(mailbox/drain box)
+              (mailbox/close box)
+              (mailbox/close box)
+              (deref (mailbox/take box))]))
+   :expected [[1 2] true false nil]}])
+

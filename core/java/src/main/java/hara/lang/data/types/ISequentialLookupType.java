@@ -37,12 +37,13 @@ public interface ISequentialLookupType<E>
 
   @Override
   default E peekFirst() {
-    return nth(0);
+    return count() == 0 ? null : nth(0);
   }
 
   @Override
   default E peekLast() {
-    return nth(count() - 1);
+    long size = count();
+    return size == 0 ? null : nth(size - 1);
   }
 
   @Override

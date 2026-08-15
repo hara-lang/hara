@@ -102,7 +102,7 @@ public class HaraModuleConformanceTest {
           "namespace/callable-var-precedence",
           "namespace/callable-var-lexical-shadow",
           "namespace/callable-var-late-binding",
-          "namespace/referred-var-protected"
+          "namespace/referred-var-shadowed"
         }) {
       IMapType scenario = cases.get(keyword(id));
       assertTrue("Missing callable Var scenario :" + id, scenario != null);

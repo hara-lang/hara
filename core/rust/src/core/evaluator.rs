@@ -857,7 +857,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         };
                         return Ok(Value::Var(var.clone()));
                     }
-                    require_owned_definition(env, &name)?;
+                    prepare_owned_definition(env, &name)?;
                     let value = eval(&fs[2], env)?;
                     let var = if namespace_registry().is_ok() {
                         let var = vm_def_global(&name, value, metadata)?;
@@ -897,7 +897,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             Form::Symbol(name) => name.clone(),
                             _ => return Err("declare expects symbols".into()),
                         };
-                        require_owned_definition(env, &name)?;
+                        prepare_owned_definition(env, &name)?;
                         let cell = match env.get(&name) {
                             Some(Value::Var(cell)) if binding_is_local(cell) => cell.clone(),
                             _ => KernelVar::new(local_var_name(&name), Value::Nil),
@@ -1336,7 +1336,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             env.remove(&name);
                         }
                     }
-                    require_owned_definition(env, &name)?;
+                    prepare_owned_definition(env, &name)?;
                     let cell = match env.get(&name) {
                         Some(Value::Var(cell)) if binding_is_local(cell) => cell.clone(),
                         _ => KernelVar::new(local_var_name(&name), Value::Nil),
@@ -1409,7 +1409,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if let Some(value) = protected_fallback_binding(env, &name, metadata.clone()) {
                         return Ok(value);
                     }
-                    require_owned_definition(env, &name)?;
+                    prepare_owned_definition(env, &name)?;
                     let cell = match env.get(&name) {
                         Some(Value::Var(cell)) if binding_is_local(cell) => cell.clone(),
                         _ => KernelVar::new(local_var_name(&name), Value::Nil),
@@ -2266,8 +2266,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if is_map && fs.len() > 3 {
                         let sources = fs[2..]
                             .iter()
-                            .map(|form| eval(form, env).and_then(make_iterator))
+                            .map(|form| eval(form, env))
                             .collect::<Result<Vec<_>, _>>()?;
+                        let primary = sources[0].clone();
                         let zipped = iterator_zip(sources)?;
                         let values = iterator_to_vec(zipped)?;
                         let mut output = Vec::with_capacity(values.len());
@@ -2275,10 +2276,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             let arguments = iterator_values(value)?;
                             output.push(call_value(function.clone(), arguments)?);
                         }
+                        let result = iterator_from_values(output);
                         return if n == "map" {
-                            Ok(Value::Vector(output.into()))
+                            transform_like(&primary, result)
                         } else {
-                            Ok(iterator_from_values(output))
+                            Ok(result)
                         };
                     }
                     let raw_collection = if fs.len() == 3 {
@@ -2292,7 +2294,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                                 if let Some(value) = raw_collection.clone() {
                                     let result = iterator_filter(function_ref.clone(), value)?;
                                     return if n == "filter" {
-                                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                                        transform_like(raw_collection.as_ref().unwrap(), result)
                                     } else {
                                         Ok(result)
                                     };
@@ -2300,7 +2302,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             }
                         }
                     }
-                    let collections = if let Some(value) = raw_collection {
+                    let collections = if let Some(value) = raw_collection.clone() {
                         vec![iterator_values(value)?]
                     } else {
                         fs[2..]
@@ -2334,7 +2336,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         }
                     }
                     if n == "map" || n == "filter" {
-                        Ok(Value::Vector(output.into()))
+                        transform_like(raw_collection.as_ref().unwrap(), iterator_from_values(output))
                     } else {
                         Ok(iterator_from_values(output))
                     }
@@ -2348,9 +2350,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err(format!("{n} expects an amount and collection"));
                     }
                     let amount = value_index(&eval(&fs[1], env)?)?;
-                    let result = iterator_take(eval(&fs[2], env)?, amount)?;
+                    let collection = eval(&fs[2], env)?;
+                    let result = iterator_take(collection.clone(), amount)?;
                     if n == "take" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&collection, result)
                     } else {
                         Ok(result)
                     }
@@ -2364,9 +2367,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err(format!("{n} expects an amount and collection"));
                     }
                     let amount = value_index(&eval(&fs[1], env)?)?;
-                    let result = iterator_drop(eval(&fs[2], env)?, amount)?;
+                    let collection = eval(&fs[2], env)?;
+                    let result = iterator_drop(collection.clone(), amount)?;
                     if n == "drop" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&collection, result)
                     } else {
                         Ok(result)
                     }
@@ -2398,14 +2402,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     };
                     let value = eval(&fs[2], env)?;
                     let result = if n.contains("take-while") {
-                        iterator_take_while(predicate, value)?
+                        iterator_take_while(predicate, value.clone())?
                     } else {
-                        iterator_drop_while(predicate, value)?
+                        iterator_drop_while(predicate, value.clone())?
                     };
                     if n.starts_with("iter-") {
                         Ok(result)
                     } else {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&value, result)
                     }
                 }
                 Form::Symbol(n) if ["iter-mapcat", "mapcat"].contains(&n.as_str()) => {
@@ -2424,9 +2428,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         Value::Function(function) => function,
                         _ => return Err(format!("{n} expects a function")),
                     };
-                    let result = iterator_mapcat(function, eval(&fs[2], env)?)?;
+                    let value = eval(&fs[2], env)?;
+                    let result = iterator_mapcat(function, value.clone())?;
                     if n == "mapcat" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&value, result)
                     } else {
                         Ok(result)
                     }
@@ -2447,9 +2452,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         Value::Function(function) => function,
                         _ => return Err(format!("{n} expects a function")),
                     };
-                    let result = iterator_keep(function, eval(&fs[2], env)?)?;
+                    let value = eval(&fs[2], env)?;
+                    let result = iterator_keep(function, value.clone())?;
                     if n == "keep" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&value, result)
                     } else {
                         Ok(result)
                     }
@@ -2476,11 +2482,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err(format!("{n} expects an amount and collection"));
                     }
                     let amount = value_index(&eval(&fs[1], env)?)?;
-                    let result = iterator_partition(eval(&fs[2], env)?, amount, n.contains("all"))?;
+                    let collection = eval(&fs[2], env)?;
+                    let result = iterator_partition(collection.clone(), amount, n.contains("all"))?;
                     if n.starts_with("iter-") {
                         Ok(result)
                     } else {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&collection, result)
                     }
                 }
                 Form::Symbol(n) if ["iter-interpose", "interpose"].contains(&n.as_str()) => {
@@ -2496,17 +2503,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err(format!("{n} expects a separator and collection"));
                     }
                     let separator = eval(&fs[1], env)?;
-                    let values = iterator_values(eval(&fs[2], env)?)?;
-                    let mut output = Vec::new();
-                    for (index, value) in values.into_iter().enumerate() {
-                        if index > 0 {
-                            output.push(separator.clone());
-                        }
-                        output.push(value);
-                    }
-                    let result = iterator_from_values(output);
+                    let collection = eval(&fs[2], env)?;
+                    let result = iterator_interpose(separator, collection.clone())?;
                     if n == "interpose" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&collection, result)
                     } else {
                         Ok(result)
                     }
@@ -2519,9 +2519,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .iter()
                         .map(|form| eval(form, env))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let primary = collections[0].clone();
                     let result = iterator_interleave(collections)?;
                     if n == "interleave" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&primary, result)
                     } else {
                         Ok(result)
                     }
@@ -2532,16 +2533,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() != 2 {
                         return Err(format!("{n} expects one collection"));
                     }
-                    let values = iterator_values(eval(&fs[1], env)?)?;
-                    let result = iterator_from_values(
-                        values
-                            .chunks(2)
-                            .filter(|chunk| chunk.len() == 2)
-                            .map(|chunk| Value::Vector(chunk.to_vec().into()))
-                            .collect(),
-                    );
+                    let collection = eval(&fs[1], env)?;
+                    let result = iterator_partition(collection.clone(), 2, false)?;
                     if n == "partition-pair" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&collection, result)
                     } else {
                         Ok(result)
                     }
@@ -2554,9 +2549,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .iter()
                         .map(|form| eval(form, env))
                         .collect::<Result<Vec<_>, _>>()?;
+                    let primary = collections[0].clone();
                     let result = iterator_zip(collections)?;
                     if n == "zip" {
-                        Ok(Value::Vector(iterator_to_vec(result)?.into()))
+                        transform_like(&primary, result)
                     } else {
                         Ok(result)
                     }
@@ -2819,7 +2815,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         _ => return Err("map transform expects a function".into()),
                     };
                     let source = eval(&fs[2], env)?;
-                    iterator_map(function, source)
+                    let result = iterator_map(function, source.clone())?;
+                    transform_like(&source, result)
                 }
                 Form::Symbol(n) if n == "__iterator-transform" => {
                     if fs.len() != 4 {
@@ -2835,32 +2832,60 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     let source = eval(&fs[3], env)?;
                     match operation.as_str() {
                         "iter-filter" => match parameter {
-                            Value::Function(function) => iterator_filter(function, source),
+                            Value::Function(function) => {
+                                let result = iterator_filter(function, source.clone())?;
+                                transform_like(&source, result)
+                            }
                             _ => Err("filter expects a function".into()),
                         },
-                        "iter-take" => iterator_take(source, value_index(&parameter)?),
-                        "iter-drop" => iterator_drop(source, value_index(&parameter)?),
+                        "iter-take" => {
+                            let result = iterator_take(source.clone(), value_index(&parameter)?)?;
+                            transform_like(&source, result)
+                        }
+                        "iter-drop" => {
+                            let result = iterator_drop(source.clone(), value_index(&parameter)?)?;
+                            transform_like(&source, result)
+                        }
                         "iter-take-while" => match parameter {
-                            Value::Function(function) => iterator_take_while(function, source),
+                            Value::Function(function) => {
+                                let result = iterator_take_while(function, source.clone())?;
+                                transform_like(&source, result)
+                            }
                             _ => Err("take-while expects a function".into()),
                         },
                         "iter-drop-while" => match parameter {
-                            Value::Function(function) => iterator_drop_while(function, source),
+                            Value::Function(function) => {
+                                let result = iterator_drop_while(function, source.clone())?;
+                                transform_like(&source, result)
+                            }
                             _ => Err("drop-while expects a function".into()),
                         },
                         "iter-mapcat" => match parameter {
-                            Value::Function(function) => iterator_mapcat(function, source),
+                            Value::Function(function) => {
+                                let result = iterator_mapcat(function, source.clone())?;
+                                transform_like(&source, result)
+                            }
                             _ => Err("mapcat expects a function".into()),
                         },
                         "iter-keep" => match parameter {
-                            Value::Function(function) => iterator_keep(function, source),
+                            Value::Function(function) => {
+                                let result = iterator_keep(function, source.clone())?;
+                                transform_like(&source, result)
+                            }
                             _ => Err("keep expects a function".into()),
                         },
-                        "iter-partition" | "iter-partition-all" => iterator_partition(
-                            source,
-                            value_index(&parameter)?,
-                            operation == "iter-partition-all",
-                        ),
+                        "iter-partition" | "iter-partition-all" => {
+                            let result = iterator_partition(
+                                source.clone(),
+                                value_index(&parameter)?,
+                                operation == "iter-partition-all",
+                            )?;
+                            transform_like(&source, result)
+                        }
+                        "iter-interpose" => {
+                            let result = iterator_interpose(parameter, source.clone())?;
+                            transform_like(&source, result)
+                        }
                         "every?" | "any?" => {
                             let function = match parameter {
                                 Value::Function(function) => function,
@@ -3693,6 +3718,7 @@ pub fn eval_traced(form: &Form, env: &mut HashMap<String, Value>) -> Result<Valu
     eval(form, env).map_err(append_trace)
 }
 
+
 pub fn eval_text(source: &str, env: &mut HashMap<String, Value>) -> Result<String, String> {
     Ok(eval_value_text(source, env)?.display())
 }
@@ -3721,4 +3747,3 @@ pub fn eval_value_text(source: &str, env: &mut HashMap<String, Value>) -> Result
     }
     Ok(result)
 }
-

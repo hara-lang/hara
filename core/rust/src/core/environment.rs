@@ -702,12 +702,13 @@ pub(crate) fn protected_fallback_binding(
     }
 }
 
-fn require_owned_definition(env: &HashMap<String, Value>, name: &str) -> Result<(), String> {
+fn prepare_owned_definition(env: &mut HashMap<String, Value>, name: &str) -> Result<(), String> {
     if let Some(Value::Var(var)) = env.get(name) {
         if !binding_is_local(var) {
-            return Err(format!(
-                "Cannot replace referred Var without ns omission: {name}"
-            ));
+            if let Ok(registry) = namespace_registry() {
+                registry.current().unmap(&Symbol::parse(name));
+            }
+            env.remove(name);
         }
     }
     Ok(())
@@ -742,9 +743,7 @@ pub(crate) fn vm_def_global(
             refresh_schema_contract(&existing)?;
             return Ok(existing);
         }
-        return Err(format!(
-            "Cannot replace referred Var without ns omission: {name}"
-        ));
+        current.unmap(&local);
     }
     let var = KernelVar::new(format!("{}/{}", current.name().as_str(), name), value);
     var.set_hara_metadata(metadata);
@@ -1159,5 +1158,4 @@ fn require_process_access(operation: &str) -> Result<(), String> {
             .ok_or_else(|| format!("{operation} is unsupported or process access is denied"))
     })
 }
-
 

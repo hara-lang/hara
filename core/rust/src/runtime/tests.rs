@@ -2566,6 +2566,12 @@ mod tests {
         );
         assert_eq!(
             runtime
+                .eval_text("(cons 3 (collection/queue 4 5))")
+                .unwrap(),
+            "(3 4 5)"
+        );
+        assert_eq!(
+            runtime
                 .eval_text("(count (dissoc (collection/ordered-set 1 2) 1))")
                 .unwrap(),
             "1"
@@ -3653,6 +3659,14 @@ mod tests {
     #[test]
     fn persistent_vectors_and_lists_keep_previous_values() {
         let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text("[(first '()) (first (vec [])) (last '()) (last (vec []))]")
+                .unwrap(),
+            "[nil nil nil nil]"
+        );
+        assert_eq!(runtime.eval_text("(conj '(1) 2)").unwrap(), "(2 1)");
+        assert_eq!(runtime.eval_text("(drop 1 '(a b c d))").unwrap(), "(b c d)");
         assert_eq!(
             runtime
                 .eval_text("(let (source [1 2]) (get (conj source 3) 2))")
@@ -4850,7 +4864,7 @@ mod tests {
             "namespace/callable-var-precedence",
             "namespace/callable-var-lexical-shadow",
             "namespace/callable-var-late-binding",
-            "namespace/referred-var-protected",
+            "namespace/referred-var-shadowed",
         ] {
             let case = module_case(id);
             let Some(Form::String(setup)) = entry(&case, "setup") else {
@@ -6354,6 +6368,36 @@ mod tests {
             runtime.eval_text("(get (assoc {} :a 1 :b 2) :b)").unwrap(),
             "2"
         );
+    }
+
+    #[test]
+    fn streaming_transforms_follow_the_primary_source_mode() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text("[(seq? (drop 1 (iterate inc 0))) (first (drop 1 (iterate inc 0))) (first (drop 1 (iterate inc 0)))]")
+                .unwrap(),
+            "[true 1 1]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(let [output (drop 1 (iter [1 2 3]))] [(iter? output) (iter-next output) (iter-next output)])")
+                .unwrap(),
+            "[true 2 3]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("[(vector? ((map inc) [1 2 3])) (seq? ((map inc) (seq [1 2 3]))) (iter? ((map inc) (iter [1 2 3])))]")
+                .unwrap(),
+            "[true true true]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(->> (iterate inc 0) (drop 1) (take-while (fn [value] (< value 5))) (filter (fn [value] (= 0 (mod value 2)))) first)")
+                .unwrap(),
+            "2"
+        );
+        assert_eq!(runtime.eval_text("(drop 1 '(a b c d))").unwrap(), "(b c d)");
     }
 
     #[test]

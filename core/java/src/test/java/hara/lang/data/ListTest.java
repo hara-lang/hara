@@ -65,8 +65,8 @@ public class ListTest {
     list.conj(1);
     list.conj(2);
     assertEquals(2, list.count());
-    assertEquals(Integer.valueOf(1), list.nth(0));
-    assertEquals(Integer.valueOf(2), list.nth(1));
+    assertEquals(Integer.valueOf(2), list.nth(0));
+    assertEquals(Integer.valueOf(1), list.nth(1));
   }
 
   @Test
@@ -153,7 +153,17 @@ public class ListTest {
     List.Standard<Integer> newList = list.conj(2);
     assertEquals(1, list.count());
     assertEquals(2, newList.count());
-    assertEquals(Integer.valueOf(2), newList.nth(1));
+    assertEquals(Integer.valueOf(2), newList.nth(0));
+    assertEquals(Integer.valueOf(1), newList.nth(1));
+  }
+
+  @Test
+  public void testIntoPreservesIteratorOrder() {
+    List.Standard<Integer> list =
+        List.Standard.into(java.util.Arrays.asList(1, 2, 3).iterator());
+    assertEquals(Integer.valueOf(1), list.nth(0));
+    assertEquals(Integer.valueOf(2), list.nth(1));
+    assertEquals(Integer.valueOf(3), list.nth(2));
   }
 
   @Test

@@ -16,11 +16,12 @@ public class CollectionsTest {
 
     list = list.conj(4);
     assertEquals(4, list.count());
-    assertEquals(Integer.valueOf(4), list.peekLast());
+    assertEquals(Integer.valueOf(4), list.peekFirst());
+    assertEquals(Integer.valueOf(3), list.peekLast());
 
     list = list.popLast();
     assertEquals(3, list.count());
-    assertEquals(Integer.valueOf(3), list.peekLast());
+    assertEquals(Integer.valueOf(2), list.peekLast());
   }
 
   @Test
@@ -38,6 +39,14 @@ public class CollectionsTest {
     vector = vector.popLast();
     assertEquals(3, vector.count());
     assertEquals(Integer.valueOf(3), vector.peekLast());
+  }
+
+  @Test
+  public void emptySequentialLookupReturnsNullAtBothEnds() {
+    assertNull(List.Standard.from(null).peekFirst());
+    assertNull(List.Standard.from(null).peekLast());
+    assertNull(Vector.Standard.empty(null).peekFirst());
+    assertNull(Vector.Standard.empty(null).peekLast());
   }
 
   @Test

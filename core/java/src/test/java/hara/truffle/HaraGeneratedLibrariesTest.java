@@ -263,7 +263,7 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
-  public void referredVarsAreProtectedUnlessTheNamespaceDeclarationOmitsThem() {
+  public void definitionsShadowReferredVarsWithoutMutatingTheirOwners() {
     try (Context context = context()) {
       assertEquals(
           "[99 3]",
@@ -274,16 +274,25 @@ public class HaraGeneratedLibrariesTest {
                       + "(defn + [a b] 99) [(+ 1 2) (std.foundation/+ 1 2)]")
               .toString());
 
-      assertErrorContains(
-          context,
-          "(ns protected (:config {:blank true}) "
-              + "(:require [std.foundation :refer [+]])) (defn + [a b] 99)",
-          "Cannot replace referred Var without ns omission: +");
-      assertErrorContains(
-          context,
-          "(ns protected-declare (:config {:blank true}) "
-              + "(:require [std.foundation :refer [count]])) (declare count)",
-          "Cannot replace referred Var without ns omission: count");
+      assertEquals(
+          "[99 3]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns protected (:config {:blank true}) "
+                      + "(:require [std.foundation :refer [+]])) "
+                      + "(defn + [a b] 99) [(+ 1 2) (std.foundation/+ 1 2)]")
+              .toString());
+      assertEquals(
+          "[42 0]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns protected-declare (:config {:blank true}) "
+                      + "(:require [std.foundation :refer [identity]])) "
+                      + "(declare identity) (defn identity [value] 42) "
+                      + "[(identity 0) (std.foundation/identity 0)]")
+              .toString());
     }
   }
 

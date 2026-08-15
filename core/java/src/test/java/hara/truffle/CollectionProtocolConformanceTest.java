@@ -145,8 +145,12 @@ public class CollectionProtocolConformanceTest {
     Vector.Standard<Long> vector = Vector.Standard.from(null, 1L, 2L);
     Object vectorWith3 = conj.invoke("conj", vector, new Object[] {3L});
     assertEquals(3L, nth.invoke("nth", vectorWith3, new Object[] {2L}));
+    Object vectorWith0 = cons.invoke("cons", vector, new Object[] {0L});
+    assertTrue(vectorWith0 instanceof hara.lang.data.Cons<?>);
+    assertEquals("(0 1 2)", ((hara.lang.protocol.IDisplay) vectorWith0).display());
     List.Standard<Long> list = List.Standard.from(null, 1L, 2L);
     Object listWith0 = cons.invoke("cons", list, new Object[] {0L});
+    assertTrue(listWith0 instanceof hara.lang.data.Cons<?>);
     assertEquals(0L, peekFirst.invoke("peek-first", listWith0, new Object[0]));
     assertEquals(1L, peekFirst.invoke("peek-first", list, new Object[0]));
     assertEquals(2L, peekLast.invoke("peek-last", list, new Object[0]));

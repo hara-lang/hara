@@ -1,104 +1,16 @@
-(ns std.lib.relay
+(ns std.stream.relay
   (:config {:override [send receive]})
-  (:require [std.codec.frame :as frame]
-            [std.lib.stream :as stream]))
+  (:require [std.stream.async :as async]
+            [std.stream.duplex :as duplex]
+            [std.stream.frame :as frame]
+            [std.stream.mailbox :as mailbox]))
 
-(defstruct Mailbox [state limit])
 (defstruct Relay [duplex codec options state jobs events reader writer])
-
-(defn- mailbox [limit]
-  (Mailbox (atom {:items [] :waiters [] :closed false :error nil}) limit))
-
-(defn- mailbox-offer [mailbox value]
-  (loop []
-    (let [current (deref (:state mailbox))]
-      (if (:closed current)
-        (throw (ex-info "Mailbox is closed" {:error/type :relay/closed})))
-      (let [waiters (:waiters current)]
-        (if (> (count waiters) 0)
-          (let [waiter (first waiters)
-                next-state (assoc current :waiters (vec (rest waiters)))]
-            (if (cas! (:state mailbox) current next-state)
-              (do ((:resolve waiter) {:value value}) true)
-              (recur)))
-          (let [items (:items current)]
-            (if (>= (count items) (:limit mailbox))
-              (throw (ex-info "Mailbox exceeded its bounded capacity"
-                              {:error/type :relay/overflow
-                               :limit (:limit mailbox)})))
-            (if (cas! (:state mailbox)
-                      current
-                      (assoc current :items (conj items {:value value})))
-              true
-              (recur))))))))
-
-(defn- mailbox-take-register [mailbox resolve reject]
-  (let [current (deref (:state mailbox))
-        items (:items current)]
-    (cond
-      (> (count items) 0)
-      (if (cas! (:state mailbox)
-                current
-                (assoc current :items (vec (rest items))))
-        (resolve (first items))
-        (mailbox-take-register mailbox resolve reject))
-
-      (:closed current)
-      (if (:error current)
-        (reject (:error current))
-        (resolve nil))
-
-      :else
-      (if (cas! (:state mailbox)
-                current
-                (assoc current :waiters
-                       (conj (:waiters current)
-                             {:resolve resolve :reject reject})))
-        nil
-        (mailbox-take-register mailbox resolve reject)))))
-
-(defn- mailbox-take [mailbox]
-  (promise/new
-   (fn [resolve reject]
-     (mailbox-take-register mailbox resolve reject))))
-
-(defn- settle-waiters [waiters error]
-  (if (> (count waiters) 0)
-    (do
-      (if error
-        ((:reject (first waiters)) error)
-        ((:resolve (first waiters)) nil))
-      (settle-waiters (vec (rest waiters)) error))
-    nil))
-
-(defn- mailbox-close [mailbox error]
-  (loop []
-    (let [current (deref (:state mailbox))]
-      (if (:closed current)
-        false
-        (let [next-state (assoc (assoc (assoc current :closed true)
-                                       :items [])
-                                :waiters [])]
-          (if (cas! (:state mailbox)
-                    current
-                    (assoc next-state :error error))
-            (do
-              (settle-waiters (:waiters current) error)
-              true)
-            (recur)))))))
-
-(defn- mailbox-drain [mailbox]
-  (loop []
-    (let [current (deref (:state mailbox))
-          items (:items current)]
-      (if (cas! (:state mailbox) current (assoc current :items []))
-        (mapv :value items)
-        (recur)))))
 
 (defn create
   ([duplex codec] (create duplex codec {}))
   ([duplex codec options]
-   (if (not (Duplex/instance? duplex))
+   (if (not (duplex/instance? duplex))
      (throw (ex-info "Relay requires a Duplex" {:value duplex})))
    (if (not (satisfies? frame/IFrameCodec codec))
      (throw (ex-info "Relay requires an IFrameCodec" {:value codec})))
@@ -120,8 +32,8 @@
                    :serial-active nil
                    :events-taken false
                    :error nil})
-            (mailbox (or (:mailbox-limit options) 256))
-            (mailbox (or (:mailbox-limit options) 256))
+            (mailbox/create (or (:mailbox-limit options) 256))
+            (mailbox/create (or (:mailbox-limit options) 256))
             (atom nil)
             (atom nil)))))
 
@@ -135,7 +47,7 @@
   (or (= :closed (:status (state relay)))
       (= :failed (:status (state relay)))))
 
-(defn- remove-pending [relay correlation-id]
+(defn remove-pending [relay correlation-id]
   (loop []
     (let [current (state relay)
           pending (:pending current)
@@ -148,7 +60,7 @@
           entry
           (recur))))))
 
-(defn- remove-serial [relay]
+(defn remove-serial [relay]
   (loop []
     (let [current (state relay)
           entry (:serial-active current)]
@@ -158,14 +70,14 @@
           entry
           (recur))))))
 
-(defn- register-pending [relay correlation-id entry]
+(defn register-pending [relay correlation-id entry]
   (swap! (:state relay)
          (fn [current]
            (assoc current :pending
                   (assoc (:pending current) correlation-id entry))))
   entry)
 
-(defn- register-serial [relay entry]
+(defn register-serial [relay entry]
   (loop []
     (let [current (state relay)]
       (if (:serial-active current)
@@ -175,17 +87,17 @@
         entry
         (recur)))))
 
-(defn- reject-entry [entry error]
+(defn reject-entry [entry error]
   (if entry ((:reject entry) error) nil))
 
-(defn- reject-entries [entries error]
+(defn reject-entries [entries error]
   (if (> (count entries) 0)
     (do
       (reject-entry (first entries) error)
       (reject-entries (vec (rest entries)) error))
     nil))
 
-(defn- fail [relay error]
+(defn fail [relay error]
   (loop []
     (let [current (state relay)]
       (if (or (= :closed (:status current)) (= :failed (:status current)))
@@ -197,21 +109,21 @@
             (do
               (reject-entries (vec (vals (:pending current))) error)
               (reject-entry (:serial-active current) error)
-              (mailbox-close (:jobs relay) error)
-              (mailbox-close (:events relay) error)
-              (try (Duplex/close (:duplex relay))
+              (mailbox/close (:jobs relay) error)
+              (mailbox/close (:events relay) error)
+              (try (duplex/close (:duplex relay))
                    (catch Throwable ignored nil))
               relay)
             (recur)))))))
 
-(defn- next-id [relay]
+(defn next-id [relay]
   (:next-id (swap! (:state relay) update :next-id inc)))
 
-(defn- timeout-error [milliseconds]
+(defn timeout-error [milliseconds]
   (ex-info "Relay exchange timed out"
            {:error/type :relay/timeout :timeout-ms milliseconds}))
 
-(defn- arm-timeout [relay mode correlation-id milliseconds]
+(defn arm-timeout [relay mode correlation-id milliseconds]
   (if milliseconds
     (promise/delay
      milliseconds
@@ -222,7 +134,7 @@
          (if entry (reject-entry entry (timeout-error milliseconds)) nil))))
     nil))
 
-(defn- dispatch-frame [relay value]
+(defn dispatch-frame [relay value]
   (let [mode (:mode (:options relay))]
     (if (= mode :correlated)
       (let [correlation-id ((:response-id (:options relay)) value)
@@ -231,25 +143,25 @@
                     (remove-pending relay correlation-id))]
         (if entry
           ((:resolve entry) value)
-          (mailbox-offer (:events relay) value)))
+          (mailbox/offer (:events relay) value)))
       (let [entry (remove-serial relay)]
         (if entry
           ((:resolve entry) value)
-          (mailbox-offer (:events relay) value))))))
+          (mailbox/offer (:events relay) value))))))
 
-(defn- dispatch-frames [relay values]
+(defn dispatch-frames [relay values]
   (loop [index 0]
     (if (< index (count values))
       (do (dispatch-frame relay (nth values index))
           (recur (inc index)))
       nil)))
 
-(defn- reader-loop [relay]
+(defn reader-loop [relay]
   (promise/run
    (fn []
      (try
        (loop [codec-state (frame/initial-state (:codec relay))]
-         (let [chunk (deref (Stream/next (Duplex/receive (:duplex relay))))]
+         (let [chunk (deref (async/next (duplex/receive (:duplex relay))))]
            (if (nil? chunk)
              (let [final (frame/finish-frame (:codec relay) codec-state)]
                (dispatch-frames relay (:frames final))
@@ -261,10 +173,10 @@
        (catch Throwable error
          (fail relay error))))))
 
-(defn- send-bytes [relay bytes]
-  (deref (Duplex/send (:duplex relay) bytes)))
+(defn send-bytes [relay bytes]
+  (deref (duplex/send (:duplex relay) bytes)))
 
-(defn- process-send [relay job]
+(defn process-send [relay job]
   (try
     (let [count (send-bytes relay
                             (if (= :raw (:kind job))
@@ -274,7 +186,7 @@
     (catch Throwable error
       ((:reject job) error))))
 
-(defn- process-exchange [relay job]
+(defn process-exchange [relay job]
   (let [mode (:mode (:options relay))
         timeout (or (:timeout-ms (:options job))
                     (:timeout-ms (:options relay)))]
@@ -300,12 +212,12 @@
             (let [entry (remove-serial relay)]
               (reject-entry entry error))))))))
 
-(defn- writer-loop [relay]
+(defn writer-loop [relay]
   (promise/run
    (fn []
      (try
        (loop []
-         (let [envelope (deref (mailbox-take (:jobs relay)))]
+         (let [envelope (deref (mailbox/take (:jobs relay)))]
            (if envelope
              (let [job (:value envelope)]
                (if (= :exchange (:kind job))
@@ -335,7 +247,7 @@
   ([duplex codec options]
    (start (create duplex codec options))))
 
-(defn- enqueue [relay kind value options]
+(defn enqueue [relay kind value options]
   (if (not (started? relay))
     (promise/new
      (fn [_ reject]
@@ -350,7 +262,7 @@
                                     :reject reject})))]
       (let [job (assoc (deref holder) :promise output)]
         (try
-          (mailbox-offer (:jobs relay) job)
+          (mailbox/offer (:jobs relay) job)
           (catch Throwable error
             ((:reject job) error)))
         output))))
@@ -368,7 +280,7 @@
 
 (defn receive [relay]
   (promise/then
-   (mailbox-take (:events relay))
+   (mailbox/take (:events relay))
    (fn [envelope]
      (if envelope (:value envelope) nil))))
 
@@ -378,10 +290,10 @@
       (throw (ex-info "Relay events stream is single-consumer"
                       {:error/type :relay/events-taken})))
     (if (cas! (:state relay) current (assoc current :events-taken true))
-      (stream/unfold
+      (async/unfold
        (fn [_]
          (promise/then
-          (mailbox-take (:events relay))
+          (mailbox/take (:events relay))
           (fn [envelope]
             (if envelope
               [{:type :message :value (:value envelope)} nil]
@@ -390,7 +302,7 @@
       (events relay))))
 
 (defn clean [relay]
-  (mailbox-drain (:events relay)))
+  (mailbox/drain (:events relay)))
 
 (defn close [relay]
   (loop []
@@ -405,14 +317,14 @@
             (do
               (reject-entries (vec (vals (:pending current))) error)
               (reject-entry (:serial-active current) error)
-              (mailbox-close (:jobs relay) error)
-              (mailbox-close (:events relay) nil)
-              (Duplex/close (:duplex relay))
+              (mailbox/close (:jobs relay) error)
+              (mailbox/close (:events relay) nil)
+              (duplex/close (:duplex relay))
               relay)
             (recur)))))))
 
 (extend-type Relay std.protocol.iclose/IClose
-  (close [relay] (std.lib.relay/close relay)))
+  (close [relay] (std.stream.relay/close relay)))
 
 (defn send-command [relay command]
   (let [command (if (string? command) {:op :string :line command} command)
@@ -442,3 +354,4 @@
        (fn [_ reject]
          (reject (ex-info "Unsupported Relay compatibility operation"
                           {:operation operation})))))))
+
