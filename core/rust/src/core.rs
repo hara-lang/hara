@@ -9,7 +9,7 @@ use crate::lang::data::{
     Atom as PAtom, Cons as PCons, Deque as PDeque, Keyword, Map as PMap, OrderedMap as POrderedMap,
     OrderedSet as POrderedSet, Pointer as PPointer, Queue as PQueue, Set as PSet,
     PriorityMap as PPriorityMap, SortedMap as PSortedMap, SortedSet as PSortedSet, Symbol, TaggedLiteral as PTaggedLiteral,
-    Trie as PTrie, Tuple as PTuple, Vector as PVector,
+    Trie as PTrie, Tuple as PTuple, Vector as PVector, Seq as PSeq,
 };
 use crate::lang::data::{Metadata, MetadataValue};
 use crate::lang::data::{
@@ -348,6 +348,9 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "close-input",
             "stdout",
             "stderr",
+            "stdout-stream",
+            "stderr-stream",
+            "duplex",
             "wait",
             "kill",
         ],
@@ -363,6 +366,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         "Socket",
         &[
             "connect", "listen", "endpoint", "events", "next", "send", "close",
+            "receive-stream", "duplex",
         ],
     ),
     (
@@ -813,6 +817,7 @@ pub enum Value {
     Tuple(Box<PTuple<Value>>),
     Vector(PVector<Value>),
     MutableCollection(Rc<RefCell<Option<MutableCollection>>>),
+    Seq(Box<PSeq<Result<Value, String>>>),
     Iterator(Rc<RefCell<IteratorState>>),
     Var(KernelVar<Value>),
     Namespace(Rc<crate::kernel::Namespace<Value>>),
@@ -1052,35 +1057,54 @@ impl Coroutine {
     }
 }
 
-#[derive(Debug)]
 pub struct RuntimeStream {
-    coroutine: Rc<Coroutine>,
-    initial_arguments: RefCell<Option<Vec<Value>>>,
+    source: RuntimeStreamSource,
     pending: Rc<Cell<bool>>,
     closed: Rc<Cell<bool>>,
+}
+
+enum RuntimeStreamSource {
+    Coroutine { coroutine: Rc<Coroutine>, initial_arguments: RefCell<Option<Vec<Value>>> },
+    Host { next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>> },
+}
+
+impl std::fmt::Debug for RuntimeStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeStream").field("closed", &self.closed.get()).finish()
+    }
 }
 
 impl RuntimeStream {
     fn new(body: Value, initial_arguments: Vec<Value>) -> Self {
         Self {
-            coroutine: Rc::new(Coroutine::new(body)),
-            initial_arguments: RefCell::new(Some(initial_arguments)),
+            source: RuntimeStreamSource::Coroutine { coroutine: Rc::new(Coroutine::new(body)), initial_arguments: RefCell::new(Some(initial_arguments)) },
             pending: Rc::new(Cell::new(false)),
             closed: Rc::new(Cell::new(false)),
         }
     }
+    fn host(next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>>) -> Self {
+        Self { source: RuntimeStreamSource::Host { next, close }, pending: Rc::new(Cell::new(false)), closed: Rc::new(Cell::new(false)) }
+    }
 }
 
-#[derive(Debug)]
 pub struct RuntimeDuplex {
     receive: Value,
-    send: Rc<Function>,
-    close: Option<Rc<Function>>,
+    send: DuplexSend,
+    close: Option<DuplexClose>,
     closed: Cell<bool>,
 }
 
+enum DuplexSend { Guest(Rc<Function>), Host(Rc<dyn Fn(Value) -> Result<Value, String>>) }
+enum DuplexClose { Guest(Rc<Function>), Host(Rc<dyn Fn() -> Result<(), String>>) }
+
+impl std::fmt::Debug for RuntimeDuplex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeDuplex").field("closed", &self.closed.get()).finish()
+    }
+}
+
 impl RuntimeDuplex {
-    fn new(receive: Value, send: Rc<Function>, close: Option<Rc<Function>>) -> Self {
+    fn new(receive: Value, send: DuplexSend, close: Option<DuplexClose>) -> Self {
         Self { receive, send, close, closed: Cell::new(false) }
     }
 }
@@ -2119,6 +2143,7 @@ fn append_trace(error: String) -> String {
 
 #[derive(Debug, Clone)]
 enum IteratorGenerator {
+    Seq(PSeq<Result<Value, String>>),
     Constant(Value),
     Repeated(Rc<Function>),
     Iterate(Rc<Function>, Value),
@@ -2144,7 +2169,6 @@ pub struct IteratorState {
     index: usize,
     closed: bool,
     cycle: bool,
-    seq: bool,
     lookahead: Option<Value>,
     generator: Option<IteratorGenerator>,
 }
@@ -2164,7 +2188,6 @@ impl IteratorState {
             index: 0,
             closed: false,
             cycle: false,
-            seq: false,
             lookahead: None,
             generator: None,
         }
@@ -2175,7 +2198,6 @@ impl IteratorState {
             index: 0,
             closed: false,
             cycle: false,
-            seq: false,
             lookahead: None,
             generator: Some(generator),
         }
@@ -2204,6 +2226,16 @@ impl IteratorState {
         }
         if let Some(generator) = &mut self.generator {
             return match generator {
+                IteratorGenerator::Seq(sequence) => match sequence.peek_first() {
+                    None => {
+                        self.closed = true;
+                        Ok(None)
+                    }
+                    Some(result) => {
+                        *sequence = sequence.pop_first();
+                        result.map(Some)
+                    }
+                },
                 IteratorGenerator::Constant(value) => Ok(Some(value.clone())),
                 IteratorGenerator::Repeated(function) => {
                     call_function(function, Vec::new()).map(Some)
@@ -2484,7 +2516,8 @@ impl IteratorState {
             match generator {
                 IteratorGenerator::Constant(_)
                 | IteratorGenerator::Repeated(_)
-                | IteratorGenerator::Iterate(_, _) => {}
+                | IteratorGenerator::Iterate(_, _)
+                | IteratorGenerator::Seq(_) => {}
                 IteratorGenerator::Take(source, _)
                 | IteratorGenerator::Drop(source, _)
                 | IteratorGenerator::Cycle(source, _, _, _)
@@ -2517,6 +2550,7 @@ impl IteratorState {
 fn sequential_equality(left: &Value, right: &Value) -> Option<bool> {
     fn items(value: &Value) -> Option<Vec<Value>> {
         match value {
+            Value::Seq(values) => values.iter().collect::<Result<Vec<_>, _>>().ok(),
             Value::List(values) => Some(values.iter().cloned().collect()),
             Value::Cons(values) => Some(values.iter().collect()),
         Value::Queue(values) => Some(values.iter().cloned().collect()),
@@ -2638,6 +2672,7 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Atom(_)
         | Value::Recur(_)
         | Value::Function(_)
+        | Value::Seq(_)
         | Value::Iterator(_)
         | Value::Var(_)
         | Value::Namespace(_)
@@ -2935,7 +2970,8 @@ impl Ord for Value {
                 | Value::Queue(_)
                 | Value::Deque(_)
                 | Value::Tuple(_)
-                | Value::Vector(_) => 10,
+                | Value::Vector(_)
+                | Value::Seq(_) => 10,
                 Value::Map(_)
                 | Value::OrderedMap(_)
                 | Value::SortedMap(_)
@@ -3061,6 +3097,13 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Queue(v) => v.hash_calc(hash_type) as i64,
             Self::Tuple(v) => v.hash_calc(hash_type) as i64,
             Self::Vector(v) => v.hash_calc(hash_type) as i64,
+            Self::Seq(v) => jh::compose_ordered(
+                "SEQUENTIAL",
+                v.iter().map(|item| match item {
+                    Ok(value) => value.java_hash(hash_type),
+                    Err(error) => jh::java_string_hash(&error) as i64,
+                }),
+            ),
             Self::MutableCollection(v) => opaque(32, |s| Rc::as_ptr(v).hash(s)),
             Self::Promise(v) => opaque(8, |s| v.identity_address().hash(s)),
             Self::Atom(v) => opaque(28, |s| v.identity_address().hash(s)),
@@ -3252,13 +3295,25 @@ impl Value {
                 };
                 format!("#<mutable-{kind}>")
             }
-            Self::Iterator(iterator) => {
-                if iterator.borrow().seq {
-                    "<seq>".into()
-                } else {
-                    "<iterator>".into()
+            Self::Seq(sequence) => {
+                let mut values = sequence.iter();
+                let mut displayed = Vec::new();
+                for _ in 0..10 {
+                    match values.next() {
+                        Some(Ok(value)) => displayed.push(value.display()),
+                        Some(Err(error)) => {
+                            displayed.push(format!("#error[{}]", Value::String(error).display()));
+                            break;
+                        }
+                        None => break,
+                    }
                 }
+                if values.next().is_some() {
+                    displayed.push("...".into());
+                }
+                format!("({})", displayed.join(" "))
             }
+            Self::Iterator(_) => "<iterator>".into(),
             Self::Var(value) => value.display(),
             Self::Namespace(value) => format!("#namespace[{}]", value.name().as_str()),
             Self::Extension(value) => format!("#ht[:handle {}]", value.handle),
@@ -4509,6 +4564,9 @@ fn os_operation(
         "close-input" if process_operation.is_some() => "process-close-input",
         "stdout" if process_operation.is_some() => "process-stdout",
         "stderr" if process_operation.is_some() => "process-stderr",
+        "stdout-stream" if process_operation.is_some() => "process-stdout-stream",
+        "stderr-stream" if process_operation.is_some() => "process-stderr-stream",
+        "duplex" if process_operation.is_some() => "process-duplex",
         "wait" if process_operation.is_some() => "process-wait",
         "kill" if process_operation.is_some() => "process-kill",
         value => value,
@@ -4647,6 +4705,24 @@ fn os_operation(
                 "process-kill" => crate::native_process::kill(&process).map(|()| process),
                 _ => unreachable!(),
             }
+        }
+        method @ ("process-stdout-stream" | "process-stderr-stream" | "process-duplex") => {
+            if forms.len() != 1 { return Err(format!("os/{method} expects a process")); }
+            let process = eval(&forms[0], env)?;
+            let kind = if method == "process-stderr-stream" { "stderr" } else { "stdout" };
+            let handle = crate::native_process::take_stream(&process, kind)?;
+            let receive = host_stream(Rc::new(move || Ok(crate::native_process::stream_promise(handle, kind))), Rc::new(|| Ok(())));
+            if method != "process-duplex" { return Ok(receive); }
+            let send_process = process.clone();
+            let close_process = process.clone();
+            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(
+                receive,
+                DuplexSend::Host(Rc::new(move |value| {
+                    let bytes = match value { Value::Bytes(v) => v, Value::ByteBuffer(v) => v.borrow().clone(), _ => return Err("Process/duplex send expects Bytes".into()) };
+                    Ok(Value::Number(crate::native_process::write(&send_process, &bytes)? as i64))
+                })),
+                Some(DuplexClose::Host(Rc::new(move || crate::native_process::close_input(&close_process)))),
+            ))))
         }
         "process-write" => {
             if forms.len() != 2 {
@@ -5349,6 +5425,21 @@ fn socket_operation(
         .strip_prefix("std.native.Socket/")
         .unwrap_or(operation);
     match operation {
+        "receive-stream" | "duplex" | "socket/receive-stream" | "socket/duplex" => {
+            if forms.len() != 1 { return Err(format!("Socket/{operation} expects a socket connection")); }
+            let socket = socket_handle(&eval(&forms[0], env)?, &format!("Socket/{operation}"))?;
+            let events = socket_provider(operation)?.events(socket).map_err(|e| socket_error(operation, e))?;
+            let receive = host_stream(Rc::new(move || socket_receive_promise(events)), Rc::new(|| Ok(())));
+            if operation.ends_with("receive-stream") { return Ok(receive); }
+            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(
+                receive,
+                DuplexSend::Host(Rc::new(move |value| {
+                    let bytes = match value { Value::Bytes(v) => v, Value::ByteBuffer(v) => v.borrow().clone(), _ => return Err("Socket/duplex send expects Bytes".into()) };
+                    socket_provider("Socket/duplex")?.send(socket, &bytes).map(|n| Value::Number(n as i64)).map_err(|e| socket_error("Socket/duplex", e))
+                })),
+                Some(DuplexClose::Host(Rc::new(move || socket_provider("Socket/duplex")?.close(socket).map_err(|e| socket_error("Socket/duplex", e))))),
+            ))))
+        }
         "socket/connect" => {
             if forms.len() != 4 {
                 return Err("socket/connect expects a host, port, options, and callback".into());
@@ -5469,6 +5560,32 @@ fn socket_operation(
         }
         _ => unreachable!(),
     }
+}
+
+fn socket_receive_promise(stream: SocketHandle) -> Result<Promise, String> {
+    let source = socket_provider("Socket/receive-stream")?.next(stream).map_err(|e| socket_error("Socket/receive-stream", e))?;
+    let output = Promise::new();
+    let settled = output.clone();
+    source.on_settle(Rc::new(move |result| match result {
+        PromiseState::Rejected(error) => { settled.reject_rejection(error); }
+        PromiseState::Pending => {}
+        PromiseState::Fulfilled(event) => {
+            let entries = map_entries(&event).unwrap_or_default();
+            let kind = entries.iter().find_map(|(k, v)| if matches!(k, Value::Keyword(key) if key.as_str() == "type") { Some(v.clone()) } else { None });
+            match kind {
+                Some(Value::Keyword(kind)) if kind.as_str() == "data" => {
+                    let bytes = entries.into_iter().find_map(|(k, v)| if matches!(k, Value::Keyword(key) if key.as_str() == "bytes") { Some(v) } else { None }).unwrap_or(Value::Nil);
+                    settled.resolve(bytes);
+                }
+                Some(Value::Keyword(kind)) if kind.as_str() == "close" => { settled.resolve(Value::Nil); }
+                Some(Value::Keyword(kind)) if kind.as_str() == "error" => { settled.reject("socket receive failed"); }
+                _ => { settled.reject("Socket/receive-stream received an invalid event"); }
+            }
+        }
+    }));
+    let poll = source.clone(); output.set_poller(Rc::new(move || { poll.state(); }));
+    let wait = source.clone(); output.set_waiter(Rc::new(move || { wait.wait_state(); }));
+    Ok(output)
 }
 
 fn socket_handle(value: &Value, operation: &str) -> Result<SocketHandle, String> {
@@ -6739,13 +6856,17 @@ impl ProviderRegistry {
 pub struct LoopbackSocketProvider {
     next_handle: Rc<Cell<SocketHandle>>,
     callbacks: Rc<RefCell<HashMap<SocketHandle, SocketCallback>>>,
+    streams: Rc<RefCell<HashMap<SocketHandle, LoopbackSocketStream>>>,
 }
+
+struct LoopbackSocketStream { socket: SocketHandle, queue: VecDeque<Value>, pending: Option<Promise>, closed: bool }
 
 impl Default for LoopbackSocketProvider {
     fn default() -> Self {
         Self {
             next_handle: Rc::new(Cell::new(1)),
             callbacks: Rc::new(RefCell::new(HashMap::new())),
+            streams: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 }
@@ -6775,6 +6896,10 @@ impl SocketProvider for LoopbackSocketProvider {
             .cloned()
             .ok_or_else(|| SocketError::Invalid("unknown socket".into()))?;
         callback(SocketEvent::Data(socket, bytes.to_vec()));
+        let event = socket_server_event_value(SocketServerEvent::Data { server: 0, connection: socket, bytes: bytes.to_vec() });
+        for stream in self.streams.borrow_mut().values_mut().filter(|s| s.socket == socket) {
+            if let Some(promise) = stream.pending.take() { promise.resolve(event.clone()); } else { stream.queue.push_back(event.clone()); }
+        }
         Ok(bytes.len())
     }
 
@@ -6785,7 +6910,30 @@ impl SocketProvider for LoopbackSocketProvider {
             .remove(&socket)
             .ok_or_else(|| SocketError::Invalid("unknown socket".into()))?;
         callback(SocketEvent::Closed(socket));
+        let event = socket_server_event_value(SocketServerEvent::Closed { server: 0, connection: socket });
+        for stream in self.streams.borrow_mut().values_mut().filter(|s| s.socket == socket) {
+            stream.closed = true;
+            if let Some(promise) = stream.pending.take() { promise.resolve(event.clone()); } else { stream.queue.push_back(event.clone()); }
+        }
         Ok(())
+    }
+
+    fn events(&self, socket: SocketHandle) -> Result<SocketHandle, SocketError> {
+        if !self.callbacks.borrow().contains_key(&socket) { return Err(SocketError::Invalid("unknown socket".into())); }
+        let handle = self.next_handle.get(); self.next_handle.set(handle + 1);
+        self.streams.borrow_mut().insert(handle, LoopbackSocketStream { socket, queue: VecDeque::new(), pending: None, closed: false });
+        Ok(handle)
+    }
+
+    fn next(&self, handle: SocketHandle) -> Result<Promise, SocketError> {
+        let promise = Promise::new();
+        let mut streams = self.streams.borrow_mut();
+        let stream = streams.get_mut(&handle).ok_or_else(|| SocketError::Invalid("unknown socket stream".into()))?;
+        if let Some(event) = stream.queue.pop_front() { promise.resolve(event); }
+        else if stream.closed { promise.resolve(socket_server_event_value(SocketServerEvent::Closed { server: 0, connection: stream.socket })); }
+        else if stream.pending.is_some() { return Err(SocketError::Invalid("socket stream already has a pending next".into())); }
+        else { stream.pending = Some(promise.clone()); }
+        Ok(promise)
     }
 }
 
@@ -6839,6 +6987,7 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Tuple(_) => "tuple",
         Value::Vector(_) => "vector",
         Value::MutableCollection(_) => "mutable-collection",
+        Value::Seq(_) => "seq",
         Value::Map(_) => "hash-map",
         Value::OrderedMap(_) => "ordered-map",
         Value::SortedMap(_) => "sorted-map",
@@ -6896,6 +7045,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Tuple(_) => "Tuple",
         Value::Vector(_) => "Vector",
         Value::MutableCollection(_) => "MutableCollection",
+        Value::Seq(_) => "Seq",
         Value::Map(_) => "HashMap",
         Value::OrderedMap(_) => "OrderedMap",
         Value::SortedMap(_) => "SortedMap",
@@ -6950,6 +7100,7 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::Tuple(_) => "tuple",
         Value::Vector(_) => "vector",
         Value::MutableCollection(_) => "mutable",
+        Value::Seq(_) => "seq",
         Value::Map(_)
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
@@ -7000,7 +7151,10 @@ fn stream_close(stream: &RuntimeStream) -> Result<(), String> {
     if stream.closed.replace(true) {
         return Ok(());
     }
-    coroutine_close(&stream.coroutine)
+    match &stream.source {
+        RuntimeStreamSource::Coroutine { coroutine, .. } => coroutine_close(coroutine),
+        RuntimeStreamSource::Host { close, .. } => close(),
+    }
 }
 
 fn stream_next(stream: &RuntimeStream) -> Value {
@@ -7013,12 +7167,39 @@ fn stream_next(stream: &RuntimeStream) -> Value {
         promise.reject("stream/pending-pull: only one Stream/next may be pending");
         return Value::Promise(promise);
     }
-    let arguments = stream.initial_arguments.borrow_mut().take().unwrap_or_default();
-    let coroutine = stream.coroutine.clone();
-    let stream = Rc::new((stream.pending.clone(), stream.closed.clone()));
-    let step = fiber::coroutine::coroutine_resume(coroutine.clone(), arguments, Box::new(Step::Done));
-    drive_stream_step(step, coroutine, stream, promise.clone());
+    match &stream.source {
+        RuntimeStreamSource::Coroutine { coroutine, initial_arguments } => {
+            let arguments = initial_arguments.borrow_mut().take().unwrap_or_default();
+            let coroutine = coroutine.clone();
+            let state = Rc::new((stream.pending.clone(), stream.closed.clone()));
+            let step = fiber::coroutine::coroutine_resume(coroutine.clone(), arguments, Box::new(Step::Done));
+            drive_stream_step(step, coroutine, state, promise.clone());
+        }
+        RuntimeStreamSource::Host { next, .. } => match next() {
+            Ok(source) => {
+                let pending = stream.pending.clone();
+                let output = promise.clone();
+                source.on_settle(Rc::new(move |settled| {
+                    pending.set(false);
+                    match settled {
+                        PromiseState::Fulfilled(value) => { output.resolve(value); }
+                        PromiseState::Rejected(error) => { output.reject_rejection(error); }
+                        PromiseState::Pending => {}
+                    };
+                }));
+                let source_poll = source.clone();
+                promise.set_poller(Rc::new(move || { source_poll.state(); }));
+                let source_wait = source.clone();
+                promise.set_waiter(Rc::new(move || { source_wait.wait_state(); }));
+            }
+            Err(error) => { stream.pending.set(false); promise.reject(error); }
+        },
+    }
     Value::Promise(promise)
+}
+
+fn host_stream(next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>>) -> Value {
+    Value::Stream(Rc::new(RuntimeStream::host(next, close)))
 }
 
 /// Pulls one item from a native Stream without exposing its representation to an embedder.
@@ -7050,7 +7231,10 @@ fn duplex_close(duplex: &RuntimeDuplex) -> Result<(), String> {
     }
     stream_close_value(&duplex.receive)?;
     if let Some(close) = &duplex.close {
-        call_function(close, Vec::new())?;
+        match close {
+            DuplexClose::Guest(function) => { call_function(function, Vec::new())?; }
+            DuplexClose::Host(function) => function()?,
+        }
     }
     Ok(())
 }
@@ -7061,7 +7245,11 @@ fn duplex_send(duplex: &RuntimeDuplex, value: Value) -> Value {
         promise.reject("duplex/closed: cannot send on a closed Duplex");
         return Value::Promise(promise);
     }
-    Value::Promise(match call_function(&duplex.send, vec![value]) {
+    let sent = match &duplex.send {
+        DuplexSend::Guest(function) => call_function(function, vec![value]),
+        DuplexSend::Host(function) => function(value),
+    };
+    Value::Promise(match sent {
         Ok(value) => promise_from(value),
         Err(error) => {
             let promise = Promise::new();
@@ -7094,7 +7282,7 @@ fn native_duplex_operation(
                 Some(Value::Function(close)) => Some(close),
                 Some(_) => return Err("Duplex/create expects a close function or nil".into()),
             };
-            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(receive, send, close))))
+            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(receive, DuplexSend::Guest(send), close.map(DuplexClose::Guest)))))
         }
         "instance?" => {
             if forms.len() != 1 { return Err("Duplex/instance? expects one value".into()); }
@@ -8603,6 +8791,7 @@ fn value_metadata(value: &Value) -> Option<Rc<Metadata>> {
         Value::Set(value) => value.meta().cloned(),
         Value::OrderedSet(value) => value.meta().cloned(),
         Value::SortedSet(value) => value.meta().cloned(),
+        Value::Seq(value) => value.meta().cloned(),
         Value::Var(value) => value.hara_metadata(),
         Value::Function(value) => value.metadata.clone(),
         Value::Struct(value) => value.metadata.clone(),
@@ -9604,6 +9793,7 @@ fn protocol_pop_first(arguments: &[Value]) -> Result<Value, String> {
         [Value::Queue(values)] => Ok(Value::Queue(Box::new(values.pop_first()))),
         [Value::Deque(values)] => Ok(Value::Deque(Box::new(values.pop_first()))),
         [Value::PriorityMap(values)] => Ok(Value::PriorityMap(Box::new(values.pop_first()))),
+        [value @ Value::Seq(_)] => collection_rest(value.clone()),
         [_] => Err("protocol/unsupported-receiver: IPopFirst/pop-first".into()),
         _ => Err("IPopFirst/pop-first expects one collection".into()),
     }
@@ -9670,9 +9860,7 @@ fn protocol_cons(arguments: &[Value]) -> Result<Value, String> {
             item.clone(),
             PList::new(),
         )))),
-        Value::Iterator(iterator) if iterator.borrow().seq => {
-            iterator_prepend(item.clone(), collection.clone())
-        }
+        Value::Seq(_) => iterator_seq(iterator_prepend(item.clone(), collection.clone())?),
         _ => Err("ICons/cons has no implementation for this value".into()),
     }
 }
@@ -9860,6 +10048,7 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
             | Value::Deque(_)
             | Value::Tuple(_)
             | Value::Vector(_)
+            | Value::Seq(_)
     );
     let map_like = matches!(
         value,
@@ -9919,7 +10108,7 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         );
     match name {
         "IColl" => persistent_collection,
-        "IConj" => persistent_collection
+        "IConj" => (persistent_collection && !matches!(value, Value::Seq(_)))
             || matches!(value, Value::Array(_) | Value::Object(_) | Value::MutableCollection(_)),
         "IEmpty" => persistent_collection
             || matches!(value, Value::Nil | Value::Array(_) | Value::Object(_) | Value::Struct(_)),
@@ -10998,6 +11187,9 @@ fn byte_set(value: &Value, index: &Value, item: &Value) -> Result<Value, String>
 
 fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
     match value {
+        Value::Seq(values) => values
+            .iter()
+            .collect::<Result<Vec<_>, _>>(),
         Value::Extension(receiver) => {
             let value = Value::Extension(receiver.clone());
             let iterator = extension_protocol_call(
@@ -11084,6 +11276,9 @@ fn iterator_to_vec(value: Value) -> Result<Vec<Value>, String> {
 fn make_iterator(value: Value) -> Result<Value, String> {
     match &value {
         Value::Iterator(_) => Ok(value),
+        Value::Seq(sequence) => Ok(Value::Iterator(Rc::new(RefCell::new(
+            IteratorState::generated(IteratorGenerator::Seq((**sequence).clone())),
+        )))),
         Value::Nil
         | Value::String(_)
         | Value::Bytes(_)
@@ -11121,20 +11316,44 @@ pub fn iterator_from_values(values: Vec<Value>) -> Value {
 }
 
 fn iterator_seq(value: Value) -> Result<Value, String> {
-    let value = match value {
-        Value::Iterator(iterator) => Value::Iterator(iterator),
-        value => {
-            let values = iterator_values(value)?;
-            Value::Iterator(Rc::new(RefCell::new(IteratorState::new(values))))
+    if matches!(value, Value::Seq(_)) {
+        return Ok(value);
+    }
+    let source = make_iterator(value)?;
+    let sequence = PSeq::new(RuntimeSeqSource {
+        source,
+        finished: false,
+    });
+    match sequence.peek_first() {
+        None => Ok(Value::Nil),
+        Some(Ok(_)) => Ok(Value::Seq(Box::new(sequence))),
+        Some(Err(error)) => Err(error),
+    }
+}
+
+struct RuntimeSeqSource {
+    source: Value,
+    finished: bool,
+}
+
+impl Iterator for RuntimeSeqSource {
+    type Item = Result<Value, String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
         }
-    };
-    if matches!(iterator_has_next(&value)?, Value::Bool(true)) {
-        if let Value::Iterator(iterator) = &value {
-            iterator.borrow_mut().seq = true;
+        match iterator_try_next(&self.source) {
+            Ok(Some(value)) => Some(Ok(value)),
+            Ok(None) => {
+                self.finished = true;
+                None
+            }
+            Err(error) => {
+                self.finished = true;
+                Some(Err(error))
+            }
         }
-        Ok(value)
-    } else {
-        Ok(Value::Nil)
     }
 }
 
@@ -11149,7 +11368,6 @@ fn iterator_prepend(head: Value, source: Value) -> Result<Value, String> {
         value => make_iterator(value)?,
     };
     let mut state = IteratorState::generated(IteratorGenerator::Prepend(Some(head), source));
-    state.seq = true;
     Ok(Value::Iterator(Rc::new(RefCell::new(state))))
 }
 fn iterator_repeated(function: Rc<Function>) -> Value {
@@ -11424,6 +11642,9 @@ fn collection_vals(value: &Value) -> Result<Value, String> {
 
 fn collection_first(value: Value) -> Result<Value, String> {
     match value {
+        Value::Seq(sequence) => sequence.peek_first().transpose()?.ok_or_else(|| {
+            "invalid empty Seq value".to_string()
+        }),
         Value::Iterator(iterator) => Ok(iterator.borrow_mut().try_next()?.unwrap_or(Value::Nil)),
         value => Ok(iterator_values(value)?
             .into_iter()
@@ -11433,6 +11654,14 @@ fn collection_first(value: Value) -> Result<Value, String> {
 }
 
 fn collection_rest(value: Value) -> Result<Value, String> {
+    if let Value::Seq(sequence) = value {
+        let tail = sequence.pop_first();
+        return match tail.peek_first() {
+            None => Ok(Value::Nil),
+            Some(Ok(_)) => Ok(Value::Seq(Box::new(tail))),
+            Some(Err(error)) => Err(error),
+        };
+    }
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
@@ -11472,6 +11701,11 @@ fn collection_second(value: Value) -> Result<Value, String> {
 
 fn collection_empty(value: Value) -> Result<Value, String> {
     match value {
+        Value::Seq(sequence) => match sequence.peek_first() {
+            None => Ok(Value::Bool(true)),
+            Some(Ok(_)) => Ok(Value::Bool(false)),
+            Some(Err(error)) => Err(error),
+        },
         Value::Iterator(iterator) => Ok(Value::Bool(!iterator.borrow_mut().has_next()?)),
         value => Ok(Value::Bool(iterator_values(value)?.is_empty())),
     }
@@ -11496,6 +11730,9 @@ fn collection_empty_value(value: Value) -> Result<Value, String> {
         Value::Deque(values) => Ok(Value::Deque(Box::new(values.empty()))),
         Value::Vector(values) => Ok(Value::Vector(values.empty())),
         Value::Tuple(values) => Ok(Value::Tuple(Box::new(values.empty()))),
+        Value::Seq(values) => Ok(Value::Tuple(Box::new(
+            PTuple::Tup0.with_meta(values.meta().cloned()),
+        ))),
         Value::Map(values) => Ok(Value::Map(values.empty())),
         Value::OrderedMap(values) => Ok(Value::OrderedMap(Box::new(values.empty()))),
         Value::SortedMap(values) => Ok(Value::SortedMap(Box::new(values.empty()))),
@@ -11570,6 +11807,14 @@ fn collection_count(value: &Value) -> Result<Value, String> {
                 MutableCollection::Vector(values) => values.len(),
             }
         }
+        Value::Seq(sequence) => {
+            let mut count = 0;
+            for value in sequence.iter() {
+                value?;
+                count += 1;
+            }
+            count
+        }
         Value::Iterator(_) => {
             let mut count = 0;
             while iterator_try_next(value)?.is_some() {
@@ -11583,7 +11828,7 @@ fn collection_count(value: &Value) -> Result<Value, String> {
 }
 
 fn iterator_is_finite(value: &Value) -> bool {
-    !matches!(value, Value::Iterator(_))
+    !matches!(value, Value::Iterator(_) | Value::Seq(_))
 }
 
 fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, String> {
@@ -12204,6 +12449,7 @@ fn attach_optional_metadata(value: Value, metadata: Option<Rc<Metadata>>) -> Res
         Value::Set(value) => Value::Set(value.with_meta(metadata.clone())),
         Value::OrderedSet(value) => Value::OrderedSet(Box::new(value.with_meta(metadata.clone()))),
         Value::SortedSet(value) => Value::SortedSet(Box::new(value.with_meta(metadata.clone()))),
+        Value::Seq(value) => Value::Seq(Box::new(value.with_meta(metadata.clone()))),
         Value::Var(value) => {
             value.set_hara_metadata(metadata);
             Value::Var(value)
@@ -15675,6 +15921,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "socket/next",
                         "socket/send",
                         "socket/close",
+                        "socket/receive-stream",
+                        "socket/duplex",
                     ]
                     .contains(&n.as_str())
                         || n.starts_with("std.native.Socket/") =>
@@ -15959,7 +16207,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err(format!("{n} expects one value"));
                     }
                     let value = eval(&fs[1], env)?;
-                    let result = matches!(value, Value::Iterator(iterator) if n == "iter?" || iterator.borrow().seq);
+                    let result = if n == "seq?" {
+                        matches!(value, Value::Seq(_))
+                    } else {
+                        matches!(value, Value::Iterator(_))
+                    };
                     Ok(Value::Bool(result))
                 }
                 Form::Symbol(n) if n == "iter-next?" => {

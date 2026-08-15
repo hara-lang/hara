@@ -3,12 +3,15 @@ package hara.lang.data;
 import hara.lang.data.types.ILinkedType;
 import hara.lang.data.types.ISequentialType;
 import hara.lang.data.types.ObjPersistent;
+import hara.lang.base.G;
 import hara.lang.protocol.IMetadata;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 
 public class Seq<E> extends ObjPersistent implements ISequentialType<E>, ILinkedType<E> {
+
+  public static final int DISPLAY_LIMIT = 10;
 
   final Iterator<E> _iter;
   final State<E> _state;
@@ -84,6 +87,20 @@ public class Seq<E> extends ObjPersistent implements ISequentialType<E>, ILinked
       current = current.popFirst();
     }
     return count;
+  }
+
+  @Override
+  public String display() {
+    StringBuilder output = new StringBuilder("(");
+    Iterator<E> values = iterator();
+    int displayed = 0;
+    while (displayed < DISPLAY_LIMIT && values.hasNext()) {
+      if (displayed > 0) output.append(' ');
+      output.append(G.display(values.next()));
+      displayed++;
+    }
+    if (values.hasNext()) output.append(displayed == 0 ? "..." : " ...");
+    return output.append(')').toString();
   }
 
   @Override

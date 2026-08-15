@@ -2501,6 +2501,11 @@ public final class HaraNodes {
         return values.length == 3 ? values[2] : null;
       }
       if (receiver instanceof hara.lang.protocol.ILookup) {
+        if (receiver instanceof hara.lang.data.types.ISequentialLookupType<?> sequential) {
+          long index = sequentialIndex(values[1]);
+          if (index >= sequential.count()) return values.length == 3 ? values[2] : null;
+          return sequential.nth(index);
+        }
         hara.lang.protocol.ILookup<Object, Object> lookup =
             (hara.lang.protocol.ILookup<Object, Object>) receiver;
         return values.length == 3 ? lookup.lookup(values[1], values[2]) : lookup.lookup(values[1]);
@@ -2518,15 +2523,35 @@ public final class HaraNodes {
     }
 
     private Object intrinsicNth(Object receiver, Object[] values) {
+      long index = sequentialIndex(values[1]);
       if (receiver instanceof hara.lang.protocol.INth) {
-        return ((hara.lang.protocol.INth<?>) receiver).nth(((Number) values[1]).longValue());
+        return ((hara.lang.protocol.INth<?>) receiver).nth(index);
       }
       byte[] bytes = (byte[]) receiver;
-      long index = ((Number) values[1]).longValue();
       if (index < 0 || index >= bytes.length) {
         throw new HaraException("byte index out of bounds: " + index, this);
       }
       return bytes[(int) index];
+    }
+
+    private long sequentialIndex(Object value) {
+      Object index = HaraBox.unwrap(value);
+      long exact;
+      try {
+        exact = hara.lang.base.NumUtils.toBigInteger(index).longValueExact();
+      } catch (RuntimeException error) {
+        throw new HaraException(
+            "sequential lookup expects a non-negative integer index, received "
+                + hara.lang.base.G.display(index),
+            this);
+      }
+      if (exact < 0) {
+        throw new HaraException(
+            "sequential lookup expects a non-negative integer index, received "
+                + hara.lang.base.G.display(index),
+            this);
+      }
+      return exact;
     }
 
     @SuppressWarnings("unchecked")

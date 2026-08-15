@@ -919,6 +919,13 @@ public final class HaraJavaAdapters {
       throw new HaraException("ILookup/lookup expects one or two arguments");
     }
     try {
+      if (lookup instanceof ISequentialLookupType<?> sequential) {
+        long index = sequentialLookupIndex(arguments[0]);
+        if (index < 0 || index >= sequential.count()) {
+          return arguments.length == 2 ? arguments[1] : null;
+        }
+        return sequential.nth(index);
+      }
       return lookupValueUnchecked(lookup, arguments);
     } catch (IndexOutOfBoundsException error) {
       // `get` is safe associative lookup, including for sequential values.
@@ -940,11 +947,11 @@ public final class HaraJavaAdapters {
   }
 
   private static Object lookupTuple(Object receiver, Object[] arguments) {
-    if (arguments.length < 1 || arguments.length > 2 || !HaraNumericConversions.isNumeric(arguments[0])) {
-      throw new HaraException("ILookup/lookup on a vector expects an index and optional default");
+    if (arguments.length < 1 || arguments.length > 2) {
+      throw new HaraException("ILookup/lookup expects one or two arguments");
     }
     ILinearType<?> tuple = (ILinearType<?>) receiver;
-    long index = HaraNumericConversions.toLong(arguments[0], "ILookup/lookup on tuple");
+    long index = sequentialLookupIndex(arguments[0]);
     if (index < 0 || index >= tuple.count()) {
       return arguments.length == 2 ? arguments[1] : null;
     }
@@ -994,13 +1001,7 @@ public final class HaraJavaAdapters {
 
   private static Object findTuple(Object receiver, Object[] arguments) {
     Object key = arguments[0];
-    if (!HaraNumericConversions.isNumeric(key)) return null;
-    long index;
-    try {
-      index = HaraNumericConversions.toLong(key, "IFind/find on tuple");
-    } catch (HaraException error) {
-      return null;
-    }
+    long index = sequentialLookupIndex(key);
     ILinearType<?> tuple = (ILinearType<?>) receiver;
     if (index < 0 || index >= tuple.count()) return null;
     return new Tuple.Tup2.L<>(null, index, tuple.nth(index));
@@ -1024,6 +1025,9 @@ public final class HaraJavaAdapters {
 
   @SuppressWarnings("unchecked")
   private static Object conjValue(IConj<?> conj, Object value) {
+    if (conj instanceof hara.lang.data.Seq<?>) {
+      throw new HaraException("protocol/unsupported-receiver: IConj/conj does not support Seq");
+    }
     if (conj instanceof ISetType<?> && value == null) {
       value = HaraNull.SINGLETON;
     }
@@ -1035,7 +1039,28 @@ public final class HaraJavaAdapters {
 
   @SuppressWarnings("unchecked")
   private static Object findValue(IFind<?, ?> find, Object key) {
+    if (find instanceof ISequentialLookupType<?> sequential) {
+      long index = sequentialLookupIndex(key);
+      return index < 0 || index >= sequential.count()
+          ? null
+          : new hara.lang.data.Tuple.Tup2.L<>(null, index, sequential.nth(index));
+    }
     return ((IFind<Object, Object>) find).find(key);
+  }
+
+  private static long sequentialLookupIndex(Object value) {
+    if (!HaraNumericConversions.isNumeric(value)) {
+      throw new HaraException(
+          "sequential lookup expects a non-negative integer index, received "
+              + hara.lang.base.G.display(value));
+    }
+    long index = HaraNumericConversions.toLong(value, "sequential lookup");
+    if (index < 0) {
+      throw new HaraException(
+          "sequential lookup expects a non-negative integer index, received "
+              + hara.lang.base.G.display(value));
+    }
+    return index;
   }
 
   private static Object setValue(ISetType<?> set, Object[] arguments) {

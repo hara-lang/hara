@@ -194,7 +194,7 @@ public class HaraLanguageTest {
       assertTrue(context.eval(HaraLanguage.ID, "(empty? [])").asBoolean());
       assertEquals(1, context.eval(HaraLanguage.ID, "(first [1 2])").asLong());
       assertEquals(2, context.eval(HaraLanguage.ID, "(second [1 2])").asLong());
-      assertEquals(2, context.eval(HaraLanguage.ID, "(iter-next (rest [1 2]))").asLong());
+      assertEquals(2, context.eval(HaraLanguage.ID, "(first (rest [1 2]))").asLong());
       assertEquals(42, context.eval(HaraLanguage.ID, "(get-in {:a {:b 42}} [:a :b])").asLong());
       assertEquals(
           42, context.eval(HaraLanguage.ID, "(get-in (assoc-in {} [:a :b] 42) [:a :b])").asLong());
@@ -216,12 +216,12 @@ public class HaraLanguageTest {
       assertTrue(context.eval(HaraLanguage.ID, "(nil? (get (dissoc {:a 1} :a) :a))").asBoolean());
       assertEquals(1, context.eval(HaraLanguage.ID, "(peek [1 2])").asLong());
       assertEquals(2, context.eval(HaraLanguage.ID, "(peek (pop '(1 2)))").asLong());
-      assertEquals(0, context.eval(HaraLanguage.ID, "(iter-next (range 3))").asLong());
-      assertEquals(2, context.eval(HaraLanguage.ID, "(iter-next (range 2 4))").asLong());
-      assertEquals(10, context.eval(HaraLanguage.ID, "(iter-next (iterate inc 10))").asLong());
-      assertEquals(7, context.eval(HaraLanguage.ID, "(iter-next (repeat 2 7))").asLong());
+      assertEquals(0, context.eval(HaraLanguage.ID, "(iter-next (iter (range 3)))").asLong());
+      assertEquals(2, context.eval(HaraLanguage.ID, "(iter-next (iter (range 2 4)))").asLong());
+      assertEquals(10, context.eval(HaraLanguage.ID, "(iter-next (iter (iterate inc 10)))").asLong());
+      assertEquals(7, context.eval(HaraLanguage.ID, "(iter-next (iter (repeat 2 7)))").asLong());
       assertEquals(
-          5, context.eval(HaraLanguage.ID, "(iter-next (repeatedly 1 (fn [] 5)))").asLong());
+          5, context.eval(HaraLanguage.ID, "(iter-next (iter (repeatedly 1 (fn [] 5))))").asLong());
       assertEquals(
           1,
           context
@@ -267,7 +267,7 @@ public class HaraLanguageTest {
           context
               .eval(HaraLanguage.ID, "(first (keep (fn [x] (if (= x 2) x nil)) [1 2]))")
               .asLong());
-      assertEquals(1, context.eval(HaraLanguage.ID, "(iter-next (cycle [1 2]))").asLong());
+      assertEquals(1, context.eval(HaraLanguage.ID, "(iter-next (iter (cycle [1 2])))").asLong());
       assertEquals(2, context.eval(HaraLanguage.ID, "(nth (first (zip [1] [2])) 1)").asLong());
       assertEquals(
           2, context.eval(HaraLanguage.ID, "(nth (first (partition-pair [1 2])) 1)").asLong());
@@ -297,6 +297,48 @@ public class HaraLanguageTest {
           3,
           context.eval(HaraLanguage.ID, "(first ((comp (map inc) (map inc)) [1 2 3]))").asLong());
       assertTrue(context.eval(HaraLanguage.ID, "(nil? (rest [1]))").asBoolean());
+      assertEquals(
+          "[true false 1 1 2 [1 2 3] [1 2 3]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [xs (seq [1 2 3])] "
+                      + "[(seq? xs) (iter? xs) (first xs) (first xs) "
+                      + " (first (rest xs)) (vec xs) (vec xs)])")
+              .toString());
+      assertEquals(
+          "[1 1 2 2]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [xs (seq [1 2 3]) left (iter xs) right (iter xs)] "
+                      + "[(iter-next left) (iter-next right) "
+                      + " (iter-next left) (iter-next right)])")
+              .toString());
+      assertEquals(
+          "[1 1]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [calls (atom 0) xs (seq (Iter/iter-map "
+                      + "(fn [value] (do (swap! calls inc) value)) [1 2]))] "
+                      + "[(first xs) (do (first xs) (deref calls))])")
+              .toString());
+      assertEquals(
+          "(0 1 2 3 4 5 6 7 8 9 ...)",
+          context.eval(HaraLanguage.ID, "(seq (Iter/iter-range 20))").toString());
+    }
+  }
+
+  @Test
+  public void sequentialLookupRejectsInvalidIndicesWithoutHostFailures() {
+    try (Context context = context()) {
+      context.eval(HaraLanguage.ID, "(load-resource \"std/foundation.hal\")");
+      PolyglotException error =
+          assertThrows(
+              PolyglotException.class,
+              () -> context.eval(HaraLanguage.ID, "(get [0 1 2 3 4 5 6 7 8] nil)"));
+      assertTrue(error.getMessage().contains("sequential lookup expects a non-negative integer"));
     }
   }
 

@@ -1377,7 +1377,6 @@ public final class Main {
     if (result.isHostObject() && result.asHostObject() instanceof Iterator<?>) {
       return "#<lazy-iterator>";
     }
-    if (result.hasIterator() && !result.hasArrayElements()) return "#<lazy-iterator>";
     if (result.isString()) return G.display(result.asString());
     return result.toString();
   }

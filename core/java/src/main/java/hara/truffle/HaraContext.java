@@ -5446,7 +5446,7 @@ public final class HaraContext {
    * iterator: a lazy seq over the tail, or null when the tail is empty.
    */
   public Object restSequence(Iterator<?> source) {
-    return HaraSeq.create(closeable(Iter.drop(source, 1), source));
+    return hara.lang.data.Seq.create(closeable(Iter.drop(source, 1), source));
   }
 
   private void captureSequenceIntrinsics() {
@@ -6043,25 +6043,26 @@ public final class HaraContext {
       throw new HaraException("seq expects a source, or a transform and source");
     }
     Object source = values.length == 1 ? values[0] : values[1];
+    Object unwrappedSource = HaraBox.unwrap(source);
     Object lazySource =
-        HaraBox.unwrap(source) instanceof HaraSeq
-            ? HaraBox.unwrap(source)
-            : HaraSeq.create((Iterator<?>) snapshotOrIterator(source));
+        unwrappedSource instanceof hara.lang.data.Seq
+            ? unwrappedSource
+            : hara.lang.data.Seq.create((Iterator<?>) snapshotOrIterator(source));
     if (values.length == 1) {
       return lazySource;
     }
     Object result = invokeCallable(values[0], new Object[] {lazySource});
     Object unwrapped = HaraBox.unwrap(result);
-    HaraSeq sequence =
-        unwrapped instanceof HaraSeq
-            ? (HaraSeq) unwrapped
-            : HaraSeq.create((Iterator<?>) iterValue(unwrapped));
+    hara.lang.data.Seq<?> sequence =
+        unwrapped instanceof hara.lang.data.Seq
+            ? (hara.lang.data.Seq<?>) unwrapped
+            : hara.lang.data.Seq.create((Iterator<?>) iterValue(unwrapped));
     return sequence;
   }
 
   @TruffleBoundary
   private Object isSeq(Object value) {
-    return HaraBox.unwrap(value) instanceof HaraSeq;
+    return HaraBox.unwrap(value) instanceof hara.lang.data.Seq;
   }
 
   @TruffleBoundary
@@ -6088,7 +6089,6 @@ public final class HaraContext {
 
   private Object snapshotOrIterator(Object value) {
     Object target = HaraBox.unwrap(value);
-    if (target instanceof HaraSeq) return target;
     if (target instanceof Iterator<?>) return target;
     if (target instanceof HaraArray) return Iter.objects(((HaraArray) target).toArray());
     return iterValue(target);
@@ -6768,6 +6768,9 @@ public final class HaraContext {
 
   private boolean protocolSatisfies(String protocolName, Object value) {
     Object receiver = HaraBox.unwrap(value);
+    if ("IConj".equals(protocolName) && receiver instanceof hara.lang.data.Seq<?>) {
+      return false;
+    }
     if ("IColl".equals(protocolName)) {
       return receiver instanceof hara.lang.protocol.IColl;
     }
@@ -7029,47 +7032,6 @@ public final class HaraContext {
     public HaraArray conj(Object value) {
       add(value);
       return this;
-    }
-  }
-
-  private static final class HaraSeq implements CloseableIterator<Object>, ICons<Object> {
-    private final Iterator<?> source;
-    private boolean closed;
-
-    private HaraSeq(Iterator<?> source) {
-      this.source = source;
-    }
-
-    private static HaraSeq create(Iterator<?> source) {
-      return source.hasNext() ? new HaraSeq(source) : null;
-    }
-
-    @Override
-    public boolean hasNext() {
-      return !closed && source.hasNext();
-    }
-
-    @Override
-    public Object next() {
-      if (!hasNext()) throw new NoSuchElementException();
-      return source.next();
-    }
-
-    @Override
-    public HaraSeq cons(Object value) {
-      return new HaraSeq(Iter.concat(Iter.objects(value), this));
-    }
-
-    @Override
-    public void close() {
-      if (closed) return;
-      closed = true;
-      Iter.close(source);
-    }
-
-    @Override
-    public String toString() {
-      return "#<seq>";
     }
   }
 

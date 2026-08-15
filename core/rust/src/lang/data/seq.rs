@@ -131,14 +131,16 @@ impl<E: Clone + PartialEq + 'static> IEquality for Seq<E> {
 }
 impl<E: Clone + std::fmt::Debug + 'static> IDisplay for Seq<E> {
     fn display(&self) -> String {
-        format!(
-            "({})",
-            self.clone()
-                .into_iter()
-                .map(|v| format!("{v:?}"))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
+        let mut values = self.iter();
+        let mut displayed = values
+            .by_ref()
+            .take(10)
+            .map(|value| format!("{value:?}"))
+            .collect::<Vec<_>>();
+        if values.next().is_some() {
+            displayed.push("...".into());
+        }
+        format!("({})", displayed.join(" "))
     }
 }
 impl<E: Clone + std::hash::Hash + JavaHash + 'static> IHash for Seq<E> {

@@ -6716,12 +6716,53 @@ mod tests {
                       (vec (Iter/iter-take 4 (cons 0 (repeat 1))))]"
                 )
                 .unwrap(),
-            "[true true [0 2] [0 1 1 1]]"
+            "[true false [0 2] [0 1 1 1]]"
         );
         assert!(runtime
             .eval_text("(cycle [])")
             .unwrap_err()
             .contains("cycle expects a non-empty source"));
+    }
+
+    #[test]
+    fn seq_is_a_reusable_frozen_view_with_independent_iterators() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [xs (seq [1 2 3])] \
+                       [(seq? xs) (iter? xs) (first xs) (first xs) \
+                        (first (rest xs)) (vec xs) (vec xs)])"
+                )
+                .unwrap(),
+            "[true false 1 1 2 [1 2 3] [1 2 3]]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [xs (seq [1 2 3]) left (iter xs) right (iter xs)] \
+                       [(iter-next left) (iter-next right) \
+                        (iter-next left) (iter-next right)])"
+                )
+                .unwrap(),
+            "[1 1 2 2]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [calls (atom 0) \
+                           xs (seq (Iter/iter-map \
+                             (fn [value] (do (swap! calls inc) value)) [1 2]))] \
+                       [(deref calls) (first xs) (deref calls)
+                        (first xs) (deref calls)])"
+                )
+                .unwrap(),
+            "[2 1 2 1 2]"
+        );
+        assert_eq!(
+            runtime.eval_text("(seq (Iter/iter-range 20))").unwrap(),
+            "(0 1 2 3 4 5 6 7 8 9 ...)"
+        );
     }
 
     #[test]
@@ -7035,7 +7076,7 @@ mod tests {
             "definition/arglists-metadata",
             "sequence/empty-is-nil",
             "sequence/non-empty-rest",
-            "sequence/is-iterator",
+            "sequence/frozen-view",
             "sequence/lazy-cons",
             "sequence/reject-conj",
             "iterator/exact-lookahead",
@@ -9545,6 +9586,25 @@ mod tests {
                 .unwrap(),
             "[true :std.native.Duplex true true :sent true true]"
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn process_duplex_streams_stdout_and_writes_stdin() {
+        let mut runtime = Runtime::new();
+        runtime.install_native_process_provider();
+        assert_eq!(runtime.eval_native(
+            "(let [p (Process/spawn [\"sh\" \"-c\" \"read line; printf reply:$line\"]) d (Process/duplex p)] (deref (Duplex/send d (str/encode-utf8 \"hello\\n\"))) (Process/close-input p) [(str/decode-utf8 (deref (Stream/next (Duplex/receive d)))) (deref (Process/wait p)) (nil? (deref (Stream/next (Duplex/receive d))))])"
+        ).unwrap(), "[\"reply:hello\" 0 true]");
+    }
+
+    #[test]
+    fn socket_duplex_maps_data_and_close_events_to_a_byte_stream() {
+        let mut runtime = Runtime::new();
+        runtime.install_loopback_socket_provider();
+        assert_eq!(runtime.eval_text(
+            "(let [s (Socket/connect \"localhost\" 8080 {} (fn [error socket] socket)) d (Socket/duplex s)] (deref (Duplex/send d (bytes 1 2 3))) (let [value (deref (Stream/next (Duplex/receive d)))] (Duplex/close d) [(vec value) (nil? (deref (Stream/next (Duplex/receive d))))]))"
+        ).unwrap(), "[[1 2 3] true]");
     }
 
     #[cfg(feature = "evaluation-journal")]
