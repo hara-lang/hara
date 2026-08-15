@@ -14,7 +14,7 @@ old_checks = '''                      + "(std.native.Result/result? (std.native.
                       + "(= 11 (res-data f)) "
                       + "(= :foundation (get (res-context f) :source))))")
 '''
-new_checks = '''                      + "(std.native.Result/result? (std.native.Result/data n)))")
+new_checks = '''                      + "(std.native.Result/result? (std.native.Result/data n))))")
 '''
 if text.count(old_checks) != 1:
     raise SystemExit(
