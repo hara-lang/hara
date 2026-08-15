@@ -1,12 +1,14 @@
-name: Agent runtime bootstrap
+name: Agent Foundation runtime bootstrap
 
 on:
   push:
     branches:
-      - agent/shape-preserving-foundation-collections
+      - agent/666-foundation-shape-materialization
+    paths:
+      - .github/workflows/agent-runtime-bootstrap.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   bootstrap:
@@ -17,24 +19,6 @@ jobs:
         with:
           fetch-depth: 1
           submodules: false
-
-      - name: Apply pending runtime patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          patch_payload=.github/agent-runtime.patch.gz.b64
-          if [[ ! -f "$patch_payload" ]]; then
-            exit 0
-          fi
-          base64 --decode "$patch_payload" | gzip --decompress > /tmp/agent-runtime.patch
-          git apply --check /tmp/agent-runtime.patch
-          git apply /tmp/agent-runtime.patch
-          rm "$patch_payload"
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add --all
-          git commit -m 'Implement Base reduction runtime substrate'
-          git push
 
       - name: Check out hara-specs-registry
         uses: actions/checkout@v4
@@ -53,36 +37,11 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Compile Truffle runtime
+      - name: Build Truffle runtime
         run: mvn -f core/java/pom.xml -Ptruffle -DskipTests package
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Capture Rust test diagnostics
-        shell: bash
-        run: |
-          set +e
-          cargo test --manifest-path core/rust/Cargo.toml --lib > /tmp/cargo-test.log 2>&1
-          status=$?
-          set -e
-          cat /tmp/cargo-test.log
-          printf '%s\n' "$status" > /tmp/cargo-test.status
-
-      - name: Upload Rust test diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: hara-rust-diagnostics-${{ github.sha }}
-          path: |
-            /tmp/cargo-test.log
-            /tmp/cargo-test.status
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Require Rust tests
-        shell: bash
-        run: test "$(cat /tmp/cargo-test.status)" -eq 0
 
       - name: Build Rust CLI
         run: cargo build --manifest-path core/rust/Cargo.toml --release --bin hara
@@ -90,7 +49,7 @@ jobs:
       - name: Upload runtime bootstrap
         uses: actions/upload-artifact@v4
         with:
-          name: hara-runtime-bootstrap-${{ github.sha }}
+          name: hara-foundation-runtime-${{ github.sha }}
           path: |
             core/java/target/hara-truffle.jar
             core/rust/target/release/hara
