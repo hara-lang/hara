@@ -154,7 +154,12 @@ public final class HaraContext {
                   "p256-keypair", "p256-public", "p256-sign", "p256-verify", "p256-shared")),
           Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv")),
           Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "wait", "kill")),
-          Map.entry("File", java.util.List.of("parent", "join", "resolve", "read", "write", "exists?", "stat", "list", "walk", "mkdir", "delete")),
+          Map.entry(
+              "File",
+              java.util.List.of(
+                  "parent", "join", "resolve", "read", "write", "exists?", "stat",
+                  "entries", "list", "walk", "mkdir", "delete", "copy", "move",
+                  "temp-file", "temp-directory")),
           Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close")),
           Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
           Map.entry("Coroutine", java.util.List.of("create", "yield", "await", "instance?")),
@@ -214,6 +219,7 @@ public final class HaraContext {
   private boolean eagerFallbacksLoading;
   private boolean eagerFallbacksLoaded;
   private volatile HaraProject project;
+  private volatile HaraFileProvider fileProvider;
   private volatile boolean projectDiscovered;
   private final Map<String, HaraExtensionRuntime> loadedExtensions = new ConcurrentHashMap<>();
   private final Map<String, ModuleRecord> modules = new ConcurrentHashMap<>();
@@ -3259,10 +3265,17 @@ public final class HaraContext {
     file.define("write", new VariadicBuiltin("std.native.File/write", this::fileWrite));
     file.define("exists?", new UnaryBuiltin("std.native.File/exists?", this::fileExists));
     file.define("stat", new UnaryBuiltin("std.native.File/stat", this::fileStat));
+    file.define("entries", new UnaryBuiltin("std.native.File/entries", this::fileEntries));
     file.define("list", new UnaryBuiltin("std.native.File/list", this::fileList));
     file.define("walk", new UnaryBuiltin("std.native.File/walk", this::fileWalk));
-    file.define("mkdir", new UnaryBuiltin("std.native.File/mkdir", this::fileMkdir));
-    file.define("delete", new UnaryBuiltin("std.native.File/delete", this::fileDelete));
+    file.define("mkdir", new VariadicBuiltin("std.native.File/mkdir", this::fileMkdir));
+    file.define("delete", new VariadicBuiltin("std.native.File/delete", this::fileDelete));
+    file.define("copy", new VariadicBuiltin("std.native.File/copy", this::fileCopy));
+    file.define("move", new VariadicBuiltin("std.native.File/move", this::fileMove));
+    file.define("temp-file", new VariadicBuiltin("std.native.File/temp-file", this::fileTempFile));
+    file.define(
+        "temp-directory",
+        new VariadicBuiltin("std.native.File/temp-directory", this::fileTempDirectory));
   }
 
   void installSocketLibrary() {
@@ -3972,184 +3985,314 @@ public final class HaraContext {
     return (HaraSocket) input;
   }
 
+  @FunctionalInterface
+  private interface FileEffect {
+    Object invoke(HaraFileProvider provider) throws Exception;
+  }
+
   private Object fileResolve(Object[] values) {
-    if (values.length != 2) throw new HaraException("file/resolve expects a root and path");
-    return Path.of(stringValue(values[0], "file/resolve"))
-        .resolve(stringValue(values[1], "file/resolve"))
-        .normalize()
-        .toString();
+    if (values.length != 2) throw new HaraException("file/resolve expects a base and path");
+    String base = stringValue(values[0], "file/resolve");
+    String path = stringValue(values[1], "file/resolve");
+    try {
+      return HaraLogicalPath.resolve(base, path);
+    } catch (Throwable error) {
+      throw fileFailure("resolve", base, path, error);
+    }
   }
 
   private Object fileParent(Object value) {
-    Path parent = Path.of(stringValue(value, "file/parent")).normalize().getParent();
-    return parent == null ? null : parent.toString();
+    String path = stringValue(value, "file/parent");
+    try {
+      return HaraLogicalPath.parent(path);
+    } catch (Throwable error) {
+      throw fileFailure("parent", path, null, error);
+    }
   }
 
   private Object fileJoin(Object[] values) {
     if (values.length != 2) throw new HaraException("file/join expects a base and path");
-    return Path.of(stringValue(values[0], "file/join"))
-        .resolve(stringValue(values[1], "file/join"))
-        .normalize()
-        .toString();
+    String base = stringValue(values[0], "file/join");
+    String path = stringValue(values[1], "file/join");
+    try {
+      return HaraLogicalPath.join(base, path);
+    } catch (Throwable error) {
+      throw fileFailure("join", base, path, error);
+    }
   }
 
   private Object fileRead(Object value) {
-    requireFileIO("file/read");
     String path = stringValue(value, "file/read");
-    return new HaraPromise(
-        CompletableFuture.supplyAsync(
-            () ->
-                invokeInContext(
-                    () -> {
-                      try {
-                        return environment.getPublicTruffleFile(path).readAllBytes();
-                      } catch (IOException error) {
-                        throw new CompletionException(error);
-                      }
-                    })));
+    return fileEffect("read", path, null, provider -> provider.read(path));
   }
 
   private Object fileWrite(Object[] values) {
-    requireFileIO("file/write");
-    if (values.length != 2) throw new HaraException("file/write expects a path and bytes");
+    if (values.length < 2 || values.length > 3) {
+      throw new HaraException("file/write expects a path, bytes, and optional options");
+    }
     String path = stringValue(values[0], "file/write");
     byte[] contents = bytesValue(values[1], "file/write").clone();
-    return new HaraPromise(
-        CompletableFuture.supplyAsync(
-            () ->
-                invokeInContext(
-                    () -> {
-                      try {
-                        try (OutputStream output =
-                            environment.getPublicTruffleFile(path).newOutputStream()) {
-                          output.write(contents);
-                        }
-                        return null;
-                      } catch (IOException error) {
-                        throw new CompletionException(error);
-                      }
-                    })));
+    IMapType<?, ?> options =
+        values.length == 3 ? fileOptions(values[2], "file/write") : emptyFileOptions();
+    HaraFileProvider.WriteMode mode =
+        switch (fileKeywordOption(options, "mode", "create", "file/write")) {
+          case "create" -> HaraFileProvider.WriteMode.CREATE;
+          case "replace" -> HaraFileProvider.WriteMode.REPLACE;
+          case "append" -> HaraFileProvider.WriteMode.APPEND;
+          default -> throw new HaraException(
+              "file/write :mode must be :create, :replace, or :append");
+        };
+    HaraFileProvider.WriteOptions writeOptions =
+        new HaraFileProvider.WriteOptions(
+            mode, fileBooleanOption(options, "parents?", false, "file/write"));
+    return fileEffect("write", path, null, provider -> provider.write(path, contents, writeOptions));
   }
 
   private Object fileExists(Object value) {
-    requireFileIO("file/exists?");
     String path = stringValue(value, "file/exists?");
-    return new HaraPromise(
-        CompletableFuture.supplyAsync(
-            () -> invokeInContext(() -> environment.getPublicTruffleFile(path).exists())));
-  }
-
-  private Object fileList(Object value) {
-    requireFileIO("file/list");
-    String path = stringValue(value, "file/list");
-    return new HaraPromise(
-        CompletableFuture.supplyAsync(
-            () ->
-                invokeInContext(
-                    () -> {
-                      try {
-                        TruffleFile directory = environment.getPublicTruffleFile(path);
-                        java.util.Collection<TruffleFile> children = directory.list();
-                        ArrayList<String> names = new ArrayList<>(children.size());
-                        for (TruffleFile child : children) {
-                          names.add(child.normalize().getPath());
-                        }
-                        Collections.sort(names);
-                        return names.toArray(new String[0]);
-                      } catch (IOException error) {
-                        throw new CompletionException(error);
-                      }
-                    })));
+    return fileEffect("exists?", path, null, provider -> provider.exists(path));
   }
 
   private Object fileStat(Object value) {
-    requireFileIO("file/stat");
     String path = stringValue(value, "file/stat");
-    return new HaraPromise(
-        CompletableFuture.supplyAsync(
-            () ->
-                invokeInContext(
-                    () -> {
-                      try {
-                        TruffleFile target = environment.getPublicTruffleFile(path);
-                        String type =
-                            target.isSymbolicLink()
-                                ? "symlink"
-                                : target.isDirectory() ? "directory" : "file";
-                        return hara.lang.data.Map.Standard.from(
-                            null,
-                            Keyword.create("size"),
-                            target.size(),
-                            Keyword.create("type"),
-                            Keyword.create(type));
-                      } catch (IOException error) {
-                        throw new CompletionException(error);
-                      }
-                    })));
+    return fileEffect("stat", path, null, provider -> provider.stat(path).toValue());
+  }
+
+  private Object fileEntries(Object value) {
+    String path = stringValue(value, "file/entries");
+    return fileEffect(
+        "entries",
+        path,
+        null,
+        provider ->
+            hara.lang.data.Vector.Standard.from(
+                null,
+                provider.entries(path).stream()
+                    .map(HaraFileProvider.Entry::toValue)
+                    .toArray()));
+  }
+
+  private Object fileList(Object value) {
+    String path = stringValue(value, "file/list");
+    return fileEffect(
+        "list",
+        path,
+        null,
+        provider -> hara.lang.data.Vector.Standard.from(null, provider.list(path).toArray()));
   }
 
   private Object fileWalk(Object value) {
-    requireFileIO("file/walk");
     String path = stringValue(value, "file/walk");
-    return new HaraPromise(
-        CompletableFuture.supplyAsync(
-            () ->
-                invokeInContext(
-                    () -> {
-                      try {
-                        ArrayList<String> files = new ArrayList<>();
-                        collectFiles(environment.getPublicTruffleFile(path), files);
-                        Collections.sort(files);
-                        return files.toArray(new String[0]);
-                      } catch (IOException error) {
-                        throw new CompletionException(error);
-                      }
-                    })));
+    return fileEffect(
+        "walk",
+        path,
+        null,
+        provider -> hara.lang.data.Vector.Standard.from(null, provider.walk(path).toArray()));
   }
 
-  private static void collectFiles(TruffleFile current, ArrayList<String> files)
-      throws IOException {
-    if (current.isSymbolicLink()) return;
-    if (current.isRegularFile()) {
-      files.add(current.normalize().getPath());
-      return;
+  private Object fileMkdir(Object[] values) {
+    if (values.length < 1 || values.length > 2) {
+      throw new HaraException("file/mkdir expects a path and optional options");
     }
-    if (!current.isDirectory()) return;
-    for (TruffleFile child : current.list()) collectFiles(child, files);
+    String path = stringValue(values[0], "file/mkdir");
+    IMapType<?, ?> options =
+        values.length == 2 ? fileOptions(values[1], "file/mkdir") : emptyFileOptions();
+    HaraFileProvider.MkdirOptions mkdirOptions =
+        new HaraFileProvider.MkdirOptions(
+            fileBooleanOption(options, "parents?", true, "file/mkdir"),
+            fileBooleanOption(options, "exists-ok?", true, "file/mkdir"));
+    return fileEffect("mkdir", path, null, provider -> provider.mkdir(path, mkdirOptions));
   }
 
-  private Object fileMkdir(Object value) {
-    requireFileIO("file/mkdir");
-    String path = stringValue(value, "file/mkdir");
-    return new HaraPromise(
+  private Object fileDelete(Object[] values) {
+    if (values.length < 1 || values.length > 2) {
+      throw new HaraException("file/delete expects a path and optional options");
+    }
+    String path = stringValue(values[0], "file/delete");
+    IMapType<?, ?> options =
+        values.length == 2 ? fileOptions(values[1], "file/delete") : emptyFileOptions();
+    HaraFileProvider.DeleteOptions deleteOptions =
+        new HaraFileProvider.DeleteOptions(
+            fileBooleanOption(options, "missing-ok?", false, "file/delete"));
+    return fileEffect("delete", path, null, provider -> provider.delete(path, deleteOptions));
+  }
+
+  private Object fileCopy(Object[] values) {
+    if (values.length < 2 || values.length > 3) {
+      throw new HaraException("file/copy expects source, target, and optional options");
+    }
+    String source = stringValue(values[0], "file/copy");
+    String target = stringValue(values[1], "file/copy");
+    IMapType<?, ?> options =
+        values.length == 3 ? fileOptions(values[2], "file/copy") : emptyFileOptions();
+    HaraFileProvider.CopyOptions copyOptions =
+        new HaraFileProvider.CopyOptions(
+            fileBooleanOption(options, "replace?", false, "file/copy"),
+            fileBooleanOption(options, "parents?", false, "file/copy"),
+            fileBooleanOption(options, "preserve-modified?", false, "file/copy"));
+    return fileEffect(
+        "copy", source, target, provider -> provider.copy(source, target, copyOptions));
+  }
+
+  private Object fileMove(Object[] values) {
+    if (values.length < 2 || values.length > 3) {
+      throw new HaraException("file/move expects source, target, and optional options");
+    }
+    String source = stringValue(values[0], "file/move");
+    String target = stringValue(values[1], "file/move");
+    IMapType<?, ?> options =
+        values.length == 3 ? fileOptions(values[2], "file/move") : emptyFileOptions();
+    HaraFileProvider.MoveOptions moveOptions =
+        new HaraFileProvider.MoveOptions(
+            fileBooleanOption(options, "replace?", false, "file/move"),
+            fileBooleanOption(options, "parents?", false, "file/move"),
+            fileBooleanOption(options, "atomic?", false, "file/move"));
+    return fileEffect(
+        "move", source, target, provider -> provider.move(source, target, moveOptions));
+  }
+
+  private Object fileTempFile(Object[] values) {
+    if (values.length < 1 || values.length > 2) {
+      throw new HaraException("file/temp-file expects a parent and optional options");
+    }
+    String parent = stringValue(values[0], "file/temp-file");
+    IMapType<?, ?> options =
+        values.length == 2 ? fileOptions(values[1], "file/temp-file") : emptyFileOptions();
+    HaraFileProvider.TempFileOptions tempOptions =
+        new HaraFileProvider.TempFileOptions(
+            fileStringOption(options, "prefix", "tmp", "file/temp-file"),
+            fileStringOption(options, "suffix", "", "file/temp-file"));
+    return fileEffect(
+        "temp-file", parent, null, provider -> provider.tempFile(parent, tempOptions));
+  }
+
+  private Object fileTempDirectory(Object[] values) {
+    if (values.length < 1 || values.length > 2) {
+      throw new HaraException("file/temp-directory expects a parent and optional options");
+    }
+    String parent = stringValue(values[0], "file/temp-directory");
+    IMapType<?, ?> options =
+        values.length == 2
+            ? fileOptions(values[1], "file/temp-directory")
+            : emptyFileOptions();
+    HaraFileProvider.TempDirectoryOptions tempOptions =
+        new HaraFileProvider.TempDirectoryOptions(
+            fileStringOption(options, "prefix", "tmp", "file/temp-directory"));
+    return fileEffect(
+        "temp-directory",
+        parent,
+        null,
+        provider -> provider.tempDirectory(parent, tempOptions));
+  }
+
+  private Object fileEffect(
+      String operation, String path, String target, FileEffect effect) {
+    CompletableFuture<Object> future =
         CompletableFuture.supplyAsync(
             () ->
                 invokeInContext(
                     () -> {
                       try {
-                        environment.getPublicTruffleFile(path).createDirectories();
-                        return null;
-                      } catch (IOException error) {
-                        throw new CompletionException(error);
+                        if (!environment.isFileIOAllowed()) {
+                          throw new HaraFileProvider.Failure(
+                              "denied", "filesystem capability is not attached");
+                        }
+                        return effect.invoke(fileProvider());
+                      } catch (Throwable error) {
+                        throw fileFailure(operation, path, target, error);
                       }
-                    })));
+                    }));
+    return new HaraPromise(future);
   }
 
-  private Object fileDelete(Object value) {
-    requireFileIO("file/delete");
-    String path = stringValue(value, "file/delete");
-    return new HaraPromise(
-        CompletableFuture.supplyAsync(
-            () ->
-                invokeInContext(
-                    () -> {
-                      try {
-                        environment.getPublicTruffleFile(path).delete();
-                        return null;
-                      } catch (IOException error) {
-                        throw new CompletionException(error);
-                      }
-                    })));
+  private HaraFileProvider fileProvider() {
+    HaraFileProvider current = fileProvider;
+    if (current != null) return current;
+    synchronized (this) {
+      current = fileProvider;
+      if (current == null) {
+        String workingDirectory =
+            environment.getPublicTruffleFile(".").getAbsoluteFile().normalize().getPath();
+        current = new HaraFileProvider(Path.of(workingDirectory));
+        fileProvider = current;
+      }
+      return current;
+    }
+  }
+
+  @SuppressWarnings("unchecked")
+  private static IMapType<?, ?> emptyFileOptions() {
+    return hara.lang.data.Map.Standard.EMPTY;
+  }
+
+  private static IMapType<?, ?> fileOptions(Object value, String operation) {
+    Object raw = HaraBox.unwrap(value);
+    if (raw == null) return emptyFileOptions();
+    if (!(raw instanceof IMapType<?, ?> map)) {
+      throw new HaraException(operation + " options must be a map");
+    }
+    return map;
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static Object fileOption(IMapType<?, ?> options, String name, Object defaultValue) {
+    Object found = ((IMapType) options).find(Keyword.create(name));
+    java.util.Map.Entry entry = (java.util.Map.Entry) found;
+    return entry == null ? defaultValue : HaraBox.unwrap(entry.getValue());
+  }
+
+  private static boolean fileBooleanOption(
+      IMapType<?, ?> options, String name, boolean defaultValue, String operation) {
+    Object value = fileOption(options, name, defaultValue);
+    if (value instanceof Boolean bool) return bool;
+    throw new HaraException(operation + " :" + name + " must be boolean");
+  }
+
+  private static String fileStringOption(
+      IMapType<?, ?> options, String name, String defaultValue, String operation) {
+    Object value = fileOption(options, name, defaultValue);
+    if (value instanceof String string) return string;
+    throw new HaraException(operation + " :" + name + " must be a string");
+  }
+
+  private static String fileKeywordOption(
+      IMapType<?, ?> options, String name, String defaultValue, String operation) {
+    Object value = fileOption(options, name, Keyword.create(defaultValue));
+    if (value instanceof Keyword keyword) return keyword.getName();
+    throw new HaraException(operation + " :" + name + " must be a keyword");
+  }
+
+  private static hara.lang.base.Ex.Info fileFailure(
+      String operation, String path, String target, Throwable error) {
+    Throwable cause = HaraFileProvider.unwrap(error);
+    if (cause instanceof hara.lang.base.Ex.Info info) return info;
+    String code = HaraFileProvider.code(cause);
+    Object canonicalPath = canonicalFilePath(path);
+    Object canonicalTarget = canonicalFilePath(target);
+    IMetadata data =
+        hara.lang.data.Map.Standard.from(
+            null,
+            Keyword.create("error", "code"),
+            Keyword.create("file", code),
+            Keyword.create("file", "operation"),
+            Keyword.create(operation),
+            Keyword.create("file", "path"),
+            canonicalPath,
+            Keyword.create("file", "target"),
+            canonicalTarget);
+    String message = cause.getMessage();
+    if (message == null || message.isBlank()) message = cause.getClass().getSimpleName();
+    return new hara.lang.base.Ex.Info(
+        "file/" + operation + " failed: " + message, data, cause);
+  }
+
+  private static Object canonicalFilePath(String value) {
+    if (value == null) return null;
+    try {
+      return HaraLogicalPath.normalise(value);
+    } catch (Throwable ignored) {
+      return value;
+    }
   }
 
   @TruffleBoundary

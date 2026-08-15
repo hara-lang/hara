@@ -6,10 +6,11 @@ import java.nio.channels.SeekableByteChannel;
 import java.nio.file.AccessMode;
 import java.nio.file.CopyOption;
 import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
 import java.nio.file.LinkOption;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
-import java.nio.file.Files;
 import java.nio.file.attribute.FileAttribute;
 import java.util.Map;
 import java.util.Set;
@@ -31,51 +32,65 @@ final class HaraMountedFileSystem implements FileSystem {
   private Path mounted(Path path) throws IOException {
     Path normalized = path.toAbsolutePath().normalize();
     if (normalized.startsWith(root)) return normalized;
-    String guest = path.normalize().toString();
-    while (guest.startsWith("/") || guest.startsWith("\\")) guest = guest.substring(1);
-    Path resolved = root.resolve(guest).normalize();
-    if (!resolved.startsWith(root)) throw new IOException("file/denied");
-    return resolved;
+    try {
+      return HaraLogicalPath.toHost(root, path.toString());
+    } catch (HaraLogicalPath.Error error) {
+      throw new IOException("file/" + error.code(), error);
+    }
   }
 
   /**
-   * Rejects paths that escape through a symlink. For a path that does not exist yet, the nearest
-   * existing ancestor is checked before the delegate is allowed to create it.
+   * Rejects mount escape through an existing ancestor symlink. The final entry is deliberately not
+   * followed so metadata and deletion can operate on a symlink itself.
    */
   private Path confined(Path path) throws IOException {
     Path candidate = mounted(path);
     Path rootReal = root.toRealPath();
-    Path existing = candidate;
-    while (existing != null && !Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
-      existing = existing.getParent();
-    }
-    if (existing == null || !existing.toRealPath().startsWith(rootReal)) {
-      throw new IOException("file/denied");
-    }
-    if (Files.exists(candidate) && !candidate.toRealPath().startsWith(rootReal)) {
-      throw new IOException("file/denied");
+    Path relative = root.relativize(candidate);
+    Path current = root;
+    int index = 0;
+    int count = relative.getNameCount();
+    for (Path component : relative) {
+      current = current.resolve(component);
+      index++;
+      if (index == count) break;
+      if (!Files.exists(current, LinkOption.NOFOLLOW_LINKS)) break;
+      if (Files.isSymbolicLink(current)) throw new IOException("file/outside-root");
+      if (!Files.isDirectory(current, LinkOption.NOFOLLOW_LINKS)) {
+        throw new NotDirectoryException(current.toString());
+      }
+      if (!current.toRealPath().startsWith(rootReal)) throw new IOException("file/outside-root");
     }
     return candidate;
   }
 
+  private static void rejectFinalSymlink(Path path) throws IOException {
+    if (Files.isSymbolicLink(path)) throw new IOException("file/unsupported");
+  }
+
   @Override
   public Path parsePath(URI uri) {
-    return parsePath(Path.of(uri).toString());
+    Path path = Path.of(uri);
+    try {
+      return mounted(path);
+    } catch (IOException error) {
+      throw new IllegalArgumentException(error.getMessage(), error);
+    }
   }
 
   @Override
   public Path parsePath(String path) {
-    String guest = path == null ? "" : path;
-    while (guest.startsWith("/") || guest.startsWith("\\")) guest = guest.substring(1);
-    Path resolved = root.resolve(guest).normalize();
-    if (!resolved.startsWith(root)) throw new IllegalArgumentException("file/denied");
-    return resolved;
+    try {
+      return HaraLogicalPath.toHost(root, path == null ? "" : path);
+    } catch (HaraLogicalPath.Error error) {
+      throw new IllegalArgumentException("file/" + error.code(), error);
+    }
   }
 
   @Override
   public void checkAccess(Path path, Set<? extends AccessMode> modes, LinkOption... options)
       throws IOException {
-    delegate.checkAccess(mounted(path), modes, options);
+    delegate.checkAccess(confined(path), modes, options);
   }
 
   @Override
@@ -92,13 +107,17 @@ final class HaraMountedFileSystem implements FileSystem {
   public SeekableByteChannel newByteChannel(
       Path path, Set<? extends OpenOption> options, FileAttribute<?>... attributes)
       throws IOException {
-    return delegate.newByteChannel(confined(path), options, attributes);
+    Path candidate = confined(path);
+    rejectFinalSymlink(candidate);
+    return delegate.newByteChannel(candidate, options, attributes);
   }
 
   @Override
   public DirectoryStream<Path> newDirectoryStream(
       Path path, DirectoryStream.Filter<? super Path> filter) throws IOException {
-    return delegate.newDirectoryStream(confined(path), filter);
+    Path candidate = confined(path);
+    rejectFinalSymlink(candidate);
+    return delegate.newDirectoryStream(candidate, filter);
   }
 
   @Override
@@ -113,7 +132,7 @@ final class HaraMountedFileSystem implements FileSystem {
   @Override
   public Path toRealPath(Path path, LinkOption... options) throws IOException {
     Path real = delegate.toRealPath(mounted(path), options);
-    if (!real.startsWith(root.toRealPath())) throw new IOException("file/denied");
+    if (!real.startsWith(root.toRealPath())) throw new IOException("file/outside-root");
     return real;
   }
 
@@ -124,19 +143,25 @@ final class HaraMountedFileSystem implements FileSystem {
   }
 
   @Override
-  public void setAttribute(Path path, String attribute, Object value, LinkOption... options)
-      throws IOException {
-    delegate.setAttribute(confined(path), attribute, value, options);
+  public void setAttribute(
+      Path path, String attribute, Object value, LinkOption... options) throws IOException {
+    Path candidate = confined(path);
+    rejectFinalSymlink(candidate);
+    delegate.setAttribute(candidate, attribute, value, options);
   }
 
   @Override
   public void copy(Path source, Path target, CopyOption... options) throws IOException {
-    delegate.copy(confined(source), confined(target), options);
+    Path sourcePath = confined(source);
+    rejectFinalSymlink(sourcePath);
+    delegate.copy(sourcePath, confined(target), options);
   }
 
   @Override
   public void move(Path source, Path target, CopyOption... options) throws IOException {
-    delegate.move(confined(source), confined(target), options);
+    Path sourcePath = confined(source);
+    rejectFinalSymlink(sourcePath);
+    delegate.move(sourcePath, confined(target), options);
   }
 
   @Override

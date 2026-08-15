@@ -7,6 +7,7 @@ pub mod cli_app;
 // value, protocol, promise, and host-call types form the runtime integration ABI.
 pub mod core;
 pub mod extension;
+pub mod file;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]
@@ -2484,7 +2485,7 @@ mod tests {
             "41"
         );
         assert_eq!(kernel.eval("beta", "(def answer 6) answer").unwrap(), "6");
-        let mount = kernel.create_memory_filesystem("/workspace");
+        let mount = kernel.create_memory_filesystem("/");
         kernel.attach_filesystem("alpha", mount).unwrap();
         kernel.attach_filesystem("beta", mount).unwrap();
         assert_eq!(kernel.filesystem("alpha"), Some(mount));
@@ -2493,16 +2494,16 @@ mod tests {
             kernel
                 .eval(
                     "alpha",
-                    "(deref (std.native.File/write \"/workspace/shared.bin\" (bytes 7 8)))",
+                    "(deref (std.native.File/write \"/shared.bin\" (bytes 7 8)))",
                 )
                 .unwrap(),
-            "nil"
+            "\"/shared.bin\""
         );
         assert_eq!(
             kernel
                 .eval(
                     "beta",
-                    "(deref (std.native.File/exists? \"/workspace/shared.bin\"))",
+                    "(deref (std.native.File/exists? \"/shared.bin\"))",
                 )
                 .unwrap(),
             "true"
@@ -2511,18 +2512,18 @@ mod tests {
             kernel
                 .eval(
                     "alpha",
-                    "(deref (std.native.File/write \"/workspace/source.hal\" \
+                    "(deref (std.native.File/write \"/source.hal\" \
                        (str/encode-utf8 \"(+ 19 23)\")))",
                 )
                 .unwrap(),
-            "nil"
+            "\"/source.hal\""
         );
         assert_eq!(
             kernel
                 .eval(
                     "beta",
                     "(str/decode-utf8 \
-                       (deref (std.native.File/read \"/workspace/source.hal\")))",
+                       (deref (std.native.File/read \"/source.hal\")))",
                 )
                 .unwrap(),
             "\"(+ 19 23)\""
@@ -2755,16 +2756,17 @@ mod tests {
     fn runtime_routes_file_operations_through_provider_registry() {
         let mut runtime = Runtime::new();
         assert!(!runtime.file_supported());
-        runtime.install_memory_file_provider("/sandbox");
+        runtime.install_memory_file_provider("/");
         assert!(runtime.file_supported());
-        let path = runtime.file_resolve("/sandbox", "data.bin").unwrap();
+        let path = runtime.file_resolve("/", "data.bin").unwrap();
+        assert_eq!(path, "/data.bin");
         assert_eq!(
             runtime
                 .file_write(&path, vec![1, 2, 3])
                 .unwrap()
                 .value()
                 .unwrap(),
-            "nil"
+            "\"/data.bin\""
         );
         assert_eq!(
             runtime.file_read(&path).unwrap().value().unwrap(),
@@ -2851,79 +2853,106 @@ mod tests {
             runtime.eval_text("(file/join \"/a\" \"b\")").unwrap(),
             "\"/a/b\""
         );
-        assert!(runtime
-            .eval_text("(file/read \"/sandbox/data.bin\")")
-            .unwrap_err()
-            .contains("unsupported or file access is denied"));
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(try
+                       (deref (file/read \"/data.bin\"))
+                       (catch error (get (ex-data error) :error/code)))",
+                )
+                .unwrap(),
+            ":file/unsupported"
+        );
 
-        runtime.install_memory_file_provider("/sandbox");
+        runtime.install_memory_file_provider("/");
         assert_eq!(
             runtime
                 .eval_text("(file/resolve \"/sandbox\" \"data.bin\")")
                 .unwrap(),
             "\"/sandbox/data.bin\""
         );
+        assert!(runtime
+            .eval_text("(file/resolve \"/\" \"../escape\")")
+            .unwrap_err()
+            .contains("file/outside-root"));
         assert_eq!(
             runtime
-                .eval_text("(deref (file/write \"/sandbox/data.bin\" (bytes 0 127 255)))")
+                .eval_text("(deref (file/write \"/data.bin\" (bytes 0 127 255)))")
                 .unwrap(),
-            "nil"
+            "\"/data.bin\""
         );
         assert_eq!(
             runtime
-                .eval_text("(deref (file/read \"/sandbox/data.bin\"))")
+                .eval_text("(deref (file/read \"/data.bin\"))")
                 .unwrap(),
             "#bytes[0 127 -1]"
         );
-        assert!(runtime
-            .eval_text("(file/resolve \"/sandbox\" \"../escape\")")
-            .unwrap_err()
-            .contains("file/denied"));
         assert_eq!(
             runtime
-                .eval_text("(deref (file/exists? \"/sandbox/data.bin\"))")
+                .eval_text("(deref (file/exists? \"/data.bin\"))")
                 .unwrap(),
             "true"
         );
         assert_eq!(
             runtime
-                .eval_text("(deref (file/stat \"/sandbox/data.bin\"))")
+                .eval_text(
+                    "(let (entry (deref (file/stat \"/data.bin\")))
+                       [(:path entry) (:name entry) (:size entry) (:type entry)
+                        (map? (:extensions entry))])",
+                )
                 .unwrap(),
-            "{:size 3 :type :file}"
+            "[\"/data.bin\" \"data.bin\" 3 :file true]"
         );
         assert_eq!(
             runtime
-                .eval_text("(deref (file/exists? \"/sandbox/missing.bin\"))")
+                .eval_text("(deref (file/exists? \"/missing.bin\"))")
                 .unwrap(),
             "false"
         );
         assert_eq!(
             runtime
-                .eval_text("(deref (file/write \"/sandbox/list/a.bin\" (bytes 1)))")
+                .eval_text(
+                    "(deref (file/write \"/list/b.bin\" (bytes 2) {:parents? true}))",
+                )
                 .unwrap(),
-            "nil"
+            "\"/list/b.bin\""
         );
         assert_eq!(
             runtime
-                .eval_text("(deref (file/write \"/sandbox/list/b.bin\" (bytes 2)))")
+                .eval_text("(deref (file/write \"/list/a.bin\" (bytes 1)))")
                 .unwrap(),
-            "nil"
+            "\"/list/a.bin\""
         );
         assert_eq!(
             runtime
-                .eval_text("(count (deref (file/list \"/sandbox/list\")))")
+                .eval_text(
+                    "(mapv (fn [entry] (:path entry))
+                           (deref (file/entries \"/list\")))",
+                )
                 .unwrap(),
-            "2"
+            "[\"/list/a.bin\" \"/list/b.bin\"]"
         );
         assert_eq!(
             runtime
-                .eval_text("(deref (file/delete \"/sandbox/data.bin\"))")
+                .eval_text("(deref (file/copy \"/data.bin\" \"/copy.bin\"))")
                 .unwrap(),
-            "nil"
+            "\"/copy.bin\""
         );
         assert_eq!(
             runtime
-                .eval_text("(deref (file/exists? \"/sandbox/data.bin\"))")
+                .eval_text("(deref (file/move \"/copy.bin\" \"/moved.bin\"))")
+                .unwrap(),
+            "\"/moved.bin\""
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(deref (file/delete \"/data.bin\"))")
+                .unwrap(),
+            "\"/data.bin\""
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(deref (file/exists? \"/data.bin\"))")
                 .unwrap(),
             "false"
         );
@@ -3014,18 +3043,22 @@ mod tests {
     }
 
     #[test]
-    fn memory_file_provider_enforces_root_and_preserves_bytes() {
+    fn memory_file_provider_exposes_one_logical_root_and_preserves_bytes() {
         use crate::core::FileProvider;
-        let files = core::MemoryFileProvider::new("/sandbox");
+        let files = core::MemoryFileProvider::new("ignored-host-label");
         assert_eq!(
-            files.resolve("/sandbox", "docs/../secret").unwrap_err(),
-            core::FileError::Denied
+            files.resolve("/", "docs/../secret").unwrap(),
+            "/secret"
         );
-        let path = files.resolve("/sandbox", "data.bin").unwrap();
+        assert_eq!(
+            files.resolve("/", "../escape").unwrap_err(),
+            core::FileError::OutsideRoot
+        );
+        let path = files.resolve("/", "data.bin").unwrap();
         let write = files.write(&path, vec![0, 127, 255]).unwrap();
         assert_eq!(
             write.state(),
-            core::PromiseState::Fulfilled(core::Value::Nil)
+            core::PromiseState::Fulfilled(core::Value::String("/data.bin".into()))
         );
         let read = files.read(&path).unwrap();
         assert_eq!(
@@ -3033,8 +3066,8 @@ mod tests {
             core::PromiseState::Fulfilled(core::Value::Bytes(vec![0, 127, 255]))
         );
         assert_eq!(
-            files.read("/outside/data.bin").unwrap_err(),
-            core::FileError::Denied
+            files.read("../outside").unwrap_err(),
+            core::FileError::OutsideRoot
         );
     }
 
@@ -3042,14 +3075,11 @@ mod tests {
     fn unsupported_capabilities_fail_stably() {
         use crate::core::{FileProvider, SocketProvider};
         let files = core::UnsupportedFileProvider;
-        assert_eq!(
-            files.resolve("/root", "data.bin").unwrap_err(),
-            core::FileError::Unsupported
-        );
-        assert_eq!(
-            files.read("data.bin").unwrap_err(),
-            core::FileError::Unsupported
-        );
+        assert_eq!(files.resolve("/root", "data.bin").unwrap(), "/root/data.bin");
+        assert!(matches!(
+            files.read("data.bin").unwrap().state(),
+            core::PromiseState::Rejected(_)
+        ));
         let sockets = core::UnsupportedSocketProvider;
         assert_eq!(
             sockets
@@ -8640,15 +8670,15 @@ mod tests {
     #[test]
     fn read_forms_uses_the_capability_gated_file_provider() {
         let mut runtime = Runtime::new();
-        runtime.install_memory_file_provider("/typed");
+        runtime.install_memory_file_provider("/");
         runtime
             .eval_text(
-                "(deref (file/write \"/typed/sample.hal\" (bytes 40 110 115 32 116 121 112 101 100 46 115 97 109 112 108 101 41 10 40 100 101 102 32 118 97 108 117 101 32 52 50 41)))",
+                "(deref (file/write \"/sample.hal\" (bytes 40 110 115 32 116 121 112 101 100 46 115 97 109 112 108 101 41 10 40 100 101 102 32 118 97 108 117 101 32 52 50 41)))",
             )
             .unwrap();
         assert_eq!(
             runtime
-                .eval_text("(count (read-forms \"/typed/sample.hal\"))")
+                .eval_text("(count (read-forms \"/sample.hal\"))")
                 .unwrap(),
             "2"
         );
