@@ -57,6 +57,22 @@ public class StdFsTest {
               .toString());
 
       assertEquals(
+          "\"/simple-delete\"",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (deref (std.fs/write-bytes \"/simple-delete\" (bytes 1)))"
+                      + "    (deref (std.fs/delete \"/simple-delete\")))")
+              .toString());
+      assertEquals(
+          "\"/missing-ok\"",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(deref (std.fs/delete \"/missing-ok\" {:missing-ok? true}))")
+              .toString());
+
+      assertEquals(
           "[\"one\" \"two\"]",
           context
               .eval(
