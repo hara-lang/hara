@@ -113,6 +113,17 @@ public class StdFsTest {
                         + "                   (or (= path \"/a\") (= path \"/b\")))"
                         + "                 (deref (std.fs/list \"/\")))))")
                 .toString());
+        assertEquals(
+            "[\"/a\" \"/b\"]",
+            context
+                .eval(
+                    HaraLanguage.ID,
+                    "(vec (map :path"
+                        + "          (filter (fn [entry]"
+                        + "                    (or (= (:path entry) \"/a\")"
+                        + "                        (= (:path entry) \"/b\")))"
+                        + "                  (deref (std.fs.walk/walk \"/\"))))))")
+                .toString());
         if (Files.isSymbolicLink(root.resolve("link"))) {
           assertEquals(
               "[[:symlink \"/link\"]]",
