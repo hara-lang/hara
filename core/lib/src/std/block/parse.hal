@@ -106,7 +106,7 @@
   (construct/token-from-string
    text
    (try
-     (edn/read text)
+     (Edn/read text)
      (catch Throwable error text))))
 
 (defn parse-children
@@ -247,6 +247,17 @@
             index
             (recur (inc index))))))))
 
+(defn parse-recovering-step
+  [source index]
+  (try
+    (let [[child next-index] (parse-at source index)]
+      {:ok true
+       :child child
+       :next-index next-index})
+    (catch Throwable error
+      {:ok false
+       :message (or (ex-message error) (str error))})))
+
 (defn parse-root-recovering
   [source]
   (loop [index 0 children [] diagnostics []]
@@ -254,12 +265,13 @@
       {:block (with-range (construct/root children source)
                           source 0 (str/length source))
        :diagnostics diagnostics}
-      (try
-        (let [[child next-index] (parse-at source index)]
-          (recur next-index (conj children child) diagnostics))
-        (catch Throwable error
+      (let [step (parse-recovering-step source index)]
+        (if (:ok step)
+          (recur (:next-index step)
+                 (conj children (:child step))
+                 diagnostics)
           (let [end (recovery-end source index)
-                message (or (ex-message error) (str error))
+                message (:message step)
                 block (with-range
                        (construct/error (str/slice source index end) message)
                        source index end)
@@ -275,6 +287,7 @@
             (recur end
                    (conj children block)
                    (conj diagnostics finding))))))))
+
 
 (defn attach-file
   [block file]
