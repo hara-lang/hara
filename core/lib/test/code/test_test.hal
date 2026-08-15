@@ -1,6 +1,6 @@
 (ns code.test-test
   (:use code.test)
-  (:require
+  (:require [code.test.base.process :as process]
             [std.work :as work]))
 
 (fact "evaluates ordinary equality"
@@ -40,16 +40,16 @@
        {:namespace "code.test-test"}))
 (def positional-summary (run '[missing]))
 
+(def timeout-outcome
+  (process/settle-result
+   (promise/delay 100 (fn [] 42))
+   {:timeout 0}))
+
 (def timeout-result
   (check
-   (fn [] (promise/from 42))
+   (fn [] (promise/delay 100 (fn [] 42)))
    42
-   {:work/timeout-promise
-    (fn [promise milliseconds]
-      {:promise (promise/from {:test/status :timeout})
-       :timeout milliseconds})
-    :work/cancel-timeout (fn [timeout] timeout)
-    :timeout 25}))
+   {:timeout 0}))
 
 (def fixture-events (atom []))
 (def fixture-summary
@@ -137,11 +137,15 @@
                   :test/fact-started :test/fact-completed
                   :test/fact-started :test/fact-completed
                   :test/run-completed])
-   (test-check "generic work timeout capabilities classify diagnostics"
-                 [(get timeout-result :status)
+   (test-check "native Result timeout classification replaces the legacy sentinel"
+                 [(std.Result/timeout? timeout-outcome)
+                  (get (ex-data
+                        (std.Result/error-value timeout-outcome))
+                       :code)
+                  (get timeout-result :status)
                   (get timeout-result :pass)
                   (get timeout-result :timeout)]
-                 [:timeout false 25])
+                 [true :result/timeout :timeout false 0])
    (test-check "generic work clocks attach deterministic elapsed time"
                  [(get timed-fact-result :status) (get timed-fact-result :elapsed)]
                  [:passed 8])
