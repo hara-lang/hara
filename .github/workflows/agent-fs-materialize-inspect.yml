@@ -1,0 +1,86 @@
+name: Materialize filesystem implementation for inspection
+
+on:
+  push:
+    branches:
+      - agent/fs-materialize-inspect
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout filesystem patch carrier
+        uses: actions/checkout@v4
+        with:
+          ref: agent/std-native-file-portable-fs
+          path: control
+          fetch-depth: 1
+
+      - name: Checkout known materialization base
+        uses: actions/checkout@v4
+        with:
+          ref: f336c05d4e147a217b3f650bf31fc0ebc23cd208
+          path: hara
+          fetch-depth: 0
+
+      - name: Checkout specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: main
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Apply filesystem implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -s ../hara-specs-registry hara/hara-specs-registry
+          cat control/.github/patches/fs-current-main-dev.part-* | base64 -d | gzip -d > "$RUNNER_TEMP/base.patch"
+          cat control/.github/patches/fs-current-main-overlay.part-* | base64 -d | gzip -d > "$RUNNER_TEMP/overlay.patch"
+          base64 -d control/.github/patches/fs-current-main-fix-03.patch.gz.b64 | gzip -d > "$RUNNER_TEMP/fix03.patch"
+          exclude=(
+            --exclude=core/java/src/test/java/hara/truffle/MainTest.java
+            --exclude=core/rust/standard-library.namespaces
+          )
+          cd hara
+          git apply --check "${exclude[@]}" "$RUNNER_TEMP/base.patch"
+          git apply "${exclude[@]}" "$RUNNER_TEMP/base.patch"
+          git apply --check "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-01.patch
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-01.patch
+          git apply --check "${exclude[@]}" "$RUNNER_TEMP/overlay.patch"
+          git apply "${exclude[@]}" "$RUNNER_TEMP/overlay.patch"
+          git apply --check "${exclude[@]}" "$RUNNER_TEMP/fix03.patch"
+          git apply "${exclude[@]}" "$RUNNER_TEMP/fix03.patch"
+          git apply --check "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-04.patch
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-04.patch
+          git apply --check "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-05.patch
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-05.patch
+          git apply --check "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-07.patch
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-07.patch
+
+          base64 -d ../control/.github/patches/std-fs-corrected.hal.b64 > core/lib/src/std/fs.hal
+          base64 -d ../control/.github/patches/std-fs-walk-corrected.hal.b64 > core/lib/src/std/fs/walk.hal
+          cp core/lib/src/std/fs.hal core/rust/hal-src/std/fs.hal
+          cp core/lib/src/std/fs/walk.hal core/rust/hal-src/std/fs/walk.hal
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('core/rust/standard-library.namespaces')
+          names = {line.strip() for line in path.read_text().splitlines() if line.strip()}
+          names.update({'std.fs', 'std.fs.path', 'std.fs.walk'})
+          path.write_text('\n'.join(sorted(names)) + '\n')
+          PY
+
+          rm hara-specs-registry
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/fs-materialized-snapshot
+          git add -A
+          git commit -m "Materialize std.native.File and portable std.fs implementation"
+          git push --force origin HEAD:refs/heads/agent/fs-materialized-snapshot
