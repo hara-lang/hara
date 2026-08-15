@@ -115,10 +115,10 @@ test("parseGithubSpec rejects malformed specs", () => {
   }
 });
 
-test("studioSource wraps a form with canonical file and boot requires", () => {
+test("studioSource wraps a form with the canonical File object and boot dependency", () => {
   assert.equal(
-    studioSource('(deref (file/read "/a.hal"))'),
-    '(do (require [std.foundation.file :as file]) (require [studio.boot :as boot]) (deref (file/read "/a.hal")))'
+    studioSource('(deref (File/read "/a.hal"))'),
+    '(do (require [studio.boot :as boot]) (deref (File/read "/a.hal")))'
   );
   assert.ok(!studioSource("x").includes("(require '"));
 });
