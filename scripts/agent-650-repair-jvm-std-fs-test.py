@@ -10,7 +10,34 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
     return source.replace(old, new, 1)
 
 
-def main() -> None:
+def repair_native_file_option_lookup() -> None:
+    context_path = Path("core/java/src/main/java/hara/truffle/HaraContext.java")
+    source = context_path.read_text(encoding="utf-8")
+    old = '''  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static Object fileOption(IMapType<?, ?> options, String name, Object defaultValue) {
+    Object found = ((IMapType) options).find(Keyword.create(name));
+    java.util.Map.Entry entry = (java.util.Map.Entry) found;
+    return entry == null ? defaultValue : HaraBox.unwrap(entry.getValue());
+  }'''
+    new = '''  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static Object fileOption(IMapType<?, ?> options, String name, Object defaultValue) {
+    Keyword expected = Keyword.create(name);
+    for (Object entryObject : options) {
+      java.util.Map.Entry entry = (java.util.Map.Entry) entryObject;
+      Object key = HaraBox.unwrap(entry.getKey());
+      if (Eq.eq(key, expected)) {
+        return HaraBox.unwrap(entry.getValue());
+      }
+    }
+    return defaultValue;
+  }'''
+    context_path.write_text(
+        replace_once(source, old, new, "HaraContext native file option lookup"),
+        encoding="utf-8",
+    )
+
+
+def repair_std_fs_test() -> None:
     test_path = Path("core/java/src/test/java/hara/truffle/StdFsTest.java")
     source = test_path.read_text(encoding="utf-8")
     source = replace_once(
@@ -61,6 +88,11 @@ def main() -> None:
         "StdFsTest missing-ok option contract",
     )
     test_path.write_text(source, encoding="utf-8")
+
+
+def main() -> None:
+    repair_native_file_option_lookup()
+    repair_std_fs_test()
 
 
 if __name__ == "__main__":
