@@ -311,6 +311,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &[
             "success",
             "error",
+            "synchronize",
             "result?",
             "success?",
             "error?",
@@ -7506,6 +7507,27 @@ fn result_context(value: Option<Value>) -> Result<Value, String> {
         .ok_or_else(|| "Result context must be a map".into())
 }
 
+fn result_synchronize_options(options: Option<Value>) -> Result<(Option<u64>, Value), String> {
+    let Some(options) = options else {
+        return Ok((None, Value::Map(PMap::new())));
+    };
+    if map_entries(&options).is_none() {
+        return Err("std.native.Result/synchronize expects an options map".into());
+    }
+    let timeout_key = Value::Keyword(Keyword::from("timeout"));
+    let context_key = Value::Keyword(Keyword::from("context"));
+    let timeout = match map_value(&options, &timeout_key) {
+        None | Some(Value::Nil) => None,
+        Some(value) => Some(
+            value_u64_integer(value, "std.native.Result/synchronize").map_err(|_| {
+                "std.native.Result/synchronize timeout must be a non-negative integer".to_string()
+            })?,
+        ),
+    };
+    let context = result_context(map_value(&options, &context_key).cloned())?;
+    Ok((timeout, context))
+}
+
 fn native_result_operation(
     operation: &str,
     forms: &[Form],
@@ -7531,6 +7553,17 @@ fn native_result_operation(
             let error = eval(&forms[0], env)?;
             let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
             Ok(Value::Result(Rc::new(ResultValue::error(error, context)?)))
+        }
+        "synchronize" => {
+            if !(1..=2).contains(&forms.len()) {
+                return Err(
+                    "std.native.Result/synchronize expects a value and optional options map".into(),
+                );
+            }
+            let value = eval(&forms[0], env)?;
+            let options = forms.get(1).map(|form| eval(form, env)).transpose()?;
+            let (timeout, context) = result_synchronize_options(options)?;
+            native_result::synchronize_value(value, timeout, context)
         }
         "result?" | "success?" | "error?" | "status" | "data" | "error-value" | "context" => {
             if forms.len() != 1 {
