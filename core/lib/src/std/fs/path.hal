@@ -25,15 +25,16 @@
 
 (defn- windows-drive-path?
   [path]
-  (let [size (str/length path)]
-    (or
-     (and (>= size 2)
-          (= (str/char-at path 1) ":")
-          (ascii-letter? (str/char-at path 0)))
-     (and (>= size 3)
-          (= (str/char-at path 0) "/")
-          (= (str/char-at path 2) ":")
-          (ascii-letter? (str/char-at path 1))))))
+  (let [segment
+        (first
+         (filter
+          (fn [part]
+            (not (= part "")))
+          (str/split path "/")))]
+    (and (not (nil? segment))
+         (>= (str/length segment) 2)
+         (= (str/char-at segment 1) ":")
+         (ascii-letter? (str/char-at segment 0)))))
 
 (defn- checked-path
   [operation path]
@@ -298,36 +299,45 @@
       (segments-path
        (conj (vec (drop-last path-segments)) name)))))
 
-(defn ^{:schema [:fn [:str] :str]}
-  remove-suffix
-  "Removes the final suffix from path and returns a canonical logical path."
-  [path]
-  (let [canonical (canonical-path :remove-suffix path)
-        name (file-name canonical)]
+(defn- remove-suffix*
+  [operation canonical]
+  (let [name (file-name canonical)]
     (if (nil? name)
       canonical
       (let [index (suffix-index name)]
         (if (= index -1)
           canonical
-          (with-file-name :remove-suffix
+          (with-file-name operation
                           canonical
                           (str/slice name 0 index)))))))
+
+(defn- add-suffix*
+  [operation canonical value]
+  (let [name (file-name canonical)]
+    (if (nil? name)
+      (path-error :file/invalid-path
+                  operation
+                  canonical
+                  "The mounted root does not have a file suffix")
+      (with-file-name operation
+                      canonical
+                      (str name "." value)))))
+
+(defn ^{:schema [:fn [:str] :str]}
+  remove-suffix
+  "Removes the final suffix from path and returns a canonical logical path."
+  [path]
+  (remove-suffix*
+   :remove-suffix
+   (canonical-path :remove-suffix path)))
 
 (defn ^{:schema [:fn [:str :str] :str]}
   add-suffix
   "Appends suffix to path's file name and returns a canonical logical path."
   [path value]
   (let [canonical (canonical-path :add-suffix path)
-        value (checked-suffix :add-suffix canonical value)
-        name (file-name canonical)]
-    (if (nil? name)
-      (path-error :file/invalid-path
-                  :add-suffix
-                  canonical
-                  "The mounted root does not have a file suffix")
-      (with-file-name :add-suffix
-                      canonical
-                      (str name "." value)))))
+        value (checked-suffix :add-suffix canonical value)]
+    (add-suffix* :add-suffix canonical value)))
 
 (defn ^{:schema [:fn [:str :str] :str]}
   replace-suffix
@@ -335,5 +345,5 @@
   [path value]
   (let [canonical (canonical-path :replace-suffix path)
         value (checked-suffix :replace-suffix canonical value)
-        without (remove-suffix canonical)]
-    (add-suffix without value)))
+        without (remove-suffix* :replace-suffix canonical)]
+    (add-suffix* :replace-suffix without value)))
