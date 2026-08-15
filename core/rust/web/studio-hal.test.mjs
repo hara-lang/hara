@@ -134,8 +134,6 @@ function makeBroker({ fetch, nodeRuntime, supersonic } = {}) {
 
 const REQUIRE_ALL =
   "(require [studio.store :as store]) " +
-  "(require [std.foundation.file :as file]) " +
-  "(require [std.foundation.host :as host]) " +
   "(require [studio.boot :as boot])";
 const evaluate = (broker, source) => broker.eval("ROOT", `(do ${REQUIRE_ALL} ${source})`);
 
@@ -172,12 +170,12 @@ test("rigged-cube creative data survives wasm evaluation and normalization", { s
   assert.equal(scene.entities[0].rig.bones.length, 2);
 });
 
-test("std.foundation.host exposes the generic browser host descriptor", { skip: wasmBytes === null }, async () => {
+test("Host exposes the generic browser host descriptor", { skip: wasmBytes === null }, async () => {
   const broker = makeBroker();
-  const description = await evaluate(broker, "(deref (host/describe))");
+  const description = await evaluate(broker, "(deref (Host/describe))");
   assert.equal(mapGet(description, "host/version"), "hara.host.v1");
-  assert.equal(await evaluate(broker, '(deref (host/capability? "filesystem"))'), true);
-  assert.equal(await evaluate(broker, '(deref (host/capability? "missing"))'), false);
+  assert.equal(await evaluate(broker, '(deref (Host/capability? "filesystem"))'), true);
+  assert.equal(await evaluate(broker, '(deref (Host/capability? "missing"))'), false);
 });
 
 test("gw.audio.supersonic exposes the portable graph lifecycle", { skip: wasmBytes === null }, async () => {
@@ -397,18 +395,18 @@ test("studio.store round trips string values and lists keys", { skip: wasmBytes 
   assert.ok((await evaluate(broker, "(count (store/keys))")) > 0);
 });
 
-test("std.foundation.file performs canonical byte filesystem operations", { skip: wasmBytes === null }, async () => {
+test("File performs canonical byte filesystem operations", { skip: wasmBytes === null }, async () => {
   const broker = makeBroker();
-  assert.equal(await evaluate(broker, '(deref (file/mkdir "/docs"))'), null);
+  assert.equal(await evaluate(broker, '(deref (File/mkdir "/docs"))'), null);
   assert.equal(
-    await evaluate(broker, '(deref (file/write "/docs/note.bin" (bytes 1 2 255)))'),
+    await evaluate(broker, '(deref (File/write "/docs/note.bin" (bytes 1 2 255)))'),
     null
   );
-  assert.equal(await evaluate(broker, '(deref (file/exists? "/docs/note.bin"))'), true);
-  assert.deepEqual(await evaluate(broker, '(deref (file/read "/docs/note.bin"))'), new Uint8Array([1, 2, 255]));
-  assert.deepEqual(await evaluate(broker, '(deref (file/list "/docs"))'), ["/docs/note.bin"]);
-  assert.equal(await evaluate(broker, '(deref (file/delete "/docs/note.bin"))'), null);
-  assert.equal(await evaluate(broker, '(deref (file/exists? "/docs/note.bin"))'), false);
+  assert.equal(await evaluate(broker, '(deref (File/exists? "/docs/note.bin"))'), true);
+  assert.deepEqual(await evaluate(broker, '(deref (File/read "/docs/note.bin"))'), new Uint8Array([1, 2, 255]));
+  assert.deepEqual(await evaluate(broker, '(deref (File/list "/docs"))'), ["/docs/note.bin"]);
+  assert.equal(await evaluate(broker, '(deref (File/delete "/docs/note.bin"))'), null);
+  assert.equal(await evaluate(broker, '(deref (File/exists? "/docs/note.bin"))'), false);
 });
 
 test("browser sessions share or isolate mounts without losing language state", { skip: wasmBytes === null }, async () => {
@@ -426,17 +424,17 @@ test("browser sessions share or isolate mounts without losing language state", {
   await isolated.attachFilesystem(isolatedMount);
   assert.equal(await alpha.eval("retained"), 42);
   await alpha.eval(
-    '(do (require [std.foundation.file :as file]) (deref (file/write "/shared.bin" (bytes 9))))'
+    '(do (deref (File/write "/shared.bin" (bytes 9))))'
   );
   assert.equal(
     await beta.eval(
-      '(do (require [std.foundation.file :as file]) (deref (file/exists? "/shared.bin")))'
+      '(do (deref (File/exists? "/shared.bin")))'
     ),
     true
   );
   assert.equal(
     await isolated.eval(
-      '(do (require [std.foundation.file :as file]) (deref (file/exists? "/shared.bin")))'
+      '(do (deref (File/exists? "/shared.bin")))'
     ),
     false
   );

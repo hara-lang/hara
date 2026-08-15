@@ -149,10 +149,7 @@ export function parseGithubSpec(input) {
 /** Wrap an internal studio form with the requires it needs. Raw wasm
  *  require vectors are UNQUOTED — keep them that way. */
 export function studioSource(form) {
-  return (
-    "(do (require [std.foundation.file :as file]) " +
-    `(require [studio.boot :as boot]) ${form})`
-  );
+  return `(do (require [studio.boot :as boot]) ${form})`;
 }
 
 /** Seed content for a newly created file. */
@@ -345,7 +342,7 @@ class StudioController {
     this.shell.addEventListener("hara:studio-action", (event) => {
       const handlers = {
         "project/select": () => this.showProjectChooser(),
-        "file/new": () => this.newFile(),
+        "File/new": () => this.newFile(),
         "project/import": () => this.importGithub(),
         "console/toggle": () => this.toggleConsole(),
         "view/explorer": () => this.setMobileView("explorer"),
@@ -559,26 +556,26 @@ class StudioController {
 
   readText(path) {
     return this.evalStudio(
-      `(str/decode-utf8 (deref (file/read ${JSON.stringify(path)})))`
+      `(str/decode-utf8 (deref (File/read ${JSON.stringify(path)})))`
     );
   }
 
   async writeText(path, content) {
     const parent = path.slice(0, path.lastIndexOf("/")) || "/";
     if (parent !== "/") {
-      await this.evalStudio(`(deref (file/mkdir ${JSON.stringify(parent)}))`);
+      await this.evalStudio(`(deref (File/mkdir ${JSON.stringify(parent)}))`);
     }
     return this.evalStudio(
-      `(deref (file/write ${JSON.stringify(path)} (str/encode-utf8 ${JSON.stringify(content)})))`
+      `(deref (File/write ${JSON.stringify(path)} (str/encode-utf8 ${JSON.stringify(content)})))`
     );
   }
 
   deletePath(path) {
-    return this.evalStudio(`(deref (file/delete ${JSON.stringify(path)}))`);
+    return this.evalStudio(`(deref (File/delete ${JSON.stringify(path)}))`);
   }
 
   async listFilesRecursive(path = "/") {
-    const children = await this.evalStudio(`(deref (file/list ${JSON.stringify(path)}))`);
+    const children = await this.evalStudio(`(deref (File/list ${JSON.stringify(path)}))`);
     const files = [];
     for (const child of children ?? []) {
       try {
@@ -705,7 +702,7 @@ class StudioController {
   }
 
   // GitHub project discovery and fetching are host responsibilities. File
-  // bytes still cross the canonical std.foundation.file HAL boundary.
+  // bytes still cross the host-mounted native File boundary.
   async importGithub() {
     const spec = await this.askInput("Import from GitHub", "owner/repo[@ref]", "");
     if (!spec || !spec.trim()) return;
@@ -1156,7 +1153,7 @@ class StudioController {
     const ok = await this.task(() => this.writeText(path, defaultFileContent(path)));
     if (ok === undefined) return;
     // The file is created either way; only switch to it when any unsaved
-    // edits in the currently open file may go (same guard as file/space
+    // edits in the currently open file may go (same guard as File/space
     // switching).
     if (!(await this.confirmDiscard())) {
       await this.refreshFiles();
