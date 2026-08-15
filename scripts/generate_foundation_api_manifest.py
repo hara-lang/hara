@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Build the canonical Foundation API manifest from Hara's registered inventory."""
-
 from __future__ import annotations
 
 import argparse
@@ -16,10 +15,7 @@ from typing import Any
 SCHEMA_VERSION = 2
 DEFAULT_EXTRA_NAMESPACES = ("std.lib.collection",)
 ALLOWED_MIGRATION_STATUSES = {
-    "moved",
-    "retired",
-    "compatibility-only",
-    "planned-replacement",
+    "moved", "retired", "compatibility-only", "planned-replacement",
 }
 
 
@@ -31,71 +27,69 @@ def digest(value: Any) -> str:
     return f"sha256:{hashlib.sha256(canonical_json(value)).hexdigest()}"
 
 
+def repository_path(path: Path, root: Path) -> str:
+    """Return stable repository-relative provenance; reject paths outside root."""
+    root = root.resolve()
+    path = path.resolve()
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError as error:
+        raise ValueError(f"Manifest provenance path must be inside Hara root {root}: {path}") from error
+
+
 def read_inventory(path: Path) -> list[str]:
-    names = {
-        line.strip()
-        for line in path.read_text().splitlines()
+    return sorted({
+        line.strip() for line in path.read_text().splitlines()
         if line.strip() and not line.lstrip().startswith("#")
-    }
-    return sorted(names)
+    })
 
 
 def selected_namespaces(inventory: list[str], extras: tuple[str, ...]) -> list[str]:
     registered = set(inventory)
-    missing_extras = sorted(set(extras) - registered)
-    if missing_extras:
-        raise ValueError(f"Configured API namespaces are not registered: {', '.join(missing_extras)}")
-    return sorted(
-        name
-        for name in registered
-        if name == "std.foundation" or name.startswith("std.foundation.") or name in extras
-    )
+    missing = sorted(set(extras) - registered)
+    if missing:
+        raise ValueError("Configured API namespaces are not registered: " + ", ".join(missing))
+    return sorted(name for name in registered if (
+        name == "std.foundation" or name.startswith("std.foundation.") or name in extras
+    ))
 
 
 def parse_runtime_config(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     source = path.read_text()
-    libraries_match = re.search(r"const LIBRARIES:.*?=\s*&\[(.*?)\];", source, re.S)
-    native_match = re.search(r"const NATIVE_TYPES:.*?=\s*&\[(.*?)\];", source, re.S)
-    if not libraries_match or not native_match:
+    libraries = re.search(r"const LIBRARIES:.*?=\s*&\[(.*?)\];", source, re.S)
+    natives = re.search(r"const NATIVE_TYPES:.*?=\s*&\[(.*?)\];", source, re.S)
+    if not libraries or not natives:
         raise ValueError(f"Unable to parse runtime aliases from {path}")
-    aliases = [
-        {
-            "alias": alias,
-            "target": namespace,
-            "kind": "namespace-alias",
-            "automatic": True,
-        }
-        for _, namespace, alias in re.findall(
-            r'\("([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\)', libraries_match.group(1)
-        )
-        if namespace.startswith("std.foundation.")
-    ]
-    native_objects = [
-        {
-            "name": name,
-            "namespace": f"std.native.{name}",
-            "automaticAlias": name,
-            "kind": "static-object",
-        }
-        for name in re.findall(r'"([^"]+)"', native_match.group(1))
-    ]
-    return sorted(aliases, key=lambda item: item["alias"]), sorted(
-        native_objects, key=lambda item: item["name"]
+    aliases = [{
+        "alias": alias,
+        "target": namespace,
+        "kind": "namespace-alias",
+        "automatic": True,
+    } for _, namespace, alias in re.findall(
+        r'\("([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\)', libraries.group(1)
+    ) if namespace.startswith("std.foundation.")]
+    native_objects = [{
+        "name": name,
+        "namespace": f"std.native.{name}",
+        "automaticAlias": name,
+        "kind": "static-object",
+    } for name in re.findall(r'"([^"]+)"', natives.group(1))]
+    return (
+        sorted(aliases, key=lambda item: item["alias"]),
+        sorted(native_objects, key=lambda item: item["name"]),
     )
 
 
-def load_migrations(path: Path | None) -> tuple[int, list[dict[str, Any]], str | None]:
+def load_migrations(path: Path | None) -> tuple[int, list[dict[str, Any]]]:
     if path is None:
-        return 0, [], None
+        return 0, []
     document = json.loads(path.read_text())
-    schema_version = document.get("schemaVersion")
-    migrations = document.get("migrations")
-    if not isinstance(schema_version, int) or not isinstance(migrations, list):
+    version, migrations = document.get("schemaVersion"), document.get("migrations")
+    if not isinstance(version, int) or not isinstance(migrations, list):
         raise ValueError("Foundation migration ledger requires schemaVersion and migrations")
     seen: set[str] = set()
     for migration in migrations:
-        former = migration.get("formerName")
-        status = migration.get("status")
+        former, status = migration.get("formerName"), migration.get("status")
         if not isinstance(former, str) or not former.startswith("std.foundation."):
             raise ValueError(f"Invalid Foundation migration name: {former!r}")
         if status not in ALLOWED_MIGRATION_STATUSES:
@@ -108,90 +102,64 @@ def load_migrations(path: Path | None) -> tuple[int, list[dict[str, Any]], str |
             if not migration.get(field):
                 raise ValueError(f"Migration requires {field}: {former}")
         seen.add(former)
-    return schema_version, sorted(migrations, key=lambda item: item["formerName"]), str(path)
+    return version, sorted(migrations, key=lambda item: item["formerName"])
 
 
 def raw_api(args: argparse.Namespace, root: Path) -> dict[str, Any]:
     if args.api_index:
         return json.loads(args.api_index.read_text())
     command = [
-        "cargo",
-        "run",
-        "--quiet",
-        "--manifest-path",
-        str(root / "core/rust/Cargo.toml"),
-        "--bin",
-        "hara-api-doc",
-        "--",
-        str(root / "core/lib/src"),
-        str(root / "core/lib/test"),
+        "cargo", "run", "--quiet", "--manifest-path", str(root / "core/rust/Cargo.toml"),
+        "--bin", "hara-api-doc", "--", str(root / "core/lib/src"), str(root / "core/lib/test"),
     ]
     return json.loads(subprocess.check_output(command, text=True))
 
 
 def build_manifest(
-    api: dict[str, Any],
-    inventory: list[str],
-    migrations: list[dict[str, Any]],
-    migration_schema: int,
-    migration_path: str | None,
-    aliases: list[dict[str, Any]],
-    native_objects: list[dict[str, Any]],
-    *,
-    repository: str,
-    source_ref: str,
-    commit: str,
-    profiles: list[str],
-    inventory_path: str,
-    extras: tuple[str, ...] = DEFAULT_EXTRA_NAMESPACES,
+    api: dict[str, Any], inventory: list[str], migrations: list[dict[str, Any]],
+    migration_schema: int, migration_path: str | None,
+    aliases: list[dict[str, Any]], native_objects: list[dict[str, Any]], *,
+    repository: str, source_ref: str, commit: str, profiles: list[str],
+    inventory_path: str, extras: tuple[str, ...] = DEFAULT_EXTRA_NAMESPACES,
 ) -> dict[str, Any]:
     selected = selected_namespaces(inventory, extras)
-    raw_by_name = {namespace["name"]: namespace for namespace in api.get("namespaces", [])}
-    missing = sorted(set(selected) - raw_by_name.keys())
-    unexpected = sorted(
-        name
-        for name in raw_by_name
-        if (name == "std.foundation" or name.startswith("std.foundation.") or name in extras)
-        and name not in selected
-    )
+    raw = {namespace["name"]: namespace for namespace in api.get("namespaces", [])}
+    missing = sorted(set(selected) - raw.keys())
+    unexpected = sorted(name for name in raw if (
+        name == "std.foundation" or name.startswith("std.foundation.") or name in extras
+    ) and name not in selected)
     if missing or unexpected:
         raise ValueError(
             f"Registered/source API mismatch: missing={missing or 'none'} unexpected={unexpected or 'none'}"
         )
     current = set(selected)
-    conflicting = sorted(
-        migration["formerName"] for migration in migrations if migration["formerName"] in current
-    )
+    conflicting = sorted(m["formerName"] for m in migrations if m["formerName"] in current)
     if conflicting:
-        raise ValueError(f"Migration names are still current API: {', '.join(conflicting)}")
+        raise ValueError("Migration names are still current API: " + ", ".join(conflicting))
 
     namespaces = []
     for name in selected:
-        namespace = dict(raw_by_name[name])
-        namespace["group"] = "foundation" if name == "std.foundation" or name.startswith("std.foundation.") else "library"
-        namespace["status"] = "implemented"
-        namespace["profiles"] = profiles
+        namespace = dict(raw[name])
+        namespace.update({
+            "group": "foundation" if name == "std.foundation" or name.startswith("std.foundation.") else "library",
+            "status": "implemented",
+            "profiles": profiles,
+        })
         namespaces.append(namespace)
 
-    semantic_surface = {
+    surface = {
         "schemaVersion": SCHEMA_VERSION,
         "profiles": profiles,
-        "namespaces": [
-            {
-                "name": namespace["name"],
-                "group": namespace["group"],
-                "status": namespace["status"],
-                "definitions": [
-                    {
-                        "name": definition["name"],
-                        "kind": definition["kind"],
-                        "signature": definition.get("signature", ""),
-                    }
-                    for definition in namespace.get("definitions", [])
-                ],
-            }
-            for namespace in namespaces
-        ],
+        "namespaces": [{
+            "name": namespace["name"],
+            "group": namespace["group"],
+            "status": namespace["status"],
+            "definitions": [{
+                "name": definition["name"],
+                "kind": definition["kind"],
+                "signature": definition.get("signature", ""),
+            } for definition in namespace.get("definitions", [])],
+        } for namespace in namespaces],
         "aliases": aliases,
         "nativeObjects": native_objects,
     }
@@ -199,13 +167,10 @@ def build_manifest(
     return {
         "schemaVersion": SCHEMA_VERSION,
         "source": {"repository": repository, "ref": source_ref, "commit": commit},
-        "generator": {"name": "generate-foundation-api-manifest", "version": "1"},
-        "inventory": {
-            "path": inventory_path,
-            "authority": "registered-standard-library-namespaces",
-        },
+        "generator": {"name": "generate-foundation-api-manifest", "version": "2"},
+        "inventory": {"path": inventory_path, "authority": "registered-standard-library-namespaces"},
         "profiles": profiles,
-        "surfaceDigest": digest(semantic_surface),
+        "surfaceDigest": digest(surface),
         "migrationLedger": {
             "schemaVersion": migration_schema,
             "path": migration_path,
@@ -243,33 +208,25 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = args.root.resolve()
-    inventory_path = (args.inventory or root / "core/rust/standard-library.namespaces").resolve()
-    migrations_path = (args.migrations or root / "core/spec/std/foundation-migrations.json").resolve()
-    runtime_config = (args.runtime_config or root / "core/rust/src/kernel/generated.rs").resolve()
+    inventory = (args.inventory or root / "core/rust/standard-library.namespaces").resolve()
+    migrations = (args.migrations or root / "core/spec/std/foundation-migrations.json").resolve()
+    runtime = (args.runtime_config or root / "core/rust/src/kernel/generated.rs").resolve()
     source_ref = args.source_ref or os.environ.get("HARA_API_REF") or git_value(
         root, "branch", "--show-current", fallback="detached"
     )
     commit = args.commit or os.environ.get("HARA_API_COMMIT") or os.environ.get("GITHUB_SHA") or git_value(
         root, "rev-parse", "HEAD", fallback="unknown"
     )
-    profiles = sorted({profile.strip() for profile in args.profiles.split(",") if profile.strip()})
+    profiles = sorted({item.strip() for item in args.profiles.split(",") if item.strip()})
     if not profiles:
         raise ValueError("At least one runtime profile is required")
-    aliases, native_objects = parse_runtime_config(runtime_config)
-    migration_schema, migrations, migration_source = load_migrations(migrations_path)
+    aliases, native_objects = parse_runtime_config(runtime)
+    migration_schema, migration_rows = load_migrations(migrations)
     manifest = build_manifest(
-        raw_api(args, root),
-        read_inventory(inventory_path),
-        migrations,
-        migration_schema,
-        migration_source,
-        aliases,
-        native_objects,
-        repository=args.repository,
-        source_ref=source_ref,
-        commit=commit,
-        profiles=profiles,
-        inventory_path=str(inventory_path),
+        raw_api(args, root), read_inventory(inventory), migration_rows, migration_schema,
+        repository_path(migrations, root), aliases, native_objects,
+        repository=args.repository, source_ref=source_ref, commit=commit, profiles=profiles,
+        inventory_path=repository_path(inventory, root),
     )
     output = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
     if args.output:

@@ -1,0 +1,121 @@
+name: Foundation API manifest
+
+on:
+  pull_request:
+    paths:
+      - "core/lib/src/std/foundation.hal"
+      - "core/lib/src/std/foundation/**"
+      - "core/lib/src/std/lib/collection.hal"
+      - "core/lib/test/std/foundation_test.hal"
+      - "core/lib/test/std/foundation/**"
+      - "core/lib/test/std/foundation*_test.hal"
+      - "core/lib/test/std/platform_native_objects_test.hal"
+      - "core/rust/standard-library.namespaces"
+      - "core/rust/src/kernel/generated.rs"
+      - "core/rust/src/bin/hara-api-doc.rs"
+      - "core/spec/std/foundation-migrations.json"
+      - "scripts/generate_foundation_api_manifest.py"
+      - "scripts/test_generate_foundation_api_manifest.py"
+      - ".github/workflows/foundation-api-manifest.yml"
+  push:
+    branches: [main]
+    paths:
+      - "core/lib/src/std/foundation.hal"
+      - "core/lib/src/std/foundation/**"
+      - "core/lib/src/std/lib/collection.hal"
+      - "core/lib/test/std/foundation_test.hal"
+      - "core/lib/test/std/foundation/**"
+      - "core/lib/test/std/foundation*_test.hal"
+      - "core/lib/test/std/platform_native_objects_test.hal"
+      - "core/rust/standard-library.namespaces"
+      - "core/rust/src/kernel/generated.rs"
+      - "core/rust/src/bin/hara-api-doc.rs"
+      - "core/spec/std/foundation-migrations.json"
+      - "scripts/generate_foundation_api_manifest.py"
+      - "scripts/test_generate_foundation_api_manifest.py"
+      - ".github/workflows/foundation-api-manifest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/rust
+
+      - name: Test manifest assembly
+        run: |
+          python scripts/test_generate_foundation_api_manifest.py
+          python -m py_compile \
+            scripts/generate_foundation_api_manifest.py \
+            scripts/test_generate_foundation_api_manifest.py
+
+      - name: Generate canonical manifest artifact
+        env:
+          HARA_API_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          HARA_API_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python scripts/generate_foundation_api_manifest.py \
+            --output generated/foundation-api-manifest.json
+
+      - name: Validate current Foundation boundary and stable provenance
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path, PurePosixPath
+
+          path = Path("generated/foundation-api-manifest.json")
+          manifest = json.loads(path.read_text())
+          expected = [
+              "std.foundation",
+              "std.foundation.bytes",
+              "std.foundation.coroutine",
+              "std.foundation.pretty",
+              "std.foundation.promise",
+              "std.foundation.string",
+          ]
+          current = [
+              item["name"]
+              for item in manifest["namespaces"]
+              if item.get("group") == "foundation"
+          ]
+          assert manifest["schemaVersion"] == 2, manifest["schemaVersion"]
+          assert current == expected, {"expected": expected, "actual": current}
+          assert manifest["surfaceDigest"].startswith("sha256:")
+          assert manifest["migrationLedger"]["digest"].startswith("sha256:")
+          retired = {item["formerName"] for item in manifest["migrations"]}
+          assert not retired.intersection(current), retired.intersection(current)
+          assert manifest["source"]["commit"] not in {"", "unknown"}
+          for field in (
+              manifest["inventory"]["path"],
+              manifest["migrationLedger"]["path"],
+          ):
+              value = PurePosixPath(field)
+              assert not value.is_absolute(), field
+              assert ".." not in value.parts, field
+          print(
+              f"validated schema-v2 manifest: {len(current)} Foundation namespaces, "
+              f"{manifest['surfaceDigest']}"
+          )
+          PY
+
+      - name: Upload canonical manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: foundation-api-manifest
+          path: generated/foundation-api-manifest.json
+          if-no-files-found: error
+          retention-days: 30
