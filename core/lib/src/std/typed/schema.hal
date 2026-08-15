@@ -106,81 +106,84 @@
    :finding/expected expected
    :finding/value value})
 
-(defn- validate-normal [schema value path]
-  (let [kind (:kind schema)]
-    (cond
-      (= kind :primitive)
-      (if (primitive-valid? (:name schema) value)
-        []
-        [(finding path schema value)])
+(defn- validate-dispatch [schema value path]
+  (:kind schema))
 
-      (= kind :enum)
-      (if (any? (fn [candidate] (= candidate value))
-                (:values schema))
-        []
-        [(finding path schema value)])
+(defmulti validate-normal validate-dispatch)
 
-      (= kind :union)
-      (if (any? (fn [member]
-                  (empty? (validate-normal member value path)))
-                (:types schema))
-        []
-        [(finding path schema value)])
+(defmethod validate-normal :primitive [schema value path]
+  (if (primitive-valid? (:name schema) value)
+    []
+    [(finding path schema value)]))
 
-      (= kind :vector)
-      (if (vector? value)
-        (loop [index 0
-               output []]
-          (if (= index (count value))
-            output
-            (recur
-             (inc index)
+(defmethod validate-normal :enum [schema value path]
+  (if (any? (fn [candidate] (= candidate value))
+            (:values schema))
+    []
+    [(finding path schema value)]))
+
+(defmethod validate-normal :union [schema value path]
+  (if (any? (fn [member]
+              (empty? (validate-normal member value path)))
+            (:types schema))
+    []
+    [(finding path schema value)]))
+
+(defmethod validate-normal :vector [schema value path]
+  (if (vector? value)
+    (loop [index 0
+           output []]
+      (if (= index (count value))
+        output
+        (recur
+         (inc index)
+         (vec
+          (concat output
+                  (validate-normal (:item schema)
+                                   (nth value index)
+                                   (conj path index)))))))
+    [(finding path schema value)]))
+
+(defmethod validate-normal :tuple [schema value path]
+  (if (and (vector? value)
+           (= (count value) (count (:items schema))))
+    (loop [index 0
+           output []]
+      (if (= index (count value))
+        output
+        (recur
+         (inc index)
+         (vec
+          (concat output
+                  (validate-normal (nth (:items schema) index)
+                                   (nth value index)
+                                   (conj path index)))))))
+    [(finding path schema value)]))
+
+(defmethod validate-normal :map [schema value path]
+  (if (map? value)
+    (loop [remaining (:fields schema)
+           output []]
+      (if (empty? remaining)
+        output
+        (let [field (first remaining)
+              key (:name field)]
+          (recur
+           (rest remaining)
+           (if (has? value key)
              (vec
               (concat output
-                      (validate-normal (:item schema)
-                                       (nth value index)
-                                       (conj path index)))))))
-        [(finding path schema value)])
+                      (validate-normal (:type field)
+                                       (get value key)
+                                       (conj path key))))
+             (conj output
+                   (finding (conj path key)
+                            (:type field)
+                            nil)))))))
+    [(finding path schema value)]))
 
-      (= kind :tuple)
-      (if (and (vector? value)
-               (= (count value) (count (:items schema))))
-        (loop [index 0
-               output []]
-          (if (= index (count value))
-            output
-            (recur
-             (inc index)
-             (vec
-              (concat output
-                      (validate-normal (nth (:items schema) index)
-                                       (nth value index)
-                                       (conj path index)))))))
-        [(finding path schema value)])
-
-      (= kind :map)
-      (if (map? value)
-        (loop [remaining (:fields schema)
-               output []]
-          (if (empty? remaining)
-            output
-            (let [field (first remaining)
-                  key (:name field)]
-              (recur
-               (rest remaining)
-               (if (has? value key)
-                 (vec
-                  (concat output
-                          (validate-normal (:type field)
-                                           (get value key)
-                                           (conj path key))))
-                 (conj output
-                       (finding (conj path key)
-                                (:type field)
-                                nil)))))))
-        [(finding path schema value)])
-
-      :else [])))
+(defmethod validate-normal :default [schema value path]
+  [])
 
 (defn ^{:schema [:fn [:any :any] :vector]}
   validate

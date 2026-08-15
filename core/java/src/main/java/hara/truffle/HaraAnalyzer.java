@@ -924,8 +924,8 @@ final class HaraAnalyzer {
   private HaraExpressionNode analyzeDefMethod(List<?> form) {
     requireCount(form, 5, "defmethod");
     Object name = form.nth(1);
-    if (!(name instanceof Symbol) || ((Symbol) name).getNamespace() != null) {
-      throw error("defmethod name must be an unqualified symbol");
+    if (!(name instanceof Symbol)) {
+      throw error("defmethod name must be a symbol");
     }
     if (!isBindingVector(form.nth(3))) {
       throw error("defmethod expects a dispatch value, parameter vector, and body");

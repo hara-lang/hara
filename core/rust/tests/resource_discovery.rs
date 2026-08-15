@@ -59,6 +59,36 @@ fn generated_catalog_loads_portable_hal_namespaces() {
 }
 
 #[test]
+fn typed_bootstrap_is_extensible_and_inference_is_loadable() {
+    let mut runtime = Runtime::new();
+    assert_eq!(
+        runtime
+            .eval_native(
+                "(require [std.typed.schema :as schema]) \
+                 (defmethod schema/normalize :test/tagged [surface] \
+                   {:kind :test/tagged :value (second surface)}) \
+                 (defmethod schema/validate-normal :test/tagged [schema value path] \
+                   (if (= (:value schema) value) [] [{:finding/path path}])) \
+                 [(schema/valid? [:tuple :keyword :int] [:age 42]) \
+                  (schema/normalize [:test/tagged 42]) \
+                  (schema/valid? [:test/tagged 42] 42) \
+                  (schema/valid? [:test/tagged 42] 41)]"
+            )
+            .unwrap(),
+        "[true {:kind :test/tagged :value 42} true false]"
+    );
+    assert_eq!(
+        runtime
+            .eval_native(
+                "(require [std.typed.infer :as infer]) \
+                 (:schema (infer/literal-result 42))"
+            )
+            .unwrap(),
+        "{:name :int :kind :primitive}"
+    );
+}
+
+#[test]
 fn host_resource_replaces_embedded_hal_source() {
     let mut runtime = Runtime::new();
     runtime.require_resource("std.lib.simple").unwrap();

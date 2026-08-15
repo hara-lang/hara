@@ -54,4 +54,27 @@ public class StdLogicLibraryTest {
               .asString());
     }
   }
+
+  @Test
+  public void typedNormalizationIsExtensibleAndInferenceIsLoadable() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[{:kind :test/tagged :value 42} true false {:kind :primitive :name :int}]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns typed-truffle-probe "
+                      + "(:require [std.typed.schema :as schema] "
+                      + "          [std.typed.infer :as infer])) "
+                      + "(defmethod schema/normalize :test/tagged [surface] "
+                      + "  {:kind :test/tagged :value (second surface)}) "
+                      + "(defmethod schema/validate-normal :test/tagged [schema value path] "
+                      + "  (if (= (:value schema) value) [] [{:finding/path path}])) "
+                      + "(pr-str [(schema/normalize [:test/tagged 42]) "
+                      + "         (schema/valid? [:test/tagged 42] 42) "
+                      + "         (schema/valid? [:test/tagged 42] 41) "
+                      + "         (:schema (infer/literal-result 42))])")
+              .asString());
+    }
+  }
 }
