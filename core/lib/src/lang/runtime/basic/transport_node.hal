@@ -1,7 +1,9 @@
 (ns lang.runtime.basic.transport-node
   (:require [tool.sh :as sh]
             [lang.core.eval :as evaluation]
-            [lang.protocol.runtime :as transport]))
+            [lang.protocol.runtime :as transport]
+            [std.codec.frame :as frame]
+            [std.lib.relay :as relay]))
 
 (defstruct ProcessTransport [lang exec process-options timeout state])
 
@@ -81,8 +83,7 @@
   ([lang exec process-options timeout]
    (lang.runtime.basic.transport-node/ProcessTransport
     lang exec process-options timeout (atom {:status :created
-                                              :buffer ""
-                                              :next-id 0}))))
+                                              :relay nil}))))
 
 (defn state
   [node]
@@ -159,17 +160,28 @@
         (reset! (get node :state)
                 {:status :starting
                  :server server
-                 :stream stream
-                 :buffer ""
-                 :next-id 0})
+                 :stream stream})
         (let [argv (conj (get node :exec) source)
               child (sh/spawn argv (get node :process-options))]
           (swap! (get node :state) assoc :process child)
-          (let [open (await-open node)]
+          (let [open (await-open node)
+                connection (get open :connection)
+                channel (relay/relay
+                         (Socket/duplex connection)
+                         (frame/json-line)
+                         {:mode :correlated
+                          :timeout-ms (get node :timeout)
+                          :prepare-request
+                          (fn [id request]
+                            [id (assoc request "id" id)])
+                          :response-id
+                          (fn [response]
+                            (wire-get response :id))})]
             (swap! (get node :state)
                    assoc
                    :status :started
-                   :connection (get open :connection))
+                   :connection connection
+                   :relay channel)
             node)))
       (catch Throwable error
         (fail-start! node error)))))
@@ -177,58 +189,16 @@
 (defn stop!
   [node]
   (let [current (state node)
+        channel (get current :relay)
         connection (get current :connection)
         server (get current :server)
         child (get current :process)]
-    (if connection (socket/close connection))
+    (if channel (relay/close channel))
+    (if (and connection (nil? channel)) (socket/close connection))
     (if server (socket/close server))
     (if child (Process/kill child))
     (swap! (get node :state) assoc :status :stopped)
     node))
-
-(defn- take-buffered-line!
-  [node]
-  (let [buffer (get (state node) :buffer)
-        index (str/index-of buffer "\n")]
-    (if (>= index 0)
-      (let [line (str/slice buffer 0 index)
-            rest (str/slice buffer (+ index 1))]
-        (swap! (get node :state) assoc :buffer rest)
-        line)
-      nil)))
-
-(defn- read-line!
-  [node]
-  (if-let [line (take-buffered-line! node)]
-    line
-    (let [event (await-event node)
-          kind (get event :type)]
-      (cond
-        (= kind :data)
-        (do
-          (swap! (get node :state)
-                 update
-                 :buffer
-                 str
-                 (str/decode-utf8 (get event :bytes)))
-          (read-line! node))
-
-        (= kind :error)
-        (throw
-         (ex-info "Process transport socket failed"
-                  {:error/type :lang/transport
-                   :lang (get node :lang)
-                   :error (get event :error)}))
-
-        (= kind :close)
-        (throw
-         (ex-info "Process transport closed before a response"
-                  {:error/type :lang/transport
-                   :lang (get node :lang)
-                   :process (get (state node) :process)}))
-
-        :else
-        (read-line! node)))))
 
 (defn exchange!
   [node source options]
@@ -238,26 +208,17 @@
               {:error/type :lang/transport
                :lang (get node :lang)
                :state (state node)}))
-    (let [id (get (swap! (get node :state) update :next-id inc) :next-id)
-          timeout (or (get options :timeout) (get node :timeout))
-          request {"id" id
-                   "source" source
+    (let [timeout (or (get options :timeout) (get node :timeout))
+          request {"source" source
                    "timeout" timeout}
-          payload (str/encode-utf8 (str (json/write request) "\n"))]
-      (socket/send (get (state node) :connection) payload)
-      (let [response (json/read (read-line! node))
-            response-id (wire-get response :id)]
-        (if (not= id response-id)
-          (throw
-           (ex-info "Process transport response id mismatch"
-                    {:error/type :lang/transport
-                     :lang (get node :lang)
-                     :expected id
-                     :actual response-id
-                     :response response}))
-          (lang.core.eval/EvalExchange
-           (get node :lang) request response {:persistent true
-                                   :process (get (state node) :process)}))))))
+          response (evaluation/await
+                    (relay/exchange (get (state node) :relay)
+                                    request
+                                    {:timeout-ms timeout})
+                    timeout)]
+      (lang.core.eval/EvalExchange
+       (get node :lang) request response {:persistent true
+                                          :process (get (state node) :process)}))))
 
 (extend-type ProcessTransport transport/IEvalTransport
   (exchange [node request options]

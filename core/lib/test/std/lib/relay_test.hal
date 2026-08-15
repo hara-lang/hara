@@ -1,0 +1,42 @@
+(ns std.lib.relay-test
+  (:require [std.codec.frame :as frame]
+            [std.lib.relay :as relay]))
+
+(defn- echo-process []
+  (Process/spawn
+   ["sh" "-c" "while IFS= read -r line; do printf '%s\n' \"$line\"; done"]))
+
+(Test/run
+ [{:name "serial process exchange"
+   :test (fn []
+           (let [process (echo-process)
+                 connection (relay/relay (Process/duplex process)
+                                         (frame/line)
+                                         {:timeout-ms 2000})
+                 reply (deref (relay/exchange connection "hello"))]
+             (relay/close connection)
+             (Process/close-input process)
+             [reply (deref (Process/wait process))]))
+   :expected ["hello" 0]}
+  {:name "correlated process exchanges"
+   :test (fn []
+           (let [process (echo-process)
+                 connection (relay/relay
+                             (Process/duplex process)
+                             (frame/line)
+                             {:mode :correlated
+                              :timeout-ms 2000
+                              :prepare-request
+                              (fn [id request]
+                                [(str id) (str id ":" request)])
+                              :response-id
+                              (fn [response]
+                                (first (str/split response ":")))})
+                 replies (deref
+                          (promise/all
+                           [(relay/exchange connection "first")
+                            (relay/exchange connection "second")]))]
+             (relay/close connection)
+             (Process/close-input process)
+             [replies (deref (Process/wait process))]))
+   :expected [["1:first" "2:second"] 0]}])
