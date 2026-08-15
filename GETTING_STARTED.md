@@ -23,6 +23,33 @@ JVM at runtime. GitHub Releases is the publishing authority for the downloaded p
 checksums. Install only one runtime with `--rust` or `--truffle`.
 Override the location with `HARA_INSTALL_DIR`, or pin a release with `HARA_VERSION=v0.1.2`.
 
+### Install from a source checkout
+
+The root Makefile provides conventional staged installs. The default builds the
+Rust CLI and installs it as `hara`:
+
+```shell
+make install                         # ~/.local/bin/hara
+make install PREFIX=/usr/local       # /usr/local/bin/hara
+```
+
+The JVM/Truffle runtime can be installed separately. Its launcher is named
+`hara-truffle`, so it can coexist with the Rust CLI:
+
+```shell
+make install-truffle                 # launcher + JAR
+make install-all                     # Rust and JVM/Truffle runtimes
+make uninstall                       # remove files installed by these targets
+```
+
+`PREFIX`, `BINDIR`, `DATADIR`, and `HARA_DATADIR` are overridable. Packaging
+jobs can stage an install without embedding the staging path in launchers:
+
+```shell
+make install DESTDIR="$PWD/pkgroot" PREFIX=/usr
+make check-install
+```
+
 The sections below build the Java/Truffle runtime from source instead.
 
 ## 1. Install prerequisites
