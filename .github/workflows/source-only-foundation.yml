@@ -1,0 +1,85 @@
+name: Source-only Foundation runtimes
+
+on:
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/build.rs'
+      - 'core/rust/src/lib.rs'
+      - 'core/rust/src/vm/**'
+      - 'core/rust/tests/source_only_foundation.rs'
+      - 'core/java/pom.xml'
+      - 'core/java/src/main/java/hara/truffle/HaraContext.java'
+      - 'core/java/src/main/java/hara/truffle/HaraLibraryLoader.java'
+      - 'core/java/src/main/java/hara/truffle/bytecode/**'
+      - 'core/java/src/test/java/hara/truffle/HaraBytecodeToolTest.java'
+      - 'core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java'
+      - 'scripts/runtime/source_only_foundation.py'
+      - 'scripts/runtime/source_only_foundation_test.py'
+      - '.github/workflows/source-only-foundation.yml'
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/build.rs'
+      - 'core/rust/src/lib.rs'
+      - 'core/rust/src/vm/**'
+      - 'core/rust/tests/source_only_foundation.rs'
+      - 'core/java/pom.xml'
+      - 'core/java/src/main/java/hara/truffle/HaraContext.java'
+      - 'core/java/src/main/java/hara/truffle/HaraLibraryLoader.java'
+      - 'core/java/src/main/java/hara/truffle/bytecode/**'
+      - 'core/java/src/test/java/hara/truffle/HaraBytecodeToolTest.java'
+      - 'core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java'
+      - 'scripts/runtime/source_only_foundation.py'
+      - 'scripts/runtime/source_only_foundation_test.py'
+      - '.github/workflows/source-only-foundation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-only-foundation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-only:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Audit tracked and development runtime inputs
+        run: |
+          python3 scripts/runtime/source_only_foundation_test.py
+          python3 scripts/runtime/source_only_foundation.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Probe Rust source-only startup
+        run: cargo test --manifest-path core/rust/Cargo.toml --test source_only_foundation
+      - name: Preserve generic HBX/HBC bundle coverage
+        run: cargo test --manifest-path core/rust/Cargo.toml --lib vm::bundle
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Probe JVM source-only startup and generic bytecode tools
+        run: mvn -B -Ptruffle -Dtest=HbcCodecTest,HaraBytecodeToolTest test --file core/java/pom.xml
+      - name: Audit the built JVM classpath
+        run: python3 scripts/runtime/source_only_foundation.py
+      - name: Check formatting and whitespace
+        run: |
+          cargo fmt --manifest-path core/rust/Cargo.toml --check
+          git diff --check
