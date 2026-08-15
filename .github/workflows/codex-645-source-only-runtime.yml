@@ -1,0 +1,124 @@
+name: Implement issue 645 source-only runtime slice
+
+on:
+  push:
+    branches:
+      - codex/645-source-only-runtime
+
+permissions:
+  contents: write
+
+concurrency:
+  group: implement-645-source-only-runtime
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: f336c05d4e147a217b3f650bf31fc0ebc23cd208
+      BRANCH_NAME: codex/645-source-only-runtime
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/645-source-only-runtime
+          fetch-depth: 0
+      - name: Apply source-only runtime slice
+        run: python3 .github/scripts/codex_645_apply.py
+      - name: Run permanent audit tests
+        run: |
+          python3 scripts/runtime/source_only_foundation_test.py
+          python3 scripts/runtime/source_only_foundation.py
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check Rust layout and formatting
+        run: |
+          bash core/rust/scripts/check-layout.sh
+          cargo fmt --manifest-path core/rust/Cargo.toml --check
+      - name: Probe Rust source-only startup
+        run: cargo test --manifest-path core/rust/Cargo.toml --test source_only_foundation
+      - name: Preserve generic Rust bundle coverage
+        run: cargo test --manifest-path core/rust/Cargo.toml --lib vm::bundle
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Probe JVM source-only startup and generic bytecode tools
+        run: mvn -B -Ptruffle -Dtest=HbcCodecTest,HaraBytecodeToolTest test --file core/java/pom.xml
+      - name: Audit built classpath and final diff
+        run: |
+          python3 scripts/runtime/source_only_foundation.py
+          git diff --check
+      - name: Publish one verified implementation commit
+        run: |
+          rm -rf hara-specs-registry
+          if [ -L "$GITHUB_WORKSPACE/../hara-specs-registry" ]; then
+            rm "$GITHUB_WORKSPACE/../hara-specs-registry"
+          fi
+          rm .github/workflows/codex-645-source-only-runtime.yml
+          rm .github/scripts/codex_645_apply.py
+          python3 - <<'PY'
+          import subprocess
+
+          allowed = {
+              ".github/scripts/codex_645_apply.py",
+              ".github/workflows/codex-645-source-only-runtime.yml",
+              ".github/workflows/lang-runtime.yml",
+              ".github/workflows/main.yml",
+              ".github/workflows/source-only-foundation.yml",
+              "core/java/pom.xml",
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              "core/java/src/main/java/hara/truffle/HbxBundleLibrary.java",
+              "core/java/src/test/java/hara/truffle/HaraBytecodeToolTest.java",
+              "core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java",
+              "core/rust/Cargo.toml",
+              "core/rust/assets/std.foundation.hbx",
+              "core/rust/src/bin/hara-foundation-artifact.rs",
+              "core/rust/src/lib.rs",
+              "core/rust/tests/source_only_foundation.rs",
+              "scripts/runtime/source_only_foundation.py",
+              "scripts/runtime/source_only_foundation_test.py",
+          }
+          entries = (
+              subprocess.check_output(["git", "status", "--porcelain=v1", "-z"])
+              .decode()
+              .split("\0")
+          )
+          paths = set()
+          for entry in entries:
+              if not entry:
+                  continue
+              path = entry[3:]
+              if " -> " in path:
+                  path = path.split(" -> ", 1)[1]
+              paths.add(path)
+          unexpected = sorted(paths - allowed)
+          required = {
+              "core/rust/assets/std.foundation.hbx",
+              "core/rust/src/lib.rs",
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              "scripts/runtime/source_only_foundation.py",
+          }
+          missing = sorted(required - paths)
+          if unexpected or missing:
+              raise SystemExit(
+                  f"unexpected={unexpected} missing-required={missing} changed={sorted(paths)}"
+              )
+          print("\n".join(sorted(paths)))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git reset --soft "$BASE_SHA"
+          git add -A
+          git diff --cached --check
+          git commit -m "feat: make Foundation development runtimes source-only"
+          git push --force-with-lease origin "HEAD:$BRANCH_NAME"
