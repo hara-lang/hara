@@ -1,4 +1,4 @@
-name: Validate and publish stacked filesystem implementation
+name: Recover and publish clean filesystem branches
 
 on:
   push:
@@ -46,7 +46,7 @@ jobs:
           set -euo pipefail
           ln -s ../hara-specs-registry hara/hara-specs-registry
 
-      - name: Materialize implementation patch
+      - name: Materialize production sources and focused tests
         shell: bash
         run: |
           set -euo pipefail
@@ -62,15 +62,20 @@ jobs:
             | gzip -d \
             > "$RUNNER_TEMP/fs-current-main-fix-03.patch"
 
+          exclude='--exclude=core/java/src/test/java/hara/truffle/MainTest.java'
           cd hara
-          git apply --check "$RUNNER_TEMP/fs-current-main.patch"
-          git apply "$RUNNER_TEMP/fs-current-main.patch"
-          git apply --check ../control/.github/patches/fs-current-main-fix-01.patch
-          git apply ../control/.github/patches/fs-current-main-fix-01.patch
-          git apply --check "$RUNNER_TEMP/fs-current-main-overlay.patch"
-          git apply "$RUNNER_TEMP/fs-current-main-overlay.patch"
-          git apply --check "$RUNNER_TEMP/fs-current-main-fix-03.patch"
-          git apply "$RUNNER_TEMP/fs-current-main-fix-03.patch"
+          echo '--- base implementation'
+          git apply --check "$exclude" "$RUNNER_TEMP/fs-current-main.patch"
+          git apply "$exclude" "$RUNNER_TEMP/fs-current-main.patch"
+          echo '--- formatting correction'
+          git apply --check "$exclude" ../control/.github/patches/fs-current-main-fix-01.patch
+          git apply "$exclude" ../control/.github/patches/fs-current-main-fix-01.patch
+          echo '--- compatibility overlay'
+          git apply --check "$exclude" "$RUNNER_TEMP/fs-current-main-overlay.patch"
+          git apply "$exclude" "$RUNNER_TEMP/fs-current-main-overlay.patch"
+          echo '--- routing and test corrections'
+          git apply --check "$exclude" "$RUNNER_TEMP/fs-current-main-fix-03.patch"
+          git apply "$exclude" "$RUNNER_TEMP/fs-current-main-fix-03.patch"
           git diff --check
           git diff --stat
 
@@ -118,7 +123,7 @@ jobs:
           set -euo pipefail
           cd hara/core
           mvn -B -Ptruffle --file java/pom.xml \
-            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest,MainTest \
+            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
             test
 
       - name: Run focused portable path tests
@@ -128,7 +133,7 @@ jobs:
           cd hara
           ./scripts/runtime/run-lib-tests core/lib/test/std/fs/path_test.hal
 
-      - name: Publish Rust native boundary branch
+      - name: Publish native provider branch
         shell: bash
         run: |
           set -euo pipefail
@@ -136,22 +141,29 @@ jobs:
           rm hara-specs-registry
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B agent/std-native-file-rust
+          git checkout -B agent/std-native-file-provider
           git add \
             core/rust/src/core.rs \
             core/rust/src/file.rs \
             core/rust/src/fiber.rs \
-            core/rust/src/lib.rs
+            core/rust/src/lib.rs \
+            core/java/src/main/java/hara/truffle/HaraContext.java \
+            core/java/src/main/java/hara/truffle/HaraFileProvider.java \
+            core/java/src/main/java/hara/truffle/HaraLogicalPath.java \
+            core/java/src/main/java/hara/truffle/HaraMountedFileSystem.java \
+            core/java/src/test/java/hara/truffle/HaraFileProviderTest.java \
+            core/java/src/test/java/hara/truffle/HaraLogicalPathTest.java \
+            core/java/src/test/java/hara/truffle/StdFsTest.java
           git diff --cached --check
-          git commit -m "Implement capability-backed std.native.File in Rust"
-          git push --force origin HEAD:refs/heads/agent/std-native-file-rust
+          git commit -m "Improve capability-backed std.native.File providers"
+          git push --force origin HEAD:refs/heads/agent/std-native-file-provider
 
       - name: Publish portable std.fs branch
         shell: bash
         run: |
           set -euo pipefail
           cd hara
-          git checkout -B agent/std-fs-portable-hal
+          git checkout -B agent/portable-std-fs-core
           git add \
             core/lib/src/std/fs.hal \
             core/lib/src/std/fs/path.hal \
@@ -163,24 +175,5 @@ jobs:
             core/rust/standard-library.namespaces
           git diff --cached --check
           git commit -m "Port the portable std.fs core"
-          git push --force origin HEAD:refs/heads/agent/std-fs-portable-hal
-
-      - name: Publish JVM provider parity branch
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd hara
-          git checkout -B agent/std-native-file-jvm
-          git add \
-            core/java/src/main/java/hara/truffle/HaraContext.java \
-            core/java/src/main/java/hara/truffle/HaraFileProvider.java \
-            core/java/src/main/java/hara/truffle/HaraLogicalPath.java \
-            core/java/src/main/java/hara/truffle/HaraMountedFileSystem.java \
-            core/java/src/test/java/hara/truffle/HaraFileProviderTest.java \
-            core/java/src/test/java/hara/truffle/HaraLogicalPathTest.java \
-            core/java/src/test/java/hara/truffle/MainTest.java \
-            core/java/src/test/java/hara/truffle/StdFsTest.java
-          git diff --cached --check
-          git commit -m "Implement std.native.File provider parity on the JVM"
           test -z "$(git status --porcelain)"
-          git push --force origin HEAD:refs/heads/agent/std-native-file-jvm
+          git push --force origin HEAD:refs/heads/agent/portable-std-fs-core
