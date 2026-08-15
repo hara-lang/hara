@@ -1,0 +1,499 @@
+(ns code.manage
+  (:config {:override [import]})
+  (:require [code.manage.automation :as automation]
+            [code.manage.ns-format :as manage-format]
+            [code.manage.ns-rename :as manage-rename]
+            [code.manage.unit :as unit]
+            [code.manage.unit.factcheck :as factcheck]
+            [code.manage.unit.import :as unit-import]
+            [code.manage.unit.isolate :as unit-isolate]
+            [code.manage.unit.require :as unit-require]
+            [code.manage.unit.scaffold :as unit-scaffold]
+            [code.manage.unit.snapto :as unit-snapto]
+            [code.manage.unit.template :as template]
+            [code.manage.var :as var]
+            [code.translate :as translate]
+            [std.work :as work]))
+
+;; Atomic operations live under code.manage.unit.*.  This namespace owns the
+;; public task values composed around those tasklets, matching Foundation.
+
+(defn- current-task-input
+  [operation]
+  (do
+    (let [input-var (resolve 'code.manage.cli/current-input)]
+      (if input-var
+        ((deref input-var) operation (current-namespace))
+        (throw
+         (ex-info
+          "code.manage.cli/current-input is unavailable"
+          {:operation operation}))))))
+
+(defn- composed-task
+  [operation tasklet-reference tasklet argcount]
+  (template/task
+   {:operation operation
+    :construct
+    {:input (fn [definition]
+              (current-task-input operation))}
+    :main
+    {:fn tasklet
+     :symbol tasklet-reference
+     :argcount argcount}}))
+
+(def analyse
+  (composed-task
+   :analyse
+   'code.manage.unit/analyse
+   unit/analyse
+   1))
+
+(def extract
+  (composed-task
+   :extract
+   'code.manage.unit/extract
+   unit/extract
+   1))
+
+(def vars
+  (composed-task
+   :vars
+   'code.manage.unit/vars
+   unit/vars
+   1))
+
+(def docstrings
+  (composed-task
+   :docstrings
+   'code.manage.unit/docstrings
+   unit/docstrings
+   1))
+
+(def transform-code
+  (composed-task
+   :transform-code
+   'code.manage.unit/transform-code
+   unit/transform-code
+   2))
+
+(def import
+  (composed-task
+   :import
+   'code.manage.unit.import/import
+   unit-import/import
+   2))
+
+(def purge
+  (composed-task
+   :purge
+   'code.manage.unit/purge
+   unit/purge
+   2))
+
+(def missing
+  (composed-task
+   :missing
+   'code.manage.unit/missing
+   unit/missing
+   2))
+
+(def todos
+  (composed-task
+   :todos
+   'code.manage.unit/todos
+   unit/todos
+   1))
+
+(def incomplete
+  (composed-task
+   :incomplete
+   'code.manage.unit/incomplete
+   unit/incomplete
+   1))
+
+(def orphaned
+  (composed-task
+   :orphaned
+   'code.manage.unit/orphaned
+   unit/orphaned
+   1))
+
+(def scaffold
+  (composed-task
+   :scaffold
+   'code.manage.unit/scaffold
+   unit/scaffold
+   2))
+
+(def create-tests
+  (composed-task
+   :create-tests
+   'code.manage.unit/create-tests
+   unit/create-tests
+   2))
+
+(def in-order?
+  (composed-task
+   :in-order
+   'code.manage.unit/in-order?
+   unit/in-order?
+   1))
+
+(def arrange
+  (composed-task
+   :arrange
+   'code.manage.unit/arrange
+   unit/arrange
+   1))
+
+(def factcheck-remove
+  (composed-task
+   :factcheck-remove
+   'code.manage.unit.factcheck/factcheck-remove
+   factcheck/factcheck-remove
+   2))
+
+(def factcheck-generate
+  (composed-task
+   :factcheck-generate
+   'code.manage.unit.factcheck/factcheck-generate
+   factcheck/factcheck-generate
+   2))
+
+(def snapto
+  (composed-task
+   :snapto
+   'code.manage.unit.snapto/snapto
+   unit-snapto/snapto
+   2))
+
+(def isolate
+  (composed-task
+   :isolate
+   'code.manage.unit.isolate/isolate
+   unit-isolate/isolate
+   2))
+
+(def locate-code
+  (composed-task
+   :locate-code
+   'code.manage.unit/locate-code
+   unit/locate-code
+   1))
+
+(def locate-test
+  (composed-task
+   :locate-test
+   'code.manage.unit/locate-test
+   unit/locate-test
+   1))
+
+(def grep
+  (composed-task
+   :grep
+   'code.manage.unit/grep
+   unit/grep
+   2))
+
+(def grep-replace
+  (composed-task
+   :grep-replace
+   'code.manage.unit/grep-replace
+   unit/grep-replace
+   2))
+
+(def unclean
+  (composed-task
+   :unclean
+   'code.manage.unit/unclean
+   unit/unclean
+   1))
+
+(def unclean-findings
+  (composed-task
+   :unclean-findings
+   'code.manage.unit/unclean-findings
+   unit/unclean-findings
+   1))
+
+(def unchecked
+  (composed-task
+   :unchecked
+   'code.manage.unit/unchecked
+   unit/unchecked
+   1))
+
+(def commented
+  (composed-task
+   :commented
+   'code.manage.unit/commented
+   unit/commented
+   1))
+
+(def pedantic
+  (composed-task
+   :pedantic
+   'code.manage.unit/pedantic
+   unit/pedantic
+   1))
+
+(def refactor-code
+  (composed-task
+   :refactor-code
+   'code.manage.unit/refactor-code
+   unit/refactor-code
+   2))
+
+(def refactor-test
+  (composed-task
+   :refactor-test
+   'code.manage.unit/refactor-test
+   unit/refactor-test
+   2))
+
+(def ns-format
+  (composed-task
+   :ns-format
+   'code.manage.ns-format/ns-format
+   manage-format/ns-format
+   1))
+
+(def ns-rename
+  (composed-task
+   :ns-rename
+   'code.manage.ns-rename/ns-rename
+   manage-rename/ns-rename
+   2))
+
+(def find-usages
+  (composed-task
+   :find-usages
+   'code.manage.var/find-usages
+   var/find-usages
+   2))
+
+(def require-file
+  (composed-task
+   :require-file
+   'code.manage.unit.require/require-file
+   unit-require/require-file
+   1))
+
+(def heal-code
+  (composed-task
+   :heal-code
+   'code.manage.unit/heal-code
+   unit/heal-code
+   1))
+
+(def clojure-to-hal
+  translate/clojure-to-hal)
+
+(def test-path-for unit-scaffold/test-path-for)
+
+(defn test-namespace-for
+  [code-unit options]
+  (unit-scaffold/test-namespace-for
+   code-unit
+   options
+   (:namespace
+    (unit/analyse code-unit))))
+
+(def definition-names unit/definition-names)
+(def public-definition-names
+  unit/public-definition-names)
+(def orphaned-meta unit/orphaned-meta)
+(def includes-any? unit/includes-any?)
+(def remove-matching-lines
+  unit/remove-matching-lines)
+(def replacements unit/replacements)
+(def replace-all unit/replace-all)
+(def refactor-swap unit/refactor-swap)
+(def incomplete-report automation/incomplete-report)
+
+(def task? template/task?)
+(def task-operation template/task-operation)
+(def tasklet-reference
+  template/tasklet-reference)
+(def batch-records template/batch-records)
+(def run-task template/run-task)
+
+(def legacy-operations
+  [:analyse :extract :vars :docstrings :transform-code :import :purge
+   :missing :todos :incomplete :incomplete-report :orphaned :scaffold
+   :create-tests :in-order :arrange :factcheck-remove :factcheck-generate
+   :snapto :isolate :locate-code :locate-test :grep :grep-replace :unclean
+   :unchecked :commented :pedantic :refactor-code :refactor-test :ns-format
+   :ns-rename :find-usages :require-file :heal-code :clojure-to-hal])
+
+(def editing-operations
+  #{:transform-code :import :purge :scaffold :create-tests :arrange
+    :factcheck-remove :factcheck-generate :snapto :isolate :grep-replace
+    :refactor-code :refactor-test :ns-format :ns-rename :heal-code
+    :clojure-to-hal})
+
+(def parity-inventory
+  (reduce
+   (fn [output operation]
+     (assoc
+      output
+      operation
+       {:status :supported
+       :boundary
+       (if (has? editing-operations operation)
+         :pure-edit-plan
+         :portable-inspection)}))
+   {}
+   legacy-operations))
+
+(def +tasks+
+  {:analyse analyse
+   :extract extract
+   :vars vars
+   :docstrings docstrings
+   :transform-code transform-code
+   :import import
+   :purge purge
+   :missing missing
+   :todos todos
+   :incomplete incomplete
+   :orphaned orphaned
+   :scaffold scaffold
+   :create-tests create-tests
+   :in-order in-order?
+   :arrange arrange
+   :factcheck-remove factcheck-remove
+   :factcheck-generate factcheck-generate
+   :snapto snapto
+   :isolate isolate
+   :locate-code locate-code
+   :locate-test locate-test
+   :grep grep
+   :grep-replace grep-replace
+   :unclean unclean
+   :unclean-findings unclean-findings
+   :unchecked unchecked
+   :commented commented
+   :pedantic pedantic
+   :refactor-code refactor-code
+   :refactor-test refactor-test
+   :ns-format ns-format
+   :ns-rename ns-rename
+   :find-usages find-usages
+   :require-file require-file
+   :heal-code heal-code
+   :clojure-to-hal clojure-to-hal})
+
+(def operation-tasks +tasks+)
+
+(defn command-task
+  [operation]
+  (or
+   (get +tasks+ operation)
+   (throw
+   (ex-info
+     "Unsupported code.manage workflow"
+     {:operation operation}))))
+
+(defn result-edit
+  [value]
+  (if (and (map? value)
+           (has? value :after))
+    value
+    nil))
+
+(defn result-findings
+  [value]
+  (cond
+    (and (map? value) (:finding value))
+    [(:finding value)]
+
+    (vector? value)
+    (vec
+     (filter
+      (fn [entry]
+        (and (map? entry)
+             (:kind entry)))
+      value))
+
+    :else
+    []))
+
+(defn plan
+  [operation input]
+  (let [task-value (command-task operation)
+        batch
+        (work/run
+         (work/local-runtime)
+         task-value
+         input)
+        records (batch-records batch)
+        values
+        (vec
+         (map
+          (fn [record]
+            (:data record))
+          records))
+        edits
+        (vec
+         (filter identity
+                 (map result-edit values)))
+        findings
+        (reduce
+         (fn [output value]
+           (into output
+                 (result-findings value)))
+         []
+         values)
+        warnings
+        (vec
+         (filter
+          (fn [record]
+            (= :warn (:status record)))
+          records))
+        errors
+        (vec
+         (filter
+          (fn [record]
+            (or
+             (= :error (:status record))
+             (= :critical (:status record))))
+          records))]
+    {:operation operation
+     :records records
+     :results
+     (vec
+      (map
+       (fn [record]
+         {:item/id (:item/id record)
+          :item/value (:data record)})
+       records))
+     :edits edits
+     :findings findings
+     :warnings warnings
+     :errors errors
+     :summary
+     {:operation operation
+      :count (count records)
+      :changed
+      (count
+       (filter
+        (fn [edit]
+          (:changed edit))
+        edits))
+      :findings (count findings)
+      :warnings (count warnings)
+      :errors (count errors)}}))
+
+(defn maintenance-work
+  [operation]
+  (command-task operation))
+
+(defn run
+  [operation input]
+  (if (= operation :incomplete-report)
+    (incomplete-report (:units input))
+    (work/run
+     (work/local-runtime)
+     (command-task operation)
+     input)))
