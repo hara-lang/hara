@@ -19,7 +19,6 @@ final class HaraNamespaceDeclaration {
 
   final Symbol name;
   final boolean blank;
-  final java.util.List<Symbol> builtins;
   final Set<String> excludedFoundation;
   final boolean selectiveFoundation;
   final Set<String> exposedFoundation;
@@ -30,7 +29,6 @@ final class HaraNamespaceDeclaration {
   private HaraNamespaceDeclaration(
       Symbol name,
       boolean blank,
-      java.util.List<Symbol> builtins,
       Set<String> excludedFoundation,
       boolean selectiveFoundation,
       Set<String> exposedFoundation,
@@ -39,7 +37,6 @@ final class HaraNamespaceDeclaration {
       Object[] structuralClauses) {
     this.name = name;
     this.blank = blank;
-    this.builtins = java.util.List.copyOf(builtins);
     this.excludedFoundation = Set.copyOf(excludedFoundation);
     this.selectiveFoundation = selectiveFoundation;
     this.exposedFoundation = Set.copyOf(exposedFoundation);
@@ -57,7 +54,6 @@ final class HaraNamespaceDeclaration {
     boolean blank = false;
     boolean overrideSeen = false;
     boolean exposeSeen = false;
-    ArrayList<Symbol> builtins = new ArrayList<>();
     LinkedHashSet<String> excludedFoundation = new LinkedHashSet<>();
     LinkedHashSet<String> exposedFoundation = new LinkedHashSet<>();
     LinkedHashSet<String> excluded = new LinkedHashSet<>();
@@ -85,7 +81,7 @@ final class HaraNamespaceDeclaration {
           if (!(entry.getKey() instanceof Keyword option) || option.getNamespace() != null) {
             throw new HaraException(":config keys must be unqualified keywords");
           }
-          if (!Set.of("blank", "builtins", "intrinsics", "override", "expose")
+          if (!Set.of("blank", "intrinsics", "override", "expose")
               .contains(option.getName())) {
             throw new HaraException("Unsupported :config option: :" + option.getName());
           }
@@ -97,8 +93,6 @@ final class HaraNamespaceDeclaration {
           }
           blank = (Boolean) blankValue;
         }
-        Object builtinValue = options.lookup(Keyword.create("builtins"));
-        if (builtinValue != null) parseBuiltins(builtinValue, builtins);
         Object overrideValue = options.lookup(Keyword.create("override"));
         if (overrideValue != null) {
           overrideSeen = true;
@@ -116,7 +110,7 @@ final class HaraNamespaceDeclaration {
           || "flavor".equals(clauseName)
           || "import".equals(clauseName)) {
         structural.add(clause);
-      } else if ("intrinsics".equals(clauseName) || "builtins".equals(clauseName)) {
+      } else if ("intrinsics".equals(clauseName)) {
         throw new HaraException(":" + clauseName + " is valid only inside ns :config");
       } else {
         throw new HaraException("Unsupported ns clause: :" + clauseName);
@@ -140,7 +134,6 @@ final class HaraNamespaceDeclaration {
     return new HaraNamespaceDeclaration(
         name,
         blank,
-        builtins,
         excludedFoundation,
         exposeSeen,
         exposedFoundation,
@@ -163,22 +156,6 @@ final class HaraNamespaceDeclaration {
         String label = "override".equals(option) ? "override" : "exposure";
         throw new HaraException("Duplicate Foundation " + label + ": " + symbol.getName());
       }
-    }
-  }
-
-  private static void parseBuiltins(Object value, java.util.List<Symbol> output) {
-    if (!(value instanceof ILinearType<?> vector) || !"[".equals(vector.startString())) {
-      throw new HaraException(":config :builtins expects a vector of symbols");
-    }
-    LinkedHashSet<String> seen = new LinkedHashSet<>();
-    for (Object item : vector) {
-      if (!(item instanceof Symbol symbol) || symbol.getNamespace() != null) {
-        throw new HaraException(":config :builtins expects unqualified symbols");
-      }
-      if (!seen.add(symbol.getName())) {
-        throw new HaraException("Duplicate builtin declaration: " + symbol.getName());
-      }
-      output.add(symbol);
     }
   }
 

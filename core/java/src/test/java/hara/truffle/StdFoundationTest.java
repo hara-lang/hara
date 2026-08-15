@@ -75,18 +75,16 @@ public class StdFoundationTest {
                   context.eval(
                       HaraLanguage.ID,
                       "(ns legacy.activation (:config {:builtins [inc]}))"));
+      assertTrue(unavailable.getMessage().contains("Unsupported :config option: :builtins"));
+      PolyglotException foundationActivation =
+          assertThrows(
+              PolyglotException.class,
+              () ->
+                  context.eval(
+                      HaraLanguage.ID,
+                      "(ns std.foundation (:config {:builtins [count]}))"));
       assertTrue(
-          unavailable
-              .getMessage()
-              .contains("No host builtins are registered for namespace: legacy.activation"));
-      assertEquals(
-          "2",
-          context
-              .eval(
-                  HaraLanguage.ID,
-                  "(ns std.foundation (:config {:builtins [count]}))"
-                      + " (std.foundation/count [41 42])")
-              .toString());
+          foundationActivation.getMessage().contains("Unsupported :config option: :builtins"));
     }
   }
 

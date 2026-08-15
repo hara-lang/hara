@@ -184,6 +184,7 @@ public final class HaraContext {
                   "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
                   "split")),
           Map.entry("UUID", java.util.List.of("instance?")),
+          Map.entry("Schema", java.util.List.of("instance?", "kind", "form", "ast", "origin")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
               "Base",
@@ -194,7 +195,7 @@ public final class HaraContext {
                   "decimal?", "long?", "double?", "keyword?", "symbol?", "pointer?",
                   "atom?", "fn?", "bytes?", "array?", "object?", "list?", "pair?", "vector?",
                   "tuple?", "map?", "map-entry?", "set?", "sequential?", "satisfies?",
-                  "type", "instance?")),
+                  "type", "instance?", "schema", "schema-of")),
           Map.entry(
               "Algo",
               java.util.List.of(
@@ -230,6 +231,7 @@ public final class HaraContext {
   private final Map<String, HalcSchema.Type> halcSchemaTypes = new ConcurrentHashMap<>();
   private final Map<String, HalcSchema.Type> halcFunctionTypes = new ConcurrentHashMap<>();
   private final Map<String, HalcSchema.Type> halcInferredFunctionTypes = new ConcurrentHashMap<>();
+  private final Map<HaraVar, ArrayList<HaraVar>> pendingSchemaContracts = new ConcurrentHashMap<>();
   private final Map<String, NamespaceLoadState> namespaceStates = new ConcurrentHashMap<>();
   private final Map<String, String> namespaceFailures = new ConcurrentHashMap<>();
   private final Map<String, String> nativeFlavors = new ConcurrentHashMap<>();
@@ -286,9 +288,6 @@ public final class HaraContext {
         });
     installProjectMacro();
     installNativeLibraries();
-    collectBuiltins(
-        "std.lib.collection",
-        () -> HaraStaticLibrary.install(this, "std.lib.collection", StdLibCollection.class));
     collectBuiltins(FOUNDATION_NAMESPACE, () -> libraryLoader.installEagerJava(this));
     hideIteratorImplementationBindings();
     for (String namespace : bytecodeLibrary.namespaces()) {
@@ -555,42 +554,6 @@ public final class HaraContext {
     }
   }
 
-  private void activateBuiltins(HaraNamespaceDeclaration declaration) {
-    if (declaration.builtins.isEmpty()) return;
-    Map<String, BuiltinExport> catalog = builtinCatalogs.get(declaration.name.getName());
-    if (catalog == null) {
-      throw new HaraException(
-          "No host builtins are registered for namespace: " + declaration.name.getName());
-    }
-    HaraNamespace target = namespace(declaration.name.getName());
-    for (Symbol requested : declaration.builtins) {
-      BuiltinExport export = catalog.get(requested.getName());
-      if (export == null) {
-        throw new HaraException(
-            "Missing builtin export: " + declaration.name.getName() + "/" + requested.getName());
-      }
-      HaraVar existing = target.lookup(requested.getName());
-      if (existing != null) {
-        if (declaration.name.getName().equals(existing.namespaceName())
-            && existing.get() == export.value
-            && existing.origin() == export.origin) {
-          continue;
-        }
-        throw new HaraException(
-            "Builtin activation conflicts with existing binding: "
-                + declaration.name.getName()
-                + "/"
-                + requested.getName());
-      }
-      target.define(requested.getName(), export.value, export.metadata, export.origin);
-      if (export.value instanceof HaraMacro macro) {
-        macros
-            .computeIfAbsent(declaration.name.getName(), ignored -> new ConcurrentHashMap<>())
-            .put(requested.getName(), macro);
-      }
-    }
-  }
-
   void defineLibraryFunction(
       String namespaceName,
       String symbolName,
@@ -715,7 +678,6 @@ public final class HaraContext {
     if (!declaration.blank) referFoundation(currentNamespace);
     configureProtocolAliases(currentNamespace);
     configureFoundationAliases(declaration);
-    activateBuiltins(declaration);
     configureNativeFlavor(declaration.structuralClauses);
     applyNamespaceRequires(declaration.structuralClauses);
     applyNamespaceUses(declaration.structuralClauses);
@@ -1111,12 +1073,6 @@ public final class HaraContext {
       if (projectSource != null) {
         requireResolvedSource(projectSource.toString(), false);
         loaded = loadedSourceNamespace(target, projectSource.toString());
-      }
-      if (loaded == null
-          && "std.lib.collection".equals(target)
-          && libraryLoader.provides(target)) {
-        libraryLoader.ensure(this, target);
-        loaded = loadLibraryResource(target, false);
       }
       if (loaded == null) loaded = loadBytecodeNamespace(target);
       if (loaded == null) libraryLoader.ensure(this, target);
@@ -2000,6 +1956,32 @@ public final class HaraContext {
               }
               return value instanceof HaraMutable mutable && mutable.type() == type;
             }));
+    target.define("schema", new UnaryBuiltin("schema", value -> compileSchema(value, null)));
+    target.define(
+        "schema-of",
+        new UnaryBuiltin(
+            "schema-of",
+            value -> {
+              Object raw = HaraBox.unwrap(value);
+              if (!(raw instanceof HaraVar variable)) {
+                throw new HaraException("schema-of expects a Var");
+              }
+              return schemaContract(variable);
+            }));
+    HaraNamespace schemaNative = namespace("std.native.Schema");
+    schemaNative.define(
+        "instance?", new UnaryBuiltin("std.native.Schema/instance?", value -> HaraBox.unwrap(value) instanceof HaraSchemaType));
+    schemaNative.define(
+        "kind",
+        new UnaryBuiltin(
+            "std.native.Schema/kind",
+            value -> Keyword.create(schemaKind(requireSchema(value, "Schema/kind").ast()))));
+    schemaNative.define(
+        "form", new UnaryBuiltin("std.native.Schema/form", value -> requireSchema(value, "Schema/form").form()));
+    schemaNative.define(
+        "ast", new UnaryBuiltin("std.native.Schema/ast", value -> schemaAst(requireSchema(value, "Schema/ast").ast())));
+    schemaNative.define(
+        "origin", new UnaryBuiltin("std.native.Schema/origin", value -> requireSchema(value, "Schema/origin").origin()));
     target.define(
         "symbol",
         new VariadicBuiltin(
@@ -2722,6 +2704,7 @@ public final class HaraContext {
     else if (raw instanceof HaraType) type = "StructType";
     else if (raw instanceof HaraProtocol) type = "Protocol";
     else if (raw instanceof HaraNativeType) type = "NativeType";
+    else if (raw instanceof HaraSchemaType) type = "SchemaType";
     else if (raw instanceof hara.lang.protocol.IExInfo || raw instanceof HaraException) type = "Error";
     else if (raw instanceof hara.lang.protocol.ICoroutine) type = "Coroutine";
     else if (raw instanceof IPromise) type = "Promise";
@@ -2762,6 +2745,120 @@ public final class HaraContext {
 
   private Keyword namedTypeKeyword(String qualifiedName) {
     return Keyword.create(qualifiedName.replace('/', '.'));
+  }
+
+  private HaraSchemaType compileSchema(Object value, HaraVar origin) {
+    Object raw = HaraBox.unwrap(value);
+    if (raw instanceof HaraSchemaType schema) return schema;
+    if (raw instanceof HaraVar variable) return compileSchema(variable.deref(), variable);
+    HalcSchema.Type ast = HalcSchema.normalize(raw);
+    if (ast instanceof HalcSchema.Unknown) {
+      throw new HaraException("schema expects schema data");
+    }
+    return new HaraSchemaType(raw, ast, origin);
+  }
+
+  private static HaraSchemaType requireSchema(Object value, String operation) {
+    Object raw = HaraBox.unwrap(value);
+    if (raw instanceof HaraSchemaType schema) return schema;
+    throw new HaraException(operation + " expects a schema");
+  }
+
+  @SuppressWarnings("unchecked")
+  private Object schemaContract(HaraVar variable) {
+    return variable.schemaContract();
+  }
+
+  @SuppressWarnings("unchecked")
+  private HaraSchemaType declaredSchemaContract(HaraVar variable) {
+    if (!(variable.meta() instanceof hara.lang.protocol.ILookup<?, ?> metadata)) return null;
+    Object declared = ((hara.lang.protocol.ILookup<Object, Object>) metadata)
+        .lookup(Keyword.create("schema"));
+    if (declared == null) return null;
+    if (declared instanceof hara.lang.data.List<?> reference
+        && reference.count() == 2
+        && reference.nth(0) instanceof Symbol operator
+        && operator.getNamespace() == null
+        && "var".equals(operator.getName())
+        && reference.nth(1) instanceof Symbol target) {
+      HaraVar schemaVar = resolve(target);
+      if (schemaVar == null) {
+        throw new HaraException("schema Var does not exist: " + target.display());
+      }
+      Object schemaValue = schemaVar.deref();
+      if (schemaValue == null) {
+        pendingSchemaContracts
+            .computeIfAbsent(schemaVar, ignored -> new ArrayList<>())
+            .add(variable);
+        return null;
+      }
+      try {
+        return compileSchema(schemaValue, schemaVar);
+      } catch (HaraException error) {
+        throw new HaraException(
+            error.getMessage() + " (schema Var " + schemaVar.display() + ": " + schemaValue + ")");
+      }
+    }
+    try {
+      return compileSchema(declared, variable);
+    } catch (HaraException error) {
+      throw new HaraException(
+          error.getMessage() + " (declared " + declared.getClass().getName() + ": " + declared + ")");
+    }
+  }
+
+  private void refreshSchemaContract(HaraVar variable) {
+    try {
+      variable.setSchemaContract(declaredSchemaContract(variable));
+    } catch (HaraException error) {
+      throw new HaraException(variable.display() + ": " + error.getMessage());
+    }
+  }
+
+  private void resolvePendingSchemaContracts(HaraVar schemaVariable) {
+    if (schemaVariable.deref() == null) return;
+    ArrayList<HaraVar> dependents = pendingSchemaContracts.remove(schemaVariable);
+    if (dependents == null) return;
+    for (HaraVar dependent : dependents) refreshSchemaContract(dependent);
+  }
+
+  private static String schemaKind(HalcSchema.Type ast) {
+    if (ast instanceof HalcSchema.Primitive) return "primitive";
+    if (ast instanceof HalcSchema.Reference) return "reference";
+    if (ast instanceof HalcSchema.Union) return "or";
+    if (ast instanceof HalcSchema.VectorType) return "vector";
+    if (ast instanceof HalcSchema.Tuple) return "tuple";
+    if (ast instanceof HalcSchema.MapType) return "map";
+    if (ast instanceof HalcSchema.FunctionType) return "function";
+    if (ast instanceof HalcSchema.EnumType) return "enum";
+    if (ast instanceof HalcSchema.Extension) return "extension";
+    return "unknown";
+  }
+
+  private static Object schemaAst(HalcSchema.Type ast) {
+    java.util.List<Object> children = new ArrayList<>();
+    if (ast instanceof HalcSchema.Primitive primitive) {
+      children.add(Keyword.create(primitive.name()));
+    } else if (ast instanceof HalcSchema.Reference reference) {
+      children.add(Symbol.create(reference.name()));
+    } else if (ast instanceof HalcSchema.Union union) {
+      union.types().forEach(value -> children.add(schemaAst(value)));
+    } else if (ast instanceof HalcSchema.VectorType vector) {
+      children.add(schemaAst(vector.item()));
+    } else if (ast instanceof HalcSchema.Tuple tuple) {
+      tuple.items().forEach(value -> children.add(schemaAst(value)));
+    } else if (ast instanceof HalcSchema.MapType map) {
+      map.fields().forEach(field -> children.add(
+          BuiltinStruct.vector(new Object[] {field.name(), schemaAst(field.type())})));
+    } else if (ast instanceof HalcSchema.EnumType values) {
+      children.addAll(values.values());
+    } else if (ast instanceof HalcSchema.Extension extension) {
+      children.addAll(extension.arguments());
+    }
+    return hara.lang.data.Map.Standard.from(
+        null,
+        Keyword.create("kind"), Keyword.create(schemaKind(ast)),
+        Keyword.create("children"), BuiltinStruct.vector(children.toArray()));
   }
 
   private Object hostCall(Object[] values) {
@@ -7021,7 +7118,7 @@ public final class HaraContext {
           return new HaraVar(name, symbolName, value, metadata, origin);
         }
       }
-      return vars.compute(
+      HaraVar variable = vars.compute(
           symbolName,
           (ignored, existing) -> {
             if (origin == HaraVar.Origin.HAL_FALLBACK
@@ -7043,6 +7140,9 @@ public final class HaraContext {
             existing.setOrigin(origin);
             return existing;
           });
+      refreshSchemaContract(variable);
+      resolvePendingSchemaContracts(variable);
+      return variable;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

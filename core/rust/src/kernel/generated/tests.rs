@@ -26,22 +26,11 @@ fn configures_defaults_exclusions_aliases_and_requires_without_sources() {
 }
 
 #[test]
-fn parses_config_clause_with_builtins_blank_and_intrinsics() {
-    let forms = parse_forms(
-        "(:config {:blank true \
-                       :builtins [+ - = count get] \
-                       :intrinsics {:exclude [bytes]}})",
-    )
-    .unwrap();
-    let config = GeneratedNamespaceConfig::configure(&forms).unwrap();
-    assert!(config.blank());
-    assert_eq!(config.builtins(), &["+", "-", "=", "count", "get"]);
-    assert_eq!(
-        config
-            .rewrite(parse_forms("bytes").unwrap().remove(0))
-            .to_string(),
-        "bytes"
-    );
+fn rejects_removed_builtins_config_option() {
+    let forms = parse_forms("(:config {:builtins [+ - = count get]})").unwrap();
+    assert!(GeneratedNamespaceConfig::configure(&forms)
+        .unwrap_err()
+        .contains("Unsupported :config option: :builtins"));
 }
 
 #[test]

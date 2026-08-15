@@ -21,6 +21,7 @@ public class StdPortableLibraryProvidersTest {
             .collect(Collectors.toSet());
 
     assertFalse(namespaces.contains("std.lib.zip"));
+    assertFalse(namespaces.contains("std.lib.collection"));
     assertFalse(namespaces.contains("std.block"));
     assertFalse(namespaces.contains("std.logic.kanren"));
     assertFalse(namespaces.contains("code.test"));

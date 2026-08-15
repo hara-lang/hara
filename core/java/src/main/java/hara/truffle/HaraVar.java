@@ -32,6 +32,7 @@ public final class HaraVar
   private final String name;
   private volatile IMetadata metadata;
   private volatile Object value;
+  private volatile HaraSchemaType schemaContract;
   private volatile Origin origin;
   private final ThreadLocal<Deque<Object>> dynamicBindings =
       ThreadLocal.withInitial(ArrayDeque::new);
@@ -100,7 +101,9 @@ public final class HaraVar
 
   @Override
   public HaraVar withMeta(IMetadata metadata) {
-    return new HaraVar(namespace, name, value, metadata, origin);
+    HaraVar result = new HaraVar(namespace, name, value, metadata, origin);
+    result.schemaContract = schemaContract;
+    return result;
   }
 
   @Override
@@ -143,6 +146,14 @@ public final class HaraVar
 
   void setMetadata(IMetadata metadata) {
     this.metadata = metadata == null ? Map.Standard.EMPTY : metadata;
+  }
+
+  HaraSchemaType schemaContract() {
+    return schemaContract;
+  }
+
+  void setSchemaContract(HaraSchemaType schemaContract) {
+    this.schemaContract = schemaContract;
   }
 
   Origin origin() {

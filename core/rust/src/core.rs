@@ -91,6 +91,13 @@ pub struct NativeType {
     pub metadata: Option<Rc<Metadata>>,
 }
 
+#[derive(Debug, Clone)]
+pub struct RuntimeSchema {
+    pub form: Form,
+    pub ast: crate::kernel::SchemaType,
+    pub origin: Option<KernelVar<Value>>,
+}
+
 pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "Maths",
@@ -303,6 +310,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         ],
     ),
     ("UUID", &["instance?"]),
+    ("Schema", &["instance?", "kind", "form", "ast", "origin"]),
     ("Error", &["new", "message", "class"]),
     (
         "Base",
@@ -326,6 +334,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "long?", "double?", "keyword?", "symbol?", "pointer?", "atom?", "fn?",
             "bytes?", "array?", "object?", "list?", "pair?", "vector?", "tuple?", "map?",
             "map-entry?", "set?", "sequential?", "satisfies?", "type", "instance?",
+            "schema", "schema-of",
         ],
     ),
     (
@@ -669,6 +678,7 @@ pub enum Value {
     Mutable(Rc<MutableValue>),
     Protocol(Rc<GuestProtocol>),
     NativeType(Rc<NativeType>),
+    Schema(Rc<RuntimeSchema>),
     Coroutine(Rc<Coroutine>),
     ExceptionInfo(Rc<ExceptionInfo>),
     Nil,
@@ -1329,45 +1339,6 @@ pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> 
                 && !maths_methods.contains(name)
                 && (!name.starts_with("iter-") || matches!(*name, "iter-next" | "iter-next?"))
         })
-}
-
-const COLLECTION_NAMESPACE: &str = "std.lib.collection";
-const COLLECTION_BUILTINS: &[&str] = &[
-    "deque",
-    "ordered-map",
-    "ordered-set",
-    "priority-map",
-    "queue",
-    "sorted-map",
-    "sorted-set",
-    "trie",
-];
-
-fn namespace_builtin(namespace: &str, name: &str) -> Option<Value> {
-    (namespace == COLLECTION_NAMESPACE && COLLECTION_BUILTINS.contains(&name))
-        .then(|| structural_function_value(name))
-}
-
-fn activate_namespace_builtins(
-    registry: &NamespaceRegistry<Value>,
-    env: &mut HashMap<String, Value>,
-    namespace: &str,
-    names: &[String],
-) -> Result<(), String> {
-    if names.is_empty() || namespace != COLLECTION_NAMESPACE {
-        return Ok(());
-    }
-    let target = registry.find_or_create(namespace);
-    for name in names {
-        let value = namespace_builtin(namespace, name)
-            .ok_or_else(|| format!("Missing builtin export: {namespace}/{name}"))?;
-        let var = target.intern(name, value);
-        var.set_origin(VarOrigin::RuntimePrimitive);
-        target.map_var(Symbol::parse(name), var.clone());
-        env.insert(name.clone(), Value::Var(var));
-    }
-    refresh_namespace_environment(registry, env);
-    Ok(())
 }
 
 #[cfg(feature = "bytecode-vm")]
@@ -2495,6 +2466,7 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Mutable(_)
         | Value::Protocol(_)
         | Value::NativeType(_)
+        | Value::Schema(_)
         | Value::Coroutine(_)
         | Value::MutableCollection(_) => false,
     }
@@ -2724,6 +2696,7 @@ impl PartialEq for Value {
             (Value::Mutable(a), Value::Mutable(b)) => a.same_identity(b),
             (Value::Protocol(a), Value::Protocol(b)) => Rc::ptr_eq(a, b),
             (Value::NativeType(a), Value::NativeType(b)) => a.name == b.name,
+            (Value::Schema(a), Value::Schema(b)) => a.ast == b.ast,
             (Value::Coroutine(a), Value::Coroutine(b)) => Rc::ptr_eq(a, b),
             (Value::ExceptionInfo(a), Value::ExceptionInfo(b)) => Rc::ptr_eq(a, b),
             (Value::Nil, Value::Nil) => true,
@@ -2802,6 +2775,7 @@ impl Ord for Value {
                 Value::Mutable(_) => 30,
                 Value::Protocol(_) => 31,
                 Value::NativeType(_) => 32,
+                Value::Schema(_) => 33,
                 Value::Coroutine(_) => 33,
                 Value::ExceptionInfo(_) => 34,
                 Value::MutableCollection(_) => 35,
@@ -2920,6 +2894,7 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Mutable(v) => opaque(29, |s| v.identity_address().hash(s)),
             Self::Protocol(v) => opaque(30, |s| v.name.hash(s)),
             Self::NativeType(v) => opaque(31, |s| v.name.hash(s)),
+            Self::Schema(v) => opaque(34, |s| v.form.to_string().hash(s)),
             Self::Coroutine(v) => opaque(32, |s| Rc::as_ptr(v).hash(s)),
             Self::ExceptionInfo(v) => opaque(33, |s| Rc::as_ptr(v).hash(s)),
         }
@@ -3122,6 +3097,7 @@ impl Value {
             ),
             Self::Protocol(value) => format!("#protocol[{}]", value.name),
             Self::NativeType(value) => format!("#<native-type {}>", value.name),
+            Self::Schema(value) => format!("(schema {})", value.form),
             Self::Coroutine(value) => {
                 let status = match &*value.state.borrow() {
                     CoroutineState::New(_) | CoroutineState::Suspended(_) => "suspended",
@@ -3885,6 +3861,7 @@ pub(crate) fn vm_def_global(
                 existing.set_hara_metadata(metadata);
             }
             existing.set_origin(definition_origin());
+            refresh_schema_contract(&existing)?;
             return Ok(existing);
         }
         return Err(format!(
@@ -3895,6 +3872,7 @@ pub(crate) fn vm_def_global(
     var.set_hara_metadata(metadata);
     var.set_origin(definition_origin());
     current.map_var(local, var.clone());
+    refresh_schema_contract(&var)?;
     Ok(var)
 }
 
@@ -6301,6 +6279,7 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Mutable(_) => "mutable",
         Value::Protocol(_) => "protocol",
         Value::NativeType(_) => "native-type",
+        Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
         Value::ExceptionInfo(_) => "error",
     }
@@ -6354,6 +6333,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Mutable(value) => return Ok(Keyword::from(value.ty.name.replace('/', "."))),
         Value::Protocol(_) => "Protocol",
         Value::NativeType(_) => "NativeType",
+        Value::Schema(_) => "SchemaType",
         Value::Coroutine(_) => "Coroutine",
         Value::ExceptionInfo(_) => "Error",
     };
@@ -6402,6 +6382,7 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::Mutable(_) => "mutable",
         Value::Protocol(_) => "protocol",
         Value::NativeType(_) => "native-type",
+        Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
         Value::ExceptionInfo(_) => "error",
     }
@@ -8180,6 +8161,145 @@ fn reduce_iterator(
     }
 }
 
+fn schema_kind(schema: &crate::kernel::SchemaType) -> &'static str {
+    use crate::kernel::SchemaType::*;
+    match schema {
+        Primitive(_) => "primitive",
+        Reference(_) => "reference",
+        Union(_) => "or",
+        Vector(_) => "vector",
+        Tuple(_) => "tuple",
+        Map(_) => "map",
+        Function(_) => "function",
+        Enum(_) => "enum",
+        Extension { .. } => "extension",
+        Unknown(_) => "unknown",
+    }
+}
+
+fn schema_ast_form(schema: &crate::kernel::SchemaType) -> Form {
+    use crate::kernel::SchemaType::*;
+    let children = match schema {
+        Primitive(name) => vec![Form::Keyword(name.clone())],
+        Reference(name) => vec![Form::Symbol(name.clone())],
+        Union(values) | Tuple(values) => values.iter().map(schema_ast_form).collect(),
+        Vector(value) => vec![schema_ast_form(value)],
+        Map(fields) => fields
+            .iter()
+            .map(|field| Form::Vector(vec![field.name.clone(), schema_ast_form(&field.value_type)]))
+            .collect(),
+        Function(arities) => arities
+            .iter()
+            .map(|arity| {
+                let mut inputs = arity.fixed.iter().map(schema_ast_form).collect::<Vec<_>>();
+                if let Some(rest) = &arity.rest {
+                    inputs.push(Form::Symbol("&".into()));
+                    inputs.push(schema_ast_form(rest));
+                }
+                Form::Map(vec![
+                    (Form::Keyword("inputs".into()), Form::Vector(inputs)),
+                    (Form::Keyword("output".into()), schema_ast_form(&arity.output)),
+                ])
+            })
+            .collect(),
+        Enum(values) => values.clone(),
+        Extension { arguments, .. } => arguments.clone(),
+        Unknown(value) => vec![value.clone()],
+    };
+    let mut entries = vec![(
+        Form::Keyword("kind".into()),
+        Form::Keyword(schema_kind(schema).into()),
+    )];
+    if let Extension { head, .. } = schema {
+        entries.push((Form::Keyword("name".into()), Form::Keyword(head.clone())));
+    }
+    entries.push((Form::Keyword("children".into()), Form::Vector(children)));
+    Form::Map(entries)
+}
+
+fn compile_schema_value(value: &Value, origin: Option<KernelVar<Value>>) -> Result<Value, String> {
+    if let Value::Schema(schema) = value {
+        return Ok(Value::Schema(schema.clone()));
+    }
+    if let Value::Var(var) = value {
+        return compile_schema_value(&var.deref_value(), Some(var.clone()));
+    }
+    let form = value_to_form(value).map_err(|_| "schema expects schema data".to_string())?;
+    let ast = crate::kernel::normalize_schema(&form)
+        .map_err(|error| format!("invalid schema: {error}"))?;
+    if matches!(ast, crate::kernel::SchemaType::Unknown(_)) {
+        return Err("schema expects schema data".into());
+    }
+    Ok(Value::Schema(Rc::new(RuntimeSchema { form, ast, origin })))
+}
+
+fn declared_schema_contract(var: &KernelVar<Value>) -> Result<Option<Value>, String> {
+    let Some(metadata) = var.hara_metadata() else {
+        return Ok(None);
+    };
+    let Some(raw) = metadata.get_keyword("schema") else {
+        return Ok(None);
+    };
+    let form = metadata_value_to_form(raw);
+    if let Form::List(reference) = &form {
+        if let [Form::Symbol(operator), Form::Symbol(target)] = reference.as_slice() {
+            if operator == "var" {
+                let registry = namespace_registry()?;
+                let referenced = registry
+                    .resolve(&Symbol::parse(target))
+                    .ok_or_else(|| format!("schema Var does not exist: {target}"))?;
+                return compile_schema_value(&referenced.deref_value(), Some(referenced)).map(Some);
+            }
+        }
+    }
+    let value = form_to_value(&form)?;
+    compile_schema_value(&value, Some(var.clone())).map(Some)
+}
+
+fn refresh_schema_contract(var: &KernelVar<Value>) -> Result<(), String> {
+    let contract = declared_schema_contract(var)?;
+    var.set_schema_contract(contract);
+    Ok(())
+}
+
+fn schema_contract(var: &KernelVar<Value>) -> Result<Value, String> {
+    Ok(var.schema_contract().unwrap_or(Value::Nil))
+}
+
+fn native_schema_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let method = operation
+        .strip_prefix("std.native.Schema/")
+        .ok_or_else(|| format!("invalid Schema operation: {operation}"))?;
+    if forms.len() != 1 {
+        return Err(format!("Schema/{method} expects one value"));
+    }
+    let value = eval(&forms[0], env)?;
+    match method {
+        "instance?" => Ok(Value::Bool(matches!(value, Value::Schema(_)))),
+        "kind" => match value {
+            Value::Schema(schema) => Ok(Value::Keyword(Keyword::from(schema_kind(&schema.ast)))),
+            _ => Err("Schema/kind expects a schema".into()),
+        },
+        "form" => match value {
+            Value::Schema(schema) => form_to_value(&schema.form),
+            _ => Err("Schema/form expects a schema".into()),
+        },
+        "ast" => match value {
+            Value::Schema(schema) => form_to_value(&schema_ast_form(&schema.ast)),
+            _ => Err("Schema/ast expects a schema".into()),
+        },
+        "origin" => match value {
+            Value::Schema(schema) => Ok(schema.origin.clone().map(Value::Var).unwrap_or(Value::Nil)),
+            _ => Err("Schema/origin expects a schema".into()),
+        },
+        _ => Err(format!("unknown Schema operation: {operation}")),
+    }
+}
+
 fn protocol_reduce(arguments: &[Value]) -> Result<Value, String> {
     let (source, function, accumulator) = match arguments {
         [source, Value::Function(function), initial] => (source, function, Some(initial.clone())),
@@ -8281,6 +8401,18 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [Value::NativeType(_), _] => Err("Base/instance? descriptor does not define instance?".into()),
             _ => Err("Base/instance? expects a type descriptor and value".into()),
         },
+        "schema" => match values {
+            [value] => compile_schema_value(value, None),
+            _ => Err("Base/schema expects one value".into()),
+        },
+        "schema-of" => match values {
+            [Value::Var(var)] => schema_contract(var),
+            [value] => Err(format!(
+                "Base/schema-of expects a Var, received {}",
+                portable_type_name(value)
+            )),
+            _ => Err("Base/schema-of expects one Var".into()),
+        },
         predicate if predicate.ends_with('?') => match values {
             [value] => Ok(Value::Bool(match predicate {
                 "nil?" => matches!(value, Value::Nil),
@@ -8344,10 +8476,13 @@ fn native_algo_operation(
             _ => return Err(format!("unknown Algo predicate: {method}")),
         }));
     }
-    if COLLECTION_BUILTINS.contains(&method) {
-        return eval_collection_constructor(method, forms, env);
+    match method {
+        "deque" | "ordered-map" | "ordered-set" | "priority-map" | "queue"
+        | "sorted-map" | "sorted-set" | "trie" => {
+            eval_collection_constructor(method, forms, env)
+        }
+        _ => Err(format!("unknown Algo operation: {operation}")),
     }
-    Err(format!("unknown Algo operation: {operation}"))
 }
 
 fn protocol_promise_state(arguments: &[Value]) -> Result<Value, String> {
@@ -12455,7 +12590,6 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
         refer_startup_defaults(&registry, &name);
     }
     select_namespace_environment(&registry, env, &name);
-    activate_namespace_builtins(&registry, env, &name, config.builtins())?;
     let destination = registry.current();
     let omitted = match config.exposed_foundation() {
         Some(exposed) => destination
@@ -13234,6 +13368,51 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     Ok(Value::Var(cell))
                 }
                 Form::Symbol(n)
+                    if n == "schema" || n == "Base/schema" || n == "std.native.Base/schema" =>
+                {
+                    if fs.len() != 2 {
+                        return Err("schema expects one value".into());
+                    }
+                    if let Form::Symbol(name) = form_without_metadata(&fs[1]) {
+                        if let Some(Value::Var(variable)) = env.get(name) {
+                            return compile_schema_value(
+                                &variable.deref_value(),
+                                Some(variable.clone()),
+                            );
+                        }
+                    }
+                    compile_schema_value(&eval(&fs[1], env)?, None)
+                }
+                Form::Symbol(n)
+                    if n == "schema-of"
+                        || n == "Base/schema-of"
+                        || n == "std.native.Base/schema-of" =>
+                {
+                    if fs.len() != 2 {
+                        return Err("schema-of expects one Var".into());
+                    }
+                    if let Form::Symbol(name) = form_without_metadata(&fs[1]) {
+                        let Some(Value::Var(variable)) = env.get(name) else {
+                            return Err("schema-of expects a Var reference".into());
+                        };
+                        return schema_contract(variable);
+                    }
+                    let Form::List(reference) = form_without_metadata(&fs[1]) else {
+                        return Err("schema-of expects a Var reference".into());
+                    };
+                    if reference.len() != 2
+                        || !matches!(&reference[0], Form::Symbol(operator) if operator == "var")
+                    {
+                        return Err("schema-of expects a Var reference".into());
+                    }
+                    let Form::Symbol(name) = &reference[1] else {
+                        return Err("schema-of expects a Var reference".into());
+                    };
+                    let variable = binding_var(env, name)
+                        .ok_or_else(|| format!("unbound var: {name}"))?;
+                    schema_contract(&variable)
+                }
+                Form::Symbol(n)
                     if [
                         "type",
                         "compare",
@@ -13517,6 +13696,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         env.insert(name, Value::Var(var.clone()));
                         var
                     };
+                    refresh_schema_contract(&var)?;
                     Ok(Value::Var(var))
                 }
                 Form::Symbol(n) if n == "declare" => {
@@ -14021,6 +14201,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     cell.reset_value(function.clone());
                     cell.set_origin(definition_origin());
+                    refresh_schema_contract(&cell)?;
                     Ok(function)
                 }
                 Form::Symbol(n) if n == "defn" || n == "defn-" => {
@@ -14078,6 +14259,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     };
                     cell.reset_value(function.clone());
                     cell.set_origin(definition_origin());
+                    refresh_schema_contract(&cell)?;
                     Ok(Value::Var(cell))
                 }
                 Form::Symbol(n) if n == "do" => {
@@ -14489,24 +14671,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         Err(error) => return Err(error),
                     })
                 }
-                Form::Symbol(n)
-                    if [
-                        "hash-map",
-                        "hash-set",
-                        "deque",
-                        "ordered-map",
-                        "ordered-set",
-                        "priority-map",
-                        "queue",
-                        "sorted-map",
-                        "sorted-set",
-                        "trie",
-                    ]
-                    .contains(&n.as_str())
-                        && (!COLLECTION_BUILTINS.contains(&n.as_str())
-                            || structural_native_dispatch_active(n)
-                            || binding_value(env, n).is_some()) =>
-                {
+                Form::Symbol(n) if ["hash-map", "hash-set"].contains(&n.as_str()) => {
                     eval_collection_constructor(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n == "set" => {
@@ -15355,6 +15520,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .map(|form| eval(form, env))
                         .collect::<Result<Vec<_>, _>>()?;
                     native_base_values(n, &values)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Schema/") => {
+                    native_schema_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Algo/") => {
                     native_algo_operation(n, &fs[1..], env)

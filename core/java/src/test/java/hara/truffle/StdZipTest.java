@@ -5,7 +5,7 @@ import static org.junit.Assert.assertEquals;
 import org.graalvm.polyglot.Context;
 import org.junit.Test;
 
-public class StdLibZipTest {
+public class StdZipTest {
   @Test
   public void classpathDiscoveryLoadsPersistentZipImplementation() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {

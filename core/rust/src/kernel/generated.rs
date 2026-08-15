@@ -55,7 +55,6 @@ pub struct GeneratedNamespaceConfig {
     required_namespaces: Vec<String>,
     used_namespaces: Vec<String>,
     used_exclusions: HashMap<String, HashSet<String>>,
-    builtins: Vec<String>,
     excluded_foundation: HashSet<String>,
     exposed_foundation: Option<HashSet<String>>,
     blank: bool,
@@ -78,7 +77,6 @@ impl GeneratedNamespaceConfig {
             required_namespaces: Vec::new(),
             used_namespaces: Vec::new(),
             used_exclusions: HashMap::new(),
-            builtins: Vec::new(),
             excluded_foundation: HashSet::new(),
             exposed_foundation: None,
             blank: false,
@@ -97,7 +95,6 @@ impl GeneratedNamespaceConfig {
         let mut overrides = HashMap::new();
         let mut requires = Vec::new();
         let mut uses = Vec::new();
-        let mut builtins = Vec::new();
         let mut excluded_foundation = HashSet::new();
         let mut exposed_foundation = None;
         let mut override_seen = false;
@@ -120,7 +117,6 @@ impl GeneratedNamespaceConfig {
                     }
                     parse_config(
                         &values[1],
-                        &mut builtins,
                         &mut blank,
                         &mut excluded_foundation,
                         &mut exposed_foundation,
@@ -169,7 +165,6 @@ impl GeneratedNamespaceConfig {
         }
 
         let mut config = Self::default();
-        config.builtins = builtins;
         config.excluded_foundation = excluded_foundation;
         config.exposed_foundation = exposed_foundation;
         config.blank = blank;
@@ -210,10 +205,6 @@ impl GeneratedNamespaceConfig {
         self.used_exclusions
             .get(namespace)
             .is_some_and(|excluded| excluded.contains(symbol))
-    }
-
-    pub fn builtins(&self) -> &[String] {
-        &self.builtins
     }
 
     pub fn excluded_foundation(&self) -> &HashSet<String> {
@@ -420,7 +411,6 @@ impl GeneratedNamespaceConfig {
 
 fn parse_config(
     form: &Form,
-    builtins: &mut Vec<String>,
     blank: &mut bool,
     foundation_overrides: &mut HashSet<String>,
     foundation_exposure: &mut Option<HashSet<String>>,
@@ -439,19 +429,6 @@ fn parse_config(
                     Form::Bool(value) => *value,
                     _ => return Err(":config :blank expects a boolean".into()),
                 };
-            }
-            "builtins" => {
-                let mut seen = HashSet::new();
-                for item in vector(value, ":config :builtins expects a vector of symbols")? {
-                    let name = symbol(item, ":config :builtins expects unqualified symbols")?;
-                    if name.contains('/') {
-                        return Err(":config :builtins expects unqualified symbols".into());
-                    }
-                    if !seen.insert(name) {
-                        return Err(format!("Duplicate builtin declaration: {name}"));
-                    }
-                    builtins.push(name.into());
-                }
             }
             "override" => {
                 *override_seen = true;

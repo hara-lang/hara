@@ -4572,12 +4572,15 @@ mod tests {
             "[\"#<native-type std.native.Maths>\" \"Maths\" \"std.native\" true 0 \"HARA\" \"HARA\" 255 255]"
         );
         assert!(runtime.eval_text("(std.native.Maths 1)").is_err());
-        assert_eq!(
-            runtime
-                .eval_text("(ns legacy.activation (:config {:builtins [inc]}))")
-                .unwrap(),
-            "nil"
-        );
+    }
+
+    #[test]
+    fn removed_builtins_config_is_rejected_by_runtime() {
+        let mut runtime = Runtime::new();
+        assert!(runtime
+            .eval_text("(ns legacy.activation (:config {:builtins [inc]}))")
+            .unwrap_err()
+            .contains("Unsupported :config option: :builtins"));
     }
 
     #[test]
@@ -4752,6 +4755,12 @@ mod tests {
         runtime
             .eval_text("(ns collection.runtime (:require [std.lib.collection :as collection]))")
             .unwrap();
+        assert_eq!(
+            runtime
+                .eval_text("(Algo/deque? (Algo/deque 1 2))")
+                .unwrap(),
+            "true"
+        );
         for source in [
             "(= (hash-map :a 1 :b 2) (collection/ordered-map :b 2 :a 1))",
             "(= (hash-map :a 1 :b 2) (collection/sorted-map :b 2 :a 1))",
@@ -6691,6 +6700,64 @@ mod tests {
             .eval_text("(type)")
             .unwrap_err()
             .contains("one value"));
+    }
+
+    #[test]
+    fn typed_schema_values_separate_data_origins_and_var_contracts() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns schema.runtime) \
+                     (def description [:int]) \
+                     (defn ^{:schema #'description} customer-name [customer] (:name customer)) \
+                     (def snapshot-description [:int]) \
+                     (defn ^{:schema #'snapshot-description} snapshot-name [customer] (:name customer)) \
+                     (def snapshot-description [:string]) \
+                     (let [from-var (std.native.Base/schema #'description) \
+                           from-value (std.native.Base/schema description) \
+                           direct (std.native.Base/schema [:int])] \
+                       [(type direct) (= from-var from-value direct) \
+                        (std.native.Schema/instance? direct) (std.native.Schema/kind direct) \
+                        (= #'description (std.native.Schema/origin from-var)) \
+                        (= from-var (std.native.Base/schema-of #'customer-name)) \
+                        (= direct (std.native.Base/schema-of #'snapshot-name)) \
+                        (= direct (std.native.Base/schema {:kind :primitive :children [:int]})) \
+                        (= [:int] (std.native.Schema/form direct)) \
+                        (map? (std.native.Schema/ast direct)) \
+                        (= direct (std.native.Base/schema direct)) \
+                        (= direct (std.native.Base/schema :int)) \
+                        (nil? (std.native.Base/schema-of #'description))])",
+                )
+                .unwrap(),
+            "[:std.native.SchemaType true true :primitive true true true true true true true true true]"
+        );
+        assert!(runtime.eval_text("(std.native.Base/schema #'customer-name)").is_err());
+        assert!(runtime.eval_text("(std.native.Base/schema customer-name)").is_err());
+        assert!(runtime.eval_text("(std.native.Base/schema-of customer-name)").is_err());
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "[(type (std.native.Base/schema [:int])) \
+                      (std.native.Schema/kind (std.native.Base/schema [:int]))]",
+                )
+                .unwrap(),
+            "[:std.native.SchemaType :primitive]"
+        );
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(def description [:int]) \
+                     (defn ^{:schema #'description} customer-name [customer] (:name customer)) \
+                     (def description [:string]) \
+                     [(std.native.Schema/kind \
+                        (std.native.Base/schema-of #'customer-name)) \
+                      (= (std.native.Base/schema-of #'customer-name) \
+                         (std.native.Base/schema [:int]))]",
+                )
+                .unwrap(),
+            "[:primitive true]"
+        );
     }
 
     #[test]

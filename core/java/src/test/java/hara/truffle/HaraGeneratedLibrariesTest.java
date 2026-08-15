@@ -111,6 +111,38 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void typedSchemaValuesSeparateDataOriginsAndVarContracts() {
+    try (Context context = context()) {
+      assertEquals(
+          "[:std.native.SchemaType true true :primitive true true true true true true true true true]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns schema.runtime) "
+                      + "(def description [:int]) "
+                      + "(defn ^{:schema #'description} customer-name [customer] (:name customer)) "
+                      + "(def snapshot-description [:int]) "
+                      + "(defn ^{:schema #'snapshot-description} snapshot-name [customer] (:name customer)) "
+                      + "(def snapshot-description [:string]) "
+                      + "(let [from-var (schema #'description) from-value (schema description) "
+                      + "direct (schema [:int])] "
+                      + "[(type direct) (= from-var from-value direct) "
+                      + "(Schema/instance? direct) (Schema/kind direct) "
+                      + "(= #'description (Schema/origin from-var)) "
+                      + "(= from-var (schema-of #'customer-name)) "
+                      + "(= direct (schema-of #'snapshot-name)) "
+                      + "(= direct (schema {:kind :primitive :children [:int]})) "
+                      + "(= [:int] (Schema/form direct)) (map? (Schema/ast direct)) "
+                      + "(= direct (schema direct)) (= direct (schema :int)) "
+                      + "(nil? (schema-of #'description))])")
+              .toString());
+      assertErrorContains(context, "(schema #'customer-name)", "schema expects schema data");
+      assertErrorContains(context, "(schema customer-name)", "schema expects schema data");
+      assertErrorContains(context, "(schema-of customer-name)", "schema-of expects a Var");
+    }
+  }
+
+  @Test
   public void nativeTestCatalogUsesRuntimeRunnerAndTestContext() {
     try (Context context = context()) {
       assertEquals(

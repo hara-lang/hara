@@ -87,49 +87,6 @@ fn definition(form: &Form, line: usize) -> Option<Definition> {
     })
 }
 
-fn namespace_builtins(form: &Form, line: usize) -> Vec<Definition> {
-    let Form::List(namespace) = form else {
-        return Vec::new();
-    };
-    if namespace.first().and_then(symbol) != Some("ns") {
-        return Vec::new();
-    }
-    namespace
-        .iter()
-        .skip(2)
-        .find_map(|clause| {
-            let Form::List(items) = clause else {
-                return None;
-            };
-            if !matches!(items.first(), Some(Form::Keyword(key)) if key == "config") {
-                return None;
-            }
-            let Form::Map(config) = items.get(1)? else {
-                return None;
-            };
-            let builtins = config.iter().find_map(|(key, value)| {
-                matches!(key, Form::Keyword(key) if key == "builtins").then_some(value)
-            })?;
-            let Form::Vector(names) = builtins else {
-                return None;
-            };
-            Some(
-                names
-                    .iter()
-                    .filter_map(symbol)
-                    .map(|name| Definition {
-                        name: name.to_owned(),
-                        kind: "builtin".into(),
-                        doc: "Native constructor activated by this namespace.".into(),
-                        signature: String::new(),
-                        line,
-                    })
-                    .collect(),
-            )
-        })
-        .unwrap_or_default()
-}
-
 fn namespace_name(path: &Path, source_root: &Path) -> String {
     path.strip_prefix(source_root)
         .unwrap_or(path)
@@ -194,11 +151,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .filter_map(|spanned| definition(&spanned.form, spanned.span.start.line))
             .collect::<Vec<_>>();
-        definitions.extend(
-            forms
-                .iter()
-                .flat_map(|spanned| namespace_builtins(&spanned.form, spanned.span.start.line)),
-        );
         definitions.sort_by_key(|definition| definition.line);
         let relative = path
             .strip_prefix(source_root)

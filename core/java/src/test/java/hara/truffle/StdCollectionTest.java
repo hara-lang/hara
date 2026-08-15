@@ -6,7 +6,7 @@ import static org.junit.Assert.assertThrows;
 import org.graalvm.polyglot.Context;
 import org.junit.Test;
 
-public class StdLibCollectionTest {
+public class StdCollectionTest {
   @Test
   public void ownsSpecialisedPersistentCollectionConstructors() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
@@ -15,7 +15,7 @@ public class StdLibCollectionTest {
           "(ns collection.java (:require [std.lib.collection :as collection]))");
 
       assertEquals(
-          "[:hara/Deque :hara/OrderedMap :hara/OrderedSet :hara/PriorityMap :hara/Queue :hara/SortedMap :hara/SortedSet :hara/Trie]",
+          "[:std.native.Deque :std.native.OrderedMap :std.native.OrderedSet :std.native.PriorityMap :std.native.Queue :std.native.SortedMap :std.native.SortedSet :std.native.Trie]",
           context
               .eval(
                   HaraLanguage.ID,
@@ -28,6 +28,9 @@ public class StdLibCollectionTest {
                       + " (type (collection/sorted-set 2 1))"
                       + " (type (collection/trie \"alpha\" 7))]")
               .toString());
+      assertEquals(
+          "true",
+          context.eval(HaraLanguage.ID, "(Algo/deque? (Algo/deque 1 2))").toString());
       assertEquals(
           "[true true true true true true true true false false]",
           context

@@ -50,7 +50,57 @@ pub fn normalize_schema(schema: &Form) -> Result<SchemaType, String> {
             }
         }
         Form::Vector(items) if !items.is_empty() => normalize_composite(items),
+        Form::Map(entries) => normalize_longhand(entries),
         other => Ok(SchemaType::Unknown(other.clone())),
+    }
+}
+
+fn normalize_longhand(entries: &[(Form, Form)]) -> Result<SchemaType, String> {
+    let get = |name: &str| {
+        entries.iter().find_map(|(key, value)| {
+            matches!(key, Form::Keyword(key) if key == name).then_some(value)
+        })
+    };
+    let Some(Form::Keyword(kind)) = get("kind") else {
+        return Ok(SchemaType::Unknown(Form::Map(entries.to_vec())));
+    };
+    let children = match get("children") {
+        Some(Form::Vector(values)) => values.as_slice(),
+        None => &[],
+        _ => return Err("schema :children must be a vector".into()),
+    };
+    match kind.as_str() {
+        "primitive" => match children {
+            [Form::Keyword(name)] => Ok(SchemaType::Primitive(name.clone())),
+            _ => Err("primitive schema requires one keyword child".into()),
+        },
+        "map" => children
+            .iter()
+            .map(|child| match child {
+                Form::Vector(pair) if pair.len() == 2 => Ok(SchemaField {
+                    name: pair[0].clone(),
+                    value_type: normalize_schema(&pair[1])?,
+                }),
+                _ => Err("map schema children must be [name schema] pairs".into()),
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(SchemaType::Map),
+        "or" => children
+            .iter()
+            .map(normalize_schema)
+            .collect::<Result<Vec<_>, _>>()
+            .map(SchemaType::Union),
+        "vector" => match children {
+            [child] => Ok(SchemaType::Vector(Box::new(normalize_schema(child)?))),
+            _ => Err("vector schema requires one child".into()),
+        },
+        "tuple" => children
+            .iter()
+            .map(normalize_schema)
+            .collect::<Result<Vec<_>, _>>()
+            .map(SchemaType::Tuple),
+        "enum" => Ok(SchemaType::Enum(children.to_vec())),
+        _ => Err(format!("unsupported longhand schema kind: {kind}")),
     }
 }
 
@@ -405,6 +455,7 @@ fn normalize_composite(items: &[Form]) -> Result<SchemaType, String> {
                 .map(SchemaType::Function)
         }
         "enum" => Ok(SchemaType::Enum(arguments.to_vec())),
+        _ if arguments.is_empty() => Ok(SchemaType::Primitive(head.clone())),
         _ => Ok(SchemaType::Extension {
             head: head.clone(),
             arguments: arguments.to_vec(),

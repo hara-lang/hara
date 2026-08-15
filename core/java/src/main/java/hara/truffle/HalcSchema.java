@@ -81,6 +81,33 @@ public final class HalcSchema {
 
   public static Type normalize(Object schema) {
     if (schema instanceof Keyword keyword) return new Primitive(keyword.getName());
+    if (schema instanceof hara.lang.data.types.IMapType<?, ?> map) {
+      @SuppressWarnings("unchecked")
+      hara.lang.data.types.IMapType<Object, Object> valuesMap =
+          (hara.lang.data.types.IMapType<Object, Object>) map;
+      Object kindValue = valuesMap.lookup(Keyword.create("kind"));
+      if (kindValue instanceof Keyword kind) {
+        ILinearType<?> children = vector(valuesMap.lookup(Keyword.create("children")));
+        if (children == null) throw invalid("schema :children must be a vector");
+        List<Object> values = values(children, 0);
+        return switch (kind.getName()) {
+          case "primitive" -> {
+            if (values.size() != 1 || !(values.get(0) instanceof Keyword name))
+              throw invalid("primitive schema requires one keyword child");
+            yield new Primitive(name.getName());
+          }
+          case "map" -> normalizeMap(values);
+          case "or" -> normalizeUnion(values);
+          case "vector" -> {
+            requireCount("vector", values, 1);
+            yield new VectorType(normalize(values.get(0)));
+          }
+          case "tuple" -> new Tuple(normalizeAll(values));
+          case "enum" -> new EnumType(values);
+          default -> throw invalid("unsupported longhand schema kind: " + kind.getName());
+        };
+      }
+    }
     if (schema instanceof hara.lang.data.List<?> reference
         && reference.count() == 2
         && reference.nth(0) instanceof Symbol operator
@@ -128,7 +155,9 @@ public final class HalcSchema {
         yield new FunctionType(arities);
       }
       case "enum" -> new EnumType(arguments);
-      default -> new Extension(head.getName(), arguments);
+      default -> arguments.isEmpty()
+          ? new Primitive(head.getName())
+          : new Extension(head.getName(), arguments);
     };
   }
 

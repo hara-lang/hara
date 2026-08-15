@@ -38,6 +38,7 @@ pub struct Var<V> {
     symbol: Symbol,
     value: Atom<V>,
     metadata: Rc<RefCell<VarMetadata>>,
+    schema_contract: Rc<RefCell<Option<V>>>,
 }
 impl<V> Var<V> {
     pub fn new(path: impl AsRef<str>, value: V) -> Self {
@@ -46,6 +47,7 @@ impl<V> Var<V> {
             symbol: Symbol::parse(path.as_ref()),
             value: Atom::new(value),
             metadata: Rc::new(RefCell::new(VarMetadata::default())),
+            schema_contract: Rc::new(RefCell::new(None)),
         }
     }
     pub fn with_metadata(path: impl AsRef<str>, value: V, metadata: VarMetadata) -> Self {
@@ -54,6 +56,7 @@ impl<V> Var<V> {
             symbol: Symbol::parse(path.as_ref()),
             value: Atom::new(value),
             metadata: Rc::new(RefCell::new(metadata)),
+            schema_contract: Rc::new(RefCell::new(None)),
         }
     }
     pub fn symbol(&self) -> &Symbol {
@@ -124,6 +127,7 @@ impl<V: Clone + 'static> Var<V> {
             symbol: Symbol::parse(path.as_ref()),
             value: self.value.clone(),
             metadata: self.metadata.clone(),
+            schema_contract: self.schema_contract.clone(),
         }
     }
     pub fn deref_value(&self) -> V {
@@ -137,6 +141,12 @@ impl<V: Clone + 'static> Var<V> {
                 .cloned()
                 .unwrap_or_else(|| self.value.deref_value())
         })
+    }
+    pub fn schema_contract(&self) -> Option<V> {
+        self.schema_contract.borrow().clone()
+    }
+    pub fn set_schema_contract(&self, contract: Option<V>) {
+        *self.schema_contract.borrow_mut() = contract;
     }
     pub fn bind(&self, value: V) {
         let key = self.identity_key();

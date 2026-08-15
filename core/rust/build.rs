@@ -54,9 +54,10 @@ fn source_roots(manifest: &Path) -> Vec<(PathBuf, PathBuf)> {
 
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    // The runtime artifact contains only the explicit Foundation bootstrap.
-    // Repository builds resolve it from canonical core/lib source; published
-    // Cargo archives carry the same six files beneath the crate-local hal-src.
+    // The runtime artifact contains the explicit Foundation bootstrap and the
+    // small portable library catalog required by the native runtime. Repository
+    // builds resolve it from canonical core/lib source; published Cargo archives
+    // carry the same inventory beneath the crate-local hal-src.
     let source_roots = source_roots(&manifest);
     let inventory_path = manifest.join("bootstrap.namespaces");
     let hta_path = manifest.join("src/hta.rs");
