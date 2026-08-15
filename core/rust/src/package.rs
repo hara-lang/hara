@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub use crate::package_catalog::{catalog_from_lock, LockedPackage};
+
 mod archive;
 mod install;
 use archive::*;

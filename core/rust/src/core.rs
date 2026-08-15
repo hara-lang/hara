@@ -98,6 +98,115 @@ pub struct RuntimeSchema {
     pub origin: Option<KernelVar<Value>>,
 }
 
+#[derive(Clone)]
+struct PackageCatalogEntry {
+    descriptor: Value,
+    namespaces: Vec<String>,
+    state: String,
+}
+
+#[derive(Clone, Default)]
+pub struct PackageCatalog {
+    entries: Rc<RefCell<HashMap<String, PackageCatalogEntry>>>,
+}
+
+impl PackageCatalog {
+    pub fn register(&self, coordinate: String, descriptor: Value, namespaces: Vec<String>) {
+        self.entries.borrow_mut().insert(
+            coordinate,
+            PackageCatalogEntry {
+                descriptor,
+                namespaces,
+                state: "available".into(),
+            },
+        );
+    }
+
+    fn catalog_value(&self) -> Value {
+        let mut entries = self
+            .entries
+            .borrow()
+            .iter()
+            .map(|(coordinate, entry)| {
+                (
+                    Value::String(coordinate.clone()),
+                    package_descriptor_state(&entry.descriptor, &entry.state),
+                )
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|(left, _), (right, _)| left.display().cmp(&right.display()));
+        Value::OrderedMap(Box::new(POrderedMap::from_iter(entries)))
+    }
+
+    fn find(&self, target: &str) -> Option<(String, Value)> {
+        self.entries.borrow().iter().find_map(|(coordinate, entry)| {
+            (coordinate == target || entry.namespaces.iter().any(|namespace| namespace == target))
+                .then(|| {
+                    (
+                        coordinate.clone(),
+                        package_descriptor_state(&entry.descriptor, &entry.state),
+                    )
+                })
+        })
+    }
+
+    pub fn contains_namespace(&self, namespace: &str) -> bool {
+        self.entries
+            .borrow()
+            .values()
+            .any(|entry| entry.namespaces.iter().any(|name| name == namespace))
+    }
+
+    fn coordinate_for_namespace(&self, namespace: &str) -> Option<String> {
+        self.entries.borrow().iter().find_map(|(coordinate, entry)| {
+            entry
+                .namespaces
+                .iter()
+                .any(|name| name == namespace)
+                .then(|| coordinate.clone())
+        })
+    }
+
+    fn state(&self, coordinate: &str) -> Option<String> {
+        self.entries
+            .borrow()
+            .get(coordinate)
+            .map(|entry| entry.state.clone())
+    }
+
+    fn set_state(&self, coordinate: &str, state: &str) {
+        if let Some(entry) = self.entries.borrow_mut().get_mut(coordinate) {
+            entry.state = state.into();
+        }
+    }
+}
+
+fn package_descriptor_state(descriptor: &Value, state: &str) -> Value {
+    let Value::OrderedMap(values) = descriptor else {
+        return descriptor.clone();
+    };
+    Value::OrderedMap(Box::new(POrderedMap::from_iter(
+        values
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .chain(std::iter::once((
+                Value::Keyword("package/state".into()),
+                Value::Keyword(state.into()),
+            ))),
+    )))
+}
+
+fn package_descriptor_coordinate(descriptor: &Value) -> Option<String> {
+    let Value::OrderedMap(values) = descriptor else {
+        return None;
+    };
+    match values.get(&Value::Keyword("package/coordinate".into())) {
+        Some(Value::String(coordinate)) => Some(coordinate.clone()),
+        Some(Value::Symbol(coordinate)) => Some(coordinate.as_str().to_owned()),
+        _ => None,
+    }
+}
+
 pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "Maths",
@@ -132,6 +241,11 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "capabilities",
         ],
     ),
+    (
+        "Env",
+        &["snapshot", "vars", "namespaces", "namespace", "resolve"],
+    ),
+    ("Package", &["catalog", "find", "ensure", "state"]),
     (
         "String",
         &[
@@ -3665,6 +3779,7 @@ thread_local! {
     static ACTIVE_FILE_PROVIDER: RefCell<Option<Rc<dyn FileProvider>>> = const { RefCell::new(None) };
     static ACTIVE_SOCKET_PROVIDER: RefCell<Option<Rc<dyn SocketProvider>>> = const { RefCell::new(None) };
     static ACTIVE_KERNEL_PROVIDER: RefCell<Option<Rc<KernelProvider>>> = const { RefCell::new(None) };
+    static ACTIVE_PACKAGE_CATALOG: RefCell<Option<PackageCatalog>> = const { RefCell::new(None) };
     static ACTIVE_PROCESS_ALLOWED: Cell<bool> = const { Cell::new(false) };
     static ACTIVE_TEST_RUNNER: RefCell<String> = RefCell::new("code.test".into());
     static HOST_CALL_HANDLER: RefCell<Option<Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>>> = const { RefCell::new(None) };
@@ -4180,6 +4295,19 @@ pub fn with_protocols<R>(registry: &ProtocolRegistry, operation: impl FnOnce() -
         active.replace(previous);
         result
     })
+}
+
+pub fn with_package_catalog<R>(catalog: &PackageCatalog, operation: impl FnOnce() -> R) -> R {
+    ACTIVE_PACKAGE_CATALOG.with(|active| {
+        let previous = active.replace(Some(catalog.clone()));
+        let result = operation();
+        active.replace(previous);
+        result
+    })
+}
+
+fn package_catalog() -> PackageCatalog {
+    ACTIVE_PACKAGE_CATALOG.with(|active| active.borrow().clone().unwrap_or_default())
 }
 
 /// Runs an evaluation through the selected runtime promise provider.
@@ -5312,6 +5440,238 @@ fn native_host_operation(
             return Ok(Value::Promise(promise));
         };
         handler(service, target, arguments)
+    })
+}
+
+fn namespace_identifier(value: Value, operation: &str) -> Result<String, String> {
+    match value {
+        Value::Symbol(name) if name.get_namespace().is_none() => Ok(name.as_str().to_owned()),
+        Value::String(name) => Ok(name),
+        Value::Namespace(namespace) => Ok(namespace.name().as_str().to_owned()),
+        _ => Err(format!(
+            "{operation} expects an unqualified namespace symbol, string, or Namespace"
+        )),
+    }
+}
+
+fn namespace_descriptor(registry: &NamespaceRegistry<Value>, name: &str) -> Value {
+    let state = registry
+        .load_state(name)
+        .or_else(|| registry.find(name).map(|_| NamespaceLoadState::Loaded))
+        .map(NamespaceLoadState::as_str)
+        .unwrap_or("unknown");
+    let package = package_catalog().coordinate_for_namespace(name);
+    let origin = if name.starts_with("std.native") {
+        "embedded"
+    } else if package.is_some() {
+        "package"
+    } else if registry.find(name).is_some() {
+        "runtime"
+    } else {
+        "registered"
+    };
+    let mut fields = vec![
+        (
+            Value::Keyword("namespace/name".into()),
+            Value::Symbol(Symbol::parse(name)),
+        ),
+        (
+            Value::Keyword("namespace/state".into()),
+            Value::Keyword(state.into()),
+        ),
+        (
+            Value::Keyword("namespace/revision".into()),
+            Value::Number(registry.module_revision(name) as i64),
+        ),
+        (
+            Value::Keyword("namespace/origin".into()),
+            Value::Keyword(origin.into()),
+        ),
+    ];
+    if let Some(package) = package {
+        fields.push((
+            Value::Keyword("namespace/package".into()),
+            Value::String(package),
+        ));
+    }
+    Value::OrderedMap(Box::new(POrderedMap::from_iter(fields)))
+}
+
+fn native_env_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let method = operation
+        .strip_prefix("std.native.Env/")
+        .unwrap_or(operation);
+    let registry = namespace_registry()?;
+    match method {
+        "snapshot" => {
+            if !forms.is_empty() {
+                return Err("std.native.Env/snapshot expects no arguments".into());
+            }
+            let namespaces = registry
+                .known_names()
+                .into_iter()
+                .map(|name| namespace_descriptor(&registry, name.as_str()))
+                .collect::<Vec<_>>();
+            Ok(Value::OrderedMap(Box::new(POrderedMap::from_iter([
+                (
+                    Value::Keyword("env/current".into()),
+                    Value::Symbol(registry.current().name().clone()),
+                ),
+                (
+                    Value::Keyword("env/namespaces".into()),
+                    Value::Vector(PVector::from(namespaces)),
+                ),
+            ]))))
+        }
+        "namespaces" => {
+            if !forms.is_empty() {
+                return Err("std.native.Env/namespaces expects no arguments".into());
+            }
+            Ok(Value::Vector(PVector::from(
+                registry
+                    .known_names()
+                    .into_iter()
+                    .map(|name| namespace_descriptor(&registry, name.as_str()))
+                    .collect::<Vec<_>>(),
+            )))
+        }
+        "namespace" => {
+            if forms.len() != 1 {
+                return Err("std.native.Env/namespace expects one namespace".into());
+            }
+            let name = namespace_identifier(eval(&forms[0], env)?, operation)?;
+            if registry.load_state(&name).is_none() && registry.find(&name).is_none() {
+                Ok(Value::Nil)
+            } else {
+                Ok(namespace_descriptor(&registry, &name))
+            }
+        }
+        "vars" => {
+            if forms.len() > 1 {
+                return Err("std.native.Env/vars expects zero or one namespace".into());
+            }
+            let name = if forms.is_empty() {
+                registry.current().name().as_str().to_owned()
+            } else {
+                namespace_identifier(eval(&forms[0], env)?, operation)?
+            };
+            let namespace = registry
+                .find(&name)
+                .ok_or_else(|| format!("namespace/not-found: {name}"))?;
+            let mut mappings = namespace.mappings();
+            mappings.retain(|(_, var)| var.symbol().get_namespace() == Some(name.as_str()));
+            mappings.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
+            Ok(Value::OrderedMap(Box::new(POrderedMap::from_iter(
+                mappings.into_iter().map(|(symbol, var)| {
+                    (
+                        Value::Symbol(Symbol::create(None, symbol.as_str())),
+                        Value::Var(var),
+                    )
+                }),
+            ))))
+        }
+        "resolve" => {
+            if forms.len() != 1 {
+                return Err("std.native.Env/resolve expects one symbol".into());
+            }
+            let Value::Symbol(symbol) = eval(&forms[0], env)? else {
+                return Err("std.native.Env/resolve expects a symbol".into());
+            };
+            // Deliberately bypass force_lazy_alias: Env inspection must never
+            // load source or invoke a package provider.
+            Ok(registry.resolve(&symbol).map(Value::Var).unwrap_or(Value::Nil))
+        }
+        _ => Err(format!("unknown std.native.Env method: {method}")),
+    }
+}
+
+fn native_package_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let method = operation
+        .strip_prefix("std.native.Package/")
+        .unwrap_or(operation);
+    let expected = match method {
+        "catalog" => 0..=0,
+        "find" | "ensure" | "state" => 1..=1,
+        _ => return Err(format!("unknown std.native.Package method: {method}")),
+    };
+    if !expected.contains(&forms.len()) {
+        return Err(format!(
+            "std.native.Package/{method} expects {} arguments",
+            expected.start()
+        ));
+    }
+    let arguments = forms
+        .iter()
+        .map(|form| eval(form, env))
+        .collect::<Result<Vec<_>, _>>()?;
+    let catalog = package_catalog();
+    if method == "catalog" {
+        return Ok(catalog.catalog_value());
+    }
+    let target = match arguments.first() {
+        Some(Value::Symbol(value)) => value.as_str().to_owned(),
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Keyword(value)) => value.as_str().to_owned(),
+        Some(value @ Value::OrderedMap(_)) if method == "ensure" =>
+            package_descriptor_coordinate(value).ok_or_else(|| {
+                "std.native.Package/ensure descriptor requires :package/coordinate".to_owned()
+            })?,
+        _ => return Err(format!("std.native.Package/{method} expects a namespace, coordinate, or exact descriptor")),
+    };
+    let found = catalog.find(&target);
+    if method == "find" {
+        return Ok(found.map(|(_, value)| value).unwrap_or(Value::Nil));
+    }
+    let Some((coordinate, descriptor)) = found else {
+        if method == "state" {
+            return Ok(Value::Nil);
+        }
+        return Err(format!("package/not-locked: {target}"));
+    };
+    if method == "state" {
+        return Ok(Value::Keyword(
+            catalog.state(&coordinate).unwrap_or_else(|| "available".into()).into(),
+        ));
+    }
+    catalog.set_state(&coordinate, "ensuring");
+    HOST_CALL_HANDLER.with(|active| {
+        let Some(handler) = active.borrow().as_ref().cloned() else {
+            let promise = Promise::new();
+            promise.reject_value(host_error(
+                "package/unsupported",
+                "Package capability provider is unavailable",
+            ));
+            catalog.set_state(&coordinate, "failed");
+            return Ok(Value::Promise(promise));
+        };
+        let result = handler("package".into(), method.into(), vec![descriptor]);
+        if let Ok(Value::Promise(promise)) = &result {
+            let state = catalog.clone();
+            let coordinate = coordinate.clone();
+            promise.on_settle(Rc::new(move |settlement| {
+                state.set_state(
+                    &coordinate,
+                    if matches!(settlement, PromiseState::Fulfilled(_)) {
+                        "ready"
+                    } else {
+                        "failed"
+                    },
+                );
+            }));
+        } else if result.is_ok() {
+            catalog.set_state(&coordinate, "ready");
+        } else {
+            catalog.set_state(&coordinate, "failed");
+        }
+        result
     })
 }
 
@@ -12202,6 +12562,17 @@ fn ensure_namespace(
         _ => {}
     }
 
+
+    if package_catalog().contains_namespace(name)
+        && NAMESPACE_SOURCE_PROVIDER
+            .with(|active| active.borrow().as_ref().and_then(|provider| provider(name)))
+            .is_none()
+    {
+        return Err(format!(
+            "package/not-installed: namespace is locked but unavailable: {name}; call Package/ensure first"
+        ));
+    }
+
     let requiring = registry.current().name().as_str().to_owned();
     let previous_state = registry.load_state(name);
     let registry_before = registry.transaction_snapshot([requiring.as_str(), name]);
@@ -14449,6 +14820,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Host/") => {
                     native_host_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Env/") => {
+                    native_env_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Package/") => {
+                    native_package_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Test/") => {
                     native_test_operation(n, &fs[1..], env)

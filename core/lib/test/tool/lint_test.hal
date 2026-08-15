@@ -18,4 +18,30 @@
   (map :type (lint/lint-source "(def x 1)\n)\nmissing"))
   => [:tool.lint/reader-error :tool.lint/unresolved-symbol])
 
+^{:refer 'tool.lint/lint-source
+  :id 'redundant-vector-materialization}
+(fact "reports vec only for a proven materialized-vector chain"
+  [(map :type
+        (lint/lint-source
+         "(ns demo.core)\n(let [covered (vec [])] (vec (filter identity covered)))"))
+   (map :type
+        (lint/lint-source
+         "(ns demo.core)\n(let [covered []] (vec (filter identity covered)))"))
+   (map :type
+        (lint/lint-source
+         "(ns demo.core)\n(let [references #{}] (vec (sort-by str (filter identity references))))"))]
+  => [[:tool.lint/redundant-vec] [] []])
+
+^{:refer 'tool.lint/analyze-source
+  :id 'public-inference-results}
+(fact "publishes deterministic normalized inference records"
+  (select-keys
+   (first (:inferences
+           (lint/analyze-source
+            "(let [covered (vec [])] (filter identity covered))")))
+   [:analysis/schema :analysis/refinements])
+  => {:analysis/schema {:kind :primitive :name :vector}
+      :analysis/refinements {:vector/backend :persistent
+                             :metadata :absent}})
+
 (pr-str (run '[tool.lint-test]))

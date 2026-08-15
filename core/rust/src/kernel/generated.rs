@@ -44,6 +44,8 @@ const NATIVE_TYPES: &[&str] = &[
     "Base",
     "Iter",
     "Kernel",
+    "Env",
+    "Package",
 ];
 
 #[derive(Debug, Clone, Default)]

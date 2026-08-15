@@ -1,99 +1,83 @@
 ;; Experimental portable schema core for HAL metadata and relation contracts.
 (ns std.typed.schema)
 
-(defn ^{:schema [:fn [:any] :map]}
-  normalize
-  "Normalizes the portable ^{:schema ...} surface grammar into tagged data."
+(defn- normalize-dispatch
   [schema]
   (cond
+    (and (map? schema) (has? schema :kind))
+    :normalized
+
     (keyword? schema)
-    {:kind :primitive :name schema}
+    :primitive
 
     (not (vector? schema))
-    {:kind :unknown :surface schema}
+    :unknown
 
-    :else
-    (let [head (first schema)
-          args
-          (loop [index 1
-                 output []]
-            (if (= index (count schema))
-              output
-              (recur (inc index)
-                     (conj output (nth schema index)))))]
-      (cond
-        (= head :or)
-        {:kind :union
-         :types
-         (loop [index 0
-                output []]
-           (if (= index (count args))
-             output
-             (recur (inc index)
-                    (conj output (normalize (nth args index))))))}
+    :else (first schema)))
 
-        (= head :maybe)
-        {:kind :union
-         :types [(normalize (first args)) (normalize :nil)]}
+(defmulti normalize normalize-dispatch)
 
-        (= head :vector)
-        {:kind :vector
-         :item (normalize (first args))}
+(defmethod normalize :normalized [schema]
+  schema)
 
-        (= head :tuple)
-        {:kind :tuple
-         :items
-         (loop [index 0
-                output []]
-           (if (= index (count args))
-             output
-             (recur (inc index)
-                    (conj output (normalize (nth args index))))))}
+(defmethod normalize :primitive [schema]
+  {:kind :primitive :name schema})
 
-        (= head :map)
-        {:kind :map
-         :fields
-         (vec
-          (map (fn [pair]
-                 {:name (first pair)
-                  :type (normalize (second pair))})
-               args))}
+(defmethod normalize :unknown [schema]
+  {:kind :unknown :surface schema})
 
-        (= head :fn)
-        {:kind :fn
-         :inputs
-         (loop [index 0
-                inputs (first args)
-                fixed []]
-           (if (= index (count inputs))
-             {:fixed fixed :rest nil}
-             (if (= '& (nth inputs index))
-               {:fixed fixed
-                :rest (normalize (nth inputs (inc index)))}
-               (recur (inc index)
-                      inputs
-                      (conj fixed
-                            (normalize (nth inputs index)))))))
-         :output (normalize (second args))}
+(defmethod normalize :or [schema]
+  {:kind :union
+   :types (vec (map normalize (rest schema)))})
 
-        (= head :function)
-        {:kind :function
-         :arities
-         (loop [index 0
-                output []]
-           (if (= index (count args))
-             output
-             (recur (inc index)
-                    (conj output (normalize (nth args index))))))}
+(defmethod normalize :maybe [schema]
+  {:kind :union
+   :types [(normalize (second schema)) (normalize :nil)]})
 
-        (= head :enum)
-        {:kind :enum :values (vec args)}
+(defmethod normalize :vector [schema]
+  {:kind :vector
+   :item (normalize (second schema))})
 
-        :else
-        {:kind :extension
-         :head head
-         :arguments (vec args)
-         :surface schema}))))
+(defmethod normalize :tuple [schema]
+  {:kind :tuple
+   :items (vec (map normalize (rest schema)))})
+
+(defmethod normalize :map [schema]
+  {:kind :map
+   :fields
+   (vec
+    (map (fn [pair]
+           {:name (first pair)
+            :type (normalize (second pair))})
+         (rest schema)))})
+
+(defmethod normalize :fn [schema]
+  (let [inputs (second schema)]
+    {:kind :fn
+     :inputs
+     (loop [index 0
+            fixed []]
+       (if (= index (count inputs))
+         {:fixed fixed :rest nil}
+         (if (= '& (nth inputs index))
+           {:fixed fixed
+            :rest (normalize (nth inputs (inc index)))}
+           (recur (inc index)
+                  (conj fixed (normalize (nth inputs index)))))))
+     :output (normalize (nth schema 2))}))
+
+(defmethod normalize :function [schema]
+  {:kind :function
+   :arities (vec (map normalize (rest schema)))})
+
+(defmethod normalize :enum [schema]
+  {:kind :enum :values (vec (rest schema))})
+
+(defmethod normalize :default [schema]
+  {:kind :extension
+   :head (first schema)
+   :arguments (vec (rest schema))
+   :surface schema})
 
 (defn- primitive-valid? [name value]
   (cond

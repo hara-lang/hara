@@ -322,6 +322,22 @@ impl<V: Clone> NamespaceRegistry<V> {
     pub fn all(&self) -> Vec<Namespace<V>> {
         self.namespaces.borrow().values().cloned().collect()
     }
+    /// Returns every namespace known either as a materialized namespace or as
+    /// a discoverable module with load state.  Catalog-backed modules can
+    /// therefore be inspected before a Namespace value exists.
+    pub fn known_names(&self) -> Vec<Symbol> {
+        let mut names = self
+            .namespaces
+            .borrow()
+            .keys()
+            .chain(self.loading_states.borrow().keys())
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        names.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        names
+    }
     pub fn load_state(&self, name: impl AsRef<str>) -> Option<NamespaceLoadState> {
         self.loading_states
             .borrow()

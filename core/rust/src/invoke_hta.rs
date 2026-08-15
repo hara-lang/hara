@@ -128,17 +128,19 @@ impl Runtime {
             self.providers.process(),
             self.providers.kernel(),
             || {
-                core::with_promise_provider(self.providers.promise(), || {
-                    core::with_macros(self.macros.clone(), || {
-                        core::with_namespace_registry(&self.namespace_registry, || {
-                            core::with_namespace_source(namespace_source, || {
-                                core::with_protocols(&self.protocols, || {
-                                    if let Some(handler) = &self.native_host_handler {
-                                        return core::with_host_calls(handler.clone(), || {
-                                            core::invoke_function_sync(function, arguments)
-                                        });
-                                    }
-                                    core::invoke_function_sync(function, arguments)
+                core::with_package_catalog(&self.package_catalog, || {
+                    core::with_promise_provider(self.providers.promise(), || {
+                        core::with_macros(self.macros.clone(), || {
+                            core::with_namespace_registry(&self.namespace_registry, || {
+                                core::with_namespace_source(namespace_source, || {
+                                    core::with_protocols(&self.protocols, || {
+                                        if let Some(handler) = &self.native_host_handler {
+                                            return core::with_host_calls(handler.clone(), || {
+                                                core::invoke_function_sync(function, arguments)
+                                            });
+                                        }
+                                        core::invoke_function_sync(function, arguments)
+                                    })
                                 })
                             })
                         })

@@ -33,6 +33,7 @@ pub mod native_module;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_process;
 mod numeric;
+pub mod package_catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package;
 #[cfg(not(target_arch = "wasm32"))]
@@ -62,6 +63,7 @@ use crate::lang::protocol::INamespaced;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use crate::lang::data::{OrderedMap as POrderedMap, Vector as PVector};
 
 /// Builds the fully bootstrapped namespace registry used by native embedding hosts.
 ///
@@ -145,6 +147,7 @@ pub struct Runtime {
     extensions: core::ExtensionRegistry,
     wasm_extensions: HashMap<String, extension::WasmExtension>,
     providers: core::ProviderRegistry,
+    package_catalog: core::PackageCatalog,
     resources: HashMap<String, String>,
     resource_overrides: HashSet<String>,
     #[cfg(feature = "bytecode-vm")]
@@ -676,6 +679,7 @@ impl Runtime {
             extensions: core::ExtensionRegistry::new(),
             wasm_extensions: HashMap::new(),
             providers: core::ProviderRegistry::new(),
+            package_catalog: core::PackageCatalog::default(),
             resources: HashMap::new(),
             resource_overrides: HashSet::new(),
             #[cfg(feature = "bytecode-vm")]
@@ -975,6 +979,7 @@ impl Runtime {
                     let config =
                         kernel::GeneratedNamespaceConfig::configure_with(&values[2..], |target| {
                             if self.namespace_registry.find(target).is_some()
+                                || self.namespace_registry.load_state(target).is_some()
                                 || self.resources.contains_key(target)
                                 || self.wasm_extensions.contains_key(target)
                                 || self.has_bytecode_resource(target)
@@ -1088,6 +1093,7 @@ impl Runtime {
                         let roots = self.extension_roots.clone();
                         let available = |target: &str| {
                             if self.namespace_registry.find(target).is_some()
+                                || self.namespace_registry.load_state(target).is_some()
                                 || self.resources.contains_key(target)
                                 || self.wasm_extensions.contains_key(target)
                             {
@@ -1143,6 +1149,7 @@ impl Runtime {
                 self.providers.process(),
                 self.providers.kernel(),
                 || {
+                    core::with_package_catalog(&self.package_catalog, || {
                     core::with_promise_provider(self.providers.promise(), || {
                         core::with_macros(self.macros.clone(), || {
                             core::with_namespace_registry(&self.namespace_registry, || {
@@ -1167,7 +1174,7 @@ impl Runtime {
                                 })
                             })
                         })
-                    })
+                    })})
                 },
             ));
         }
@@ -1178,6 +1185,7 @@ impl Runtime {
             self.providers.process(),
             self.providers.kernel(),
             || {
+                core::with_package_catalog(&self.package_catalog, || {
                 core::with_promise_provider(self.providers.promise(), || {
                     core::with_macros(self.macros.clone(), || {
                         core::with_namespace_registry(&self.namespace_registry, || {
@@ -1206,7 +1214,7 @@ impl Runtime {
                             })
                         })
                     })
-                })
+                })})
             },
         ))?;
         self.env = fiber.environment();
@@ -1524,6 +1532,10 @@ impl Runtime {
             .get(name)
             .is_some_and(|existing| existing != source);
         self.resources.insert(name.into(), source.into());
+        if !self.loaded_resources.contains(name) {
+            self.namespace_registry
+                .set_load_state(name, kernel::NamespaceLoadState::Unloaded);
+        }
         if changed {
             self.loaded_resources.remove(name);
             #[cfg(feature = "bytecode-vm")]
@@ -1531,6 +1543,33 @@ impl Runtime {
                 self.resource_overrides.insert(name.into());
             }
         }
+    }
+
+    /// Registers exact package ownership from project.lock.edn without
+    /// downloading or loading any namespace.
+    #[wasm_bindgen(js_name = registerPackageLock)]
+    pub fn register_package_lock(&mut self, source: &str) -> Result<(), JsValue> {
+        let packages = package_catalog::catalog_from_lock(source)
+            .map_err(|error| JsValue::from_str(&error))?;
+        for package in packages {
+            let namespaces = package.namespaces.clone();
+            let descriptor = core::Value::OrderedMap(Box::new(POrderedMap::from_iter([
+                (core::Value::Keyword("package/coordinate".into()), core::Value::String(package.coordinate.clone())),
+                (core::Value::Keyword("package/version".into()), core::Value::String(package.version)),
+                (core::Value::Keyword("package/tap".into()), core::Value::String(package.tap)),
+                (core::Value::Keyword("package/registry-commit".into()), core::Value::String(package.registry_commit)),
+                (core::Value::Keyword("package/identity-revision".into()), core::Value::String(package.identity_revision)),
+                (core::Value::Keyword("package/archive-sha256".into()), core::Value::String(package.archive_sha256)),
+                (core::Value::Keyword("package/namespaces".into()), core::Value::Vector(PVector::from(namespaces.iter().map(|name| core::Value::Symbol(crate::lang::data::Symbol::parse(name))).collect::<Vec<_>>()))),
+            ])));
+            self.package_catalog.register(package.coordinate, descriptor, namespaces.clone());
+            for namespace in namespaces {
+                if self.namespace_registry.load_state(&namespace).is_none() {
+                    self.namespace_registry.set_load_state(&namespace, kernel::NamespaceLoadState::Unloaded);
+                }
+            }
+        }
+        Ok(())
     }
 
     #[cfg(feature = "bytecode-vm")]
@@ -9241,6 +9280,68 @@ mod tests {
 
         assert_eq!(runtime.eval_halc(&bytes).unwrap(), "<fn>");
         assert_eq!(runtime.eval_native("((comp inc inc) 40)").unwrap(), "42");
+    }
+
+    #[test]
+    fn environment_facade_inspects_without_loading_registered_namespaces() {
+        let mut runtime = Runtime::new();
+        runtime.register_resource(
+            "example.unloaded",
+            "(ns example.unloaded) (def answer 42)",
+        );
+        runtime.eval_native("(def local-value 7)").unwrap();
+
+        assert_eq!(
+            runtime
+                .eval_native("(get (Env/namespace 'example.unloaded) :namespace/state)")
+                .unwrap(),
+            ":unloaded"
+        );
+        assert_eq!(runtime.eval_native("(Env/resolve 'example.unloaded/answer)").unwrap(), "nil");
+        assert!(runtime
+            .eval_native("(Env/vars)")
+            .unwrap()
+            .contains("local-value"));
+        assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");
+        assert_eq!(runtime.eval_native("example.unloaded/answer").unwrap_err().contains("unbound"), true);
+    }
+
+    #[test]
+    fn package_facade_uses_the_existing_host_capability_boundary() {
+        let mut runtime = Runtime::new();
+        let lock = format!(
+            "{{:lock/format \"0.0.0-alpha\" :packages {{\"hara:example/package\" {{:version \"1.0.0\" :tap \"hara\" :registry-commit \"{}\" :identity-revision \"{}\" :archive-sha256 \"sha256:{}\" :namespaces [example.unloaded]}}}}}}",
+            "a".repeat(40),
+            "b".repeat(40),
+            "c".repeat(64)
+        );
+        runtime.register_package_lock(&lock).unwrap();
+        runtime.install_native_host_handler(Rc::new(|service, operation, arguments| {
+            assert_eq!(service, "package");
+            assert_eq!(operation, "ensure");
+            assert_eq!(arguments.len(), 1);
+            let promise = core::Promise::new();
+            promise.resolve(core::Value::Keyword("ready".into()));
+            Ok(core::Value::Promise(promise))
+        }));
+        assert_eq!(
+            runtime
+                .eval_native("(get (Package/find 'example.unloaded) :package/state)")
+                .unwrap(),
+            ":available"
+        );
+        assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");
+        let missing = runtime
+            .eval_native("(require 'example.unloaded)")
+            .unwrap_err();
+        assert!(missing.contains("package/not-installed"), "{missing}");
+        assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");
+        assert_eq!(
+            runtime
+                .eval_native("(deref (Package/ensure 'example.unloaded))")
+                .unwrap(),
+            ":ready"
+        );
     }
 
     #[cfg(feature = "evaluation-journal")]

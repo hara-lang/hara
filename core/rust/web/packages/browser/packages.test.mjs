@@ -28,27 +28,34 @@ async function fixture() {
     "src/demo/world.hal": source
   });
   const archiveDigest = await digest(archive);
+  const registryCommit = "a".repeat(40);
+  const identityRevision = "b".repeat(40);
   const lock = `{:lock/format \"0.0.0-alpha\" :packages {"demo:world" `
-    + `{:packages/url "https://packages.example/demo.harp" `
-    + `:release-url "https://github.example/demo.harp" `
-    + `:size ${archive.byteLength} :harp-sha256 "${archiveDigest}"}}}`;
-  return { archive, lock };
+    + `{:version "1.0.0" :tap "hara" :registry-commit "${registryCommit}" `
+    + `:identity-revision "${identityRevision}" :archive-sha256 "${archiveDigest}" `
+    + `:namespaces [demo.world]}}}`;
+  const registry = `{:registry/packages {"demo:world" {"1.0.0" `
+    + `{:archive-sha256 "${archiveDigest}" :identity-revision "${identityRevision}"}}}}`;
+  return { archive, lock, registry, registryCommit, archiveDigest };
 }
 
-test("format-2 locks prefer packages.* and verify HARP resources", async () => {
-  const { archive, lock } = await fixture();
+test("exact locks use the pinned registry and digest object endpoint", async () => {
+  const { archive, lock, registry, registryCommit, archiveDigest } = await fixture();
   const requested = [];
   const resources = await loadLockedPackageResources(lock, async (url) => {
     requested.push(url);
-    return new Response(archive);
-  });
+    return new Response(url.includes("/v1/registry") ? registry : archive);
+  }, "https://packages.example");
 
-  assert.deepEqual(requested, ["https://packages.example/demo.harp"]);
+  assert.deepEqual(requested, [
+    `https://packages.example/v1/registry?ref=${registryCommit}`,
+    `https://packages.example/objects/sha256/${archiveDigest.slice(7)}`
+  ]);
   assert.equal(resources["demo.world"], "(ns demo.world) (def world {:title \"Demo\"})");
 });
 
 test("installation is atomic when a locked archive fails verification", async () => {
-  const { archive, lock } = await fixture();
+  const { archive, lock, registry } = await fixture();
   const registered = [];
   const runtime = {
     registerResource(namespace, source) {
@@ -59,7 +66,10 @@ test("installation is atomic when a locked archive fails verification", async ()
   corrupt[corrupt.length - 1] ^= 1;
 
   await assert.rejects(
-    installLockedPackages(runtime, lock, { fetch: async () => new Response(corrupt) }),
+    installLockedPackages(runtime, lock, {
+      origin: "https://packages.example",
+      fetch: async (url) => new Response(url.includes("/v1/registry") ? registry : corrupt)
+    }),
     /digest mismatch/
   );
   assert.deepEqual(registered, []);

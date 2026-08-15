@@ -147,6 +147,8 @@ public final class HaraContext {
           Map.entry("Numbers", java.util.List.of("long", "double")),
           Map.entry("Bits", java.util.List.of("and", "or", "xor", "not", "shift-left", "shift-right")),
           Map.entry("Kernel", java.util.List.of("session-create", "session-close", "session-list", "session-info", "session-eval", "session-namespace", "session-complete", "resource-register", "resource-remove", "resource-list", "filesystem-create", "filesystem-attach", "filesystem-detach", "filesystem-info", "filesystem-close", "capabilities")),
+          Map.entry("Env", java.util.List.of("snapshot", "vars", "namespaces", "namespace", "resolve")),
+          Map.entry("Package", java.util.List.of("catalog", "find", "ensure", "state")),
           Map.entry("String", java.util.List.of("length", "blank?", "includes?", "starts-with?", "ends-with?", "char-at", "slice", "index-of", "last-index-of", "join", "split", "split-lines", "repeat", "replace", "replace-first", "trim", "trim-left", "trim-right", "upper", "lower", "capitalize", "decapitalize", "pad-left", "pad-right", "reverse", "encode-utf8", "decode-utf8", "to-fixed")),
           Map.entry("Bytes", java.util.List.of("new", "instance?", "count", "get", "set", "copy", "slice", "u8", "s8")),
           Map.entry(
@@ -288,6 +290,7 @@ public final class HaraContext {
         });
     installProjectMacro();
     installNativeLibraries();
+    installEnvironmentLibraries();
     collectBuiltins(FOUNDATION_NAMESPACE, () -> libraryLoader.installEagerJava(this));
     hideIteratorImplementationBindings();
     for (String namespace : bytecodeLibrary.namespaces()) {
@@ -536,6 +539,93 @@ public final class HaraContext {
     }
     namespaceStates.put(namespaceName, NamespaceLoadState.LOADED);
     namespaceFailures.remove(namespaceName);
+  }
+
+  private void installEnvironmentLibraries() {
+    HaraNamespace env = namespace("std.native.Env");
+    env.define("snapshot", new VariadicBuiltin("std.native.Env/snapshot", this::environmentSnapshot));
+    env.define("vars", new VariadicBuiltin("std.native.Env/vars", this::environmentVars));
+    env.define("namespaces", new VariadicBuiltin("std.native.Env/namespaces", this::environmentNamespaces));
+    env.define("namespace", new UnaryBuiltin("std.native.Env/namespace", this::environmentNamespace));
+    env.define("resolve", new UnaryBuiltin("std.native.Env/resolve", this::environmentResolve));
+    namespaceStates.put("std.native.Env", NamespaceLoadState.LOADED);
+
+    HaraNamespace packages = namespace("std.native.Package");
+    packages.define("catalog", new VariadicBuiltin("std.native.Package/catalog", values -> packageUnsupported("catalog", values, 0)));
+    packages.define("find", new VariadicBuiltin("std.native.Package/find", values -> packageUnsupported("find", values, 1)));
+    packages.define("ensure", new VariadicBuiltin("std.native.Package/ensure", values -> packageUnsupported("ensure", values, 1)));
+    packages.define("state", new VariadicBuiltin("std.native.Package/state", values -> packageUnsupported("state", values, 1)));
+    namespaceStates.put("std.native.Package", NamespaceLoadState.LOADED);
+  }
+
+  private Object packageUnsupported(String operation, Object[] values, int arity) {
+    if (values.length != arity) {
+      throw new HaraException("std.native.Package/" + operation + " expects " + arity + " arguments");
+    }
+    throw new HaraException("package/unsupported: Package capability provider is unavailable");
+  }
+
+  private Object environmentSnapshot(Object[] values) {
+    if (values.length != 0) throw new HaraException("std.native.Env/snapshot expects no arguments");
+    return hara.lang.data.OrderedMap.Standard.from(
+        null,
+        Keyword.create("env/current"), Symbol.create(currentNamespace.name()),
+        Keyword.create("env/namespaces"), environmentNamespaces(new Object[0]));
+  }
+
+  private Object environmentNamespaces(Object[] values) {
+    if (values.length != 0) throw new HaraException("std.native.Env/namespaces expects no arguments");
+    java.util.TreeSet<String> names = new java.util.TreeSet<>(namespaces.keySet());
+    names.addAll(namespaceStates.keySet());
+    ArrayList<Object> output = new ArrayList<>();
+    for (String name : names) output.add(environmentNamespaceDescriptor(name));
+    return hara.lang.data.Vector.Standard.from(null, output.toArray());
+  }
+
+  private Object environmentNamespace(Object value) {
+    String name = namespaceIdentifier(value, "std.native.Env/namespace");
+    if (!namespaces.containsKey(name) && !namespaceStates.containsKey(name)) return null;
+    return environmentNamespaceDescriptor(name);
+  }
+
+  private Object environmentNamespaceDescriptor(String name) {
+    NamespaceLoadState state = namespaceStates.get(name);
+    if (state == null && namespaces.containsKey(name)) state = NamespaceLoadState.LOADED;
+    String origin = name.startsWith("std.native") ? "embedded" : namespaces.containsKey(name) ? "runtime" : "registered";
+    return hara.lang.data.OrderedMap.Standard.from(
+        null,
+        Keyword.create("namespace/name"), Symbol.create(name),
+        Keyword.create("namespace/state"), Keyword.create(state == null ? "unknown" : state.keyword),
+        Keyword.create("namespace/revision"), modules.values().stream()
+            .filter(module -> name.equals(module.namespace))
+            .mapToLong(module -> module.revision)
+            .max()
+            .orElse(0L),
+        Keyword.create("namespace/origin"), Keyword.create(origin));
+  }
+
+  private Object environmentVars(Object[] values) {
+    if (values.length > 1) throw new HaraException("std.native.Env/vars expects zero or one namespace");
+    String name = values.length == 0 ? currentNamespace.name() : namespaceIdentifier(values[0], "std.native.Env/vars");
+    HaraNamespace target = namespaces.get(name);
+    if (target == null) throw new HaraException("namespace/not-found: " + name);
+    ArrayList<Object> entries = new ArrayList<>();
+    for (String symbol : target.sortedSymbolNames()) {
+      HaraVar variable = target.lookup(symbol);
+      if (name.equals(variable.namespaceName())) {
+        entries.add(Symbol.create(symbol));
+        entries.add(variable);
+      }
+    }
+    return hara.lang.data.OrderedMap.Standard.from(null, entries.toArray());
+  }
+
+  private Object environmentResolve(Object value) {
+    Object raw = HaraBox.unwrap(value);
+    if (!(raw instanceof Symbol symbol)) throw new HaraException("std.native.Env/resolve expects a symbol");
+    String owner = symbol.getNamespace();
+    HaraNamespace target = owner == null ? currentNamespace : namespaces.get(owner);
+    return target == null ? null : target.lookup(symbol.getName());
   }
 
   private void registerBuiltin(

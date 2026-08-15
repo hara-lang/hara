@@ -27,16 +27,7 @@ async function sha256(bytes) {
   return `sha256:${hex(new Uint8Array(digest))}`;
 }
 
-function distributionUrl(entry) {
-  return entry["distribution/url"]
-    ?? entry["packages/url"]
-    ?? entry["release-url"]
-    ?? entry.url;
-}
-
-function distributionDigest(entry) {
-  return entry["harp-sha256"] ?? entry.sha256;
-}
+const defaultPackagesOrigin = "https://packages.hara-lang.org";
 
 function safeArchivePath(path) {
   return path
@@ -46,13 +37,13 @@ function safeArchivePath(path) {
 }
 
 /**
- * Downloads and verifies every HARP archive in a format-2 project lock.
- * `packages.*` distribution URLs are preferred, while immutable release URLs
- * remain valid fallbacks. Nothing is registered until all packages verify.
+ * Downloads and verifies every HARP archive through the commit-pinned Packages
+ * registry. Nothing is registered until all packages verify.
  */
 export async function loadLockedPackageResources(
   lockSource,
-  request = (...args) => globalThis.fetch(...args)
+  request = (...args) => globalThis.fetch(...args),
+  origin = defaultPackagesOrigin
 ) {
   const lock = parseEdn(lockSource);
   if (lock["lock/format"] !== "0.0.0-alpha") {
@@ -61,13 +52,28 @@ export async function loadLockedPackageResources(
 
   const staged = {};
   for (const [coordinate, entry] of Object.entries(lock.packages ?? {})) {
-    const url = distributionUrl(entry);
-    const digest = distributionDigest(entry);
-    if (!url || !digest) {
-      throw new Error(`Locked package ${coordinate} is missing its URL or SHA-256`);
+    const registryCommit = entry["registry-commit"];
+    const identityRevision = entry["identity-revision"];
+    const digest = entry["archive-sha256"];
+    const version = entry.version;
+    if (!/^[0-9a-f]{40}$/.test(registryCommit ?? "")
+        || !/^[0-9a-f]{40}$/.test(identityRevision ?? "")
+        || !/^sha256:[0-9a-f]{64}$/.test(digest ?? "")
+        || typeof version !== "string") {
+      throw new Error(`Locked package ${coordinate} has an incomplete exact descriptor`);
     }
-
-    const response = await request(url);
+    const base = String(origin).replace(/\/$/, "");
+    const registryResponse = await request(`${base}/v1/registry?ref=${registryCommit}`);
+    if (!registryResponse.ok) {
+      throw new Error(`Locked package ${coordinate} registry failed: ${registryResponse.status}`);
+    }
+    const registry = parseEdn(await registryResponse.text());
+    const release = registry["registry/packages"]?.[coordinate]?.[version];
+    if (release?.["archive-sha256"] !== digest
+        || release?.["identity-revision"] !== identityRevision) {
+      throw new Error(`Locked package ${coordinate} registry mismatch`);
+    }
+    const response = await request(`${base}/objects/sha256/${digest.slice(7)}`);
     if (!response.ok) {
       throw new Error(`Locked package ${coordinate} failed: ${response.status}`);
     }
@@ -115,7 +121,12 @@ export async function loadLockedPackageResources(
 
 /** Verifies a lock completely, then atomically exposes its HAL resources. */
 export async function installLockedPackages(runtime, lockSource, options = {}) {
-  const resources = await loadLockedPackageResources(lockSource, options.fetch);
+  runtime.raw?.registerPackageLock?.(lockSource);
+  const resources = await loadLockedPackageResources(
+    lockSource,
+    options.fetch,
+    options.origin ?? defaultPackagesOrigin
+  );
   for (const [namespace, source] of Object.entries(resources)) {
     runtime.registerResource(namespace, source);
   }
