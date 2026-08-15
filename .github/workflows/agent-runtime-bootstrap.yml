@@ -49,8 +49,30 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Test Rust runtime
-        run: cargo test --manifest-path core/rust/Cargo.toml --lib
+      - name: Capture Rust test diagnostics
+        shell: bash
+        run: |
+          set +e
+          cargo test --manifest-path core/rust/Cargo.toml --lib > /tmp/cargo-test.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/cargo-test.log
+          printf '%s\n' "$status" > /tmp/cargo-test.status
+
+      - name: Upload Rust test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hara-rust-diagnostics-${{ github.sha }}
+          path: |
+            /tmp/cargo-test.log
+            /tmp/cargo-test.status
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Require Rust tests
+        shell: bash
+        run: test "$(cat /tmp/cargo-test.status)" -eq 0
 
       - name: Build Rust CLI
         run: cargo build --manifest-path core/rust/Cargo.toml --release --bin hara
