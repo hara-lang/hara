@@ -76,6 +76,25 @@ impl ResultValue {
         self.status == ResultStatus::Error
     }
 
+    pub fn is_timeout(&self) -> bool {
+        if !self.is_error() {
+            return false;
+        }
+        let Some(error) = &self.error else {
+            return false;
+        };
+        let code_key = Value::Keyword(Keyword::from("code"));
+        map_entries(error.data.as_ref()).is_some_and(|entries| {
+            entries.into_iter().any(|(key, value)| {
+                key == code_key
+                    && matches!(
+                        value,
+                        Value::Keyword(code) if code.as_str() == "result/timeout"
+                    )
+            })
+        })
+    }
+
     pub fn with_context(&self, additional: Value) -> Result<Self, String> {
         let additional = validate_context(additional)?;
         let mut merged = PMap::new();
@@ -549,6 +568,7 @@ mod tests {
             panic!("expected Result");
         };
         assert!(captured.is_error());
+        assert!(!captured.is_timeout());
         assert!(matches!(
             captured.error_value(),
             Value::ExceptionInfo(value) if Rc::ptr_eq(&value, &error)
@@ -565,6 +585,7 @@ mod tests {
             panic!("expected Result");
         };
         assert!(timeout.is_error());
+        assert!(timeout.is_timeout());
         let Value::ExceptionInfo(timeout_error) = timeout.error_value() else {
             panic!("expected timeout Error");
         };
