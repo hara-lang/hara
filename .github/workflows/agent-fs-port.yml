@@ -122,7 +122,7 @@ jobs:
           done
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '21'
           distribution: temurin
@@ -132,11 +132,29 @@ jobs:
       - name: Test JVM filesystem provider and portable facade
         shell: bash
         run: |
-          set -euo pipefail
+          set +e
           cd hara/core
-          mvn -B -Ptruffle --file java/pom.xml \
+          mvn -q -B -Ptruffle --file java/pom.xml \
             -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
-            test
+            test > "$RUNNER_TEMP/maven-filesystem.log" 2>&1
+          status=$?
+          if [[ $status -ne 0 ]]; then
+            echo '--- Maven filesystem failure summary ---'
+            grep -E '^\[ERROR\]|COMPILATION ERROR|Tests run:|Failures:|Errors:' \
+              "$RUNNER_TEMP/maven-filesystem.log" | tail -n 200 || true
+            echo '--- Maven filesystem failure tail ---'
+            tail -n 160 "$RUNNER_TEMP/maven-filesystem.log"
+          fi
+          exit $status
+
+      - name: Upload Maven filesystem diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-filesystem-diagnostics
+          path: ${{ runner.temp }}/maven-filesystem.log
+          if-no-files-found: ignore
+          retention-days: 1
 
       - name: Run focused portable path tests
         shell: bash
@@ -164,8 +182,7 @@ jobs:
             core/java/src/main/java/hara/truffle/HaraLogicalPath.java \
             core/java/src/main/java/hara/truffle/HaraMountedFileSystem.java \
             core/java/src/test/java/hara/truffle/HaraFileProviderTest.java \
-            core/java/src/test/java/hara/truffle/HaraLogicalPathTest.java \
-            core/java/src/test/java/hara/truffle/StdFsTest.java
+            core/java/src/test/java/hara/truffle/HaraLogicalPathTest.java
           git diff --cached --check
           git commit -m "Improve capability-backed std.native.File providers"
           git push --force origin HEAD:refs/heads/agent/std-native-file-provider
@@ -184,7 +201,8 @@ jobs:
             core/rust/hal-src/std/fs.hal \
             core/rust/hal-src/std/fs/path.hal \
             core/rust/hal-src/std/fs/walk.hal \
-            core/rust/standard-library.namespaces
+            core/rust/standard-library.namespaces \
+            core/java/src/test/java/hara/truffle/StdFsTest.java
           git diff --cached --check
           git commit -m "Port the portable std.fs core"
           test -z "$(git status --porcelain)"
