@@ -231,9 +231,40 @@ jobs:
         run: |
           set -euo pipefail
           cd hara/core
+
+          mvn -B -Ptruffle --file java/pom.xml process-test-resources
+          for resource in \
+            java/target/classes/std/fs.hal \
+            java/target/classes/std/fs/path.hal \
+            java/target/classes/std/fs/walk.hal; do
+            if [[ ! -s "$resource" ]]; then
+              echo "::error file=$resource::Portable filesystem source was not packaged for JVM tests"
+              exit 1
+            fi
+          done
+          find java/target/classes/std/fs* -type f -maxdepth 3 -print | sort
+
+          set +e
+          log="$RUNNER_TEMP/std-fs-maven.log"
           mvn -B -Ptruffle --file java/pom.xml \
             -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
-            test
+            test >"$log" 2>&1
+          status=$?
+          set -e
+          if [[ "$status" -ne 0 ]]; then
+            echo "::group::Focused JVM filesystem failure summary"
+            grep -E 'Tests run:|Failures:|Errors:|<<< FAILURE!|Cannot load namespace|No source found|Caused by:|AssertionFailedError|BUILD FAILURE|\[ERROR\]' "$log" \
+              | tail -n 240 || true
+            echo "::endgroup::"
+            echo "::group::Surefire reports"
+            find java/target/surefire-reports -maxdepth 1 -type f \
+              \( -name 'TEST-*.xml' -o -name '*.txt' \) \
+              -print -exec tail -n 220 {} \; || true
+            echo "::endgroup::"
+            echo "::error::Focused JVM std.fs integration failed; see grouped Maven and Surefire output"
+            exit "$status"
+          fi
+          tail -n 100 "$log"
 
       - name: Publish clean portable std.fs branch
         shell: bash
