@@ -1,19 +1,63 @@
 (ns std.foundation.native-method-conformance)
 
+(def native-method-fixtures
+  {'Regex/instance?
+   [true (fn [] (Regex/instance? (Regex/compile "a+")))]
+
+   'Regex/compile
+   [true (fn [] (Regex/instance? (Regex/compile "a+")))]
+
+   'Regex/pattern
+   ["a+" (fn [] (Regex/pattern (Regex/compile "a+")))]
+
+   'Regex/find?
+   [true (fn [] (Regex/find? (Regex/compile "a+") "caa"))]
+
+   'Regex/find
+   ["aa" (fn [] (Regex/find (Regex/compile "a+") "caa"))]
+
+   'Regex/matches
+   [[true false true]
+    (fn []
+      [(Regex/matches (Regex/compile "a+") "aa")
+       (Regex/matches (Regex/compile "a+") "caa")
+       (Regex/matches (Regex/compile "a|abc") "abc")])]
+
+   'Regex/replace
+   ["12:x" (fn []
+              (Regex/replace
+                (Regex/compile "([a-z]+)-([0-9]+)")
+                "x-12"
+                "$2:$1"))]
+
+   'Regex/split
+   [["a" "b" "c"]
+    (fn [] (Regex/split (Regex/compile ",+") "a,,b,c"))]})
+
 (defn native-method-result
-  "Runs a direct canonical native method call and classifies only missing dispatch as failure."
+  "Runs direct canonical native calls, with concrete Regex cases and missing-dispatch classification."
   [method thunk]
-  (try
-    (do
-      (thunk)
-      {:method method :pass true})
-    (catch Throwable error
-      (let [message (ex-message error)]
-        {:method method
-         :pass
-         (if (std.foundation.string/includes? message "nbound symbol")
-           false
-           (if (std.foundation.string/includes? message "unavailable/")
+  (let [fixture (get native-method-fixtures method)]
+    (try
+      (if fixture
+        (let [expected (first fixture)
+              actual ((second fixture))]
+          {:method method
+           :pass (= expected actual)
+           :expected expected
+           :actual actual})
+        (do
+          (thunk)
+          {:method method :pass true}))
+      (catch Throwable error
+        (let [message (ex-message error)]
+          {:method method
+           :pass
+           (if fixture
              false
-             true))
-         :error message}))))
+             (if (std.foundation.string/includes? message "nbound symbol")
+               false
+               (if (std.foundation.string/includes? message "unavailable/")
+                 false
+                 true)))
+           :error message})))))
