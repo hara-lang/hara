@@ -35,6 +35,16 @@ jobs:
             git clone --depth 1 https://github.com/hara-lang/hara-specs-registry.git ../hara-specs-registry
           fi
 
+      - name: Record the untouched focused HAL baseline
+        id: baseline_hal
+        run: |
+          set +e
+          ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_test.hal
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "untouched foundation_test.hal exit status: $status"
+          exit 0
+
       - name: Validate patch scripts
         run: python3 -m py_compile .github/scripts/patch_result_runtime.py .github/scripts/patch_result_tests_hal.py
 
@@ -101,19 +111,68 @@ jobs:
           cargo check --manifest-path core/rust/Cargo.toml --lib
           mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
 
-      - name: Run pre-write focused HAL test
-        run: ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_test.hal
+      - name: Re-run the focused HAL baseline before writing source
+        id: patched_hal
+        run: |
+          set +e
+          ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_test.hal
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "runtime-patched foundation_test.hal exit status: $status"
+          exit 0
 
-      - name: Evaluate complete candidate in a fresh native Hara process
+      - name: Reject a new focused HAL regression
+        env:
+          BASELINE_STATUS: ${{ steps.baseline_hal.outputs.status }}
+          PATCHED_STATUS: ${{ steps.patched_hal.outputs.status }}
+        run: |
+          if [ "$BASELINE_STATUS" = 0 ] && [ "$PATCHED_STATUS" != 0 ]; then
+            echo "Result runtime patch introduced a new foundation_test.hal failure"
+            exit 1
+          fi
+          if [ "$BASELINE_STATUS" != 0 ]; then
+            echo "foundation_test.hal already fails on the untouched branch (status $BASELINE_STATUS); continuing with isolated Result proofs"
+          fi
+
+      - name: Evaluate the complete candidate and focused res-* proof in a fresh native Hara process
         run: |
           python3 .github/scripts/patch_result_tests_hal.py candidate
-          ./core/hara eval "$(cat core/target/foundation-result-candidate.hal)"
+          candidate="$(cat core/target/foundation-result-candidate.hal)"
+          ./core/hara eval "$candidate"
+          output="$(./core/hara eval "$candidate
+          (let [success (res-success 42 {:source :candidate})
+                nested (res-success 7)
+                synchronized (res-synchronize (atom nested))]
+            (and (res? success)
+                 (res-success? success)
+                 (= :success (res-status success))
+                 (= 42 (res-data success))
+                 (= :candidate (get (res-context success) :source))
+                 (res-success? synchronized)
+                 (res? (res-data synchronized))))")"
+          test "$output" = true
 
       - name: Apply res-* facade and focused tests
         run: python3 .github/scripts/patch_result_tests_hal.py apply
 
-      - name: Validate written HAL source in a fresh native Hara process
-        run: ./core/hara eval "$(cat core/lib/src/std/foundation.hal)"
+      - name: Validate written HAL source and res-* proof in another fresh native Hara process
+        run: |
+          source="$(cat core/lib/src/std/foundation.hal)"
+          ./core/hara eval "$source"
+          output="$(./core/hara eval "$source
+          (let [success (res-success 42 {:source :written})
+                updated (res-with-context success {:source :updated})
+                nested (res-success 7)
+                synchronized (res-synchronize (atom nested))]
+            (and (res? success)
+                 (res-success? success)
+                 (not (res-error? success))
+                 (= :success (res-status success))
+                 (= 42 (res-data success))
+                 (= :updated (get (res-context updated) :source))
+                 (res-success? synchronized)
+                 (res? (res-data synchronized))))")"
+          test "$output" = true
 
       - name: Validate canonical and mirrored HAL parity
         run: cmp core/lib/src/std/foundation.hal core/rust/hal-src/std/foundation.hal
@@ -127,8 +186,26 @@ jobs:
       - name: Run focused Java Result tests
         run: mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HaraResultTest test
 
-      - name: Repeat focused HAL test after write
-        run: ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_test.hal
+      - name: Repeat the broad focused HAL harness after writing
+        id: final_hal
+        run: |
+          set +e
+          ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_test.hal
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "written foundation_test.hal exit status: $status"
+          exit 0
+
+      - name: Check broad HAL harness against its untouched baseline
+        env:
+          BASELINE_STATUS: ${{ steps.baseline_hal.outputs.status }}
+          FINAL_STATUS: ${{ steps.final_hal.outputs.status }}
+        run: |
+          if [ "$BASELINE_STATUS" = 0 ]; then
+            test "$FINAL_STATUS" = 0
+          else
+            echo "untouched branch status=$BASELINE_STATUS; written branch status=$FINAL_STATUS"
+          fi
 
       - name: Check patch and commit implementation
         run: |
