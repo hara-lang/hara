@@ -1,0 +1,47 @@
+name: Agent runtime bootstrap
+
+on:
+  push:
+    branches:
+      - agent/shape-preserving-foundation-collections
+    paths:
+      - .github/workflows/agent-runtime-bootstrap.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: false
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build Truffle runtime jar
+        run: mvn -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust CLI
+        run: cargo build --manifest-path core/rust/Cargo.toml --release --bin hara
+
+      - name: Upload runtime bootstrap
+        uses: actions/upload-artifact@v4
+        with:
+          name: hara-runtime-bootstrap-${{ github.sha }}
+          path: |
+            core/java/target/hara-truffle.jar
+            core/rust/target/release/hara
+          if-no-files-found: error
+          retention-days: 1
