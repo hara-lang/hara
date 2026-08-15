@@ -1,0 +1,105 @@
+name: Diagnose portable std.fs JVM tranche
+
+on:
+  push:
+    branches:
+      - agent/650-portable-fs-build
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-650-portable-fs-jvm-diagnostic
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: 28bb0a83083b922344d478b2f5777ea1a8b1cbf1
+          path: hara
+          fetch-depth: 0
+
+      - name: Checkout build materializer
+        uses: actions/checkout@v4
+        with:
+          ref: agent/650-portable-fs-build
+          path: builder
+          fetch-depth: 1
+
+      - name: Checkout specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: main
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Materialize portable std.fs tranche
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -s ../hara-specs-registry hara/hara-specs-registry
+          cd hara
+          git fetch origin agent/fs-materialized-snapshot
+          git checkout origin/agent/fs-materialized-snapshot -- \
+            core/lib/src/std/fs.hal \
+            core/lib/src/std/fs/walk.hal \
+            core/java/src/test/java/hara/truffle/StdFsTest.java
+          python3 ../builder/scripts/agent-650-materialize-portable-fs.py
+          python3 ../builder/scripts/agent-650-repair-jvm-std-fs-test.py
+          git diff --check
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: hara/core/java/pom.xml
+
+      - name: Run JVM suite and publish concise diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara/core
+          mvn -B -Ptruffle --file java/pom.xml process-test-resources
+
+          set +e
+          mvn -B -Ptruffle --file java/pom.xml \
+            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
+            test >"$RUNNER_TEMP/std-fs-maven.log" 2>&1
+          status=$?
+          set -e
+
+          {
+            echo '=== focused Maven and Surefire summary ==='
+            grep -E 'Tests run:|Failures:|Errors:|<<< FAILURE!|ComparisonFailure|PolyglotException|AssertionError|AssertionFailedError|expected:|but was:|Unable to read|Unmatched delimiter|Caused by:|BUILD FAILURE|\[ERROR\]' \
+              "$RUNNER_TEMP/std-fs-maven.log" | tail -n 320 || true
+            echo
+            echo '=== hara.truffle.StdFsTest.txt ==='
+            cat java/target/surefire-reports/hara.truffle.StdFsTest.txt 2>/dev/null || \
+              echo 'StdFsTest Surefire text report was not generated.'
+          } >"$RUNNER_TEMP/std-fs-jvm-failure.txt"
+
+          cp java/src/test/java/hara/truffle/StdFsTest.java \
+            "$RUNNER_TEMP/StdFsTest.java"
+
+          cd ../..
+          rm hara-specs-registry
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout --orphan agent-650-portable-fs-jvm-diagnostic
+          git rm -rf . || true
+          git clean -fdx
+          mkdir -p diagnostics
+          cp "$RUNNER_TEMP/std-fs-jvm-failure.txt" diagnostics/
+          cp "$RUNNER_TEMP/StdFsTest.java" diagnostics/
+          git add diagnostics
+          git commit -m 'Capture portable std.fs JVM diagnostics'
+          git push --force origin HEAD:refs/heads/agent/650-portable-fs-jvm-diagnostic
+          exit "$status"
