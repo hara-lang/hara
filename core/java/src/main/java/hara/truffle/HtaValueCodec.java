@@ -58,6 +58,8 @@ public final class HtaValueCodec {
   private static final int VAR_REF = 35;
   private static final int DEQUE = 36;
   private static final int PRIORITY_MAP = 37;
+  private static final String RESULT_STRUCT_NAME = "hara/Result";
+  private static final String[] RESULT_STRUCT_FIELDS = {"status", "data", "error", "context"};
 
   private HtaValueCodec() {}
 
@@ -143,6 +145,17 @@ public final class HtaValueCodec {
       writeText(output, handle.owner());
       writeText(output, handle.type());
       writeLong(output, handle.id());
+    } else if (value instanceof HaraResult result) {
+      output.write(STRUCT);
+      write(output, RESULT_STRUCT_NAME, depth + 1);
+      output.write(VECTOR);
+      writeCollection(output, java.util.List.of(RESULT_STRUCT_FIELDS), depth + 1);
+      output.write(VECTOR);
+      writeCollection(
+          output,
+          java.util.Arrays.asList(
+              result.status(), result.data(), result.errorValue(), result.transportContext()),
+          depth + 1);
     } else if (value instanceof HaraMutable || value instanceof HaraMutableType) {
       throw new HaraException(
           "hta/value-unsupported: mutable values are not serializable; use (into {} value)");
@@ -443,7 +456,35 @@ public final class HtaValueCodec {
         }
         fields[index] = (String) fieldObjects[index];
       }
+      if (RESULT_STRUCT_NAME.equals(nameValue)
+          && java.util.Arrays.equals(fields, RESULT_STRUCT_FIELDS)) {
+        return result(members);
+      }
       return new HaraStruct(new HaraType((String) nameValue, fields), members);
+    }
+
+    private Object result(Object[] members) {
+      Object status = HaraBox.unwrap(members[0]);
+      Object data = nullable(members[1]);
+      Object error = nullable(members[2]);
+      Object context = HaraPersistentValues.normalize(members[3]);
+      if (Keyword.create("success").equals(status)) {
+        if (error != null) throw malformed("success Result contains an error");
+        return HaraResult.success(data, context);
+      }
+      if (Keyword.create("error").equals(status)) {
+        if (data != null) throw malformed("error Result contains success data");
+        if (!(error instanceof hara.lang.base.Ex.Info)) {
+          throw malformed("error Result lacks a native Error");
+        }
+        return HaraResult.error(error, context);
+      }
+      throw malformed("invalid Result status");
+    }
+
+    private Object nullable(Object value) {
+      Object raw = HaraBox.unwrap(value);
+      return raw == HaraNull.SINGLETON ? null : raw;
     }
 
     private Object[] sequenceValues(Object value, String kind) {

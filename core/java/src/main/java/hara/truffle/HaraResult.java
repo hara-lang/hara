@@ -29,6 +29,7 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
   private static final Object TIMEOUT = new Object();
   private static final Keyword TIMEOUT_KEY = Keyword.create("timeout");
   private static final Keyword CONTEXT_KEY = Keyword.create("context");
+  private static final Keyword DISPLAY_KEY = Keyword.create("display");
 
   private final Status status;
   private final Object data;
@@ -227,6 +228,18 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
       merged = (IMapType) merged.assoc(entry.getKey(), entry.getValue());
     }
     return new HaraResult(status, data, error, (IMapType<Object, Object>) merged);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  IMapType<Object, Object> transportContext() {
+    IMapType portable = EMPTY_CONTEXT;
+    for (Object entryValue : context) {
+      Entry entry = (Entry) entryValue;
+      if (!Eq.eq(entry.getKey(), DISPLAY_KEY)) {
+        portable = (IMapType) portable.assoc(entry.getKey(), entry.getValue());
+      }
+    }
+    return (IMapType<Object, Object>) portable;
   }
 
   @Override
