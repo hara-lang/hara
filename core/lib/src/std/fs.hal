@@ -138,9 +138,9 @@
     (delete-node value)))
 
 (defn delete
-  "Deletes a file, symlink, or empty directory. With :recursive? true,
-   directories are deleted in post-order and the promise resolves to the
-   deleted canonical paths."
+  "Deletes a file, symlink, or empty directory. A simple deletion resolves to
+   the canonical path. With :recursive? true, directories are deleted in
+   post-order and the promise resolves to the deleted canonical paths."
   ([value]
    (delete value {}))
   ([value options]
@@ -153,16 +153,18 @@
                   :file/operation :delete
                   :file/path value
                   :file/target nil}))
-       (promise/then
-        (exists? value)
-        (fn [present]
-          (if present
-            (delete-tree value options)
-            (if (:missing-ok? options)
-              (promise/from [])
-              (promise/then
-               (File/delete value {:missing-ok? false})
-               (fn [deleted-path] [deleted-path]))))))))))
+       (if (:recursive? options)
+         (promise/then
+          (exists? value)
+          (fn [present]
+            (if present
+              (delete-tree value options)
+              (if (:missing-ok? options)
+                (promise/from [])
+                (promise/then
+                 (File/delete value {:missing-ok? false})
+                 (fn [deleted-path] [deleted-path]))))))
+         (File/delete value {:missing-ok? (:missing-ok? options)}))))))
 
 (defn- prepare-directory-target
   [target options]
