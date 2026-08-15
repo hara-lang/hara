@@ -99,7 +99,43 @@ jobs:
           )
           if text.count(old) != 1:
               raise SystemExit(f'expected one native_equal import, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+
+          old_context = (
+              '        assert_eq!(\n'
+              '            super::super::map_value(&updated.context, &Value::Keyword(Keyword::from("source"))),\n'
+              '            Some(&Value::String("right".into()))\n'
+              '        );\n'
+          )
+          new_context = (
+              '        let source = super::super::map_value(\n'
+              '            &updated.context,\n'
+              '            &Value::Keyword(Keyword::from("source")),\n'
+              '        )\n'
+              '        .expect("source context");\n'
+              '        assert!(matches!(source, Value::String(value) if value.as_str() == "right"));\n'
+          )
+          if text.count(old_context) != 1:
+              raise SystemExit(f'expected one Result context assertion, found {text.count(old_context)}')
+          text = text.replace(old_context, new_context, 1)
+
+          old_error = (
+              '        assert!(matches!(\n'
+              '            result.error_value(),\n'
+              '            Value::ExceptionInfo(ref preserved) if Rc::ptr_eq(preserved, &error)\n'
+              '        ));\n'
+          )
+          new_error = (
+              '        let preserved = match result.error_value() {\n'
+              '            Value::ExceptionInfo(preserved) => preserved,\n'
+              '            other => panic!("expected native Error, got {}", other.display()),\n'
+              '        };\n'
+              '        assert_eq!(preserved.message, error.message);\n'
+              '        assert_eq!(preserved.data.display(), error.data.display());\n'
+          )
+          if text.count(old_error) != 1:
+              raise SystemExit(f'expected one Result error identity assertion, found {text.count(old_error)}')
+          path.write_text(text.replace(old_error, new_error, 1))
           PY
 
       - name: Format Rust sources
@@ -112,7 +148,7 @@ jobs:
         run: cargo check --manifest-path core/rust/Cargo.toml --lib
 
       - name: Run focused Rust Result tests
-        run: cargo test --manifest-path core/rust/Cargo.toml native_result --lib
+        run: cargo test --manifest-path core/rust/Cargo.toml 'core::native_result::tests::' --lib
 
       - name: Run focused Java Result tests
         run: mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HaraResultTest test
