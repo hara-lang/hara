@@ -1,4 +1,4 @@
-package hara.verify.json;
+package hara.truffle;
 
 import hara.kernel.builtin.BuiltinStruct;
 import hara.lang.data.Keyword;
@@ -13,8 +13,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-/** The deliberately small semantic JSON model used by commitments and proof circuits. */
-public abstract class JsonValue {
+/** The deliberately small semantic model used by the strict JSON runtime library. */
+abstract class JsonValue {
   private JsonValue() {}
 
   public static final class Null extends JsonValue {

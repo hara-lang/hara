@@ -20,12 +20,6 @@ public interface NativeFlavorAccess {
         "The embedding runtime does not expose a mutable classpath");
   }
 
-  default Class<?> defineClass(byte[] bytecode) {
-    throw new NativeFlavorException(
-        NativeFlavorException.Kind.UNSUPPORTED,
-        "The embedding runtime does not support runtime class definition");
-  }
-
   static NativeFlavorAccess of(ClassLoader classLoader, Set<NativeCapability> capabilities) {
     Set<NativeCapability> grants = Set.copyOf(capabilities);
     return new NativeFlavorAccess() {

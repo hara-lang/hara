@@ -50,13 +50,6 @@ public class HaraJvmFlavorParityTest {
               () -> truffle.eval(HaraLanguage.ID, "(hara.native.jvm.classpath/paths)"));
       assertTrue(classpath.getMessage().contains("JVM classpath capability is not granted"));
 
-      PolyglotException compiler =
-          assertThrows(
-              PolyglotException.class,
-              () ->
-                  truffle.eval(
-                      HaraLanguage.ID, "(hara.native.jvm.compiler/compile '(fn [x] (+ x 2)))"));
-      assertTrue(compiler.getMessage().contains("JVM compilation capability is not granted"));
     }
   }
 

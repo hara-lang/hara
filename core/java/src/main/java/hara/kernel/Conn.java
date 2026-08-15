@@ -5,11 +5,11 @@ import java.io.IOException;
 import java.net.Socket;
 
 /**
- * @deprecated Use {@link std.lib.resp.RespConnection}. This compatibility type will be removed in
+ * @deprecated Use {@link hara.kernel.resp.RespConnection}. This compatibility type will be removed in
  *     a future release.
  */
 @Deprecated
-public class Conn extends std.lib.resp.RespConnection {
+public class Conn extends hara.kernel.resp.RespConnection {
   public Conn(Socket socket) throws IOException {
     super(socket);
   }

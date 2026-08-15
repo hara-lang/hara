@@ -307,11 +307,19 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "Base",
         &[
-            "reduce-in",
+            "list",
+            "vector",
+            "pair",
+            "tup",
+            "hash-map",
+            "hash-set",
+            "atom",
+            "pointer",
+            "symbol",
+            "keyword",
             "reduced",
             "reduced?",
             "unreduced",
-            "append-at-count",
         ],
     ),
     (
@@ -8171,84 +8179,56 @@ fn protocol_reduce(arguments: &[Value]) -> Result<Value, String> {
     reduce_iterator(function, accumulator, source.clone(), "IReduce/reduce")
 }
 
-fn foundation_protocol_descriptor(name: &str) -> Option<GuestProtocol> {
-    FOUNDATION_PROTOCOLS
-        .iter()
-        .find(|(candidate, _)| *candidate == name)
-        .map(|(protocol, methods)| GuestProtocol {
-            name: builtin_protocol_name(protocol),
-            methods: methods
-                .iter()
-                .map(|(method, arity)| ((*method).to_owned(), *arity))
-                .collect(),
-        })
-}
-
-fn satisfies_foundation_protocol(name: &str, value: &Value) -> bool {
-    foundation_protocol_descriptor(name)
-        .is_some_and(|protocol| protocol_satisfies(&protocol, value))
-}
-
-fn base_reduce_in(arguments: &[Value]) -> Result<Value, String> {
-    let [initial, Value::Function(function), source] = arguments else {
-        return Err("Base/reduce-in expects an initial value, function, and source".into());
-    };
-    let converted = satisfies_foundation_protocol("IToMutable", initial);
-    let accumulator = if converted {
-        protocol_call(
-            "std.protocol.itomutable/IToMutable",
-            "to-mutable",
-            std::slice::from_ref(initial),
-        )?
-    } else {
-        initial.clone()
-    };
-    let output = reduce_iterator(
-        function,
-        Some(accumulator),
-        source.clone(),
-        "Base/reduce-in",
-    )?;
-    if converted && satisfies_foundation_protocol("IToPersistent", &output) {
-        protocol_call(
-            "std.protocol.itopersistent/IToPersistent",
-            "to-persistent",
-            std::slice::from_ref(&output),
-        )
-    } else {
-        Ok(output)
-    }
-}
-
-fn base_append_at_count(arguments: &[Value]) -> Result<Value, String> {
-    let [collection, item] = arguments else {
-        return Err("Base/append-at-count expects a collection and value".into());
-    };
-    match collection {
-        Value::MutableCollection(collection) => {
-            let mut borrowed = collection.borrow_mut();
-            let mutable = borrowed
-                .as_mut()
-                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
-            if let MutableCollection::List(values) = mutable {
-                values.push_last(item.clone());
-                return Ok(Value::MutableCollection(collection.clone()));
-            }
-            drop(borrowed);
-            protocol_conj(arguments)
-        }
-        Value::List(values) => Ok(Value::List(values.push_last(item.clone()))),
-        _ => protocol_conj(arguments),
-    }
-}
-
 fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.Base/")
         .or_else(|| operation.strip_prefix("Base/"))
         .unwrap_or(operation);
     match operation {
-        "reduce-in" => base_reduce_in(values),
+        "list" => Ok(Value::List(values.to_vec().into())),
+        "vector" => Ok(Value::Vector(values.to_vec().into())),
+        "pair" => match values {
+            [left, right] => Ok(Value::Tuple(Box::new(PTuple::from_values(vec![
+                left.clone(),
+                right.clone(),
+            ])?))),
+            _ => Err("Base/pair expects two arguments".into()),
+        },
+        "tup" if values.len() <= 5 => Ok(Value::Tuple(Box::new(PTuple::from_values(
+            values.to_vec(),
+        )?))),
+        "tup" => Err("Base/tup expects at most 5 arguments".into()),
+        "hash-map" if values.len() % 2 == 0 => Ok(Value::Map(PMap::from_iter(
+            values
+                .chunks_exact(2)
+                .map(|pair| (pair[0].clone(), pair[1].clone())),
+        ))),
+        "hash-map" => Err("Base/hash-map expects an even number of arguments".into()),
+        "hash-set" => Ok(Value::Set(values.iter().cloned().collect())),
+        "atom" => match values {
+            [value] => Ok(Value::Atom(Box::new(RuntimeAtom::new(value.clone(), true)))),
+            _ => Err("Base/atom expects one value".into()),
+        },
+        "pointer" => match values {
+            [descriptor] => pointer_from_descriptor(descriptor.clone()),
+            _ => Err("Base/pointer expects one descriptor map".into()),
+        },
+        "symbol" => match values {
+            [Value::String(name)] => Ok(Value::Symbol(Symbol::parse(name))),
+            [Value::String(namespace), Value::String(name)] => {
+                Ok(Value::Symbol(Symbol::create(Some(namespace), name)))
+            }
+            _ => Err("Base/symbol expects a name or namespace and name".into()),
+        },
+        "keyword" => match values {
+            [Value::String(name)] => Keyword::parse(name)
+                .map(Value::Keyword)
+                .map_err(|error| format!("Base/keyword failed: {error}")),
+            [Value::String(namespace), Value::String(name)] => Keyword::create(Some(namespace), name)
+                .map(Value::Keyword)
+                .map_err(|error| format!("Base/keyword failed: {error}")),
+            _ => Err("Base/keyword expects a name or namespace and name".into()),
+        },
         "reduced" => match values {
             [value] => Ok(reduced_value(value.clone())),
             _ => Err("Base/reduced expects one value".into()),
@@ -8261,7 +8241,6 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [value] => Ok(unreduced_value(value.clone())),
             _ => Err("Base/unreduced expects one value".into()),
         },
-        "append-at-count" => base_append_at_count(values),
         _ => Err(format!("unknown Base operation: {operation}")),
     }
 }

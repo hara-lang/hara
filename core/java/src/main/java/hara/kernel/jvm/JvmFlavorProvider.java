@@ -1,6 +1,5 @@
 package hara.kernel.jvm;
 
-import hara.compiler.Compiler;
 import hara.kernel.NativeMode;
 import hara.kernel.base.Reflect;
 import hara.kernel.flavor.NativeCapability;
@@ -163,23 +162,6 @@ public final class JvmFlavorProvider implements NativeFlavorProvider {
     requireCapability(access, NativeCapability.CLASSPATH, "JVM classpath");
     requireDynamicRuntime("classpath mutation");
     return access.addClassPath(location);
-  }
-
-  public byte[] compile(Object expression, NativeFlavorAccess access) {
-    requireCapability(access, NativeCapability.COMPILATION, "JVM compilation");
-    requireDynamicRuntime("runtime compilation");
-    if (!(expression instanceof hara.lang.data.List)) {
-      throw unsupported("JVM compilation expects a quoted fn form");
-    }
-    return (byte[])
-        invoke(
-            "compile JVM function", () -> new Compiler().compile((hara.lang.data.List) expression));
-  }
-
-  public Class<?> defineClass(byte[] bytecode, NativeFlavorAccess access) {
-    requireCapability(access, NativeCapability.COMPILATION, "JVM compilation");
-    requireDynamicRuntime("runtime class definition");
-    return access.defineClass(bytecode);
   }
 
   private static Class<?> asType(Object value) {

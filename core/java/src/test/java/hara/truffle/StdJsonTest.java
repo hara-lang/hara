@@ -44,4 +44,17 @@ public class StdJsonTest {
           context.eval(HaraLanguage.ID, "(pretty/pprint-str {:a [1 2]})").asString());
     }
   }
+
+  @Test
+  public void strictJsonRejectsDuplicateKeysInvalidNumbersAndExcessiveNesting() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> StrictJson.parseValue("{\"a\":1,\"a\":2}"));
+    assertThrows(IllegalArgumentException.class, () -> StrictJson.parseValue("1e3"));
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> StrictJson.parseValue("9223372036854775808"));
+    String nested = "[".repeat(StrictJson.MAX_DEPTH + 1) + "0" + "]".repeat(StrictJson.MAX_DEPTH + 1);
+    assertThrows(IllegalArgumentException.class, () -> StrictJson.parseValue(nested));
+  }
 }

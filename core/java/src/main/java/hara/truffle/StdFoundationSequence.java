@@ -8,6 +8,10 @@ public final class StdFoundationSequence {
     return context.mapValues(values);
   }
 
+  @HaraExport(
+      name = "reduce",
+      doc = "Reduces a collection with function and an optional initial value.",
+      arglists = {"[function value]", "[function initial value]"})
   public static Object reduce(HaraContext context, Object[] values) {
     return context.reduceIterator(values);
   }

@@ -10,7 +10,7 @@ fn main() {
 fn run() -> Result<(), String> {
     let command = env::args().nth(1).unwrap_or_else(|| "check".into());
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/std.foundation.hbx");
-    let generated = hara_wasm::vm::compile_embedded_standard_library_bundle()?;
+    let generated = hara_wasm::vm::compile_embedded_foundation_bootstrap_bundle()?;
     match command.as_str() {
         "generate" => {
             fs::create_dir_all(path.parent().expect("asset parent"))

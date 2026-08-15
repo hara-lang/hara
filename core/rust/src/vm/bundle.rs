@@ -1,4 +1,4 @@
-//! Deterministic indexed container for the embedded standard library.
+//! Deterministic indexed container for the embedded Foundation bootstrap.
 
 use sha2::{Digest, Sha256};
 
@@ -30,7 +30,7 @@ pub struct BytecodeBundleModule {
     pub artifact: Vec<u8>,
 }
 
-pub fn embedded_standard_library_sources() -> Vec<ModuleSource<'static>> {
+pub fn embedded_foundation_bootstrap_sources() -> Vec<ModuleSource<'static>> {
     let ordered = std::iter::once("std.foundation")
         .chain(EAGER_HAL_RESOURCES.iter().copied())
         .chain(
@@ -53,7 +53,7 @@ pub fn embedded_standard_library_sources() -> Vec<ModuleSource<'static>> {
         })
         .collect::<Vec<_>>();
     order_module_sources(&sources)
-        .expect("embedded standard-library dependencies must be acyclic")
+        .expect("embedded Foundation bootstrap dependencies must be acyclic")
         .into_iter()
         .map(|index| sources[index])
         .collect()
@@ -105,8 +105,20 @@ pub fn compile_bytecode_bundle(sources: &[ModuleSource<'_>]) -> Result<Vec<u8>, 
     encode_bytecode_bundle(&encoded)
 }
 
+pub fn compile_embedded_foundation_bootstrap_bundle() -> Result<Vec<u8>, String> {
+    compile_bytecode_bundle(&embedded_foundation_bootstrap_sources())
+}
+
+/// Compatibility name retained for embedding hosts built against the original
+/// standard-library bundle API. The embedded artifact is now Foundation-only.
 pub fn compile_embedded_standard_library_bundle() -> Result<Vec<u8>, String> {
-    compile_bytecode_bundle(&embedded_standard_library_sources())
+    compile_embedded_foundation_bootstrap_bundle()
+}
+
+/// Compatibility name retained for callers that previously inspected the
+/// embedded standard-library sources.
+pub fn embedded_standard_library_sources() -> Vec<ModuleSource<'static>> {
+    embedded_foundation_bootstrap_sources()
 }
 
 pub fn eval_bytecode_bundle(runtime: &mut Runtime, bytes: &[u8]) -> Result<(), String> {
@@ -443,8 +455,8 @@ mod tests {
     #[test]
     fn embedded_bundle_round_trips_and_bootstraps() {
         on_compiler_gate_stack(|| {
-            let bytes = compile_embedded_standard_library_bundle()
-                .expect("compile standard library bundle");
+            let bytes = compile_embedded_foundation_bootstrap_bundle()
+                .expect("compile Foundation bootstrap bundle");
             let mut runtime = Runtime::core();
             for &(name, _, source) in EMBEDDED_HAL_RESOURCES {
                 runtime.register_resource(name, source);
@@ -458,14 +470,8 @@ mod tests {
             assert_eq!(runtime.eval_native("(upper \"hara\")").unwrap(), "\"HARA\"");
             assert!(runtime.use_namespace("std.foundation"));
             assert_eq!(runtime.eval_native("(if-not false 42)").unwrap(), "42");
-            assert!(
-                runtime.namespace_registry.find("lang.core").is_none(),
-                "non-eager namespaces must remain indexed but unloaded"
-            );
-            runtime
-                .load_bytecode_resource("lang.core")
-                .expect("load lazy bytecode namespace");
-            assert!(runtime.namespace_registry.find("lang.core").is_some());
+            assert!(runtime.namespace_registry.find("lang.core").is_none());
+            assert!(!runtime.bytecode_resources.contains_key("lang.core"));
         });
     }
 
@@ -738,15 +744,15 @@ mod tests {
     }
 
     #[test]
-    fn embedded_bundle_indexes_every_standard_library_namespace() {
+    fn embedded_bundle_contains_exact_foundation_bootstrap() {
         on_compiler_gate_stack(|| {
             let sources = embedded_standard_library_sources();
             let expected = sources
                 .iter()
                 .map(|source| source.resource)
                 .collect::<Vec<_>>();
-            let bytes = compile_bytecode_bundle(&sources).expect("compile standard library bundle");
-            let modules = decode(&bytes).expect("decode standard library bundle");
+            let bytes = compile_bytecode_bundle(&sources).expect("compile Foundation bootstrap");
+            let modules = decode(&bytes).expect("decode Foundation bootstrap");
             let actual = modules
                 .iter()
                 .map(|module| module.resource.as_str())
@@ -757,18 +763,18 @@ mod tests {
             );
             let mut inventory = actual.clone();
             inventory.sort_unstable();
-            assert_eq!(inventory, crate::STANDARD_LIBRARY_INVENTORY);
-            assert!(modules.iter().any(|module| module.resource == "code.test"));
-            assert!(modules.iter().any(|module| module.resource == "lang.core"));
+            assert_eq!(inventory, crate::FOUNDATION_BOOTSTRAP_INVENTORY);
+            assert!(!modules.iter().any(|module| module.resource == "code.test"));
+            assert!(!modules.iter().any(|module| module.resource == "lang.core"));
         });
     }
 
     #[test]
     fn bundled_global_reads_are_bound_to_their_defining_namespaces() {
         on_compiler_gate_stack(|| {
-            let bytes = compile_embedded_standard_library_bundle()
-                .expect("compile standard library bundle");
-            for module in decode(&bytes).expect("decode standard library bundle") {
+            let bytes = compile_embedded_foundation_bootstrap_bundle()
+                .expect("compile Foundation bootstrap bundle");
+            for module in decode(&bytes).expect("decode Foundation bootstrap bundle") {
                 let program = crate::vm::decode_program(&module.artifact)
                     .unwrap_or_else(|error| panic!("decode {}: {error}", module.resource));
                 assert_eq!(program.namespace.as_deref(), Some(module.resource.as_str()));

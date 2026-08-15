@@ -451,7 +451,6 @@ public interface RT {
       jvm.mappings.put(Symbol.create("set!"), new Var("set!", new JvmSetFunction(this)));
       addNamespace(Symbol.create("hara.native.jvm.reflect"));
       addNamespace(Symbol.create("hara.native.jvm.classpath"));
-      addNamespace(Symbol.create("hara.native.jvm.compiler"));
       JvmNativeLibraries.install(this);
     }
 

@@ -1,11 +1,15 @@
 package hara.truffle;
 
-import hara.verify.json.JsonValue;
 import hara.lang.data.types.IMapType;
+import hara.lang.data.types.ILinearType;
 
 /** Compact and indented encoders for the strict JSON v1 value model. */
 final class StdJson {
   private StdJson() {}
+
+  static Object read(String source) {
+    return StrictJson.parse(source);
+  }
 
   static String write(Object value) {
     requireStrictValue(value);
@@ -87,8 +91,8 @@ final class StdJson {
         throw new IllegalArgumentException("JSON integers must fit in the signed 64-bit range.");
       }
     }
-    if (value instanceof hara.lang.data.Vector<?> vector) {
-      for (Object item : vector) requireStrictValue(item);
+    if (value instanceof ILinearType<?> values) {
+      for (Object item : values) requireStrictValue(item);
       return;
     }
     if (value instanceof IMapType<?, ?> map) {

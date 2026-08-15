@@ -133,6 +133,12 @@
   "Returns a function that ignores its arguments and always returns value."
   [value] (fn [ignored & rest] value))
 
+(defn ^{:schema [:fn [& :any] :any]}
+  concat
+  "Returns a lazy sequence containing each source in order."
+  [& sources]
+  (seq (apply Iter/iter-concat sources)))
+
 (defn ^{:schema [:function [:fn [:fn :fn] :fn]
                             [:fn [:fn :fn :fn] :fn]
                             [:fn [:fn :fn :fn :fn & :fn] :fn]]}
@@ -315,6 +321,41 @@
   (IWatch/watch-list reference))
 
 ;; ---------------------------------------------------------------------------
+;; Reduced values and reduction
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any] :any]}
+  reduced
+  "Wraps value as an early-termination result for reduce."
+  [value]
+  (Base/reduced value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  reduced?
+  "Returns true when value is an early-termination reduction result."
+  [value]
+  (Base/reduced? value))
+
+(defn ^{:schema [:fn [:any] :any]}
+  unreduced
+  "Returns the value wrapped by a reduced result, or value unchanged."
+  [value]
+  (Base/unreduced value))
+
+(defn ^{:schema [:fn [:any :fn :any] :any]}
+  reduce-in
+  "Reduces source into initial, using mutable conversion when supported."
+  [initial function source]
+  (let [converted (satisfies? IToMutable initial)
+        accumulator (if converted
+                      (IToMutable/to-mutable initial)
+                      initial)
+        output (reduce function accumulator source)]
+    (if (and converted (satisfies? IToPersistent output))
+      (IToPersistent/to-persistent output)
+      output)))
+
+;; ---------------------------------------------------------------------------
 ;; Sequence access
 ;; ---------------------------------------------------------------------------
 
@@ -441,7 +482,7 @@
   "Materializes values using template's persistent collection shape when possible."
   [template values]
   (let [items (vec values)
-        rebuild (fn [seed source] (reduce conj seed source))
+        rebuild (fn [seed source] (reduce-in seed conj source))
         output
         (cond (map? template) (rebuild (empty template) items)
               (set? template) (rebuild (empty template) items)
@@ -955,7 +996,7 @@
   into
   "Returns destination with every item of source conjoined."
   [destination source]
-  (reduce conj destination source))
+  (reduce-in destination conj source))
 
 (defn ^{:schema [:fn [:any] :any]}
   distinct
@@ -1031,38 +1072,32 @@
   "Returns a map whose keys are (function key), preserving each value.
    When transformed keys collide, the later entry wins."
   [function value-map]
-  (let [it (iter value-map)]
-    (loop [result (empty value-map)]
-      (if (iter-next? it)
-        (let [entry (iter-next it)]
-          (recur (assoc result
-                        (function (key entry))
-                        (val entry))))
-        result))))
+  (reduce-in (empty value-map)
+             (fn [result entry]
+               (assoc result (function (key entry)) (val entry)))
+             value-map))
 
 (defn ^{:schema [:fn [:fn :map] :map]}
   map-vals
   "Returns a map with function applied to each value, preserving its keys."
   [function value-map]
-  (let [it (iter value-map)]
-    (loop [result {}]
-      (if (iter-next? it)
-        (let [entry (iter-next it)]
-          (recur (assoc result
-                        (key entry)
-                        (function (val entry)))))
-        result))))
+  (reduce-in (empty value-map)
+             (fn [result entry]
+               (assoc result (key entry) (function (val entry))))
+             value-map))
 
 (defn ^{:schema [:fn [:fn & :any] :map]}
   merge-with
   "Merges maps left-to-right, combining duplicate values with
    (function old new). Nil maps are skipped."
   [function & maps]
-  (reduce
+  (reduce-in
+    {}
     (fn [result value-map]
       (if (nil? value-map)
         result
-        (reduce
+        (reduce-in
+          result
           (fn [current entry]
             (let [entry-key (key entry)
                   entry-value (val entry)]
@@ -1071,30 +1106,26 @@
                      (if (has? current entry-key)
                        (function (get current entry-key) entry-value)
                        entry-value))))
-          result
           value-map)))
-    {}
     maps))
 
 (defn ^{:schema [:fn [:fn :any] :map]}
   group-by
   "Returns a map of (function value) to vectors of the values producing it."
   [function values]
-  (reduce (fn [result value]
+  (reduce-in {} (fn [result value]
             (let [group-key (function value)]
               (assoc result
                      group-key
                      (conj (get result group-key []) value))))
-          {}
           values))
 
 (defn ^{:schema [:fn [:any] :map]}
   frequencies
   "Returns a map of each distinct item of values to its occurrence count."
   [values]
-  (reduce (fn [result value]
+  (reduce-in {} (fn [result value]
             (assoc result value (+ 1 (get result value 0))))
-          {}
           values))
 
 ;; ---------------------------------------------------------------------------
@@ -1105,7 +1136,9 @@
   union
   "Returns a set containing every value in sets."
   [& sets]
-  (reduce (fn [result values] (reduce conj result values)) #{} sets))
+  (reduce-in #{}
+             (fn [result values] (reduce-in result conj values))
+             sets))
 
 (defn ^{:schema [:fn [:set & :set] :set]}
   intersection
@@ -1123,7 +1156,9 @@
   difference
   "Returns values in first-set absent from every remaining set."
   [first-set & sets]
-  (reduce (fn [result values] (reduce dissoc result values)) first-set sets))
+  (reduce-in first-set
+             (fn [result values] (reduce-in result dissoc values))
+             sets))
 
 (defn ^{:schema [:fn [:set :set] :bool]}
   subset?

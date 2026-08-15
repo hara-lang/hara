@@ -1,15 +1,13 @@
 use crate::core::Value;
-use crate::journal::{
-    Journal, JournalEvent, JournalEventKind, JournalStatus, ValuePreview,
-};
+use crate::journal::{Journal, JournalEvent, JournalEventKind, JournalStatus, ValuePreview};
 use crate::kernel::halc_trace::{
     HalcArtifactTrace, HalcTraceEvent, HalcTraceStatus, HalcTraceValue,
 };
 use crate::lang::data::{OrderedMap, Vector};
 
 use super::{
-    BytecodeSummary, CaseObservation, Check, ExpectedOutcome, HalcSummary,
-    ProductionReport, StageOutcome, TeachingAnnotation, REPORT_SCHEMA,
+    BytecodeSummary, CaseObservation, Check, ExpectedOutcome, HalcSummary, ProductionReport,
+    StageOutcome, TeachingAnnotation, REPORT_SCHEMA,
 };
 
 pub(super) fn report_value(report: &ProductionReport, browser_only: bool) -> Value {
@@ -24,11 +22,18 @@ pub(super) fn report_value(report: &ProductionReport, browser_only: bool) -> Val
         .collect::<Vec<_>>();
     let passed_checks = checks.iter().filter(|check| check.pass).count();
     let failed_checks = checks.len().saturating_sub(passed_checks);
-    let status = if failed_checks == 0 { "passed" } else { "failed" };
+    let status = if failed_checks == 0 {
+        "passed"
+    } else {
+        "failed"
+    };
 
     object([
         ("schema", string(REPORT_SCHEMA)),
-        ("view", string(if browser_only { "browser" } else { "complete" })),
+        (
+            "view",
+            string(if browser_only { "browser" } else { "complete" }),
+        ),
         ("status", string(status)),
         ("terminalNeutral", Value::Bool(true)),
         (
@@ -77,10 +82,7 @@ fn runtime_matrix() -> Value {
             object([
                 ("supported", Value::Bool(false)),
                 ("status", string("unsupported")),
-                (
-                    "reason",
-                    string("production-corpus-runner-pending-406"),
-                ),
+                ("reason", string("production-corpus-runner-pending-406")),
             ]),
         ),
     ])
@@ -106,7 +108,10 @@ fn case_value(observation: &CaseObservation) -> Value {
                     object([
                         ("required", Value::Bool(observation.interpreter_required)),
                         ("outcome", outcome_value(&observation.interpreter)),
-                        ("trace", journal_value(&observation.journal, &observation.case.source_id)),
+                        (
+                            "trace",
+                            journal_value(&observation.journal, &observation.case.source_id),
+                        ),
                     ]),
                 ),
                 (
@@ -125,10 +130,7 @@ fn case_value(observation: &CaseObservation) -> Value {
                 ),
             ]),
         ),
-        (
-            "checks",
-            vector(observation.checks.iter().map(check_value)),
-        ),
+        ("checks", vector(observation.checks.iter().map(check_value))),
         (
             "teaching",
             vector(observation.teaching.iter().map(annotation_value)),
@@ -138,14 +140,12 @@ fn case_value(observation: &CaseObservation) -> Value {
 
 fn expected_value(expected: &ExpectedOutcome) -> Value {
     match expected {
-        ExpectedOutcome::Display(value) => object([
-            ("status", string("returned")),
-            ("display", string(value)),
-        ]),
-        ExpectedOutcome::ErrorCategory(value) => object([
-            ("status", string("error")),
-            ("category", string(value)),
-        ]),
+        ExpectedOutcome::Display(value) => {
+            object([("status", string("returned")), ("display", string(value))])
+        }
+        ExpectedOutcome::ErrorCategory(value) => {
+            object([("status", string("error")), ("category", string(value))])
+        }
         ExpectedOutcome::CompileError(value) => object([
             ("status", string("compile-error")),
             ("marker", string(value)),
@@ -184,7 +184,10 @@ fn halc_summary_value(summary: &HalcSummary) -> Value {
         ),
         ("namespace", optional_string(summary.namespace.as_deref())),
         ("resource", optional_string(summary.resource.as_deref())),
-        ("sourceHash", optional_string(summary.source_hash.as_deref())),
+        (
+            "sourceHash",
+            optional_string(summary.source_hash.as_deref()),
+        ),
         ("events", integer(summary.event_count)),
         (
             "sequencesContiguous",
@@ -309,9 +312,7 @@ fn halc_event_value(event: &HalcTraceEvent) -> Value {
     ])
 }
 
-fn evidence_value(
-    evidence: &std::collections::BTreeMap<String, HalcTraceValue>,
-) -> Value {
+fn evidence_value(evidence: &std::collections::BTreeMap<String, HalcTraceValue>) -> Value {
     object(evidence.iter().map(|(key, value)| {
         let value = match value {
             HalcTraceValue::String(value) => string(value),

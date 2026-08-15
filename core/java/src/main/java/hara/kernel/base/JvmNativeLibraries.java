@@ -38,35 +38,10 @@ final class JvmNativeLibraries {
             "classpath/add!",
             v -> provider(runtime).addClassPath(String.valueOf(v[0]), runtime._nativeAccess),
             1));
-    Namespace compiler = runtime.getNamespace(Symbol.create("hara.native.jvm.compiler"));
-    compiler.mappings.put(
-        Symbol.create("compile"),
-        fn("compiler/compile", v -> provider(runtime).compile(v[0], runtime._nativeAccess), 1));
-    compiler.mappings.put(
-        Symbol.create("define!"),
-        fn(
-            "compiler/define!",
-            v -> provider(runtime).defineClass(bytecode(v[0]), runtime._nativeAccess),
-            1));
-    compiler.mappings.put(
-        Symbol.create("compile!"),
-        fn(
-            "compiler/compile!",
-            v -> {
-              JvmFlavorProvider provider = provider(runtime);
-              return provider.defineClass(
-                  provider.compile(v[0], runtime._nativeAccess), runtime._nativeAccess);
-            },
-            1));
   }
 
   private static JvmFlavorProvider provider(RT.Instance<?> runtime) {
     return JvmNativeFunction.provider(runtime);
-  }
-
-  private static byte[] bytecode(Object value) {
-    if (value instanceof byte[]) return (byte[]) value;
-    throw new hara.lang.base.Ex.Runtime("compiler/define! expects bytes");
   }
 
   private static Var fn(

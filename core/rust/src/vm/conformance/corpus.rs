@@ -168,10 +168,12 @@ fn parse_expectation(entries: &[(Form, Form)], id: &str) -> Result<ExpectedOutco
 }
 
 fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
-    entries.iter().find_map(|(candidate, value)| match candidate {
-        Form::Keyword(name) if name == key => Some(value),
-        _ => None,
-    })
+    entries
+        .iter()
+        .find_map(|(candidate, value)| match candidate {
+            Form::Keyword(name) if name == key => Some(value),
+            _ => None,
+        })
 }
 
 fn required<'a>(entries: &'a [(Form, Form)], key: &str, id: &str) -> Result<&'a Form, String> {
@@ -203,8 +205,9 @@ fn optional_bool(entries: &[(Form, Form)], key: &str, default: bool) -> Result<b
 fn optional_usize(entries: &[(Form, Form)], key: &str, default: usize) -> Result<usize, String> {
     match entry(entries, key) {
         None => Ok(default),
-        Some(Form::Number(value)) if *value > 0 => usize::try_from(*value)
-            .map_err(|_| format!(":{key} exceeds the host size limit")),
+        Some(Form::Number(value)) if *value > 0 => {
+            usize::try_from(*value).map_err(|_| format!(":{key} exceeds the host size limit"))
+        }
         _ => Err(format!(":{key} must be a positive integer")),
     }
 }
@@ -215,17 +218,12 @@ mod tests {
 
     #[test]
     fn embedded_corpus_is_well_formed_and_tracks_upstream_cases() {
-        let corpus = parse_corpus(include_str!(
-            "../../../assets/code-vm-conformance.edn"
-        ))
-        .expect("embedded corpus");
+        let corpus = parse_corpus(include_str!("../../../assets/code-vm-conformance.edn"))
+            .expect("embedded corpus");
         assert_eq!(corpus.id, "code.vm/production");
         assert!(corpus.cases.len() >= 12);
         assert!(corpus.cases.iter().any(|case| case.browser_safe));
-        assert!(corpus
-            .cases
-            .iter()
-            .all(|case| !case.upstream_id.is_empty()));
+        assert!(corpus.cases.iter().all(|case| !case.upstream_id.is_empty()));
     }
 
     #[test]

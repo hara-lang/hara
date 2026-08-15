@@ -43,7 +43,7 @@ import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
-import std.lib.resp.RespConnection;
+import hara.kernel.resp.RespConnection;
 
 public final class Main {
   private Main() {}

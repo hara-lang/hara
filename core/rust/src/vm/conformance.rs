@@ -30,8 +30,7 @@ use crate::kernel::halc_trace::{HalcArtifactTrace, HalcTraceValue};
 use crate::Runtime;
 
 use super::{
-    compile_source_with, BytecodeObservationSession, BytecodeSessionStatus,
-    SessionRetentionLimits,
+    compile_source_with, BytecodeObservationSession, BytecodeSessionStatus, SessionRetentionLimits,
 };
 
 pub const REPORT_SCHEMA: &str = "hal.code-vm-conformance-runtime/0-alpha";
@@ -312,7 +311,8 @@ fn summarize_halc(trace: &HalcArtifactTrace) -> HalcSummary {
     HalcSummary {
         status: trace.status.as_keyword().into(),
         decode_parity: result.and_then(|values| evidence_bool(values, "decode/parity")),
-        handoff_status: handoff.and_then(|event| evidence_string(&event.evidence, "handoff/status")),
+        handoff_status: handoff
+            .and_then(|event| evidence_string(&event.evidence, "handoff/status")),
         handoff_category: failure,
         fallback: handoff.and_then(|event| evidence_bool(&event.evidence, "handoff/fallback")),
         namespace: trace_evidence_string(trace, "module/namespace"),
@@ -335,7 +335,11 @@ fn checks(
     bytecode: &BytecodeSummary,
 ) -> Vec<Check> {
     let mut checks = Vec::new();
-    checks.push(outcome_check("bytecode/expected", &case.expected, &bytecode.outcome));
+    checks.push(outcome_check(
+        "bytecode/expected",
+        &case.expected,
+        &bytecode.outcome,
+    ));
     checks.push(if case.interpreter_required {
         outcome_check("interpreter/expected", &case.expected, interpreter)
     } else {
@@ -393,10 +397,7 @@ fn checks(
             case.trace_limit,
             if case.expect_dropped { ">" } else { ">=" }
         ),
-        actual: format!(
-            "steps={},dropped={}",
-            bytecode.step_count, bytecode.dropped
-        ),
+        actual: format!("steps={},dropped={}", bytecode.step_count, bytecode.dropped),
     });
     checks.push(Check {
         id: "fallback/forbidden".into(),
@@ -480,13 +481,10 @@ fn halc_check(case: &CorpusCase, halc: &HalcSummary) -> Check {
         }
         ExpectedOutcome::CompileError(marker) => {
             halc.status == "error"
-                && halc
-                    .handoff_category
-                    .as_deref()
-                    .is_some_and(|category| {
-                        category.contains(normalize_compile_marker(marker))
-                            || marker.contains(normalize_compile_marker(category))
-                    })
+                && halc.handoff_category.as_deref().is_some_and(|category| {
+                    category.contains(normalize_compile_marker(marker))
+                        || marker.contains(normalize_compile_marker(category))
+                })
         }
         ExpectedOutcome::ErrorCategory(_) => false,
     };

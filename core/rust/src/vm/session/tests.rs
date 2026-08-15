@@ -53,12 +53,9 @@ fn public_snapshot_exposes_deterministic_bounded_owned_globals() {
     }
     source.push_str("nil)");
 
-    let mut session = BytecodeObservationSession::compile_named(
-        "execution/globals",
-        "globals.hal",
-        source,
-    )
-    .expect("global fixture must compile");
+    let mut session =
+        BytecodeObservationSession::compile_named("execution/globals", "globals.hal", source)
+            .expect("global fixture must compile");
     let mut limits = session.observation_limits();
     limits.display_chars = 4;
     session.set_observation_limits(limits);

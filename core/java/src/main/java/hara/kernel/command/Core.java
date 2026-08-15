@@ -1,11 +1,7 @@
 package hara.kernel.command;
 
-import hara.compiler.Compiler;
-import hara.compiler.DynamicClassLoader;
 import hara.kernel.Command;
 import hara.kernel.Foundation;
-import hara.kernel.NativeMode;
-import hara.kernel.base.Parser;
 import hara.kernel.base.RT;
 import hara.lang.base.Ex;
 import hara.lang.base.G;
@@ -69,19 +65,4 @@ public class Core {
     return G.display(rt.eval(rt.readString(args.get(1).toString())));
   }
 
-  @Command.Fn(name = "COMPILE")
-  public static Object runCompile(Foundation F, List<Object> args) {
-    NativeMode.requireDisabled("runtime compilation");
-    try {
-      hara.lang.data.List expression =
-          (hara.lang.data.List) Parser.LispReader.readString(args.get(0).toString(), null);
-      Compiler compiler = new Compiler();
-      byte[] bytecode = compiler.compile(expression);
-      DynamicClassLoader loader = new DynamicClassLoader(Foundation.class.getClassLoader());
-      Class<?> clazz = loader.defineClass(null, bytecode);
-      return clazz.getConstructor().newInstance();
-    } catch (Exception e) {
-      throw Ex.Sneaky(e);
-    }
-  }
 }

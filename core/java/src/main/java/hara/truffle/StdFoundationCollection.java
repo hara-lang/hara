@@ -10,6 +10,10 @@ public final class StdFoundationCollection {
     return context.removeValues(values);
   }
 
+  @HaraExport(
+      name = "reduce-kv",
+      doc = "Reduces key/value entries with function and an initial value.",
+      arglists = {"[function initial map]"})
   public static Object reduceKeyValues(HaraContext context, Object[] values) {
     return context.reduceKeyValues(values);
   }

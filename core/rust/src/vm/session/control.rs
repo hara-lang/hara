@@ -25,10 +25,7 @@ impl BytecodeObservationSession {
         let value = evidence::snapshot_value(&snapshot, &self.source_id);
         Ok(with_global_state(
             value,
-            global_state_value(
-                &self.registry,
-                self.observation_limits.display_chars,
-            ),
+            global_state_value(&self.registry, self.observation_limits.display_chars),
         ))
     }
 
@@ -230,10 +227,7 @@ fn with_global_state(snapshot: Value, globals: Value) -> Value {
     }
 }
 
-fn global_state_value(
-    registry: &NamespaceRegistry<Value>,
-    display_chars: usize,
-) -> Value {
+fn global_state_value(registry: &NamespaceRegistry<Value>, display_chars: usize) -> Value {
     let current = registry.current();
     let namespace = current.name().as_str().to_owned();
     let mut bindings = current

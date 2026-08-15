@@ -33,9 +33,11 @@ fn arithmetic_fixture_carries_all_three_production_traces() {
     assert_eq!(arithmetic.interpreter.display.as_deref(), Some("7"));
     assert_eq!(arithmetic.halc.handoff_status.as_deref(), Some("ready"));
     assert_eq!(arithmetic.bytecode.outcome.display.as_deref(), Some("7"));
-    assert!(arithmetic.halc_trace.events.iter().any(|event| {
-        event.stage == "handoff/bytecode"
-    }));
+    assert!(arithmetic
+        .halc_trace
+        .events
+        .iter()
+        .any(|event| { event.stage == "handoff/bytecode" }));
     let trace_json = crate::json::write(&arithmetic.bytecode_trace).unwrap();
     assert!(trace_json.contains(BYTECODE_TRACE_SCHEMA));
     assert!(trace_json.contains("code.vm/arith/nested"));
@@ -81,7 +83,10 @@ fn unsupported_bytecode_form_is_typed_and_never_falls_back() {
 fn reports_are_deterministic_and_browser_view_is_terminal_neutral() {
     let first = run_embedded().expect("first run");
     let second = run_embedded().expect("second run");
-    assert_eq!(first.to_json(false).unwrap(), second.to_json(false).unwrap());
+    assert_eq!(
+        first.to_json(false).unwrap(),
+        second.to_json(false).unwrap()
+    );
 
     let browser = first.browser_json(false).unwrap();
     assert!(browser.contains("\"view\":\"browser\""));

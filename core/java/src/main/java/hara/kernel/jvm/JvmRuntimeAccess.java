@@ -1,6 +1,5 @@
 package hara.kernel.jvm;
 
-import hara.compiler.DynamicClassLoader;
 import hara.kernel.base.RT;
 import hara.kernel.flavor.NativeCapability;
 import hara.kernel.flavor.NativeFlavorAccess;
@@ -47,11 +46,6 @@ public final class JvmRuntimeAccess implements NativeFlavorAccess {
           "Unable to add JVM classpath entry " + location + ": " + error.getMessage(),
           error);
     }
-  }
-
-  @Override
-  public Class<?> defineClass(byte[] bytecode) {
-    return new DynamicClassLoader(loader).defineClass(null, bytecode);
   }
 
   private static URL toUrl(String location) throws Exception {

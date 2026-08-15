@@ -11,7 +11,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.EnumSet;
-import java.util.function.Function;
 import org.junit.Test;
 
 public class JvmFlavorLibrariesTest {
@@ -36,7 +35,7 @@ public class JvmFlavorLibrariesTest {
   }
 
   @Test
-  public void classpathAndCompilationRequireIndependentGrants() {
+  public void classpathRequiresAnIndependentGrant() {
     RT.Instance<Object> runtime = runtime(EnumSet.of(NativeCapability.REFLECTION));
 
     NativeFlavorException classpath =
@@ -45,17 +44,10 @@ public class JvmFlavorLibrariesTest {
             () -> runtime.eval(runtime.readString("(hara.native.jvm.classpath/paths)")));
     assertEquals(NativeFlavorException.Kind.DENIED, classpath.kind());
 
-    NativeFlavorException compiler =
-        assertThrows(
-            NativeFlavorException.class,
-            () ->
-                runtime.eval(
-                    runtime.readString("(hara.native.jvm.compiler/compile '(fn [x] (+ x 2)))")));
-    assertEquals(NativeFlavorException.Kind.DENIED, compiler.kind());
   }
 
   @Test
-  public void grantedClasspathAndCompilerServicesAreUsable() throws Exception {
+  public void grantedClasspathServicesAreUsable() throws Exception {
     RT.Instance<Object> runtime = runtime(EnumSet.allOf(NativeCapability.class));
     Path directory = Files.createTempDirectory("hara-jvm-classpath-");
     try {
@@ -66,14 +58,6 @@ public class JvmFlavorLibrariesTest {
                   runtime.readString("(hara.native.jvm.classpath/add! \"" + escaped + "\")"));
       assertTrue(added.startsWith("file:"));
 
-      Class<?> compiled =
-          (Class<?>)
-              runtime.eval(
-                  runtime.readString("(hara.native.jvm.compiler/compile! '(fn [x] (+ x 2)))"));
-      @SuppressWarnings("unchecked")
-      Function<Long, Long> function =
-          (Function<Long, Long>) compiled.getConstructor().newInstance();
-      assertEquals(Long.valueOf(42), function.apply(40L));
     } finally {
       Files.deleteIfExists(directory);
     }

@@ -15,7 +15,7 @@ std.foundation.promise
 std.foundation.string
 ```
 
-`core/rust/standard-library.namespaces` is authoritative for loadable standard-library namespace membership. A source file, test fixture, automatic alias, or native object does not become a public namespace merely because it is present in the repository or visible to an evaluator.
+`core/rust/bootstrap.namespaces` is authoritative for the Foundation namespaces embedded in production Java and Rust runtimes. The broader `standard-library.namespaces` catalog remains development/package input; membership there does not make a source part of the bootstrap. A source file, test fixture, automatic alias, or native object does not become a public namespace merely because it is present in the repository or visible to an evaluator.
 
 The root `std.foundation` namespace owns the portable value layer: composition, collections, sequence operations, set algebra, metadata, references, macros, structural traversal, regular-expression helpers, and the small language-level helpers automatically referred into ordinary namespaces. Regular-expression ownership remains root-level: `regexp`, `re-pattern`, `re-find`, `re-matches`, `re-replace`, and `re-split` are portable HAL functions, while `regexp?` remains a kernel-installed root predicate.
 
@@ -42,6 +42,15 @@ For example:
 ```
 
 The presence of aliases such as `Edn` or identities such as `std.native.Edn` does **not** imply that `std.foundation.edn` or another retired Foundation child is loadable.
+
+`Base` owns foundational constructor identities that otherwise have no natural
+receiver: `list`, `vector`, `pair`, `tup`, `hash-map`, `hash-set`, `atom`,
+`pointer`, `symbol`, and `keyword`. Their root spellings remain the ordinary
+portable API and bootstrap primitives. `Base` also owns the low-level
+`reduced`, `reduced?`, and `unreduced` marker operations; root Foundation wraps
+those operations and implements `reduce-in` portably through `IReduce`,
+`IToMutable`, and `IToPersistent`. `reduce-in` is not a Base method because its
+source is reduced through the existing source-dispatched protocol.
 
 `OS` remains the migration direction for the former `std.foundation.os` API, but availability and export shape are runtime-profile concerns to be proven by cross-runtime conformance. A process handle is a runtime value, not an automatic `Process` static-object alias. Neither should be presented as part of the common native-object inventory without profile evidence.
 

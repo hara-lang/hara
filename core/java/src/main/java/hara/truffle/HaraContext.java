@@ -182,13 +182,14 @@ public final class HaraContext {
               "Regex",
               java.util.List.of(
                   "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
-                  "split"))
+                  "split")),
           Map.entry("UUID", java.util.List.of("instance?")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
               "Base",
               java.util.List.of(
-                  "reduce-in", "reduced", "reduced?", "unreduced", "append-at-count")),
+                  "list", "vector", "pair", "tup", "hash-map", "hash-set", "atom",
+                  "pointer", "symbol", "keyword", "reduced", "reduced?", "unreduced")),
           Map.entry(
               "Iter",
               java.util.List.of(
@@ -469,11 +470,9 @@ public final class HaraContext {
           exports,
           NATIVE_TYPES.get("Base"),
           Map.of(
-              "reduce-in", "__base-reduce-in",
               "reduced", "__base-reduced",
               "reduced?", "__base-reduced?",
-              "unreduced", "__base-unreduced",
-              "append-at-count", "__base-append-at-count"));
+              "unreduced", "__base-unreduced"));
       installNativeExportGroup("Iter", exports, NATIVE_TYPES.get("Iter"), Map.of());
       return;
     }
@@ -2167,8 +2166,6 @@ public final class HaraContext {
     target.define("iter-repeatedly", new UnaryBuiltin("iter-repeatedly", this::iterRepeatedly));
     target.define("iter-iterate", new VariadicBuiltin("iter-iterate", this::iterIterate));
     target.define(
-        "__base-reduce-in", new VariadicBuiltin("Base/reduce-in", this::baseReduceIn));
-    target.define(
         "__base-reduced",
         new UnaryBuiltin("Base/reduced", value -> Reduced.mark(HaraBox.unwrap(value))));
     target.define(
@@ -2177,9 +2174,6 @@ public final class HaraContext {
     target.define(
         "__base-unreduced",
         new UnaryBuiltin("Base/unreduced", value -> Reduced.unreduced(HaraBox.unwrap(value))));
-    target.define(
-        "__base-append-at-count",
-        new VariadicBuiltin("Base/append-at-count", this::baseAppendAtCount));
     target.define("alter-var-root", new VariadicBuiltin("alter-var-root", this::alterVarRoot));
     target.define("apply", new VariadicBuiltin("apply", this::applyFunction));
     target.define(
@@ -2529,6 +2523,37 @@ public final class HaraContext {
         "vector",
         new VariadicBuiltin(
             "vector", values -> hara.lang.data.Vector.Standard.from(null, values)));
+    target.define(
+        "pair",
+        new VariadicBuiltin(
+            "pair",
+            values -> {
+              requireMethodArity("pair", values, 2);
+              return hara.kernel.builtin.BuiltinStruct.pair(
+                  HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+            }));
+    target.define(
+        "tup",
+        new VariadicBuiltin(
+            "tup",
+            values -> {
+              if (values.length > 5) throw new HaraException("tup expects at most 5 arguments");
+              Object[] unwrapped = java.util.Arrays.stream(values).map(HaraBox::unwrap).toArray();
+              return hara.kernel.builtin.BuiltinStruct.tuple(unwrapped);
+            }));
+    target.define(
+        "hash-map",
+        new VariadicBuiltin(
+            "hash-map",
+            values -> {
+              if (values.length % 2 != 0) {
+                throw new HaraException("hash-map expects an even number of arguments");
+              }
+              return hara.kernel.builtin.BuiltinStruct.hashMap(values);
+            }));
+    target.define(
+        "hash-set",
+        new VariadicBuiltin("hash-set", hara.kernel.builtin.BuiltinStruct::hashSet));
     target.define(
         "atom",
         new UnaryBuiltin(
@@ -3122,7 +3147,6 @@ public final class HaraContext {
             }));
     namespace("hara.native.jvm.reflect");
     namespace("hara.native.jvm.classpath");
-    namespace("hara.native.jvm.compiler");
     HaraNamespace edn = namespace("std.native.Edn");
     edn.define(
         "read-forms",
@@ -3213,32 +3237,6 @@ public final class HaraContext {
             value ->
                 jvmProvider().addClassPath(String.valueOf(HaraBox.unwrap(value)), nativeAccess())));
 
-    HaraNamespace compiler = namespace("hara.native.jvm.compiler");
-    compiler.define(
-        "compile",
-        new UnaryBuiltin(
-            "compiler/compile",
-            value -> jvmProvider().compile(HaraBox.unwrap(value), nativeAccess())));
-    compiler.define(
-        "define!",
-        new UnaryBuiltin(
-            "compiler/define!",
-            value -> {
-              Object bytecode = HaraBox.unwrap(value);
-              if (!(bytecode instanceof byte[])) {
-                throw new HaraException("compiler/define! expects bytes");
-              }
-              return jvmProvider().defineClass((byte[]) bytecode, nativeAccess());
-            }));
-    compiler.define(
-        "compile!",
-        new UnaryBuiltin(
-            "compiler/compile!",
-            value -> {
-              JvmFlavorProvider provider = jvmProvider();
-              return provider.defineClass(
-                  provider.compile(HaraBox.unwrap(value), nativeAccess()), nativeAccess());
-            }));
   }
 
   void installStringLibrary() {
@@ -3405,7 +3403,7 @@ public final class HaraContext {
                 throw new HaraException("json/read expects a string");
               }
               try {
-                return hara.verify.json.StrictJson.parse(source);
+                return StdJson.read(source);
               } catch (IllegalArgumentException error) {
                 throw new HaraException("json/read: " + error.getMessage());
               }
@@ -5585,50 +5583,6 @@ public final class HaraContext {
     Iterator<?> iterator = requireIterator(value, "iter-close");
     Iter.close(iterator);
     return null;
-  }
-
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  private Object baseReduceIn(Object[] values) {
-    requireMethodArity("Base/reduce-in", values, 3);
-    Object initial = HaraBox.unwrap(values[0]);
-    Object function = values[1];
-    Object sourceValue = values[2];
-    boolean converted = protocolSatisfies("IToMutable", initial);
-    Object accumulator =
-        converted
-            ? HaraBox.unwrap(
-                protocolCall("IToMutable", "to-mutable", new Object[] {initial}))
-            : initial;
-    Iterator source = (Iterator) iterValue(sourceValue);
-    try {
-      while (source.hasNext()) {
-        accumulator =
-            HaraBox.unwrap(
-                invokeCallable(function, new Object[] {accumulator, source.next()}));
-        if (Reduced.isReduced(accumulator)) {
-          accumulator = Reduced.unreduced(accumulator);
-          break;
-        }
-      }
-    } finally {
-      Iter.close(source);
-    }
-    if (converted && protocolSatisfies("IToPersistent", accumulator)) {
-      return protocolCall(
-          "IToPersistent", "to-persistent", new Object[] {accumulator});
-    }
-    return accumulator;
-  }
-
-  @SuppressWarnings({"rawtypes", "unchecked"})
-  private Object baseAppendAtCount(Object[] values) {
-    requireMethodArity("Base/append-at-count", values, 2);
-    Object collection = HaraBox.unwrap(values[0]);
-    Object item = HaraBox.unwrap(values[1]);
-    if (collection instanceof hara.lang.data.List<?> && collection instanceof IPushLast pushLast) {
-      return pushLast.pushLast(item);
-    }
-    return protocolCall("IConj", "conj", new Object[] {collection, item});
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})

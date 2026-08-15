@@ -1,6 +1,6 @@
 package hara.truffle;
 
-import std.lib.resp.RespConnection;
+import hara.kernel.resp.RespConnection;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;

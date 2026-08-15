@@ -2,9 +2,6 @@
 
 The following classes have less than 50% line coverage and require unit tests:
 
-- `hara.compiler.Compiler`
-- `hara.compiler.CompilerException`
-- `hara.compiler.DynamicClassLoader`
 - `hara.core.block.Parser`
 - `hara.kernel.Foundation$Peer`
 - `hara.kernel.Main`
@@ -217,12 +214,3 @@ The following classes have less than 50% line coverage and require unit tests:
 - `hara.lang.string.UnicodeEscaper`
 - `hara.lang.string.UnicodeUnescaper`
 - `hara.lang.string.UnicodeUnpairedSurrogateRemover`
-- `hara.transpile.base.Book`
-- `hara.transpile.base.Emit`
-- `hara.transpile.base.EmitBlock`
-- `hara.transpile.base.EmitCommon`
-- `hara.transpile.base.EmitCommon$Context`
-- `hara.transpile.base.EmitFnImpl`
-- `hara.transpile.base.EmitHelper`
-- `hara.transpile.base.Grammar`
-- `hara.transpile.base.Util`

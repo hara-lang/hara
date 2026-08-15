@@ -481,11 +481,8 @@ impl Compiler {
                                             Some(Form::Symbol(operation)) if operation == "field"
                                         ) =>
                                     {
-                                        let place_children = self.list_children(
-                                            parts,
-                                            place.span,
-                                            place.children,
-                                        );
+                                        let place_children =
+                                            self.list_children(parts, place.span, place.children);
                                         if let Some(receiver) = place_children.get(1) {
                                             self.collect_free(receiver, bound, free);
                                         }

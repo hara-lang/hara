@@ -1,15 +1,15 @@
-package hara.verify.json;
+package hara.truffle;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 
 /** A dependency-free parser for the strict, proof-friendly JSON v1 profile. */
-public final class StrictJson {
+final class StrictJson {
   public static final int MAX_DEPTH = 256;
 
   private StrictJson() {}
 
-  public static JsonValue parseValue(String source) {
+  static JsonValue parseValue(String source) {
     if (source == null) throw new IllegalArgumentException("JSON source cannot be null.");
     var parser = new Parser(source);
     var value = parser.value(0);
@@ -18,7 +18,7 @@ public final class StrictJson {
     return value;
   }
 
-  public static Object parse(String source) {
+  static Object parse(String source) {
     return parseValue(source).toHara();
   }
 

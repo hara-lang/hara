@@ -135,9 +135,11 @@ pub(super) fn evidence_bool(
 }
 
 fn map_entry(value: &Value, key: &str) -> Option<Value> {
-    crate::core::map_entries(value)?.into_iter().find_map(|(candidate, value)| {
-        matches!(candidate, Value::String(ref name) if name == key).then_some(value)
-    })
+    crate::core::map_entries(value)?
+        .into_iter()
+        .find_map(|(candidate, value)| {
+            matches!(candidate, Value::String(ref name) if name == key).then_some(value)
+        })
 }
 
 fn map_string(value: &Value, key: &str) -> Option<String> {

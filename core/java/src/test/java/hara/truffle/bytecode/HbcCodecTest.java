@@ -246,7 +246,7 @@ public class HbcCodecTest {
     assertArrayEquals(Arrays.copyOfRange(bundle, 4, 36), MessageDigest.getInstance("SHA-256").digest(payload));
     List<HbxBundleCodec.Module> modules = HbxBundleCodec.decode(bundle);
     List<String> expectedInventory =
-        Files.readAllLines(Path.of("rust/standard-library.namespaces"));
+        Files.readAllLines(Path.of("rust/bootstrap.namespaces"));
     List<String> actualInventory =
         modules.stream().map(HbxBundleCodec.Module::resource).sorted().toList();
     assertEquals(expectedInventory, actualInventory);
