@@ -1,79 +1,76 @@
 ;; ============================================================================
-;; std.codec.form — deterministic nested application/x-www-form-urlencoded data.
-;;
-;; This deliberately uses RFC 3986 component semantics: spaces are %20 and a
-;; literal plus is %2B. Brackets in generated field paths remain readable.
+;; std.codec.form — ordered application/x-www-form-urlencoded string pairs.
 ;; ============================================================================
 (ns std.codec.form
   (:require [std.codec.url :as url]))
 
-(defn- field-name
+(defn encode-component
   [value]
-  (cond (string? value) value
-        (keyword? value) (name value)
-        (symbol? value) (name value)
-        :else (str value)))
+  (if (not (string? value))
+    (throw (ex-info "Form component encode expects a string"
+                    {:value value})))
+  (str/replace (url/encode value) "%20" "+"))
 
-(defn- value-text
+(defn decode-component
   [value]
-  (cond (string? value) value
-        (keyword? value) (name value)
-        (symbol? value) (name value)
-        :else (str value)))
+  (if (not (string? value))
+    (throw (ex-info "Form component decode expects a string"
+                    {:value value})))
+  (url/decode (str/replace value "+" "%20")))
 
-(defn- nested-name
-  [prefix value]
-  (if prefix
-    (str prefix "[" (field-name value) "]")
-    (field-name value)))
-
-(defn- indexed-name
-  [prefix index]
-  (str prefix "[" index "]"))
-
-(defn- sequence-value?
+(defn- valid-pair?
   [value]
-  (or (vector? value) (list? value) (tuple? value)))
+  (and (vector? value)
+       (= 2 (count value))
+       (string? (nth value 0))
+       (string? (nth value 1))))
 
-(defn- flatten-value
-  [output prefix value]
-  (cond
-    (nil? value)
-    output
-
-    (map? value)
-    (reduce (fn [result key]
-              (flatten-value result (nested-name prefix key) (get value key)))
-            output
-            (sort-by field-name (keys value)))
-
-    (sequence-value? value)
-    (loop [index 0 result output values (vec value)]
-      (if (= index (count values))
-        result
-        (recur (inc index)
-               (flatten-value result (indexed-name prefix index) (nth values index))
-               values)))
-
-    :else
-    (conj output [prefix (value-text value)])))
-
-(defn pairs
+(defn- checked-pairs
   [value]
-  (if (not (map? value))
-    (throw (ex-info "Form encoding expects a map" {:value value})))
-  (flatten-value [] nil value))
-
-(defn- encode-key
-  [value]
-  (-> (url/encode value)
-      (str/replace "%5B" "[")
-      (str/replace "%5D" "]")))
+  (if (not (vector? value))
+    (throw (ex-info "Form encoding expects an ordered vector of string pairs"
+                    {:value value})))
+  (loop [index 0 output []]
+    (if (= index (count value))
+      output
+      (let [pair (nth value index)]
+        (if (not (valid-pair? pair))
+          (throw (ex-info "Malformed form pair"
+                          {:value pair :index index})))
+        (recur (inc index) (conj output pair))))))
 
 (defn encode
   [value]
-  (str/join "&"
-            (map (fn [entry]
-                   (str (encode-key (first entry)) "="
-                        (url/encode (second entry))))
-                 (pairs value))))
+  (str/join
+   "&"
+   (map (fn [pair]
+          (str (encode-component (nth pair 0))
+               "="
+               (encode-component (nth pair 1))))
+        (checked-pairs value))))
+
+(defn- decode-pair
+  [value index offset]
+  (let [separator (str/index-of value "=")]
+    (if (neg? separator)
+      (throw (ex-info "Malformed form pair"
+                      {:value value :index index :offset offset})))
+    [(decode-component (str/slice value 0 separator))
+     (decode-component (str/slice value (inc separator)))]))
+
+(defn decode
+  [source]
+  (if (not (string? source))
+    (throw (ex-info "Form decode expects a string"
+                    {:value source})))
+  (if (= source "")
+    []
+    (let [length (str/length source)]
+      (loop [offset 0 index 0 output []]
+        (let [separator (str/index-of source "&" offset)
+              end (if (neg? separator) length separator)
+              value (str/slice source offset end)
+              output (conj output (decode-pair value index offset))]
+          (if (neg? separator)
+            output
+            (recur (inc separator) (inc index) output)))))))
