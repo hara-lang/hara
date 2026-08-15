@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: foundation-shape-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   materialize:
     runs-on: ubuntu-latest
@@ -64,7 +68,14 @@ jobs:
           echo '4ec4ad5730d9a96c76b64cd2f10742e94a4ec2875ba9f9627c255804fc79370e  /tmp/agent-foundation.patch' | sha256sum -c -
           git apply --check /tmp/agent-foundation.patch
           git apply /tmp/agent-foundation.patch
-          rm "${parts[@]}"
+
+          echo 'f193b92d8e729f9f1c21f1eb6b24e9047b033de4af105720339f9994f6f694de  .github/agent-foundation-corrections.patch.gz.b64' | sha256sum -c -
+          base64 --decode .github/agent-foundation-corrections.patch.gz.b64 | gzip --decompress > /tmp/agent-foundation-corrections.patch
+          echo '4126d3f507d0ef17709a41639b7b6ce227e260d6481b80d5f7fc164f30cfa2ca  /tmp/agent-foundation-corrections.patch' | sha256sum -c -
+          git apply --check /tmp/agent-foundation-corrections.patch
+          git apply /tmp/agent-foundation-corrections.patch
+
+          rm "${parts[@]}" .github/agent-foundation-corrections.patch.gz.b64
           rm .github/workflows/agent-source-snapshot.yml
           rm .github/workflows/agent-runtime-bootstrap.yml
           rustfmt --edition 2021 core/rust/src/core.rs core/rust/src/fiber.rs
@@ -131,6 +142,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf hara-specs-registry
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add --all
