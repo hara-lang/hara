@@ -3515,7 +3515,7 @@ public final class HaraContext {
                 throw new HaraException("json/read expects a string");
               }
               try {
-                return hara.verify.json.StrictJson.parse(source);
+                return StdJson.read(source);
               } catch (IllegalArgumentException error) {
                 throw new HaraException("json/read: " + error.getMessage());
               }
