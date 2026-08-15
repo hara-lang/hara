@@ -30,6 +30,8 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
   private static final Keyword TIMEOUT_KEY = Keyword.create("timeout");
   private static final Keyword CONTEXT_KEY = Keyword.create("context");
   private static final Keyword DISPLAY_KEY = Keyword.create("display");
+  private static final Keyword ERROR_CODE_KEY = Keyword.create("code");
+  private static final Keyword TIMEOUT_ERROR_CODE = Keyword.create("result", "timeout");
 
   private final Status status;
   private final Object data;
@@ -217,6 +219,15 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
 
   public boolean isError() {
     return status == Status.ERROR;
+  }
+
+  @SuppressWarnings("unchecked")
+  public boolean isTimeout() {
+    if (!isError() || error == null || !(error.getData() instanceof IMapType<?, ?> rawData)) {
+      return false;
+    }
+    IMapType<Object, Object> data = (IMapType<Object, Object>) rawData;
+    return Eq.eq(data.lookup(ERROR_CODE_KEY), TIMEOUT_ERROR_CODE);
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})

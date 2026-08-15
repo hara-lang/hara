@@ -187,7 +187,7 @@ public final class HaraContext {
           Map.entry(
               "Result",
               java.util.List.of(
-                  "success", "error", "synchronize", "result?", "success?", "error?", "status",
+                  "success", "error", "synchronize", "result?", "success?", "error?", "timeout?", "status",
                   "data", "error-value", "context", "with-context")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
@@ -1862,6 +1862,13 @@ public final class HaraContext {
             value ->
                 HaraBox.unwrap(value) instanceof HaraResult nativeResult
                     && nativeResult.isError()));
+    result.define(
+        "timeout?",
+        new UnaryBuiltin(
+            "std.native.Result/timeout?",
+            value ->
+                HaraBox.unwrap(value) instanceof HaraResult nativeResult
+                    && nativeResult.isTimeout()));
     result.define(
         "status",
         new UnaryBuiltin(

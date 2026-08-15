@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -121,6 +122,7 @@ public class HaraResultTest {
             hara.lang.data.Map.Standard.from(
                 null, Keyword.create("timeout"), 0L));
     assertTrue(timeout.isError());
+    assertTrue(timeout.isTimeout());
     assertTrue(promise.cancelled.get());
     assertEquals(
         Keyword.create("result", "timeout"),
@@ -135,6 +137,7 @@ public class HaraResultTest {
             hara.lang.data.Map.Standard.from(
                 null, Keyword.create("timeout"), 0L));
     assertTrue(unsupported.isError());
+    assertFalse(unsupported.isTimeout());
     assertEquals(
         Keyword.create("result", "timeout-unsupported"),
         errorData(unsupported).lookup(Keyword.create("code")));
@@ -145,6 +148,7 @@ public class HaraResultTest {
             hara.lang.data.Map.Standard.from(
                 null, Keyword.create("timeout"), 0L));
     assertTrue(cancellationFailure.isError());
+    assertTrue(cancellationFailure.isTimeout());
     assertEquals(
         Boolean.FALSE,
         cancellationFailure.context().lookup(Keyword.create("result", "cancelled")));
@@ -208,6 +212,24 @@ public class HaraResultTest {
     @Override
     public Object derefTimeout(long milliseconds, Object timeoutValue) {
       return timeoutValue;
+    }
+  }
+
+  @Test
+  public void timeoutPredicateIsExposedByNativeApi() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertTrue(
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [timeout (std.native.Result/error "
+                      + "(ex-info \"timeout\" {:code :result/timeout})) "
+                      + "other (std.native.Result/error "
+                      + "(ex-info \"other\" {:code :demo/other}))] "
+                      + "(and (std.native.Result/timeout? timeout) "
+                      + "(not (std.native.Result/timeout? other)) "
+                      + "(not (std.native.Result/timeout? nil))))")
+              .asBoolean());
     }
   }
 
