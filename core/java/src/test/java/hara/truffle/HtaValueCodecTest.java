@@ -69,6 +69,66 @@ public class HtaValueCodecTest {
     assertThrows(HaraException.class, () -> HtaValueCodec.encode(decoded));
   }
   @Test
+  public void nativeResultsUseTheExistingStructTagAndRoundTrip() {
+    Object context =
+        hara.lang.data.Map.Standard.from(
+            null,
+            Keyword.create("source"),
+            "hta",
+            Keyword.create("display"),
+            new Object());
+    HaraResult success = HaraResult.success(42L, context);
+    byte[] encoded = HtaValueCodec.encode(success);
+    assertEquals(33, Byte.toUnsignedInt(encoded[4]));
+    Object value = HtaValueCodec.decode(encoded);
+    assertTrue(value instanceof HaraResult);
+    HaraResult decoded = (HaraResult) value;
+    assertTrue(decoded.isSuccess());
+    assertEquals(42L, decoded.data());
+    assertEquals("hta", decoded.context().lookup(Keyword.create("source")));
+    assertEquals(null, decoded.context().lookup(Keyword.create("display")));
+
+    hara.lang.base.Ex.Info error =
+        new hara.lang.base.Ex.Info(
+            "boom",
+            hara.lang.data.Map.Standard.from(
+                null, Keyword.create("code"), Keyword.create("demo", "boom")));
+    decoded =
+        (HaraResult)
+            HtaValueCodec.decodeCanonical(
+                HtaValueCodec.encode(HaraResult.error(error, context)));
+    assertTrue(decoded.isError());
+    assertEquals("boom", decoded.errorValue().getMessage());
+  }
+
+  @Test
+  public void resultTransportRejectsNonportableContextAndKeepsNonexactStructsGeneric() {
+    HaraResult nonportable =
+        HaraResult.success(
+            1L,
+            hara.lang.data.Map.Standard.from(
+                null, Keyword.create("native"), new Object()));
+    HaraException error =
+        assertThrows(HaraException.class, () -> HtaValueCodec.encode(nonportable));
+    assertTrue(error.getMessage().contains("hta/value-unsupported"));
+
+    HaraType type =
+        new HaraType(
+            "hara/Result", new String[] {"data", "status", "error", "context"});
+    HaraStruct generic =
+        new HaraStruct(
+            type,
+            new Object[] {
+              42L,
+              Keyword.create("success"),
+              null,
+              hara.lang.data.Map.Standard.EMPTY
+            });
+    Object decoded = HtaValueCodec.decodeCanonical(HtaValueCodec.encode(generic));
+    assertTrue(decoded instanceof HaraStruct);
+  }
+
+  @Test
   public void structsRoundTripAndMutableValuesAreRejected() throws Exception {
     HaraType type = new HaraType("demo/Point", new String[] {"x", "y"});
     HaraStruct struct = new HaraStruct(type, new Object[] {1L, 2L});

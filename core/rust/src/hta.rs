@@ -1,4 +1,4 @@
-use crate::core::Value;
+use crate::core::{ResultValue, Value};
 #[cfg(test)]
 use crate::lang::data::{Tuple as PTuple, Vector as PVector};
 use crate::lang::protocol::INamespaced;
@@ -44,6 +44,8 @@ const POINTER: u8 = 34;
 const VAR_REF: u8 = 35;
 const DEQUE: u8 = 36;
 const PRIORITY_MAP: u8 = 37;
+const RESULT_STRUCT_NAME: &str = "hara/Result";
+const RESULT_STRUCT_FIELDS: [&str; 4] = ["status", "data", "error", "context"];
 
 pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = MAGIC.to_vec();
@@ -249,6 +251,22 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
                 depth + 1,
             )?;
         }
+        Value::Result(value) => {
+            output.push(STRUCT);
+            encode_bare(&Value::String(RESULT_STRUCT_NAME.into()), output, depth + 1)?;
+            let fields = RESULT_STRUCT_FIELDS
+                .iter()
+                .map(|field| Value::String((*field).into()))
+                .collect::<Vec<_>>();
+            encode_sequence(VECTOR, fields.iter(), output, depth)?;
+            let values = [
+                value.status_value(),
+                value.data.clone(),
+                value.error_value(),
+                value.transport_context(),
+            ];
+            encode_sequence(VECTOR, values.iter(), output, depth)?;
+        }
         Value::Struct(value) => {
             output.push(STRUCT);
             encode_bare(&Value::String(value.ty.name.clone()), output, depth + 1)?;
@@ -325,6 +343,44 @@ fn encode_len(value: usize, output: &mut Vec<u8>) -> Result<(), String> {
     let value = u32::try_from(value).map_err(|_| "hta/value-too-large")?;
     output.extend_from_slice(&value.to_be_bytes());
     Ok(())
+}
+
+fn decode_result_struct(
+    name: &str,
+    fields: &[String],
+    values: &[Value],
+) -> Result<Option<Value>, String> {
+    let exact_fields = fields.len() == RESULT_STRUCT_FIELDS.len()
+        && fields
+            .iter()
+            .zip(RESULT_STRUCT_FIELDS.iter())
+            .all(|(field, expected)| field == expected);
+    if name != RESULT_STRUCT_NAME || !exact_fields {
+        return Ok(None);
+    }
+    let [status, data, error, context] = values else {
+        return Err("hta/value-malformed: Result arity mismatch".into());
+    };
+    let result = match status {
+        Value::Keyword(status) if status.as_str() == "success" => {
+            if !matches!(error, Value::Nil) {
+                return Err("hta/value-malformed: success Result contains an error".into());
+            }
+            ResultValue::success(data.clone(), context.clone())
+        }
+        Value::Keyword(status) if status.as_str() == "error" => {
+            if !matches!(data, Value::Nil) {
+                return Err("hta/value-malformed: error Result contains success data".into());
+            }
+            if !matches!(error, Value::ExceptionInfo(_)) {
+                return Err("hta/value-malformed: error Result lacks a native Error".into());
+            }
+            ResultValue::error(error.clone(), context.clone())
+        }
+        _ => return Err("hta/value-malformed: invalid Result status".into()),
+    }
+    .map_err(|error| format!("hta/value-malformed: invalid Result: {error}"))?;
+    Ok(Some(Value::Result(std::rc::Rc::new(result))))
 }
 
 struct Reader<'a> {
@@ -549,6 +605,9 @@ impl Reader<'_> {
                 if fields.len() != values.len() {
                     return Err("hta/value-malformed: struct arity mismatch".into());
                 }
+                if let Some(result) = decode_result_struct(&name, &fields, &values)? {
+                    return Ok(result);
+                }
                 Ok(Value::Struct(std::rc::Rc::new(
                     crate::core::StructValue::from_values(
                         std::rc::Rc::new(crate::core::StructType { name, fields }),
@@ -641,6 +700,137 @@ mod tests {
     }
 
     #[test]
+    fn native_results_round_trip_through_the_existing_struct_tag() {
+        let success = Value::Result(std::rc::Rc::new(
+            ResultValue::success(
+                Value::Number(42),
+                Value::Map(
+                    vec![(Value::Keyword("source".into()), Value::String("hta".into()))]
+                        .into_iter()
+                        .collect(),
+                ),
+            )
+            .unwrap(),
+        ));
+        let Value::Result(decoded) = decode(&encode(&success).unwrap()).unwrap() else {
+            panic!("expected native Result");
+        };
+        assert!(decoded.is_success());
+        assert_eq!(decoded.data, Value::Number(42));
+        assert!(crate::core::map_entries(&decoded.context)
+            .unwrap()
+            .iter()
+            .any(|(key, value)| key == &Value::Keyword("source".into())
+                && value == &Value::String("hta".into())));
+
+        let error = Value::ExceptionInfo(std::rc::Rc::new(crate::core::ExceptionInfo {
+            message: "boom".into(),
+            data: Box::new(Value::Map(
+                vec![(
+                    Value::Keyword("code".into()),
+                    Value::Keyword("demo/boom".into()),
+                )]
+                .into_iter()
+                .collect(),
+            )),
+            cause: None,
+        }));
+        let failure = Value::Result(std::rc::Rc::new(
+            ResultValue::error(error, Value::Map(Default::default())).unwrap(),
+        ));
+        let Value::Result(decoded) = decode(&encode(&failure).unwrap()).unwrap() else {
+            panic!("expected native Result");
+        };
+        assert!(decoded.is_error());
+        let Value::ExceptionInfo(error) = decoded.error_value() else {
+            panic!("expected transported native Error");
+        };
+        assert_eq!(error.message, "boom");
+    }
+
+    #[test]
+    fn result_transport_strips_only_display_and_rejects_other_native_context() {
+        let display = crate::core::native_function("result-display", 1, |_| {
+            Ok(Value::String("rendered".into()))
+        });
+        let result = Value::Result(std::rc::Rc::new(
+            ResultValue::success(
+                Value::Number(1),
+                Value::Map(
+                    vec![
+                        (Value::Keyword("display".into()), display),
+                        (
+                            Value::Keyword("source".into()),
+                            Value::String("transport".into()),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            )
+            .unwrap(),
+        ));
+        let Value::Result(decoded) = decode(&encode(&result).unwrap()).unwrap() else {
+            panic!("expected native Result");
+        };
+        let entries = crate::core::map_entries(&decoded.context).unwrap();
+        assert!(!entries
+            .iter()
+            .any(|(key, _)| key == &Value::Keyword("display".into())));
+        assert!(entries
+            .iter()
+            .any(|(key, _)| key == &Value::Keyword("source".into())));
+
+        let nonportable = Value::Result(std::rc::Rc::new(
+            ResultValue::success(
+                Value::Number(1),
+                Value::Map(
+                    vec![(
+                        Value::Keyword("native".into()),
+                        Value::Promise(crate::core::Promise::new()),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+            )
+            .unwrap(),
+        ));
+        assert!(encode(&nonportable)
+            .unwrap_err()
+            .contains("hta/value-unsupported"));
+    }
+
+    #[test]
+    fn nonexact_result_structs_remain_generic_structs() {
+        let ty = std::rc::Rc::new(crate::core::StructType {
+            name: RESULT_STRUCT_NAME.into(),
+            fields: vec![
+                "data".into(),
+                "status".into(),
+                "error".into(),
+                "context".into(),
+            ],
+        });
+        let value = Value::Struct(std::rc::Rc::new(
+            crate::core::StructValue::from_values(
+                ty,
+                vec![
+                    Value::Number(42),
+                    Value::Keyword("success".into()),
+                    Value::Nil,
+                    Value::Map(Default::default()),
+                ],
+                None,
+            )
+            .unwrap(),
+        ));
+        assert!(matches!(
+            decode(&encode(&value).unwrap()).unwrap(),
+            Value::Struct(_)
+        ));
+    }
+
+    #[test]
     fn pointers_round_trip_as_descriptors() {
         let fields = vec![(Value::Keyword("id".into()), Value::String("ROOT".into()))]
             .into_iter()
@@ -682,7 +872,10 @@ mod tests {
         ));
         let decoded = decode(&encode(&priority_map).unwrap()).unwrap();
         assert!(matches!(decoded, Value::PriorityMap(_)));
-        assert_eq!(crate::core::map_entries(&decoded).unwrap()[0].0, Value::Keyword("b".into()));
+        assert_eq!(
+            crate::core::map_entries(&decoded).unwrap()[0].0,
+            Value::Keyword("b".into())
+        );
         let tagged = Value::Tagged(Box::new(crate::lang::data::TaggedLiteral::new(
             crate::lang::data::Symbol::parse("demo/tag"),
             Value::Number(42),

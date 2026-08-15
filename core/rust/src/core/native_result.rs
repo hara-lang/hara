@@ -95,6 +95,16 @@ impl ResultValue {
         Ok(updated)
     }
 
+    pub(crate) fn transport_context(&self) -> Value {
+        let display = Value::Keyword(Keyword::from("display"));
+        Value::Map(PMap::from_iter(
+            map_entries(&self.context)
+                .expect("validated Result context")
+                .into_iter()
+                .filter(|(key, _)| key != &display),
+        ))
+    }
+
     pub(crate) fn deref_value(&self) -> Result<Value, String> {
         match self.status {
             ResultStatus::Success => Ok(self.data.clone()),
