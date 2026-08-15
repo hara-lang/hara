@@ -1,0 +1,102 @@
+name: Isolate JVM filesystem regressions
+
+on:
+  push:
+    branches:
+      - agent/std-native-file-portable-fs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-fs-jvm-diagnostic-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout patch carrier
+        uses: actions/checkout@v4
+        with:
+          ref: agent/std-native-file-portable-fs
+          path: control
+          fetch-depth: 1
+
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: hara
+          fetch-depth: 1
+
+      - name: Materialize filesystem implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat control/.github/patches/fs-current-main-dev.part-* | base64 -d | gzip -d > "$RUNNER_TEMP/base.patch"
+          cat control/.github/patches/fs-current-main-overlay.part-* | base64 -d | gzip -d > "$RUNNER_TEMP/overlay.patch"
+          base64 -d control/.github/patches/fs-current-main-fix-03.patch.gz.b64 | gzip -d > "$RUNNER_TEMP/fix03.patch"
+          exclude=(
+            --exclude=core/java/src/test/java/hara/truffle/MainTest.java
+            --exclude=core/rust/standard-library.namespaces
+          )
+          cd hara
+          git apply "${exclude[@]}" "$RUNNER_TEMP/base.patch"
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-01.patch
+          git apply "${exclude[@]}" "$RUNNER_TEMP/overlay.patch"
+          git apply "${exclude[@]}" "$RUNNER_TEMP/fix03.patch"
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-04.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('core/rust/standard-library.namespaces')
+          names = {line.strip() for line in path.read_text().splitlines() if line.strip()}
+          names.update({'std.fs', 'std.fs.path', 'std.fs.walk'})
+          path.write_text('\n'.join(sorted(names)) + '\n')
+          PY
+          git diff --check
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: hara/core/java/pom.xml
+
+      - name: Run filesystem test classes independently
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          mkdir -p "$RUNNER_TEMP/fs-jvm-logs"
+          overall=0
+          cd hara/core
+          for test_class in HaraLogicalPathTest HaraFileProviderTest StdFsTest; do
+            log="$RUNNER_TEMP/fs-jvm-logs/${test_class}.log"
+            echo "=== $test_class ==="
+            mvn -q -B -Ptruffle --file java/pom.xml \
+              -Dtest="$test_class" \
+              test > "$log" 2>&1
+            status=$?
+            echo "$status" > "$RUNNER_TEMP/fs-jvm-logs/${test_class}.status"
+            if [[ $status -ne 0 ]]; then
+              overall=1
+              grep -E '^\[ERROR\]|COMPILATION ERROR|Tests run:|Failures:|Errors:|expected:|but was:' "$log" | tail -n 120 || true
+              tail -n 100 "$log"
+            else
+              echo "$test_class passed"
+            fi
+          done
+          exit $overall
+
+      - name: Upload JVM filesystem diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fs-jvm-diagnostics
+          path: ${{ runner.temp }}/fs-jvm-logs
+          if-no-files-found: error
+          retention-days: 1
