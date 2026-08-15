@@ -51,22 +51,30 @@ jobs:
               return text.replace(old, new, 1)'''
           new = r'''    count = text.count(old)
               if label == "Rust Result synchronize operation" and count == 0:
-                  actual = ''' + "'''" + r'''        "error" => {
-                      if !(1..=2).contains(&forms.len()) {
-                          return Err("std.native.Result/error expects an error and optional context".into());
-                      }
-                      let error = eval(&forms[0], env)?;
-                      let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
-                      Ok(Value::Result(Rc::new(ResultValue::error(error, context)?)))
-                  }
-                  "result?" | "success?" | "error?" => {
-          ''' + "'''" + r'''
-                  actual_count = text.count(actual)
-                  if actual_count != 1:
+                  anchor = '        "result?" | "success?" | "error?" => {\n'
+                  addition = (
+                      '        "synchronize" => {\n'
+                      '            if !(1..=2).contains(&forms.len()) {\n'
+                      '                return Err(\n'
+                      '                    "std.native.Result/synchronize expects a value and optional options map"\n'
+                      '                        .into(),\n'
+                      '                );\n'
+                      '            }\n'
+                      '            let value = eval(&forms[0], env)?;\n'
+                      '            let options = forms\n'
+                      '                .get(1)\n'
+                      '                .map(|form| eval(form, env))\n'
+                      '                .transpose()?;\n'
+                      '            let (timeout, context) = result_synchronize_options(options)?;\n'
+                      '            native_result::synchronize_value(value, timeout, context)\n'
+                      '        }\n'
+                  )
+                  anchor_count = text.count(anchor)
+                  if anchor_count != 1:
                       raise RuntimeError(
-                          f"{label}: expected one current-source anchor, found {actual_count}"
+                          f"{label}: expected one predicate-dispatch anchor, found {anchor_count}"
                       )
-                  return text.replace(actual, new, 1)
+                  return text.replace(anchor, addition + anchor, 1)
               if count != 1:
                   raise RuntimeError(f"{label}: expected one anchor, found {count}")
               return text.replace(old, new, 1)'''
