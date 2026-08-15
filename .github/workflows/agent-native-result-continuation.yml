@@ -51,7 +51,18 @@ jobs:
               return text.replace(old, new, 1)'''
           new = r'''    count = text.count(old)
               if label == "Rust Result synchronize operation" and count == 0:
-                  anchor = '        "result?" | "success?" | "error?" => {\n'
+                  import re
+
+                  matches = list(
+                      re.finditer(
+                          r'(?m)^[ \t]*"result\?"\s*\|\s*"success\?"\s*\|\s*"error\?"',
+                          text,
+                      )
+                  )
+                  if len(matches) != 1:
+                      raise RuntimeError(
+                          f"{label}: expected one Result predicate-dispatch arm, found {len(matches)}"
+                      )
                   addition = (
                       '        "synchronize" => {\n'
                       '            if !(1..=2).contains(&forms.len()) {\n'
@@ -69,12 +80,8 @@ jobs:
                       '            native_result::synchronize_value(value, timeout, context)\n'
                       '        }\n'
                   )
-                  anchor_count = text.count(anchor)
-                  if anchor_count != 1:
-                      raise RuntimeError(
-                          f"{label}: expected one predicate-dispatch anchor, found {anchor_count}"
-                      )
-                  return text.replace(anchor, addition + anchor, 1)
+                  insertion = matches[0].start()
+                  return text[:insertion] + addition + text[insertion:]
               if count != 1:
                   raise RuntimeError(f"{label}: expected one anchor, found {count}")
               return text.replace(old, new, 1)'''
