@@ -7945,7 +7945,7 @@ fn unreduced_value(value: Value) -> Value {
 }
 
 fn reduce_iterator(
-    function: &Rc<Function>,
+    function: &Value,
     initial: Option<Value>,
     source: Value,
     operation: &str,
@@ -7955,7 +7955,7 @@ fn reduce_iterator(
         let mut accumulator = initial;
         while let Some(value) = iterator_try_next(&iterator)? {
             let next = match accumulator {
-                Some(current) => call_function(function, vec![current, value])?,
+                Some(current) => call_value(function.clone(), vec![current, value])?,
                 None => value,
             };
             if is_reduced_value(&next) {
@@ -7980,15 +7980,17 @@ fn reduce_iterator(
 
 fn protocol_reduce(arguments: &[Value]) -> Result<Value, String> {
     let (source, function, accumulator) = match arguments {
-        [source, Value::Function(function), initial] => (source, function, Some(initial.clone())),
-        [source, Value::Function(function)] => (source, function, None),
+        [source, function @ Value::Function(_), initial] => {
+            (source, function.clone(), Some(initial.clone()))
+        }
+        [source, function @ Value::Function(_)] => (source, function.clone(), None),
         _ => {
             return Err(
                 "IReduce/reduce expects a value, function, and optional initial value".into(),
             )
         }
     };
-    reduce_iterator(function, accumulator, source.clone(), "IReduce/reduce")
+    reduce_iterator(&function, accumulator, source.clone(), "IReduce/reduce")
 }
 
 fn foundation_protocol_descriptor(name: &str) -> Option<GuestProtocol> {
@@ -8010,9 +8012,10 @@ fn satisfies_foundation_protocol(name: &str, value: &Value) -> bool {
 }
 
 fn base_reduce_in(arguments: &[Value]) -> Result<Value, String> {
-    let [initial, Value::Function(function), source] = arguments else {
-        return Err("Base/reduce-in expects an initial value, function, and source".into());
+    let [initial, function, source] = arguments else {
+        return Err("Base/reduce-in expects an initial value, callable, and source".into());
     };
+    let function = deref_value(function.clone());
     let converted = satisfies_foundation_protocol("IToMutable", initial);
     let accumulator = if converted {
         protocol_call(
@@ -8024,7 +8027,7 @@ fn base_reduce_in(arguments: &[Value]) -> Result<Value, String> {
         initial.clone()
     };
     let output = reduce_iterator(
-        function,
+        &function,
         Some(accumulator),
         source.clone(),
         "Base/reduce-in",
@@ -15192,8 +15195,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             },
                         };
                         while let Some(value) = iterator_try_next(&iterator)? {
-                            accumulator =
-                                call_value(function.clone(), vec![accumulator, value])?;
+                            accumulator = call_value(function.clone(), vec![accumulator, value])?;
                             if is_reduced_value(&accumulator) {
                                 return Ok(unreduced_value(accumulator));
                             }

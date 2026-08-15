@@ -4546,6 +4546,22 @@ mod tests {
     }
 
     #[test]
+    fn base_native_methods_have_behavioral_conformance_cases() {
+        let mut runtime = Runtime::new();
+        runtime
+            .eval_text(include_str!(
+                "../../lib/test-fixtures/std/foundation/native_method_conformance.hal"
+            ))
+            .unwrap();
+        let results = runtime.eval_text("(base-native-method-results)").unwrap();
+        assert!(
+            !results.contains(":pass false"),
+            "Base behavioral conformance failed: {results}"
+        );
+        assert_eq!(results.matches(":pass true").count(), 8);
+    }
+
+    #[test]
     fn native_types_are_descriptors_and_foundation_libraries_are_hal_wrappers() {
         let mut runtime = Runtime::new();
         assert_eq!(

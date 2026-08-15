@@ -17,3 +17,59 @@
              false
              true))
          :error message}))))
+
+(defn native-method-value-result
+  "Runs a behavioral native method case and compares its value."
+  [method expected thunk]
+  (try
+    (let [actual (thunk)]
+      {:method method
+       :pass (std.foundation/= expected actual)
+       :expected expected
+       :actual actual})
+    (catch Throwable error
+      {:method method
+       :pass false
+       :expected expected
+       :error (ex-message error)})))
+
+(defn base-native-reducer
+  [accumulator value]
+  (+ accumulator value))
+
+(defn base-native-method-results
+  "Exercises every std.native.Base method, including non-function callables for reduce-in."
+  []
+  [(native-method-value-result
+    'Base/reduce-in
+    [1 2]
+    (fn [] (Base/reduce-in [] Base/append-at-count [1 2])))
+   (native-method-value-result
+    'Base/reduce-in
+    6
+    (fn [] (Base/reduce-in 0 #'base-native-reducer [1 2 3])))
+   (native-method-value-result
+    'Base/reduce-in
+    2
+    (fn [] (Base/reduce-in nil :answer [{:answer 2} 0])))
+   (native-method-value-result
+    'Base/reduce-in
+    2
+    (fn [] (Base/reduce-in :answer {:answer 2} [nil])))
+   (native-method-value-result
+    'Base/reduced
+    true
+    (fn [] (Base/reduced? (Base/reduced :done))))
+   (native-method-value-result
+    'Base/reduced?
+    [true false]
+    (fn [] [(Base/reduced? (Base/reduced :done))
+            (Base/reduced? :done)]))
+   (native-method-value-result
+    'Base/unreduced
+    :done
+    (fn [] (Base/unreduced (Base/reduced :done))))
+   (native-method-value-result
+    'Base/append-at-count
+    [1 2]
+    (fn [] (Base/append-at-count [1] 2)))])

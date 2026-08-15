@@ -299,20 +299,20 @@ public final class HaraJavaAdapters {
         "get-entry",
         (receiver, arguments) ->
             ((IDepsType) receiver)
-                .depGet(receiver instanceof IContext ? (IContext) receiver : null, arguments[0]));
+                .getEntry(receiver instanceof IContext ? (IContext) receiver : null, arguments[0]));
     protocol.extend(
         IDepsType.class,
         "get-deps",
         (receiver, arguments) ->
             ((IDepsType) receiver)
-                .depEntries(
+                .getDeps(
                     receiver instanceof IContext ? (IContext) receiver : null, arguments[0]));
     protocol.extend(
         IDepsType.class,
         "list-entries",
         (receiver, arguments) ->
             ((IDepsType) receiver)
-                .depIds(receiver instanceof IContext ? (IContext) receiver : null));
+                .listEntries(receiver instanceof IContext ? (IContext) receiver : null));
   }
 
   public static void installConj(HaraProtocol protocol) {

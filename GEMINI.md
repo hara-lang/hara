@@ -10,7 +10,7 @@
 * The package `hara.lang.kernel` has been renamed to `hara.kernel`.
 * The `Server` object has a long lifecycle, managing the server socket and shared resources like log streams. It spawns short-lived `Conn` objects for each client connection, which must not close shared resources.
 * The `std.lang` emission phase uses `SourceNode` objects (tree structure) instead of strings to track location data for Source Map generation.
-* The default implementation for the `IDeps` protocol family operates on a map-based `context` object, which is expected to hold dependency data under `:entries` and `:graph` keys.
+* The portable map implementation for the `IDeps` protocol family reads identifiers directly from the context map. Each value may be a raw entry or a per-entry `{:entry value :deps ids}` map; missing `:deps` defaults to an empty set. The Java and Rust native interfaces are extension points and currently have no built-in implementors.
 * Communication between the Runtime (`RT`) and `Foundation` relies on shared interfaces from `hara.lang.base` (e.g., `I.Context`) to bridge the classloader boundary without requiring serialization.
 * `hara.kernel.Conn.Encoder` and `hara.kernel.Conn.Parser` are public and used for serializing RESP data for both network communication and AOF persistence.
 * `hara.kernel.Main` initiates the server and then runs a local REPL on the main thread using JLine for input handling, evaluating in the `ROOT` session.
@@ -190,7 +190,7 @@
 * `hara.lib.block.Block` and `hara.lib.zip.Zipper` implement `hara.lang.base.I.ObjType` and return `CLASS` for their object type.
 * To run a Java class with a `main` method located in `src/test/java` using Maven, use `mvn test-compile exec:java -Dexec.mainClass="pkg.ClassName" -Dexec.classpathScope=test`.
 * The `List` data structure interface has a `conjAll(Iterator<E> it)` method for appending all elements from an iterator.
-* Clojure protocols, like `std.protocol.deps/IDeps`, are backed by Java interfaces defined in files such as `hara.lang.base.I.java`.
+* Hara protocols, such as `std.protocol.ideps/IDeps`, are bridged to Java interfaces such as `hara.lang.data.types.IDepsType` when a native value implements them.
 * The `hara.kernel.base.Builtin.Basic.deref` static method is used to resolve `Future` objects, and `hara.kernel.base.Eval.eval` is used to evaluate forms.
 * The project uses the `googleformatter-maven-plugin` which automatically reformats source code in-place during the Maven build lifecycle. Running `mvn` commands (like `test` or `package`) locally will modify files and result in a dirty git working tree.
 * For building collections incrementally, use the `Mutable` version of a data structure (e.g., `Vector.Mutable`) and convert it to a persistent `Standard` version (e.g., using `toPersistent()`) when done.

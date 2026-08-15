@@ -57,24 +57,24 @@ public class HaraJavaAdaptersTest {
 
 @Test
 public void bridgesTheExistingDependencyTypeContract() {
-  class DependencyFixture implements IDepsType<String, String>, IContext {
+  class DependencyFixture implements IDepsType<String, Long>, IContext {
     @Override
     public Object call(Object... arguments) {
       return null;
     }
 
     @Override
-    public String depGet(IContext context, String id) {
-      return context == this ? "entry:" + id : "wrong-context";
+    public Long getEntry(IContext context, String id) {
+      return context == this && "a".equals(id) ? 11L : null;
     }
 
     @Override
-    public ISetType<String> depEntries(IContext context, String id) {
+    public ISetType<String> getDeps(IContext context, String id) {
       return Set.Standard.from(null, "base:" + id);
     }
 
     @Override
-    public Iterator<String> depIds(IContext context) {
+    public Iterator<String> listEntries(IContext context) {
       return java.util.List.of("a", "b").iterator();
     }
   }
@@ -85,7 +85,7 @@ public void bridgesTheExistingDependencyTypeContract() {
           "IDeps", Map.of("get-entry", 2, "get-deps", 2, "list-entries", 1));
   HaraJavaAdapters.installDeps(deps);
 
-  assertEquals("entry:a", deps.invoke("get-entry", fixture, new Object[] {"a"}));
+  assertEquals(11L, deps.invoke("get-entry", fixture, new Object[] {"a"}));
   assertTrue(deps.invoke("get-deps", fixture, new Object[] {"a"}) instanceof ISetType);
   Iterator<?> ids = (Iterator<?>) deps.invoke("list-entries", fixture, new Object[0]);
   assertEquals("a", ids.next());

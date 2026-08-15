@@ -114,6 +114,16 @@ public class NativeMethodParityTest {
   }
 
   @Test
+  public void baseNativeMethodsHaveBehavioralConformanceCases() throws Exception {
+    String source = Files.readString(FIXTURE) + "\n(base-native-method-results)";
+    try (Context context = Context.newBuilder(HaraLanguage.ID).allowAllAccess(true).build()) {
+      String result = context.eval(HaraLanguage.ID, source).toString();
+      assertTrue(result, !result.contains(":pass false"));
+      assertEquals(8, result.split(":pass true", -1).length - 1);
+    }
+  }
+
+  @Test
   public void nativeTypeObjectsAndAliasesAreUniversalIncludingBlankNamespaces() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).allowAllAccess(true).build()) {
       assertEquals(
