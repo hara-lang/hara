@@ -1,0 +1,369 @@
+name: Build synchronous std.fs tranche
+
+on:
+  push:
+    branches:
+      - agent/650-sync-std-fs-build
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-650-sync-std-fs
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BASE_SHA: 22be825b26c48ce3dc3b4bb71dd6d4e50b37989c
+      FINAL_BRANCH: agent/650-sync-std-fs
+    steps:
+      - name: Checkout current main baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 22be825b26c48ce3dc3b4bb71dd6d4e50b37989c
+          path: hara
+          fetch-depth: 0
+
+      - name: Checkout synchronous filesystem materializer
+        uses: actions/checkout@v4
+        with:
+          ref: agent/650-sync-std-fs-build
+          path: builder
+          fetch-depth: 1
+
+      - name: Checkout specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: main
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build native Hara development tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -s ../hara-specs-registry hara/hara-specs-registry
+          cd hara
+          cargo build --manifest-path core/rust/Cargo.toml --bin hara --bin hara-test
+          core/rust/target/debug/hara --version
+
+      - name: Construct complete synchronous candidates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile builder/scripts/agent-650-make-std-fs-synchronous.py
+          rm -rf "$RUNNER_TEMP/std-fs-candidates"
+          python3 builder/scripts/agent-650-make-std-fs-synchronous.py \
+            candidates hara "$RUNNER_TEMP/std-fs-candidates"
+          find "$RUNNER_TEMP/std-fs-candidates" -type f -print | sort
+
+      - name: Evaluate write and retest std.fs.walk in fresh Hara processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          HARA=core/rust/target/debug/hara
+          CANDIDATE="$RUNNER_TEMP/std-fs-candidates/core/lib/src/std/fs/walk.hal"
+
+          "$HARA" --project core --offline stdin < "$CANDIDATE"
+
+          candidate_check="$RUNNER_TEMP/std-fs-walk-candidate-check.hal"
+          cat "$CANDIDATE" > "$candidate_check"
+          cat >> "$candidate_check" <<'HAL'
+
+          (let [root (deref (File/temp-directory "/" {:prefix "std-fs-walk-candidate-"}))
+                a (str root "/a")
+                b (str root "/b")
+                _ (deref (File/write b (bytes 2)))
+                _ (deref (File/write a (bytes 1)))
+                values (vec (map :path (walk root)))
+                result [(promise? (File/entries root))
+                        (= values [a b])
+                        (promise? values)]
+                _ (deref (File/delete a))
+                _ (deref (File/delete b))
+                _ (deref (File/delete root))]
+            (if (= result [true true false])
+              :std-fs-walk-candidate-ok
+              (throw (ex-info "Synchronous walk candidate assertion failed"
+                              {:result result :values values}))))
+          HAL
+          "$HARA" --project core --offline stdin < "$candidate_check"
+
+          python3 ../builder/scripts/agent-650-make-std-fs-synchronous.py \
+            apply . "$RUNNER_TEMP/std-fs-candidates" \
+            core/lib/src/std/fs/walk.hal
+          "$HARA" --offline run core/lib/src/std/fs/walk.hal
+
+          cat > "$RUNNER_TEMP/std-fs-walk-written-check.hal" <<'HAL'
+          (do
+            (require 'std.fs.walk)
+            (let [root (deref (File/temp-directory "/" {:prefix "std-fs-walk-written-"}))
+                  a (str root "/a")
+                  b (str root "/b")
+                  _ (deref (File/write b (bytes 2)))
+                  _ (deref (File/write a (bytes 1)))
+                  values (vec (map :path (std.fs.walk/walk root)))
+                  result [(promise? (File/entries root))
+                          (= values [a b])
+                          (promise? values)]
+                  _ (deref (File/delete a))
+                  _ (deref (File/delete b))
+                  _ (deref (File/delete root))]
+              (if (= result [true true false])
+                :std-fs-walk-written-ok
+                (throw (ex-info "Written synchronous walk assertion failed"
+                                {:result result :values values})))))
+          HAL
+          "$HARA" --project core --offline stdin \
+            < "$RUNNER_TEMP/std-fs-walk-written-check.hal"
+
+      - name: Evaluate write and retest std.fs in fresh Hara processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          HARA=core/rust/target/debug/hara
+          CANDIDATE="$RUNNER_TEMP/std-fs-candidates/core/lib/src/std/fs.hal"
+
+          "$HARA" --project core --offline stdin < "$CANDIDATE"
+
+          candidate_check="$RUNNER_TEMP/std-fs-candidate-check.hal"
+          cat "$CANDIDATE" > "$candidate_check"
+          cat >> "$candidate_check" <<'HAL'
+
+          (let [root (temp-directory "/" {:prefix "std-fs-candidate-"})
+                file (path/join root "value.txt")
+                written (write-bytes file (str/encode-utf8 "value"))
+                bytes-value (read-bytes file)
+                result [(= written file)
+                        (= (str/decode-utf8 bytes-value) "value")
+                        (file? file)
+                        (directory? root)
+                        (promise? written)
+                        (promise? bytes-value)]
+                deleted (delete root {:recursive? true})]
+            (if (and (= result [true true true true false false])
+                     (= deleted [file root]))
+              :std-fs-candidate-ok
+              (throw (ex-info "Synchronous std.fs candidate assertion failed"
+                              {:result result :deleted deleted}))))
+          HAL
+          "$HARA" --project core --offline stdin < "$candidate_check"
+
+          python3 ../builder/scripts/agent-650-make-std-fs-synchronous.py \
+            apply . "$RUNNER_TEMP/std-fs-candidates" \
+            core/lib/src/std/fs.hal
+          "$HARA" --offline run core/lib/src/std/fs.hal
+
+          cat > "$RUNNER_TEMP/std-fs-written-check.hal" <<'HAL'
+          (do
+            (require 'std.fs)
+            (let [root (std.fs/temp-directory "/" {:prefix "std-fs-written-"})
+                  file (std.fs.path/join root "value.txt")
+                  written (std.fs/write-bytes
+                           file
+                           (std.foundation.string/encode-utf8 "value"))
+                  bytes-value (std.fs/read-bytes file)
+                  result [(= written file)
+                          (= (std.foundation.string/decode-utf8 bytes-value) "value")
+                          (std.fs/file? file)
+                          (std.fs/directory? root)
+                          (promise? written)
+                          (promise? bytes-value)]
+                  deleted (std.fs/delete root {:recursive? true})]
+              (if (and (= result [true true true true false false])
+                       (= deleted [file root]))
+                :std-fs-written-ok
+                (throw (ex-info "Written synchronous std.fs assertion failed"
+                                {:result result :deleted deleted})))))
+          HAL
+          "$HARA" --project core --offline stdin \
+            < "$RUNNER_TEMP/std-fs-written-check.hal"
+
+      - name: Evaluate write and retest the Foundation ownership comment source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          HARA=core/rust/target/debug/hara
+          CANDIDATE="$RUNNER_TEMP/std-fs-candidates/core/lib/src/std/foundation.hal"
+
+          "$HARA" --project core --offline stdin < "$CANDIDATE"
+          cat "$CANDIDATE" > "$RUNNER_TEMP/std-foundation-candidate-check.hal"
+          cat >> "$RUNNER_TEMP/std-foundation-candidate-check.hal" <<'HAL'
+
+          (if (= 2 (inc 1))
+            :std-foundation-candidate-ok
+            (throw (ex-info "Foundation candidate assertion failed" {})))
+          HAL
+          "$HARA" --project core --offline stdin \
+            < "$RUNNER_TEMP/std-foundation-candidate-check.hal"
+
+          python3 ../builder/scripts/agent-650-make-std-fs-synchronous.py \
+            apply . "$RUNNER_TEMP/std-fs-candidates" \
+            core/lib/src/std/foundation.hal
+          "$HARA" --offline run core/lib/src/std/foundation.hal
+          printf '%s\n' \
+            "(do (require 'std.foundation)" \
+            "    (if (= 2 (inc 1))" \
+            "      :std-foundation-written-ok" \
+            "      (throw (ex-info \"Foundation written assertion failed\" {}))))" \
+            | "$HARA" --project core --offline stdin
+
+      - name: Evaluate write and focus-test the synchronous facade fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          HARA=core/rust/target/debug/hara
+          HARA_TEST=core/rust/target/debug/hara-test
+          CANDIDATE="$RUNNER_TEMP/std-fs-candidates/core/lib/test/std/fs/facade_test.hal"
+
+          "$HARA" --project core --offline stdin < "$CANDIDATE"
+          python3 ../builder/scripts/agent-650-make-std-fs-synchronous.py \
+            apply . "$RUNNER_TEMP/std-fs-candidates" \
+            core/lib/test/std/fs/facade_test.hal
+          "$HARA" --offline run core/lib/test/std/fs/facade_test.hal
+          "$HARA_TEST" --root core core/lib/test/std/fs/facade_test.hal
+
+      - name: Apply JVM fixture and filesystem documentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          python3 ../builder/scripts/agent-650-make-std-fs-synchronous.py \
+            apply . "$RUNNER_TEMP/std-fs-candidates" \
+            core/java/src/test/java/hara/truffle/StdFsTest.java \
+            core/spec/std/filesystem.md \
+            core/spec/std/foundation-architecture.md
+
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/sync-rust-hal-src --check
+          git diff --check
+
+          test -z "$(git diff --name-only -- core/lib/src/std/fs/path.hal core/rust/hal-src/std/fs/path.hal)"
+          ! rg -n 'broader std\.fs remains planned|portable promise-based filesystem operations|Returns a promise of entry maps' \
+            core/lib/src/std/foundation.hal \
+            core/lib/src/std/fs.hal \
+            core/lib/src/std/fs/walk.hal \
+            core/spec/std/filesystem.md \
+            core/spec/std/foundation-architecture.md
+
+          python3 - <<'PY'
+          import subprocess
+          expected = {
+              "core/java/src/test/java/hara/truffle/StdFsTest.java",
+              "core/lib/src/std/foundation.hal",
+              "core/lib/src/std/fs.hal",
+              "core/lib/src/std/fs/walk.hal",
+              "core/lib/test/std/fs/facade_test.hal",
+              "core/rust/hal-src/std/foundation.hal",
+              "core/rust/hal-src/std/fs.hal",
+              "core/rust/hal-src/std/fs/walk.hal",
+              "core/spec/std/filesystem.md",
+              "core/spec/std/foundation-architecture.md",
+          }
+          actual = set(subprocess.check_output(
+              ["git", "diff", "--name-only"], text=True).splitlines())
+          if actual != expected:
+              raise SystemExit(
+                  "unexpected synchronous std.fs diff\n"
+                  f"missing={sorted(expected - actual)}\n"
+                  f"extra={sorted(actual - expected)}"
+              )
+          PY
+          git status --short
+
+      - name: Run required focused Hara filesystem harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          core/rust/target/debug/hara-test --root core \
+            core/lib/test/std/fs/facade_test.hal \
+            core/lib/test/std/fs/path_test.hal
+
+      - name: Run Foundation regression fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          core/rust/target/debug/hara-test --root core \
+            core/lib/test/std/foundation_test.hal
+
+      - name: Run provider regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          cargo test --manifest-path core/rust/Cargo.toml file::tests --lib -- --nocapture
+
+      - name: Run required raw runtime tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          cargo test --manifest-path core/rust/raw/Cargo.toml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hara/core/rust/web/package-lock.json
+
+      - name: Run required HTA fiber-resumption tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara/core/rust/web
+          npm ci
+          npm run test:hta
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: hara/core/java/pom.xml
+
+      - name: Run focused JVM filesystem tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          mvn -B -Ptruffle --file core/java/pom.xml \
+            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest test
+
+      - name: Publish clean synchronous std.fs branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          rm hara-specs-registry
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$FINAL_BRANCH" "$BASE_SHA"
+          git add \
+            core/java/src/test/java/hara/truffle/StdFsTest.java \
+            core/lib/src/std/foundation.hal \
+            core/lib/src/std/fs.hal \
+            core/lib/src/std/fs/walk.hal \
+            core/lib/test/std/fs/facade_test.hal \
+            core/rust/hal-src/std/foundation.hal \
+            core/rust/hal-src/std/fs.hal \
+            core/rust/hal-src/std/fs/walk.hal \
+            core/spec/std/filesystem.md \
+            core/spec/std/foundation-architecture.md
+          git diff --cached --check
+          git commit -m "Make std.fs synchronous"
+          git push --force origin HEAD:refs/heads/$FINAL_BRANCH
