@@ -25,6 +25,8 @@ replacements = {
     "foundation/res-timeout?": "Result/timeout?",
     "std.foundation/res-timeout?": "Result/timeout?",
     "std.foundation/res-error-value": "Result/error-value",
+    "native Result timeout classification replaces TimeoutValue":
+        "native Result timeout classification replaces the legacy sentinel",
 }
 for old, new in replacements.items():
     if old in text:
