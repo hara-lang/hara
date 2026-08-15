@@ -173,7 +173,7 @@ test("rigged-cube creative data survives wasm evaluation and normalization", { s
 test("Host exposes the generic browser host descriptor", { skip: wasmBytes === null }, async () => {
   const broker = makeBroker();
   const description = await evaluate(broker, "(deref (Host/describe))");
-  assert.equal(mapGet(description, "Host/version"), "hara.host.v1");
+  assert.equal(mapGet(description, "host/version"), "hara.host.v1");
   assert.equal(await evaluate(broker, '(deref (Host/capability? "filesystem"))'), true);
   assert.equal(await evaluate(broker, '(deref (Host/capability? "missing"))'), false);
 });
