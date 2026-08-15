@@ -1,0 +1,151 @@
+name: Materialize tool.sh contract
+
+on:
+  push:
+    branches: [agent/645-tool-sh-contract]
+    paths:
+      - .github/workflows/agent-645-tool-sh-apply.yml
+      - scripts/runtime/apply_tool_sh_contract.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-tool-sh-contract
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out candidate branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/645-tool-sh-contract
+          fetch-depth: 0
+
+      - name: Apply the candidate implementation
+        run: python3 scripts/runtime/apply_tool_sh_contract.py
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose sibling specifications path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Audit and materialize the ignored Rust HAL snapshot
+        run: |
+          python3 scripts/runtime/check-tool-sh-hard-cut.py
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/sync-rust-hal-src --check
+          git diff --check
+
+      - name: Build JVM and Rust runtimes
+        run: |
+          mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+          cargo build --manifest-path core/rust/Cargo.toml --bin hara
+
+      - name: Test canonical tool.sh
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/sh_test.hal
+
+      - name: Test tool.sh.docker
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/sh/docker_test.hal
+
+      - name: Test tool.sh.git
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/sh/git_test.hal
+
+      - name: Test tool.sh.tmux
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/sh/tmux_test.hal
+
+      - name: Test tool.sh.net
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/sh/net_test.hal
+
+      - name: Test tool.sh.desktop
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/sh/desktop_test.hal
+
+      - name: Test tool.runtime migration
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/runtime_test.hal
+
+      - name: Test verify-runtime migration
+        run: ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/runtime/basic/type_verify_test.hal
+
+      - name: Test oneshot-runtime migration
+        run: ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/runtime/basic/type_oneshot_test.hal
+
+      - name: Probe exact process semantics on JVM and Rust
+        run: |
+          cat > /tmp/tool-sh-contract-probe.hal <<'HAL'
+          (ns tool-sh-contract-probe
+            (:require [tool.sh :as sh]))
+
+          (let [pending (sh/execute
+                         ["sh" "-c"
+                          "printf ' out\\n'; printf ' err\\n' >&2; exit 7"])
+                async-result (deref pending)
+                input-result (sh/run ["cat"] {:stdin "hello\\n"})
+                cwd-result (sh/run ["pwd"] {:cwd "/tmp"})
+                env-result (sh/run ["printenv" "HARA_TOOL_SH_TEST"]
+                                   {:env {"HARA_TOOL_SH_TEST" "present"}})
+                failed (try
+                         (sh/run! ["sh" "-c" "printf out; printf err >&2; exit 9"])
+                         nil
+                         (catch Throwable error (ex-data error)))]
+            (pr-str
+             [(promise? pending)
+              (= {:command ["sh" "-c"
+                            "printf ' out\\n'; printf ' err\\n' >&2; exit 7"]
+                  :stdout " out\\n" :stderr " err\\n" :exit 7}
+                 async-result)
+              (= {:command ["cat"] :stdout "hello\\n" :stderr "" :exit 0}
+                 input-result)
+              (= "/tmp\\n" (:stdout cwd-result))
+              (= "present\\n" (:stdout env-result))
+              (= {:command ["sh" "-c" "printf out; printf err >&2; exit 9"]
+                  :stdout "out" :stderr "err" :exit 9}
+                 failed)]))
+          HAL
+
+          expected='[true true true true true true]'
+          actual="$(./core/hara --project core --offline run /tmp/tool-sh-contract-probe.hal)"
+          test "$actual" = "$expected"
+          actual="$(HARA_RUNTIME=rust \
+            HARA_NATIVE="$GITHUB_WORKSPACE/core/rust/target/debug/hara" \
+            ./core/hara --project core --offline run /tmp/tool-sh-contract-probe.hal)"
+          test "$actual" = "$expected"
+
+      - name: Publish one clean implementation commit
+        env:
+          BRANCH: agent/645-tool-sh-contract
+        run: |
+          rm -rf hara-specs-registry
+          rm .github/workflows/agent-645-tool-sh-apply.yml
+          rm scripts/runtime/apply_tool_sh_contract.py
+          python3 scripts/runtime/check-tool-sh-hard-cut.py
+          python3 scripts/runtime/sync-rust-hal-src --check
+          git diff --check
+
+          base_sha="28bb0a83083b922344d478b2f5777ea1a8b1cbf1"
+          git reset --soft "$base_sha"
+          git add -A
+          git diff --cached --check
+          git config user.name "OpenAI Agent"
+          git config user.email "openai-agent@users.noreply.github.com"
+          git commit -m "Complete the canonical tool.sh process boundary"
+          git push --force-with-lease origin "HEAD:$BRANCH"
