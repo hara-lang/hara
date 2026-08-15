@@ -178,7 +178,11 @@ public final class HaraContext {
           Map.entry(
               "Test",
               java.util.List.of("catalog", "config", "context", "events", "result", "passed?")),
-          Map.entry("Regex", java.util.List.of("instance?", "pattern", "find?")),
+          Map.entry(
+              "Regex",
+              java.util.List.of(
+                  "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
+                  "split")),
           Map.entry("UUID", java.util.List.of("instance?")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
@@ -438,7 +442,17 @@ public final class HaraContext {
       installNativeExportGroup(
           "Printer", exports, NATIVE_TYPES.get("Printer"), Map.of());
       installNativeExportGroup(
-          "Regex", exports, NATIVE_TYPES.get("Regex"), Map.of("instance?", "regexp?"));
+          "Regex",
+          exports,
+          NATIVE_TYPES.get("Regex"),
+          Map.of(
+              "instance?", "regexp?",
+              "compile", "regexp",
+              "pattern", "re-pattern",
+              "find", "re-find",
+              "matches", "re-matches",
+              "replace", "re-replace",
+              "split", "re-split"));
       installNativeExportGroup(
           "UUID", exports, NATIVE_TYPES.get("UUID"), Map.of("instance?", "uuid?"));
       installNativeExportGroup(
@@ -2928,6 +2942,21 @@ public final class HaraContext {
             "std.native.Regex/instance?",
             value -> HaraBox.unwrap(value) instanceof java.util.regex.Pattern));
     regex.define(
+        "compile",
+        new UnaryBuiltin(
+            "std.native.Regex/compile",
+            value -> {
+              Object raw = HaraBox.unwrap(value);
+              if (!(raw instanceof String pattern)) {
+                throw new HaraException("std.native.Regex/compile expects one string");
+              }
+              try {
+                return java.util.regex.Pattern.compile(pattern);
+              } catch (java.util.regex.PatternSyntaxException error) {
+                throw new HaraException("invalid regexp: " + error.getDescription());
+              }
+            }));
+    regex.define(
         "pattern",
         new UnaryBuiltin(
             "std.native.Regex/pattern",
@@ -2950,6 +2979,61 @@ public final class HaraContext {
                     "std.native.Regex/find? expects a regexp and string");
               }
               return pattern.matcher(input).find();
+            }));
+    regex.define(
+        "find",
+        new VariadicBuiltin(
+            "std.native.Regex/find",
+            values -> {
+              if (values.length != 2
+                  || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
+                  || !(HaraBox.unwrap(values[1]) instanceof String input)) {
+                throw new HaraException(
+                    "std.native.Regex/find expects a regexp and string");
+              }
+              java.util.regex.Matcher matcher = pattern.matcher(input);
+              return matcher.find() ? matcher.group() : null;
+            }));
+    regex.define(
+        "matches",
+        new VariadicBuiltin(
+            "std.native.Regex/matches",
+            values -> {
+              if (values.length != 2
+                  || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
+                  || !(HaraBox.unwrap(values[1]) instanceof String input)) {
+                throw new HaraException(
+                    "std.native.Regex/matches expects a regexp and string");
+              }
+              return pattern.matcher(input).matches();
+            }));
+    regex.define(
+        "replace",
+        new VariadicBuiltin(
+            "std.native.Regex/replace",
+            values -> {
+              if (values.length != 3
+                  || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
+                  || !(HaraBox.unwrap(values[1]) instanceof String input)
+                  || !(HaraBox.unwrap(values[2]) instanceof String replacement)) {
+                throw new HaraException(
+                    "std.native.Regex/replace expects a regexp, string, and replacement");
+              }
+              return pattern.matcher(input).replaceAll(replacement);
+            }));
+    regex.define(
+        "split",
+        new VariadicBuiltin(
+            "std.native.Regex/split",
+            values -> {
+              if (values.length != 2
+                  || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
+                  || !(HaraBox.unwrap(values[1]) instanceof String input)) {
+                throw new HaraException(
+                    "std.native.Regex/split expects a regexp and string");
+              }
+              String[] parts = pattern.split(input, -1);
+              return hara.lang.data.Vector.Standard.from(null, (Object[]) parts);
             }));
     HaraNamespace kernel = namespace("std.native.Kernel");
     for (String method : NATIVE_TYPES.get("Kernel")) {

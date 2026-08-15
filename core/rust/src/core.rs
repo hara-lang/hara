@@ -296,7 +296,12 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         "Test",
         &["catalog", "config", "context", "events", "result", "passed?"],
     ),
-    ("Regex", &["instance?", "pattern", "find?"]),
+    (
+        "Regex",
+        &[
+            "instance?", "compile", "pattern", "find?", "find", "matches", "replace", "split",
+        ],
+    ),
     ("UUID", &["instance?"]),
     ("Error", &["new", "message", "class"]),
     (
@@ -4603,6 +4608,18 @@ fn native_regex_operation(
             }
             Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Regex(_))))
         }
+        "compile" => {
+            if forms.len() != 1 {
+                return Err("std.native.Regex/compile expects one string".into());
+            }
+            let pattern = match eval(&forms[0], env)? {
+                Value::String(pattern) => pattern,
+                _ => return Err("std.native.Regex/compile expects one string".into()),
+            };
+            regex::Regex::new(&pattern)
+                .map_err(|error| format!("invalid regexp: {error}"))?;
+            Ok(Value::Regex(pattern))
+        }
         "pattern" => {
             if forms.len() != 1 {
                 return Err("std.native.Regex/pattern expects one regexp".into());
@@ -4627,6 +4644,101 @@ fn native_regex_operation(
             let regexp = regex::Regex::new(&pattern)
                 .map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Bool(regexp.is_match(&input)))
+        }
+        "find" => {
+            if forms.len() != 2 {
+                return Err("std.native.Regex/find expects a regexp and string".into());
+            }
+            let pattern = match eval(&forms[0], env)? {
+                Value::Regex(pattern) => pattern,
+                _ => return Err("std.native.Regex/find expects a regexp and string".into()),
+            };
+            let input = match eval(&forms[1], env)? {
+                Value::String(input) => input,
+                _ => return Err("std.native.Regex/find expects a regexp and string".into()),
+            };
+            let regexp = regex::Regex::new(&pattern)
+                .map_err(|error| format!("invalid regexp: {error}"))?;
+            Ok(regexp
+                .find(&input)
+                .map(|matched| Value::String(matched.as_str().to_owned()))
+                .unwrap_or(Value::Nil))
+        }
+        "matches" => {
+            if forms.len() != 2 {
+                return Err("std.native.Regex/matches expects a regexp and string".into());
+            }
+            let pattern = match eval(&forms[0], env)? {
+                Value::Regex(pattern) => pattern,
+                _ => return Err("std.native.Regex/matches expects a regexp and string".into()),
+            };
+            let input = match eval(&forms[1], env)? {
+                Value::String(input) => input,
+                _ => return Err("std.native.Regex/matches expects a regexp and string".into()),
+            };
+            let anchored = format!(r"\A(?:{pattern})\z");
+            let regexp = regex::Regex::new(&anchored)
+                .map_err(|error| format!("invalid regexp: {error}"))?;
+            Ok(Value::Bool(regexp.is_match(&input)))
+        }
+        "replace" => {
+            if forms.len() != 3 {
+                return Err(
+                    "std.native.Regex/replace expects a regexp, string, and replacement".into(),
+                );
+            }
+            let pattern = match eval(&forms[0], env)? {
+                Value::Regex(pattern) => pattern,
+                _ => {
+                    return Err(
+                        "std.native.Regex/replace expects a regexp, string, and replacement"
+                            .into(),
+                    )
+                }
+            };
+            let input = match eval(&forms[1], env)? {
+                Value::String(input) => input,
+                _ => {
+                    return Err(
+                        "std.native.Regex/replace expects a regexp, string, and replacement"
+                            .into(),
+                    )
+                }
+            };
+            let replacement = match eval(&forms[2], env)? {
+                Value::String(replacement) => replacement,
+                _ => {
+                    return Err(
+                        "std.native.Regex/replace expects a regexp, string, and replacement"
+                            .into(),
+                    )
+                }
+            };
+            let regexp = regex::Regex::new(&pattern)
+                .map_err(|error| format!("invalid regexp: {error}"))?;
+            Ok(Value::String(
+                regexp.replace_all(&input, replacement.as_str()).into_owned(),
+            ))
+        }
+        "split" => {
+            if forms.len() != 2 {
+                return Err("std.native.Regex/split expects a regexp and string".into());
+            }
+            let pattern = match eval(&forms[0], env)? {
+                Value::Regex(pattern) => pattern,
+                _ => return Err("std.native.Regex/split expects a regexp and string".into()),
+            };
+            let input = match eval(&forms[1], env)? {
+                Value::String(input) => input,
+                _ => return Err("std.native.Regex/split expects a regexp and string".into()),
+            };
+            let regexp = regex::Regex::new(&pattern)
+                .map_err(|error| format!("invalid regexp: {error}"))?;
+            Ok(Value::Vector(PVector::from_iter(
+                regexp
+                    .split(&input)
+                    .map(|part| Value::String(part.to_owned())),
+            )))
         }
         _ => Err(format!("unknown std.native.Regex operation: {operation}")),
     }
