@@ -91,10 +91,15 @@ final class HaraProject {
           Parser.LispReader.readString(
               Files.readString(descriptor, StandardCharsets.UTF_8), null);
       if (PROJECT_FILE.equals(descriptor.getFileName().toString())) {
-        if (!(form instanceof IMapType<?, ?> options)
-            || !(lookup(options, "project/id") instanceof Symbol projectName)) {
-          throw new HaraException("project.edn expects a map with :project/id");
-        }
+        if (!(form instanceof IMapType<?, ?> options))
+          throw new HaraException("project.edn must be an EDN map");
+        Object projectId = lookup(options, "project/id");
+        Symbol projectName =
+            projectId instanceof Symbol symbol
+                ? symbol
+                : projectId instanceof String string ? Symbol.create(string) : null;
+        if (projectName == null)
+          throw new HaraException("project.edn :project/id must be a string or symbol");
         rejectLegacyRuntimeKeys(options, PROJECT_FILE);
         Path root = descriptor.toAbsolutePath().normalize().getParent();
         java.util.List<Path> sharedSourcePaths =

@@ -87,11 +87,31 @@ Because `nil` denotes EOF, yielding `nil` rejects the pull with
 pull and close the stream. The namespace is deliberately absent from the
 Foundation bootstrap bundle.
 
+Foundation iterators are synchronous: `iter-next` either returns immediately
+or the iterator is exhausted. `std.lib.stream/from-iterator` is the explicit
+one-way bridge into Promise-based pulling. `unfold` accepts a direct or
+promised step result of `[item next-state]`, with `nil` ending the stream.
+`map`, `filter`, and `take` are lazy managed streams; `reduce` and `collect`
+are Promise-returning terminals. Managed streams own and always close their
+upstream source on EOF, error, early termination, or explicit close.
+
 A stream is not duplex. Duplex transports compose a readable `IStream` with a
 separate write operation; for example, a WebSocket exposes inbound messages as
 a stream and outbound messages through `WebSocket/send`. Stream, coroutine,
 and transport handles are worker-local and cannot cross session, HTA, snapshot,
 or worker serialization boundaries.
+
+Connected processes and sockets expose this composition directly.
+`Process/duplex` receives stdout byte chunks and sends stdin byte chunks;
+stderr remains independently observable through `Process/stderr-stream`.
+`Socket/duplex` receives and sends byte chunks for one connected socket; a
+listening socket is not a Duplex. Sends return Promises, receive sides preserve
+the one-pending-pull Stream rule, and closing either Duplex is idempotent.
+
+Duplex replaces transport-specific input/output plumbing, but not Relay.
+Relay remains the portable layer for codecs and framing, serialized or
+correlated exchanges, timeouts, pending-request dispatch, and unsolicited
+events over a Duplex.
 
 ## Schema values and Var contracts
 

@@ -46,6 +46,41 @@ public class HaraMigrationPrimitivesTest {
   }
 
   @Test
+  public void mapDestructuringUsesDefstructLookupSemantics() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[[1 2 7 :user.Point] [3 4]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (defstruct Point [x y]) "
+                      + "[(let [{:keys [x y missing] :or {missing 7} :as point} "
+                      + "       (Point 1 2)] "
+                      + "   [x y missing (type point)]) "
+                      + " ((fn [{:keys [x y]}] [x y]) (Point 3 4))])")
+              .toString());
+    }
+  }
+
+  @Test
+  public void mapConstructorUsesFoundationGetWhenNamespaceShadowsGet() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[1 2 [1 2]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (ns migration.shadow (:config {:override [get]})) "
+                      + "(defstruct Point [x y]) "
+                      + "(defn get [value key] :shadowed) "
+                      + "(let [{:keys [x y]} (map->Point {:x 1 :y 2})] "
+                      + "  [x y [(:x (map->Point {:x 1 :y 2})) "
+                      + "        (:y (map->Point {:x 1 :y 2}))]]))")
+              .toString());
+    }
+  }
+
+  @Test
   public void instancePredicateIsRestrictedToHaraStructTypes() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       Value result =

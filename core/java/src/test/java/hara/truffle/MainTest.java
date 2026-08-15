@@ -91,6 +91,47 @@ public class MainTest {
   }
 
   @Test
+  public void projectTestAcceptsDirectTestRunVectors() throws Exception {
+    Path root = Files.createTempDirectory("hara-cli-direct-test-");
+    try {
+      Files.createDirectories(root.resolve("test/direct"));
+      Files.writeString(
+          root.resolve("project.edn"),
+          "{:hara/type :project :hara/version \"1.0.0\" :project/id direct-test "
+              + ":project/version \"0.1.0\" :project/source-paths [] "
+              + ":project/test-paths [\"test\"] :project/extension-paths [] "
+              + ":project/capabilities #{} :project/dependencies {}}");
+      Path testFile = root.resolve("test/direct/result_test.hal");
+      Files.writeString(
+          testFile,
+          "(Test/run [{:name \"direct Test/run result\" "
+              + ":test (fn [] (+ 19 23)) :expected 42}])");
+      ByteArrayOutputStream output = new ByteArrayOutputStream();
+      ByteArrayOutputStream error = new ByteArrayOutputStream();
+      int status =
+          Main.run(
+              new String[] {
+                "--project", root.toString(), "--offline", "test", testFile.toString()
+              },
+              new PrintStream(output, true, StandardCharsets.UTF_8),
+              new PrintStream(error, true, StandardCharsets.UTF_8));
+
+      assertEquals(error.toString(StandardCharsets.UTF_8), 0, status);
+      assertTrue(
+          output.toString(StandardCharsets.UTF_8).contains("result_test.hal: 1 passed, 0 failed"));
+      assertTrue(
+          output.toString(StandardCharsets.UTF_8).contains("test result: 1 passed, 0 failed"));
+    } finally {
+      Files.walk(root).sorted(Comparator.reverseOrder()).forEach(path -> {
+        try {
+          Files.deleteIfExists(path);
+        } catch (Exception ignored) {
+        }
+      });
+    }
+  }
+
+  @Test
   public void fileLibraryIsDefaultDeniedAndExplicitlyGranted() throws Exception {
     ByteArrayOutputStream deniedOutput = new ByteArrayOutputStream();
     ByteArrayOutputStream deniedError = new ByteArrayOutputStream();

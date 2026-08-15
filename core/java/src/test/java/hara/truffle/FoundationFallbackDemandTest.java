@@ -13,7 +13,7 @@ import org.junit.Test;
 public class FoundationFallbackDemandTest {
   @Test
   public void indexesPortableDefinitionsThatShadowJavaExports() {
-    for (String name : new String[] {"has?", "identity", "if-not", "long", "map"}) {
+    for (String name : new String[] {"call", "has?", "identity", "if-not", "long", "map"}) {
       assertTrue(name, FoundationFallbackDefinitions.defines(name));
     }
     for (String name : new String[] {"assoc", "nth", "read-string"}) {
@@ -87,6 +87,48 @@ public class FoundationFallbackDemandTest {
                   "(= [2 3] (map (fn [value] (+ value 1)) [1 2]))")
               .asBoolean());
       assertFalse(context.eval(HaraLanguage.ID, "(= nil (resolve 'map))").asBoolean());
+    }
+  }
+
+  @Test
+  public void automaticQualifiedAliasAndReferAccessMaterializePortableDefinitions() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          42L,
+          context
+              .eval(HaraLanguage.ID, "(ns foundation-automatic) (call + 19 23)")
+              .asLong());
+
+      assertEquals(
+          42L,
+          context.eval(HaraLanguage.ID, "(std.foundation/call + 19 23)").asLong());
+
+      assertEquals(
+          42L,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns foundation-alias (:require [std.foundation :as f])) (f/call + 19 23)")
+              .asLong());
+
+      assertEquals(
+          42L,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns foundation-refer (:require [std.foundation :refer [call]])) "
+                      + "(call + 19 23)")
+              .asLong());
+
+    }
+  }
+
+  @Test
+  public void previouslyEstablishedAliasDemandsPortableDefinition() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      context.eval(HaraLanguage.ID, "(ns foundation-prior-alias) (alias f std.foundation)");
+      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'call))").asBoolean());
+      assertEquals(42L, context.eval(HaraLanguage.ID, "(f/call + 19 23)").asLong());
     }
   }
 

@@ -776,8 +776,8 @@ public final class HaraNodes {
             ? null
             : java.lang.reflect.Array.get(value, index);
       }
-      if (value instanceof hara.lang.data.types.IMapType<?, ?>) {
-        return ((hara.lang.data.types.IMapType<Object, Object>) value).lookup(key);
+      if (value instanceof hara.lang.protocol.ILookup<?, ?>) {
+        return ((hara.lang.protocol.ILookup<Object, Object>) value).lookup(key);
       }
       if (value instanceof java.util.Map<?, ?>) {
         return ((java.util.Map<?, ?>) value).get(key);

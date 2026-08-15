@@ -146,6 +146,7 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
     Keyword config = Keyword.create("config");
     Keyword override = Keyword.create("override");
     Keyword expose = Keyword.create("expose");
+    Keyword require = Keyword.create("require");
     for (Object form : forms) {
       if (!(form instanceof hara.lang.data.List<?> declaration)
           || declaration.count() == 0
@@ -157,16 +158,32 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
       int start = "ns".equals(operator.getName()) ? 2 : 1;
       for (int index = start; index < declaration.count(); index++) {
         if (!(declaration.nth(index) instanceof hara.lang.data.List<?> clause)
-            || clause.count() != 2
-            || !config.equals(clause.nth(0))
-            || !(clause.nth(1) instanceof hara.lang.data.types.IMapType<?, ?> options)) {
+            || clause.count() == 0) {
           continue;
         }
-        hara.lang.data.types.IMapType raw = options;
-        if (raw.lookup(override) != null || raw.lookup(expose) != null) return true;
+        if (require.equals(clause.nth(0))) {
+          for (int requirement = 1; requirement < clause.count(); requirement++) {
+            if (requiresFoundationNamespace(clause.nth(requirement))) return true;
+          }
+        }
+        if (clause.count() == 2
+            && config.equals(clause.nth(0))
+            && clause.nth(1) instanceof hara.lang.data.types.IMapType<?, ?> options) {
+          hara.lang.data.types.IMapType raw = options;
+          if (raw.lookup(override) != null || raw.lookup(expose) != null) return true;
+        }
       }
     }
     return false;
+  }
+
+  private static boolean requiresFoundationNamespace(Object value) {
+    if (!(value instanceof hara.lang.data.types.ILinearType<?> requirement)
+        || requirement.count() == 0
+        || !(requirement.nth(0) instanceof hara.lang.data.Symbol namespace)) {
+      return false;
+    }
+    return "std.foundation".equals(namespace.display());
   }
 
   static Object[] readAll(String source, String sourceName) {

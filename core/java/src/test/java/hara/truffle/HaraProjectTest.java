@@ -34,6 +34,20 @@ public class HaraProjectTest {
   }
 
   @Test
+  public void acceptsStringProjectCoordinatesLikeTheRustRuntime() throws Exception {
+    Path root = Files.createTempDirectory("hara-project-coordinate");
+    Files.writeString(
+        root.resolve("project.edn"),
+        "{:hara/type :project :project/id \"gh:greenways-ai/hoplite\" "
+            + ":project/source-paths [] :project/test-paths [] "
+            + ":project/extension-paths []}");
+
+    HaraProject project = HaraProject.discover(root);
+
+    assertEquals("gh:greenways-ai/hoplite", project.name().display());
+  }
+
+  @Test
   public void rejectsProjectPathsOutsideTheProjectRoot() throws Exception {
     Path root = Files.createTempDirectory("hara-project-invalid");
     Path descriptor = root.resolve("project.edn");

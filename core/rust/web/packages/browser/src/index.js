@@ -1,6 +1,6 @@
 import init, * as wasmBindings from "./wasm/hara_wasm.js";
 import { instantiateWholeWasm } from "./whole-wasm.js";
-export { installLockedPackages, loadLockedPackageResources } from "./packages.js";
+export { installLockedPackages, installPackageProvider, loadLockedPackageResources } from "./packages.js";
 
 const { Runtime } = wasmBindings;
 
@@ -25,6 +25,9 @@ function createApi(runtime) {
     },
     registerResource(namespace, source) {
       runtime.register_resource(String(namespace), String(source));
+    },
+    unregisterResource(namespace) {
+      runtime.unregister_resource(String(namespace));
     },
     evalInNamespace(namespace, source) {
       return runtime.eval_in_namespace(String(namespace), String(source));

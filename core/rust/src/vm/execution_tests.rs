@@ -942,6 +942,10 @@ fn defstruct_forms_issue_223() {
         "[1 7 nil :user.Point]"
     );
     assert_eq!(
+        eval("(do (defstruct Point [x y]) [(let [{:keys [x y missing] :or {missing 7} :as point} (Point 1 2)] [x y missing (type point)]) ((fn [{:keys [x y]}] [x y]) (Point 3 4))])"),
+        "[[1 2 7 :user.Point] [3 4]]"
+    );
+    assert_eq!(
         eval("(do (defstruct Point [x y]) [(get (map->Point {:x 1 :extra 9}) :x) (get (map->Point {:x 1 :extra 9}) :y)])"),
         "[1 nil]"
     );

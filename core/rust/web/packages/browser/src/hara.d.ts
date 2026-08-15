@@ -9,6 +9,7 @@ export interface HaraRuntime {
   eval(source: string): string;
   require(namespace: string): string;
   registerResource(namespace: string, source: string): void;
+  unregisterResource(namespace: string): void;
   evalInNamespace(namespace: string, source: string): string;
   currentNamespace(): string;
   compileBytecode(source: string): Uint8Array;
@@ -38,6 +39,12 @@ export function installLockedPackages(
   lockSource: string,
   options?: LockedPackageOptions
 ): Promise<string[]>;
+
+export function installPackageProvider(
+  runtime: HaraRuntime,
+  lockSource: string,
+  options?: LockedPackageOptions
+): { readonly active: ReadonlySet<string>; readonly handler: Function };
 
 export function start(options?: StartOptions): Promise<HaraRuntime>;
 export const ready: Promise<HaraRuntime>;

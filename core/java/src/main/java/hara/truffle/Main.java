@@ -407,29 +407,10 @@ public final class Main {
       for (Path file : files) {
         try (Context context = context(capabilities, project)) {
           Value value = context.eval(HaraLanguage.ID, Files.readString(file));
-          Object results = Parser.LispReader.readString(value.asString(), null);
-          int filePassed = 0;
-          int fileFailed = 0;
-          if (results instanceof IMapType summary) {
-            Object status = summary.lookup(Keyword.create("status"));
-            Object countsValue = summary.lookup(Keyword.create("counts"));
-            if (!(status instanceof Keyword)
-                || !(countsValue instanceof IMapType counts)
-                || !(counts.lookup(Keyword.create("passed")) instanceof Long passedCount)
-                || !(counts.lookup(Keyword.create("failed")) instanceof Long failedCount)) {
-              throw new HaraException("code.test/run result is missing :status or :counts");
-            }
-            filePassed = Math.toIntExact(passedCount);
-            fileFailed = Math.toIntExact(failedCount);
-          } else if (results instanceof ILinearType<?> items) {
-            for (Object item : items) {
-              if (!(item instanceof IMapType map) || !(map.lookup(Keyword.create("pass")) instanceof Boolean result))
-                throw new HaraException("test result is missing boolean :pass");
-              if (result) filePassed++; else fileFailed++;
-            }
-          } else {
-            throw new HaraException("test file must return a code.test/run summary or test result vector");
-          }
+          HaraNativeTestRunner.Result result = HaraNativeTestRunner.parseResult(file, value);
+          int filePassed = result.passedChecks();
+          int fileFailed = result.failedChecks() + result.errors() + result.timeouts();
+          if (!result.passed() && fileFailed == 0) fileFailed = 1;
           passed += filePassed;
           failed += fileFailed;
           output.println("test " + file + ": " + filePassed + " passed, " + fileFailed + " failed");

@@ -106,6 +106,7 @@ struct PackageCatalogEntry {
     descriptor: Value,
     namespaces: Vec<String>,
     state: String,
+    pending: Option<Promise>,
 }
 
 #[derive(Clone, Default)]
@@ -121,6 +122,7 @@ impl PackageCatalog {
                 descriptor,
                 namespaces,
                 state: "available".into(),
+                pending: None,
             },
         );
     }
@@ -180,6 +182,19 @@ impl PackageCatalog {
     fn set_state(&self, coordinate: &str, state: &str) {
         if let Some(entry) = self.entries.borrow_mut().get_mut(coordinate) {
             entry.state = state.into();
+        }
+    }
+
+    fn pending(&self, coordinate: &str) -> Option<Promise> {
+        self.entries
+            .borrow()
+            .get(coordinate)
+            .and_then(|entry| entry.pending.clone())
+    }
+
+    fn set_pending(&self, coordinate: &str, pending: Option<Promise>) {
+        if let Some(entry) = self.entries.borrow_mut().get_mut(coordinate) {
+            entry.pending = pending;
         }
     }
 }
@@ -251,7 +266,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "alias-state", "intern-var", "eval-in", "eval",
         ],
     ),
-    ("Package", &["catalog", "find", "ensure", "state"]),
+    ("Package", &["catalog", "find", "ensure", "load", "unload", "state"]),
     (
         "String",
         &[
@@ -356,6 +371,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ),
     ("Coroutine", &["create", "yield", "await", "instance?"]),
     ("Stream", &["generate", "next", "instance?"]),
+    ("Duplex", &["create", "receive", "send", "close", "instance?"]),
     (
         "Arr",
         &[
@@ -810,6 +826,7 @@ pub enum Value {
     Schema(Rc<RuntimeSchema>),
     Coroutine(Rc<Coroutine>),
     Stream(Rc<RuntimeStream>),
+    Duplex(Rc<RuntimeDuplex>),
     Result(Rc<ResultValue>),
     ExceptionInfo(Rc<ExceptionInfo>),
     Nil,
@@ -1051,6 +1068,20 @@ impl RuntimeStream {
             pending: Rc::new(Cell::new(false)),
             closed: Rc::new(Cell::new(false)),
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct RuntimeDuplex {
+    receive: Value,
+    send: Rc<Function>,
+    close: Option<Rc<Function>>,
+    closed: Cell<bool>,
+}
+
+impl RuntimeDuplex {
+    fn new(receive: Value, send: Rc<Function>, close: Option<Rc<Function>>) -> Self {
+        Self { receive, send, close, closed: Cell::new(false) }
     }
 }
 
@@ -2619,6 +2650,7 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Schema(_)
         | Value::Coroutine(_)
         | Value::Stream(_)
+        | Value::Duplex(_)
         | Value::Result(_)
         | Value::MutableCollection(_) => false,
     }
@@ -2851,6 +2883,7 @@ impl PartialEq for Value {
             (Value::Schema(a), Value::Schema(b)) => a.ast == b.ast,
             (Value::Coroutine(a), Value::Coroutine(b)) => Rc::ptr_eq(a, b),
             (Value::Stream(a), Value::Stream(b)) => Rc::ptr_eq(a, b),
+            (Value::Duplex(a), Value::Duplex(b)) => Rc::ptr_eq(a, b),
             (Value::Result(a), Value::Result(b)) => a == b,
             (Value::ExceptionInfo(a), Value::ExceptionInfo(b)) => Rc::ptr_eq(a, b),
             (Value::Nil, Value::Nil) => true,
@@ -2932,9 +2965,10 @@ impl Ord for Value {
                 Value::Schema(_) => 33,
                 Value::Coroutine(_) => 33,
                 Value::Stream(_) => 34,
-                Value::Result(_) => 35,
-                Value::ExceptionInfo(_) => 36,
-                Value::MutableCollection(_) => 37,
+                Value::Duplex(_) => 35,
+                Value::Result(_) => 36,
+                Value::ExceptionInfo(_) => 37,
+                Value::MutableCollection(_) => 38,
             }
         }
         rank(self)
@@ -3053,6 +3087,7 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Schema(v) => opaque(34, |s| v.form.to_string().hash(s)),
             Self::Coroutine(v) => opaque(32, |s| Rc::as_ptr(v).hash(s)),
             Self::Stream(v) => opaque(35, |s| Rc::as_ptr(v).hash(s)),
+            Self::Duplex(v) => opaque(36, |s| Rc::as_ptr(v).hash(s)),
             Self::Result(v) => v.java_hash(hash_type),
             Self::ExceptionInfo(v) => opaque(33, |s| Rc::as_ptr(v).hash(s)),
         }
@@ -3265,6 +3300,7 @@ impl Value {
                 format!("#<coroutine {status}>")
             }
             Self::Stream(value) => format!("#<stream {}>", if value.closed.get() { "closed" } else { "ready" }),
+            Self::Duplex(value) => format!("#<duplex {}>", if value.closed.get() { "closed" } else { "open" }),
             Self::Result(value) => value.display(),
             Self::ExceptionInfo(value) => {
                 format!(
@@ -3703,6 +3739,10 @@ impl ProtocolRegistry {
                 [Value::Stream(stream)] => {
                     stream_close(stream)?;
                     Ok(Value::Stream(stream.clone()))
+                }
+                [Value::Duplex(duplex)] => {
+                    duplex_close(duplex)?;
+                    Ok(Value::Duplex(duplex.clone()))
                 }
                 [value] => iterator_close(value),
                 _ => Err("IClose/close expects one argument".into()),
@@ -5730,7 +5770,8 @@ fn native_package_operation(
         .unwrap_or(operation);
     let expected = match method {
         "catalog" => 0..=0,
-        "find" | "ensure" | "state" => 1..=1,
+        "find" | "ensure" | "load" | "state" => 1..=1,
+        "unload" => 1..=2,
         _ => return Err(format!("unknown std.native.Package method: {method}")),
     };
     if !expected.contains(&forms.len()) {
@@ -5751,9 +5792,9 @@ fn native_package_operation(
         Some(Value::Symbol(value)) => value.as_str().to_owned(),
         Some(Value::String(value)) => value.clone(),
         Some(Value::Keyword(value)) => value.as_str().to_owned(),
-        Some(value @ Value::OrderedMap(_)) if method == "ensure" =>
+        Some(value @ Value::OrderedMap(_)) if method == "ensure" || method == "unload" =>
             package_descriptor_coordinate(value).ok_or_else(|| {
-                "std.native.Package/ensure descriptor requires :package/coordinate".to_owned()
+                format!("std.native.Package/{method} descriptor requires :package/coordinate")
             })?,
         _ => return Err(format!("std.native.Package/{method} expects a namespace, coordinate, or exact descriptor")),
     };
@@ -5772,7 +5813,47 @@ fn native_package_operation(
             catalog.state(&coordinate).unwrap_or_else(|| "available".into()).into(),
         ));
     }
-    catalog.set_state(&coordinate, "ensuring");
+    if method == "load" {
+        if catalog.coordinate_for_namespace(&target).as_deref() != Some(&coordinate) {
+            return Err("std.native.Package/load expects a locked namespace".into());
+        }
+        if catalog.state(&coordinate).as_deref() != Some("ready") {
+            return Err(format!("package/not-ready: {coordinate}; call Package/ensure first"));
+        }
+        let registry = namespace_registry()?;
+        require_namespace(&registry, env, &target)?;
+        return Ok(Value::Symbol(Symbol::parse(&target)));
+    }
+    if method == "ensure" {
+        if catalog.state(&coordinate).as_deref() == Some("ready") {
+            let promise = Promise::new();
+            promise.resolve(descriptor);
+            return Ok(Value::Promise(promise));
+        }
+        if let Some(pending) = catalog.pending(&coordinate) {
+            return Ok(Value::Promise(pending));
+        }
+    } else if catalog.state(&coordinate).as_deref() == Some("available") {
+        let promise = Promise::new();
+        promise.resolve(Value::Vector(PVector::new()));
+        return Ok(Value::Promise(promise));
+    } else if catalog.pending(&coordinate).is_some() {
+        return Err(format!("package/busy: {coordinate}"));
+    }
+    if method == "unload" {
+        if let Some(options) = arguments.get(1) {
+            if map_entries(options).is_none() {
+                return Err("std.native.Package/unload options must be a map".into());
+            }
+            if let Some(value) = map_value(options, &Value::Keyword("cascade".into())) {
+                if !matches!(value, Value::Bool(_)) {
+                    return Err("std.native.Package/unload :cascade must be boolean".into());
+                }
+            }
+        }
+    }
+    let previous_state = catalog.state(&coordinate).unwrap_or_else(|| "available".into());
+    catalog.set_state(&coordinate, if method == "ensure" { "ensuring" } else { "unloading" });
     HOST_CALL_HANDLER.with(|active| {
         let Some(handler) = active.borrow().as_ref().cloned() else {
             let promise = Promise::new();
@@ -5780,27 +5861,33 @@ fn native_package_operation(
                 "package/unsupported",
                 "Package capability provider is unavailable",
             ));
-            catalog.set_state(&coordinate, "failed");
+            catalog.set_state(&coordinate, if method == "ensure" { "failed" } else { &previous_state });
             return Ok(Value::Promise(promise));
         };
-        let result = handler("package".into(), method.into(), vec![descriptor]);
+        let mut provider_arguments = vec![descriptor];
+        provider_arguments.extend(arguments.iter().skip(1).cloned());
+        let result = handler("package".into(), method.into(), provider_arguments);
         if let Ok(Value::Promise(promise)) = &result {
             let state = catalog.clone();
             let coordinate = coordinate.clone();
+            let operation = method.to_owned();
+            let rollback = previous_state.clone();
+            state.set_pending(&coordinate, Some(promise.clone()));
             promise.on_settle(Rc::new(move |settlement| {
-                state.set_state(
-                    &coordinate,
-                    if matches!(settlement, PromiseState::Fulfilled(_)) {
-                        "ready"
-                    } else {
-                        "failed"
-                    },
-                );
+                let next = match (&operation[..], settlement) {
+                    ("ensure", PromiseState::Fulfilled(_)) => "ready",
+                    ("ensure", _) => "failed",
+                    ("unload", PromiseState::Fulfilled(_)) => "available",
+                    ("unload", _) => rollback.as_str(),
+                    _ => rollback.as_str(),
+                };
+                state.set_state(&coordinate, next);
+                state.set_pending(&coordinate, None);
             }));
         } else if result.is_ok() {
-            catalog.set_state(&coordinate, "ready");
+            catalog.set_state(&coordinate, if method == "ensure" { "ready" } else { "available" });
         } else {
-            catalog.set_state(&coordinate, "failed");
+            catalog.set_state(&coordinate, if method == "ensure" { "failed" } else { &previous_state });
         }
         result
     })
@@ -6773,6 +6860,7 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
         Value::Stream(_) => "stream",
+        Value::Duplex(_) => "duplex",
         Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
@@ -6829,6 +6917,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Schema(_) => "SchemaType",
         Value::Coroutine(_) => "Coroutine",
         Value::Stream(_) => "Stream",
+        Value::Duplex(_) => "Duplex",
         Value::Result(_) => "Result",
         Value::ExceptionInfo(_) => "Error",
     };
@@ -6880,6 +6969,7 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
         Value::Stream(_) => "stream",
+        Value::Duplex(_) => "duplex",
         Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
@@ -6952,6 +7042,89 @@ pub fn stream_close_value(value: &Value) -> Result<(), String> {
 
 pub fn stream_value(value: &Value) -> bool {
     matches!(value, Value::Stream(_))
+}
+
+fn duplex_close(duplex: &RuntimeDuplex) -> Result<(), String> {
+    if duplex.closed.replace(true) {
+        return Ok(());
+    }
+    stream_close_value(&duplex.receive)?;
+    if let Some(close) = &duplex.close {
+        call_function(close, Vec::new())?;
+    }
+    Ok(())
+}
+
+fn duplex_send(duplex: &RuntimeDuplex, value: Value) -> Value {
+    if duplex.closed.get() {
+        let promise = Promise::new();
+        promise.reject("duplex/closed: cannot send on a closed Duplex");
+        return Value::Promise(promise);
+    }
+    Value::Promise(match call_function(&duplex.send, vec![value]) {
+        Ok(value) => promise_from(value),
+        Err(error) => {
+            let promise = Promise::new();
+            promise.reject(error);
+            promise
+        }
+    })
+}
+
+fn native_duplex_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let method = operation.strip_prefix("std.native.Duplex/").unwrap_or(operation);
+    match method {
+        "create" => {
+            if !(2..=3).contains(&forms.len()) {
+                return Err("Duplex/create expects a Stream, send function, and optional close function".into());
+            }
+            let receive = eval(&forms[0], env)?;
+            if !matches!(receive, Value::Stream(_)) {
+                return Err("Duplex/create expects a Stream as its receive side".into());
+            }
+            let Value::Function(send) = eval(&forms[1], env)? else {
+                return Err("Duplex/create expects a send function".into());
+            };
+            let close = match forms.get(2).map(|form| eval(form, env)).transpose()? {
+                None | Some(Value::Nil) => None,
+                Some(Value::Function(close)) => Some(close),
+                Some(_) => return Err("Duplex/create expects a close function or nil".into()),
+            };
+            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(receive, send, close))))
+        }
+        "instance?" => {
+            if forms.len() != 1 { return Err("Duplex/instance? expects one value".into()); }
+            Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Duplex(_))))
+        }
+        "receive" => {
+            if forms.len() != 1 { return Err("Duplex/receive expects one Duplex".into()); }
+            match eval(&forms[0], env)? {
+                Value::Duplex(duplex) => Ok(duplex.receive.clone()),
+                _ => Err("Duplex/receive expects a Duplex".into()),
+            }
+        }
+        "send" => {
+            if forms.len() != 2 { return Err("Duplex/send expects a Duplex and value".into()); }
+            let duplex = eval(&forms[0], env)?;
+            let value = eval(&forms[1], env)?;
+            match duplex {
+                Value::Duplex(duplex) => Ok(duplex_send(&duplex, value)),
+                _ => Err("Duplex/send expects a Duplex".into()),
+            }
+        }
+        "close" => {
+            if forms.len() != 1 { return Err("Duplex/close expects one Duplex".into()); }
+            match eval(&forms[0], env)? {
+                Value::Duplex(duplex) => { duplex_close(&duplex)?; Ok(Value::Duplex(duplex)) }
+                _ => Err("Duplex/close expects a Duplex".into()),
+            }
+        }
+        _ => Err(format!("unknown std.native.Duplex operation: {method}")),
+    }
 }
 
 fn drive_stream_step(
@@ -9829,7 +10002,7 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
         "IPersistent" => persistent_collection || matches!(value, Value::Struct(_)),
         "IStream" => matches!(value, Value::Stream(_)),
-        "IClose" => matches!(value, Value::Stream(_) | Value::Coroutine(_) | Value::Iterator(_)),
+        "IClose" => matches!(value, Value::Stream(_) | Value::Duplex(_) | Value::Coroutine(_) | Value::Iterator(_)),
         _ => false,
     }
 }
@@ -12446,7 +12619,7 @@ pub(crate) fn bind_pattern(
             Ok(())
         }
         Form::Map(entries) => {
-            if !matches!(value, Value::Nil) && map_entries(&value).is_none() {
+            if !matches!(value, Value::Nil | Value::Struct(_)) && map_entries(&value).is_none() {
                 return Err("cannot destructure non-map value".into());
             }
             let defaults = entries.iter().find_map(|(key, value)| {
@@ -12482,7 +12655,7 @@ pub(crate) fn bind_pattern(
                             };
                             bind_pattern(
                                 &Form::Symbol(name.clone()),
-                                map_value(&value, &lookup).cloned().unwrap_or(Value::Nil),
+                                collection_get(&value, &lookup, Value::Nil)?,
                                 env,
                                 bound,
                                 defaults,
@@ -12493,7 +12666,7 @@ pub(crate) fn bind_pattern(
                         let lookup = literal_value(key)?;
                         bind_pattern(
                             binding,
-                            map_value(&value, &lookup).cloned().unwrap_or(Value::Nil),
+                            collection_get(&value, &lookup, Value::Nil)?,
                             env,
                             bound,
                             defaults,
@@ -12955,14 +13128,13 @@ fn ensure_namespace(
     }
 
 
-    if package_catalog().contains_namespace(name)
-        && NAMESPACE_SOURCE_PROVIDER
-            .with(|active| active.borrow().as_ref().and_then(|provider| provider(name)))
-            .is_none()
-    {
-        return Err(format!(
-            "package/not-installed: namespace is locked but unavailable: {name}; call Package/ensure first"
-        ));
+    let catalog = package_catalog();
+    if let Some(coordinate) = catalog.coordinate_for_namespace(name) {
+        if catalog.state(&coordinate).as_deref() != Some("ready") {
+            return Err(format!(
+                "package/not-installed: namespace is locked but unavailable: {name}; call Package/ensure first"
+            ));
+        }
     }
 
     let requiring = registry.current().name().as_str().to_owned();
@@ -16359,6 +16531,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Stream/") => {
                     native_stream_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Duplex/") => {
+                    native_duplex_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Error/")

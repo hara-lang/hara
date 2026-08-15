@@ -544,7 +544,10 @@ final class FoundationFallbackDemand {
 
   private boolean needsFallback(
       Symbol symbol, Set<String> lexical, Set<String> globals) {
-    if (symbol.getNamespace() != null) return false;
+    if (symbol.getNamespace() != null) {
+      return context.namespaceQualifierTargets(symbol.getNamespace(), "std.foundation")
+          && FoundationFallbackDefinitions.defines(symbol.getName());
+    }
     String name = symbol.getName();
     if (lexical.contains(name)
         || globals.contains(name)

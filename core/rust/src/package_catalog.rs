@@ -9,6 +9,7 @@ pub struct LockedPackage {
     pub identity_revision: String,
     pub archive_sha256: String,
     pub namespaces: Vec<String>,
+    pub dependencies: Vec<String>,
 }
 
 pub fn catalog_from_lock(source: &str) -> Result<Vec<LockedPackage>, String> {
@@ -39,7 +40,11 @@ pub fn catalog_from_lock(source: &str) -> Result<Vec<LockedPackage>, String> {
         if namespaces.is_empty() {
             return Err(format!("locked package {coordinate} exports no namespaces"));
         }
-        output.push(LockedPackage { coordinate, version, tap, registry_commit, identity_revision, archive_sha256, namespaces });
+        let dependencies = match lookup(descriptor, "dependencies") {
+            Some(value) => map_keys(value, "locked package :dependencies")?,
+            None => Vec::new(),
+        };
+        output.push(LockedPackage { coordinate, version, tap, registry_commit, identity_revision, archive_sha256, namespaces, dependencies });
     }
     output.sort_by(|left, right| left.coordinate.cmp(&right.coordinate));
     let mut owners = std::collections::BTreeMap::new();
@@ -47,6 +52,17 @@ pub fn catalog_from_lock(source: &str) -> Result<Vec<LockedPackage>, String> {
         for namespace in &package.namespaces {
             if let Some(previous) = owners.insert(namespace, &package.coordinate) {
                 return Err(format!("package/namespace-conflict: {namespace} is exported by {previous} and {}", package.coordinate));
+            }
+        }
+    }
+    let coordinates = output.iter().map(|package| package.coordinate.as_str()).collect::<std::collections::BTreeSet<_>>();
+    for package in &output {
+        for dependency in &package.dependencies {
+            if dependency == &package.coordinate {
+                return Err(format!("package/dependency-cycle: {} depends on itself", package.coordinate));
+            }
+            if !coordinates.contains(dependency.as_str()) {
+                return Err(format!("package/dependency-not-locked: {} requires {dependency}", package.coordinate));
             }
         }
     }
@@ -75,6 +91,13 @@ fn symbols(form: &Form, label: &str) -> Result<Vec<String>, String> {
     output.dedup();
     Ok(output)
 }
+fn map_keys(form: &Form, label: &str) -> Result<Vec<String>, String> {
+    let entries = map(form, &format!("{label} must be a map"))?;
+    let mut output = entries.iter().map(|(key, _)| scalar(key, label)).collect::<Result<Vec<_>, _>>()?;
+    output.sort();
+    output.dedup();
+    Ok(output)
+}
 fn validate_sha256(value: &str) -> Result<(), String> {
     let value = value.strip_prefix("sha256:").unwrap_or(value);
     if value.len() == 64 && value.chars().all(|value| value.is_ascii_hexdigit()) { Ok(()) } else { Err("locked package :archive-sha256 must be SHA-256".into()) }
@@ -91,8 +114,9 @@ mod tests {
     fn reads_exact_lock_catalog_and_rejects_namespace_conflicts() {
         let digest = format!("sha256:{}", "a".repeat(64));
         let commit = "b".repeat(40);
-        let source = format!("{{:lock/format \"0.0.0-alpha\" :packages {{\"hara:demo/core\" {{:version \"1.2.3\" :tap \"hara\" :registry-commit \"{commit}\" :identity-revision \"{commit}\" :archive-sha256 \"{digest}\" :namespaces [demo.core demo.util]}}}}}}");
+        let source = format!("{{:lock/format \"0.0.0-alpha\" :packages {{\"hara:demo/base\" {{:version \"1.0.0\" :tap \"hara\" :registry-commit \"{commit}\" :identity-revision \"{commit}\" :archive-sha256 \"{digest}\" :namespaces [demo.base]}} \"hara:demo/core\" {{:version \"1.2.3\" :tap \"hara\" :registry-commit \"{commit}\" :identity-revision \"{commit}\" :archive-sha256 \"{digest}\" :namespaces [demo.core demo.util] :dependencies {{\"hara:demo/base\" \"1.0.0\"}}}}}}}}");
         let catalog = catalog_from_lock(&source).unwrap();
-        assert_eq!(catalog[0].namespaces, vec!["demo.core", "demo.util"]);
+        assert_eq!(catalog[1].namespaces, vec!["demo.core", "demo.util"]);
+        assert_eq!(catalog[1].dependencies, vec!["hara:demo/base"]);
     }
 }

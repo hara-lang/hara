@@ -1,0 +1,44 @@
+(ns std.lib.stream-test
+  (:require [std.lib.stream :as stream]))
+
+(def results
+  (Test/run
+    [{:name "recognises native and managed streams"
+      :test (fn []
+              [(stream/stream? (stream/generate (fn [] nil)))
+               (stream/stream? (stream/from-iterator [1]))
+               (stream/stream? [1])])
+      :expected [true true false]}
+     {:name "bridges iterators and composes transforms"
+      :test (fn []
+              (deref
+                (stream/collect
+                  (stream/take 3
+                    (stream/filter odd?
+                      (stream/map inc (stream/from-iterator [0 1 2 3 4 5])))))))
+      :expected [1 3 5]}
+     {:name "unfold accepts promised steps"
+      :test (fn []
+              (deref
+                (stream/collect
+                  (stream/unfold
+                    (fn [index]
+                      (promise/from
+                        (if (< index 3) [index (inc index)] nil)))
+                    0))))
+      :expected [0 1 2]}
+     {:name "reduces asynchronously"
+      :test (fn []
+              (deref (stream/reduce + 10 (stream/from-iterator [1 2 3]))))
+      :expected 16}
+     {:name "rejects nil stream items"
+      :test (fn []
+              (try
+                (do
+                  (deref (stream/next
+                           (stream/generate (fn [] (co/yield nil)))))
+                  false)
+                (catch Throwable error true)))
+      :expected true}]))
+
+results

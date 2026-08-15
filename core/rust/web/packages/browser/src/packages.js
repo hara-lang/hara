@@ -29,6 +29,34 @@ async function sha256(bytes) {
 
 const defaultPackagesOrigin = "https://packages.hara-lang.org";
 
+function ednScalar(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value.sym === "string") return value.sym;
+  if (value && typeof value.key === "string") return value.key;
+  return String(value);
+}
+
+function packageCoordinate(lock, target) {
+  if (Object.hasOwn(lock.packages ?? {}, target)) return target;
+  for (const [coordinate, entry] of Object.entries(lock.packages ?? {})) {
+    if ((entry.namespaces ?? []).some((namespace) => ednScalar(namespace) === target)) return coordinate;
+  }
+  throw new Error(`package/not-locked: ${target}`);
+}
+
+function lockedClosure(lock, targets) {
+  const selected = new Set();
+  const visit = (target) => {
+    const coordinate = packageCoordinate(lock, target);
+    if (selected.has(coordinate)) return;
+    const entry = lock.packages[coordinate];
+    selected.add(coordinate);
+    for (const dependency of Object.keys(entry.dependencies ?? {})) visit(dependency);
+  };
+  for (const target of targets ?? Object.keys(lock.packages ?? {})) visit(target);
+  return [...selected].sort();
+}
+
 function safeArchivePath(path) {
   return path
     && !path.startsWith("/")
@@ -43,7 +71,8 @@ function safeArchivePath(path) {
 export async function loadLockedPackageResources(
   lockSource,
   request = (...args) => globalThis.fetch(...args),
-  origin = defaultPackagesOrigin
+  origin = defaultPackagesOrigin,
+  targets
 ) {
   const lock = parseEdn(lockSource);
   if (lock["lock/format"] !== "0.0.0-alpha") {
@@ -51,7 +80,8 @@ export async function loadLockedPackageResources(
   }
 
   const staged = {};
-  for (const [coordinate, entry] of Object.entries(lock.packages ?? {})) {
+  for (const coordinate of lockedClosure(lock, targets)) {
+    const entry = lock.packages[coordinate];
     const registryCommit = entry["registry-commit"];
     const identityRevision = entry["identity-revision"];
     const digest = entry["archive-sha256"];
@@ -119,13 +149,76 @@ export async function loadLockedPackageResources(
   return staged;
 }
 
+/** Installs the on-demand Package capability used by std.native.Package. */
+export function installPackageProvider(runtime, lockSource, options = {}) {
+  const lock = parseEdn(lockSource);
+  const active = new Set();
+  runtime.raw?.registerPackageLock?.(lockSource);
+  const handler = async (service, operation, arguments_) => {
+    if (service !== "package") throw new Error(`host/unsupported-service: ${service}`);
+    const descriptor = arguments_?.[0] ?? {};
+    const coordinate = descriptor["package/coordinate"];
+    if (typeof coordinate !== "string") throw new Error("package/descriptor-invalid");
+    if (operation === "ensure") {
+      const closure = lockedClosure(lock, [coordinate]);
+      const resources = await loadLockedPackageResources(
+        lockSource,
+        options.fetch,
+        options.origin ?? defaultPackagesOrigin,
+        closure
+      );
+      for (const [namespace, source] of Object.entries(resources)) {
+        runtime.registerResource(namespace, source);
+      }
+      closure.forEach((item) => active.add(item));
+      return descriptor;
+    }
+    if (operation === "unload") {
+      const cascade = arguments_?.[1]?.cascade === true;
+      const selected = new Set([coordinate]);
+      if (cascade) {
+        let changed = true;
+        while (changed) {
+          changed = false;
+          for (const [candidate, entry] of Object.entries(lock.packages ?? {})) {
+            if (active.has(candidate)
+                && Object.keys(entry.dependencies ?? {}).some((dependency) => selected.has(dependency))
+                && !selected.has(candidate)) {
+              selected.add(candidate);
+              changed = true;
+            }
+          }
+        }
+      } else {
+        const blockers = Object.entries(lock.packages ?? {})
+          .filter(([candidate, entry]) => active.has(candidate)
+            && Object.keys(entry.dependencies ?? {}).includes(coordinate))
+          .map(([candidate]) => candidate);
+        if (blockers.length) throw new Error(`package/unload-blocked: ${blockers.join(",")}`);
+      }
+      const order = [...selected].reverse();
+      for (const item of order) {
+        for (const namespace of lock.packages[item]?.namespaces ?? []) {
+          runtime.raw?.unregister_resource?.(ednScalar(namespace));
+        }
+        active.delete(item);
+      }
+      return order;
+    }
+    throw new Error(`package/unsupported-operation: ${operation}`);
+  };
+  runtime.raw?.install_host_handler?.(handler);
+  return Object.freeze({ active, handler });
+}
+
 /** Verifies a lock completely, then atomically exposes its HAL resources. */
 export async function installLockedPackages(runtime, lockSource, options = {}) {
   runtime.raw?.registerPackageLock?.(lockSource);
   const resources = await loadLockedPackageResources(
     lockSource,
     options.fetch,
-    options.origin ?? defaultPackagesOrigin
+    options.origin ?? defaultPackagesOrigin,
+    options.targets
   );
   for (const [namespace, source] of Object.entries(resources)) {
     runtime.registerResource(namespace, source);

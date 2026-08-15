@@ -3,6 +3,7 @@ import test from "node:test";
 import { zipSync } from "fflate";
 import {
   installLockedPackages,
+  installPackageProvider,
   loadLockedPackageResources
 } from "./src/packages.js";
 
@@ -73,4 +74,34 @@ test("installation is atomic when a locked archive fails verification", async ()
     /digest mismatch/
   );
   assert.deepEqual(registered, []);
+});
+
+test("the package provider activates and unloads an exact target", async () => {
+  const { archive, lock, registry } = await fixture();
+  const registered = [];
+  const removed = [];
+  let handler;
+  const runtime = {
+    registerResource(namespace, source) {
+      registered.push([namespace, source]);
+    },
+    raw: {
+      registerPackageLock() {},
+      install_host_handler(value) { handler = value; },
+      unregister_resource(namespace) { removed.push(namespace); }
+    }
+  };
+  const provider = installPackageProvider(runtime, lock, {
+    origin: "https://packages.example",
+    fetch: async (url) => new Response(url.includes("/v1/registry") ? registry : archive)
+  });
+
+  await handler("package", "ensure", [{ "package/coordinate": "demo:world" }]);
+  assert.equal(provider.active.has("demo:world"), true);
+  assert.equal(registered[0][0], "demo.world");
+  assert.deepEqual(
+    await handler("package", "unload", [{ "package/coordinate": "demo:world" }, {}]),
+    ["demo:world"]
+  );
+  assert.deepEqual(removed, ["demo.world"]);
 });

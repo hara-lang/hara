@@ -1545,6 +1545,38 @@ impl Runtime {
         }
     }
 
+    /// Detaches a host-supplied namespace while leaving already captured
+    /// values alive. Package providers use this to deactivate one generation.
+    pub fn unregister_resource(&mut self, name: &str) -> Result<(), JsValue> {
+        if self.namespace_registry.current().name().as_str() == name {
+            return Err(JsValue::from_str("package/unload-current-namespace"));
+        }
+        self.resources.remove(name);
+        self.resource_overrides.remove(name);
+        self.loaded_resources.remove(name);
+        #[cfg(feature = "bytecode-vm")]
+        self.bytecode_resources.remove(name);
+        self.generated_configs.remove(name);
+        self.macros
+            .borrow_mut()
+            .retain(|(namespace, _), _| namespace != name);
+        for namespace in self.namespace_registry.all() {
+            for (symbol, var) in namespace.mappings() {
+                if var.symbol().get_namespace() == Some(name) {
+                    namespace.unmap(&symbol);
+                }
+            }
+            for (alias, target) in namespace.aliases() {
+                if target.name().as_str() == name {
+                    namespace.unalias(alias.as_str());
+                }
+            }
+        }
+        self.namespace_registry.remove(name);
+        self.refresh_qualified_bindings();
+        Ok(())
+    }
+
     /// Registers exact package ownership from project.lock.edn without
     /// downloading or loading any namespace.
     #[wasm_bindgen(js_name = registerPackageLock)]
@@ -1561,6 +1593,7 @@ impl Runtime {
                 (core::Value::Keyword("package/identity-revision".into()), core::Value::String(package.identity_revision)),
                 (core::Value::Keyword("package/archive-sha256".into()), core::Value::String(package.archive_sha256)),
                 (core::Value::Keyword("package/namespaces".into()), core::Value::Vector(PVector::from(namespaces.iter().map(|name| core::Value::Symbol(crate::lang::data::Symbol::parse(name))).collect::<Vec<_>>()))),
+                (core::Value::Keyword("package/dependencies".into()), core::Value::Vector(PVector::from(package.dependencies.iter().map(|coordinate| core::Value::String(coordinate.clone())).collect::<Vec<_>>()))),
             ])));
             self.package_catalog.register(package.coordinate, descriptor, namespaces.clone());
             for namespace in namespaces {
@@ -2282,7 +2315,7 @@ fn value_to_js(value: &core::Value) -> Result<JsValue, String> {
 #[cfg(target_arch = "wasm32")]
 fn js_to_value(value: &JsValue) -> Result<core::Value, String> {
     use crate::lang::data::{OrderedMap as POrderedMap, Vector as PVector};
-    use wasm_bindgen::JsCast;
+    use wasm_bindgen::{closure::Closure, JsCast};
 
     if value.is_null() || value.is_undefined() {
         return Ok(core::Value::Nil);
@@ -2310,6 +2343,28 @@ fn js_to_value(value: &JsValue) -> Result<core::Value, String> {
     }
     if value.is_instance_of::<js_sys::Uint8Array>() {
         return Ok(core::Value::Bytes(js_sys::Uint8Array::new(value).to_vec()));
+    }
+    if value.is_instance_of::<js_sys::Promise>() {
+        let source: js_sys::Promise = value.clone().unchecked_into();
+        let pending = core::Promise::new();
+        let fulfilled = pending.clone();
+        let rejected = pending.clone();
+        let on_fulfilled = Closure::once_into_js(move |value: JsValue| {
+            match js_to_value(&value) {
+                Ok(value) => fulfilled.resolve(value),
+                Err(error) => fulfilled.reject(format!("host/result-invalid: {error}")),
+            }
+            JsValue::UNDEFINED
+        });
+        let on_rejected = Closure::once_into_js(move |error: JsValue| {
+            rejected.reject(format!("host/rejected: {}", js_error_string(error)));
+            JsValue::UNDEFINED
+        });
+        source.then2(
+            on_fulfilled.unchecked_ref::<js_sys::Function>(),
+            on_rejected.unchecked_ref::<js_sys::Function>(),
+        );
+        return Ok(core::Value::Promise(pending));
     }
     if js_sys::Array::is_array(value) {
         let array = js_sys::Array::from(value);
@@ -3638,6 +3693,23 @@ mod tests {
                 )
                 .unwrap(),
             "[1 7 nil 1 :user.Point]"
+        );
+    }
+
+    #[test]
+    fn map_destructuring_uses_defstruct_lookup_semantics() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (defstruct Point [x y]) \
+                     [(let [{:keys [x y missing] :or {missing 7} :as point} \
+                            (Point 1 2)] \
+                        [x y missing (type point)]) \
+                      ((fn [{:keys [x y]}] [x y]) (Point 3 4))])",
+                )
+                .unwrap(),
+            "[[1 2 7 :user.Point] [3 4]]"
         );
     }
 
@@ -5119,6 +5191,12 @@ mod tests {
             .unwrap();
         assert!(canonical.same_identity(&referred));
         assert_eq!(runtime.eval_text("(identity 42)").unwrap(), "42");
+        assert_eq!(runtime.eval_text("(call + 1 2 3)").unwrap(), "6");
+        assert_eq!(
+            runtime.eval_text("(std.foundation/call + 19 23)").unwrap(),
+            "42"
+        );
+        assert!(runtime.eval_text("(call 2 1)").is_err());
         assert_eq!(runtime.eval_text("(first (range 3))").unwrap(), "0");
         assert_eq!(runtime.eval_text("(first (range 2 5))").unwrap(), "2");
 
@@ -9394,10 +9472,16 @@ mod tests {
         runtime.register_package_lock(&lock).unwrap();
         runtime.install_native_host_handler(Rc::new(|service, operation, arguments| {
             assert_eq!(service, "package");
-            assert_eq!(operation, "ensure");
-            assert_eq!(arguments.len(), 1);
+            assert!(operation == "ensure" || operation == "unload");
+            assert!(!arguments.is_empty());
             let promise = core::Promise::new();
-            promise.resolve(core::Value::Keyword("ready".into()));
+            promise.resolve(if operation == "ensure" {
+                core::Value::Keyword("ready".into())
+            } else {
+                core::Value::Vector(PVector::from(vec![core::Value::String(
+                    "hara:example/package".into(),
+                )]))
+            });
             Ok(core::Value::Promise(promise))
         }));
         assert_eq!(
@@ -9412,11 +9496,54 @@ mod tests {
             .unwrap_err();
         assert!(missing.contains("package/not-installed"), "{missing}");
         assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");
+        runtime.register_resource(
+            "example.unloaded",
+            "(ns example.unloaded) (def answer 42)",
+        );
         assert_eq!(
             runtime
                 .eval_native("(deref (Package/ensure 'example.unloaded))")
                 .unwrap(),
             ":ready"
+        );
+        assert_eq!(
+            runtime
+                .eval_native("(Package/load 'example.unloaded)")
+                .unwrap(),
+            "example.unloaded"
+        );
+        assert_eq!(runtime.eval_native("example.unloaded/answer").unwrap(), "42");
+        assert_eq!(
+            runtime
+                .eval_native("(deref (Package/unload 'example.unloaded {:cascade false}))")
+                .unwrap(),
+            "[\"hara:example/package\"]"
+        );
+        assert_eq!(
+            runtime.eval_native("(Package/state 'example.unloaded)").unwrap(),
+            ":available"
+        );
+    }
+
+    #[test]
+    fn duplex_has_stream_receive_promise_send_and_idempotent_close() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_native(
+                    "(let [closed (atom 0) \
+                           s (Stream/generate (fn [] (Coroutine/yield :received) :done)) \
+                           d (Duplex/create s (fn [value] [:sent value]) \
+                                            (fn [] (swap! closed inc)))] \
+                       (let [sent (first (deref (Duplex/send d :value)))] \
+                         (IClose/close d) \
+                         (Duplex/close d) \
+                         [(Duplex/instance? d) (type d) (satisfies? IClose d) \
+                          (= s (Duplex/receive d)) sent (= 1 (deref closed)) \
+                          (= :rejected (IPromise/state (Duplex/send d :late)))]))",
+                )
+                .unwrap(),
+            "[true :std.native.Duplex true true :sent true true]"
         );
     }
 

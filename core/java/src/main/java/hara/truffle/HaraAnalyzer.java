@@ -1466,7 +1466,7 @@ final class HaraAnalyzer {
       mapArgs[i + 1] =
           List.Standard.from(
               null,
-              Symbol.create("get"),
+              Symbol.create("std.foundation", "get"),
               recordMap,
               Keyword.create(fieldNames[i]));
     }

@@ -133,6 +133,11 @@ public final class HaraNativeTestRunner {
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
+  static Result parseResult(Path path, Value value) {
+    return parseResult(path, value.isString() ? value.asString() : value.toString());
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
   static Result parseResult(Path path, String transfer) {
     Object parsed;
     String summaryText = transfer;
