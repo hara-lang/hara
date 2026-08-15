@@ -1,0 +1,166 @@
+name: Validate code.test Result timeout migration
+
+on:
+  push:
+    branches:
+      - agent/667-code-test-result-timeout
+
+permissions:
+  contents: write
+
+jobs:
+  code-test-timeout:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/667-code-test-result-timeout
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Fetch external conformance fixtures
+        run: |
+          if [ ! -d ../hara-specs-registry/.git ]; then
+            git clone --depth 1 https://github.com/hara-lang/hara-specs-registry.git ../hara-specs-registry
+          fi
+          ln -sfn ../hara-specs-registry hara-specs-registry
+
+      - name: Build the Truffle runtime used by the HAL development gate
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Generate complete process and test candidates
+        run: |
+          python3 -m py_compile .github/scripts/patch_code_test_result_timeout.py
+          python3 .github/scripts/patch_code_test_result_timeout.py candidate
+
+      - name: Evaluate complete process candidate before writing
+        run: ./core/hara eval "$(cat core/target/code-test-result-timeout/process.hal)"
+
+      - name: Prove candidate timeout, checker, and aggregate behavior
+        run: |
+          source="$(cat core/target/code-test-result-timeout/process.hal)"
+          output="$(./core/hara eval "$source
+          (let [outcome
+                (code.test.base.process/settle-result
+                 (Promise/delay 100 (fn [] 42))
+                 {:timeout 0})
+                check-result
+                (code.test.base.process/check
+                 (fn [] (Promise/delay 100 (fn [] 42)))
+                 42
+                 {:timeout 0})
+                fact-result
+                (code.test.base.process/run-fact
+                 {:namespace 'demo
+                  :name \"timeout\"
+                  :meta {}
+                  :function
+                  (fn [options]
+                    (Promise/delay 100 (fn [] [])))}
+                 {:timeout 0})]
+            [(std.foundation/res-timeout? outcome)
+             (get (ex-data
+                   (std.foundation/res-error-value outcome))
+                  :code)
+             (:status check-result)
+             (:pass check-result)
+             (:timeout check-result)
+             (:status fact-result)])")"
+          test "$output" = '[true :result/timeout :timeout false 0 :timeout]'
+
+      - name: Record focused Rust HAL runner baseline before writing
+        id: baseline
+        run: |
+          set +e
+          ./scripts/runtime/run-lib-tests core/lib/test/code/test_test.hal
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "untouched code.test runner status: $status"
+          exit 0
+
+      - name: Apply process and test migration
+        run: python3 .github/scripts/patch_code_test_result_timeout.py apply
+
+      - name: Evaluate written process source in a fresh process
+        run: ./core/hara eval "$(cat core/lib/src/code/test/base/process.hal)"
+
+      - name: Evaluate the written focused test in the Truffle runtime
+        run: |
+          output="$(./core/hara eval "$(cat core/lib/test/code/test_test.hal)")"
+          echo "$output"
+          if echo "$output" | grep -F ':pass false'; then
+            echo "A code.test focused assertion failed"
+            exit 1
+          fi
+
+      - name: Prove written native timeout behavior
+        run: |
+          source="$(cat core/lib/src/code/test/base/process.hal)"
+          output="$(./core/hara eval "$source
+          (let [outcome
+                (code.test.base.process/settle-result
+                 (Promise/delay 100 (fn [] 42))
+                 {:timeout 0})
+                check-result
+                (code.test.base.process/check
+                 (fn [] (Promise/delay 100 (fn [] 42)))
+                 42
+                 {:timeout 0})]
+            [(std.foundation/res-timeout? outcome)
+             (:status check-result)
+             (:timeout check-result)])")"
+          test "$output" = '[true :timeout 0]'
+
+      - name: Validate source mirror and compatibility removal
+        run: |
+          cmp core/lib/src/code/test/base/process.hal core/rust/hal-src/code/test/base/process.hal
+          if git grep -n 'TimeoutValue' -- core/lib/src/code/test/base/process.hal core/rust/hal-src/code/test/base/process.hal core/lib/test/code/test_test.hal; then
+            echo "TimeoutValue compatibility remains"
+            exit 1
+          fi
+          if git grep -n ':work/timeout-promise\|:work/cancel-timeout' -- core/lib/src/code/test/base/process.hal core/lib/test/code/test_test.hal; then
+            echo "Legacy timeout capability plumbing remains"
+            exit 1
+          fi
+
+      - name: Record focused Rust HAL runner status after writing
+        id: final
+        run: |
+          set +e
+          ./scripts/runtime/run-lib-tests core/lib/test/code/test_test.hal
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "written code.test runner status: $status"
+          exit 0
+
+      - name: Reject a new focused runner regression
+        env:
+          BASELINE_STATUS: ${{ steps.baseline.outputs.status }}
+          FINAL_STATUS: ${{ steps.final.outputs.status }}
+        run: |
+          if [ "$BASELINE_STATUS" = 0 ]; then
+            test "$FINAL_STATUS" = 0
+          else
+            echo "code.test runner already failed on untouched source: $BASELINE_STATUS -> $FINAL_STATUS"
+          fi
+
+      - name: Publish clean implementation
+        run: |
+          git diff --check
+          rm -f hara-specs-registry
+          rm -f .github/scripts/patch_code_test_result_timeout.py
+          rm -f .github/workflows/agent-code-test-result-timeout.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Use Result timeouts in code.test"
+          git push origin HEAD:agent/667-code-test-result-timeout
