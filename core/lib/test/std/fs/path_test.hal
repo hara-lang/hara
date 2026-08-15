@@ -1,0 +1,44 @@
+(ns std.fs.path-test
+  (:use code.test)
+  (:require [std.fs.path :as path]))
+
+(def results
+  [(fact "normalise returns canonical logical paths"
+     [(path/normalise "src//./main.hal")
+      (path/normalise "")
+      (path/root)]
+     => ["/src/main.hal" "/" "/"])
+   (fact "normalise resolves parent segments"
+     (path/normalise "/src/lib/../main.hal")
+     => "/src/main.hal")
+   (fact "join treats later absolute-looking fragments as fragments"
+     (path/join "/src" "/test/main.hal")
+     => "/src/test/main.hal")
+   (fact "resolve replaces the base for absolute logical paths"
+     (path/resolve "/src" "/test/main.hal")
+     => "/test/main.hal")
+   (fact "parent and file-name use logical semantics"
+     [(path/parent "/src/main.hal")
+      (path/parent "/")
+      (path/file-name "/src/main.hal")
+      (path/file-name "/")]
+     => ["/src" nil "main.hal" ""])
+   (fact "relativize and subpath are deterministic"
+     [(path/relativize "/src/lib" "/src/test/main.hal")
+      (path/subpath "/src/test/main.hal" 1 3)]
+     => ["../test/main.hal" "/test/main.hal"])
+   (fact "suffix operations preserve canonical paths"
+     [(path/suffix "/src/main.hal")
+      (path/suffix "/src/.env")
+      (path/remove-suffix "/src/main.hal")
+      (path/replace-suffix "/src/main.hal" "json")]
+     => ["hal" nil "/src/main" "/src/main.json"])
+   (fact "paths cannot escape above the mounted root"
+     (try (path/normalise "../../secret") false (catch Throwable _ true))
+     => true)
+   (fact "host separators and drive prefixes are invalid"
+     [(try (path/normalise "C:/secret") false (catch Throwable _ true))
+      (try (path/normalise "src\\main.hal") false (catch Throwable _ true))]
+     => [true true])])
+
+(pr-str (run '[std.fs.path-test]))

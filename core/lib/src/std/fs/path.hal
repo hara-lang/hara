@@ -1,0 +1,194 @@
+;; Portable logical path algebra for the filesystem mounted at `/`.
+;; No operation observes a host path, host separator, drive, home directory,
+;; or process working directory.
+(ns std.fs.path
+  (:config {:override [resolve]})
+  (:require [std.foundation.string :as str]))
+
+(defn- path-error
+  [code message path]
+  (ex-info message
+           {:error/code code
+            :file/operation :path
+            :file/path path
+            :file/target nil}))
+
+(defn- drive-prefix?
+  [segment]
+  (and (>= (str/length segment) 2)
+       (= (str/char-at segment 1) ":")
+       (str/includes? "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+                      (str/char-at segment 0))))
+
+(defn- raw-segments
+  [path]
+  (cond
+    (not (string? path))
+    (throw (path-error :file/invalid-path
+                       "Logical path must be a string"
+                       path))
+
+    (str/includes? path "\u0000")
+    (throw (path-error :file/invalid-path
+                       "Logical path contains NUL"
+                       path))
+
+    (str/includes? path "\\")
+    (throw (path-error :file/invalid-path
+                       "Logical paths use / rather than host separators"
+                       path))
+
+    :else
+    (str/split path "/")))
+
+(defn segments
+  "Returns canonical logical path segments. Relative inputs are rooted at /."
+  [path]
+  (reduce
+   (fn [output segment]
+     (cond
+       (or (= segment "") (= segment "."))
+       output
+
+       (= segment "..")
+       (if (= 0 (count output))
+         (throw (path-error :file/outside-root
+                            "Logical path escapes above the mounted root"
+                            path))
+         (subvec output 0 (dec (count output))))
+
+       (drive-prefix? segment)
+       (throw (path-error :file/invalid-path
+                          "Logical paths do not accept host drive prefixes"
+                          path))
+
+       :else
+       (conj output segment)))
+   []
+   (raw-segments path)))
+
+(defn normalise
+  "Returns the canonical absolute logical path for path."
+  [path]
+  (let [parts (segments path)]
+    (if (= 0 (count parts))
+      "/"
+      (str "/" (str/join "/" parts)))))
+
+(def normalize normalise)
+
+(defn root
+  "Returns the mounted logical filesystem root."
+  []
+  "/")
+
+(defn join
+  "Joins logical fragments. A leading / on a later fragment is ignored."
+  ([base path]
+   (let [base (normalise base)
+         path (if (str/starts-with? path "/")
+                (str/slice path 1)
+                path)]
+     (normalise
+      (str base
+           (if (= base "/") "" "/")
+           path))))
+  ([base path & paths]
+   (reduce join (join base path) paths)))
+
+(defn resolve
+  "Resolves path against base; an absolute logical path replaces base."
+  [base path]
+  (if (str/starts-with? path "/")
+    (normalise path)
+    (join base path)))
+
+(defn parent
+  "Returns path's canonical parent, or nil for /."
+  [path]
+  (let [parts (segments path)]
+    (cond
+      (= 0 (count parts)) nil
+      (= 1 (count parts)) "/"
+      :else (normalise (str/join "/" (subvec parts 0 (dec (count parts))))))))
+
+(defn file-name
+  "Returns the final logical segment, or the empty string for /."
+  [path]
+  (let [parts (segments path)]
+    (if (= 0 (count parts)) "" (nth parts (dec (count parts))))))
+
+(defn- common-count
+  [left right]
+  (loop [index 0]
+    (if (or (= index (count left))
+            (= index (count right))
+            (not (= (nth left index) (nth right index))))
+      index
+      (recur (inc index)))))
+
+(defn relativize
+  "Returns target relative to base using only logical .. segments."
+  [base target]
+  (let [left (segments base)
+        right (segments target)
+        common (common-count left right)
+        parents (loop [index common output []]
+                  (if (= index (count left))
+                    output
+                    (recur (inc index) (conj output ".."))))
+        children (subvec right common (count right))
+        output (reduce conj parents children)]
+    (if (= 0 (count output)) "." (str/join "/" output))))
+
+(defn subpath
+  "Returns the selected segment range as a canonical logical path."
+  ([path start]
+   (subpath path start (count (segments path))))
+  ([path start end]
+   (normalise (str/join "/" (subvec (segments path) start end)))))
+
+(defn suffix
+  "Returns the final filename suffix without its dot, or nil."
+  [path]
+  (let [name (file-name path)]
+    (if (= name "")
+      nil
+      (let [index (str/last-index-of name ".")]
+        (if (or (= index -1) (= index 0))
+          nil
+          (str/slice name (inc index)))))))
+
+(defn remove-suffix
+  "Removes the final filename suffix."
+  [path]
+  (let [name (file-name path)
+        value (suffix path)]
+    (if (nil? value)
+      (normalise path)
+      (join (or (parent path) "/")
+            (str/slice name 0 (- (str/length name)
+                                 (inc (str/length value))))))))
+
+(defn add-suffix
+  "Adds a suffix to path's final filename."
+  [path value]
+  (cond
+    (or (nil? value) (= value ""))
+    (normalise path)
+
+    (or (not (string? value))
+        (str/includes? value "/")
+        (str/includes? value "\\")
+        (str/includes? value "\u0000"))
+    (throw (path-error :file/invalid-path
+                       "A suffix must be one logical filename fragment"
+                       path))
+
+    :else
+    (str (normalise path) "." value)))
+
+(defn replace-suffix
+  "Replaces path's final filename suffix."
+  [path value]
+  (add-suffix (remove-suffix path) value))
