@@ -1,0 +1,62 @@
+name: Build synchronous std.fs tranche v3
+
+on:
+  push:
+    branches:
+      - agent/650-sync-std-fs-build-v3
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-650-sync-std-fs-v3
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: hara
+          fetch-depth: 0
+
+      - name: Checkout validation driver
+        uses: actions/checkout@v4
+        with:
+          ref: agent/650-sync-std-fs-build-v3
+          path: builder
+          fetch-depth: 1
+
+      - name: Checkout specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: main
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: hara/core/rust/web/package-lock.json
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: hara/core/java/pom.xml
+
+      - name: Build, verify, and publish synchronous std.fs
+        shell: bash
+        run: bash builder/scripts/agent-650-run-sync-std-fs-v3.sh hara hara-specs-registry
