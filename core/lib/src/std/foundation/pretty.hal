@@ -1,15 +1,33 @@
+;; ============================================================================
+;; std.foundation.pretty — portable EDN document construction and rendering.
+;;
+;; Contract:
+;;   * Traverse values through IEncodable/IEncodeVisitor without host interop.
+;;   * Build ordinary Document data before rendering or writing output.
+;;   * Canonical mode is deterministic; pretty mode adds semantic annotations
+;;     and width-sensitive line breaking.
+;;   * Every public definition carries documentation and portable schema metadata.
+;; ============================================================================
 (ns std.foundation.pretty)
 
-(def default-options
+(def ^{:schema :map
+       :doc "Default options for canonical and pretty document visitors."}
+  default-options
   {:width 80 :print-meta false :sort-keys 80 :map-delimiter ","
    :map-coll-separator " " :seq-limit nil :print-handlers {}
    :print-fallback :pretty})
 
 (defstruct CanonicalVisitor [options])
-(defstruct PrettyVisitor [options])
+(def ^{:schema [:fn [:map] :any]
+       :doc "Constructs a visitor that produces deterministic canonical EDN documents."}
+  CanonicalVisitor
+  CanonicalVisitor)
 
-(declare format-doc)
-(declare format-doc-edn)
+(defstruct PrettyVisitor [options])
+(def ^{:schema [:fn [:map] :any]
+       :doc "Constructs a visitor that produces annotated, width-sensitive EDN documents."}
+  PrettyVisitor
+  PrettyVisitor)
 
 (defn- annotate [kind document]
   (Document/annotate kind document))
@@ -136,22 +154,34 @@
                (format-doc visitor form))))
   (visit-unknown [visitor value] (unknown-document visitor value)))
 
-(defn canonical-printer
+(defn ^{:schema [:function [:fn [] :any]
+                            [:fn [:map] :any]]}
+  canonical-printer
+  "Returns a canonical EDN visitor configured with options."
   ([] (canonical-printer {}))
   ([options]
    (std.foundation.pretty/CanonicalVisitor
      (merge default-options options {:mode :canonical}))))
 
-(defn pretty-printer
+(defn ^{:schema [:function [:fn [] :any]
+                            [:fn [:map] :any]]}
+  pretty-printer
+  "Returns an annotated pretty-print visitor configured with options."
   ([] (pretty-printer {}))
   ([options]
    (std.foundation.pretty/PrettyVisitor
      (merge default-options options {:mode :pretty}))))
 
-(defn format-doc-edn [visitor value]
+(defn ^{:schema [:fn [:any :any] :any]}
+  format-doc-edn
+  "Encodes value through visitor without adding metadata decoration."
+  [visitor value]
   (IEncodable/encode-with value visitor))
 
-(defn format-doc
+(defn ^{:schema [:function [:fn [:any] :any]
+                            [:fn [:any :any] :any]]}
+  format-doc
+  "Formats value as a document, using the default pretty visitor when omitted."
   ([visitor value]
    (let [metadata (value-meta value)
          options (:options visitor)]
@@ -165,21 +195,33 @@
        (format-doc-edn visitor value))))
   ([value] (format-doc (pretty-printer) value)))
 
-(defn render
+(defn ^{:schema [:function [:fn [:any] :str]
+                            [:fn [:any :map] :str]]}
+  render
+  "Renders document to a string with optional Document rendering options."
   ([document] (render document {}))
   ([document options] (Document/render document options)))
 
-(defn write
+(defn ^{:schema [:function [:fn [:any] :any]
+                            [:fn [:any :map] :any]]}
+  write
+  "Renders document and writes it through the portable Printer boundary."
   ([document] (write document {}))
   ([document options] (Printer/p (render document options))))
 
-(defn pprint-str
+(defn ^{:schema [:function [:fn [:any] :str]
+                            [:fn [:any :map] :str]]}
+  pprint-str
+  "Pretty-formats value to a width-sensitive string."
   ([value] (pprint-str value {}))
   ([value options]
    (let [visitor (pretty-printer options)]
      (render (format-doc visitor value)
              {:width (:width (:options visitor))}))))
 
-(defn pprint
+(defn ^{:schema [:function [:fn [:any] :any]
+                            [:fn [:any :map] :any]]}
+  pprint
+  "Pretty-formats value and writes it through the portable Printer boundary."
   ([value] (pprint value {}))
   ([value options] (Printer/p (pprint-str value options))))

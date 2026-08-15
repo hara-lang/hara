@@ -99,7 +99,8 @@
   [value] (fn [ignored & rest] value))
 
 (defn ^{:schema [:function [:fn [:fn :fn] :fn]
-                            [:fn [:fn :fn :fn] :fn]]}
+                            [:fn [:fn :fn :fn] :fn]
+                            [:fn [:fn :fn :fn :fn & :fn] :fn]]}
   comp
   "Composes two or more functions right-to-left."
   ([f g]   (fn [value] (f (g value))))
@@ -457,7 +458,8 @@
   "Returns a lazy seq of seed, (function seed), (function (function seed)), …"
   [function seed] (seq (Iter/iter-iterate function seed)))
 
-(defn ^{:schema [:fn [:fn :any] :any]}
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
   take-while
   "Unary form returns an iterator transform; collection form eagerly
    materializes items while predicate holds."
@@ -465,7 +467,8 @@
   ([predicate value]
    (materialize-vector value (Iter/iter-take-while predicate value))))
 
-(defn ^{:schema [:fn [:fn :any] :any]}
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
   drop-while
   "Unary form returns an iterator transform; collection form eagerly
    materializes after dropping items while predicate holds."
@@ -491,7 +494,8 @@
   ([amount value]
    (materialize-groups value (Iter/iter-partition amount value))))
 
-(defn ^{:schema [:fn [:any :any] :any]}
+(defn ^{:schema [:function [:fn [:any] :fn]
+                            [:fn [:any :any] :any]]}
   interpose
   "Unary form returns an iterator transform; collection form eagerly inserts
    separator between items."
@@ -503,9 +507,9 @@
   interleave
   "Eagerly returns the first items of each source, then the second items, and
    so on, stopping at the shortest source."
-  [value & rest]
+  [value & values]
   (materialize-vector value
-                    (apply Iter/iter-interleave (concat [value] rest))))
+                      (apply Iter/iter-interleave (concat [value] values))))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any & :any] :any]]}
@@ -517,7 +521,8 @@
    (materialize-vector value
                      (apply Iter/iter-map function (concat [value] rest)))))
 
-(defn ^{:schema [:fn [:fn :any] :any]}
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
   filter
   "Unary form returns an iterator transform; collection form eagerly keeps
    items for which predicate returns true."
@@ -525,21 +530,24 @@
   ([predicate value]
    (materialize-vector value (Iter/iter-filter predicate value))))
 
-(defn ^{:schema [:fn [:num :any] :any]}
+(defn ^{:schema [:function [:fn [:num] :fn]
+                            [:fn [:num :any] :any]]}
   take
   "Unary form returns an iterator transform; collection form eagerly returns
    the first amount items."
   ([amount] (partial Iter/iter-take amount))
   ([amount value] (materialize-vector value (Iter/iter-take amount value))))
 
-(defn ^{:schema [:fn [:num :any] :any]}
+(defn ^{:schema [:function [:fn [:num] :fn]
+                            [:fn [:num :any] :any]]}
   drop
   "Unary form returns an iterator transform; collection form eagerly returns
    all but the first amount items."
   ([amount] (partial Iter/iter-drop amount))
   ([amount value] (materialize-vector value (Iter/iter-drop amount value))))
 
-(defn ^{:schema [:fn [:fn :any] :any]}
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
   mapcat
   "Unary form returns an iterator transform; collection form eagerly maps and
    concatenates."
@@ -547,7 +555,8 @@
   ([function value]
    (materialize-vector value (Iter/iter-mapcat function value))))
 
-(defn ^{:schema [:fn [:fn :any] :any]}
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
   keep
   "Unary form returns an iterator transform; collection form eagerly returns
    non-nil mapped results."
@@ -564,22 +573,24 @@
   zip
   "Eagerly returns tuples of the items of each source in parallel, stopping at
    the shortest source."
-  [first & rest]
-  (materialize-vector first
-                    (apply Iter/iter-zip (concat [first] rest))))
+  [value & values]
+  (materialize-vector value
+                      (apply Iter/iter-zip (concat [value] values))))
 
 (defn ^{:schema [:fn [:any] :any]}
   partition-pair
   "Eagerly returns value partitioned into pairs."
   [value] (materialize-vector value (Iter/iter-partition-pair value)))
 
-(defn ^{:schema [:fn [:fn :any] :bool]}
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :bool]]}
   every?
   "Unary form returns a reusable terminal; collection form tests every item."
   ([predicate] (partial Iter/iter-every? predicate))
   ([predicate value] (Iter/iter-every? predicate value)))
 
-(defn ^{:schema [:fn [:fn :any] :bool]}
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :bool]]}
   any?
   "Unary form returns a reusable terminal; collection form tests any item."
   ([predicate] (partial Iter/iter-any? predicate))
@@ -1086,7 +1097,6 @@
           values))
 
 ;; ---------------------------------------------------------------------------
-;; ---------------------------------------------------------------------------
 ;; Set algebra and graph ordering
 ;; ---------------------------------------------------------------------------
 
@@ -1317,6 +1327,7 @@
               (if (has? replacements value) (get replacements value) value))
             form))
 
+;; ---------------------------------------------------------------------------
 ;; Macro tooling
 ;; ---------------------------------------------------------------------------
 
@@ -1331,7 +1342,10 @@
       (if (= expanded current)
         current
         (if (>= expansions 1000)
-          (throw "macro expansion exceeded 1000 steps")
+          (throw (ex-info "macro expansion exceeded 1000 steps"
+                          {:form current
+                           :expansions expansions
+                           :limit 1000}))
           (recur expanded (+ expansions 1)))))))
 
 (declare macroexpand-all)
@@ -1587,10 +1601,12 @@
 
 (defmacro intern-in
   "Copies selected Vars into a namespace as its public façade."
-  [ns? & syms]
-  (let [implicit? (if (vector? ns?) true (if (namespace ns?) true false))
-        target (if implicit? (list 'current-namespace) ns?)
-        entries (if implicit? (apply list ns? syms) syms)]
+  [target-or-entry & additional-entries]
+  (let [implicit? (if (vector? target-or-entry) true (if (namespace target-or-entry) true false))
+        target (if implicit? (list 'current-namespace) target-or-entry)
+        selected-entries (if implicit?
+                           (apply list target-or-entry additional-entries)
+                           additional-entries)]
     (vec
      (map
       (fn [entry]
@@ -1600,7 +1616,7 @@
                 target
                 (list 'quote (symbol (name to)))
                 (list 'var from))))
-      entries))))
+      selected-entries))))
 
 (defmacro intern-all
   "Copies every public Var from each source namespace into the current namespace."
@@ -1617,7 +1633,11 @@
        (keys (ns-publics source))))
     namespaces)))
 
-(def ^:dynamic *template-meta* nil)
+(def ^{:dynamic true
+       :schema :any
+       :doc "Metadata supplied to the active template expansion."}
+  *template-meta*
+  nil)
 
 (defmacro with:template-meta
   "Binds template metadata for the duration of body."
@@ -1751,18 +1771,6 @@
           {}
           ids))
 
-(defn- set-union
-  [left right]
-  (reduce conj left right))
-
-(defn- set-difference
-  [left right]
-  (set (filter (fn [value] (not (has? right value))) left)))
-
-(defn- graph-values
-  [graph]
-  (reduce set-union #{} (vals graph)))
-
 (defn ^{:schema [:function [:fn [:any :any] :map]
                             [:fn [:any :any :map] :map]]}
   deps-resolve
@@ -1776,9 +1784,9 @@
      (if (empty? pending)
        {:all seen :graph graph}
        (let [next-graph (merge graph (deps-map context pending))
-             next-seen (set-union seen pending)
-             discovered (graph-values next-graph)
-             next-pending (set-difference discovered next-seen)]
+             next-seen (union seen pending)
+             discovered (apply union (vals next-graph))
+             next-pending (difference discovered next-seen)]
          (recur next-pending next-seen next-graph))))))
 
 (defn ^{:schema [:function [:fn [:any] :vector]
@@ -1819,8 +1827,8 @@
   ([context id selected]
    (loop [graph {id (dependents-direct context id selected)}]
      (let [known (set (keys graph))
-           discovered (graph-values graph)
-           pending (set-difference discovered known)]
+           discovered (apply union (vals graph))
+           pending (difference discovered known)]
        (if (empty? pending)
          graph
          (recur (merge graph
