@@ -1,0 +1,199 @@
+name: Agent reconcile Foundation source ownership
+
+on:
+  push:
+    branches: [agent/foundation-surface-conformance]
+
+permissions:
+  contents: write
+
+jobs:
+  rewrite:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/foundation-surface-conformance
+          fetch-depth: 0
+
+      - name: Apply the reviewed Foundation ownership migration
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace(path, old, new, *, count=None):
+              target = Path(path)
+              source = target.read_text()
+              actual = source.count(old)
+              if actual == 0:
+                  raise SystemExit(f"missing expected text in {path}: {old!r}")
+              if count is not None and actual != count:
+                  raise SystemExit(
+                      f"unexpected replacement count in {path}: expected {count}, found {actual}: {old!r}"
+                  )
+              target.write_text(source.replace(old, new))
+
+          root = Path("core/lib/src/std/foundation.hal")
+          source = root.read_text()
+          marker = "(ns std.foundation)"
+          if marker not in source:
+              raise SystemExit("root Foundation namespace marker is missing")
+          header = """;; ============================================================================
+          ;; std.foundation — the portable value bootstrap and root language library.
+          ;;
+          ;; Contract:
+          ;;   * Keep this layer portable and free of direct host interop.
+          ;;   * Every public function carries a docstring and portable schema metadata.
+          ;;   * Macros carry docstrings; their form-level signatures remain outside the
+          ;;     value schema grammar.
+          ;;
+          ;; Registered loadable family (core/rust/standard-library.namespaces):
+          ;;
+          ;;   std.foundation
+          ;;   std.foundation.bytes
+          ;;   std.foundation.coroutine
+          ;;   std.foundation.pretty
+          ;;   std.foundation.promise
+          ;;   std.foundation.string
+          ;;
+          ;; The root owns composition, collections, sequences, set algebra, metadata,
+          ;; references, structural traversal, predicates, dependency helpers, and the
+          ;; small language-level operations referred into ordinary namespaces.
+          ;;
+          ;; Runtime-installed objects such as Edn, Json, Crypto, File, Socket, Host,
+          ;; Kernel, and OS use std.native.* identities but are not loadable Foundation
+          ;; children. Availability of capability-bearing objects remains profile- and
+          ;; host-dependent.
+          ;;
+          ;; Higher-level ownership:
+          ;;   * portable path operations: std.fs.path (broader std.fs remains planned)
+          ;;   * formatting, reports, tables, and terminal rendering: std.format.*
+          ;;   * component lifecycle: std.lib.component
+          ;;   * cryptographic algorithms above native primitives: std.crypto.*
+          ;;   * specialized collection helpers: std.lib.collection
+          ;;
+          ;; Authoritative references:
+          ;;   * core/spec/std/foundation-architecture.md
+          ;;   * core/spec/std/foundation-migrations.json
+          ;;   * scripts/generate_foundation_api_manifest.py
+          ;; ============================================================================
+          """
+          root.write_text(header + marker + source.split(marker, 1)[1])
+
+          replace(
+              "core/rust/web/studio/ui.js",
+              "export function studioSource(form) {\n  return (\n    \"(do (require [std.foundation.file :as file]) \" +\n    `(require [studio.boot :as boot]) ${form})`\n  );\n}",
+              "export function studioSource(form) {\n  return `(do (require [studio.boot :as boot]) ${form})`;\n}",
+              count=1,
+          )
+          replace("core/rust/web/studio/ui.js", "file/", "File/")
+
+          replace(
+              "core/rust/web/studio-ui.test.mjs",
+              'test("studioSource wraps a form with canonical file and boot requires", () => {\n  assert.equal(\n    studioSource(\'(deref (file/read "/a.hal"))\'),\n    \'(do (require [std.foundation.file :as file]) (require [studio.boot :as boot]) (deref (file/read "/a.hal")))\'\n  );',
+              'test("studioSource wraps a form with the canonical File object and boot dependency", () => {\n  assert.equal(\n    studioSource(\'(deref (File/read "/a.hal"))\'),\n    \'(do (require [studio.boot :as boot]) (deref (File/read "/a.hal")))\'\n  );',
+              count=1,
+          )
+
+          replace(
+              "core/rust/web/studio-hal.test.mjs",
+              'const REQUIRE_ALL =\n  "(require [studio.store :as store]) " +\n  "(require [std.foundation.file :as file]) " +\n  "(require [std.foundation.host :as host]) " +\n  "(require [studio.boot :as boot])";',
+              'const REQUIRE_ALL =\n  "(require [studio.store :as store]) " +\n  "(require [studio.boot :as boot])";',
+              count=1,
+          )
+          replace("core/rust/web/studio-hal.test.mjs", "std.foundation.file", "File")
+          replace("core/rust/web/studio-hal.test.mjs", "std.foundation.host", "Host")
+          replace("core/rust/web/studio-hal.test.mjs", "file/", "File/")
+          replace("core/rust/web/studio-hal.test.mjs", "host/", "Host/")
+          replace(
+              "core/rust/web/studio-hal.test.mjs",
+              "(do (require [File :as file]) ",
+              "(do ",
+          )
+
+          replace(
+              "core/lib/integration/hara/runtime_smoke.hal",
+              "(ns tool.runtime-smoke\n  (:require [std.foundation.os :as os]\n            [std.foundation.string :as string]",
+              "(ns tool.runtime-smoke\n  (:require [std.foundation.string :as string]",
+              count=1,
+          )
+
+          replace(
+              "core/lib/test/tool/project/production_test.hal",
+              "(ns tool.project.production-test\n  (:require [std.foundation.edn :as edn]\n            \n            [tool.project.production :as production]))",
+              "(ns tool.project.production-test\n  (:require [tool.project.production :as production]))",
+              count=1,
+          )
+          replace("core/lib/test/tool/project/production_test.hal", "edn/read", "Edn/read")
+
+          manage = "core/lib/test/code/manage_test.hal"
+          for old, new in (
+              ("foundation-file-unit", "fs-path-unit"),
+              ("core/lib/src/std/foundation/file.hal", "core/lib/src/std/fs/path.hal"),
+              ("(ns std.foundation.file)", "(ns std.fs.path)"),
+              ("std.foundation.file/parent", "std.fs.path/parent"),
+              ("std.foundation.file/resolve", "std.fs.path/resolve"),
+              ("std.foundation.file/hidden", "std.fs.path/hidden"),
+              ("std.foundation.file-test", "std.fs.path-test"),
+              ("core/lib/test/std/foundation/file_test.hal", "core/lib/test/std/fs/path_test.hal"),
+              ("custom/std/foundation/file_test.hal", "custom/std/fs/path_test.hal"),
+          ):
+              replace(manage, old, new)
+
+          replace(
+              "core/java/src/test/java/hara/truffle/HaraSqliteProcessExtensionTest.java",
+              '              + "[std.foundation.json :as json] "\n',
+              "",
+              count=1,
+          )
+          replace(
+              "core/java/src/test/java/hara/truffle/HaraSqliteProcessExtensionTest.java",
+              "(def graph-data (json/read graph-json))",
+              "(def graph-data (Json/read graph-json))",
+              count=1,
+          )
+
+          stale = (
+              "std.foundation.edn",
+              "std.foundation.file",
+              "std.foundation.host",
+              "std.foundation.json",
+              "std.foundation.os",
+          )
+          migrated = (
+              "core/rust/web/studio/ui.js",
+              "core/rust/web/studio-ui.test.mjs",
+              "core/rust/web/studio-hal.test.mjs",
+              "core/lib/integration/hara/runtime_smoke.hal",
+              "core/lib/test/tool/project/production_test.hal",
+              "core/lib/test/code/manage_test.hal",
+              "core/java/src/test/java/hara/truffle/HaraSqliteProcessExtensionTest.java",
+          )
+          for path in migrated:
+              text = Path(path).read_text()
+              remaining = [name for name in stale if name in text]
+              if remaining:
+                  raise SystemExit(f"stale Foundation references remain in {path}: {remaining}")
+
+          Path(".github/workflows/agent-foundation-source-reconcile.yml").unlink()
+          PY
+
+      - name: Commit the reconciled source files
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            core/lib/src/std/foundation.hal \
+            core/lib/integration/hara/runtime_smoke.hal \
+            core/lib/test/code/manage_test.hal \
+            core/lib/test/tool/project/production_test.hal \
+            core/java/src/test/java/hara/truffle/HaraSqliteProcessExtensionTest.java \
+            core/rust/web/studio/ui.js \
+            core/rust/web/studio-hal.test.mjs \
+            core/rust/web/studio-ui.test.mjs \
+            .github/workflows/agent-foundation-source-reconcile.yml
+          git commit -m "Reconcile remaining Foundation source ownership"
+          git push origin HEAD:agent/foundation-surface-conformance
