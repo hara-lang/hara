@@ -6625,31 +6625,32 @@ mod tests {
 
     #[test]
     fn portable_type_descriptors_cover_named_and_collection_values() {
-        let mut runtime = Runtime::new();
-        runtime
-            .eval_text("(ns type.runtime (:require [std.lib.collection :as collection]))")
-            .unwrap();
+        let mut runtime = Runtime::core();
+        for (namespace, _, source) in EMBEDDED_HAL_RESOURCES {
+            runtime.register_resource(namespace, source);
+        }
+        runtime.eval_text("(ns type.runtime)").unwrap();
         for (source, expected) in [
-            ("nil", ":hara/Nil"),
-            (":key", ":hara/Keyword"),
-            ("(symbol \"hara/name\")", ":hara/Symbol"),
-            ("[]", ":hara/Vector"),
-            ("(list)", ":hara/List"),
-            ("(collection/queue)", ":hara/Queue"),
-            ("(vector)", ":hara/Vector"),
-            ("(hash-map)", ":hara/HashMap"),
-            ("{}", ":hara/HashMap"),
-            ("(collection/sorted-map)", ":hara/SortedMap"),
-            ("(collection/trie)", ":hara/Trie"),
-            ("(hash-set)", ":hara/HashSet"),
-            ("#{}", ":hara/OrderedSet"),
-            ("(collection/sorted-set)", ":hara/SortedSet"),
-            ("(bytes)", ":hara/ByteBuffer"),
-            ("(array)", ":hara/Array"),
-            ("(object)", ":hara/Object"),
-            ("(atom 0)", ":hara/Atom"),
-            ("(ns:create (quote example))", ":hara/Namespace"),
-            ("#\"x\"", ":hara/RegExp"),
+            ("nil", ":std.native.Nil"),
+            (":key", ":std.native.Keyword"),
+            ("(symbol \"hara/name\")", ":std.native.Symbol"),
+            ("[]", ":std.native.Tuple"),
+            ("(list)", ":std.native.List"),
+            ("(std.native.Algo/queue)", ":std.native.Queue"),
+            ("(vector)", ":std.native.Vector"),
+            ("(hash-map)", ":std.native.HashMap"),
+            ("{}", ":std.native.HashMap"),
+            ("(std.native.Algo/sorted-map)", ":std.native.SortedMap"),
+            ("(std.native.Algo/trie)", ":std.native.Trie"),
+            ("(hash-set)", ":std.native.HashSet"),
+            ("#{}", ":std.native.OrderedSet"),
+            ("(std.native.Algo/sorted-set)", ":std.native.SortedSet"),
+            ("(bytes)", ":std.native.ByteBuffer"),
+            ("(array)", ":std.native.Array"),
+            ("(object)", ":std.native.Object"),
+            ("(atom 0)", ":std.native.Atom"),
+            ("(ns:create (quote example))", ":std.native.Namespace"),
+            ("#\"x\"", ":std.native.RegExp"),
         ] {
             assert_eq!(
                 runtime.eval_text(&format!("(type {source})")).unwrap(),
@@ -6658,13 +6659,13 @@ mod tests {
         }
         assert_eq!(
             runtime.eval_text("(type (type []))").unwrap(),
-            ":hara/Keyword"
+            ":std.native.Keyword"
         );
         assert_eq!(
             runtime
                 .eval_text("[(type [1 2 3 4 5 6 7 8]) (type [1 2 3 4 5 6 7 8 9])]")
                 .unwrap(),
-            "[:hara/Vector :hara/Vector]"
+            "[:std.native.Tuple :std.native.Vector]"
         );
         assert_eq!(
             runtime
@@ -6673,7 +6674,7 @@ mod tests {
                      [(type (Point 1 2)) (type (Cursor 1 2)) (type Point) (type Cursor)]",
                 )
                 .unwrap(),
-            "[:geometry/Point :geometry/Cursor :hara/StructType :hara/MutableType]"
+            "[:geometry.Point :geometry.Cursor :std.native.StructType :std.native.MutableType]"
         );
         assert_eq!(
             runtime
@@ -8104,7 +8105,7 @@ mod tests {
                       (map-entry? (IFind/find {:a 1} :a))]",
                 )
                 .unwrap(),
-            "[:hara/Vector true :hara/Vector true]"
+            "[:std.native.Tuple true :std.native.Tuple true]"
         );
     }
 

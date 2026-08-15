@@ -94,7 +94,7 @@ fn dynamic_collections_and_short_circuit_forms() {
                (type [1 2 3 4 5 6 7 8 9]) (vector? [1 2 3 4 5 6 7 8 9]) \
                (tuple? [1 2 3 4 5 6 7 8 9]) (pair? (vector 1 2))]"
         ),
-        "[:hara/Vector true true true :hara/Vector true :hara/Vector true false false]"
+        "[:std.native.Tuple true true true :std.native.Tuple true :std.native.Vector true false false]"
     );
     assert_eq!(eval("[(get [1 2] 1) (get [] 0 :missing)]"), "[2 :missing]");
     assert_eq!(eval("(let [x 42] {:answer x})"), "{:answer 42}");
@@ -596,6 +596,18 @@ fn defn_lowering_binds_direct_calls() {
     .unwrap();
     let listing = disassemble(&program);
     assert!(listing.contains("CallStatic 0001 1"), "{listing}");
+}
+
+#[test]
+fn inline_metadata_lowers_forwarding_calls_to_the_declared_target() {
+    let program = compile_source(
+        "(do (defn target [x] (+ x 1)) (defn ^{:inline true} shim [x] (target x)) (shim 41))",
+    )
+    .unwrap();
+    let listing = disassemble(&program);
+    assert_eq!(listing.matches("GetGlobal 1").count(), 2, "{listing}");
+    assert!(!listing.contains("GetGlobal 2"), "{listing}");
+    assert_eq!(eval("(do (defn target [x] (+ x 1)) (defn ^{:inline true} shim [x] (target x)) (shim 41))"), "42");
 }
 
 #[test]

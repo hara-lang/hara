@@ -872,6 +872,8 @@ public final class HaraNodes {
       if (context.hasNativeSymbol(symbol)) return context.resolveNativeSymbol(symbol);
       HaraVar var = context.resolve(symbol);
       if (var == null) {
+        Object namespace = context.resolveNamespaceValue(displaySymbol);
+        if (namespace != null) return namespace;
         throw unboundError("symbol");
       }
       return var.deref();

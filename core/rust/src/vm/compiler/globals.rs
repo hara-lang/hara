@@ -709,6 +709,12 @@ impl Compiler {
             ));
         }
         let async_function = metadata.as_ref().is_some_and(|value| value.flag("async"));
+        if let Some(crate::lang::data::MetadataValue::Symbol(target)) =
+            metadata.as_ref().and_then(|value| value.get_keyword("inline-target"))
+        {
+            self.inline_globals
+                .insert(name.clone(), target.as_str().to_owned());
+        }
         let metadata = self.var_metadata(metadata);
         self.declare_program_global(&name);
         let single_arity = matches!(

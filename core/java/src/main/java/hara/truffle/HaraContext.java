@@ -179,7 +179,7 @@ public final class HaraContext {
               "Test",
               java.util.List.of("catalog", "config", "context", "events", "result", "passed?")),
           Map.entry(
-              "Regex",
+              "RegExp",
               java.util.List.of(
                   "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
                   "split")),
@@ -188,8 +188,20 @@ public final class HaraContext {
           Map.entry(
               "Base",
               java.util.List.of(
-                  "list", "vector", "pair", "tup", "hash-map", "hash-set", "atom",
-                  "pointer", "symbol", "keyword", "reduced", "reduced?", "unreduced")),
+                  "list", "vector", "vec", "set", "pair", "tuple", "hash-map", "hash-set", "atom",
+                  "pointer", "symbol", "keyword", "reduced", "reduced?", "unreduced",
+                  "nil?", "not-nil?", "boolean?", "false?", "true?", "string?", "char?", "number?", "integer?",
+                  "decimal?", "long?", "double?", "keyword?", "symbol?", "pointer?",
+                  "atom?", "fn?", "bytes?", "array?", "object?", "list?", "pair?", "vector?",
+                  "tuple?", "map?", "map-entry?", "set?", "sequential?", "satisfies?",
+                  "type", "instance?")),
+          Map.entry(
+              "Algo",
+              java.util.List.of(
+                  "deque", "ordered-map", "ordered-set", "priority-map", "queue",
+                  "sorted-map", "sorted-set", "trie", "deque?", "ordered-map?",
+                  "ordered-set?", "priority-map?", "queue?", "sorted-map?",
+                  "sorted-set?", "trie?")),
           Map.entry(
               "Iter",
               java.util.List.of(
@@ -274,9 +286,11 @@ public final class HaraContext {
         });
     installProjectMacro();
     installNativeLibraries();
+    collectBuiltins(
+        "std.lib.collection",
+        () -> HaraStaticLibrary.install(this, "std.lib.collection", StdLibCollection.class));
     collectBuiltins(FOUNDATION_NAMESPACE, () -> libraryLoader.installEagerJava(this));
     hideIteratorImplementationBindings();
-    hideBaseImplementationBindings();
     for (String namespace : bytecodeLibrary.namespaces()) {
       namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
     }
@@ -444,9 +458,9 @@ public final class HaraContext {
       installNativeExportGroup(
           "Printer", exports, NATIVE_TYPES.get("Printer"), Map.of());
       installNativeExportGroup(
-          "Regex",
+          "RegExp",
           exports,
-          NATIVE_TYPES.get("Regex"),
+          NATIVE_TYPES.get("RegExp"),
           Map.of(
               "instance?", "regexp?",
               "compile", "regexp",
@@ -466,13 +480,13 @@ public final class HaraContext {
               "message", "ex-message",
               "class", "ex-class"));
       installNativeExportGroup(
-          "Base",
-          exports,
-          NATIVE_TYPES.get("Base"),
-          Map.of(
-              "reduced", "__base-reduced",
-              "reduced?", "__base-reduced?",
-              "unreduced", "__base-unreduced"));
+          "Base", exports, NATIVE_TYPES.get("Base"), Map.of("tuple", "tup"));
+      namespace("std.native.Base")
+          .define(
+              "pair?",
+              new UnaryBuiltin(
+                  "std.native.Base/pair?",
+                  value -> HaraBox.unwrap(value) instanceof hara.lang.data.Tuple.Tup2<?, ?>));
       installNativeExportGroup("Iter", exports, NATIVE_TYPES.get("Iter"), Map.of());
       return;
     }
@@ -1372,6 +1386,14 @@ public final class HaraContext {
     return variable;
   }
 
+  public Object resolveNamespaceValue(Symbol symbol) {
+    if (symbol.getNamespace() != null) return null;
+    String requested = symbol.getName();
+    String target = aliases.getOrDefault(currentNamespace.name(), Map.of()).get(requested);
+    if (target != null) return namespaces.get(target);
+    return namespaces.get(requested);
+  }
+
   Symbol canonicalSymbol(Symbol symbol) {
     if (hasNativeSymbol(symbol)) return symbol;
     HaraVar variable = resolve(symbol);
@@ -1849,6 +1871,16 @@ public final class HaraContext {
               return unwrapped == null || unwrapped == HaraNull.SINGLETON;
             }));
     target.define(
+        "not-nil?",
+        new UnaryBuiltin(
+            "not-nil?",
+            value -> {
+              Object unwrapped = HaraBox.unwrap(value);
+              return unwrapped != null && unwrapped != HaraNull.SINGLETON;
+            }));
+    target.define("false?", new UnaryBuiltin("false?", value -> Boolean.FALSE.equals(HaraBox.unwrap(value))));
+    target.define("true?", new UnaryBuiltin("true?", value -> Boolean.TRUE.equals(HaraBox.unwrap(value))));
+    target.define(
         "empty?",
         new UnaryBuiltin(
             "empty?", value -> !Boolean.TRUE.equals(iterHasNext(iterValue(value)))));
@@ -1932,7 +1964,10 @@ public final class HaraContext {
     target.define("casable?", new UnaryBuiltin("casable?", value -> protocolSatisfies("ICas", value)));
     target.define("watchable?", new UnaryBuiltin("watchable?", value -> protocolSatisfies("IWatch", value)));
     target.define("applicable?", new UnaryBuiltin("applicable?", value -> protocolSatisfies("IApplicable", value)));
-    target.define("pair?", new UnaryBuiltin("pair?", value -> protocolSatisfies("IPair", value)));
+    target.define(
+        "pair?",
+        new UnaryBuiltin(
+            "pair?", value -> HaraBox.unwrap(value) instanceof hara.lang.data.Tuple.Tup2<?, ?>));
     target.define("mutable?", new UnaryBuiltin("mutable?", value -> protocolSatisfies("IMutable", value)));
     target.define("persistent?", new UnaryBuiltin("persistent?", value -> protocolSatisfies("IPersistent", value)));
     target.define("satisfies?", new VariadicBuiltin("satisfies?", values -> {
@@ -1951,8 +1986,14 @@ public final class HaraContext {
               }
               Object type = HaraBox.unwrap(values[0]);
               Object value = HaraBox.unwrap(values[1]);
+              if (type instanceof HaraNativeType nativeType) {
+                if (!nativeType.methods().contains("instance?")) {
+                  throw new HaraException("instance? descriptor does not define instance?");
+                }
+                return portableType(value).equals(Keyword.create("std.native." + nativeType.getName()));
+              }
               if (!(type instanceof HaraType)) {
-                throw new HaraException("instance? expects a Hara type");
+                throw new HaraException("instance? expects a type descriptor");
               }
               if (value instanceof HaraStruct struct) {
                 return struct.type() == type;
@@ -2166,13 +2207,13 @@ public final class HaraContext {
     target.define("iter-repeatedly", new UnaryBuiltin("iter-repeatedly", this::iterRepeatedly));
     target.define("iter-iterate", new VariadicBuiltin("iter-iterate", this::iterIterate));
     target.define(
-        "__base-reduced",
+        "reduced",
         new UnaryBuiltin("Base/reduced", value -> Reduced.mark(HaraBox.unwrap(value))));
     target.define(
-        "__base-reduced?",
+        "reduced?",
         new UnaryBuiltin("Base/reduced?", value -> Reduced.isReduced(HaraBox.unwrap(value))));
     target.define(
-        "__base-unreduced",
+        "unreduced",
         new UnaryBuiltin("Base/unreduced", value -> Reduced.unreduced(HaraBox.unwrap(value))));
     target.define("alter-var-root", new VariadicBuiltin("alter-var-root", this::alterVarRoot));
     target.define("apply", new VariadicBuiltin("apply", this::applyFunction));
@@ -2537,7 +2578,7 @@ public final class HaraContext {
         new VariadicBuiltin(
             "tup",
             values -> {
-              if (values.length > 5) throw new HaraException("tup expects at most 5 arguments");
+              if (values.length > 8) throw new HaraException("tuple expects at most 8 arguments");
               Object[] unwrapped = java.util.Arrays.stream(values).map(HaraBox::unwrap).toArray();
               return hara.kernel.builtin.BuiltinStruct.tuple(unwrapped);
             }));
@@ -2693,7 +2734,8 @@ public final class HaraContext {
     else if (raw instanceof hara.lang.data.Cons<?>) type = "Cons";
     else if (raw instanceof hara.lang.data.Queue<?>) type = "Queue";
     else if (raw instanceof hara.lang.data.Deque<?>) type = "Deque";
-    else if (raw instanceof hara.lang.data.Tuple.Tup0 || raw instanceof hara.lang.data.Tuple.Tup1<?>) type = "Vector";
+    else if (raw instanceof hara.lang.data.Tuple.Tup0
+        || raw instanceof hara.lang.data.Tuple.Tup1<?>) type = "Tuple";
     else if (raw instanceof hara.lang.data.Vector<?>) type = "Vector";
     else if (raw instanceof hara.lang.data.OrderedMap<?, ?>) type = "OrderedMap";
     else if (raw instanceof hara.lang.data.PriorityMap<?, ?>) type = "PriorityMap";
@@ -2715,15 +2757,11 @@ public final class HaraContext {
         || raw instanceof HbcMachine.HbcNativeCallable
         || raw instanceof IFn) type = "Function";
     else type = "Object";
-    return Keyword.create("hara", type);
+    return Keyword.create("std.native." + type);
   }
 
   private Keyword namedTypeKeyword(String qualifiedName) {
-    int separator = qualifiedName.indexOf('/');
-    return separator < 0
-        ? Keyword.create(currentNamespace.name(), qualifiedName)
-        : Keyword.create(
-            qualifiedName.substring(0, separator), qualifiedName.substring(separator + 1));
+    return Keyword.create(qualifiedName.replace('/', '.'));
   }
 
   private Object hostCall(Object[] values) {
@@ -3014,20 +3052,30 @@ public final class HaraContext {
     test.define("run", new VariadicBuiltin("std.native.Test/run", this::nativeTestRun));
     test.define("result", new VariadicBuiltin("std.native.Test/result", this::nativeTestResult));
     test.define("passed?", new VariadicBuiltin("std.native.Test/passed?", this::nativeTestPassed));
-    HaraNamespace regex = namespace("std.native.Regex");
+    HaraNamespace algo = namespace("std.native.Algo");
+    HaraStaticLibrary.install(this, "std.native.Algo", StdNativeAlgo.class);
+    algo.define("deque?", typePredicate("std.native.Algo/deque?", hara.lang.data.Deque.class));
+    algo.define("ordered-map?", typePredicate("std.native.Algo/ordered-map?", hara.lang.data.OrderedMap.class));
+    algo.define("ordered-set?", typePredicate("std.native.Algo/ordered-set?", hara.lang.data.OrderedSet.class));
+    algo.define("priority-map?", typePredicate("std.native.Algo/priority-map?", hara.lang.data.PriorityMap.class));
+    algo.define("queue?", typePredicate("std.native.Algo/queue?", hara.lang.data.Queue.class));
+    algo.define("sorted-map?", typePredicate("std.native.Algo/sorted-map?", hara.lang.data.SortedMap.class));
+    algo.define("sorted-set?", typePredicate("std.native.Algo/sorted-set?", hara.lang.data.SortedSet.class));
+    algo.define("trie?", typePredicate("std.native.Algo/trie?", hara.lang.data.Trie.class));
+    HaraNamespace regex = namespace("std.native.RegExp");
     regex.define(
         "instance?",
         new UnaryBuiltin(
-            "std.native.Regex/instance?",
+            "std.native.RegExp/instance?",
             value -> HaraBox.unwrap(value) instanceof java.util.regex.Pattern));
     regex.define(
         "compile",
         new UnaryBuiltin(
-            "std.native.Regex/compile",
+            "std.native.RegExp/compile",
             value -> {
               Object raw = HaraBox.unwrap(value);
               if (!(raw instanceof String pattern)) {
-                throw new HaraException("std.native.Regex/compile expects one string");
+                throw new HaraException("std.native.RegExp/compile expects one string");
               }
               try {
                 return java.util.regex.Pattern.compile(pattern);
@@ -3038,37 +3086,37 @@ public final class HaraContext {
     regex.define(
         "pattern",
         new UnaryBuiltin(
-            "std.native.Regex/pattern",
+            "std.native.RegExp/pattern",
             value -> {
               Object raw = HaraBox.unwrap(value);
               if (!(raw instanceof java.util.regex.Pattern pattern)) {
-                throw new HaraException("std.native.Regex/pattern expects one regexp");
+                throw new HaraException("std.native.RegExp/pattern expects one regexp");
               }
               return pattern.pattern();
             }));
     regex.define(
         "find?",
         new VariadicBuiltin(
-            "std.native.Regex/find?",
+            "std.native.RegExp/find?",
             values -> {
               if (values.length != 2
                   || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
                   || !(HaraBox.unwrap(values[1]) instanceof String input)) {
                 throw new HaraException(
-                    "std.native.Regex/find? expects a regexp and string");
+                    "std.native.RegExp/find? expects a regexp and string");
               }
               return pattern.matcher(input).find();
             }));
     regex.define(
         "find",
         new VariadicBuiltin(
-            "std.native.Regex/find",
+            "std.native.RegExp/find",
             values -> {
               if (values.length != 2
                   || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
                   || !(HaraBox.unwrap(values[1]) instanceof String input)) {
                 throw new HaraException(
-                    "std.native.Regex/find expects a regexp and string");
+                    "std.native.RegExp/find expects a regexp and string");
               }
               java.util.regex.Matcher matcher = pattern.matcher(input);
               return matcher.find() ? matcher.group() : null;
@@ -3076,40 +3124,40 @@ public final class HaraContext {
     regex.define(
         "matches",
         new VariadicBuiltin(
-            "std.native.Regex/matches",
+            "std.native.RegExp/matches",
             values -> {
               if (values.length != 2
                   || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
                   || !(HaraBox.unwrap(values[1]) instanceof String input)) {
                 throw new HaraException(
-                    "std.native.Regex/matches expects a regexp and string");
+                    "std.native.RegExp/matches expects a regexp and string");
               }
               return pattern.matcher(input).matches();
             }));
     regex.define(
         "replace",
         new VariadicBuiltin(
-            "std.native.Regex/replace",
+            "std.native.RegExp/replace",
             values -> {
               if (values.length != 3
                   || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
                   || !(HaraBox.unwrap(values[1]) instanceof String input)
                   || !(HaraBox.unwrap(values[2]) instanceof String replacement)) {
                 throw new HaraException(
-                    "std.native.Regex/replace expects a regexp, string, and replacement");
+                    "std.native.RegExp/replace expects a regexp, string, and replacement");
               }
               return pattern.matcher(input).replaceAll(replacement);
             }));
     regex.define(
         "split",
         new VariadicBuiltin(
-            "std.native.Regex/split",
+            "std.native.RegExp/split",
             values -> {
               if (values.length != 2
                   || !(HaraBox.unwrap(values[0]) instanceof java.util.regex.Pattern pattern)
                   || !(HaraBox.unwrap(values[1]) instanceof String input)) {
                 throw new HaraException(
-                    "std.native.Regex/split expects a regexp and string");
+                    "std.native.RegExp/split expects a regexp and string");
               }
               String[] parts = pattern.split(input, -1);
               return hara.lang.data.Vector.Standard.from(null, (Object[]) parts);
@@ -6248,6 +6296,10 @@ public final class HaraContext {
     Object descriptor = variable == null ? null : HaraBox.unwrap(variable.deref());
     return descriptor instanceof HaraProtocol protocol
         && protocol.satisfies(receiver);
+  }
+
+  private UnaryBuiltin typePredicate(String name, Class<?> type) {
+    return new UnaryBuiltin(name, value -> type.isInstance(HaraBox.unwrap(value)));
   }
 
   private Iterator<?> requireIterator(Object value, String operation) {

@@ -128,7 +128,7 @@ public final class HaraProtocol implements TruffleObject {
       return false;
     }
     for (String methodName : methods.keySet()) {
-      if (implementation(receiver, methodName) == null) return false;
+      if (implementations.resolveExplicit(methodName, receiver) == null) return false;
     }
     return true;
   }

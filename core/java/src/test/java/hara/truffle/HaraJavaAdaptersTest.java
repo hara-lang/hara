@@ -4,7 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import hara.lang.data.Atom;
-import hara.lang.data.types.IDepsType;
+import hara.lang.protocol.IDeps;
 import hara.lang.data.types.ISetType;
 import hara.lang.protocol.IContext;
 import hara.lang.data.List;
@@ -56,8 +56,8 @@ public class HaraJavaAdaptersTest {
   }
 
 @Test
-public void bridgesTheExistingDependencyTypeContract() {
-  class DependencyFixture implements IDepsType<String, String>, IContext {
+public void bridgesTheContextAwareDependencyContract() {
+  class DependencyFixture implements IDeps<String, String>, IContext {
     @Override
     public Object call(Object... arguments) {
       return null;
@@ -70,24 +70,28 @@ public void bridgesTheExistingDependencyTypeContract() {
 
     @Override
     public ISetType<String> depEntries(IContext context, String id) {
-      return Set.Standard.from(null, "base:" + id);
+      return Set.Standard.from(null, (context == this ? "base:" : "wrong-context:") + id);
     }
 
     @Override
-    public Iterator<String> depIds(IContext context) {
-      return java.util.List.of("a", "b").iterator();
+    public Iterator<String> depKeys(IContext context) {
+      return (context == this ? java.util.List.of("a", "b") : java.util.List.of("wrong-context"))
+          .iterator();
     }
   }
 
   DependencyFixture fixture = new DependencyFixture();
   HaraProtocol deps =
       new HaraProtocol(
-          "IDeps", Map.of("get-entry", 2, "get-deps", 2, "list-entries", 1));
+          "IDeps", Map.of("dep-get", 2, "dep-entries", 2, "dep-keys", 1));
   HaraJavaAdapters.installDeps(deps);
 
-  assertEquals("entry:a", deps.invoke("get-entry", fixture, new Object[] {"a"}));
-  assertTrue(deps.invoke("get-deps", fixture, new Object[] {"a"}) instanceof ISetType);
-  Iterator<?> ids = (Iterator<?>) deps.invoke("list-entries", fixture, new Object[0]);
+  assertEquals("entry:a", deps.invoke("dep-get", fixture, new Object[] {"a"}));
+  @SuppressWarnings("unchecked")
+  ISetType<String> entries =
+      (ISetType<String>) deps.invoke("dep-entries", fixture, new Object[] {"a"});
+  assertTrue(entries.has("base:a"));
+  Iterator<?> ids = (Iterator<?>) deps.invoke("dep-keys", fixture, new Object[0]);
   assertEquals("a", ids.next());
   assertEquals("b", ids.next());
 }

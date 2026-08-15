@@ -13,6 +13,11 @@ impl Compiler {
         children: &[Child<'_>],
         span: &Span,
     ) -> Result<(), CompileError> {
+        if self.ctx().scopes.resolve(name).is_none() {
+            if let Some(target) = self.inline_target(name) {
+                return self.compile_forwarded_call(&target, children, span);
+            }
+        }
         let argc = (children.len() - 1) as u8;
         if self.ctx().name.as_deref() == Some(name) && self.ctx().captures.is_empty() {
             let prototype = self.ctx().proto_id as u16;
@@ -50,6 +55,45 @@ impl Compiler {
                 ))
             }
         };
+        self.compile_call_arguments(children, span)?;
+        if self.ctx().fallthrough {
+            self.emit(Instruction::Call { argc }, Some(span.start));
+        }
+        Ok(())
+    }
+
+    fn inline_target(&self, name: &str) -> Option<String> {
+        if let Some(target) = self.inline_globals.get(name) {
+            return Some(target.clone());
+        }
+        crate::core::namespace_registry()
+            .ok()
+            .and_then(|registry| {
+                let current = registry
+                    .find(&self.namespace)
+                    .unwrap_or_else(|| registry.current());
+                registry
+                    .resolve(&crate::lang::data::Symbol::parse(name))
+                    .or_else(|| current.resolve(&crate::lang::data::Symbol::parse(name)))
+            })
+            .and_then(|var| var.hara_metadata())
+            .and_then(|metadata| match metadata.get_keyword("inline-target") {
+                Some(crate::lang::data::MetadataValue::Symbol(target)) => {
+                    Some(target.as_str().to_owned())
+                }
+                _ => None,
+            })
+    }
+
+    fn compile_forwarded_call(
+        &mut self,
+        target: &str,
+        children: &[Child<'_>],
+        span: &Span,
+    ) -> Result<(), CompileError> {
+        let argc = (children.len() - 1) as u8;
+        let index = self.global_name_constant(target, span)?;
+        self.emit(Instruction::GetGlobal(index), Some(span.start));
         self.compile_call_arguments(children, span)?;
         if self.ctx().fallthrough {
             self.emit(Instruction::Call { argc }, Some(span.start));

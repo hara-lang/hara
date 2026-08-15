@@ -24,6 +24,11 @@ public final class HaraDispatchRegistry {
     return table == null ? null : table.resolve(receiver);
   }
 
+  public HaraProtocolImplementation resolveExplicit(String method, Object receiver) {
+    Table table = tables.get(method);
+    return table == null ? null : table.resolveExplicit(receiver);
+  }
+
   public Assumption stable() {
     return stable;
   }
@@ -69,8 +74,13 @@ public final class HaraDispatchRegistry {
     }
 
     private HaraProtocolImplementation resolve(Object receiver) {
+      HaraProtocolImplementation implementation = resolveExplicit(receiver);
+      return implementation == null ? defaultImplementation : implementation;
+    }
+
+    private HaraProtocolImplementation resolveExplicit(Object receiver) {
       if (receiver == null) {
-        return nil != null ? nil : defaultImplementation;
+        return nil;
       }
 
       HaraType namedType = HaraDispatchKey.namedType(receiver);
@@ -90,13 +100,14 @@ public final class HaraDispatchRegistry {
       if (cached != null) {
         return cached == NO_IMPLEMENTATION ? null : cached;
       }
-      HaraProtocolImplementation implementation = resolveClass(receiverClass, receiver);
+      HaraProtocolImplementation implementation = resolveClass(receiverClass, receiver, false);
       resolvedClasses.put(
           receiverClass, implementation == null ? NO_IMPLEMENTATION : implementation);
       return implementation;
     }
 
-    private HaraProtocolImplementation resolveClass(Class<?> receiverClass, Object receiver) {
+    private HaraProtocolImplementation resolveClass(
+        Class<?> receiverClass, Object receiver, boolean includeDefault) {
       HaraProtocolImplementation implementation = javaClasses.get(receiverClass);
       if (implementation != null) {
         return implementation;
@@ -108,7 +119,7 @@ public final class HaraDispatchRegistry {
 
       HaraDispatchKey.PrimitiveCategory category = HaraDispatchKey.primitiveCategory(receiver);
       implementation = category == null ? null : primitives.get(category);
-      return implementation == null ? defaultImplementation : implementation;
+      return implementation == null && includeDefault ? defaultImplementation : implementation;
     }
 
     private HaraProtocolImplementation mostSpecificJavaClass(Class<?> receiverClass) {

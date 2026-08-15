@@ -297,7 +297,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &["catalog", "config", "context", "events", "run", "result", "passed?"],
     ),
     (
-        "Regex",
+        "RegExp",
         &[
             "instance?", "compile", "pattern", "find?", "find", "matches", "replace", "split",
         ],
@@ -309,8 +309,10 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &[
             "list",
             "vector",
+            "vec",
+            "set",
             "pair",
-            "tup",
+            "tuple",
             "hash-map",
             "hash-set",
             "atom",
@@ -320,6 +322,18 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "reduced",
             "reduced?",
             "unreduced",
+            "nil?", "not-nil?", "boolean?", "false?", "true?", "string?", "char?", "number?", "integer?", "decimal?",
+            "long?", "double?", "keyword?", "symbol?", "pointer?", "atom?", "fn?",
+            "bytes?", "array?", "object?", "list?", "pair?", "vector?", "tuple?", "map?",
+            "map-entry?", "set?", "sequential?", "satisfies?", "type", "instance?",
+        ],
+    ),
+    (
+        "Algo",
+        &[
+            "deque", "ordered-map", "ordered-set", "priority-map", "queue", "sorted-map",
+            "sorted-set", "trie", "deque?", "ordered-map?", "ordered-set?", "priority-map?",
+            "queue?", "sorted-map?", "sorted-set?", "trie?",
         ],
     ),
     (
@@ -418,7 +432,7 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
     ("ICount", &[("count", 1)]),
     (
         "IDeps",
-        &[("get-entry", 2), ("get-deps", 2), ("list-entries", 1)],
+        &[("dep-get", 2), ("dep-entries", 2), ("dep-keys", 1)],
     ),
     ("IDeref", &[("deref", 1)]),
     ("IDerefTimeout", &[("deref-timeout", 3)]),
@@ -4675,22 +4689,22 @@ fn native_regex_operation(
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
     let operation = operation
-        .strip_prefix("std.native.Regex/")
+        .strip_prefix("std.native.RegExp/")
         .unwrap_or(operation);
     match operation {
         "instance?" => {
             if forms.len() != 1 {
-                return Err("std.native.Regex/instance? expects one value".into());
+                return Err("std.native.RegExp/instance? expects one value".into());
             }
             Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Regex(_))))
         }
         "compile" => {
             if forms.len() != 1 {
-                return Err("std.native.Regex/compile expects one string".into());
+                return Err("std.native.RegExp/compile expects one string".into());
             }
             let pattern = match eval(&forms[0], env)? {
                 Value::String(pattern) => pattern,
-                _ => return Err("std.native.Regex/compile expects one string".into()),
+                _ => return Err("std.native.RegExp/compile expects one string".into()),
             };
             regex::Regex::new(&pattern)
                 .map_err(|error| format!("invalid regexp: {error}"))?;
@@ -4698,24 +4712,24 @@ fn native_regex_operation(
         }
         "pattern" => {
             if forms.len() != 1 {
-                return Err("std.native.Regex/pattern expects one regexp".into());
+                return Err("std.native.RegExp/pattern expects one regexp".into());
             }
             match eval(&forms[0], env)? {
                 Value::Regex(pattern) => Ok(Value::String(pattern)),
-                _ => Err("std.native.Regex/pattern expects one regexp".into()),
+                _ => Err("std.native.RegExp/pattern expects one regexp".into()),
             }
         }
         "find?" => {
             if forms.len() != 2 {
-                return Err("std.native.Regex/find? expects a regexp and string".into());
+                return Err("std.native.RegExp/find? expects a regexp and string".into());
             }
             let pattern = match eval(&forms[0], env)? {
                 Value::Regex(pattern) => pattern,
-                _ => return Err("std.native.Regex/find? expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/find? expects a regexp and string".into()),
             };
             let input = match eval(&forms[1], env)? {
                 Value::String(input) => input,
-                _ => return Err("std.native.Regex/find? expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/find? expects a regexp and string".into()),
             };
             let regexp = regex::Regex::new(&pattern)
                 .map_err(|error| format!("invalid regexp: {error}"))?;
@@ -4723,15 +4737,15 @@ fn native_regex_operation(
         }
         "find" => {
             if forms.len() != 2 {
-                return Err("std.native.Regex/find expects a regexp and string".into());
+                return Err("std.native.RegExp/find expects a regexp and string".into());
             }
             let pattern = match eval(&forms[0], env)? {
                 Value::Regex(pattern) => pattern,
-                _ => return Err("std.native.Regex/find expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/find expects a regexp and string".into()),
             };
             let input = match eval(&forms[1], env)? {
                 Value::String(input) => input,
-                _ => return Err("std.native.Regex/find expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/find expects a regexp and string".into()),
             };
             let regexp = regex::Regex::new(&pattern)
                 .map_err(|error| format!("invalid regexp: {error}"))?;
@@ -4742,15 +4756,15 @@ fn native_regex_operation(
         }
         "matches" => {
             if forms.len() != 2 {
-                return Err("std.native.Regex/matches expects a regexp and string".into());
+                return Err("std.native.RegExp/matches expects a regexp and string".into());
             }
             let pattern = match eval(&forms[0], env)? {
                 Value::Regex(pattern) => pattern,
-                _ => return Err("std.native.Regex/matches expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/matches expects a regexp and string".into()),
             };
             let input = match eval(&forms[1], env)? {
                 Value::String(input) => input,
-                _ => return Err("std.native.Regex/matches expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/matches expects a regexp and string".into()),
             };
             let anchored = format!(r"\A(?:{pattern})\z");
             let regexp = regex::Regex::new(&anchored)
@@ -4760,14 +4774,14 @@ fn native_regex_operation(
         "replace" => {
             if forms.len() != 3 {
                 return Err(
-                    "std.native.Regex/replace expects a regexp, string, and replacement".into(),
+                    "std.native.RegExp/replace expects a regexp, string, and replacement".into(),
                 );
             }
             let pattern = match eval(&forms[0], env)? {
                 Value::Regex(pattern) => pattern,
                 _ => {
                     return Err(
-                        "std.native.Regex/replace expects a regexp, string, and replacement"
+                        "std.native.RegExp/replace expects a regexp, string, and replacement"
                             .into(),
                     )
                 }
@@ -4776,7 +4790,7 @@ fn native_regex_operation(
                 Value::String(input) => input,
                 _ => {
                     return Err(
-                        "std.native.Regex/replace expects a regexp, string, and replacement"
+                        "std.native.RegExp/replace expects a regexp, string, and replacement"
                             .into(),
                     )
                 }
@@ -4785,7 +4799,7 @@ fn native_regex_operation(
                 Value::String(replacement) => replacement,
                 _ => {
                     return Err(
-                        "std.native.Regex/replace expects a regexp, string, and replacement"
+                        "std.native.RegExp/replace expects a regexp, string, and replacement"
                             .into(),
                     )
                 }
@@ -4798,15 +4812,15 @@ fn native_regex_operation(
         }
         "split" => {
             if forms.len() != 2 {
-                return Err("std.native.Regex/split expects a regexp and string".into());
+                return Err("std.native.RegExp/split expects a regexp and string".into());
             }
             let pattern = match eval(&forms[0], env)? {
                 Value::Regex(pattern) => pattern,
-                _ => return Err("std.native.Regex/split expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/split expects a regexp and string".into()),
             };
             let input = match eval(&forms[1], env)? {
                 Value::String(input) => input,
-                _ => return Err("std.native.Regex/split expects a regexp and string".into()),
+                _ => return Err("std.native.RegExp/split expects a regexp and string".into()),
             };
             let regexp = regex::Regex::new(&pattern)
                 .map_err(|error| format!("invalid regexp: {error}"))?;
@@ -4816,7 +4830,7 @@ fn native_regex_operation(
                     .map(|part| Value::String(part.to_owned())),
             )))
         }
-        _ => Err(format!("unknown std.native.Regex operation: {operation}")),
+        _ => Err(format!("unknown std.native.RegExp operation: {operation}")),
     }
 }
 
@@ -6319,7 +6333,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Cons(_) => "Cons",
         Value::Queue(_) => "Queue",
         Value::Deque(_) => "Deque",
-        Value::Tuple(_) => "Vector",
+        Value::Tuple(_) => "Tuple",
         Value::Vector(_) => "Vector",
         Value::MutableCollection(_) => "MutableCollection",
         Value::Map(_) => "HashMap",
@@ -6335,15 +6349,15 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Namespace(_) => "Namespace",
         Value::Extension(_) => "Extension",
         Value::StructType(_) => "StructType",
-        Value::Struct(value) => return Keyword::parse(&value.ty.name),
+        Value::Struct(value) => return Ok(Keyword::from(value.ty.name.replace('/', "."))),
         Value::MutableType(_) => "MutableType",
-        Value::Mutable(value) => return Keyword::parse(&value.ty.name),
+        Value::Mutable(value) => return Ok(Keyword::from(value.ty.name.replace('/', "."))),
         Value::Protocol(_) => "Protocol",
         Value::NativeType(_) => "NativeType",
         Value::Coroutine(_) => "Coroutine",
         Value::ExceptionInfo(_) => "Error",
     };
-    Keyword::create(Some("hara"), builtin)
+    Ok(Keyword::from(format!("std.native.{builtin}")))
 }
 
 pub fn receiver_category(value: &Value) -> &'static str {
@@ -8187,6 +8201,14 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
     match operation {
         "list" => Ok(Value::List(values.to_vec().into())),
         "vector" => Ok(Value::Vector(values.to_vec().into())),
+        "vec" => match values {
+            [value] => Ok(Value::Vector(PVector::from_iter(iterator_values(value.clone())?))),
+            _ => Err("Base/vec expects one collection".into()),
+        },
+        "set" => match values {
+            [value] => Ok(Value::Set(unique_values(iterator_values(value.clone())?).into())),
+            _ => Err("Base/set expects one collection".into()),
+        },
         "pair" => match values {
             [left, right] => Ok(Value::Tuple(Box::new(PTuple::from_values(vec![
                 left.clone(),
@@ -8194,10 +8216,10 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             ])?))),
             _ => Err("Base/pair expects two arguments".into()),
         },
-        "tup" if values.len() <= 5 => Ok(Value::Tuple(Box::new(PTuple::from_values(
+        "tuple" if values.len() <= 8 => Ok(Value::Tuple(Box::new(PTuple::from_values(
             values.to_vec(),
         )?))),
-        "tup" => Err("Base/tup expects at most 5 arguments".into()),
+        "tuple" => Err("Base/tuple expects at most 8 arguments".into()),
         "hash-map" if values.len() % 2 == 0 => Ok(Value::Map(PMap::from_iter(
             values
                 .chunks_exact(2)
@@ -8241,8 +8263,91 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [value] => Ok(unreduced_value(value.clone())),
             _ => Err("Base/unreduced expects one value".into()),
         },
+        "satisfies?" => match values {
+            [Value::Protocol(protocol), value] => Ok(Value::Bool(protocol_satisfies(protocol, value))),
+            _ => Err("Base/satisfies? expects a protocol and value".into()),
+        },
+        "type" => match values {
+            [value] => Ok(Value::Keyword(portable_type_keyword(value)?)),
+            _ => Err("Base/type expects one value".into()),
+        },
+        "instance?" => match values {
+            [Value::StructType(_), value] | [Value::MutableType(_), value] => {
+                named_instance_of(&values[0], value)
+            }
+            [Value::NativeType(native), value] if native.methods.iter().any(|method| method == "instance?") => {
+                Ok(Value::Bool(portable_type_keyword(value)?.as_str() == format!("std.native.{}", native.name)))
+            }
+            [Value::NativeType(_), _] => Err("Base/instance? descriptor does not define instance?".into()),
+            _ => Err("Base/instance? expects a type descriptor and value".into()),
+        },
+        predicate if predicate.ends_with('?') => match values {
+            [value] => Ok(Value::Bool(match predicate {
+                "nil?" => matches!(value, Value::Nil),
+                "not-nil?" => !matches!(value, Value::Nil),
+                "boolean?" => matches!(value, Value::Bool(_)),
+                "false?" => matches!(value, Value::Bool(false)),
+                "true?" => matches!(value, Value::Bool(true)),
+                "string?" => matches!(value, Value::String(_)),
+                "char?" => matches!(value, Value::Character(_)),
+                "number?" => numeric::is_numeric_value(value),
+                "integer?" => numeric::is_integer_value(value),
+                "decimal?" => matches!(value, Value::Decimal(_)),
+                "long?" => numeric::to_i64_exact(value).is_ok(),
+                "double?" => matches!(value, Value::Float(_)),
+                "keyword?" => matches!(value, Value::Keyword(_)),
+                "symbol?" => matches!(value, Value::Symbol(_)),
+                "pointer?" => matches!(value, Value::Pointer(_)),
+                "atom?" => matches!(value, Value::Atom(_)),
+                "fn?" => matches!(value, Value::Function(_)),
+                "bytes?" => matches!(value, Value::Bytes(_) | Value::ByteBuffer(_)),
+                "array?" => matches!(value, Value::Array(_)),
+                "object?" => matches!(value, Value::Object(_)),
+                "list?" => matches!(value, Value::List(_) | Value::Cons(_)),
+                "pair?" => matches!(value, Value::Tuple(tuple) if tuple.len() == 2),
+                "vector?" => matches!(value, Value::Vector(_) | Value::Tuple(_)),
+                "tuple?" => matches!(value, Value::Tuple(_)),
+                "map?" => matches!(value, Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) | Value::PriorityMap(_)),
+                "map-entry?" => pair_parts(value).is_some(),
+                "set?" => matches!(value, Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)),
+                "sequential?" => matches!(value, Value::List(_) | Value::Cons(_) | Value::Queue(_) | Value::Deque(_) | Value::Vector(_) | Value::Tuple(_)),
+                _ => return Err(format!("unknown Base predicate: {predicate}")),
+            })),
+            _ => Err(format!("Base/{predicate} expects one value")),
+        },
         _ => Err(format!("unknown Base operation: {operation}")),
     }
+}
+
+fn native_algo_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let method = operation
+        .strip_prefix("std.native.Algo/")
+        .ok_or_else(|| format!("invalid Algo operation: {operation}"))?;
+    if let Some(family) = method.strip_suffix('?') {
+        if forms.len() != 1 {
+            return Err(format!("Algo/{method} expects one value"));
+        }
+        let value = eval(&forms[0], env)?;
+        return Ok(Value::Bool(match family {
+            "deque" => matches!(value, Value::Deque(_)),
+            "ordered-map" => matches!(value, Value::OrderedMap(_)),
+            "ordered-set" => matches!(value, Value::OrderedSet(_)),
+            "priority-map" => matches!(value, Value::PriorityMap(_)),
+            "queue" => matches!(value, Value::Queue(_)),
+            "sorted-map" => matches!(value, Value::SortedMap(_)),
+            "sorted-set" => matches!(value, Value::SortedSet(_)),
+            "trie" => matches!(value, Value::Trie(_)),
+            _ => return Err(format!("unknown Algo predicate: {method}")),
+        }));
+    }
+    if COLLECTION_BUILTINS.contains(&method) {
+        return eval_collection_constructor(method, forms, env);
+    }
+    Err(format!("unknown Algo operation: {operation}"))
 }
 
 fn protocol_promise_state(arguments: &[Value]) -> Result<Value, String> {
@@ -8732,27 +8837,41 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
             | Value::Queue(_)
             | Value::Vector(_)
     );
+    let iterable = persistent_collection
+        || matches!(
+            value,
+            Value::Iterator(_)
+                | Value::Nil
+                | Value::String(_)
+                | Value::Bytes(_)
+                | Value::ByteBuffer(_)
+                | Value::Array(_)
+                | Value::Object(_)
+                | Value::Struct(_)
+                | Value::Mutable(_)
+                | Value::Pointer(_)
+        );
+    let metadata_capable = persistent_collection
+        || matches!(
+            value,
+            Value::Symbol(_)
+                | Value::Keyword(_)
+                | Value::Pointer(_)
+                | Value::Var(_)
+                | Value::Function(_)
+                | Value::Struct(_)
+                | Value::Mutable(_)
+                | Value::NativeType(_)
+        );
     match name {
         "IColl" => persistent_collection,
-        "IConj" | "IEmpty" => {
-            persistent_collection || matches!(value, Value::Array(_) | Value::Object(_))
-        }
+        "IConj" => persistent_collection
+            || matches!(value, Value::Array(_) | Value::Object(_) | Value::MutableCollection(_)),
+        "IEmpty" => persistent_collection
+            || matches!(value, Value::Nil | Value::Array(_) | Value::Object(_) | Value::Struct(_)),
         "IToMutable" => mutable_convertible,
         "IToPersistent" => matches!(value, Value::MutableCollection(_)),
-        "IIter" | "IReduce" => {
-            persistent_collection
-                || matches!(
-                    value,
-                    Value::Iterator(_)
-                        | Value::String(_)
-                        | Value::Bytes(_)
-                        | Value::ByteBuffer(_)
-                        | Value::Array(_)
-                        | Value::Object(_)
-                        | Value::Pointer(_)
-                        | Value::Nil
-                )
-        }
+        "IIter" | "IReduce" | "IPeekFirst" | "IPeekLast" => iterable,
         "IIterator" => matches!(value, Value::Iterator(_)),
         "ICount" => {
             persistent_collection
@@ -8763,7 +8882,11 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
                         | Value::ByteBuffer(_)
                         | Value::Array(_)
                         | Value::Object(_)
+                        | Value::Struct(_)
+                        | Value::Mutable(_)
                         | Value::Pointer(_)
+                        | Value::MutableCollection(_)
+                        | Value::Iterator(_)
                         | Value::Nil
                 )
         }
@@ -8782,9 +8905,16 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
                     Value::Set(_)
                         | Value::OrderedSet(_)
                         | Value::SortedSet(_)
+                        | Value::List(_)
+                        | Value::Cons(_)
+                        | Value::Queue(_)
+                        | Value::Deque(_)
                         | Value::Vector(_)
                         | Value::Tuple(_)
                         | Value::Pointer(_)
+                        | Value::Object(_)
+                        | Value::Struct(_)
+                        | Value::Mutable(_)
                 )
         }
         "ILookup" => {
@@ -8806,6 +8936,13 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         ),
         "IPointer" | "IApplicable" | "IInvokeIn" => matches!(value, Value::Pointer(_)),
         "IPair" => pair_parts(value).is_some(),
+        "IObjType" => metadata_capable,
+        "IPushLast" => matches!(
+            value,
+            Value::List(_) | Value::Tuple(_) | Value::Vector(_) | Value::Queue(_) | Value::Deque(_)
+        ),
+        "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
+        "IPersistent" => persistent_collection || matches!(value, Value::Struct(_)),
         _ => false,
     }
 }
@@ -8846,6 +8983,9 @@ fn named_predicate_protocol(name: &str) -> Option<&'static str> {
 }
 
 fn named_protocol_satisfies(name: &str, value: &Value) -> bool {
+    if name == "pair?" {
+        return matches!(value, Value::Tuple(tuple) if tuple.len() == 2);
+    }
     let Some(protocol_name) = named_predicate_protocol(name) else {
         return false;
     };
@@ -10889,6 +11029,16 @@ pub(crate) fn definition_metadata(
             .collect::<Result<Vec<_>, String>>()?
     };
     metadata = assoc_metadata(metadata, "arglists", MetadataValue::Vector(arglists));
+    if metadata.as_ref().is_some_and(|value| value.flag("inline")) {
+        let target = inline_forward_target(rest).ok_or_else(|| {
+            ":inline true requires a transparent forwarding function".to_string()
+        })?;
+        metadata = assoc_metadata(
+            metadata,
+            "inline-target",
+            MetadataValue::Symbol(Symbol::from(target)),
+        );
+    }
     if private {
         metadata = assoc_metadata(metadata, "private", MetadataValue::Boolean(true));
     }
@@ -10896,6 +11046,68 @@ pub(crate) fn definition_metadata(
         metadata = assoc_metadata(metadata, "macro", MetadataValue::Boolean(true));
     }
     Ok((metadata, rest))
+}
+
+fn inline_forward_target(forms: &[Form]) -> Option<String> {
+    fn clause_target(params: &Form, body: &[Form]) -> Option<String> {
+        if body.len() != 1 {
+            return None;
+        }
+        let Form::Vector(params) = form_without_metadata(params) else {
+            return None;
+        };
+        let Form::List(call) = form_without_metadata(&body[0]) else {
+            return None;
+        };
+        let parameter_names = params
+            .iter()
+            .map(form_without_metadata)
+            .map(|form| match form {
+                Form::Symbol(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        if let [ampersand, rest] = parameter_names.as_slice() {
+            if *ampersand == "&" {
+                return match call.as_slice() {
+                    [Form::Symbol(apply), Form::Symbol(target), Form::Symbol(argument)]
+                        if apply == "apply" && argument == rest =>
+                    {
+                        Some(target.clone())
+                    }
+                    _ => None,
+                };
+            }
+        }
+        let Form::Symbol(target) = call.first()? else {
+            return None;
+        };
+        let arguments = call[1..]
+            .iter()
+            .map(form_without_metadata)
+            .map(|form| match form {
+                Form::Symbol(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()?;
+        (arguments == parameter_names).then(|| target.clone())
+    }
+
+    if matches!(forms.first().map(form_without_metadata), Some(Form::Vector(_))) {
+        return clause_target(forms.first()?, &forms[1..]);
+    }
+    let mut target = None;
+    for clause in forms {
+        let Form::List(parts) = form_without_metadata(clause) else {
+            return None;
+        };
+        let candidate = clause_target(parts.first()?, &parts[1..])?;
+        if target.as_ref().is_some_and(|value| value != &candidate) {
+            return None;
+        }
+        target = Some(candidate);
+    }
+    target
 }
 
 pub(crate) fn schema_var_reference(metadata: Option<&Metadata>) -> Option<&Symbol> {
@@ -12551,7 +12763,25 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     force_lazy_alias(&registry, env, n)?;
                 }
             }
-            binding_value(env, n).ok_or_else(|| format!("unbound symbol: {n}"))
+            if let Some(value) = binding_value(env, n) {
+                return Ok(value);
+            }
+            if !n.contains('/') {
+                if let Ok(registry) = namespace_registry() {
+                    if let Some((_, namespace)) = registry
+                        .current()
+                        .aliases()
+                        .into_iter()
+                        .find(|(alias, _)| alias.as_str() == n)
+                    {
+                        return Ok(Value::Namespace(Rc::new(namespace)));
+                    }
+                    if let Some(namespace) = registry.find(n) {
+                        return Ok(Value::Namespace(Rc::new(namespace)));
+                    }
+                }
+            }
+            Err(format!("unbound symbol: {n}"))
         }
         Form::List(fs) if fs.is_empty() => Ok(Value::List(PList::new())),
         Form::List(fs) => {
@@ -14041,7 +14271,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n) if n.starts_with("std.native.Test/") => {
                     native_test_operation(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n.starts_with("std.native.Regex/") => {
+                Form::Symbol(n) if n.starts_with("std.native.RegExp/") => {
                     native_regex_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Document/") => {
@@ -15125,6 +15355,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .map(|form| eval(form, env))
                         .collect::<Result<Vec<_>, _>>()?;
                     native_base_values(n, &values)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Algo/") => {
+                    native_algo_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Bits/")

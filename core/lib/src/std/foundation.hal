@@ -7,7 +7,7 @@
 ;;   * Macros carry docstrings; their form-level signatures remain outside the
 ;;     value schema grammar.
 ;;
-;; Registered loadable family (core/rust/standard-library.namespaces):
+;; Embedded bootstrap family (core/rust/bootstrap.namespaces):
 ;;
 ;;   std.foundation
 ;;   std.foundation.bytes
@@ -40,6 +40,60 @@
 ;; ============================================================================
 (ns std.foundation)
 
+;; Base-backed bootstrap shims remain ordinary functions for interpretation and
+;; first-class use. The compiler validates `:inline true` against their
+;; transparent forwarding form and lowers direct calls to the Base operation.
+(defn ^{:inline true} list [& values] (apply Base/list values))
+(defn ^{:inline true} vector [& values] (apply Base/vector values))
+(defn ^{:inline true} vec [value] (Base/vec value))
+(defn ^{:inline true} set [value] (Base/set value))
+(defn ^{:inline true} pair [left right] (Base/pair left right))
+(defn ^{:inline true} pair? [value] (Base/pair? value))
+(defn ^{:inline true} tuple [& values] (apply Base/tuple values))
+(defn ^{:inline true} hash-map [& entries] (apply Base/hash-map entries))
+(defn ^{:inline true} hash-set [& values] (apply Base/hash-set values))
+(defn ^{:inline true} atom [value] (Base/atom value))
+(defn ^{:inline true} pointer [descriptor] (Base/pointer descriptor))
+(defn ^{:inline true} symbol
+  ([name] (Base/symbol name))
+  ([namespace name] (Base/symbol namespace name)))
+(defn ^{:inline true} keyword
+  ([name] (Base/keyword name))
+  ([namespace name] (Base/keyword namespace name)))
+(defn ^{:inline true} reduced [value] (Base/reduced value))
+(defn ^{:inline true} reduced? [value] (Base/reduced? value))
+(defn ^{:inline true} unreduced [value] (Base/unreduced value))
+(defn ^{:inline true} nil? [value] (Base/nil? value))
+(defn ^{:inline true} not-nil? [value] (Base/not-nil? value))
+(defn ^{:inline true} boolean? [value] (Base/boolean? value))
+(defn ^{:inline true} false? [value] (Base/false? value))
+(defn ^{:inline true} true? [value] (Base/true? value))
+(defn ^{:inline true} string? [value] (Base/string? value))
+(defn ^{:inline true} char? [value] (Base/char? value))
+(defn ^{:inline true} number? [value] (Base/number? value))
+(defn ^{:inline true} integer? [value] (Base/integer? value))
+(defn ^{:inline true} decimal? [value] (Base/decimal? value))
+(defn ^{:inline true} long? [value] (Base/long? value))
+(defn ^{:inline true} double? [value] (Base/double? value))
+(defn ^{:inline true} keyword? [value] (Base/keyword? value))
+(defn ^{:inline true} symbol? [value] (Base/symbol? value))
+(defn ^{:inline true} pointer? [value] (Base/pointer? value))
+(defn ^{:inline true} atom? [value] (Base/atom? value))
+(defn ^{:inline true} fn? [value] (Base/fn? value))
+(defn ^{:inline true} bytes? [value] (Base/bytes? value))
+(defn ^{:inline true} array? [value] (Base/array? value))
+(defn ^{:inline true} object? [value] (Base/object? value))
+(defn ^{:inline true} list? [value] (Base/list? value))
+(defn ^{:inline true} vector? [value] (Base/vector? value))
+(defn ^{:inline true} tuple? [value] (Base/tuple? value))
+(defn ^{:inline true} map? [value] (Base/map? value))
+(defn ^{:inline true} map-entry? [value] (Base/map-entry? value))
+(defn ^{:inline true} set? [value] (Base/set? value))
+(defn ^{:inline true} sequential? [value] (Base/sequential? value))
+(defn ^{:inline true} satisfies? [protocol value] (Base/satisfies? protocol value))
+(defn ^{:inline true} type [value] (Base/type value))
+(defn ^{:inline true} instance? [descriptor value] (Base/instance? descriptor value))
+
 (defmacro code-line
   "Expands to the line number of the invocation form."
   []
@@ -63,7 +117,9 @@
   meta
   "Returns value metadata through IObjType, or nil when none is present."
   [value]
-  (IObjType/meta value))
+  (if (satisfies? IObjType value)
+    (IObjType/meta value)
+    nil))
 
 (defn ^{:schema [:fn [:any :map] :any]}
   with-meta
@@ -208,72 +264,62 @@
 (defn ^{:schema [:fn [:num] :bool]}
   odd?
   "Returns true if value is not evenly divisible by 2."
-  [value] (not (even? value)))
+  [value] (not= (mod value 2) 0))
 
 (defn ^{:schema [:fn [:any] :bool]}
-  nil?
+  not-nil?
   "Returns true if value is nil."
-  [value] (= value nil))
-
-(defn ^{:schema [:fn [:any] :bool]}
-  false?
-  "Returns true if value is exactly false."
-  [value] (= value false))
-
-(defn ^{:schema [:fn [:any] :bool]}
-  true?
-  "Returns true if value is exactly true."
-  [value] (= value true))
+  [value] (not= value nil))
 
 (defn ^{:schema [:fn [:any :any] :bool]}
   has?
   "Returns true if collection contains key, including when its value is nil."
   [collection key]
-  (not (nil? (IFind/find collection key))))
+  (not-nil? (IFind/find collection key)))
 
 ;; ---------------------------------------------------------------------------
 ;; Regex
 ;; `regexp?` remains the kernel-installed root predicate. The helpers below are
-;; portable HAL wrappers over the std.native.Regex runtime object.
+;; portable HAL wrappers over the std.native.RegExp runtime object.
 ;; ---------------------------------------------------------------------------
 
 (defn ^{:schema [:fn [[:or :str :regex]] :regex]}
   regexp
   "Compiles a pattern string, returning Regex values unchanged."
   [pattern]
-  (if (regexp? pattern)
+  (if (RegExp/instance? pattern)
     pattern
-    (Regex/compile pattern)))
+    (RegExp/compile pattern)))
 
 (defn ^{:schema [:fn [:regex] :str]}
   re-pattern
   "Returns the source pattern of a Regex value."
   [regex]
-  (Regex/pattern regex))
+  (RegExp/pattern regex))
 
 (defn ^{:schema [:fn [[:or :str :regex] :str] [:maybe :str]]}
   re-find
   "Returns the first match in input, or nil when the pattern does not match."
   [pattern input]
-  (Regex/find (regexp pattern) input))
+  (RegExp/find (regexp pattern) input))
 
 (defn ^{:schema [:fn [[:or :str :regex] :str] :bool]}
   re-matches
   "Returns true when pattern matches all of input."
   [pattern input]
-  (Regex/matches (regexp pattern) input))
+  (RegExp/matches (regexp pattern) input))
 
 (defn ^{:schema [:fn [[:or :str :regex] :str :str] :str]}
   re-replace
   "Replaces every match in input using numbered $1 capture groups."
   [pattern input replacement]
-  (Regex/replace (regexp pattern) input replacement))
+  (RegExp/replace (regexp pattern) input replacement))
 
 (defn ^{:schema [:fn [[:or :str :regex] :str] [:vector :str]]}
   re-split
   "Splits input around matches and returns the resulting vector."
   [pattern input]
-  (Regex/split (regexp pattern) input))
+  (RegExp/split (regexp pattern) input))
 
 ;; ---------------------------------------------------------------------------
 ;; References
@@ -324,24 +370,6 @@
 ;; Reduced values and reduction
 ;; ---------------------------------------------------------------------------
 
-(defn ^{:schema [:fn [:any] :any]}
-  reduced
-  "Wraps value as an early-termination result for reduce."
-  [value]
-  (Base/reduced value))
-
-(defn ^{:schema [:fn [:any] :bool]}
-  reduced?
-  "Returns true when value is an early-termination reduction result."
-  [value]
-  (Base/reduced? value))
-
-(defn ^{:schema [:fn [:any] :any]}
-  unreduced
-  "Returns the value wrapped by a reduced result, or value unchanged."
-  [value]
-  (Base/unreduced value))
-
 (defn ^{:schema [:fn [:any :fn :any] :any]}
   reduce-in
   "Reduces source into initial, using mutable conversion when supported."
@@ -362,14 +390,19 @@
 (defn ^{:schema [:fn [:any] :bool]}
   empty?
   "Returns true if value yields no items."
-  [value] (not (iter-next? (iter value))))
+  [value]
+  (if (satisfies? ICount value)
+    (= 0 (ICount/count value))
+    (not (iter-next? (iter value)))))
 
 (defn ^{:schema [:fn [:any] :any]}
   first
   "Returns the first item of value, or nil if value is empty."
   [value]
-  (let [it (iter value)]
-    (if (iter-next? it) (iter-next it) nil)))
+  (if (satisfies? IPeekFirst value)
+    (IPeekFirst/peek-first value)
+    (let [it (iter value)]
+      (if (iter-next? it) (iter-next it) nil))))
 
 (defn ^{:schema [:fn [:any] :any]}
   second
@@ -391,11 +424,13 @@
   last
   "Returns the last item of value, or nil if value is empty."
   [value]
-  (let [it (iter value)]
-    (if (iter-next? it)
-      (loop [result (iter-next it)]
-        (if (iter-next? it) (recur (iter-next it)) result))
-      nil)))
+  (if (satisfies? IPeekLast value)
+    (IPeekLast/peek-last value)
+    (let [it (iter value)]
+      (if (iter-next? it)
+        (loop [result (iter-next it)]
+          (if (iter-next? it) (recur (iter-next it)) result))
+        nil))))
 
 (defn ^{:schema [:fn [:any] :any]}
   reverse
@@ -456,12 +491,12 @@
 (defn ^{:schema [:fn [:any] :any]}
   key
   "Returns the key of a map entry."
-  [entry] (first entry))
+  [entry] (IPair/key entry))
 
 (defn ^{:schema [:fn [:any] :any]}
   val
   "Returns the value of a map entry."
-  [entry] (second entry))
+  [entry] (IPair/value entry))
 
 (defn ^{:schema [:fn [:any] :any]}
   keys
@@ -481,20 +516,20 @@
   materialize-vector
   "Materializes values using template's persistent collection shape when possible."
   [template values]
-  (let [items (vec values)
-        rebuild (fn [seed source] (reduce-in seed conj source))
+  (let [rebuild (fn [seed source] (reduce-in seed conj source))
         output
-        (cond (map? template) (rebuild (empty template) items)
-              (set? template) (rebuild (empty template) items)
-              (list? template) (rebuild (empty template) (reverse items))
+        (cond (map? template) (rebuild (empty template) values)
+              (set? template) (rebuild (empty template) values)
+              (list? template) (rebuild (empty template) (reverse (vec values)))
               (= (type template) :hara/Queue)
-              (rebuild (empty template) items)
+              (rebuild (empty template) values)
               (tuple? template)
-              (if (<= (count items) 8)
-                (rebuild (empty template) items)
-                items)
-              (vector? template) items
-              :else items)]
+              (let [items (vec values)]
+                (if (<= (count items) 8)
+                  (rebuild (empty template) items)
+                  items))
+              (vector? template) (rebuild (empty template) values)
+              :else (vec values))]
     (if (not (nil? (meta template)))
       (with-meta output (meta template))
       output)))
@@ -1313,24 +1348,24 @@
         (outer (with-meta (apply list (map inner form)) (meta form)))
 
         (vector? form)
-        (outer (with-meta (reduce (fn [out value] (conj out (inner value)))
-                                  (empty form)
-                                  form)
+        (outer (with-meta (reduce-in (empty form)
+                                     (fn [out value] (conj out (inner value)))
+                                     form)
                           (meta form)))
 
         (set? form)
-        (outer (with-meta (reduce (fn [out value] (conj out (inner value)))
-                                  (empty form)
-                                  form)
+        (outer (with-meta (reduce-in (empty form)
+                                     (fn [out value] (conj out (inner value)))
+                                     form)
                           (meta form)))
 
         (map? form)
-        (outer (with-meta (reduce (fn [out entry]
-                                    (assoc out
-                                           (inner (key entry))
-                                           (inner (val entry))))
-                                  (empty form)
-                                  form)
+        (outer (with-meta (reduce-in (empty form)
+                                     (fn [out entry]
+                                       (assoc out
+                                              (inner (key entry))
+                                              (inner (val entry))))
+                                     form)
                           (meta form)))
 
         :else (outer form)))
@@ -1395,22 +1430,22 @@
         (with-meta (apply list (map function form)) (meta form))
 
         (vector? form)
-        (reduce (fn [output value] (conj output (function value)))
-                (empty form)
-                form)
+        (reduce-in (empty form)
+                   (fn [output value] (conj output (function value)))
+                   form)
 
         (map? form)
-        (reduce (fn [output entry]
-                  (assoc output
-                         (function (key entry))
-                         (function (val entry))))
-                (empty form)
-                form)
+        (reduce-in (empty form)
+                   (fn [output entry]
+                     (assoc output
+                            (function (key entry))
+                            (function (val entry))))
+                   form)
 
         (set? form)
-        (reduce (fn [output value] (conj output (function value)))
-                (empty form)
-                form)
+        (reduce-in (empty form)
+                   (fn [output value] (conj output (function value)))
+                   form)
 
         :else form))
 
@@ -1768,42 +1803,42 @@
 ;; ---------------------------------------------------------------------------
 
 (defn ^{:schema [:fn [:any :any] :any]}
-  get-entry
+  dep-get
   "Returns one dependency entry from a map graph or IDeps context."
   [context id]
-  (if (map? context)
+  (if (satisfies? IDeps context)
+    (IDeps/dep-get context id)
     (let [value (get context id)]
       (if (and (map? value) (has? value :entry))
         (:entry value)
-        value))
-    (IDeps/get-entry context id)))
+        value))))
 
 (defn ^{:schema [:fn [:any :any] :any]}
-  get-deps
+  dep-entries
   "Returns one entry's dependencies as a set."
   [context id]
-  (if (map? context)
+  (if (satisfies? IDeps context)
+    (set (IDeps/dep-entries context id))
     (let [value (get context id)
           dependencies (if (and (map? value) (has? value :deps))
                          (:deps value)
                          [])]
-      (set (or dependencies [])))
-    (set (IDeps/get-deps context id))))
+      (set (or dependencies [])))))
 
 (defn ^{:schema [:fn [:any] :vector]}
-  list-entries
+  dep-keys
   "Lists dependency identifiers from a map graph or IDeps context."
   [context]
-  (if (map? context)
-    (vec (keys context))
-    (vec (IDeps/list-entries context))))
+  (if (satisfies? IDeps context)
+    (vec (IDeps/dep-keys context))
+    (vec (keys context))))
 
 (defn ^{:schema [:fn [:any :any] :map]}
   deps-map
   "Builds the direct dependency map for ids."
   [context ids]
   (reduce (fn [output id]
-            (assoc output id (get-deps context id)))
+            (assoc output id (dep-entries context id)))
           {}
           ids))
 
@@ -1830,7 +1865,7 @@
   deps-ordered
   "Returns dependencies before dependents and throws on a cycle."
   ([context]
-   (deps-ordered context (list-entries context)))
+   (deps-ordered context (dep-keys context)))
   ([context ids]
    (topological-sort (:graph (deps-resolve context ids)))))
 
@@ -1839,10 +1874,10 @@
   dependents-direct
   "Returns selected entries that directly depend on id."
   ([context id]
-   (dependents-direct context id (list-entries context)))
+   (dependents-direct context id (dep-keys context)))
   ([context id selected]
    (set (filter (fn [candidate]
-                  (has? (get-deps context candidate) id))
+                  (has? (dep-entries context candidate) id))
                 selected))))
 
 (defn ^{:schema [:fn [:any :any :any] :map]}
@@ -1859,7 +1894,7 @@
   dependents-all
   "Returns the complete reverse graph rooted at id."
   ([context id]
-   (dependents-all context id (list-entries context)))
+   (dependents-all context id (dep-keys context)))
   ([context id selected]
    (loop [graph {id (dependents-direct context id selected)}]
      (let [known (set (keys graph))
@@ -1875,6 +1910,6 @@
   dependents-ordered
   "Returns transitive dependents before id in teardown order."
   ([context id]
-   (dependents-ordered context id (list-entries context)))
+   (dependents-ordered context id (dep-keys context)))
   ([context id selected]
    (topological-sort (dependents-all context id selected))))

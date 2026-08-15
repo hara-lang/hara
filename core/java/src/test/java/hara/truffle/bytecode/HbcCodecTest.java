@@ -394,7 +394,7 @@ public class HbcCodecTest {
             .build();
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[:hara/Vector true true true :hara/Vector true :hara/Vector true false]",
+          "[:std.native.Vector true true true :std.native.Vector true :std.native.Vector true false]",
           context.eval(source).toString());
     }
   }

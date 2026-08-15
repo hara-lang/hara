@@ -47,7 +47,7 @@ public class HaraGeneratedLibrariesTest {
                       + "(map-entry? (first {:a 1}))]")
               .toString());
       assertEquals(
-          ":hara/Vector",
+          ":std.native.Tuple",
           context.eval(HaraLanguage.ID, "(type (first {:a 1}))").toString());
       assertEquals(
           "[false true]",
@@ -68,10 +68,10 @@ public class HaraGeneratedLibrariesTest {
   public void portableTypeReturnsCanonicalAndNamedKeywords() {
     try (Context context = context()) {
       assertEquals(
-          "[:hara/Nil :hara/Integer :hara/Float :hara/String :hara/Keyword "
-              + ":hara/Symbol :hara/Vector :hara/Vector :hara/HashMap "
-              + ":hara/OrderedSet :hara/Pointer :hara/Function :hara/Atom :hara/Vector "
-              + ":hara/Vector :hara/Vector :hara/RegExp]",
+          "[:std.native.Nil :std.native.Integer :std.native.Decimal :std.native.String :std.native.Keyword "
+              + ":std.native.Symbol :std.native.Tuple :std.native.Vector :std.native.HashMap "
+              + ":std.native.OrderedSet :std.native.Pointer :std.native.Function :std.native.Atom :std.native.Tuple "
+              + ":std.native.Tuple :std.native.Vector :std.native.RegExp]",
           context
               .eval(
                   HaraLanguage.ID,
@@ -83,7 +83,7 @@ public class HaraGeneratedLibrariesTest {
                       + "(type #\"x\")]")
               .toString());
       assertEquals(
-          "[:geometry/Point :geometry/Cursor :hara/StructType :hara/MutableType]",
+          "[:geometry.Point :geometry.Cursor :std.native.StructType :std.native.MutableType]",
           context
               .eval(
                   HaraLanguage.ID,

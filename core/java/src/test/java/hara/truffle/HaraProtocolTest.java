@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertThrows;
 
@@ -35,6 +36,18 @@ public class HaraProtocolTest {
     assertEquals("nil", protocol.invoke("describe", null, new Object[0]));
     assertEquals("foreign", protocol.invoke("describe", new ForeignValue(), new Object[0]));
     assertEquals("default", protocol.invoke("describe", new Object(), new Object[0]));
+  }
+
+  @Test
+  public void defaultsRemainCallableWithoutClaimingProtocolSatisfaction() {
+    HaraProtocol protocol = new HaraProtocol("Describe", Map.of("describe", 1));
+    protocol.extendDefault("describe", (receiver, arguments) -> "default");
+
+    assertFalse(protocol.satisfies(new Object()));
+    assertEquals("default", protocol.invoke("describe", new Object(), new Object[0]));
+
+    protocol.extend(Object.class, "describe", (receiver, arguments) -> "explicit");
+    assertTrue(protocol.satisfies(new Object()));
   }
 
   @Test

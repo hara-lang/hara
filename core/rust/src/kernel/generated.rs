@@ -653,7 +653,7 @@ fn canonical(namespace: &str, method: &str) -> String {
         ("std.native.Printer", method) => method.into(),
         ("std.native.Edn", method) => format!("std.native.Edn/{method}"),
         ("std.native.Json", method) => format!("std.native.Json/{method}"),
-        ("std.native.Regex", "instance?") => "regexp?".into(),
+        ("std.native.RegExp", "instance?") => "regexp?".into(),
         ("std.native.UUID", "instance?") => "uuid?".into(),
         ("std.native.Error", method) => format!("std.native.Error/{method}"),
         ("std.native.Iter", method) => format!("std.native.Iter/{method}"),

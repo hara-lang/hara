@@ -242,6 +242,9 @@ struct Compiler {
     /// visible to global references compiled after their defining form
     /// (issue #223 two-phase visibility).
     globals: Vec<String>,
+    /// Source-level forwarding shims opted into call-site lowering with
+    /// `^{:inline target/name}`.
+    inline_globals: HashMap<String, String>,
     /// Var metadata table indexed by `DefGlobal` operands.
     var_metadata: Vec<std::rc::Rc<crate::lang::data::Metadata>>,
     /// True while compiling a direct child of the top-level sequence;
@@ -348,6 +351,7 @@ impl Compiler {
                 fallthrough: true,
             }],
             globals: Vec::new(),
+            inline_globals: HashMap::new(),
             var_metadata: Vec::new(),
             top_level: true,
             next_destructure_id: 0,

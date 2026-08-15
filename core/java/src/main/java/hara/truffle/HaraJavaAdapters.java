@@ -1,7 +1,7 @@
 package hara.truffle;
 
 import hara.lang.base.Reduced;
-import hara.lang.data.types.IDepsType;
+import hara.lang.protocol.IDeps;
 import hara.lang.data.types.ISequentialLookupType;
 import hara.lang.data.types.ISequentialType;
 import hara.lang.data.types.ILinearType;
@@ -32,7 +32,7 @@ public final class HaraJavaAdapters {
     installCount(context.defineProtocol("ICount", Map.of("count", 1)));
     installDeps(
         context.defineProtocol(
-            "IDeps", Map.of("get-entry", 2, "get-deps", 2, "list-entries", 1)));
+            "IDeps", Map.of("dep-get", 2, "dep-entries", 2, "dep-keys", 1)));
     installConj(context.defineProtocol("IConj", Map.of("conj", 2)));
     installFind(context.defineProtocol("IFind", Map.of("find", 2)));
     installEquality(context.defineProtocol("IEquality", Map.of("equality", 2)));
@@ -295,24 +295,24 @@ public final class HaraJavaAdapters {
   @SuppressWarnings({"rawtypes", "unchecked"})
   public static void installDeps(HaraProtocol protocol) {
     protocol.extend(
-        IDepsType.class,
-        "get-entry",
+        IDeps.class,
+        "dep-get",
         (receiver, arguments) ->
-            ((IDepsType) receiver)
+            ((IDeps) receiver)
                 .depGet(receiver instanceof IContext ? (IContext) receiver : null, arguments[0]));
     protocol.extend(
-        IDepsType.class,
-        "get-deps",
+        IDeps.class,
+        "dep-entries",
         (receiver, arguments) ->
-            ((IDepsType) receiver)
+            ((IDeps) receiver)
                 .depEntries(
                     receiver instanceof IContext ? (IContext) receiver : null, arguments[0]));
     protocol.extend(
-        IDepsType.class,
-        "list-entries",
+        IDeps.class,
+        "dep-keys",
         (receiver, arguments) ->
-            ((IDepsType) receiver)
-                .depIds(receiver instanceof IContext ? (IContext) receiver : null));
+            ((IDeps) receiver)
+                .depKeys(receiver instanceof IContext ? (IContext) receiver : null));
   }
 
   public static void installConj(HaraProtocol protocol) {
@@ -592,7 +592,28 @@ public final class HaraJavaAdapters {
         Iterable.class, "iter", (receiver, arguments) -> ((Iterable<?>) receiver).iterator());
     protocol.extend(
         Iterator.class, "iter", (receiver, arguments) -> receiver);
-    protocol.extendDefault("iter", (receiver, arguments) -> hara.lang.base.Iter.iter(receiver));
+    protocol.extend(String.class, "iter", (receiver, arguments) ->
+        hara.lang.base.Iter.chars(((String) receiver).toCharArray()));
+    protocol.extend(java.util.Map.class, "iter", (receiver, arguments) ->
+        ((java.util.Map<?, ?>) receiver).entrySet().iterator());
+    protocol.extend(java.util.Map.Entry.class, "iter", (receiver, arguments) -> {
+      java.util.Map.Entry<?, ?> entry = (java.util.Map.Entry<?, ?>) receiver;
+      return hara.lang.base.Iter.objects(entry.getKey(), entry.getValue());
+    });
+    protocol.extendNil("iter", (receiver, arguments) -> hara.lang.base.Iter.emptyIterator());
+    installArrayIter(protocol, Object[].class);
+    installArrayIter(protocol, boolean[].class);
+    installArrayIter(protocol, byte[].class);
+    installArrayIter(protocol, char[].class);
+    installArrayIter(protocol, short[].class);
+    installArrayIter(protocol, int[].class);
+    installArrayIter(protocol, long[].class);
+    installArrayIter(protocol, float[].class);
+    installArrayIter(protocol, double[].class);
+  }
+
+  private static void installArrayIter(HaraProtocol protocol, Class<?> type) {
+    protocol.extend(type, "iter", (receiver, arguments) -> hara.lang.base.Iter.iter(receiver));
   }
 
   public static void installIterator(HaraProtocol protocol) {
@@ -667,8 +688,7 @@ public final class HaraJavaAdapters {
           result = HaraBox.unwrap(result);
           return Reduced.isReduced(result) ? Reduced.unreduced(result) : result;
         });
-    protocol.extendDefault(
-        "reduce",
+    HaraProtocolInvoker fallback =
         (receiver, arguments) -> {
           if (arguments.length < 1 || arguments.length > 2) {
             throw new HaraException("IReduce/reduce expects a function and optional initial value");
@@ -696,7 +716,28 @@ public final class HaraJavaAdapters {
           } finally {
             hara.lang.base.Iter.close(iterator);
           }
-        });
+        };
+    protocol.extend(Iterable.class, "reduce", fallback);
+    protocol.extend(Iterator.class, "reduce", fallback);
+    protocol.extend(String.class, "reduce", (receiver, arguments) ->
+        fallback.invoke(hara.lang.base.Iter.chars(((String) receiver).toCharArray()), arguments));
+    protocol.extend(java.util.Map.class, "reduce", fallback);
+    protocol.extend(java.util.Map.Entry.class, "reduce", fallback);
+    protocol.extendNil("reduce", fallback);
+    installArrayReduce(protocol, fallback, Object[].class);
+    installArrayReduce(protocol, fallback, boolean[].class);
+    installArrayReduce(protocol, fallback, byte[].class);
+    installArrayReduce(protocol, fallback, char[].class);
+    installArrayReduce(protocol, fallback, short[].class);
+    installArrayReduce(protocol, fallback, int[].class);
+    installArrayReduce(protocol, fallback, long[].class);
+    installArrayReduce(protocol, fallback, float[].class);
+    installArrayReduce(protocol, fallback, double[].class);
+  }
+
+  private static void installArrayReduce(
+      HaraProtocol protocol, HaraProtocolInvoker fallback, Class<?> type) {
+    protocol.extend(type, "reduce", fallback);
   }
 
   public static void installPromise(HaraProtocol protocol) {

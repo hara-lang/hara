@@ -1672,7 +1672,7 @@ public class HaraLanguageTest {
     while (names.find()) {
       protocols.add(names.group(1));
     }
-    assertEquals(53, protocols.size());
+    assertEquals(54, protocols.size());
     Set<String> unavailableProtocols =
         Set.of(
             "IColl",
@@ -1772,13 +1772,13 @@ public class HaraLanguageTest {
         Pattern.compile("\\(std\\.protocol\\.[a-z]+/[a-z?\\-]+\\s+fixture").matcher(source);
     int callCount = 0;
     while (calls.find()) callCount++;
-    assertEquals(101, callCount);
+    assertEquals(104, callCount);
     assertTrue(!source.contains("protocol-call"));
 
     try (Context context = context()) {
       String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
-      assertEquals(53, result.split(":pass true", -1).length - 1);
+      assertEquals(54, result.split(":pass true", -1).length - 1);
     }
   }
 
@@ -1790,7 +1790,7 @@ public class HaraLanguageTest {
     String catalog =
         Files.readString(
             Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn"));
-    assertEquals(86, catalog.split("\\{:protocol ", -1).length - 1);
+    assertEquals(89, catalog.split("\\{:protocol ", -1).length - 1);
     Matcher methodVars =
         Pattern.compile(
                 "(?m)^\\s*\\[?\\(protocol-case\\s+:[^\\s]+\\s+:[^\\s]+\\s+"
@@ -1800,7 +1800,7 @@ public class HaraLanguageTest {
     try (Context context = context()) {
       String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
-      assertEquals(86, result.split(":pass true", -1).length - 1);
+      assertEquals(89, result.split(":pass true", -1).length - 1);
 
       int methodCount = 0;
       while (methodVars.find()) {
@@ -1815,7 +1815,7 @@ public class HaraLanguageTest {
             methodVar + " returned an uncategorized arity error: " + error.getMessage(),
             error.getMessage().contains("protocol/arity"));
       }
-      assertEquals(86, methodCount);
+      assertEquals(89, methodCount);
 
       int failureCount = 0;
       for (String line : source.split("\\R")) {
@@ -1864,7 +1864,7 @@ public class HaraLanguageTest {
                 + uncategorizedError,
             categorizedCall != null);
       }
-      assertEquals(86, failureCount);
+      assertEquals(89, failureCount);
       assertTrue(
           context
               .eval(
