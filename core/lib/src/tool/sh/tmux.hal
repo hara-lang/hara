@@ -1,0 +1,94 @@
+;; ============================================================================
+;; tool.sh.tmux — deterministic tmux argv builders and injectable execution.
+;; ============================================================================
+(ns tool.sh.tmux
+  (:require [tool.sh :as sh]))
+
+(defn- env-name
+  [key]
+  (str/upper (if (keyword? key) (name key) (str key))))
+
+(defn with-args
+  [command options]
+  (let [options (or options {})
+        command (if (:root options)
+                  (into command ["-c" (str (:root options))])
+                  command)]
+    (reduce (fn [out key]
+              (into out ["-e" (str (env-name key) "=" (get (:env options) key))]))
+            command
+            (sort-by env-name (keys (or (:env options) {}))))))
+
+(def tmux-with-args with-args)
+
+(defn kill-server-command [] ["tmux" "kill-server"])
+(defn list-sessions-command [] ["tmux" "list-sessions" "-F" "#{session_name}"])
+(defn has-session-command [session] ["tmux" "has-session" "-t" (str session)])
+
+(defn new-session-command
+  ([session] (new-session-command session {}))
+  ([session options]
+   (with-args ["tmux" "new-session" "-d" "-s" (str session) "-n" "CMD"] options)))
+
+(defn kill-session-command [session] ["tmux" "kill-session" "-t" (str session)])
+(defn list-windows-command [session]
+  ["tmux" "list-windows" "-t" (str session) "-F" "#{window_name}"])
+
+(defn send-keys-command
+  [session key command]
+  ["tmux" "send-keys" "-t" (str session ":" key)
+   (if (string? command) command (str/join " " command))
+   "C-m"])
+
+(defn new-window-command
+  ([session key] (new-window-command session key {}))
+  ([session key options]
+   (with-args ["tmux" "new-window" "-t" (str session) "-n" (str key)] options)))
+
+(defn kill-window-command [session key]
+  ["tmux" "kill-window" "-t" (str session ":" key)])
+
+(defn kill-server
+  ([] (kill-server {}))
+  ([options] (sh/execute! (kill-server-command) options)))
+
+(defn list-sessions
+  ([] (list-sessions {}))
+  ([options] (str/split-lines (:stdout (sh/execute! (list-sessions-command) options)))))
+
+(defn has-session?
+  ([session] (has-session? session {}))
+  ([session options] (= 0 (:exit (sh/execute (has-session-command session) options)))))
+
+(defn new-session
+  ([session] (new-session session {}))
+  ([session options] (sh/execute! (new-session-command session options) options)))
+
+(defn kill-session
+  ([session] (kill-session session {}))
+  ([session options] (sh/execute! (kill-session-command session) options)))
+
+(defn list-windows
+  ([session] (list-windows session {}))
+  ([session options]
+   (str/split-lines (:stdout (sh/execute! (list-windows-command session) options)))))
+
+(defn has-window?
+  ([session key] (has-window? session key {}))
+  ([session key options] (has? (set (list-windows session options)) (str key))))
+
+(defn run-command
+  ([session key command] (run-command session key command {}))
+  ([session key command options]
+   (sh/execute! (send-keys-command session key command) options)))
+
+(defn new-window
+  ([session key] (new-window session key {}))
+  ([session key options]
+   (if (has-window? session key options)
+     :window-already-present
+     (sh/execute! (new-window-command session key options) options))))
+
+(defn kill-window
+  ([session key] (kill-window session key {}))
+  ([session key options] (sh/execute! (kill-window-command session key) options)))

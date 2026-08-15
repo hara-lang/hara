@@ -1,5 +1,6 @@
 package hara.truffle;
 
+import hara.lang.data.types.IDepsType;
 import hara.lang.data.types.ISequentialLookupType;
 import hara.lang.data.types.ISequentialType;
 import hara.lang.data.types.ILinearType;
@@ -28,6 +29,9 @@ public final class HaraJavaAdapters {
     context.defineProtocol("IMatch", Map.of("match-value", 2));
     installAssoc(context.defineProtocol("IAssoc", Map.of("assoc", 3)));
     installCount(context.defineProtocol("ICount", Map.of("count", 1)));
+    installDeps(
+        context.defineProtocol(
+            "IDeps", Map.of("get-entry", 2, "get-deps", 2, "list-entries", 1)));
     installConj(context.defineProtocol("IConj", Map.of("conj", 2)));
     installFind(context.defineProtocol("IFind", Map.of("find", 2)));
     installEquality(context.defineProtocol("IEquality", Map.of("equality", 2)));
@@ -285,6 +289,29 @@ public final class HaraJavaAdapters {
         });
     protocol.extend(byte[].class, "count", (receiver, arguments) -> ((byte[]) receiver).length);
     protocol.extendNil("count", (receiver, arguments) -> 0L);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static void installDeps(HaraProtocol protocol) {
+    protocol.extend(
+        IDepsType.class,
+        "get-entry",
+        (receiver, arguments) ->
+            ((IDepsType) receiver)
+                .depGet(receiver instanceof IContext ? (IContext) receiver : null, arguments[0]));
+    protocol.extend(
+        IDepsType.class,
+        "get-deps",
+        (receiver, arguments) ->
+            ((IDepsType) receiver)
+                .depEntries(
+                    receiver instanceof IContext ? (IContext) receiver : null, arguments[0]));
+    protocol.extend(
+        IDepsType.class,
+        "list-entries",
+        (receiver, arguments) ->
+            ((IDepsType) receiver)
+                .depIds(receiver instanceof IContext ? (IContext) receiver : null));
   }
 
   public static void installConj(HaraProtocol protocol) {

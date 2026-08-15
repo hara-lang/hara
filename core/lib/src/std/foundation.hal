@@ -1189,10 +1189,10 @@
   "Returns graph nodes in dependency order and throws on a cycle."
   [graph]
   (let [without-self
-        (reduce (fn [output entry]
-                  (assoc output (key entry) (dissoc (val entry) (key entry))))
-                {}
-                graph)
+        (reduce-kv (fn [output node dependencies]
+                     (assoc output node (dissoc dependencies node)))
+                   {}
+                   graph)
         all-dependencies (apply union (vals without-self))
         complete
         (reduce (fn [output node]
@@ -1203,23 +1203,24 @@
            ordered []]
       (if (empty? remaining)
         ordered
-        (let [ready (filter (fn [entry] (empty? (val entry))) remaining)]
+        (let [ready (filter (fn [node] (empty? (get remaining node)))
+                            (keys remaining))]
           (if (empty? ready)
             (let [cycle (find-cycle remaining)]
               (throw (ex-info (str "Graph Contains Circular Dependency: "
                                    (pr-str cycle))
                               {:data remaining :list ordered :cycle cycle})))
-            (let [nodes (set (map key ready))
+            (let [nodes (set ready)
                   next-remaining
-                  (reduce (fn [output entry]
-                            (if (has? nodes (key entry))
-                              output
-                              (assoc output
-                                     (key entry)
-                                     (difference (val entry) nodes))))
-                          {}
-                          remaining)]
-              (recur next-remaining (vec (concat ordered (keys ready)))))))))))
+                  (reduce-kv (fn [output node dependencies]
+                               (if (has? nodes node)
+                                 output
+                                 (assoc output
+                                        node
+                                        (difference dependencies nodes))))
+                             {}
+                             remaining)]
+              (recur next-remaining (vec (concat ordered ready))))))))))
 
 (defn ^{:schema [:fn [:map :any] :vector]}
   topological-sort-order-by-deps
@@ -1663,3 +1664,131 @@
 (defmacro code-column
   "Expands to the column number of the invocation form."
   [] (get (meta &form) :column))
+
+;; ---------------------------------------------------------------------------
+;; Dependency graph queries
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  get-entry
+  "Returns one dependency entry from a map graph or IDeps context."
+  [context id]
+  (if (map? context)
+    (let [value (get context id)]
+      (if (and (map? value) (has? value :entry))
+        (:entry value)
+        value))
+    (IDeps/get-entry context id)))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  get-deps
+  "Returns one entry's dependencies as a set."
+  [context id]
+  (if (map? context)
+    (let [value (get context id)
+          dependencies (if (and (map? value) (has? value :deps))
+                         (:deps value)
+                         [])]
+      (set (or dependencies [])))
+    (set (IDeps/get-deps context id))))
+
+(defn ^{:schema [:fn [:any] :vector]}
+  list-entries
+  "Lists dependency identifiers from a map graph or IDeps context."
+  [context]
+  (if (map? context)
+    (vec (keys context))
+    (vec (IDeps/list-entries context))))
+
+(defn ^{:schema [:fn [:any :any] :map]}
+  deps-map
+  "Builds the direct dependency map for ids."
+  [context ids]
+  (reduce (fn [output id]
+            (assoc output id (get-deps context id)))
+          {}
+          ids))
+
+(defn- set-union
+  [left right]
+  (reduce conj left right))
+
+(defn- set-difference
+  [left right]
+  (set (filter (fn [value] (not (has? right value))) left)))
+
+(defn- graph-values
+  [graph]
+  (reduce set-union #{} (vals graph)))
+
+(defn ^{:schema [:function [:fn [:any :any] :map]
+                            [:fn [:any :any :map] :map]]}
+  deps-resolve
+  "Resolves ids and every transitive dependency into {:all set :graph map}."
+  ([context ids]
+   (deps-resolve context ids {:all #{} :graph {}}))
+  ([context ids state]
+   (loop [pending (set ids)
+          seen (set (or (:all state) #{}))
+          graph (or (:graph state) {})]
+     (if (empty? pending)
+       {:all seen :graph graph}
+       (let [next-graph (merge graph (deps-map context pending))
+             next-seen (set-union seen pending)
+             discovered (graph-values next-graph)
+             next-pending (set-difference discovered next-seen)]
+         (recur next-pending next-seen next-graph))))))
+
+(defn ^{:schema [:function [:fn [:any] :vector]
+                            [:fn [:any :any] :vector]]}
+  deps-ordered
+  "Returns dependencies before dependents and throws on a cycle."
+  ([context]
+   (deps-ordered context (list-entries context)))
+  ([context ids]
+   (topological-sort (:graph (deps-resolve context ids)))))
+
+(defn ^{:schema [:function [:fn [:any :any] :any]
+                            [:fn [:any :any :any] :any]]}
+  dependents-direct
+  "Returns selected entries that directly depend on id."
+  ([context id]
+   (dependents-direct context id (list-entries context)))
+  ([context id selected]
+   (set (filter (fn [candidate]
+                  (has? (get-deps context candidate) id))
+                selected))))
+
+(defn ^{:schema [:fn [:any :any :any] :map]}
+  dependents-topological
+  "Builds one level of the reverse dependency graph."
+  [context ids selected]
+  (reduce (fn [output id]
+            (assoc output id (dependents-direct context id selected)))
+          {}
+          ids))
+
+(defn ^{:schema [:function [:fn [:any :any] :map]
+                            [:fn [:any :any :any] :map]]}
+  dependents-all
+  "Returns the complete reverse graph rooted at id."
+  ([context id]
+   (dependents-all context id (list-entries context)))
+  ([context id selected]
+   (loop [graph {id (dependents-direct context id selected)}]
+     (let [known (set (keys graph))
+           discovered (graph-values graph)
+           pending (set-difference discovered known)]
+       (if (empty? pending)
+         graph
+         (recur (merge graph
+                       (dependents-topological context pending selected))))))))
+
+(defn ^{:schema [:function [:fn [:any :any] :vector]
+                            [:fn [:any :any :any] :vector]]}
+  dependents-ordered
+  "Returns transitive dependents before id in teardown order."
+  ([context id]
+   (dependents-ordered context id (list-entries context)))
+  ([context id selected]
+   (topological-sort (dependents-all context id selected))))

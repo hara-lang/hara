@@ -1,0 +1,47 @@
+(ns std.foundation.deps-test
+  (:use code.test))
+
+(def graph
+  {:a {:entry :A :deps #{:b}}
+   :b {:entry :B :deps #{:c}}
+   :c {:entry :C :deps #{}}
+   :x {:entry :X :deps #{}}})
+
+(def results
+  [(fact "dependency accessors support the portable map graph"
+     [(get-entry graph :a)
+      (get-deps graph :a)
+      (set (list-entries graph))]
+     => [:A #{:b} #{:a :b :c :x}])
+
+   (fact "dependency resolution includes transitive and independent nodes"
+     [(deps-resolve graph [:a])
+      (set (deps-ordered graph [:a :x]))]
+     => [{:all #{:a :b :c}
+          :graph {:a #{:b} :b #{:c} :c #{}}}
+         #{:a :b :c :x}])
+
+   (fact "dependency order places dependencies before dependents"
+     (deps-ordered graph [:a])
+     => [:c :b :a])
+
+   (fact "reverse dependency helpers preserve teardown order"
+     [(dependents-direct graph :c)
+      (dependents-all graph :c)
+      (dependents-ordered graph :c)]
+     => [#{:b}
+         {:c #{:b} :b #{:a} :a #{}}
+         [:a :b :c]])
+
+   (fact "selected reverse dependencies stay inside the selection"
+     (dependents-ordered graph :c [:b :c])
+     => [:b :c])
+
+   (fact "cycles are rejected by topological ordering"
+     (try
+       (deps-ordered {:a {:deps #{:b}} :b {:deps #{:a}}})
+       false
+       (catch Throwable error true))
+     => true)])
+
+(pr-str (run '[std.foundation.deps-test]))

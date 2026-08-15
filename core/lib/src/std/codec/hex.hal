@@ -1,0 +1,49 @@
+;; ============================================================================
+;; std.codec.hex — lowercase hexadecimal over portable UTF-8 and Bytes.
+;; ============================================================================
+(ns std.codec.hex)
+
+(def +digits+ "0123456789abcdef")
+
+(defn- input-bytes
+  [value]
+  (cond (string? value) (str/encode-utf8 value)
+        (Bytes/instance? value) value
+        :else (throw (ex-info "Hex encode expects a string or bytes" {:value value}))))
+
+(defn encode
+  [value]
+  (let [value (input-bytes value)
+        length (bytes/count value)]
+    (loop [index 0 output ""]
+      (if (= index length)
+        output
+        (let [byte (bytes/get value index)]
+          (recur (inc index)
+                 (str output
+                      (str/char-at +digits+ (Bits/shift-right byte 4))
+                      (str/char-at +digits+ (Bits/and byte 15)))))))))
+
+(defn- digit
+  [value index]
+  (let [number (str/index-of +digits+ (str/lower value))]
+    (if (neg? number)
+      (throw (ex-info "Invalid hexadecimal digit"
+                      {:value value :index index}))
+      number)))
+
+(defn decode
+  [value]
+  (if (not (string? value))
+    (throw (ex-info "Hex decode expects a string" {:value value})))
+  (let [length (str/length value)]
+    (if (odd? length)
+      (throw (ex-info "Hex input must contain an even number of digits"
+                      {:value value :length length})))
+    (loop [index 0 output []]
+      (if (= index length)
+        (apply bytes output)
+        (let [high (digit (str/char-at value index) index)
+              low-index (inc index)
+              low (digit (str/char-at value low-index) low-index)]
+          (recur (+ index 2) (conj output (+ (* high 16) low))))))))

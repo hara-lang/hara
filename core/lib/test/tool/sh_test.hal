@@ -1,0 +1,37 @@
+(ns tool.sh-test
+  (:use code.test)
+  (:require [tool.sh :as sh]))
+
+(defn fake-runner
+  [argv options]
+  {:command argv
+   :stdout (or (:stdout options) "ok")
+   :stderr (or (:stderr options) "")
+   :exit (or (:exit options) 0)})
+
+(def results
+  [(fact "tool.sh validates argv and delegates through an injectable runner"
+     (sh/execute ["printf" "ok"] {:tool.sh/runner fake-runner})
+     => {:command ["printf" "ok"] :stdout "ok" :stderr "" :exit 0})
+
+   (fact "tool.sh run! keeps the structured failure in ex-data"
+     (try
+       (sh/execute! ["false"] {:tool.sh/runner fake-runner
+                                :stdout "out"
+                                :stderr "err"
+                                :exit 7})
+       nil
+       (catch Throwable error
+         [(ex-message error) (ex-data error)]))
+     => ["Command failed"
+         {:command ["false"] :stdout "out" :stderr "err" :exit 7}])
+
+   (fact "tool.sh rejects implicit command strings"
+     (try (sh/command "echo unsafe") false (catch Throwable error true))
+     => true)
+
+   (fact "process options expose only cwd and env"
+     (sh/process-options {:cwd "/tmp" :env {"A" "1"} :trim false :other true})
+     => {:cwd "/tmp" :env {"A" "1"}})])
+
+(pr-str (run '[tool.sh-test]))

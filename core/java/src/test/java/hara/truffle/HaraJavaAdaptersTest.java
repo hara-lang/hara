@@ -4,6 +4,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import hara.lang.data.Atom;
+import hara.lang.data.types.IDepsType;
+import hara.lang.data.types.ISetType;
+import hara.lang.protocol.IContext;
 import hara.lang.data.List;
 import hara.lang.data.Keyword;
 import hara.lang.data.Queue;
@@ -52,6 +55,42 @@ public class HaraJavaAdaptersTest {
     assertEquals(41L, deref.invoke("deref", atom, new Object[0]));
   }
 
+@Test
+public void bridgesTheExistingDependencyTypeContract() {
+  class DependencyFixture implements IDepsType<String, String>, IContext {
+    @Override
+    public Object call(Object... arguments) {
+      return null;
+    }
+
+    @Override
+    public String depGet(IContext context, String id) {
+      return context == this ? "entry:" + id : "wrong-context";
+    }
+
+    @Override
+    public ISetType<String> depEntries(IContext context, String id) {
+      return Set.Standard.from(null, "base:" + id);
+    }
+
+    @Override
+    public Iterator<String> depIds(IContext context) {
+      return java.util.List.of("a", "b").iterator();
+    }
+  }
+
+  DependencyFixture fixture = new DependencyFixture();
+  HaraProtocol deps =
+      new HaraProtocol(
+          "IDeps", Map.of("get-entry", 2, "get-deps", 2, "list-entries", 1));
+  HaraJavaAdapters.installDeps(deps);
+
+  assertEquals("entry:a", deps.invoke("get-entry", fixture, new Object[] {"a"}));
+  assertTrue(deps.invoke("get-deps", fixture, new Object[] {"a"}) instanceof ISetType);
+  Iterator<?> ids = (Iterator<?>) deps.invoke("list-entries", fixture, new Object[0]);
+  assertEquals("a", ids.next());
+  assertEquals("b", ids.next());
+}
   @Test
   public void adaptsCollectionNavigationAndConversion() {
     List.Standard<String> list = List.Standard.from(null, "one", "two");

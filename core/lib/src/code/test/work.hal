@@ -665,11 +665,47 @@
                  :test/config (:test/config options)
                  :test/context (:test/context options)})))
 
+(defn native-cancelled-result
+  [fact]
+  (merge (process/fact-result-identity fact)
+         {:status :cancelled
+          :checks []
+          :reason :fail-fast}))
+
+(defn native-results
+  [facts options]
+  (loop [remaining facts
+         results []]
+    (if (empty? remaining)
+      results
+      (let [fact (first remaining)
+            result (process/run-fact fact options)
+            next-results (conj results result)
+            tail (vec (rest remaining))]
+        (if (and (:fail-fast options) (failing-status? (:status result)))
+          (vec (concat next-results (map native-cancelled-result tail)))
+          (recur tail next-results))))))
+
+(defn native-run
+  [selector-or-options]
+  (let [base-options (normalize-run-options selector-or-options)
+        facts (selected-facts base-options)
+        options (effective-suite-options facts base-options)]
+    (try
+      (do
+        (process/run-hook (:before-all options) options)
+        (summary-from-results (native-results facts options)))
+      (finally
+        (process/run-hook (:after-all options) options)))))
+
 (defn run
   "Runs selected facts through the canonical IWork fact-batch graph."
   ([] (run {}))
   ([selector-or-options]
-   (run (work/local-runtime) selector-or-options {}))
+   (let [config (Test/config {})]
+     (if (= :native (:runner config))
+       (native-run selector-or-options)
+       (run (work/local-runtime) selector-or-options {}))))
   ([runtime selector-or-options]
    (run runtime selector-or-options {}))
   ([runtime selector-or-options work-options]

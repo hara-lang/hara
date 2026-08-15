@@ -1,0 +1,223 @@
+;; ============================================================================
+;; tool.sh.git — Foundation-compatible Git operations over canonical tool.sh.
+;; ============================================================================
+(ns tool.sh.git
+  (:require [tool.sh :as sh]))
+
+(defn- arguments
+  [value]
+  (if (vector? value) value [value]))
+
+(defn command
+  "Builds Git argv. :root is represented with git -C, never a shell cd."
+  ([args]
+   (command args {}))
+  ([args options]
+   (let [prefix (if (:root options)
+                  ["git" "-C" (str (:root options))]
+                  ["git"])]
+     (vec (concat prefix (arguments args))))))
+
+(defn git-result
+  ([args]
+   (git-result args {}))
+  ([args options]
+   (sh/execute (command args options) options)))
+
+(defn git-run
+  ([args]
+   (git-run args {}))
+  ([args options]
+   (let [options (or options {})
+         ignore-errors (if (has? options :ignore-errors)
+                         (:ignore-errors options)
+                         true)
+         result (git-result args options)]
+     (if (and (not= 0 (:exit result)) (not ignore-errors))
+       (throw (ex-info "Git command failed" result))
+       result))))
+
+(defn git
+  ([args]
+   (git-run args {}))
+  ([args options]
+   (git-run args options)))
+
+(defn init
+  ([] (init {}))
+  ([options] (git ["init"] options)))
+
+(defn clone
+  ([url] (clone url {}))
+  ([url options]
+   (let [args (if (:dir options)
+                ["clone" url (str (:dir options))]
+                ["clone" url])]
+     (git args (dissoc options :dir)))))
+
+(defn- staged-code?
+  [value]
+  (has? #{"M" "A" "D" "R" "C"} value))
+
+(defn status
+  ([] (status {}))
+  ([options]
+   (let [lines (str/split-lines (:stdout (git ["status" "--porcelain" "-b"] options)))]
+     (reduce
+      (fn [output line]
+        (let [code (str/slice line 0 2)
+              value (str/trim (str/slice line 3))]
+          (cond
+            (= code "##")
+            (let [branch-info value
+                  branch (if (str/starts-with? branch-info "No commits yet on ")
+                           (str/slice branch-info (str/length "No commits yet on "))
+                           (first (str/split branch-info "...")))]
+              (assoc output :branch branch))
+
+            (= code "??")
+            (update output :untracked conj value)
+
+            :else
+            (let [x (str/char-at code 0)
+                  y (str/char-at code 1)
+                  output (if (staged-code? x) (update output :staged conj value) output)]
+              (if (staged-code? y) (update output :changed conj value) output)))))
+      {:branch "HEAD" :changed [] :staged [] :untracked []}
+      lines))))
+
+(defn add
+  ([value] (add value {}))
+  ([value options]
+   (let [args (cond (:all options) ["add" "--all"]
+                    (vector? value) (into ["add"] value)
+                    (string? value) ["add" value]
+                    :else ["add"])]
+     (git args options))))
+
+(defn commit
+  ([value]
+   (if (map? value) (commit nil value) (commit value {})))
+  ([message options]
+   (let [message (or message (:message options))
+         args (if message ["commit" "-m" message] ["commit"])
+         args (if (:amend options) (conj args "--amend") args)
+         args (if (:no-verify options) (conj args "--no-verify") args)
+         args (if (:allow-empty options) (conj args "--allow-empty") args)]
+     (git args options))))
+
+(defn log
+  ([] (log {}))
+  ([options]
+   (let [args ["log" "--pretty=format:%H|%an|%ae|%at|%s"]
+         args (if (:n options) (conj args (str "-" (:n options))) args)
+         lines (str/split-lines (:stdout (git args options)))]
+     (mapv (fn [line]
+             (let [parts (str/split line "|")]
+               (if (>= (count parts) 5)
+                 {:hash (nth parts 0)
+                  :author (nth parts 1)
+                  :email (nth parts 2)
+                  :time (try (read-string (nth parts 3)) (catch Throwable error 0))
+                  :subject (str/join "|" (drop 4 parts))}
+                 {:raw line})))
+           lines))))
+
+(defn branch
+  ([] (branch nil {}))
+  ([value]
+   (if (map? value) (branch nil value) (branch value {})))
+  ([name options]
+   (cond
+     (nil? name)
+     (mapv (fn [line] (str/trim (str/replace line "*" "")))
+           (str/split-lines (:stdout (git ["branch"] options))))
+
+     (:delete options)
+     (git ["branch" "-D" name] options)
+
+     :else
+     (git ["branch" name] options))))
+
+(defn checkout
+  ([name] (checkout name {}))
+  ([name options]
+   (let [args ["checkout"]
+         args (if (:create options) (conj args "-b") args)
+         args (if (:force options) (conj args "-f") args)]
+     (git (conj args name) options))))
+
+(defn merge-branch
+  ([name] (merge-branch name {}))
+  ([name options] (git ["merge" name] options)))
+
+(defn pull
+  ([] (pull {}))
+  ([options]
+   (let [args ["pull"]
+         args (if (:rebase options) (conj args "--rebase") args)
+         args (if (:force options) (conj args "--force") args)]
+     (git args options))))
+
+(defn push
+  ([] (push {}))
+  ([options]
+   (let [args ["push"]
+         args (if (:force options) (conj args "--force") args)
+         args (if (:upstream options)
+                (into args ["-u" (str (:upstream options))])
+                args)]
+     (git args options))))
+
+(defn fetch
+  ([] (fetch {}))
+  ([options]
+   (let [args ["fetch"]
+         args (if (:all options) (conj args "--all") args)
+         args (if (:prune options) (conj args "--prune") args)]
+     (git args options))))
+
+(defn reset
+  ([commit] (reset commit {}))
+  ([commit options]
+   (let [mode (cond (= (:mode options) :soft) "--soft"
+                    (= (:mode options) :hard) "--hard"
+                    (= (:mode options) :mixed) "--mixed"
+                    :else nil)
+         args (if mode ["reset" mode commit] ["reset" commit])]
+     (git args options))))
+
+(defn rev-parse
+  ([reference] (rev-parse reference {}))
+  ([reference options]
+   (:stdout (git ["rev-parse" reference] options))))
+
+(defn squash
+  [options]
+  (let [target (or (:base options)
+                   (if (:n options) (str "HEAD~" (:n options)) nil))]
+    (if (nil? target)
+      (throw (ex-info "Git squash requires :n or :base" {:options options})))
+    (reset target (assoc options :mode :soft :ignore-errors false))
+    (commit (or (:message options) "squashed commit")
+            (assoc options :ignore-errors false))))
+
+(defn rebase
+  ([upstream] (rebase upstream {}))
+  ([upstream options]
+   (let [result (git-run ["rebase" upstream] (assoc options :ignore-errors true))]
+     (if (= 0 (:exit result))
+       result
+       (do
+         (git-run ["rebase" "--abort"] options)
+         (throw (ex-info "Git rebase failed and was aborted" result)))))))
+
+(defn submodule
+  ([action] (submodule action {}))
+  ([action options]
+   (let [args (cond (= action :update) ["submodule" "update" "--init" "--recursive"]
+                    (= action :init) ["submodule" "init"]
+                    (= action :sync) ["submodule" "sync"]
+                    (vector? action) (into ["submodule"] action)
+                    :else ["submodule" (name action)])]
+     (git args options))))

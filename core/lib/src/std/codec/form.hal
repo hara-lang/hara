@@ -1,0 +1,79 @@
+;; ============================================================================
+;; std.codec.form — deterministic nested application/x-www-form-urlencoded data.
+;;
+;; This deliberately uses RFC 3986 component semantics: spaces are %20 and a
+;; literal plus is %2B. Brackets in generated field paths remain readable.
+;; ============================================================================
+(ns std.codec.form
+  (:require [std.codec.url :as url]))
+
+(defn- field-name
+  [value]
+  (cond (string? value) value
+        (keyword? value) (name value)
+        (symbol? value) (name value)
+        :else (str value)))
+
+(defn- value-text
+  [value]
+  (cond (string? value) value
+        (keyword? value) (name value)
+        (symbol? value) (name value)
+        :else (str value)))
+
+(defn- nested-name
+  [prefix value]
+  (if prefix
+    (str prefix "[" (field-name value) "]")
+    (field-name value)))
+
+(defn- indexed-name
+  [prefix index]
+  (str prefix "[" index "]"))
+
+(defn- sequence-value?
+  [value]
+  (or (vector? value) (list? value) (tuple? value)))
+
+(defn- flatten-value
+  [output prefix value]
+  (cond
+    (nil? value)
+    output
+
+    (map? value)
+    (reduce (fn [result key]
+              (flatten-value result (nested-name prefix key) (get value key)))
+            output
+            (sort-by field-name (keys value)))
+
+    (sequence-value? value)
+    (loop [index 0 result output values (vec value)]
+      (if (= index (count values))
+        result
+        (recur (inc index)
+               (flatten-value result (indexed-name prefix index) (nth values index))
+               values)))
+
+    :else
+    (conj output [prefix (value-text value)])))
+
+(defn pairs
+  [value]
+  (if (not (map? value))
+    (throw (ex-info "Form encoding expects a map" {:value value})))
+  (flatten-value [] nil value))
+
+(defn- encode-key
+  [value]
+  (-> (url/encode value)
+      (str/replace "%5B" "[")
+      (str/replace "%5D" "]")))
+
+(defn encode
+  [value]
+  (str/join "&"
+            (map (fn [entry]
+                   (str (encode-key (first entry)) "="
+                        (url/encode (second entry))))
+                 (pairs value))))

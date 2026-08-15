@@ -392,6 +392,10 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
         ],
     ),
     ("ICount", &[("count", 1)]),
+    (
+        "IDeps",
+        &[("get-entry", 2), ("get-deps", 2), ("list-entries", 1)],
+    ),
     ("IDeref", &[("deref", 1)]),
     ("IDerefTimeout", &[("deref-timeout", 3)]),
     ("IDisplay", &[("display", 1)]),

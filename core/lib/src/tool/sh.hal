@@ -1,0 +1,98 @@
+;; ============================================================================
+;; tool.sh — canonical argv-only host command boundary.
+;;
+;; No command string is interpreted implicitly. Callers must pass a non-empty
+;; vector of string arguments. Process lifecycle remains on std.native.Process.
+;; ============================================================================
+(ns tool.sh)
+
+(defn command
+  "Validates and returns one argv vector."
+  [argv]
+  (if (and (vector? argv)
+           (not (empty? argv))
+           (every? string? argv))
+    argv
+    (throw
+     (ex-info "tool.sh requires a non-empty argv vector of strings"
+              {:command argv}))))
+
+(defn process-options
+  "Selects options understood by Process/spawn."
+  [options]
+  (let [options (or options {})
+        selected (if (:cwd options) {:cwd (:cwd options)} {})]
+    (if (:env options)
+      (assoc selected :env (:env options))
+      selected)))
+
+(defn spawn
+  "Starts one argv vector and returns the native process handle."
+  ([argv]
+   (spawn argv {}))
+  ([argv options]
+   (let [argv (command argv)
+         selected (process-options options)]
+     (if (empty? selected)
+       (Process/spawn argv)
+       (Process/spawn argv selected)))))
+
+(defn- output-text
+  [value trim?]
+  (let [decoded (str/decode-utf8 value)]
+    (if trim? (str/trim decoded) decoded)))
+
+(defn run
+  "Runs argv synchronously and returns command, stdout, stderr and exit status.
+
+   :cwd and :env are passed to the process builder. :trim defaults to true."
+  ([argv]
+   (run argv {}))
+  ([argv options]
+   (let [argv (command argv)
+         options (or options {})
+         trim? (not (false? (:trim options)))
+         process (spawn argv options)
+         values (deref
+                 (promise/all
+                  [(Process/stdout process)
+                   (Process/stderr process)
+                   (Process/wait process)]))]
+     {:command argv
+      :stdout (output-text (nth values 0) trim?)
+      :stderr (output-text (nth values 1) trim?)
+      :exit (nth values 2)})))
+
+(defn ensure!
+  "Returns a successful command result or throws ex-info containing it."
+  ([result]
+   (ensure! "Command failed" result))
+  ([message result]
+   (if (= 0 (:exit result))
+     result
+     (throw (ex-info message result)))))
+
+(defn run!
+  "Runs argv and throws a structured exception on non-zero exit."
+  ([argv]
+   (run! argv {}))
+  ([argv options]
+   (ensure! (run argv options))))
+
+(defn execute
+  "Runs through :tool.sh/runner when supplied, otherwise through run.
+
+   Injectable runners receive argv and the remaining options map."
+  ([argv]
+   (execute argv {}))
+  ([argv options]
+   (let [options (or options {})
+         runner (or (:tool.sh/runner options) run)]
+     (runner (command argv) (dissoc options :tool.sh/runner)))))
+
+(defn execute!
+  "Injected-runner form of run!."
+  ([argv]
+   (execute! argv {}))
+  ([argv options]
+   (ensure! (execute argv options))))
