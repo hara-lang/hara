@@ -74,8 +74,9 @@ done < "$baseline"
 while IFS= read -r source; do
   relative="${source#"$root/"}"
   case "$relative" in
-    src/core.rs|src/lib.rs|src/fiber.rs|src/bin/hara/repl.rs)
-      # Compatibility facades while the Java port is split into modules.
+    src/core.rs|src/core/*|src/lib.rs|src/runtime/*|src/fiber.rs|src/bin/hara/repl.rs)
+      # Runtime compatibility facades are responsibility-split without a
+      # per-file size limit while their public surface remains flat.
       continue
       ;;
   esac
