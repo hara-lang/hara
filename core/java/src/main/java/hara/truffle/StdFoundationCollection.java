@@ -6,18 +6,10 @@ import hara.lang.data.Symbol;
 public final class StdFoundationCollection {
   private StdFoundationCollection() {}
 
-  @HaraExport(
-      name = "remove",
-      doc = "Returns values for which predicate is false.",
-      arglists = {"[predicate value]"})
   public static Object remove(HaraContext context, Object[] values) {
     return context.removeValues(values);
   }
 
-  @HaraExport(
-      name = "reduce-kv",
-      doc = "Reduces key/value entries with function and an initial value.",
-      arglists = {"[function initial map]"})
   public static Object reduceKeyValues(HaraContext context, Object[] values) {
     return context.reduceKeyValues(values);
   }

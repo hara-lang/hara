@@ -4633,6 +4633,7 @@ mod tests {
             "Regex",
             "UUID",
             "Error",
+            "Base",
             "Iter",
             "Kernel",
         ] {

@@ -2654,13 +2654,13 @@ mod tests {
 
     #[test]
     fn raw_kernels_expose_the_foundation_data_namespaces() {
-        assert_eq!(crate::core::NATIVE_TYPES.len(), 24);
+        assert_eq!(crate::core::NATIVE_TYPES.len(), 25);
         assert_eq!(
             crate::core::NATIVE_TYPES
                 .iter()
                 .map(|(_, methods)| methods.len())
                 .sum::<usize>(),
-            200
+            206
         );
         let mut runtime = Session::new();
         assert!(runtime.env.contains_key("Edn/write"));
@@ -2689,6 +2689,7 @@ mod tests {
             "Regex",
             "UUID",
             "Error",
+            "Base",
             "Iter",
         ] {
             assert!(runtime.env.contains_key(native_type), "{native_type}");

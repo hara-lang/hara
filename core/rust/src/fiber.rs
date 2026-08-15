@@ -177,6 +177,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "interpose",
     "iter",
     "iter-close",
+    "iter-concat",
     "iter-cycle",
     "iter-drop",
     "iter-drop-while",

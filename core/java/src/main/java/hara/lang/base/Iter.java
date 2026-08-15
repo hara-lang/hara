@@ -173,31 +173,54 @@ public interface Iter {
   //
 
   public static <E> E reduce(Iterator<E> it, BiFunction<E, E, E> f) {
-    var _acc = it.next();
-    while (it.hasNext()) {
-      _acc = f.apply(_acc, it.next());
+    try {
+      var _acc = it.next();
+      while (it.hasNext()) {
+        _acc = f.apply(_acc, it.next());
+        if (Reduced.isReduced(_acc)) {
+          return (E) Reduced.unreduced(_acc);
+        }
+      }
+      return _acc;
+    } finally {
+      close(it);
     }
-    return _acc;
   }
 
+  @SuppressWarnings("unchecked")
   public static <E, R> R reduce(Iterator<E> it, R init, BiFunction<R, E, R> f) {
-    var _acc = init;
-    while (it.hasNext()) {
-      _acc = f.apply(_acc, it.next());
+    try {
+      var _acc = init;
+      while (it.hasNext()) {
+        _acc = f.apply(_acc, it.next());
+        if (Reduced.isReduced(_acc)) {
+          return (R) Reduced.unreduced(_acc);
+        }
+      }
+      return _acc;
+    } finally {
+      close(it);
     }
-    return _acc;
   }
 
+  @SuppressWarnings("unchecked")
   public static <E, R> R reduce(
       Iterator<E> it, R init, BiFunction<R, E, R> f, Function<R, Boolean> end) {
-    var _acc = init;
-    while (it.hasNext()) {
-      if (end.apply(_acc)) {
-        return _acc;
+    try {
+      var _acc = init;
+      while (it.hasNext()) {
+        if (end.apply(_acc)) {
+          return _acc;
+        }
+        _acc = f.apply(_acc, it.next());
+        if (Reduced.isReduced(_acc)) {
+          return (R) Reduced.unreduced(_acc);
+        }
       }
-      _acc = f.apply(_acc, it.next());
+      return _acc;
+    } finally {
+      close(it);
     }
-    return _acc;
   }
 
   @SuppressWarnings("unchecked")

@@ -41,6 +41,7 @@ const NATIVE_TYPES: &[&str] = &[
     "Regex",
     "UUID",
     "Error",
+    "Base",
     "Iter",
     "Kernel",
 ];
