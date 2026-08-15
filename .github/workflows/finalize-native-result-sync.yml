@@ -1,0 +1,169 @@
+name: Finalize native Result synchronization
+
+on:
+  push:
+    branches:
+      - agent/640-native-result-bootstrap
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/640-native-result-bootstrap
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Fetch external conformance fixtures
+        run: |
+          if [ ! -d ../hara-specs-registry/.git ]; then
+            git clone --depth 1 https://github.com/hara-lang/hara-specs-registry.git ../hara-specs-registry
+          fi
+          ln -sfn ../hara-specs-registry hara-specs-registry
+
+      - name: Qualify generated Java res-* checks
+        run: python3 .github/scripts/sitecustomize.py
+
+      - name: Adapt the Rust patch anchor to current formatting
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/scripts/patch_result_runtime.py')
+          text = path.read_text()
+          old = '''    count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one anchor, found {count}")
+              return text.replace(old, new, 1)'''
+          new = r'''    count = text.count(old)
+              if label == "Rust Result synchronize operation" and count == 0:
+                  import re
+
+                  matches = list(
+                      re.finditer(
+                          r'(?m)^[ \t]*"result\?"\s*\|\s*"success\?"\s*\|\s*"error\?"',
+                          text,
+                      )
+                  )
+                  if len(matches) != 1:
+                      raise RuntimeError(
+                          f"{label}: expected one Result predicate-dispatch arm, found {len(matches)}"
+                      )
+                  addition = (
+                      '        "synchronize" => {\n'
+                      '            if !(1..=2).contains(&forms.len()) {\n'
+                      '                return Err(\n'
+                      '                    "std.native.Result/synchronize expects a value and optional options map"\n'
+                      '                        .into(),\n'
+                      '                );\n'
+                      '            }\n'
+                      '            let value = eval(&forms[0], env)?;\n'
+                      '            let options = forms\n'
+                      '                .get(1)\n'
+                      '                .map(|form| eval(form, env))\n'
+                      '                .transpose()?;\n'
+                      '            let (timeout, context) = result_synchronize_options(options)?;\n'
+                      '            native_result::synchronize_value(value, timeout, context)\n'
+                      '        }\n'
+                  )
+                  insertion = matches[0].start()
+                  return text[:insertion] + addition + text[insertion:]
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one anchor, found {count}")
+              return text.replace(old, new, 1)'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one replace_once implementation, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python3 -m py_compile .github/scripts/patch_result_runtime.py .github/scripts/patch_result_tests_hal.py
+
+      - name: Apply native synchronization runtime patch
+        run: python3 .github/scripts/patch_result_runtime.py
+
+      - name: Compile patched runtimes
+        run: |
+          rustfmt --edition 2021 core/rust/src/core.rs core/rust/src/fiber.rs core/rust/src/core/native_result.rs
+          rustfmt --edition 2021 --check core/rust/src/core.rs core/rust/src/fiber.rs core/rust/src/core/native_result.rs
+          cargo check --manifest-path core/rust/Cargo.toml --lib
+          mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Evaluate complete Foundation candidate in a fresh native process
+        run: |
+          python3 .github/scripts/patch_result_tests_hal.py candidate
+          candidate="$(cat core/target/foundation-result-candidate.hal)"
+          ./core/hara eval "$candidate"
+          output="$(./core/hara eval "$candidate
+          (let [success (res-success 42 {:source :candidate})
+                nested (res-success 7)
+                synchronized (res-synchronize (atom nested))]
+            (and (res? success)
+                 (res-success? success)
+                 (= :success (res-status success))
+                 (= 42 (res-data success))
+                 (= :candidate (get (res-context success) :source))
+                 (res-success? synchronized)
+                 (res? (res-data synchronized))))")"
+          test "$output" = true
+
+      - name: Apply Foundation res-* facade and focused tests
+        run: python3 .github/scripts/patch_result_tests_hal.py apply
+
+      - name: Validate written Foundation source in another fresh native process
+        run: |
+          source="$(cat core/lib/src/std/foundation.hal)"
+          ./core/hara eval "$source"
+          output="$(./core/hara eval "$source
+          (let [success (res-success 42 {:source :written})
+                updated (res-with-context success {:source :updated})
+                nested (res-success 7)
+                synchronized (res-synchronize (atom nested))]
+            (and (res? success)
+                 (res-success? success)
+                 (not (res-error? success))
+                 (= :success (res-status success))
+                 (= 42 (res-data success))
+                 (= :updated (get (res-context updated) :source))
+                 (res-success? synchronized)
+                 (res? (res-data synchronized))))")"
+          test "$output" = true
+
+      - name: Validate canonical and mirrored HAL parity
+        run: cmp core/lib/src/std/foundation.hal core/rust/hal-src/std/foundation.hal
+
+      - name: Run focused Rust Result tests
+        run: |
+          rustfmt --edition 2021 --check core/rust/src/core.rs core/rust/src/fiber.rs core/rust/src/core/native_result.rs
+          cargo test --manifest-path core/rust/Cargo.toml 'core::native_result::tests::' --lib
+
+      - name: Run focused Java Result tests
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HaraResultTest test
+
+      - name: Publish the materialized source tree
+        run: |
+          git diff --check
+          rm -f hara-specs-registry
+          rm -f .github/scripts/patch_result_runtime.py
+          rm -f .github/scripts/patch_result_tests_hal.py
+          rm -f .github/scripts/sitecustomize.py
+          rm -f .github/workflows/agent-native-result-continuation.yml
+          rm -f .github/workflows/finalize-native-result-sync.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Add Result synchronization and res-* facade"
+          git push origin HEAD:agent/640-native-result-bootstrap
