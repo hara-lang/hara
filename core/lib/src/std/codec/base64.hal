@@ -1,5 +1,5 @@
 ;; ============================================================================
-;; std.codec.base64 — canonical padded RFC 4648 Base64.
+;; std.codec.base64 — canonical padded RFC 4648 Base64 over portable Bytes.
 ;; ============================================================================
 (ns std.codec.base64)
 
@@ -7,9 +7,10 @@
 
 (defn- input-bytes
   [value]
-  (cond (string? value) (str/encode-utf8 value)
-        (Bytes/instance? value) value
-        :else (throw (ex-info "Base64 encode expects a string or bytes" {:value value}))))
+  (if (Bytes/instance? value)
+    value
+    (throw (ex-info "Base64 encode expects Bytes"
+                    {:value value}))))
 
 (defn encode
   [value]
@@ -33,8 +34,12 @@
                  (str output
                       (str/char-at +alphabet+ first)
                       (str/char-at +alphabet+ second)
-                      (if (> remaining 1) (str/char-at +alphabet+ third) "=")
-                      (if (> remaining 2) (str/char-at +alphabet+ fourth) "="))))))))
+                      (if (> remaining 1)
+                        (str/char-at +alphabet+ third)
+                        "=")
+                      (if (> remaining 2)
+                        (str/char-at +alphabet+ fourth)
+                        "="))))))))
 
 (defn- value-of
   [character index]
@@ -60,8 +65,10 @@
               cb (str/char-at source (inc index))
               cc (str/char-at source (+ index 2))
               cd (str/char-at source (+ index 3))]
-          (if (or (= ca "=") (= cb "=")
-                  (and (not last?) (or (= cc "=") (= cd "="))))
+          (if (or (= ca "=")
+                  (= cb "=")
+                  (and (not last?)
+                       (or (= cc "=") (= cd "="))))
             (throw (ex-info "Base64 padding is only valid in the final quartet"
                             {:value source :index index})))
           (let [a (value-of ca index)
@@ -69,21 +76,29 @@
                 c-padding (= cc "=")
                 d-padding (= cd "=")]
             (if (and c-padding (not d-padding))
-              (throw (ex-info "Invalid Base64 padding" {:value source :index index})))
+              (throw (ex-info "Invalid Base64 padding"
+                              {:value source :index index})))
             (let [c (if c-padding 0 (value-of cc (+ index 2)))
                   d (if d-padding 0 (value-of cd (+ index 3)))]
-              (if (and c-padding (not= 0 (Bits/and b 15)))
-                (throw (ex-info "Non-canonical Base64 trailing bits" {:value source})))
-              (if (and d-padding (not c-padding) (not= 0 (Bits/and c 3)))
-                (throw (ex-info "Non-canonical Base64 trailing bits" {:value source})))
+              (if (and c-padding
+                       (not= 0 (Bits/and b 15)))
+                (throw (ex-info "Non-canonical Base64 trailing bits"
+                                {:value source :index index})))
+              (if (and d-padding
+                       (not c-padding)
+                       (not= 0 (Bits/and c 3)))
+                (throw (ex-info "Non-canonical Base64 trailing bits"
+                                {:value source :index index})))
               (let [packed (+ (Bits/shift-left a 18)
                               (Bits/shift-left b 12)
                               (Bits/shift-left c 6)
                               d)
-                    output (conj output (Bits/and (Bits/shift-right packed 16) 255))
+                    output (conj output
+                                 (Bits/and (Bits/shift-right packed 16) 255))
                     output (if c-padding
                              output
-                             (conj output (Bits/and (Bits/shift-right packed 8) 255)))
+                             (conj output
+                                   (Bits/and (Bits/shift-right packed 8) 255)))
                     output (if d-padding
                              output
                              (conj output (Bits/and packed 255)))]
