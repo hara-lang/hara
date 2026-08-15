@@ -10,84 +10,75 @@ def replace_once(source: str, old: str, new: str, label: str) -> str:
     return source.replace(old, new, 1)
 
 
-def repair_native_file_option_lookup() -> None:
-    context_path = Path("core/java/src/main/java/hara/truffle/HaraContext.java")
-    source = context_path.read_text(encoding="utf-8")
-    old = '''  @SuppressWarnings({"rawtypes", "unchecked"})
-  private static Object fileOption(IMapType<?, ?> options, String name, Object defaultValue) {
-    Object found = ((IMapType) options).find(Keyword.create(name));
-    java.util.Map.Entry entry = (java.util.Map.Entry) found;
-    return entry == null ? defaultValue : HaraBox.unwrap(entry.getValue());
-  }'''
-    new = '''  @SuppressWarnings({"rawtypes", "unchecked"})
-  private static Object fileOption(IMapType<?, ?> options, String name, Object defaultValue) {
-    Keyword expected = Keyword.create(name);
-    for (Object entryObject : options) {
-      java.util.Map.Entry entry = (java.util.Map.Entry) entryObject;
-      Object key = HaraBox.unwrap(entry.getKey());
-      if (Eq.eq(key, expected)) {
-        return HaraBox.unwrap(entry.getValue());
+def repair_native_file_delete() -> None:
+    provider_path = Path("core/java/src/main/java/hara/truffle/HaraFileProvider.java")
+    source = provider_path.read_text(encoding="utf-8")
+    old = '''  String delete(String path, DeleteOptions options) throws IOException {
+    String logical = HaraLogicalPath.normalise(path);
+    if ("/".equals(logical)) throw failure("denied", "cannot delete the mounted root");
+    Path host = scoped(logical);
+    try {
+      BasicFileAttributes attributes = attributes(host);
+      if (attributes.isDirectory() && !attributes.isSymbolicLink()) {
+        Files.delete(host);
+      } else {
+        Files.delete(host);
       }
+      return logical;
+    } catch (NoSuchFileException error) {
+      if (options.missingOk()) return logical;
+      throw map(error);
+    } catch (Throwable error) {
+      throw map(error);
     }
-    return defaultValue;
   }'''
-    source = replace_once(source, old, new, "HaraContext native file option lookup")
-
-    delete_start = '''  private Object fileDelete(Object[] values) {
-    if (values.length < 1 || values.length > 2) {'''
-    delete_start_instrumented = '''  private Object fileDelete(Object[] values) {
-    System.err.println("FILE_DELETE_ARGS length=" + values.length);
-    for (int index = 0; index < values.length; index++) {
-      Object raw = values[index];
-      Object unwrapped = HaraBox.unwrap(raw);
-      System.err.println(
-          "FILE_DELETE_ARG index="
-              + index
-              + " raw-class="
-              + (raw == null ? "null" : raw.getClass().getName())
-              + " unwrapped-class="
-              + (unwrapped == null ? "null" : unwrapped.getClass().getName())
-              + " display="
-              + G.display(unwrapped));
+    new = '''  String delete(String path, DeleteOptions options) throws IOException {
+    String logical = HaraLogicalPath.normalise(path);
+    if ("/".equals(logical)) throw failure("denied", "cannot delete the mounted root");
+    Path host = scoped(logical);
+    try {
+      Files.delete(host);
+      return logical;
+    } catch (NoSuchFileException error) {
+      if (options.missingOk()) return logical;
+      throw map(error);
+    } catch (Throwable error) {
+      throw map(error);
     }
-    if (values.length < 1 || values.length > 2) {'''
-    source = replace_once(
-        source,
-        delete_start,
-        delete_start_instrumented,
-        "HaraContext file delete argument instrumentation",
+  }'''
+    provider_path.write_text(
+        replace_once(source, old, new, "HaraFileProvider missing-ok delete path"),
+        encoding="utf-8",
     )
 
-    options_marker = '''    IMapType<?, ?> options =
-        values.length == 2 ? fileOptions(values[1], "file/delete") : emptyFileOptions();
-    HaraFileProvider.DeleteOptions deleteOptions ='''
-    options_instrumented = '''    IMapType<?, ?> options =
-        values.length == 2 ? fileOptions(values[1], "file/delete") : emptyFileOptions();
-    System.err.println(
-        "FILE_DELETE_OPTIONS count=" + options.count() + " display=" + G.display(options));
-    for (Object entryObject : options) {
-      java.util.Map.Entry<?, ?> entry = (java.util.Map.Entry<?, ?>) entryObject;
-      Object key = HaraBox.unwrap(entry.getKey());
-      Object value = HaraBox.unwrap(entry.getValue());
-      System.err.println(
-          "FILE_DELETE_OPTION key-class="
-              + (key == null ? "null" : key.getClass().getName())
-              + " key="
-              + G.display(key)
-              + " value-class="
-              + (value == null ? "null" : value.getClass().getName())
-              + " value="
-              + G.display(value));
-    }
-    HaraFileProvider.DeleteOptions deleteOptions ='''
-    source = replace_once(
-        source,
-        options_marker,
-        options_instrumented,
-        "HaraContext file delete option instrumentation",
-    )
 
-    context_path.write_text(source, encoding="utf-8")
+def repair_provider_test() -> None:
+    test_path = Path("core/java/src/test/java/hara/truffle/HaraFileProviderTest.java")
+    source = test_path.read_text(encoding="utf-8")
+    marker = '''      assertFalse(provider.exists("/work/copied.bin"));
+      assertTrue(provider.exists("/work/moved.bin"));
+
+      String temporaryFile ='''
+    replacement = '''      assertFalse(provider.exists("/work/copied.bin"));
+      assertTrue(provider.exists("/work/moved.bin"));
+
+      assertEquals(
+          "/work/missing-ok",
+          provider.delete("/work/missing-ok", new HaraFileProvider.DeleteOptions(true)));
+      assertEquals(
+          "not-found",
+          assertThrows(
+                  HaraFileProvider.Failure.class,
+                  () ->
+                      provider.delete(
+                          "/work/missing", new HaraFileProvider.DeleteOptions(false)))
+              .code());
+
+      String temporaryFile ='''
+    test_path.write_text(
+        replace_once(source, marker, replacement, "HaraFileProvider missing-ok test"),
+        encoding="utf-8",
+    )
 
 
 def repair_std_fs_test() -> None:
@@ -144,7 +135,8 @@ def repair_std_fs_test() -> None:
 
 
 def main() -> None:
-    repair_native_file_option_lookup()
+    repair_native_file_delete()
+    repair_provider_test()
     repair_std_fs_test()
 
 
