@@ -1,4 +1,4 @@
-name: Export applied JVM filesystem sources
+name: Export applied filesystem diff
 
 on:
   push:
@@ -39,10 +39,22 @@ jobs:
           git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-01.patch
           git apply "${exclude[@]}" "$RUNNER_TEMP/overlay.patch"
           git apply "${exclude[@]}" "$RUNNER_TEMP/fix03.patch"
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-04.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('core/rust/standard-library.namespaces')
+          names = {line.strip() for line in path.read_text().splitlines() if line.strip()}
+          names.update({'std.fs', 'std.fs.path', 'std.fs.walk'})
+          path.write_text('\n'.join(sorted(names)) + '\n')
+          PY
+          git diff --name-status > ../applied-files.txt
+          git diff --binary > ../applied-filesystem.patch
       - uses: actions/upload-artifact@v4
         with:
-          name: applied-jvm-filesystem-sources
+          name: applied-filesystem-diff
           path: |
+            applied-files.txt
+            applied-filesystem.patch
             hara/core/java/src/main/java/hara/truffle/HaraContext.java
             hara/core/java/src/main/java/hara/truffle/HaraFileProvider.java
             hara/core/java/src/main/java/hara/truffle/HaraLogicalPath.java
