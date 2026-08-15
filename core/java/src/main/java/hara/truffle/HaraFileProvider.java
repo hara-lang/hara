@@ -220,12 +220,7 @@ final class HaraFileProvider {
     if ("/".equals(logical)) throw failure("denied", "cannot delete the mounted root");
     Path host = scoped(logical);
     try {
-      BasicFileAttributes attributes = attributes(host);
-      if (attributes.isDirectory() && !attributes.isSymbolicLink()) {
-        Files.delete(host);
-      } else {
-        Files.delete(host);
-      }
+      Files.delete(host);
       return logical;
     } catch (NoSuchFileException error) {
       if (options.missingOk()) return logical;

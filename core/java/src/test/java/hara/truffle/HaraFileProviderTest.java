@@ -77,6 +77,18 @@ public class HaraFileProviderTest {
       assertFalse(provider.exists("/work/copied.bin"));
       assertTrue(provider.exists("/work/moved.bin"));
 
+      assertEquals(
+          "/work/missing-ok",
+          provider.delete("/work/missing-ok", new HaraFileProvider.DeleteOptions(true)));
+      assertEquals(
+          "not-found",
+          assertThrows(
+                  HaraFileProvider.Failure.class,
+                  () ->
+                      provider.delete(
+                          "/work/missing", new HaraFileProvider.DeleteOptions(false)))
+              .code());
+
       String temporaryFile =
           provider.tempFile("/work", new HaraFileProvider.TempFileOptions("case", ".tmp"));
       String temporaryDirectory =
