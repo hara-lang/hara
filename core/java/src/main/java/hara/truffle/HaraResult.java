@@ -7,10 +7,12 @@ import hara.lang.data.Keyword;
 import hara.lang.data.types.IMapType;
 import hara.lang.protocol.Constant;
 import hara.lang.protocol.IDeref;
+import hara.lang.protocol.IDerefTimeout;
 import hara.lang.protocol.IDisplay;
 import hara.lang.protocol.IEquality;
 import hara.lang.protocol.IExInfo;
 import hara.lang.protocol.IHash;
+import hara.lang.protocol.IPromise;
 import java.util.Map.Entry;
 import java.util.Objects;
 
@@ -23,6 +25,10 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
 
   private static final IMapType<Object, Object> EMPTY_CONTEXT =
       hara.lang.data.Map.Standard.EMPTY;
+  private static final Object MISSING = new Object();
+  private static final Object TIMEOUT = new Object();
+  private static final Keyword TIMEOUT_KEY = Keyword.create("timeout");
+  private static final Keyword CONTEXT_KEY = Keyword.create("context");
 
   private final Status status;
   private final Object data;
@@ -52,6 +58,141 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
   public static HaraResult error(Object error, Object context) {
     return new HaraResult(Status.ERROR, null, normalizeError(error), contextMap(context));
   }
+
+  public static HaraResult synchronize(Object value) {
+    return synchronize(value, null);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  public static HaraResult synchronize(Object value, Object options) {
+    Object raw = HaraBox.unwrap(value);
+    SynchronizeOptions parsed = synchronizeOptions(options);
+
+    if (raw instanceof HaraResult result) {
+      return parsed.context().count() == 0 ? result : result.withContext(parsed.context());
+    }
+
+    if (parsed.timeout() != null) {
+      if (raw instanceof IDerefTimeout<?> timed) {
+        try {
+          Object resolved = ((IDerefTimeout) timed).derefTimeout(parsed.timeout(), TIMEOUT);
+          if (resolved == TIMEOUT) {
+            return timeoutResult(raw, parsed.timeout(), parsed.context());
+          }
+          return success(resolved, parsed.context());
+        } catch (Throwable error) {
+          return error(error, parsed.context());
+        }
+      }
+      if (raw instanceof IDeref<?>) {
+        return timeoutUnsupportedResult(parsed.timeout(), parsed.context());
+      }
+      return success(raw, parsed.context());
+    }
+
+    if (raw instanceof IDeref<?> dereferenceable) {
+      try {
+        return success(dereferenceable.deref(), parsed.context());
+      } catch (Throwable error) {
+        return error(error, parsed.context());
+      }
+    }
+    return success(raw, parsed.context());
+  }
+
+  private static SynchronizeOptions synchronizeOptions(Object options) {
+    Object raw = HaraBox.unwrap(options);
+    if (raw == null) return new SynchronizeOptions(null, EMPTY_CONTEXT);
+    if (!(raw instanceof IMapType<?, ?>)) {
+      throw new HaraException("std.native.Result/synchronize expects an options map");
+    }
+    @SuppressWarnings("unchecked")
+    IMapType<Object, Object> map = (IMapType<Object, Object>) raw;
+
+    Object timeoutValue = map.lookup(TIMEOUT_KEY, MISSING);
+    Long timeout = null;
+    if (timeoutValue != MISSING && HaraBox.unwrap(timeoutValue) != null) {
+      Object numeric = HaraBox.unwrap(timeoutValue);
+      if (!(numeric instanceof Number number)
+          || number.longValue() < 0
+          || number.doubleValue() != (double) number.longValue()) {
+        throw new HaraException(
+            "std.native.Result/synchronize timeout must be a non-negative integer");
+      }
+      timeout = number.longValue();
+    }
+
+    Object contextValue = map.lookup(CONTEXT_KEY, MISSING);
+    IMapType<Object, Object> context =
+        contextValue == MISSING ? EMPTY_CONTEXT : contextMap(contextValue);
+    return new SynchronizeOptions(timeout, context);
+  }
+
+  private static HaraResult timeoutResult(
+      Object value, long milliseconds, IMapType<Object, Object> context) {
+    IMapType<Object, Object> enriched =
+        assocContext(
+            context,
+            Keyword.create("result", "timeout"),
+            milliseconds,
+            Keyword.create("result", "cancellation-requested"),
+            value instanceof IPromise);
+
+    if (value instanceof IPromise promise) {
+      try {
+        promise.cancel();
+        enriched =
+            assocContext(enriched, Keyword.create("result", "cancelled"), Boolean.TRUE);
+      } catch (Throwable cancellationError) {
+        enriched =
+            assocContext(
+                enriched,
+                Keyword.create("result", "cancelled"),
+                Boolean.FALSE,
+                Keyword.create("result", "cancellation-error"),
+                errorMessage(cancellationError));
+      }
+    }
+
+    return error(
+        resultError("timeout", "Result synchronization timed out", milliseconds),
+        enriched);
+  }
+
+  private static HaraResult timeoutUnsupportedResult(
+      long milliseconds, IMapType<Object, Object> context) {
+    return error(
+        resultError(
+            "timeout-unsupported",
+            "Timed synchronization is unsupported for this dereferenceable value",
+            milliseconds),
+        assocContext(context, Keyword.create("result", "timeout"), milliseconds));
+  }
+
+  private static Ex.Info resultError(String code, String message, long milliseconds) {
+    return new Ex.Info(
+        message,
+        hara.lang.data.Map.Standard.from(
+            null,
+            Keyword.create("code"),
+            Keyword.create("result", code),
+            Keyword.create("message"),
+            message,
+            Keyword.create("timeout"),
+            milliseconds));
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static IMapType<Object, Object> assocContext(
+      IMapType<Object, Object> context, Object... entries) {
+    IMapType result = context;
+    for (int index = 0; index < entries.length; index += 2) {
+      result = (IMapType) result.assoc(entries[index], entries[index + 1]);
+    }
+    return (IMapType<Object, Object>) result;
+  }
+
+  private record SynchronizeOptions(Long timeout, IMapType<Object, Object> context) {}
 
   public Keyword status() {
     return Keyword.create(status == Status.SUCCESS ? "success" : "error");
