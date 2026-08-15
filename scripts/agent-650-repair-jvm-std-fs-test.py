@@ -31,10 +31,63 @@ def repair_native_file_option_lookup() -> None:
     }
     return defaultValue;
   }'''
-    context_path.write_text(
-        replace_once(source, old, new, "HaraContext native file option lookup"),
-        encoding="utf-8",
+    source = replace_once(source, old, new, "HaraContext native file option lookup")
+
+    delete_start = '''  private Object fileDelete(Object[] values) {
+    if (values.length < 1 || values.length > 2) {'''
+    delete_start_instrumented = '''  private Object fileDelete(Object[] values) {
+    System.err.println("FILE_DELETE_ARGS length=" + values.length);
+    for (int index = 0; index < values.length; index++) {
+      Object raw = values[index];
+      Object unwrapped = HaraBox.unwrap(raw);
+      System.err.println(
+          "FILE_DELETE_ARG index="
+              + index
+              + " raw-class="
+              + (raw == null ? "null" : raw.getClass().getName())
+              + " unwrapped-class="
+              + (unwrapped == null ? "null" : unwrapped.getClass().getName())
+              + " display="
+              + G.display(unwrapped));
+    }
+    if (values.length < 1 || values.length > 2) {'''
+    source = replace_once(
+        source,
+        delete_start,
+        delete_start_instrumented,
+        "HaraContext file delete argument instrumentation",
     )
+
+    options_marker = '''    IMapType<?, ?> options =
+        values.length == 2 ? fileOptions(values[1], "file/delete") : emptyFileOptions();
+    HaraFileProvider.DeleteOptions deleteOptions ='''
+    options_instrumented = '''    IMapType<?, ?> options =
+        values.length == 2 ? fileOptions(values[1], "file/delete") : emptyFileOptions();
+    System.err.println(
+        "FILE_DELETE_OPTIONS count=" + options.count() + " display=" + G.display(options));
+    for (Object entryObject : options) {
+      java.util.Map.Entry<?, ?> entry = (java.util.Map.Entry<?, ?>) entryObject;
+      Object key = HaraBox.unwrap(entry.getKey());
+      Object value = HaraBox.unwrap(entry.getValue());
+      System.err.println(
+          "FILE_DELETE_OPTION key-class="
+              + (key == null ? "null" : key.getClass().getName())
+              + " key="
+              + G.display(key)
+              + " value-class="
+              + (value == null ? "null" : value.getClass().getName())
+              + " value="
+              + G.display(value));
+    }
+    HaraFileProvider.DeleteOptions deleteOptions ='''
+    source = replace_once(
+        source,
+        options_marker,
+        options_instrumented,
+        "HaraContext file delete option instrumentation",
+    )
+
+    context_path.write_text(source, encoding="utf-8")
 
 
 def repair_std_fs_test() -> None:
