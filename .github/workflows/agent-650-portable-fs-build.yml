@@ -1,0 +1,179 @@
+name: Build portable std.fs tranche
+
+on:
+  push:
+    branches:
+      - agent/650-portable-fs-build
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-650-portable-fs-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout validated std.native.File provider branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/650-std-native-file-provider
+          path: hara
+          fetch-depth: 0
+
+      - name: Checkout specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: main
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Materialize portable std.fs sources and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -s ../hara-specs-registry hara/hara-specs-registry
+          cd hara
+          git fetch origin agent/fs-materialized-snapshot
+          git checkout origin/agent/fs-materialized-snapshot -- \
+            core/lib/src/std/fs.hal \
+            core/lib/src/std/fs/walk.hal \
+            core/java/src/test/java/hara/truffle/StdFsTest.java
+
+          cat > core/lib/test/std/fs/facade_test.hal <<'HAL'
+          (ns std.fs.facade-test
+            (:use code.test)
+            (:require [std.fs :as fs]
+                      [std.fs.walk :as walk]))
+
+          (def results
+            [(fact "filesystem-effects-return-promises-before-provider-resolution"
+               [(promise? (fs/stat "/missing"))
+                (promise? (fs/entries "/missing"))
+                (promise? (fs/exists? "/missing"))
+                (promise? (fs/file? "/missing"))
+                (promise? (walk/walk "/missing"))]
+               => [true true true true true])
+
+             (fact "portable-copy-and-delete-defaults-are-safe"
+               [fs/copy-default-options fs/delete-default-options]
+               => [{:replace? false
+                    :parents? false
+                    :preserve-modified? false}
+                   {:recursive? false
+                    :missing-ok? false}])
+
+             (fact "walk-defaults-are-deterministic-and-bounded-only-on-request"
+               walk/default-options
+               => {:include-root? false
+                   :max-depth nil
+                   :include nil
+                   :exclude nil})
+
+             (fact "public-filesystem-surface-matches-the-portable-contract"
+               (vec (sort (keys (ns-publics 'std.fs))))
+               => '[copy
+                    copy-default-options
+                    copy-into
+                    copy-single
+                    create-directory
+                    delete
+                    delete-default-options
+                    directory?
+                    entries
+                    exists?
+                    file?
+                    list
+                    mkdir
+                    move
+                    read-bytes
+                    select
+                    stat
+                    symlink?
+                    temp-directory
+                    temp-file
+                    write-bytes])
+
+             (fact "public-walk-surface-matches-the-portable-contract"
+               (vec (sort (keys (ns-publics 'std.fs.walk))))
+               => '[default-options walk])])
+
+          (pr-str (run '[std.fs.facade-test]))
+          HAL
+
+          ./scripts/runtime/sync-rust-hal-src
+          ./scripts/runtime/sync-rust-hal-src --check
+          git diff --check
+          git status --short
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate Rust packaging and providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          cargo check --manifest-path core/rust/Cargo.toml --lib
+          cargo test --manifest-path core/rust/Cargo.toml file::tests --lib -- --nocapture
+
+      - name: Evaluate portable facade test in a fresh process
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          ./scripts/runtime/run-lib-tests core/lib/test/std/fs/facade_test.hal
+
+      - name: Evaluate portable path test in a fresh process
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          ./scripts/runtime/run-lib-tests core/lib/test/std/fs/path_test.hal
+
+      - name: Run focused portable filesystem library harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          ./scripts/runtime/run-lib-tests core/lib/test/std/fs
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: hara/core/java/pom.xml
+
+      - name: Validate JVM provider and effectful portable facade
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara/core
+          mvn -B -Ptruffle --file java/pom.xml \
+            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
+            test
+
+      - name: Publish portable std.fs branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          rm hara-specs-registry
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/650-portable-std-fs
+          git add \
+            core/lib/src/std/fs.hal \
+            core/lib/src/std/fs/walk.hal \
+            core/lib/test/std/fs/facade_test.hal \
+            core/java/src/test/java/hara/truffle/StdFsTest.java \
+            core/rust/standard-library.namespaces
+          git diff --cached --check
+          git commit -m "Add portable promise-based std.fs core"
+          git push --force origin HEAD:refs/heads/agent/650-portable-std-fs
