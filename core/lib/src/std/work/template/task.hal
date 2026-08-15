@@ -166,6 +166,73 @@
   ([input params arguments]
    (request {:input input :params params :args arguments})))
 
+(defn invocation-arguments
+  "Restores the std.task call convention for zero to four task arguments.
+   A map in the single-argument position is params over constructed input.
+   Values following :args are forwarded to the task main function."
+  [arguments]
+  (let [marker
+        (loop [index 0]
+          (if (= index (count arguments))
+            -1
+            (if (= :args (nth arguments index))
+              index
+              (recur (inc index)))))
+        task-arguments
+        (if (= marker -1)
+          arguments
+          (vec (take marker arguments)))
+        additional
+        (if (= marker -1)
+          []
+          (vec (drop (inc marker) arguments)))
+        total (count task-arguments)
+        options
+        (case total
+          0 {}
+          1 (let [value (first task-arguments)]
+              (if (map? value)
+                {:params value}
+                {:input value}))
+          2 {:input (nth task-arguments 0)
+             :params (nth task-arguments 1)}
+          3 {:input (nth task-arguments 0)
+             :params (nth task-arguments 1)
+             :environment (nth task-arguments 2)}
+          4 {:input (nth task-arguments 0)
+             :params (nth task-arguments 1)
+             :lookup (nth task-arguments 2)
+             :environment (nth task-arguments 3)}
+          (throw
+           (ex-info
+            "Task invocation accepts at most input, params, lookup, and environment"
+            {:arguments task-arguments})))]
+    (request
+     (if (empty? additional)
+       options
+       (assoc options :args additional)))))
+
+(defn invoke
+  "Invokes compiled task work through the historical four-argument std.task
+   calling convention."
+  [work-value definition arguments]
+  (work/run
+   (work/local-runtime)
+   work-value
+   (invocation-arguments arguments)))
+
+(defn callable
+  [work-value definition]
+  (work/definition
+   (assoc
+    (work/work-spec work-value)
+    :work/invoke
+    (fn [task & arguments]
+      (std.work.template.task/invoke
+       task
+       definition
+       arguments)))))
+
 (defn request?
   [value]
   (and (map? value)
@@ -845,33 +912,35 @@
   (let [definition (normalise-definition definition)
         id (:task/id definition)
         version (:task/version definition)]
-    (command/batch
-     {:id id
-      :version version
-      :template/schema schema-id
-      :template/definition definition}
-     {:prepare
-      (work/pure
-       {:id :task/prepare :version version}
-       (fn [input context]
-         (prepare-input definition input context)))
-      :list
-      (work/pure
-       {:id :task/list :version version}
-       (fn [prepared context]
-         (list-items definition prepared context)))
-      :process
-      (unit-work definition)
-      :summarise
-      (work/pure
-       {:id :task/summarise :version version}
-       (fn [batch context]
-         (summarise definition batch context)))
-      :finish
-      (work/pure
-       {:id :task/finish :version version}
-       (fn [batch context]
-         (finish definition batch context)))})))
+    (callable
+     (command/batch
+      {:id id
+       :version version
+       :template/schema schema-id
+       :template/definition definition}
+      {:prepare
+       (work/pure
+        {:id :task/prepare :version version}
+        (fn [input context]
+          (prepare-input definition input context)))
+       :list
+       (work/pure
+        {:id :task/list :version version}
+        (fn [prepared context]
+          (list-items definition prepared context)))
+       :process
+       (unit-work definition)
+       :summarise
+       (work/pure
+        {:id :task/summarise :version version}
+        (fn [batch context]
+          (summarise definition batch context)))
+       :finish
+       (work/pure
+        {:id :task/finish :version version}
+        (fn [batch context]
+          (finish definition batch context)))})
+     definition)))
 
 (def template compile)
 

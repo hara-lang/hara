@@ -111,7 +111,7 @@ pub(crate) fn parse_endpoint(value: &str, fallback_host: &str) -> Result<(String
 
 pub(crate) fn run_repl(options: &Options, offline: bool) -> Result<(), String> {
     let broker = RuntimeBroker::start_with(
-        options.root.clone(),
+        options.root.clone().or_else(|| options.project.clone()),
         options.native_sockets,
         options.allow_process,
         options.allow_postgres,

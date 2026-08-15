@@ -175,6 +175,7 @@
            :version version
            :type :code.manage
            :params defaults
+           :construct (or (:construct config) {})
            :metadata
            {:code.manage/schema schema-id
             :code.manage/operation operation
@@ -195,7 +196,9 @@
                tasklet
                argcount
                (tasklet-subject-unit subject)
-               (tasklet-subject-options subject)))}
+               (merge
+                (tasklet-subject-options subject)
+                (or (:task/params subject) {}))))}
            :summary
            {:finalise
             (fn [summary records results]
@@ -205,23 +208,25 @@
           compiled (task-template/template definition)
           normalised (:template/definition
                       (work/work-spec compiled))]
-      (work/chain
-       {:id id
-        :version version
-        :template/schema task-template/schema-id
-        :template/definition normalised
-        :code.manage/schema schema-id
-        :code.manage/operation operation
-        :code.manage/tasklet tasklet-symbol}
-       [compiled
-        (work/pure
-         {:id (keyword
-               (str "code.manage/"
-                    (name operation)
-                    "-legacy-result"))
-          :version version}
-         (fn [bundle context]
-           (legacy-batch bundle)))]))))
+      (let [composed
+            (work/chain
+             {:id id
+              :version version
+              :template/schema task-template/schema-id
+              :template/definition normalised
+              :code.manage/schema schema-id
+              :code.manage/operation operation
+              :code.manage/tasklet tasklet-symbol}
+             [compiled
+              (work/pure
+               {:id (keyword
+                     (str "code.manage/"
+                          (name operation)
+                          "-legacy-result"))
+                :version version}
+               (fn [bundle context]
+                 (legacy-batch bundle)))])]
+        (task-template/callable composed normalised)))))
 
 (defn task-definition
   [work-value]

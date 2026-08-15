@@ -618,12 +618,11 @@ impl NativeFileProvider {
 
     fn scoped(&self, logical: &str) -> Result<PathBuf, FileError> {
         let logical = logical_normalise(logical)?;
-        let mut candidate = self.root.clone();
-        for segment in logical.trim_start_matches('/').split('/') {
-            if !segment.is_empty() {
-                candidate.push(segment);
-            }
-        }
+        let logical_path = Path::new(&logical);
+        let relative = logical_path
+            .strip_prefix(&self.root)
+            .unwrap_or_else(|_| Path::new(logical.trim_start_matches('/')));
+        let candidate = self.root.join(relative);
         let mut current = self.root.clone();
         let relative = candidate
             .strip_prefix(&self.root)
@@ -1599,6 +1598,34 @@ mod tests {
         assert_ne!(first, second);
         assert!(first.starts_with("/tmp/tmp-"));
         assert!(second.starts_with("/tmp/tmp-"));
+    }
+
+    #[cfg(all(unix, not(target_arch = "wasm32")))]
+    #[test]
+    fn native_provider_accepts_a_host_absolute_path_within_its_mount() {
+        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "hara-native-file-mounted-path-{}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("project.edn"), b"{}").unwrap();
+        let root = root.canonicalize().unwrap();
+        let files = NativeFileProvider::new(&root);
+        let mounted = root.join("project.edn").to_string_lossy().into_owned();
+        let generated = root.join("generated.hal").to_string_lossy().into_owned();
+
+        assert_eq!(files.read_bytes(&mounted).unwrap(), b"{}");
+        assert_eq!(files.stat_entry(&mounted).unwrap().path, mounted);
+        assert_eq!(
+            files
+                .write_bytes(&generated, b"(ns generated)\n".to_vec(), WriteOptions::default())
+                .unwrap(),
+            generated
+        );
+        assert_eq!(fs::read(root.join("generated.hal")).unwrap(), b"(ns generated)\n");
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(all(unix, not(target_arch = "wasm32")))]

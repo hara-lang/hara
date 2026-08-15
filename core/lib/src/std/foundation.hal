@@ -50,51 +50,37 @@
 ;; ============================================================================
 (ns std.foundation)
 
-;; ---------------------------------------------------------------------------
-;; Test primitives
-;; ---------------------------------------------------------------------------
+(defmacro code-line
+  "Expands to the line number of the invocation form."
+  []
+  (get (meta &form) :line))
 
-(defn ^{:schema [:fn [:map] :nil]}
-  test-config
-  "Validates test options against the runtime-owned Test configuration."
-  [options]
-  (do (Test/config options) nil))
-
-(defn ^{:schema [:function [:fn [:any :any :any] :map]
-                            [:fn [:any :any :any :map] :map]]}
-  test-result
-  "Constructs a portable test result, optionally adding outcome details."
-  ([name actual expected]
-   (Test/result name actual expected))
-  ([name actual expected outcome]
-   (merge (Test/result name actual expected) outcome)))
-
-(defmacro test-check
-  "Evaluates one lightweight assertion and converts thrown errors into results."
-  [name actual expected]
-  `(let [name# ~name
-         expected# ~expected]
-     (try
-       (std.foundation/test-result name# ~actual expected#)
-       (catch Throwable error#
-         (std.foundation/test-result
-          name# nil expected#
-          {:pass false
-           :status :error
-           :error (ex-message error#)
-           :error-data (ex-data error#)})))))
-
-(defn ^{:schema [:fn [:map] :bool]}
-  test-passed?
-  "Returns true when a portable test result passed."
-  [result]
-  (Test/passed? result))
+(defmacro code-column
+  "Expands to the column number of the invocation form."
+  [] (get (meta &form) :column))
 
 (defn ^{:schema [:fn [:str] [:vec :any]]}
   read-forms
   "Reads every top-level form from a capability-gated HAL source file."
   [path]
   (Edn/read-forms path))
+
+;; ---------------------------------------------------------------------------
+;; Metadata
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any] :map]}
+  meta
+  "Returns value metadata through IObjType, or nil when none is present."
+  [value]
+  (IObjType/meta value))
+
+(defn ^{:schema [:fn [:any :map] :any]}
+  with-meta
+  "Returns value carrying metadata through IObjType."
+  [value metadata]
+  (IObjType/with-meta value metadata))
+
 
 ;; ---------------------------------------------------------------------------
 ;; Functions and composition
@@ -108,12 +94,14 @@
 (defn ^{:schema [:fn [:num] :num]}
   inc
   "Returns value + 1."
-  [value] (+ value 1))
+  [value]
+  (+ value 1))
 
 (defn ^{:schema [:fn [:num] :num]}
   dec
   "Returns value - 1."
-  [value] (- value 1))
+  [value]
+  (- value 1))
 
 (defn ^{:schema [:fn [:any] :fn]}
   constantly
@@ -136,7 +124,8 @@
 (defn ^{:schema [:fn [:fn] :fn]}
   complement
   "Returns a function returning the logical negation of predicate's result."
-  [predicate] (fn [value] (not (predicate value))))
+  [predicate]
+  (fn [value] (not (predicate value))))
 
 (defn ^{:schema [:fn [:fn & :any] :fn]}
   partial
@@ -154,22 +143,6 @@
     (map (fn [function]
             (apply function arguments))
           functions)))
-
-;; ---------------------------------------------------------------------------
-;; Metadata
-;; ---------------------------------------------------------------------------
-
-(defn ^{:schema [:fn [:any] :map]}
-  meta
-  "Returns value metadata through IObjType, or nil when none is present."
-  [value]
-  (IObjType/meta value))
-
-(defn ^{:schema [:fn [:any :map] :any]}
-  with-meta
-  "Returns value carrying metadata through IObjType."
-  [value metadata]
-  (IObjType/with-meta value metadata))
 
 ;; ---------------------------------------------------------------------------
 ;; Predicates
@@ -1657,13 +1630,48 @@
   [symbols variables]
   variables)
 
-(defmacro code-line
-  "Expands to the line number of the invocation form."
-  [] (get (meta &form) :line))
 
-(defmacro code-column
-  "Expands to the column number of the invocation form."
-  [] (get (meta &form) :column))
+
+;; ---------------------------------------------------------------------------
+;; Test primitives
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:map] :nil]}
+  test-config
+  "Validates test options against the runtime-owned Test configuration."
+  [options]
+  (do (Test/config options) nil))
+
+(defn ^{:schema [:function [:fn [:any :any :any] :map]
+                            [:fn [:any :any :any :map] :map]]}
+  test-result
+  "Constructs a portable test result, optionally adding outcome details."
+  ([name actual expected]
+   (Test/result name actual expected))
+  ([name actual expected outcome]
+   (merge (Test/result name actual expected) outcome)))
+
+(defmacro test-check
+  "Evaluates one lightweight assertion and converts thrown errors into results."
+  [name actual expected]
+  `(let [name# ~name
+         expected# ~expected]
+     (try
+       (std.foundation/test-result name# ~actual expected#)
+       (catch Throwable error#
+         (std.foundation/test-result
+          name# nil expected#
+          {:pass false
+           :status :error
+           :error (ex-message error#)
+           :error-data (ex-data error#)})))))
+
+(defn ^{:schema [:fn [:map] :bool]}
+  test-passed?
+  "Returns true when a portable test result passed."
+  [result]
+  (Test/passed? result))
+
 
 ;; ---------------------------------------------------------------------------
 ;; Dependency graph queries

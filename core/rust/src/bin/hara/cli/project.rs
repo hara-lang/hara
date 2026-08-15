@@ -71,7 +71,7 @@ fn eval_runtime(options: &Options) -> Result<Runtime, String> {
         let project = project_for(options, &[])?;
         project::register_sources(&project, &mut runtime)?;
     }
-    if let Some(root) = &options.root {
+    if let Some(root) = options.root.as_ref().or(options.project.as_ref()) {
         runtime.install_native_file_provider(root.to_string_lossy().as_ref());
     }
     if options.native_sockets {
@@ -475,7 +475,7 @@ enum ManageFormat {
     EditorJson,
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ManageArguments {
     write: bool,
     namespaces: Vec<String>,
@@ -632,7 +632,7 @@ fn manage_units(
                     } else {
                         String::new()
                     };
-                    Ok(format!(
+                    Ok::<String, String>(format!(
                         " :test-path {} :test-source {}",
                         hal_string(&test_path.to_string_lossy()),
                         hal_string(&test_source)
@@ -870,7 +870,7 @@ pub(crate) fn run_headless(options: &Options) -> Result<(), String> {
         return Err("--offline cannot be used with headless".into());
     }
     let broker = RuntimeBroker::start_with(
-        options.root.clone(),
+        options.root.clone().or_else(|| options.project.clone()),
         options.native_sockets,
         options.allow_process,
         options.allow_postgres,
