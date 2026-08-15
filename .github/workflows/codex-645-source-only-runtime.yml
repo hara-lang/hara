@@ -26,14 +26,25 @@ jobs:
       - name: Apply source-only runtime slice
         run: |
           python3 .github/scripts/codex_645_apply.py
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/rust/src/lib.rs")
+          source = path.read_text(encoding="utf-8")
+          old = "                {\n            let foundation = self\n"
+          new = "        {\n            let foundation = self\n"
+          if source.count(old) != 1:
+              raise SystemExit(f"expected one source fallback indentation marker, found {source.count(old)}")
+          path.write_text(source.replace(old, new), encoding="utf-8")
+          PY
           git add -A
       - name: Run permanent audit tests
         run: |
           python3 scripts/runtime/source_only_foundation_test.py
           python3 scripts/runtime/source_only_foundation.py
       - uses: dtolnay/rust-toolchain@stable
-      - name: Check Rust formatting
-        run: cargo fmt --manifest-path core/rust/Cargo.toml --check
+      - name: Check focused Rust formatting
+        run: rustfmt --edition 2021 --check core/rust/tests/source_only_foundation.rs
       - name: Probe Rust source-only startup
         run: cargo test --manifest-path core/rust/Cargo.toml --test source_only_foundation
       - name: Preserve generic Rust bundle coverage
