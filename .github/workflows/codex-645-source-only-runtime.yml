@@ -26,11 +26,12 @@ jobs:
       - name: Apply source-only runtime slice
         run: |
           python3 .github/scripts/codex_645_apply.py
+          rm core/rust/tests/source_only_foundation.rs
           python3 - <<'PY'
           from pathlib import Path
 
-          path = Path("core/rust/src/lib.rs")
-          source = path.read_text(encoding="utf-8")
+          rust_path = Path("core/rust/src/lib.rs")
+          source = rust_path.read_text(encoding="utf-8")
           replacements = (
               (
                   "                {\n            let foundation = self\n",
@@ -43,12 +44,29 @@ jobs:
                   "    fn install_structural_primitives(&mut self) {\n",
                   "shared structural primitive installer",
               ),
+              (
+                  "use crate::kernel::Form;\n",
+                  "#[cfg(test)]\nmod source_only_foundation_tests;\nuse crate::kernel::Form;\n",
+                  "library-only source startup test module",
+              ),
           )
           for old, new, label in replacements:
               if source.count(old) != 1:
                   raise SystemExit(f"expected one {label} marker, found {source.count(old)}")
               source = source.replace(old, new)
-          path.write_text(source, encoding="utf-8")
+          rust_path.write_text(source, encoding="utf-8")
+
+          workflow_path = Path(".github/workflows/lang-runtime.yml")
+          workflow = workflow_path.read_text(encoding="utf-8")
+          old_test_path = "core/rust/tests/source_only_foundation.rs"
+          new_test_path = "core/rust/src/source_only_foundation_tests.rs"
+          if workflow.count(old_test_path) != 2:
+              raise SystemExit(
+                  f"expected two focused runtime path filters, found {workflow.count(old_test_path)}"
+              )
+          workflow_path.write_text(
+              workflow.replace(old_test_path, new_test_path), encoding="utf-8"
+          )
           PY
           git add -A
       - name: Run permanent audit tests
@@ -57,9 +75,9 @@ jobs:
           python3 scripts/runtime/source_only_foundation.py
       - uses: dtolnay/rust-toolchain@stable
       - name: Check focused Rust formatting
-        run: rustfmt --edition 2021 --check core/rust/tests/source_only_foundation.rs
+        run: rustfmt --edition 2021 --check core/rust/src/source_only_foundation_tests.rs
       - name: Probe Rust source-only startup
-        run: cargo test --manifest-path core/rust/Cargo.toml --test source_only_foundation
+        run: cargo test --manifest-path core/rust/Cargo.toml --lib fresh_runtime_loads_foundation_from_embedded_hal_sources
       - name: Preserve generic Rust bundle coverage
         run: cargo test --manifest-path core/rust/Cargo.toml --lib vm::bundle
       - name: Checkout hara-specs-registry
@@ -108,6 +126,7 @@ jobs:
               "core/rust/assets/std.foundation.hbx",
               "core/rust/src/bin/hara-foundation-artifact.rs",
               "core/rust/src/lib.rs",
+              "core/rust/src/source_only_foundation_tests.rs",
               "core/rust/tests/source_only_foundation.rs",
               "scripts/runtime/source_only_foundation.py",
               "scripts/runtime/source_only_foundation_test.py",
