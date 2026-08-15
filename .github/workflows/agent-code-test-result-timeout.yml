@@ -1,0 +1,150 @@
+name: Implement Result-native code.test timeout handling
+
+on:
+  push:
+    branches:
+      - agent/667-code-test-result-timeout-v2
+
+permissions:
+  contents: write
+
+jobs:
+  code-test-result-timeout:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/667-code-test-result-timeout-v2
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Wait for and stack on the timeout-typing tranche
+        run: |
+          cp .github/scripts/patch_code_test_result_timeout.py /tmp/patch_code_test_result_timeout.py
+          ready=false
+          for attempt in $(seq 1 90); do
+            git fetch origin agent/667-result-timeout-typing-f
+            if git show origin/agent/667-result-timeout-typing-f:core/lib/src/std/foundation.hal | grep -q 'res-timeout?' \
+               && ! git cat-file -e origin/agent/667-result-timeout-typing-f:.github/scripts/patch_result_timeout_typing.py 2>/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ready" != true ]; then
+            echo 'timeout-typing tranche did not publish a clean implementation commit' >&2
+            exit 1
+          fi
+          git reset --hard origin/agent/667-result-timeout-typing-f
+          mkdir -p .github/scripts
+          cp /tmp/patch_code_test_result_timeout.py .github/scripts/patch_code_test_result_timeout.py
+          sed -i 's/(mapv descriptor-value value)/(vec (map descriptor-value value))/' .github/scripts/patch_code_test_result_timeout.py
+
+      - name: Fetch external conformance fixtures
+        run: |
+          if [ ! -d ../hara-specs-registry/.git ]; then
+            git clone --depth 1 https://github.com/hara-lang/hara-specs-registry.git ../hara-specs-registry
+          fi
+          ln -sfn ../hara-specs-registry hara-specs-registry
+
+      - name: Validate patch script
+        run: python3 -m py_compile .github/scripts/patch_code_test_result_timeout.py
+
+      - name: Run focused code.test baseline
+        run: |
+          if [ -f core/lib/test/code/test/base/process_test.hal ]; then
+            ./scripts/runtime/run-lib-tests core/lib/test/code/test/base/process_test.hal
+          fi
+          if [ -f core/lib/test/code/test/checker/common_test.hal ]; then
+            ./scripts/runtime/run-lib-tests core/lib/test/code/test/checker/common_test.hal
+          fi
+
+      - name: Evaluate complete candidates before writing
+        run: |
+          python3 .github/scripts/patch_code_test_result_timeout.py candidate
+          candidate="$(cat core/target/code-test-result-timeout/common.hal)
+          $(cat core/target/code-test-result-timeout/collection.hal)
+          $(cat core/target/code-test-result-timeout/process.hal)
+          $(cat core/target/code-test-result-timeout/test.hal)"
+          ./core/hara eval "$candidate"
+          proof="$(./core/hara eval "$candidate
+          (let [passing (code.test.base.process/check-result (fn [] 42) 42)
+                failing (code.test.base.process/check-result (fn [] 42) 43)
+                timeout (res-error
+                         (ex-info \"timed out\"
+                                  {:code :result/timeout
+                                   :timeout 25}))]
+            (and (res-success? passing)
+                 (res-data passing)
+                 (res-success? failing)
+                 (not (res-data failing))
+                 (= :timeout
+                    (code.test.base.process/comparison-status timeout))))")"
+          test "$proof" = true
+
+      - name: Apply sources, mirrors, tests, and audit
+        run: python3 .github/scripts/patch_code_test_result_timeout.py apply
+
+      - name: Evaluate written HAL sources in a fresh process
+        run: |
+          written="$(cat core/lib/src/code/test/checker/common.hal)
+          $(cat core/lib/src/code/test/checker/collection.hal)
+          $(cat core/lib/src/code/test/base/process.hal)
+          $(cat core/lib/src/code/test.hal)"
+          ./core/hara eval "$written"
+          proof="$(./core/hara eval "$written
+          (let [passing (code.test.base.process/check-result (fn [] 42) 42)
+                timeout (res-error
+                         (ex-info \"timed out\" {:code :result/timeout}))]
+            (and (res-success? passing)
+                 (res-data passing)
+                 (= :timeout
+                    (code.test.base.process/comparison-status timeout))))")"
+          test "$proof" = true
+
+      - name: Validate mirrors and timeout audit
+        run: |
+          cmp core/lib/src/code/test.hal core/rust/hal-src/code/test.hal
+          cmp core/lib/src/code/test/base/process.hal core/rust/hal-src/code/test/base/process.hal
+          cmp core/lib/src/code/test/checker/common.hal core/rust/hal-src/code/test/checker/common.hal
+          cmp core/lib/src/code/test/checker/collection.hal core/rust/hal-src/code/test/checker/collection.hal
+          bash scripts/audit-code-test-result-timeout.sh
+
+      - name: Run Result-native code.test checks
+        run: |
+          ./scripts/runtime/run-lib-tests core/lib/test/code/test/result_timeout_test.hal
+          ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_result_timeout_test.hal
+          for test_file in \
+            core/lib/test/code/test/base/process_test.hal \
+            core/lib/test/code/test/checker/common_test.hal \
+            core/lib/test/code/test/checker/collection_test.hal \
+            core/lib/test/code/test/compile_test.hal; do
+            if [ -f "$test_file" ]; then
+              ./scripts/runtime/run-lib-tests "$test_file"
+            fi
+          done
+
+      - name: Validate runtime library discovery
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --test resource_discovery
+          mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HaraGeneratedLibrariesTest test
+
+      - name: Publish clean stacked implementation commit
+        run: |
+          git diff --check
+          rm -f hara-specs-registry
+          rm -f .github/scripts/patch_code_test_result_timeout.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Route code.test timeouts through native Result"
+          git push --force-with-lease origin HEAD:agent/667-code-test-result-timeout-v2
