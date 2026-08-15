@@ -6100,7 +6100,18 @@ public final class HaraContext {
   }
 
   private java.net.URL getResource(String resourceName) {
-    return HaraContext.class.getClassLoader().getResource(resourceName);
+    ClassLoader definingLoader = HaraContext.class.getClassLoader();
+    java.net.URL resource =
+        definingLoader == null
+            ? ClassLoader.getSystemResource(resourceName)
+            : definingLoader.getResource(resourceName);
+    if (resource != null) {
+      return resource;
+    }
+    ClassLoader contextLoader = Thread.currentThread().getContextClassLoader();
+    return contextLoader != null && contextLoader != definingLoader
+        ? contextLoader.getResource(resourceName)
+        : null;
   }
 
   @TruffleBoundary
