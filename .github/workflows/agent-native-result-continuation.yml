@@ -38,6 +38,44 @@ jobs:
       - name: Validate patch scripts
         run: python3 -m py_compile .github/scripts/patch_result_runtime.py .github/scripts/patch_result_tests_hal.py
 
+      - name: Adapt patch anchors to current source
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/scripts/patch_result_runtime.py')
+          text = path.read_text()
+          old = '''    count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one anchor, found {count}")
+              return text.replace(old, new, 1)'''
+          new = r'''    count = text.count(old)
+              if label == "Rust Result synchronize operation" and count == 0:
+                  actual = ''' + "'''" + r'''        "error" => {
+                      if !(1..=2).contains(&forms.len()) {
+                          return Err("std.native.Result/error expects an error and optional context".into());
+                      }
+                      let error = eval(&forms[0], env)?;
+                      let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
+                      Ok(Value::Result(Rc::new(ResultValue::error(error, context)?)))
+                  }
+                  "result?" | "success?" | "error?" => {
+          ''' + "'''" + r'''
+                  actual_count = text.count(actual)
+                  if actual_count != 1:
+                      raise RuntimeError(
+                          f"{label}: expected one current-source anchor, found {actual_count}"
+                      )
+                  return text.replace(actual, new, 1)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one anchor, found {count}")
+              return text.replace(old, new, 1)'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one replace_once implementation, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          python3 -m py_compile .github/scripts/patch_result_runtime.py
+
       - name: Apply native synchronization runtime patch
         run: python3 .github/scripts/patch_result_runtime.py
 
