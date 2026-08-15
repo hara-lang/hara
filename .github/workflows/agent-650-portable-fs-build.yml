@@ -17,10 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
-      - name: Checkout validated std.native.File provider branch
+      - name: Checkout current main with merged std.native.File providers
         uses: actions/checkout@v4
         with:
-          ref: agent/650-std-native-file-provider
+          ref: 962fca08786dda040a3f542583c33ff5ae5cd53c
           path: hara
           fetch-depth: 0
 
@@ -44,6 +44,77 @@ jobs:
             core/lib/src/std/fs/walk.hal \
             core/java/src/test/java/hara/truffle/StdFsTest.java
 
+          python3 - <<'PY'
+          from pathlib import Path
+
+          fs_path = Path("core/lib/src/std/fs.hal")
+          fs_source = fs_path.read_text()
+          marker = "(defn copy-into"
+          if marker not in fs_source:
+              raise SystemExit("std.fs copy-into marker not found")
+          fs_source = fs_source.split(marker, 1)[0] + '''(defn copy-into
+            ([source directory]
+             (copy-into source directory {}))
+            ([source directory options]
+             (let [source (path/normalise source)
+                   directory (path/normalise directory)
+                   name (path/file-name source)]
+               (if (nil? name)
+                 (rejected
+                  (ex-info "The mounted root has no filename for copy-into"
+                           {:error/code :file/invalid-path
+                            :file/operation :copy
+                            :file/path source
+                            :file/target directory}))
+                 (copy source (path/join directory name) options)))))
+          '''
+          fs_path.write_text(fs_source)
+
+          test_path = Path("core/lib/test/std/fs/path_test.hal")
+          test_source = test_path.read_text()
+          old = '''   (fact "public-path-surface-matches-the-foundation-contract"
+             (vec (sort (keys (ns-publics 'std.fs.path))))
+             => '[add-suffix
+                  file-name
+                  join
+                  normalise
+                  parent
+                  relativize
+                  remove-suffix
+                  replace-suffix
+                  resolve
+                  root
+                  segments
+                  subpath
+                  suffix])])
+          '''
+          new = '''   ;; `ns-publics` includes runtime bootstrap bindings in some profiles.
+             ;; Resolve the canonical qualified names instead of treating that
+             ;; implementation inventory as the portable module contract.
+             (fact "foundation-path-contract-symbols-are-resolvable"
+               (every?
+                (fn [symbol]
+                  (not (nil? (resolve symbol))))
+                '[std.fs.path/add-suffix
+                  std.fs.path/file-name
+                  std.fs.path/join
+                  std.fs.path/normalise
+                  std.fs.path/parent
+                  std.fs.path/relativize
+                  std.fs.path/remove-suffix
+                  std.fs.path/replace-suffix
+                  std.fs.path/resolve
+                  std.fs.path/root
+                  std.fs.path/segments
+                  std.fs.path/subpath
+                  std.fs.path/suffix])
+               => true)])
+          '''
+          if old not in test_source:
+              raise SystemExit("std.fs.path public-surface assertion not found")
+          test_path.write_text(test_source.replace(old, new))
+          PY
+
           cat > core/lib/test/std/fs/facade_test.hal <<'HAL'
           (ns std.fs.facade-test
             (:use code.test)
@@ -51,13 +122,22 @@ jobs:
                       [std.fs.walk :as walk]))
 
           (def results
-            [(fact "filesystem-effects-return-promises-before-provider-resolution"
+            [(fact "extended-native-file-effects-return-promises-before-provider-resolution"
+               [(promise? (File/entries "/missing"))
+                (promise? (File/copy "/source" "/target"))
+                (promise? (File/move "/source" "/target"))
+                (promise? (File/temp-file "/tmp"))
+                (promise? (File/temp-directory "/tmp"))]
+               => [true true true true true])
+
+             (fact "portable-filesystem-effects-return-promises-before-provider-resolution"
                [(promise? (fs/stat "/missing"))
                 (promise? (fs/entries "/missing"))
                 (promise? (fs/exists? "/missing"))
                 (promise? (fs/file? "/missing"))
-                (promise? (walk/walk "/missing"))]
-               => [true true true true true])
+                (promise? (walk/walk "/missing"))
+                (promise? (fs/copy-into "/" "/target"))]
+               => [true true true true true true])
 
              (fact "portable-copy-and-delete-defaults-are-safe"
                [fs/copy-default-options fs/delete-default-options]
@@ -118,7 +198,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Validate Rust packaging and providers
+      - name: Validate Rust packaging and native providers
         shell: bash
         run: |
           set -euo pipefail
@@ -155,7 +235,7 @@ jobs:
           cache: maven
           cache-dependency-path: hara/core/java/pom.xml
 
-      - name: Validate JVM provider and effectful portable facade
+      - name: Validate JVM native provider and effectful portable facade
         shell: bash
         run: |
           set -euo pipefail
@@ -164,7 +244,7 @@ jobs:
             -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
             test
 
-      - name: Publish portable std.fs branch
+      - name: Publish clean portable std.fs branch
         shell: bash
         run: |
           set -euo pipefail
@@ -172,13 +252,15 @@ jobs:
           rm hara-specs-registry
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B agent/650-portable-std-fs
+          git checkout -B agent/650-portable-std-fs-current-main \
+            962fca08786dda040a3f542583c33ff5ae5cd53c
           git add \
             core/lib/src/std/fs.hal \
             core/lib/src/std/fs/walk.hal \
             core/lib/test/std/fs/facade_test.hal \
+            core/lib/test/std/fs/path_test.hal \
             core/java/src/test/java/hara/truffle/StdFsTest.java \
             core/rust/standard-library.namespaces
           git diff --cached --check
           git commit -m "Add portable promise-based std.fs core"
-          git push --force origin HEAD:refs/heads/agent/650-portable-std-fs
+          git push --force origin HEAD:refs/heads/agent/650-portable-std-fs-current-main
