@@ -105,13 +105,14 @@
   ([source] (arrange-blocks source []))
   ([source order]
   (let [{:keys [preamble blocks]} (source-sections source)
-        positions (zipmap order (range (count order)))
+        find-block (fn [reference]
+                     (first (filter (fn [block] (= (:refer block) reference)) blocks)))
+        ordered (vec (keep find-block order))
+        ordered-references (set (map :refer ordered))
+        remaining (sort-by (fn [block] (str (:refer block)))
+                           (filter (fn [block] (not (get ordered-references (:refer block)))) blocks))
         body (str/join "\n\n"
-                       (map :source
-                            (sort-by (fn [block]
-                                       [(get positions (:refer block) 999999)
-                                        (str (:refer block))])
-                                     blocks)))]
+                       (map :source (concat ordered remaining)))]
     (cond
       (and (str/blank? preamble) (str/blank? body)) ""
       (str/blank? preamble) (str body "\n")
