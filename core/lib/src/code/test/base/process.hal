@@ -12,10 +12,11 @@
     (catch Throwable error
       {:type :code/test :status :exception :data error})))
 
-(defn synchronization-options
-  [options]
-  (let [context (merge {:test {:phase :settle}}
-                       (or (:context options) {}))]
+(defn settlement-context [options]
+  (merge {:test {:phase :evaluation}} (or (:result/context options) {})))
+
+(defn synchronization-options [options]
+  (let [context (settlement-context options)]
     (if (has? options :timeout)
       {:timeout (:timeout options)
        :context context}
@@ -26,7 +27,7 @@
   ([value]
    (settle-result value {}))
   ([value options]
-   (Result/synchronize value (synchronization-options options))))
+   (res-synchronize value (synchronization-options options))))
 
 (defn settle
   "Returns the settled value, throwing the native Error for unsuccessful outcomes."
@@ -35,97 +36,82 @@
   ([value options]
    (deref (settle-result value options))))
 
-(defn timeout-error?
-  [error]
-  (= :result/timeout (get (ex-data error) :code)))
+(defn evaluation-result [thunk options]
+  (try (settle-result (thunk) options)
+       (catch Throwable error (res-error error (settlement-context options)))))
 
-(defn timeout-milliseconds
-  [outcome options]
-  (or (get (ex-data (Result/error-value outcome)) :timeout)
-      (get (Result/context outcome) :result/timeout)
-      (:timeout options)))
+(defn reported-expected [expected]
+  (if (common/checker? expected) (str expected) expected))
 
-(defn timeout-check-result
-  [outcome reported-expected options]
-  {:pass false
-   :status :timeout
-   :actual nil
-   :expected reported-expected
-   :timeout (timeout-milliseconds outcome options)})
+(defn check-operation [thunk expected options]
+  (let [checker (common/->checker expected)
+        evaluation (evaluation-result thunk options)]
+    {:checker checker :evaluation evaluation
+     :comparison (common/compare-result checker evaluation)
+     :expected (reported-expected expected)}))
 
-(defn verification-result
-  [checker reported-expected outcome]
-  (if (Result/error? outcome)
-    (let [error (Result/error-value outcome)
-          evaluation {:type :code/test
-                      :status :exception
-                      :data error}
-          verification (common/verify checker evaluation)
-          passing (common/succeeded? verification)]
-      {:pass passing
-       :status (if passing :success :error)
-       :actual nil
-       :expected reported-expected
-       :error (if passing nil (ex-message error))
-       :error-data (if passing nil (ex-data error))})
-    (let [actual (Result/data outcome)
-          evaluation {:type :code/test
-                      :status :success
-                      :data actual}
-          verification (common/verify checker evaluation)]
-      {:pass (common/succeeded? verification)
-       :status (:status verification)
-       :actual actual
-       :expected reported-expected})))
+(defn check-result
+  "Evaluates and compares once, returning one native Result<boolean>."
+  ([thunk expected] (check-result thunk expected {}))
+  ([thunk expected options] (:comparison (check-operation thunk expected options))))
+
+(defn legacy-check-map [operation]
+  (let [evaluation (:evaluation operation) comparison (:comparison operation)
+        expected (:expected operation)
+        actual (if (res-success? evaluation) (res-data evaluation) nil)]
+    (cond
+      (res-timeout? comparison)
+      (let [error (res-error-value comparison) data (or (ex-data error) {})]
+        {:pass false :status :timeout :actual actual :expected expected
+         :timeout (get data :timeout) :error (ex-message error)
+         :error-data data :comparison comparison})
+      (res-error? comparison)
+      (let [error (res-error-value comparison)]
+        {:pass false :status :error :actual actual :expected expected
+         :error (ex-message error) :error-data (ex-data error) :comparison comparison})
+      :else {:pass (= true (res-data comparison)) :status :success
+             :actual actual :expected expected :comparison comparison})))
 
 (defn check
-  "Evaluates a thunk and verifies its canonical code.test result envelope."
+  "Compatibility adapter over the canonical Result-native comparison path."
   ([thunk expected]
    (check thunk expected {}))
   ([thunk expected options]
-   (let [checker (common/->checker expected)
-         reported-expected (if (common/checker? expected)
-                             (str expected)
-                             expected)
-         outcome
-         (try
-           (settle-result (thunk) options)
-           (catch Throwable error
-             (Result/error
-              error
-              {:test {:phase :evaluation}})))]
-     (if (Result/timeout? outcome)
-       (timeout-check-result outcome reported-expected options)
-       (verification-result checker reported-expected outcome)))))
+   (legacy-check-map (check-operation thunk expected options))))
 
-(defn checks-pass?
-  [checks]
-  (reduce (fn [passing check-result]
-            (and passing (:pass check-result)))
-          true
-          checks))
+(defn check-comparison [check]
+  (if (res? check) check
+      (if (and (map? check) (res? (:comparison check))) (:comparison check) nil)))
+
+(defn comparison-status [check]
+  (let [comparison (check-comparison check)]
+    (cond
+      (res-timeout? comparison) :timeout
+      (res-error? comparison) :error
+      (res-success? comparison) (if (= true (res-data comparison)) :passed :failed)
+      (and (map? check) (= :timeout (:status check))) :timeout
+      (and (map? check) (= :error (:status check))) :error
+      (and (map? check) (:pass check)) :passed
+      :else :failed)))
+
+(defn checks-pass? [checks]
+  (every? (fn [check] (= :passed (comparison-status check))) checks))
 
 (defn checks-error?
   [checks]
-  (reduce (fn [errored check-result]
-            (or errored (= :error (:status check-result))))
-          false
-          checks))
+  (any? (fn [check] (= :error (comparison-status check))) checks))
 
 (defn checks-timeout?
   [checks]
-  (reduce (fn [timed-out check-result]
-            (or timed-out (= :timeout (:status check-result))))
-          false
-          checks))
+  (any? (fn [check] (= :timeout (comparison-status check))) checks))
 
 (defn normalize-checks
   [value]
-  (if (vector? value)
-    value
-    (if (map? value)
-      [value]
-      [{:pass true :actual value :expected :returned}])))
+  (cond
+    (vector? value) value
+    (res? value) [value]
+    (map? value) [value]
+    :else [{:pass true :actual value :expected :returned}]))
 
 (defn clock-now
   [options]
@@ -154,6 +140,9 @@
   {:namespace (:namespace fact)
    :name (:name fact)
    :meta (:meta fact)})
+
+(defn timeout-error? [error]
+  (= :result/timeout (get (ex-data error) :code)))
 
 (defn error-result
   [fact error]

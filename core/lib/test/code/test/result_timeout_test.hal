@@ -1,0 +1,34 @@
+(ns code.test.result-timeout-test
+  (:require [code.test.base.process :as process]
+            [code.test.checker.common :as common]))
+
+^{:refer code.test/check-result}
+(Test/run
+ [{:name "returns Result<boolean> without evaluating twice"
+   :test (fn []
+           (let [calls (atom 0)
+                 passing (process/check-result (fn [] (do (swap! calls inc) 42)) 42)
+                 failing (process/check-result (fn [] 42) 43)]
+             [(res? passing) (res-data passing)
+              (res-success? failing) (res-data failing) (deref calls)]))
+   :expected [true true true false 1]}
+  {:name "propagates errors and lets throws consume native Error"
+   :test (fn []
+           (let [ordinary (process/check-result
+                           (fn [] (throw (ex-info "boom" {:code :demo/boom}))) 42)
+                 expected (process/check-result
+                           (fn [] (throw (ex-info "boom" {:code :demo/boom})))
+                           (common/throws :hara/Error "boom"))]
+             [(res-error? ordinary)
+              (get (ex-data (res-error-value ordinary)) :code)
+              (res-success? expected) (res-data expected)]))
+   :expected [true :demo/boom true true]}
+  {:name "classifies timeout, error, failure, and pass"
+   :test (fn []
+           [(process/comparison-status
+             (res-error (ex-info "timeout" {:code :result/timeout})))
+            (process/comparison-status
+             (res-error (ex-info "boom" {:code :demo/boom})))
+            (process/comparison-status (res-success false))
+            (process/comparison-status (res-success true))])
+   :expected [:timeout :error :failed :passed]}])

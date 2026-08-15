@@ -16,11 +16,13 @@
   (instance? code.test.checker.common/Checker value))
 
 (defn result-data [result]
-  (if (and (map? result)
-           (= :code/test (:type result))
-           (has? result :data))
-    (:data result)
-    result))
+  (cond
+    (res-success? result) (res-data result)
+    (res-error? result) (res-error-value result)
+    (and (map? result)
+         (= :code/test (:type result))
+         (has? result :data)) (:data result)
+    :else result))
 
 (extend-type Checker std.protocol.ifn/IFn
   (invoke [checker & arguments]
@@ -48,7 +50,52 @@
            :from :verify)))
 
 (defn succeeded? [result]
-  (and (= :success (:status result)) (= true (:data result))))
+  (if (res? result)
+    (and (res-success? result) (= true (res-data result)))
+    (and (= :success (:status result)) (= true (:data result)))))
+
+(declare checker-descriptor)
+
+(defn native-error? [value] (= :hara/Error (type value)))
+
+(defn descriptor-value [value]
+  (cond
+    (checker? value) (checker-descriptor value)
+    (fn? value) (str value)
+    (regexp? value) {:descriptor/type :regexp :descriptor/pattern (Regex/pattern value)}
+    (map? value) (reduce-kv (fn [out key nested]
+                              (assoc out key (descriptor-value nested))) {} value)
+    (vector? value) (mapv descriptor-value value)
+    (set? value) (into #{} (map descriptor-value value))
+    (list? value) (vec (map descriptor-value value))
+    (native-error? value) {:descriptor/type :error
+                           :descriptor/error-type (type value)
+                           :descriptor/message (ex-message value)
+                           :descriptor/data (or (ex-data value) {})}
+    :else value))
+
+(defn checker-descriptor [checker]
+  {:checker/type (:tag checker)
+   :checker/expected (descriptor-value (:expect checker))
+   :checker/form (descriptor-value (:form checker))})
+
+(defn error-checker? [checker] (has? #{:throws :raises} (:tag checker)))
+
+(defn comparison-context [checker actual]
+  {:test {:checker (checker-descriptor checker) :actual actual} :failures []})
+
+(defn invoke-checker-result [checker actual]
+  (let [context (comparison-context checker actual)]
+    (try (res-success (boolean (checker actual)) context)
+         (catch Throwable error (res-error error context)))))
+
+(defn compare-result [checker evaluation]
+  (if (res-error? evaluation)
+    (if (error-checker? checker)
+      (invoke-checker-result checker (res-error-value evaluation))
+      (res-with-context evaluation
+                        {:test {:checker (checker-descriptor checker)} :failures []}))
+    (invoke-checker-result checker (res-data evaluation))))
 
 (defn exactly
   ([expected] (exactly expected identity))
@@ -117,15 +164,16 @@
   ([error-type] (throws error-type nil))
   ([error-type message]
    (checker {:tag :throws
-             :doc "Checks a thrown error type and optional message."
+             :doc "Checks a captured native Error type and optional message."
              :fn (fn [result]
-                   (and (map? result)
-                        (= :exception (:status result))
-                        (or (= error-type :hara/Error)
-                            (= error-type (type (:data result))))
-                        (if message
-                          (= message (ex-message (:data result)))
-                          true)))
+                   (let [error (cond
+                                 (native-error? result) result
+                                 (res-error? result) (res-error-value result)
+                                 (and (map? result) (= :exception (:status result))) (:data result)
+                                 :else nil)]
+                     (and error
+                          (or (= error-type :hara/Error) (= error-type (type error)))
+                          (if message (= message (ex-message error)) true))))
              :expect {:exception error-type :message message}})))
 
 (defmacro capture
