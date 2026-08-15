@@ -103,6 +103,33 @@ session through RESP on `127.0.0.1:1311`. Use `--offline` to start without the l
 `headless` for a listener without terminal UI, and `remote HOST:PORT` for a client connection. The CLI also supports `run <file>`, `stdin`, and `help`. For a native-image build, see the
 [developer guide](../../website/hara-www/docs/development/); native mode intentionally removes dynamic JVM services.
 
+### Agent in-REPL prototype
+
+For agent-assisted exploration, Hara includes a native HAL RESP client in
+`tool.inrepl`. This deliberately is not an MCP server and does not start a
+daemon: start a loopback server yourself, keep its endpoint in
+`HARA_INREPL_ENDPOINT`, and let the agent attach to its dedicated `AGENT`
+session.
+
+```shell
+hara --host 127.0.0.1 --port 1311 server
+export HARA_INREPL_ENDPOINT=127.0.0.1:1311
+```
+
+Opt a project in with `:project/inrepl-capabilities #{:inrepl/loopback}`, then
+evaluate through a one-shot local client that preserves the server-side session:
+
+```shell
+hara --project . --allow-net eval \
+  '(do (require [tool.inrepl :as inrepl])
+       (inrepl/eval-project "." "127.0.0.1:1311" "(+ 19 23)"))'
+```
+
+Use it for experiments, documentation, completion, and checking live state.
+It accepts only `localhost` or `127.0.0.1`, never uses `ROOT`, and can reset
+its own `AGENT` session. It does not replace the required fresh-process
+validation of saved `.hal` files.
+
 The Makefile also mirrors the main repository and CI workflows:
 
 ```shell

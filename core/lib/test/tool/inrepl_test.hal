@@ -1,0 +1,38 @@
+(ns tool.inrepl-test
+  (:require [tool.inrepl :as inrepl]
+            [tool.project :as project]))
+
+(defn- failure-data [f]
+  (try
+    (do (f) nil)
+    (catch Throwable error (ex-data error))))
+
+[(test-check "RESP decoder accepts nested arrays and bulk values"
+             (inrepl/decode
+              (str/encode-utf8 "*2\r\n$6\r\nRESULT\r\n*2\r\n$2\r\n42\r\n$2\r\nok\r\n"))
+             {:resp/type :array
+              :resp/value
+              [{:resp/type :bulk :resp/value "RESULT"}
+               {:resp/type :array
+                :resp/value [{:resp/type :bulk :resp/value "42"}
+                             {:resp/type :bulk :resp/value "ok"}]}]})
+ (test-check "RESP decoder leaves fragmented frames incomplete"
+             (inrepl/parse-at (str/encode-utf8 "$5\r\nhel") 0 0)
+             nil)
+ (test-check "RESP encoder uses UTF-8 byte length"
+             (inrepl/decode (inrepl/encode-array ["hé"]))
+             {:resp/type :array
+              :resp/value [{:resp/type :bulk :resp/value "hé"}]})
+ (test-check "only explicit loopback endpoints are accepted"
+             [(inrepl/endpoint "127.0.0.1:1311")
+              (:host (failure-data (fn [] (inrepl/endpoint "example.com:1311"))))]
+             [{:host "127.0.0.1" :port 1311 :endpoint "127.0.0.1:1311"}
+              "example.com"])
+ (test-check "projects opt in to the loopback workflow"
+             [(project/inrepl-loopback? {:project/inrepl-capabilities #{:inrepl/loopback}})
+              (project/inrepl-loopback? {})
+              (:unknown (failure-data
+                         (fn []
+                           (project/inrepl-capabilities
+                            {:project/inrepl-capabilities #{:inrepl/remote}}))))]
+             [true false [:inrepl/remote]])]

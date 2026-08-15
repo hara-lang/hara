@@ -1,0 +1,46 @@
+(ns code.manage.unit.test-doc-test
+  (:use code.test)
+  (:require [code.manage.unit.test-doc :as test-doc]))
+
+(def legacy-source
+  "(ns demo.test\n  (:use code.test)\n  (:require [demo.subject :as subject]))\n\n(def results\n  [(fact \"runs\" (subject/run 1) => 2)])\n")
+
+(fact "documents nested def results facts with their aliased subject"
+  (let [document (test-doc/document {:path "test/demo/test.hal" :source legacy-source})]
+    [(:format document)
+     (:noncanonical document)
+     (:unresolved document)
+     (get-in document [:facts 0 :refer])
+     (get-in document [:facts 0 :inference])
+     (str/includes? (test-doc/render document)
+                    "^{:refer demo.subject/run}\n(fact \"runs\"")])
+  => ["code.manage.test-doc/1" 1 0 "demo.subject/run" :qualified-call true])
+
+(fact "leaves a direct fact with refer metadata out of migration"
+  (test-doc/document
+   {:path "test/demo/test.hal"
+    :source "(ns demo.test (:use code.test))\n\n^{:refer demo.subject/run}\n(fact \"runs\" 2 => 2)\n"})
+  => nil)
+
+(fact "marks ambiguous facts unresolved instead of guessing"
+  (let [document
+        (test-doc/document
+         {:path "test/demo/test.hal"
+          :source "(ns demo.test (:use code.test) (:require [demo.subject :as subject]))\n\n(fact \"mixed\" (subject/left) (subject/right))\n"})]
+    [(:unresolved document)
+     (get-in document [:facts 0 :inference])])
+  => [1 :unresolved])
+
+(fact "maps test files into separate EDN and generated-test roots"
+  [(test-doc/target-path "/repo/core/lib/test/code/demo_test.hal"
+                         "/repo/core/lib/test"
+                         "/repo/core/test-docs/lib"
+                         ".edn")
+   (test-doc/target-path "/repo/core/lib/test/code/demo_test.hal"
+                         "/repo/core/lib/test"
+                         "/repo/core/target/generated-tests/lib"
+                         ".hal")]
+  => ["/repo/core/test-docs/lib/code/demo_test.edn"
+      "/repo/core/target/generated-tests/lib/code/demo_test.hal"])
+
+(pr-str (run {:namespace "code.manage.unit.test-doc-test"}))

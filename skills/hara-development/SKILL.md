@@ -28,6 +28,17 @@ For each coherent `.hal` change:
 Each invocation creates a fresh Hara execution context. If parsing fails,
 correct the proposed source and evaluate it again.
 
+## Optional agent in-REPL exploration
+
+When `HARA_INREPL_ENDPOINT` names a user-started loopback Hara RESP server, use
+`tool.inrepl` for small experiments in its dedicated `AGENT` session. The
+project must opt in with `:project/inrepl-capabilities #{:inrepl/loopback}`, and
+the local client requires `hara --allow-net`.
+
+Do not start, discover, or stop a server automatically. Do not attach to
+`ROOT`. Treat the live session as feedback only: every saved `.hal` change
+still follows the fresh-process cycle above.
+
 ## Source ownership
 
 - Edit canonical `.hal` sources rather than generated Rust snapshots, target
