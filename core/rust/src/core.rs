@@ -15332,9 +15332,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         && [
                             "success",
                             "error",
+                            "synchronize",
                             "result?",
                             "success?",
                             "error?",
+                            "timeout?",
                             "status",
                             "data",
                             "error-value",

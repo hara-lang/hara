@@ -182,7 +182,7 @@ public final class HaraContext {
               "Regex",
               java.util.List.of(
                   "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
-                  "split"))
+                  "split")),
           Map.entry("UUID", java.util.List.of("instance?")),
           Map.entry(
               "Result",
