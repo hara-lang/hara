@@ -1,112 +1,422 @@
-;; Experimental portable schema core for HAL metadata and relation contracts.
-(ns std.typed.schema)
+;; Canonical portable schema interpretation for ^{:schema ...} metadata.
+(ns std.typed.schema
+  (:config {:blank true})
+  (:require [std.foundation :refer :all :exclude [resolve]]))
 
-(defn ^{:schema [:fn [:any] :map]}
-  normalize
-  "Normalizes the portable ^{:schema ...} surface grammar into tagged data."
-  [schema]
+(def +primitive-aliases+
+  {:boolean :bool
+   :number :num
+   :integer :int
+   :string :str})
+
+(def +primitive-names+
+  #{:any :nil :bool :num :int :float :decimal :str :char :regex
+    :keyword :symbol :list :vector :map :set :fn :atom :bytes :promise})
+
+(defn schema-error
+  [message surface reason]
+  (throw (ex-info message
+                  {:type :std.typed.schema/invalid-schema
+                   :reason reason
+                   :surface surface})))
+
+(defn canonical-primitive
+  [value]
+  (let [canonical (or (get +primitive-aliases+ value) value)]
+    (if (has? +primitive-names+ canonical)
+      canonical
+      (schema-error (str "unsupported schema primitive: " value)
+                    value
+                    :unsupported-primitive))))
+
+(defn reference-form?
+  [value]
+  (and (list? value)
+       (= 2 (count value))
+       (= 'var (first value))))
+
+(defn qualify-reference
+  [target context]
+  (if (not (symbol? target))
+    (schema-error "named schema reference must target a symbol"
+                  target
+                  :invalid-reference)
+    (let [prefix (namespace target)
+          current (:namespace context)]
+      (if prefix
+        (let [prefix-symbol (symbol prefix)
+              resolved-prefix (or (get (:aliases context) prefix-symbol)
+                                  prefix-symbol)]
+          (symbol (str resolved-prefix) (name target)))
+        (let [referred (get (:refer-map context) target)]
+          (if referred
+            referred
+            (if current
+              (symbol (str current) (name target))
+              (schema-error (str "named schema reference is not fully qualified: " target)
+                            target
+                            :unqualified-reference))))))))
+
+(defn normalize-reference
+  [surface context]
+  (let [target (second surface)
+        qualified (qualify-reference target context)]
+    {:kind :reference :name qualified}))
+
+(defn require-count
+  [head arguments expected surface]
+  (if (= expected (count arguments))
+    true
+    (schema-error
+     (str head " schema expects " expected
+          (if (= expected 1) " argument, got " " arguments, got ")
+          (count arguments))
+     surface
+     :invalid-arity)))
+
+(defn append-unique
+  [output value]
+  (if (any? (fn [candidate] (= candidate value)) output)
+    output
+    (conj output value)))
+
+(defn union-normal
+  [members]
+  (let [flattened
+        (reduce (fn [output member]
+                  (if (= :union (:kind member))
+                    (reduce append-unique output (:types member))
+                    (append-unique output member)))
+                []
+                members)]
+    (cond
+      (empty? flattened)
+      (schema-error ":or schema requires at least one member"
+                    [:or]
+                    :empty-union)
+
+      (= 1 (count flattened))
+      (first flattened)
+
+      :else
+      {:kind :union :types flattened})))
+
+(declare normalize-in)
+
+(defn normalize-many
+  [values context]
+  (loop [remaining (vec values)
+         output []]
+    (if (empty? remaining)
+      output
+      (recur (vec (rest remaining))
+             (conj output (normalize-in (first remaining) context))))))
+
+(defn normalize-inputs
+  [inputs context surface]
+  (if (not (vector? inputs))
+    (schema-error ":fn schema inputs must be a vector"
+                  surface
+                  :invalid-function-inputs)
+    (loop [index 0
+           fixed []]
+      (if (= index (count inputs))
+        {:fixed fixed :rest nil}
+        (let [input (nth inputs index)]
+          (if (= '& input)
+            (if (= (+ index 2) (count inputs))
+              {:fixed fixed
+               :rest (normalize-in (nth inputs (inc index)) context)}
+              (schema-error ":fn schema & must precede exactly one rest type"
+                            surface
+                            :invalid-function-rest))
+            (recur (inc index)
+                   (conj fixed (normalize-in input context)))))))))
+
+(defn normalize-map-fields
+  [arguments context surface]
+  (loop [remaining (vec arguments)
+         fields []
+         names #{}]
+    (if (empty? remaining)
+      fields
+      (let [pair (first remaining)]
+        (if (and (vector? pair) (= 2 (count pair)))
+          (let [field-name (first pair)]
+            (if (has? names field-name)
+              (schema-error (str "duplicate :map schema field: " field-name)
+                            surface
+                            :duplicate-map-field)
+              (recur (vec (rest remaining))
+                     (conj fields
+                           {:name field-name
+                            :type (normalize-in (second pair) context)})
+                     (conj names field-name))))
+          (schema-error ":map schema fields must be [name type] pairs"
+                        surface
+                        :invalid-map-field))))))
+
+(defn normalize-function
+  [surface context]
+  (let [arguments (vec (rest surface))]
+    (require-count :fn arguments 2 surface)
+    {:kind :fn
+     :inputs (normalize-inputs (first arguments) context surface)
+     :output (normalize-in (second arguments) context)}))
+
+(defn normalize-composite
+  [surface context]
+  (if (empty? surface)
+    (schema-error "schema vector cannot be empty" surface :empty-schema)
+    (let [head (first surface)
+          arguments (vec (rest surface))]
+      (if (not (keyword? head))
+        (schema-error "schema vector head must be a keyword"
+                      surface
+                      :invalid-head)
+        (cond
+          (= head :or)
+          (if (empty? arguments)
+            (schema-error ":or schema requires at least one member"
+                          surface
+                          :empty-union)
+            (union-normal (normalize-many arguments context)))
+
+          (= head :maybe)
+          (do
+            (require-count :maybe arguments 1 surface)
+            (union-normal [(normalize-in (first arguments) context)
+                           (normalize-in :nil context)]))
+
+          (= head :vector)
+          (do
+            (require-count :vector arguments 1 surface)
+            {:kind :vector
+             :item (normalize-in (first arguments) context)})
+
+          (= head :tuple)
+          {:kind :tuple
+           :items (normalize-many arguments context)}
+
+          (= head :map)
+          {:kind :map
+           :fields (normalize-map-fields arguments context surface)}
+
+          (= head :fn)
+          (normalize-function surface context)
+
+          (= head :function)
+          (if (empty? arguments)
+            (schema-error ":function schema requires at least one :fn schema"
+                          surface
+                          :empty-function)
+            (let [arities (normalize-many arguments context)]
+              (if (every? (fn [arity] (= :fn (:kind arity))) arities)
+                {:kind :function :arities arities}
+                (schema-error ":function members must be :fn schemas"
+                              surface
+                              :invalid-function-member))))
+
+          (= head :enum)
+          (if (empty? arguments)
+            (schema-error ":enum schema requires at least one value"
+                          surface
+                          :empty-enum)
+            {:kind :enum
+             :values (reduce append-unique [] arguments)})
+
+          :else
+          (schema-error (str "unsupported schema form: " head)
+                        surface
+                        :unsupported-form))))))
+
+(defn normalize-in
+  "Normalizes a portable schema surface with namespace-resolution context."
+  [schema context]
   (cond
     (keyword? schema)
-    {:kind :primitive :name schema}
+    {:kind :primitive :name (canonical-primitive schema)}
 
-    (not (vector? schema))
-    {:kind :unknown :surface schema}
+    (reference-form? schema)
+    (normalize-reference schema context)
+
+    (vector? schema)
+    (normalize-composite schema context)
 
     :else
-    (let [head (first schema)
-          args
-          (loop [index 1
-                 output []]
-            (if (= index (count schema))
-              output
-              (recur (inc index)
-                     (conj output (nth schema index)))))]
-      (cond
-        (= head :or)
-        {:kind :union
-         :types
-         (loop [index 0
-                output []]
-           (if (= index (count args))
-             output
-             (recur (inc index)
-                    (conj output (normalize (nth args index))))))}
+    (schema-error (str "unsupported schema value: " schema)
+                  schema
+                  :unsupported-value)))
 
-        (= head :maybe)
-        {:kind :union
-         :types [(normalize (first args)) (normalize :nil)]}
+(defn ^{:schema [:function
+                           [:fn [:any] :map]
+                           [:fn [:any :map] :map]]}
+  normalize
+  "Normalizes the portable ^{:schema ...} surface grammar into tagged data."
+  ([schema]
+   (normalize-in schema {}))
+  ([schema context]
+   (normalize-in schema context)))
 
-        (= head :vector)
-        {:kind :vector
-         :item (normalize (first args))}
+(defn normalize-result
+  "Returns {:schema normalized} or {:error exception-data} without throwing."
+  ([schema]
+   (normalize-result schema {}))
+  ([schema context]
+   (try
+     {:schema (normalize schema context)}
+     (catch Exception error
+       {:error (merge {:message (ex-message error)}
+                      (or (ex-data error) {}))}))))
 
-        (= head :tuple)
-        {:kind :tuple
-         :items
-         (loop [index 0
-                output []]
-           (if (= index (count args))
-             output
-             (recur (inc index)
-                    (conj output (normalize (nth args index))))))}
+(defn unknown
+  ([] {:kind :unknown})
+  ([surface] {:kind :unknown :surface surface}))
 
-        (= head :map)
-        {:kind :map
-         :fields
-         (vec
-          (map (fn [pair]
-                 {:name (first pair)
-                  :type (normalize (second pair))})
-               args))}
+(defn unknown?
+  [schema]
+  (= :unknown (:kind schema)))
 
-        (= head :fn)
-        {:kind :fn
-         :inputs
-         (loop [index 0
-                inputs (first args)
-                fixed []]
-           (if (= index (count inputs))
-             {:fixed fixed :rest nil}
-             (if (= '& (nth inputs index))
-               {:fixed fixed
-                :rest (normalize (nth inputs (inc index)))}
-               (recur (inc index)
-                      inputs
-                      (conj fixed
-                            (normalize (nth inputs index)))))))
-         :output (normalize (second args))}
+(defn function-schema?
+  [schema]
+  (boolean
+   (or (= :fn (:kind schema))
+       (= :function (:kind schema)))))
 
-        (= head :function)
-        {:kind :function
-         :arities
-         (loop [index 0
-                output []]
-           (if (= index (count args))
-             output
-             (recur (inc index)
-                    (conj output (normalize (nth args index))))))}
+(defn project-arities-normal
+  [normalized]
+  (cond
+    (= :fn (:kind normalized)) [normalized]
+    (= :function (:kind normalized)) (:arities normalized)
+    :else []))
 
-        (= head :enum)
-        {:kind :enum :values (vec args)}
+(defn ^{:schema [:function
+                           [:fn [:any] :vector]
+                           [:fn [:any :map] :vector]]}
+  project-arities
+  "Returns normalized function arities from :fn or :function schema."
+  ([schema]
+   (project-arities-normal (normalize schema)))
+  ([schema context]
+   (project-arities-normal (normalize schema context))))
 
-        :else
-        {:kind :extension
-         :head head
-         :arguments (vec args)
-         :surface schema}))))
+(defn resolve-normal
+  [schema definitions visited]
+  (let [kind (:kind schema)]
+    (cond
+      (= kind :reference)
+      (let [name (:name schema)]
+        (if (has? visited name)
+          schema
+          (let [target (get definitions name)]
+            (if target
+              (resolve-normal target definitions (conj visited name))
+              schema))))
 
-(defn- primitive-valid? [name value]
+      (= kind :union)
+      (union-normal
+       (map (fn [member]
+              (resolve-normal member definitions visited))
+            (:types schema)))
+
+      (= kind :vector)
+      (assoc schema :item (resolve-normal (:item schema) definitions visited))
+
+      (= kind :tuple)
+      (assoc schema :items
+             (vec (map (fn [member]
+                         (resolve-normal member definitions visited))
+                       (:items schema))))
+
+      (= kind :map)
+      (assoc schema :fields
+             (vec (map (fn [field]
+                         (assoc field :type
+                                (resolve-normal (:type field)
+                                                definitions
+                                                visited)))
+                       (:fields schema))))
+
+      (= kind :fn)
+      (assoc schema
+             :inputs
+             {:fixed (vec (map (fn [input]
+                                 (resolve-normal input definitions visited))
+                               (get-in schema [:inputs :fixed])))
+              :rest (let [rest-type (get-in schema [:inputs :rest])]
+                      (if rest-type
+                        (resolve-normal rest-type definitions visited)
+                        nil))}
+             :output (resolve-normal (:output schema) definitions visited))
+
+      (= kind :function)
+      (assoc schema :arities
+             (vec (map (fn [arity]
+                         (resolve-normal arity definitions visited))
+                       (:arities schema))))
+
+      :else schema)))
+
+(defn resolve
+  "Resolves named schema references without evaluating code. Cycles remain references."
+  [schema definitions]
+  (resolve-normal schema definitions #{}))
+
+(defn reference-names-normal
+  [schema]
+  (let [kind (:kind schema)]
+    (cond
+      (= kind :reference) #{(:name schema)}
+      (= kind :union)
+      (reduce (fn [output member]
+                (into output (reference-names-normal member)))
+              #{} (:types schema))
+      (= kind :vector) (reference-names-normal (:item schema))
+      (= kind :tuple)
+      (reduce (fn [output member]
+                (into output (reference-names-normal member)))
+              #{} (:items schema))
+      (= kind :map)
+      (reduce (fn [output field]
+                (into output (reference-names-normal (:type field))))
+              #{} (:fields schema))
+      (= kind :fn)
+      (into
+       (reduce (fn [output input]
+                 (into output (reference-names-normal input)))
+               #{} (get-in schema [:inputs :fixed]))
+       (into
+        (if (get-in schema [:inputs :rest])
+          (reference-names-normal (get-in schema [:inputs :rest]))
+          #{})
+        (reference-names-normal (:output schema))))
+      (= kind :function)
+      (reduce (fn [output arity]
+                (into output (reference-names-normal arity)))
+              #{} (:arities schema))
+      :else #{})))
+
+(defn reference-names
+  [schema]
+  (reference-names-normal schema))
+
+(defn unresolved-references
+  [schema definitions]
+  (vec (filter (fn [name] (not (has? definitions name)))
+               (reference-names schema))))
+
+(defn primitive-valid?
+  [name value]
   (cond
     (= name :any) true
     (= name :nil) (nil? value)
     (= name :bool) (boolean? value)
-    (= name :boolean) (boolean? value)
     (= name :num) (number? value)
-    (= name :number) (number? value)
-    (= name :int) (long? value)
-    (= name :integer) (long? value)
+    (= name :int) (integer? value)
+    (= name :float) (and (number? value) (not (integer? value)))
+    (= name :decimal) (number? value)
     (= name :str) (string? value)
-    (= name :string) (string? value)
+    (= name :char) (char? value)
     (= name :keyword) (keyword? value)
     (= name :symbol) (symbol? value)
     (= name :list) (list? value)
@@ -114,15 +424,38 @@
     (= name :map) (map? value)
     (= name :set) (set? value)
     (= name :bytes) (bytes? value)
+    (= name :fn) (fn? value)
     :else true))
 
-(defn- finding [path expected value]
+(defn finding
+  [path expected value]
   {:finding/type :std.typed.schema/invalid-value
    :finding/path (vec path)
    :finding/expected expected
    :finding/value value})
 
-(defn- validate-normal [schema value path]
+(declare validate-normal)
+
+(defn validate-fields
+  [fields value path]
+  (loop [remaining fields
+         output []]
+    (if (empty? remaining)
+      output
+      (let [field (first remaining)
+            key (:name field)]
+        (recur
+         (rest remaining)
+         (if (has? value key)
+           (vec (concat output
+                        (validate-normal (:type field)
+                                         (get value key)
+                                         (conj path key))))
+           (conj output
+                 (finding (conj path key) (:type field) nil))))))))
+
+(defn validate-normal
+  [schema value path]
   (let [kind (:kind schema)]
     (cond
       (= kind :primitive)
@@ -131,8 +464,7 @@
         [(finding path schema value)])
 
       (= kind :enum)
-      (if (any? (fn [candidate] (= candidate value))
-                (:values schema))
+      (if (any? (fn [candidate] (= candidate value)) (:values schema))
         []
         [(finding path schema value)])
 
@@ -145,100 +477,379 @@
 
       (= kind :vector)
       (if (vector? value)
-        (loop [index 0
-               output []]
+        (loop [index 0 output []]
           (if (= index (count value))
             output
-            (recur
-             (inc index)
-             (vec
-              (concat output
-                      (validate-normal (:item schema)
-                                       (nth value index)
-                                       (conj path index)))))))
+            (recur (inc index)
+                   (vec (concat output
+                                (validate-normal (:item schema)
+                                                 (nth value index)
+                                                 (conj path index)))))))
         [(finding path schema value)])
 
       (= kind :tuple)
       (if (and (vector? value)
                (= (count value) (count (:items schema))))
-        (loop [index 0
-               output []]
+        (loop [index 0 output []]
           (if (= index (count value))
             output
-            (recur
-             (inc index)
-             (vec
-              (concat output
-                      (validate-normal (nth (:items schema) index)
-                                       (nth value index)
-                                       (conj path index)))))))
+            (recur (inc index)
+                   (vec (concat output
+                                (validate-normal (nth (:items schema) index)
+                                                 (nth value index)
+                                                 (conj path index)))))))
         [(finding path schema value)])
 
       (= kind :map)
       (if (map? value)
-        (loop [remaining (:fields schema)
-               output []]
-          (if (empty? remaining)
-            output
-            (let [field (first remaining)
-                  key (:name field)]
-              (recur
-               (rest remaining)
-               (if (has? value key)
-                 (vec
-                  (concat output
-                          (validate-normal (:type field)
-                                           (get value key)
-                                           (conj path key))))
-                 (conj output
-                       (finding (conj path key)
-                                (:type field)
-                                nil)))))))
+        (validate-fields (:fields schema) value path)
         [(finding path schema value)])
 
+      (= kind :reference) []
+      (= kind :unknown) []
       :else [])))
 
-(defn ^{:schema [:fn [:any :any] :vector]}
+(defn ^{:schema [:function
+                           [:fn [:any :any] :vector]
+                           [:fn [:any :any :map] :vector]]}
   validate
   "Returns deterministic, path-aware findings for value against schema."
-  [schema value]
-  (validate-normal (normalize schema) value []))
+  ([schema value]
+   (validate-normal (normalize schema) value []))
+  ([schema value context]
+   (validate-normal (normalize schema context) value [])))
 
-(defn ^{:schema [:fn [:any :any] :bool]}
+(defn ^{:schema [:function
+                           [:fn [:any :any] :bool]
+                           [:fn [:any :any :map] :bool]]}
   valid?
   "Returns true when value conforms to schema."
-  [schema value]
-  (empty? (validate schema value)))
+  ([schema value]
+   (empty? (validate schema value)))
+  ([schema value context]
+   (empty? (validate schema value context))))
 
-(defn- compatible-normal? [expected actual]
-  (cond
-    (= expected actual) true
-    (and (= :primitive (:kind expected))
-         (= :any (:name expected))) true
-    (and (= :primitive (:kind actual))
-         (= :any (:name actual))) true
-    (= :unknown (:kind expected)) true
-    (= :unknown (:kind actual)) true
-    (= :union (:kind expected))
-    (any? (fn [member] (compatible-normal? member actual))
-          (:types expected))
-    (= :union (:kind actual))
-    (any? (fn [member] (compatible-normal? expected member))
-          (:types actual))
-    :else false))
+(defn primitive-compatible?
+  [expected actual]
+  (or (= expected actual)
+      (= expected :any)
+      (= actual :any)
+      (and (= expected :num)
+           (has? #{:int :float :decimal} actual))
+      (and (= actual :num)
+           (has? #{:int :float :decimal} expected))))
 
-(defn ^{:schema [:fn [:any :any] :bool]}
+(declare compatible-normal?)
+
+(defn fields-by-name
+  [fields]
+  (reduce (fn [output field]
+            (assoc output (:name field) (:type field)))
+          {} fields))
+
+(defn compatible-map?
+  [expected actual]
+  (let [left (fields-by-name (:fields expected))
+        right (fields-by-name (:fields actual))
+        shared (filter (fn [key] (has? right key)) (keys left))]
+    (every? (fn [key]
+              (compatible-normal? (get left key) (get right key)))
+            shared)))
+
+(defn compatible-normal?
+  [expected actual]
+  (let [expected-kind (:kind expected)
+        actual-kind (:kind actual)]
+    (cond
+      (= expected actual) true
+      (= expected-kind :unknown) true
+      (= actual-kind :unknown) true
+      (and (= expected-kind :primitive) (= actual-kind :primitive))
+      (primitive-compatible? (:name expected) (:name actual))
+      (= expected-kind :reference) true
+      (= actual-kind :reference) true
+      (= expected-kind :union)
+      (any? (fn [member] (compatible-normal? member actual))
+            (:types expected))
+      (= actual-kind :union)
+      (any? (fn [member] (compatible-normal? expected member))
+            (:types actual))
+      (and (= expected-kind :vector) (= actual-kind :vector))
+      (compatible-normal? (:item expected) (:item actual))
+      (and (= expected-kind :tuple)
+           (= actual-kind :tuple)
+           (= (count (:items expected)) (count (:items actual))))
+      (every? true?
+              (map compatible-normal? (:items expected) (:items actual)))
+      (and (= expected-kind :map) (= actual-kind :map))
+      (compatible-map? expected actual)
+      (and (= expected-kind :enum) (= actual-kind :enum))
+      (any? (fn [value]
+              (any? (fn [candidate] (= value candidate)) (:values actual)))
+            (:values expected))
+      :else false)))
+
+(defn ^{:schema [:function
+                           [:fn [:any :any] :bool]
+                           [:fn [:any :any :map] :bool]]}
   compatible?
   "Returns true when two surface schemas have an overlapping value domain."
-  [expected actual]
-  (compatible-normal? (normalize expected) (normalize actual)))
+  ([expected actual]
+   (boolean (compatible-normal? (normalize expected) (normalize actual))))
+  ([expected actual context]
+   (boolean
+    (compatible-normal? (normalize expected context)
+                        (normalize actual context)))))
 
-(defn ^{:schema [:fn [:any] :vector]}
-  project-arities
-  "Returns normalized function arities from :fn or :function schema."
-  [schema]
-  (let [normalized (normalize schema)]
+(declare assignable-normal?)
+
+(defn assignable-map?
+  [expected actual]
+  (let [left (fields-by-name (:fields expected))
+        right (fields-by-name (:fields actual))]
+    (every? (fn [key]
+              (and (has? right key)
+                   (assignable-normal? (get left key) (get right key))))
+            (keys left))))
+
+(defn assignable-function?
+  [expected actual]
+  (let [expected-arities (project-arities-normal expected)
+        actual-arities (project-arities-normal actual)]
+    (every?
+     (fn [expected-arity]
+       (any?
+        (fn [actual-arity]
+          (and (= (count (get-in expected-arity [:inputs :fixed]))
+                  (count (get-in actual-arity [:inputs :fixed])))
+               (= (nil? (get-in expected-arity [:inputs :rest]))
+                  (nil? (get-in actual-arity [:inputs :rest])))
+               (every? true?
+                       (map assignable-normal?
+                            (get-in actual-arity [:inputs :fixed])
+                            (get-in expected-arity [:inputs :fixed])))
+               (or (nil? (get-in expected-arity [:inputs :rest]))
+                   (assignable-normal?
+                    (get-in actual-arity [:inputs :rest])
+                    (get-in expected-arity [:inputs :rest])))
+               (assignable-normal? (:output expected-arity)
+                                   (:output actual-arity))))
+        actual-arities))
+     expected-arities)))
+
+(defn assignable-normal?
+  "Directional assignment: every actual value must fit the expected domain."
+  [expected actual]
+  (let [expected-kind (:kind expected)
+        actual-kind (:kind actual)]
     (cond
-      (= :fn (:kind normalized)) [normalized]
-      (= :function (:kind normalized)) (:arities normalized)
-      :else [])))
+      (= expected actual) true
+      (= expected-kind :unknown) true
+      (= actual-kind :unknown) true
+      (and (= expected-kind :primitive)
+           (= :any (:name expected))) true
+      (= expected-kind :union)
+      (if (= actual-kind :union)
+        (every? (fn [actual-member]
+                  (any? (fn [expected-member]
+                          (assignable-normal? expected-member actual-member))
+                        (:types expected)))
+                (:types actual))
+        (any? (fn [member]
+                (assignable-normal? member actual))
+              (:types expected)))
+      (= actual-kind :union)
+      (every? (fn [member]
+                (assignable-normal? expected member))
+              (:types actual))
+      (and (= expected-kind :primitive) (= actual-kind :primitive))
+      (or (= (:name expected) (:name actual))
+          (and (= :num (:name expected))
+               (has? #{:int :float :decimal} (:name actual))))
+      (= expected-kind :reference) true
+      (= actual-kind :reference) true
+      (and (= expected-kind :vector) (= actual-kind :vector))
+      (assignable-normal? (:item expected) (:item actual))
+      (and (= expected-kind :tuple)
+           (= actual-kind :tuple)
+           (= (count (:items expected)) (count (:items actual))))
+      (every? true?
+              (map assignable-normal? (:items expected) (:items actual)))
+      (and (= expected-kind :map) (= actual-kind :map))
+      (assignable-map? expected actual)
+      (and (= expected-kind :enum) (= actual-kind :enum))
+      (every? (fn [value]
+                (any? (fn [candidate] (= value candidate)) (:values expected)))
+              (:values actual))
+      (and (function-schema? expected) (function-schema? actual))
+      (assignable-function? expected actual)
+      :else false)))
+
+(defn assignable?
+  "Returns true when every value in actual is accepted by expected."
+  ([expected actual]
+   (boolean (assignable-normal? (normalize expected) (normalize actual))))
+  ([expected actual context]
+   (boolean
+    (assignable-normal? (normalize expected context)
+                        (normalize actual context)))))
+
+(defn arity-matches?
+  [arity argument-count]
+  (let [fixed-count (count (get-in arity [:inputs :fixed]))
+        rest-type (get-in arity [:inputs :rest])]
+    (if rest-type
+      (<= fixed-count argument-count)
+      (= fixed-count argument-count))))
+
+(defn matching-arity
+  [function-schema argument-count]
+  (first (filter (fn [arity]
+                   (arity-matches? arity argument-count))
+                 (project-arities-normal function-schema))))
+
+(defn expected-argument
+  [arity index]
+  (let [fixed (get-in arity [:inputs :fixed])]
+    (if (< index (count fixed))
+      (nth fixed index)
+      (get-in arity [:inputs :rest]))))
+
+;; Native Result schemas
+
+(def +result-property-names+ #{:status :error-code})
+
+(defn result-property-error [message surface reason]
+  (schema-error message surface reason))
+
+(defn normalize-result-properties [properties surface]
+  (if (not (map? properties))
+    (result-property-error ":result schema properties must be a map" surface :invalid-result-properties)
+    (let [unknown (vec (filter (fn [key] (not (has? +result-property-names+ key)))
+                               (keys properties)))
+          status? (has? properties :status)
+          code? (has? properties :error-code)
+          status (get properties :status)
+          code (get properties :error-code)]
+      (cond
+        (not (empty? unknown))
+        (result-property-error (str "unsupported :result schema properties: " unknown)
+                               surface :unsupported-result-property)
+        (and status? (not (has? #{:success :error} status)))
+        (result-property-error ":result :status must be :success or :error"
+                               surface :invalid-result-status)
+        (and code? (not (keyword? code)))
+        (result-property-error ":result :error-code must be a keyword"
+                               surface :invalid-result-error-code)
+        (and code? (= :success status))
+        (result-property-error ":result :error-code cannot refine a successful Result"
+                               surface :conflicting-result-properties)
+        :else
+        (let [status (if code? :error status)
+              output (if status {:status status} {})]
+          (if code? (assoc output :error-code code) output))))))
+
+(defn normalize-result-schema [surface context]
+  (let [arguments (vec (rest surface))]
+    (cond
+      (= 1 (count arguments))
+      {:kind :result :properties {} :data (normalize-in (first arguments) context)}
+      (and (= 2 (count arguments)) (map? (first arguments)))
+      {:kind :result
+       :properties (normalize-result-properties (first arguments) surface)
+       :data (normalize-in (second arguments) context)}
+      :else
+      (schema-error ":result schema expects a data schema and optional property map"
+                    surface :invalid-result-arity))))
+
+(def +normalize-in-before-result+ normalize-in)
+(defn normalize-in [schema context]
+  (if (and (vector? schema) (not (empty? schema)) (= :result (first schema)))
+    (normalize-result-schema schema context)
+    (+normalize-in-before-result+ schema context)))
+
+(def +resolve-normal-before-result+ resolve-normal)
+(defn resolve-normal [schema definitions visited]
+  (if (= :result (:kind schema))
+    (assoc schema :data (resolve-normal (:data schema) definitions visited))
+    (+resolve-normal-before-result+ schema definitions visited)))
+
+(def +reference-names-normal-before-result+ reference-names-normal)
+(defn reference-names-normal [schema]
+  (if (= :result (:kind schema))
+    (reference-names-normal (:data schema))
+    (+reference-names-normal-before-result+ schema)))
+
+(defn result-error-code [value]
+  (if (res-error? value)
+    (get (ex-data (res-error-value value)) :code)
+    nil))
+
+(defn validate-result-normal [schema value path]
+  (if (not (res? value))
+    [(finding path schema value)]
+    (let [properties (:properties schema)
+          expected-status (get properties :status)
+          expected-code (get properties :error-code)
+          actual-status (res-status value)
+          status-findings (if (and expected-status (not= expected-status actual-status))
+                            [(finding (conj path :status) expected-status actual-status)] [])
+          actual-code (result-error-code value)
+          code-findings (if (and expected-code (not= expected-code actual-code))
+                          [(finding (conj path :error :code) expected-code actual-code)] [])
+          data-findings (if (res-success? value)
+                          (validate-normal (:data schema) (res-data value) (conj path :data)) [])]
+      (vec (concat status-findings code-findings data-findings)))))
+
+(def +validate-normal-before-result+ validate-normal)
+(defn validate-normal [schema value path]
+  (if (= :result (:kind schema))
+    (validate-result-normal schema value path)
+    (+validate-normal-before-result+ schema value path)))
+
+(defn result-status-domain [schema]
+  (let [status (get-in schema [:properties :status])]
+    (cond (= status :success) #{:success}
+          (= status :error) #{:error}
+          :else #{:success :error})))
+
+(defn result-status-overlap? [left right]
+  (any? (fn [status] (has? (result-status-domain right) status))
+        (result-status-domain left)))
+
+(defn result-success-overlap? [left right]
+  (and (has? (result-status-domain left) :success)
+       (has? (result-status-domain right) :success)))
+
+(defn result-error-code-compatible? [left right]
+  (let [left-code (get-in left [:properties :error-code])
+        right-code (get-in right [:properties :error-code])]
+    (or (nil? left-code) (nil? right-code) (= left-code right-code))))
+
+(defn compatible-result? [left right]
+  (and (result-status-overlap? left right)
+       (result-error-code-compatible? left right)
+       (or (not (result-success-overlap? left right))
+           (compatible-normal? (:data left) (:data right)))))
+
+(def +compatible-normal-before-result+ compatible-normal?)
+(defn compatible-normal? [expected actual]
+  (if (and (= :result (:kind expected)) (= :result (:kind actual)))
+    (compatible-result? expected actual)
+    (+compatible-normal-before-result+ expected actual)))
+
+(defn assignable-result? [expected actual]
+  (let [expected-statuses (result-status-domain expected)
+        actual-statuses (result-status-domain actual)
+        expected-code (get-in expected [:properties :error-code])
+        actual-code (get-in actual [:properties :error-code])]
+    (and (every? (fn [status] (has? expected-statuses status)) actual-statuses)
+         (or (not (has? actual-statuses :success))
+             (assignable-normal? (:data expected) (:data actual)))
+         (or (nil? expected-code) (= expected-code actual-code)))))
+
+(def +assignable-normal-before-result+ assignable-normal?)
+(defn assignable-normal? [expected actual]
+  (if (and (= :result (:kind expected)) (= :result (:kind actual)))
+    (assignable-result? expected actual)
+    (+assignable-normal-before-result+ expected actual)))
