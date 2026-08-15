@@ -1,0 +1,174 @@
+name: Validate and publish clean filesystem stack
+
+on:
+  push:
+    branches:
+      - agent/std-native-file-portable-fs
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-fs-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout patch carrier
+        uses: actions/checkout@v4
+        with:
+          ref: agent/std-native-file-portable-fs
+          path: control
+          fetch-depth: 1
+
+      - name: Checkout current main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: hara
+          fetch-depth: 0
+
+      - name: Checkout specification fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: main
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Materialize filesystem implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          ln -s ../hara-specs-registry hara/hara-specs-registry
+          cat control/.github/patches/fs-current-main-dev.part-* | base64 -d | gzip -d > "$RUNNER_TEMP/base.patch"
+          cat control/.github/patches/fs-current-main-overlay.part-* | base64 -d | gzip -d > "$RUNNER_TEMP/overlay.patch"
+          base64 -d control/.github/patches/fs-current-main-fix-03.patch.gz.b64 | gzip -d > "$RUNNER_TEMP/fix03.patch"
+          exclude=(
+            --exclude=core/java/src/test/java/hara/truffle/MainTest.java
+            --exclude=core/rust/standard-library.namespaces
+          )
+          cd hara
+          git apply --check "${exclude[@]}" "$RUNNER_TEMP/base.patch"
+          git apply "${exclude[@]}" "$RUNNER_TEMP/base.patch"
+          git apply --check "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-01.patch
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-01.patch
+          git apply --check "${exclude[@]}" "$RUNNER_TEMP/overlay.patch"
+          git apply "${exclude[@]}" "$RUNNER_TEMP/overlay.patch"
+          git apply --check "${exclude[@]}" "$RUNNER_TEMP/fix03.patch"
+          git apply "${exclude[@]}" "$RUNNER_TEMP/fix03.patch"
+          git apply --check "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-04.patch
+          git apply "${exclude[@]}" ../control/.github/patches/fs-current-main-fix-04.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('core/rust/standard-library.namespaces')
+          names = {line.strip() for line in path.read_text().splitlines() if line.strip()}
+          names.update({'std.fs', 'std.fs.path', 'std.fs.walk'})
+          path.write_text('\n'.join(sorted(names)) + '\n')
+          PY
+          git diff --check
+          git status --short
+
+      - name: Verify canonical and embedded HAL sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          cmp core/lib/src/std/fs.hal core/rust/hal-src/std/fs.hal
+          cmp core/lib/src/std/fs/path.hal core/rust/hal-src/std/fs/path.hal
+          cmp core/lib/src/std/fs/walk.hal core/rust/hal-src/std/fs/walk.hal
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Validate Rust providers
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          rustfmt --edition 2021 --check core/rust/src/file.rs core/rust/src/fiber.rs
+          cargo check --manifest-path core/rust/Cargo.toml --lib
+          cargo test --manifest-path core/rust/Cargo.toml file::tests --lib -- --nocapture
+          for test_name in \
+            session_kernel_mounts_preserve_state_and_enforce_lifetime \
+            runtime_routes_file_operations_through_provider_registry \
+            hara_file_operations_use_capability_providers \
+            memory_file_provider_exposes_one_logical_root_and_preserves_bytes \
+            unsupported_capabilities_fail_stably \
+            read_forms_uses_the_capability_gated_file_provider; do
+            cargo test --manifest-path core/rust/Cargo.toml "$test_name" --lib -- --exact --nocapture
+          done
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: hara/core/java/pom.xml
+
+      - name: Validate JVM provider and portable facade
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara/core
+          mvn -B -Ptruffle --file java/pom.xml \
+            -Dtest=HaraLogicalPathTest,HaraFileProviderTest,StdFsTest \
+            test
+
+      - name: Validate portable path API
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          ./scripts/runtime/run-lib-tests core/lib/test/std/fs/path_test.hal
+
+      - name: Publish native provider branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          rm hara-specs-registry
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B agent/std-native-file-provider
+          git add \
+            core/java/src/main/java/hara/truffle/HaraContext.java \
+            core/java/src/main/java/hara/truffle/HaraFileProvider.java \
+            core/java/src/main/java/hara/truffle/HaraLogicalPath.java \
+            core/java/src/main/java/hara/truffle/HaraMountedFileSystem.java \
+            core/java/src/test/java/hara/truffle/HaraFileProviderTest.java \
+            core/java/src/test/java/hara/truffle/HaraLogicalPathTest.java \
+            core/rust/src/core.rs \
+            core/rust/src/file.rs \
+            core/rust/src/fiber.rs \
+            core/rust/src/lib.rs
+          git diff --cached --check
+          git commit -m "Improve capability-backed std.native.File providers"
+          git push --force origin HEAD:refs/heads/agent/std-native-file-provider
+
+      - name: Publish portable std.fs branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hara
+          git checkout -B agent/portable-std-fs-core
+          git add \
+            core/java/src/test/java/hara/truffle/StdFsTest.java \
+            core/lib/src/std/fs.hal \
+            core/lib/src/std/fs/path.hal \
+            core/lib/src/std/fs/walk.hal \
+            core/lib/test/std/fs/path_test.hal \
+            core/rust/standard-library.namespaces
+          git add -f \
+            core/rust/hal-src/std/fs.hal \
+            core/rust/hal-src/std/fs/path.hal \
+            core/rust/hal-src/std/fs/walk.hal
+          git diff --cached --check
+          git commit -m "Port the portable std.fs core"
+          test -z "$(git status --porcelain --untracked-files=all)"
+          git push --force origin HEAD:refs/heads/agent/portable-std-fs-core
