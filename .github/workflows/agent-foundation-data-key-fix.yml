@@ -1,0 +1,46 @@
+name: Agent preserve Foundation host descriptor data key
+
+on:
+  push:
+    branches: [agent/foundation-surface-conformance]
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/foundation-surface-conformance
+          fetch-depth: 0
+
+      - name: Restore the stable host descriptor key
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/rust/web/studio-hal.test.mjs")
+          source = path.read_text()
+          old = 'mapGet(description, "Host/version")'
+          new = 'mapGet(description, "host/version")'
+          if source.count(old) != 1:
+              raise SystemExit(f"expected exactly one accidental data-key replacement, found {source.count(old)}")
+          path.write_text(source.replace(old, new))
+          Path(".github/workflows/agent-foundation-data-key-fix.yml").unlink()
+          PY
+          node --check core/rust/web/studio-hal.test.mjs
+          python scripts/check_foundation_surface.py \
+            --report generated/foundation-surface-conformance.json
+
+      - name: Commit the corrected key
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            core/rust/web/studio-hal.test.mjs \
+            .github/workflows/agent-foundation-data-key-fix.yml
+          git commit -m "Preserve the host descriptor data key"
+          git push origin HEAD:agent/foundation-surface-conformance
