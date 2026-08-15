@@ -1,0 +1,48 @@
+name: Agent std.block source export
+
+on:
+  push:
+    branches:
+      - agent/std-block-port-source-export
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Hara branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Check out pinned Foundation reference
+        uses: actions/checkout@v4
+        with:
+          repository: zcaudate-xyz/foundation-base
+          ref: f909a44ad504cc6c9f44248d59ec3148261a48d7
+          path: .foundation-reference
+          fetch-depth: 1
+
+      - name: Export exact sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p target/std-block-source-export
+          tar --exclude=.git --exclude=.foundation-reference -czf \
+            target/std-block-source-export/hara-current.tar.gz .
+          tar -C .foundation-reference --exclude=.git -czf \
+            target/std-block-source-export/foundation-f909a44.tar.gz .
+          printf '%s\n' "${GITHUB_SHA}" > \
+            target/std-block-source-export/hara-commit.txt
+          printf '%s\n' 'f909a44ad504cc6c9f44248d59ec3148261a48d7' > \
+            target/std-block-source-export/foundation-commit.txt
+
+      - name: Upload source export
+        uses: actions/upload-artifact@v4
+        with:
+          name: std-block-source-export-${{ github.sha }}
+          path: target/std-block-source-export
+          if-no-files-found: error
+          retention-days: 1
