@@ -11,7 +11,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS = ROOT / "core/spec/clj-hal-corpus.json"
@@ -42,13 +42,37 @@ def git(repo: Path, *args: str) -> str:
     return run.stdout
 
 
+def character_literal_end(text: str, index: int) -> int:
+    """Return the first offset after a Clojure character literal.
+
+    Delimiter characters are valid character literals (for example ``\\)`` and
+    ``\\;``), so they must never participate in the surrounding form depth or
+    comment state. Named and numeric literals consume the rest of their token.
+    """
+    end = index + 1
+    if end >= len(text):
+        return end
+    first = text[end]
+    end += 1
+    if first.isalnum():
+        while end < len(text):
+            char = text[end]
+            if char.isspace() or char in '()[]{}";,':
+                break
+            end += 1
+    return end
+
+
 def forms(source: str) -> Iterator[str]:
     start = None
     depth = 0
     string = escaped = comment = False
-    for index, char in enumerate(source):
+    index = 0
+    while index < len(source):
+        char = source[index]
         if comment:
             comment = char != "\n"
+            index += 1
             continue
         if string:
             if escaped:
@@ -57,6 +81,10 @@ def forms(source: str) -> Iterator[str]:
                 escaped = True
             elif char == '"':
                 string = False
+            index += 1
+            continue
+        if char == "\\":
+            index = character_literal_end(source, index)
             continue
         if char == ";":
             comment = True
@@ -71,15 +99,18 @@ def forms(source: str) -> Iterator[str]:
             if depth == 0 and start is not None:
                 yield source[start : index + 1]
                 start = None
+        index += 1
 
 
 def balanced(text: str, start: int) -> str:
     depth = 0
     string = escaped = comment = False
-    for index in range(start, len(text)):
+    index = start
+    while index < len(text):
         char = text[index]
         if comment:
             comment = char != "\n"
+            index += 1
             continue
         if string:
             if escaped:
@@ -88,6 +119,10 @@ def balanced(text: str, start: int) -> str:
                 escaped = True
             elif char == '"':
                 string = False
+            index += 1
+            continue
+        if char == "\\":
+            index = character_literal_end(text, index)
             continue
         if char == ";":
             comment = True
@@ -99,7 +134,102 @@ def balanced(text: str, start: int) -> str:
             depth -= 1
             if depth == 0:
                 return text[start : index + 1]
+        index += 1
     raise CorpusError("unbalanced namespace clause")
+
+
+def quoted_end(text: str, index: int) -> int:
+    escaped = False
+    index += 1
+    while index < len(text):
+        char = text[index]
+        index += 1
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            return index
+    return index
+
+
+def collection_end(text: str, index: int) -> int:
+    pairs = {"(": ")", "[": "]", "{": "}"}
+    stack = [pairs[text[index]]]
+    string = escaped = comment = False
+    index += 1
+    while index < len(text):
+        char = text[index]
+        if comment:
+            comment = char != "\n"
+            index += 1
+            continue
+        if string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                string = False
+            index += 1
+            continue
+        if char == "\\":
+            index = character_literal_end(text, index)
+            continue
+        if char == ";":
+            comment = True
+        elif char == '"':
+            string = True
+        elif char in pairs:
+            stack.append(pairs[char])
+        elif char in ")]}":
+            if not stack or char != stack[-1]:
+                raise CorpusError(f"mismatched delimiter while scanning form: {char}")
+            stack.pop()
+            if not stack:
+                return index + 1
+        index += 1
+    raise CorpusError("unbalanced collection")
+
+
+def form_items(form: str) -> list[str]:
+    """Split one collection into its top-level raw items."""
+    offset = 0
+    while offset < len(form) and form[offset].isspace():
+        offset += 1
+    if offset >= len(form) or form[offset] not in "([{":
+        return []
+    limit = collection_end(form, offset) - 1
+    offset += 1
+    output: list[str] = []
+    while offset < limit:
+        while offset < limit and (form[offset].isspace() or form[offset] == ","):
+            offset += 1
+        if offset >= limit:
+            break
+        if form[offset] == ";":
+            newline = form.find("\n", offset)
+            offset = limit if newline < 0 else newline + 1
+            continue
+        start = offset
+        char = form[offset]
+        if char in "([{":
+            offset = collection_end(form, offset)
+        elif char == '"':
+            offset = quoted_end(form, offset)
+        elif char == "\\":
+            offset = character_literal_end(form, offset)
+        else:
+            while offset < limit:
+                char = form[offset]
+                if char.isspace() or char == "," or char in '()[]{}";':
+                    break
+                offset += 1
+        if offset > start:
+            output.append(form[start:offset])
+        else:
+            offset += 1
+    return output
 
 
 def skip_meta(text: str, offset: int) -> int:
@@ -110,32 +240,10 @@ def skip_meta(text: str, offset: int) -> int:
             return offset
         offset += 1
         if offset < len(text) and text[offset] == '"':
-            offset += 1
-            escaped = False
-            while offset < len(text):
-                char = text[offset]
-                offset += 1
-                if escaped:
-                    escaped = False
-                elif char == "\\":
-                    escaped = True
-                elif char == '"':
-                    break
+            offset = quoted_end(text, offset)
             continue
         if offset < len(text) and text[offset] in "[{":
-            opening = text[offset]
-            closing = "]" if opening == "[" else "}"
-            depth = 0
-            while offset < len(text):
-                char = text[offset]
-                if char == opening:
-                    depth += 1
-                elif char == closing:
-                    depth -= 1
-                    if depth == 0:
-                        offset += 1
-                        break
-                offset += 1
+            offset = collection_end(text, offset)
         else:
             match = TOKEN.match(text, offset)
             if not match:
@@ -143,7 +251,73 @@ def skip_meta(text: str, offset: int) -> int:
             offset = match.end()
 
 
-def source_surface(source: str) -> dict:
+def require_aliases(ns_form: str | None) -> dict[str, str]:
+    if not ns_form:
+        return {}
+    aliases: dict[str, str] = {}
+    pattern = re.compile(
+        r"\[\s*([A-Za-z0-9_.-]+)\s+(?:[^\]]*?\s)?"
+        r":as\s+([A-Za-z0-9_.-]+)(?=\s|\])"
+    )
+    for namespace, alias in pattern.findall(ns_form):
+        aliases[alias] = namespace
+    return aliases
+
+
+def unqualified_symbol(token: str) -> str | None:
+    if not token or token.startswith((':', '"')):
+        return None
+    if token[0] in "([{" or token in {"nil", "true", "false"}:
+        return None
+    return token.rsplit("/", 1)[-1]
+
+
+def intern_declaration(
+    form: str,
+    aliases: dict[str, str],
+    current_namespace: str | None,
+) -> tuple[set[str], set[str]]:
+    """Return exports declared by ``intern-in`` and namespaces from ``intern-all``.
+
+    ``std.lib.foundation/intern-in`` treats an unqualified first argument as an
+    explicit destination namespace.  It contributes to the scanned namespace
+    only when that destination is the namespace currently being scanned.  A
+    vector or a namespaced symbol as the first argument means the current
+    namespace is the destination.
+    """
+    items = form_items(form)
+    if not items:
+        return set(), set()
+    head = items[0].rsplit("/", 1)[-1]
+    output: set[str] = set()
+    intern_all: set[str] = set()
+    if head == "intern-in":
+        arguments = items[1:]
+        if arguments and not arguments[0].startswith("[") and "/" not in arguments[0]:
+            destination = aliases.get(arguments[0], arguments[0]).lstrip("'")
+            if destination != current_namespace:
+                return set(), set()
+            arguments = arguments[1:]
+        for argument in arguments:
+            if argument.startswith("["):
+                pair = form_items(argument)
+                if len(pair) >= 2:
+                    exported = unqualified_symbol(pair[0])
+                    if exported:
+                        output.add(exported)
+            elif "/" in argument:
+                exported = unqualified_symbol(argument)
+                if exported:
+                    output.add(exported)
+    elif head == "intern-all":
+        for argument in items[1:]:
+            namespace = aliases.get(argument, argument)
+            if namespace and not namespace.startswith((':', '"', '[', '(')):
+                intern_all.add(namespace.lstrip("'"))
+    return output, intern_all
+
+
+def source_declaration(source: str) -> dict:
     ns_form = next((form for form in forms(source) if NS.match(form)), None)
     namespace = NS.match(ns_form).group(1) if ns_form else None
     dependencies: set[str] = set()
@@ -151,19 +325,172 @@ def source_surface(source: str) -> dict:
         for match in CLAUSE.finditer(ns_form):
             clause = balanced(ns_form, match.start())
             dependencies.update(REQ_VECTOR.findall(clause))
+    aliases = require_aliases(ns_form)
     public: set[str] = set()
+    intern_all: set[str] = set()
     for form in forms(source):
         match = DEF.match(form)
-        if not match or match.group(1).endswith("-") or match.group(1) in NON_BINDING:
-            continue
-        name = TOKEN.match(form, skip_meta(form, match.end()))
-        if name and not name.group(0).startswith(":"):
-            public.add(name.group(0))
+        if match and not match.group(1).endswith("-") and match.group(1) not in NON_BINDING:
+            name = TOKEN.match(form, skip_meta(form, match.end()))
+            if name and not name.group(0).startswith(":"):
+                public.add(name.group(0))
+        exports, namespaces = intern_declaration(form, aliases, namespace)
+        public.update(exports)
+        intern_all.update(namespaces)
+    dependencies.update(intern_all)
     return {
         "namespace": namespace,
         "dependencies": sorted(dependencies),
         "public_symbols": sorted(public),
+        "intern_all": sorted(intern_all),
     }
+
+
+def source_surface(
+    source: str,
+    resolve_publics: Callable[[str], Iterable[str]] | None = None,
+) -> dict:
+    declaration = source_declaration(source)
+    public = set(declaration["public_symbols"])
+    if resolve_publics is not None:
+        for namespace in declaration["intern_all"]:
+            public.update(resolve_publics(namespace))
+    return {
+        "namespace": declaration["namespace"],
+        "dependencies": declaration["dependencies"],
+        "public_symbols": sorted(public),
+    }
+
+
+def resolve_source_surfaces(sources: dict[str, str]) -> dict[str, dict]:
+    """Resolve namespace surfaces for a repository source catalog.
+
+    ``intern-all`` is a namespace-level export relation.  Iterating to a fixed
+    point handles chains and cycles without requiring a Clojure runtime.
+    Results remain keyed by source path so callers can retain exact blob/path
+    evidence.
+    """
+    declarations = {path: source_declaration(source) for path, source in sources.items()}
+    paths_by_namespace = {
+        declaration["namespace"]: path
+        for path, declaration in declarations.items()
+        if declaration["namespace"]
+    }
+    publics = {
+        namespace: set(declarations[path]["public_symbols"])
+        for namespace, path in paths_by_namespace.items()
+    }
+    changed = True
+    while changed:
+        changed = False
+        for namespace, path in paths_by_namespace.items():
+            expanded = set(publics[namespace])
+            for imported in declarations[path]["intern_all"]:
+                expanded.update(publics.get(imported, set()))
+            if expanded != publics[namespace]:
+                publics[namespace] = expanded
+                changed = True
+    return {
+        path: {
+            "namespace": declaration["namespace"],
+            "dependencies": declaration["dependencies"],
+            "public_symbols": sorted(publics.get(declaration["namespace"], set())),
+        }
+        for path, declaration in declarations.items()
+    }
+
+
+class RepositorySurfaceCatalog:
+    """Lazy public-surface reader for one pinned Git repository tree."""
+
+    def __init__(self, reference: Path, commit: str):
+        self.reference = reference
+        self.commit = commit
+        self.paths = tuple(
+            path
+            for path in git(
+                reference, "ls-tree", "-r", "--name-only", commit
+            ).splitlines()
+            if path.endswith(".clj")
+        )
+        self._declarations: dict[str, dict] = {}
+        self._surfaces: dict[str, dict] = {}
+        self._namespace_paths: dict[str, str | None] = {}
+        self._namespace_publics: dict[str, set[str]] = {}
+
+    def __iter__(self):
+        return iter(self.paths)
+
+    def __getitem__(self, path: str) -> dict:
+        return self.surface(path)
+
+    def declaration(self, path: str) -> dict:
+        if path not in self._declarations:
+            source = git(self.reference, "show", f"{self.commit}:{path}")
+            self._declarations[path] = source_declaration(source)
+        return self._declarations[path]
+
+    def path_for_namespace(self, namespace: str) -> str | None:
+        if namespace in self._namespace_paths:
+            return self._namespace_paths[namespace]
+        relative = namespace.replace(".", "/").replace("-", "_") + ".clj"
+        candidates = [
+            path
+            for path in self.paths
+            if path == relative or path.endswith("/" + relative)
+        ]
+        candidates.sort(
+            key=lambda path: (
+                0 if path == "src/" + relative else 1,
+                0 if path.startswith("src/") else 1,
+                1 if "/test" in path or path.startswith("test/") else 0,
+                len(path),
+                path,
+            )
+        )
+        selected = candidates[0] if candidates else None
+        self._namespace_paths[namespace] = selected
+        return selected
+
+    def namespace_publics(self, namespace: str) -> set[str]:
+        if namespace in self._namespace_publics:
+            return set(self._namespace_publics[namespace])
+        public: set[str] = set()
+        pending = [namespace]
+        visited: set[str] = set()
+        while pending:
+            current = pending.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            path = self.path_for_namespace(current)
+            if path is None:
+                continue
+            declaration = self.declaration(path)
+            public.update(declaration["public_symbols"])
+            pending.extend(declaration["intern_all"])
+        self._namespace_publics[namespace] = public
+        return set(public)
+
+    def surface(self, path: str) -> dict:
+        if path not in self._surfaces:
+            declaration = self.declaration(path)
+            public = set(declaration["public_symbols"])
+            for imported in declaration["intern_all"]:
+                public.update(self.namespace_publics(imported))
+            self._surfaces[path] = {
+                "namespace": declaration["namespace"],
+                "dependencies": declaration["dependencies"],
+                "public_symbols": sorted(public),
+            }
+        return self._surfaces[path]
+
+
+def repository_source_catalog(
+    reference: Path,
+    commit: str,
+) -> RepositorySurfaceCatalog:
+    return RepositorySurfaceCatalog(reference, commit)
 
 
 def components(graph: dict[str, set[str]]) -> list[list[str]]:
@@ -252,8 +579,22 @@ def blob(repo: Path, revision: str, path: str) -> str:
     return git(repo, "rev-parse", f"{revision}:{path}").strip()
 
 
-def target_surface(target_root: Path, path: str) -> dict:
-    source = (target_root / path).read_text(encoding="utf-8")
+def git_path_exists(repo: Path, revision: str, path: str) -> bool:
+    run = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{revision}:{path}"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return run.returncode == 0
+
+
+def target_surface(target_root: Path, path: str, revision: str | None = None) -> dict:
+    source = (
+        git(target_root, "show", f"{revision}:{path}")
+        if revision is not None
+        else (target_root / path).read_text(encoding="utf-8")
+    )
     return source_surface(source)
 
 
@@ -274,16 +615,22 @@ def route_for(symbol: str, declaration: dict) -> dict:
     return route
 
 
-def route_declarations(routes: dict, reference: Path, commit: str) -> list[dict]:
+def route_declarations(
+    routes: dict,
+    reference: Path,
+    commit: str,
+    catalog: RepositorySurfaceCatalog | None = None,
+) -> list[dict]:
     declarations = list(routes.get("namespaces", []))
-    source_paths = git(reference, "ls-tree", "-r", "--name-only", commit, "src/std/lib").splitlines()
+    catalog = catalog or repository_source_catalog(reference, commit)
     existing = {entry["namespace"] for entry in declarations}
     for family in routes.get("families", []):
-        prefix = family["source_prefix"]
-        for path in source_paths:
-            if not path.endswith(".clj") or not path.startswith(prefix):
+        prefix = family["source_prefix"].rstrip("/")
+        for path in sorted(catalog):
+            in_family = path == prefix + ".clj" or path.startswith(prefix + "/")
+            if not path.endswith(".clj") or not in_family:
                 continue
-            surface = source_surface(git(reference, "show", f"{commit}:{path}"))
+            surface = catalog[path]
             name = surface["namespace"]
             if not name or name in existing:
                 continue
@@ -311,11 +658,11 @@ def route_declarations(routes: dict, reference: Path, commit: str) -> list[dict]
 def generate(routes: dict, reference: Path, target_root: Path) -> dict:
     commit = routes["reference"]["commit"]
     target_commit = routes["target"]["base_commit"]
+    catalog = repository_source_catalog(reference, commit)
     entries = []
-    for declaration in route_declarations(routes, reference, commit):
+    for declaration in route_declarations(routes, reference, commit, catalog):
         path = declaration["source_path"]
-        source = git(reference, "show", f"{commit}:{path}")
-        surface = source_surface(source)
+        surface = catalog[path]
         name = surface["namespace"]
         if name != declaration["namespace"]:
             raise CorpusError(f"route namespace mismatch for {path}: {name}")
@@ -324,18 +671,20 @@ def generate(routes: dict, reference: Path, target_root: Path) -> dict:
         targets = []
         surfaces = {}
         for target_path in target_paths:
-            file = target_root / target_path
             state_routes = [route for route in symbol_routes if route.get("target_path") == target_path]
             implemented = any(route.get("state") == "implemented" for route in state_routes)
-            if implemented and not file.is_file() and not declaration.get("recipe"):
+            snapshotted = implemented and git_path_exists(
+                target_root, target_commit, target_path
+            )
+            if implemented and not snapshotted and not declaration.get("recipe"):
                 raise CorpusError(f"implemented target is missing: {target_path}")
-            if file.is_file():
-                target = target_surface(target_root, target_path)
+            if snapshotted:
+                target = target_surface(target_root, target_path, target_commit)
                 surfaces[target_path] = set(target["public_symbols"])
                 targets.append({
                     "namespace": target["namespace"],
                     "path": target_path,
-                    "blob": git(target_root, "hash-object", target_path).strip(),
+                    "blob": blob(target_root, target_commit, target_path),
                 })
             else:
                 targets.append({"namespace": state_routes[0].get("target_namespace"), "path": target_path})
@@ -369,10 +718,19 @@ def generate(routes: dict, reference: Path, target_root: Path) -> dict:
             raise CorpusError(f"generated symbols do not resolve for {name}: {unresolved_generated}")
         canonical_paths = [target["path"] for target in targets]
         if canonical_paths:
-            canonical = target_root / canonical_paths[0]
+            canonical_path = canonical_paths[0]
+            canonical = (
+                git(target_root, "show", f"{target_commit}:{canonical_path}")
+                if git_path_exists(target_root, target_commit, canonical_path)
+                else None
+            )
             for mirror_path in declaration.get("mirrors", []):
-                mirror = target_root / mirror_path
-                if not mirror.is_file() or mirror.read_bytes() != canonical.read_bytes():
+                mirror = (
+                    git(target_root, "show", f"{target_commit}:{mirror_path}")
+                    if git_path_exists(target_root, target_commit, mirror_path)
+                    else None
+                )
+                if canonical is None or mirror != canonical:
                     raise CorpusError(f"Hara mirror drift for {name}: {mirror_path}")
         for retired_path in declaration.get("retirements", []):
             if (target_root / retired_path).exists():
@@ -513,12 +871,15 @@ def verify(corpus: dict, reference: Path, target_root: Path) -> None:
     commit = corpus["reference"]["commit"]
     if git(reference, "rev-parse", f"{commit}^{{commit}}").strip() != commit:
         raise CorpusError("Foundation checkout does not contain the pinned commit")
+    target_commit = corpus["target"]["base_commit"]
+    if git(target_root, "rev-parse", f"{target_commit}^{{commit}}").strip() != target_commit:
+        raise CorpusError("Hara checkout does not contain the pinned target commit")
+    catalog = repository_source_catalog(reference, commit)
     for entry in corpus["namespaces"]:
         name = entry["namespace"]
-        source = git(reference, "show", f"{commit}:{entry['source_path']}")
         if git(reference, "rev-parse", f"{commit}:{entry['source_path']}").strip() != entry["source_blob"]:
             raise CorpusError(f"Foundation blob drift for {name}")
-        surface = source_surface(source)
+        surface = catalog[entry["source_path"]]
         if surface["namespace"] != name or surface["dependencies"] != entry["dependencies"]:
             raise CorpusError(f"Foundation surface drift for {name}")
         if corpus.get("schema_version") == 2:
@@ -528,21 +889,21 @@ def verify(corpus: dict, reference: Path, target_root: Path) -> None:
                 target_path = target.get("path")
                 if not target.get("blob"):
                     continue
-                file = target_root / target_path
-                if not file.is_file():
-                    raise CorpusError(f"missing Hara target for {name}: {target_path}")
-                if git(target_root, "hash-object", target_path).strip() != target["blob"]:
+                if not git_path_exists(target_root, target_commit, target_path):
+                    raise CorpusError(
+                        f"missing pinned Hara target for {name}: {target_path}"
+                    )
+                if blob(target_root, target_commit, target_path) != target["blob"]:
                     raise CorpusError(f"Hara blob drift for {name}: {target_path}")
             continue
         target_path = entry.get("target_path")
         if not target_path:
             continue
-        target = target_root / target_path
-        if not target.is_file():
-            raise CorpusError(f"missing Hara target for {name}")
-        if git(target_root, "hash-object", target_path).strip() != entry["target_blob"]:
+        if not git_path_exists(target_root, target_commit, target_path):
+            raise CorpusError(f"missing pinned Hara target for {name}")
+        if blob(target_root, target_commit, target_path) != entry["target_blob"]:
             raise CorpusError(f"Hara blob drift for {name}")
-        if source_surface(target.read_text(encoding="utf-8"))["namespace"] != entry["target_namespace"]:
+        if target_surface(target_root, target_path, target_commit)["namespace"] != entry["target_namespace"]:
             raise CorpusError(f"Hara namespace drift for {name}")
 
 
