@@ -20,7 +20,7 @@ jobs:
       - name: Checkout current main with merged std.native.File providers
         uses: actions/checkout@v4
         with:
-          ref: 962fca08786dda040a3f542583c33ff5ae5cd53c
+          ref: 28bb0a83083b922344d478b2f5777ea1a8b1cbf1
           path: hara
           fetch-depth: 0
 
@@ -102,6 +102,29 @@ jobs:
                   std.fs.path/suffix])
                => true)])'''
           test_path.write_text(before + new_fact + runner_marker + after)
+
+          context_path = Path("core/java/src/main/java/hara/truffle/HaraContext.java")
+          context_source = context_path.read_text()
+          old_loader = '''  private java.net.URL getResource(String resourceName) {
+            return HaraContext.class.getClassLoader().getResource(resourceName);
+          }'''
+          new_loader = '''  private java.net.URL getResource(String resourceName) {
+            ClassLoader definingLoader = HaraContext.class.getClassLoader();
+            java.net.URL resource =
+                definingLoader == null
+                    ? ClassLoader.getSystemResource(resourceName)
+                    : definingLoader.getResource(resourceName);
+            if (resource != null) {
+              return resource;
+            }
+            ClassLoader contextLoader = Thread.currentThread().getContextClassLoader();
+            return contextLoader != null && contextLoader != definingLoader
+                ? contextLoader.getResource(resourceName)
+                : null;
+          }'''
+          if old_loader not in context_source:
+              raise SystemExit("HaraContext classpath loader marker not found")
+          context_path.write_text(context_source.replace(old_loader, new_loader))
           PY
 
           cat > core/lib/test/std/fs/facade_test.hal <<'HAL'
@@ -275,12 +298,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B agent/650-portable-std-fs-current-main \
-            962fca08786dda040a3f542583c33ff5ae5cd53c
+            28bb0a83083b922344d478b2f5777ea1a8b1cbf1
           git add \
             core/lib/src/std/fs.hal \
             core/lib/src/std/fs/walk.hal \
             core/lib/test/std/fs/facade_test.hal \
             core/lib/test/std/fs/path_test.hal \
+            core/java/src/main/java/hara/truffle/HaraContext.java \
             core/java/src/test/java/hara/truffle/StdFsTest.java \
             core/rust/standard-library.namespaces
           git diff --cached --check
