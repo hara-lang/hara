@@ -1,0 +1,90 @@
+name: Continue native Result implementation
+
+on:
+  push:
+    branches:
+      - agent/640-native-result-bootstrap
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/640-native-result-bootstrap
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Fetch external conformance fixtures
+        run: |
+          if [ ! -d ../hara-specs-registry/.git ]; then
+            git clone --depth 1 https://github.com/hara-lang/hara-specs-registry.git ../hara-specs-registry
+          fi
+
+      - name: Validate patch scripts
+        run: python3 -m py_compile .github/scripts/patch_result_runtime.py .github/scripts/patch_result_tests_hal.py
+
+      - name: Apply native synchronization runtime patch
+        run: python3 .github/scripts/patch_result_runtime.py
+
+      - name: Format and compile patched runtimes
+        run: |
+          rustfmt --edition 2021 core/rust/src/core.rs core/rust/src/fiber.rs core/rust/src/core/native_result.rs
+          rustfmt --edition 2021 --check core/rust/src/core.rs core/rust/src/fiber.rs core/rust/src/core/native_result.rs
+          cargo check --manifest-path core/rust/Cargo.toml --lib
+          mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Run pre-write focused HAL test
+        run: ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_test.hal
+
+      - name: Evaluate complete candidate in a fresh native Hara process
+        run: |
+          python3 .github/scripts/patch_result_tests_hal.py candidate
+          ./core/hara eval "$(cat core/target/foundation-result-candidate.hal)"
+
+      - name: Apply res-* facade and focused tests
+        run: python3 .github/scripts/patch_result_tests_hal.py apply
+
+      - name: Validate written HAL source in a fresh native Hara process
+        run: ./core/hara eval "$(cat core/lib/src/std/foundation.hal)"
+
+      - name: Validate canonical and mirrored HAL parity
+        run: cmp core/lib/src/std/foundation.hal core/rust/hal-src/std/foundation.hal
+
+      - name: Run focused Rust Result tests
+        run: |
+          rustfmt --edition 2021 core/rust/src/core.rs core/rust/src/fiber.rs core/rust/src/core/native_result.rs
+          rustfmt --edition 2021 --check core/rust/src/core.rs core/rust/src/fiber.rs core/rust/src/core/native_result.rs
+          cargo test --manifest-path core/rust/Cargo.toml 'core::native_result::tests::' --lib
+
+      - name: Run focused Java Result tests
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HaraResultTest test
+
+      - name: Repeat focused HAL test after write
+        run: ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_test.hal
+
+      - name: Check patch and commit implementation
+        run: |
+          git diff --check
+          rm .github/scripts/patch_result_runtime.py
+          rm .github/scripts/patch_result_tests_hal.py
+          rm .github/workflows/agent-native-result-continuation.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Add Result synchronization and res-* facade"
+          git push origin HEAD:agent/640-native-result-bootstrap
