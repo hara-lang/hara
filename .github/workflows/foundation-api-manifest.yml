@@ -45,10 +45,13 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - uses: dtolnay/rust-toolchain@stable
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: core/rust
@@ -68,11 +71,11 @@ jobs:
           python scripts/generate_foundation_api_manifest.py \
             --output generated/foundation-api-manifest.json
 
-      - name: Validate current Foundation boundary
+      - name: Validate current Foundation boundary and stable provenance
         run: |
           python - <<'PY'
           import json
-          from pathlib import Path
+          from pathlib import Path, PurePosixPath
 
           path = Path("generated/foundation-api-manifest.json")
           manifest = json.loads(path.read_text())
@@ -96,6 +99,13 @@ jobs:
           retired = {item["formerName"] for item in manifest["migrations"]}
           assert not retired.intersection(current), retired.intersection(current)
           assert manifest["source"]["commit"] not in {"", "unknown"}
+          for field in (
+              manifest["inventory"]["path"],
+              manifest["migrationLedger"]["path"],
+          ):
+              value = PurePosixPath(field)
+              assert not value.is_absolute(), field
+              assert ".." not in value.parts, field
           print(
               f"validated schema-v2 manifest: {len(current)} Foundation namespaces, "
               f"{manifest['surfaceDigest']}"
