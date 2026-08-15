@@ -1,0 +1,72 @@
+(ns std.fs.facade-test
+  (:use code.test)
+  (:require [std.fs :as fs]
+            [std.fs.walk :as walk]))
+
+(def results
+  [(fact "extended-native-file-effects-return-promises-before-provider-resolution"
+     [(promise? (File/entries "/missing"))
+      (promise? (File/copy "/source" "/target"))
+      (promise? (File/move "/source" "/target"))
+      (promise? (File/temp-file "/tmp"))
+      (promise? (File/temp-directory "/tmp"))]
+     => [true true true true true])
+
+   (fact "portable-filesystem-effects-return-promises-before-provider-resolution"
+     [(promise? (fs/stat "/missing"))
+      (promise? (fs/entries "/missing"))
+      (promise? (fs/exists? "/missing"))
+      (promise? (fs/file? "/missing"))
+      (promise? (walk/walk "/missing"))
+      (promise? (fs/copy-into "/" "/target"))]
+     => [true true true true true true])
+
+   (fact "portable-copy-and-delete-defaults-are-safe"
+     [fs/copy-default-options fs/delete-default-options]
+     => [{:replace? false
+          :parents? false
+          :preserve-modified? false}
+         {:recursive? false
+          :missing-ok? false}])
+
+   (fact "walk-defaults-are-deterministic-and-bounded-only-on-request"
+     walk/default-options
+     => {:include-root? false
+         :max-depth nil
+         :include nil
+         :exclude nil})
+
+   (fact "portable-filesystem-contract-symbols-are-resolvable"
+     (every? (fn [symbol]
+               (not (nil? (resolve symbol))))
+             '[std.fs/copy
+               std.fs/copy-default-options
+               std.fs/copy-into
+               std.fs/copy-single
+               std.fs/create-directory
+               std.fs/delete
+               std.fs/delete-default-options
+               std.fs/directory?
+               std.fs/entries
+               std.fs/exists?
+               std.fs/file?
+               std.fs/list
+               std.fs/mkdir
+               std.fs/move
+               std.fs/read-bytes
+               std.fs/select
+               std.fs/stat
+               std.fs/symlink?
+               std.fs/temp-directory
+               std.fs/temp-file
+               std.fs/write-bytes])
+     => true)
+
+   (fact "portable-walk-contract-symbols-are-resolvable"
+     (every? (fn [symbol]
+               (not (nil? (resolve symbol))))
+             '[std.fs.walk/default-options
+               std.fs.walk/walk])
+     => true)])
+
+(pr-str (run '[std.fs.facade-test]))
