@@ -187,6 +187,7 @@
   [location]
   (let [head (nav/form-head location)]
     (and (nav/definition-location? location)
+         (not (str/ends-with? head "-"))
          (not (has? +non-binding-definitions+ head)))))
 
 (defn public-symbols
@@ -203,6 +204,122 @@
     {:namespace (nav/namespace-name root)
      :dependencies (dependencies root)
      :public-symbols (public-symbols root)}))
+
+(defn namespace-shape
+  "Returns the stable namespace, dependency, and public-binding shape for
+   source text, a block tree, or an existing shape map."
+  [input]
+  (let [summary
+        (if (and (map? input)
+                 (has? input :namespace)
+                 (has? input :dependencies)
+                 (has? input :public-symbols))
+          input
+          (source-summary input))]
+    {:namespace (:namespace summary)
+     :dependencies
+     (unique-sorted (or (:dependencies summary) []))
+     :public-symbols
+     (unique-sorted (or (:public-symbols summary) []))}))
+
+(defn- value-index
+  [values]
+  (reduce
+   (fn [output value]
+     (assoc output value true))
+   {}
+   values))
+
+(defn- values-only-in
+  [left right]
+  (let [right-index (value-index right)]
+    (vec
+     (filter
+      (fn [value]
+        (not (has? right-index value)))
+      left))))
+
+(defn namespace-shape-check
+  "Compares two namespace shapes. A namespace map can express an intentional
+   ownership move; optional extra dependencies or public symbols must be
+   explicitly allowed."
+  ([expected actual]
+   (namespace-shape-check expected actual {}))
+  ([expected actual options]
+   (let [expected (namespace-shape expected)
+         actual (namespace-shape actual)
+         namespace-map (or (:namespace-map options) {})
+         expected-namespace
+         (or (get namespace-map (:namespace expected))
+             (:namespace expected))
+         missing-dependencies
+         (values-only-in (:dependencies expected)
+                         (:dependencies actual))
+         unexpected-dependencies
+         (values-only-in (:dependencies actual)
+                         (:dependencies expected))
+         missing-public-symbols
+         (values-only-in (:public-symbols expected)
+                         (:public-symbols actual))
+         unexpected-public-symbols
+         (values-only-in (:public-symbols actual)
+                         (:public-symbols expected))
+         namespace-match?
+         (= expected-namespace (:namespace actual))
+         dependencies-match?
+         (and
+          (empty? missing-dependencies)
+          (or (:allow-extra-dependencies? options)
+              (empty? unexpected-dependencies)))
+         public-symbols-match?
+         (and
+          (empty? missing-public-symbols)
+          (or (:allow-extra-public-symbols? options)
+              (empty? unexpected-public-symbols)))]
+     {:conformant?
+      (and namespace-match?
+           dependencies-match?
+           public-symbols-match?)
+      :expected expected
+      :actual actual
+      :namespace
+      {:expected expected-namespace
+       :actual (:namespace actual)
+       :match? namespace-match?}
+      :dependencies
+      {:missing missing-dependencies
+       :unexpected unexpected-dependencies
+       :match? dependencies-match?}
+      :public-symbols
+      {:missing missing-public-symbols
+       :unexpected unexpected-public-symbols
+       :match? public-symbols-match?}})))
+
+(defn translated-namespace-shape-check
+  "Translates Clojure source with code.translate and compares its resulting
+   namespace shape to the reviewed Hara target shape."
+  ([source target]
+   (translated-namespace-shape-check source target {}))
+  ([source target options]
+   (let [translation
+         (rule/translate-source
+          source
+          (merge {:mode :review}
+                 (or (:translation/options options) {})))
+         check
+         (namespace-shape-check
+          (:output translation)
+          target
+          (or (:shape/options options) {}))]
+     (assoc
+      check
+      :translation
+      {:output (:output translation)
+       :changed (:changed translation)
+       :rules/matched
+       (vec (map :rule/id (:rules/matched translation)))
+       :rules/applied
+       (vec (map :rule/id (:rules/applied translation)))}))))
 
 (defn catalog-field
   [value keyword-key string-key]
