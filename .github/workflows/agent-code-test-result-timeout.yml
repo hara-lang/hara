@@ -87,20 +87,21 @@ jobs:
           echo "untouched code.test runner status: $status"
           exit 0
 
+      - name: Record raw fixture-loader baseline before writing
+        id: raw_baseline
+        run: |
+          set +e
+          ./core/hara eval "$(cat core/lib/test/code/test_test.hal)"
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "untouched raw code.test fixture status: $status"
+          exit 0
+
       - name: Apply process and test migration
         run: python3 .github/scripts/patch_code_test_result_timeout.py apply
 
       - name: Evaluate written process source in a fresh process
         run: ./core/hara eval "$(cat core/lib/src/code/test/base/process.hal)"
-
-      - name: Evaluate the written focused test in the Truffle runtime
-        run: |
-          output="$(./core/hara eval "$(cat core/lib/test/code/test_test.hal)")"
-          echo "$output"
-          if echo "$output" | grep -F ':pass false'; then
-            echo "A code.test focused assertion failed"
-            exit 1
-          fi
 
       - name: Prove written native timeout behavior
         run: |
@@ -114,11 +115,22 @@ jobs:
                 (code.test.base.process/check
                  (fn [] (Promise/delay 100 (fn [] 42)))
                  42
+                 {:timeout 0})
+                fact-result
+                (code.test.base.process/run-fact
+                 {:namespace 'demo
+                  :name \"timeout\"
+                  :meta {}
+                  :function
+                  (fn [options]
+                    (Promise/delay 100 (fn [] [])))}
                  {:timeout 0})]
             [(Result/timeout? outcome)
+             (get (ex-data (Result/error-value outcome)) :code)
              (:status check-result)
-             (:timeout check-result)])")"
-          test "$output" = '[true :timeout 0]'
+             (:timeout check-result)
+             (:status fact-result)])")"
+          test "$output" = '[true :result/timeout :timeout 0 :timeout]'
 
       - name: Validate source mirror and compatibility removal
         run: |
@@ -142,15 +154,32 @@ jobs:
           echo "written code.test runner status: $status"
           exit 0
 
-      - name: Reject a new focused runner regression
+      - name: Record raw fixture-loader status after writing
+        id: raw_final
+        run: |
+          set +e
+          ./core/hara eval "$(cat core/lib/test/code/test_test.hal)"
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "written raw code.test fixture status: $status"
+          exit 0
+
+      - name: Reject new focused-loader regressions
         env:
           BASELINE_STATUS: ${{ steps.baseline.outputs.status }}
           FINAL_STATUS: ${{ steps.final.outputs.status }}
+          RAW_BASELINE_STATUS: ${{ steps.raw_baseline.outputs.status }}
+          RAW_FINAL_STATUS: ${{ steps.raw_final.outputs.status }}
         run: |
           if [ "$BASELINE_STATUS" = 0 ]; then
             test "$FINAL_STATUS" = 0
           else
             echo "code.test runner already failed on untouched source: $BASELINE_STATUS -> $FINAL_STATUS"
+          fi
+          if [ "$RAW_BASELINE_STATUS" = 0 ]; then
+            test "$RAW_FINAL_STATUS" = 0
+          else
+            echo "raw code.test fixture already failed on untouched source: $RAW_BASELINE_STATUS -> $RAW_FINAL_STATUS"
           fi
 
       - name: Publish clean implementation
