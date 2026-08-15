@@ -141,6 +141,7 @@ public final class HaraJavaAdapters {
                 "cancel", 1)));
     installCoroutine(
         context.defineProtocol("ICoroutine", Map.of("status", 1, "resume", -1)));
+    installStream(context.defineProtocol("IStream", Map.of("next", 1)));
   }
 
   public static void installIFn(HaraProtocol protocol) {
@@ -764,6 +765,10 @@ public final class HaraJavaAdapters {
         ICoroutine.class,
         "resume",
         (receiver, arguments) -> ((ICoroutine) receiver).resume(arguments));
+  }
+
+  public static void installStream(HaraProtocol protocol) {
+    protocol.extend(IStream.class, "next", (receiver, arguments) -> ((IStream) receiver).next());
   }
 
   public static void installRealize(HaraProtocol protocol) {

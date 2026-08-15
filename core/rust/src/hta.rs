@@ -1,4 +1,4 @@
-use crate::core::Value;
+use crate::core::{ResultValue, Value};
 #[cfg(test)]
 use crate::lang::data::{Tuple as PTuple, Vector as PVector};
 use crate::lang::protocol::INamespaced;
@@ -44,6 +44,8 @@ const POINTER: u8 = 34;
 const VAR_REF: u8 = 35;
 const DEQUE: u8 = 36;
 const PRIORITY_MAP: u8 = 37;
+const RESULT_STRUCT_NAME: &str = "std.native/Result";
+const RESULT_STRUCT_FIELDS: [&str; 4] = ["status", "data", "error", "context"];
 
 pub fn encode(value: &Value) -> Result<Vec<u8>, String> {
     let mut output = MAGIC.to_vec();
@@ -249,6 +251,22 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
                 depth + 1,
             )?;
         }
+        Value::Result(value) => {
+            output.push(STRUCT);
+            encode_bare(&Value::String(RESULT_STRUCT_NAME.into()), output, depth + 1)?;
+            let fields = RESULT_STRUCT_FIELDS
+                .iter()
+                .map(|field| Value::String((*field).into()))
+                .collect::<Vec<_>>();
+            encode_sequence(VECTOR, fields.iter(), output, depth)?;
+            let values = [
+                value.status_value(),
+                value.data.clone(),
+                value.error_value(),
+                value.transport_context(),
+            ];
+            encode_sequence(VECTOR, values.iter(), output, depth)?;
+        }
         Value::Struct(value) => {
             output.push(STRUCT);
             encode_bare(&Value::String(value.ty.name.clone()), output, depth + 1)?;
@@ -325,6 +343,44 @@ fn encode_len(value: usize, output: &mut Vec<u8>) -> Result<(), String> {
     let value = u32::try_from(value).map_err(|_| "hta/value-too-large")?;
     output.extend_from_slice(&value.to_be_bytes());
     Ok(())
+}
+
+fn decode_result_struct(
+    name: &str,
+    fields: &[String],
+    values: &[Value],
+) -> Result<Option<Value>, String> {
+    let exact_fields = fields.len() == RESULT_STRUCT_FIELDS.len()
+        && fields
+            .iter()
+            .zip(RESULT_STRUCT_FIELDS.iter())
+            .all(|(field, expected)| field == expected);
+    if name != RESULT_STRUCT_NAME || !exact_fields {
+        return Ok(None);
+    }
+    let [status, data, error, context] = values else {
+        return Err("hta/value-malformed: Result arity mismatch".into());
+    };
+    let result = match status {
+        Value::Keyword(status) if status.as_str() == "success" => {
+            if !matches!(error, Value::Nil) {
+                return Err("hta/value-malformed: success Result contains an error".into());
+            }
+            ResultValue::success(data.clone(), context.clone())
+        }
+        Value::Keyword(status) if status.as_str() == "error" => {
+            if !matches!(data, Value::Nil) {
+                return Err("hta/value-malformed: error Result contains success data".into());
+            }
+            if !matches!(error, Value::ExceptionInfo(_)) {
+                return Err("hta/value-malformed: error Result lacks a native Error".into());
+            }
+            ResultValue::error(error.clone(), context.clone())
+        }
+        _ => return Err("hta/value-malformed: invalid Result status".into()),
+    }
+    .map_err(|error| format!("hta/value-malformed: invalid Result: {error}"))?;
+    Ok(Some(Value::Result(std::rc::Rc::new(result))))
 }
 
 struct Reader<'a> {
@@ -549,6 +605,9 @@ impl Reader<'_> {
                 if fields.len() != values.len() {
                     return Err("hta/value-malformed: struct arity mismatch".into());
                 }
+                if let Some(result) = decode_result_struct(&name, &fields, &values)? {
+                    return Ok(result);
+                }
                 Ok(Value::Struct(std::rc::Rc::new(
                     crate::core::StructValue::from_values(
                         std::rc::Rc::new(crate::core::StructType { name, fields }),
@@ -714,6 +773,29 @@ mod tests {
             assert_eq!(decode(&encode(&value).unwrap()).unwrap(), value);
         }
     }
+
+    #[test]
+    fn native_result_round_trips_through_the_canonical_struct_shape() {
+        let context = Value::Map(
+            vec![(
+                Value::Keyword("source".into()),
+                Value::String("hta".into()),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let value = Value::Result(std::rc::Rc::new(
+            ResultValue::success(Value::Number(42), context).unwrap(),
+        ));
+
+        let encoded = encode(&value).unwrap();
+        let decoded = decode(&encoded).unwrap();
+
+        assert_eq!(decoded, value);
+        assert!(matches!(decoded, Value::Result(_)));
+        assert!(encoded.windows(17).any(|bytes| bytes == b"std.native/Result"));
+    }
+
     #[test]
     fn canonical_maps_ignore_insertion_order() {
         let a = Value::Map(
@@ -793,6 +875,18 @@ mod tests {
             .unwrap(),
         ));
         let decoded = decode(&encode(&value).unwrap()).unwrap();
+        assert_eq!(
+            crate::core::call_value(Value::Keyword("x".into()), vec![decoded.clone()]).unwrap(),
+            Value::Number(1)
+        );
+        assert_eq!(
+            crate::core::call_value(
+                Value::Keyword("missing".into()),
+                vec![decoded.clone(), Value::Number(7)],
+            )
+            .unwrap(),
+            Value::Number(7)
+        );
         let Value::Struct(decoded) = decoded else {
             panic!("struct value")
         };

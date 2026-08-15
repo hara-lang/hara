@@ -91,6 +91,7 @@ final class FoundationHalcLowerer {
     }
     return switch (symbol.getName()) {
       case "quote" -> lowerQuote(list);
+      case "comment" -> new HaraNodes.Literal(null);
       case "syntax-quote" -> lowerSyntaxQuote(list);
       case "if" -> lowerIf(list);
       case "cond" -> lowerCond(list);

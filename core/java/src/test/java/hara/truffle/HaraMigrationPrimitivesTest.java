@@ -30,6 +30,22 @@ public class HaraMigrationPrimitivesTest {
   }
 
   @Test
+  public void keywordInvocationUsesDefstructMapSemantics() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[1 7 nil 1 :user.Point]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (defstruct Point [x y]) "
+                      + "(let [point (map->Point {:x 1 :extra 9})] "
+                      + "[(:x point) (:missing point 7) (:extra point) "
+                      + " (get point :x) (type point)]))")
+              .toString());
+    }
+  }
+
+  @Test
   public void instancePredicateIsRestrictedToHaraStructTypes() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       Value result =

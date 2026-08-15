@@ -29,6 +29,9 @@ use std::rc::Rc;
 
 #[path = "fiber.rs"]
 mod fiber;
+#[path = "core/native_result.rs"]
+mod native_result;
+pub use native_result::{ResultStatus, ResultValue};
 #[path = "native_crypto.rs"]
 mod native_crypto;
 pub(crate) use fiber::Cont;
@@ -243,7 +246,10 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ),
     (
         "Env",
-        &["snapshot", "vars", "namespaces", "namespace", "resolve"],
+        &[
+            "current", "snapshot", "vars", "namespaces", "namespace", "module", "resolve",
+            "alias-state", "intern-var", "eval-in", "eval",
+        ],
     ),
     ("Package", &["catalog", "find", "ensure", "state"]),
     (
@@ -349,6 +355,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &["run", "new", "from", "all", "delay", "instance?"],
     ),
     ("Coroutine", &["create", "yield", "await", "instance?"]),
+    ("Stream", &["generate", "next", "instance?"]),
     (
         "Arr",
         &[
@@ -424,6 +431,13 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         ],
     ),
     ("UUID", &["instance?"]),
+    (
+        "Result",
+        &[
+            "success", "error", "synchronize", "result?", "success?", "error?", "status",
+            "data", "error-value", "context", "with-context",
+        ],
+    ),
     ("Schema", &["instance?", "kind", "form", "ast", "origin"]),
     ("Error", &["new", "message", "class"]),
     (
@@ -524,6 +538,7 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
     ("IAssoc", &[("assoc", 3)]),
     ("ICas", &[("cas", 3)]),
     ("IClose", &[("close", 1)]),
+    ("IStream", &[("next", 1)]),
     (
         "IComponent",
         &[
@@ -794,6 +809,8 @@ pub enum Value {
     NativeType(Rc<NativeType>),
     Schema(Rc<RuntimeSchema>),
     Coroutine(Rc<Coroutine>),
+    Stream(Rc<RuntimeStream>),
+    Result(Rc<ResultValue>),
     ExceptionInfo(Rc<ExceptionInfo>),
     Nil,
 }
@@ -1014,6 +1031,25 @@ impl Coroutine {
     pub fn new(body: Value) -> Self {
         Self {
             state: RefCell::new(CoroutineState::New(body)),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RuntimeStream {
+    coroutine: Rc<Coroutine>,
+    initial_arguments: RefCell<Option<Vec<Value>>>,
+    pending: Rc<Cell<bool>>,
+    closed: Rc<Cell<bool>>,
+}
+
+impl RuntimeStream {
+    fn new(body: Value, initial_arguments: Vec<Value>) -> Self {
+        Self {
+            coroutine: Rc::new(Coroutine::new(body)),
+            initial_arguments: RefCell::new(Some(initial_arguments)),
+            pending: Rc::new(Cell::new(false)),
+            closed: Rc::new(Cell::new(false)),
         }
     }
 }
@@ -2582,6 +2618,8 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::NativeType(_)
         | Value::Schema(_)
         | Value::Coroutine(_)
+        | Value::Stream(_)
+        | Value::Result(_)
         | Value::MutableCollection(_) => false,
     }
 }
@@ -2812,6 +2850,8 @@ impl PartialEq for Value {
             (Value::NativeType(a), Value::NativeType(b)) => a.name == b.name,
             (Value::Schema(a), Value::Schema(b)) => a.ast == b.ast,
             (Value::Coroutine(a), Value::Coroutine(b)) => Rc::ptr_eq(a, b),
+            (Value::Stream(a), Value::Stream(b)) => Rc::ptr_eq(a, b),
+            (Value::Result(a), Value::Result(b)) => a == b,
             (Value::ExceptionInfo(a), Value::ExceptionInfo(b)) => Rc::ptr_eq(a, b),
             (Value::Nil, Value::Nil) => true,
             _ => false,
@@ -2891,8 +2931,10 @@ impl Ord for Value {
                 Value::NativeType(_) => 32,
                 Value::Schema(_) => 33,
                 Value::Coroutine(_) => 33,
-                Value::ExceptionInfo(_) => 34,
-                Value::MutableCollection(_) => 35,
+                Value::Stream(_) => 34,
+                Value::Result(_) => 35,
+                Value::ExceptionInfo(_) => 36,
+                Value::MutableCollection(_) => 37,
             }
         }
         rank(self)
@@ -3010,6 +3052,8 @@ impl crate::lang::hash::JavaHash for Value {
             Self::NativeType(v) => opaque(31, |s| v.name.hash(s)),
             Self::Schema(v) => opaque(34, |s| v.form.to_string().hash(s)),
             Self::Coroutine(v) => opaque(32, |s| Rc::as_ptr(v).hash(s)),
+            Self::Stream(v) => opaque(35, |s| Rc::as_ptr(v).hash(s)),
+            Self::Result(v) => v.java_hash(hash_type),
             Self::ExceptionInfo(v) => opaque(33, |s| Rc::as_ptr(v).hash(s)),
         }
     }
@@ -3220,6 +3264,8 @@ impl Value {
                 };
                 format!("#<coroutine {status}>")
             }
+            Self::Stream(value) => format!("#<stream {}>", if value.closed.get() { "closed" } else { "ready" }),
+            Self::Result(value) => value.display(),
             Self::ExceptionInfo(value) => {
                 format!(
                     "#error[{} {}]",
@@ -3654,6 +3700,10 @@ impl ProtocolRegistry {
                     coroutine_close(coroutine)?;
                     Ok(Value::Coroutine(coroutine.clone()))
                 }
+                [Value::Stream(stream)] => {
+                    stream_close(stream)?;
+                    Ok(Value::Stream(stream.clone()))
+                }
                 [value] => iterator_close(value),
                 _ => Err("IClose/close expects one argument".into()),
             },
@@ -3752,6 +3802,11 @@ impl ProtocolRegistry {
             "resume",
             protocol_coroutine_resume,
         );
+        registry.register("std.protocol.istream/IStream", "next", |arguments| match arguments {
+            [Value::Stream(stream)] => Ok(stream_next(stream)),
+            [_] => Err("IStream/next expects a stream".into()),
+            _ => Err("IStream/next expects one argument".into()),
+        });
         registry.register(
             "std.protocol.iwatch/IWatch",
             "watch-add",
@@ -5507,6 +5562,12 @@ fn native_env_operation(
         .unwrap_or(operation);
     let registry = namespace_registry()?;
     match method {
+        "current" => {
+            if !forms.is_empty() {
+                return Err("std.native.Env/current expects no arguments".into());
+            }
+            Ok(Value::Symbol(registry.current().name().clone()))
+        }
         "snapshot" => {
             if !forms.is_empty() {
                 return Err("std.native.Env/snapshot expects no arguments".into());
@@ -5550,6 +5611,55 @@ fn native_env_operation(
                 Ok(namespace_descriptor(&registry, &name))
             }
         }
+        "module" => {
+            if forms.len() != 1 {
+                return Err("std.native.Env/module expects one module path".into());
+            }
+            let requested = match eval(&forms[0], env)? {
+                Value::String(path) => path,
+                Value::Symbol(name) => name.as_str().to_owned(),
+                _ => return Err("std.native.Env/module expects a path string or namespace symbol".into()),
+            };
+            let source = requested.strip_prefix("classpath:").unwrap_or(&requested);
+            let namespace = if source.ends_with(".hal") || source.ends_with(".hrl") {
+                source
+                    .trim_end_matches(".hal")
+                    .trim_end_matches(".hrl")
+                    .trim_start_matches("./")
+                    .replace('/', ".")
+            } else {
+                source.to_owned()
+            };
+            let revision = registry.module_revision(&namespace);
+            if revision == 0
+                && registry.load_state(&namespace).is_none()
+                && registry.find(&namespace).is_none()
+            {
+                return Ok(Value::Nil);
+            }
+            let dependencies = registry
+                .module_dependencies(&namespace)
+                .into_iter()
+                .map(|dependency| {
+                    Value::String(format!("{}.hal", dependency.as_str().replace('.', "/")))
+                })
+                .collect::<Vec<_>>();
+            Ok(Value::OrderedMap(Box::new(POrderedMap::from_iter([
+                (Value::Keyword("module/path".into()), Value::String(requested)),
+                (
+                    Value::Keyword("module/namespace".into()),
+                    Value::Symbol(Symbol::parse(&namespace)),
+                ),
+                (
+                    Value::Keyword("module/revision".into()),
+                    Value::Number(revision as i64),
+                ),
+                (
+                    Value::Keyword("module/dependencies".into()),
+                    Value::Vector(PVector::from(dependencies)),
+                ),
+            ]))))
+        }
         "vars" => {
             if forms.len() > 1 {
                 return Err("std.native.Env/vars expects zero or one namespace".into());
@@ -5585,8 +5695,29 @@ fn native_env_operation(
             // load source or invoke a package provider.
             Ok(registry.resolve(&symbol).map(Value::Var).unwrap_or(Value::Nil))
         }
+        "eval" => {
+            if forms.len() != 1 {
+                return Err("std.native.Env/eval expects one form".into());
+            }
+            eval_value(eval(&forms[0], env)?, env)
+        }
+        "alias-state" | "intern-var" | "eval-in" => {
+            let legacy = match method {
+                "alias-state" => "ns-alias-state",
+                "intern-var" => "intern-var",
+                _ => "eval-in-ns",
+            };
+            let mut delegated = Vec::with_capacity(forms.len() + 1);
+            delegated.push(Form::Symbol(legacy.to_owned()));
+            delegated.extend_from_slice(forms);
+            eval(&Form::List(delegated), env)
+        }
         _ => Err(format!("unknown std.native.Env method: {method}")),
     }
+}
+
+fn eval_value(value: Value, env: &mut HashMap<String, Value>) -> Result<Value, String> {
+    eval(&value_to_form(&value)?, env)
 }
 
 fn native_package_operation(
@@ -6641,6 +6772,8 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::NativeType(_) => "native-type",
         Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
+        Value::Stream(_) => "stream",
+        Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
 }
@@ -6695,6 +6828,8 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::NativeType(_) => "NativeType",
         Value::Schema(_) => "SchemaType",
         Value::Coroutine(_) => "Coroutine",
+        Value::Stream(_) => "Stream",
+        Value::Result(_) => "Result",
         Value::ExceptionInfo(_) => "Error",
     };
     Ok(Keyword::from(format!("std.native.{builtin}")))
@@ -6744,6 +6879,8 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::NativeType(_) => "native-type",
         Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
+        Value::Stream(_) => "stream",
+        Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
 }
@@ -6766,6 +6903,141 @@ fn coroutine_close(coroutine: &Coroutine) -> Result<(), String> {
             *state = CoroutineState::Dead;
             Ok(())
         }
+    }
+}
+
+fn stream_close(stream: &RuntimeStream) -> Result<(), String> {
+    if stream.closed.replace(true) {
+        return Ok(());
+    }
+    coroutine_close(&stream.coroutine)
+}
+
+fn stream_next(stream: &RuntimeStream) -> Value {
+    let promise = Promise::new();
+    if stream.closed.get() {
+        promise.resolve(Value::Nil);
+        return Value::Promise(promise);
+    }
+    if stream.pending.replace(true) {
+        promise.reject("stream/pending-pull: only one Stream/next may be pending");
+        return Value::Promise(promise);
+    }
+    let arguments = stream.initial_arguments.borrow_mut().take().unwrap_or_default();
+    let coroutine = stream.coroutine.clone();
+    let stream = Rc::new((stream.pending.clone(), stream.closed.clone()));
+    let step = fiber::coroutine::coroutine_resume(coroutine.clone(), arguments, Box::new(Step::Done));
+    drive_stream_step(step, coroutine, stream, promise.clone());
+    Value::Promise(promise)
+}
+
+/// Pulls one item from a native Stream without exposing its representation to an embedder.
+pub fn stream_next_value(value: &Value) -> Result<Promise, String> {
+    let Value::Stream(stream) = value else {
+        return Err("stream/next expects a Stream".into());
+    };
+    let Value::Promise(promise) = stream_next(stream) else {
+        unreachable!("native Stream/next always returns a Promise")
+    };
+    Ok(promise)
+}
+
+/// Closes a native Stream owned by the current runtime worker.
+pub fn stream_close_value(value: &Value) -> Result<(), String> {
+    let Value::Stream(stream) = value else {
+        return Err("stream/close expects a Stream".into());
+    };
+    stream_close(stream)
+}
+
+pub fn stream_value(value: &Value) -> bool {
+    matches!(value, Value::Stream(_))
+}
+
+fn drive_stream_step(
+    mut step: Step,
+    coroutine: Rc<Coroutine>,
+    state: Rc<(Rc<Cell<bool>>, Rc<Cell<bool>>)>,
+    output: Promise,
+) {
+    loop {
+        match step {
+            Step::Done(result) => {
+                state.0.set(false);
+                match result {
+                    Ok(value) if matches!(*coroutine.state.borrow(), CoroutineState::Dead) => {
+                        state.1.set(true);
+                        output.resolve(Value::Nil);
+                    }
+                    Ok(Value::Nil) => {
+                        state.1.set(true);
+                        let _ = coroutine_close(&coroutine);
+                        output.reject("stream/nil-item: a stream coroutine may not yield nil");
+                    }
+                    Ok(value) => { output.resolve(value); }
+                    Err(error) => {
+                        state.1.set(true);
+                        output.reject(error);
+                    }
+                }
+                return;
+            }
+            Step::Continue(next) => step = next(),
+            Step::Wait(promise, resume) => {
+                let resume = Rc::new(RefCell::new(Some(resume)));
+                let coroutine_next = coroutine.clone();
+                let state_next = state.clone();
+                let output_next = output.clone();
+                promise.on_settle(Rc::new(move |settled| {
+                    if let Some(resume) = resume.borrow_mut().take() {
+                        drive_stream_step(resume(settled), coroutine_next.clone(), state_next.clone(), output_next.clone());
+                    }
+                }));
+                return;
+            }
+            Step::Yield(_, _) => {
+                state.0.set(false);
+                state.1.set(true);
+                output.reject("stream/internal: yield escaped its coroutine boundary");
+                return;
+            }
+        }
+    }
+}
+
+fn native_stream_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let method = operation.strip_prefix("std.native.Stream/").unwrap_or(operation);
+    match method {
+        "generate" => {
+            if forms.is_empty() {
+                return Err("Stream/generate expects a function".into());
+            }
+            let body = eval(&forms[0], env)?;
+            if !matches!(body, Value::Function(_)) {
+                return Err("Stream/generate expects a function".into());
+            }
+            let arguments = forms[1..]
+                .iter()
+                .map(|form| eval(form, env))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Stream(Rc::new(RuntimeStream::new(body, arguments))))
+        }
+        "instance?" => {
+            if forms.len() != 1 { return Err("Stream/instance? expects one value".into()); }
+            Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Stream(_))))
+        }
+        "next" => {
+            if forms.len() != 1 { return Err("Stream/next expects one stream".into()); }
+            match eval(&forms[0], env)? {
+                Value::Stream(stream) => Ok(stream_next(&stream)),
+                _ => Err("Stream/next expects a stream".into()),
+            }
+        }
+        _ => Err(format!("unknown std.native.Stream operation: {method}")),
     }
 }
 
@@ -7829,6 +8101,116 @@ fn document_operation(operation: &str, values: Vec<Value>) -> Result<Value, Stri
     }
 }
 
+fn result_context(value: Option<Value>) -> Result<Value, String> {
+    let context = value.unwrap_or_else(|| Value::Map(PMap::new()));
+    map_entries(&context)
+        .is_some()
+        .then_some(context)
+        .ok_or_else(|| "Result context must be a map".into())
+}
+
+fn result_synchronize_options(options: Option<Value>) -> Result<(Option<u64>, Value), String> {
+    let Some(options) = options else {
+        return Ok((None, Value::Map(PMap::new())));
+    };
+    if map_entries(&options).is_none() {
+        return Err("std.native.Result/synchronize expects an options map".into());
+    }
+    let timeout_key = Value::Keyword(Keyword::from("timeout"));
+    let context_key = Value::Keyword(Keyword::from("context"));
+    let timeout = match map_value(&options, &timeout_key) {
+        None | Some(Value::Nil) => None,
+        Some(value) => Some(
+            value_u64_integer(value, "std.native.Result/synchronize").map_err(|_| {
+                "std.native.Result/synchronize timeout must be a non-negative integer".to_string()
+            })?,
+        ),
+    };
+    let context = result_context(map_value(&options, &context_key).cloned())?;
+    Ok((timeout, context))
+}
+
+fn native_result_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let operation = operation
+        .strip_prefix("std.native.Result/")
+        .unwrap_or(operation);
+    match operation {
+        "success" => {
+            if !(1..=2).contains(&forms.len()) {
+                return Err("std.native.Result/success expects data and optional context".into());
+            }
+            let data = eval(&forms[0], env)?;
+            let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
+            Ok(Value::Result(Rc::new(ResultValue::success(data, context)?)))
+        }
+        "error" => {
+            if !(1..=2).contains(&forms.len()) {
+                return Err("std.native.Result/error expects an error and optional context".into());
+            }
+            let error = eval(&forms[0], env)?;
+            let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
+            Ok(Value::Result(Rc::new(ResultValue::error(error, context)?)))
+        }
+        "synchronize" => {
+            if !(1..=2).contains(&forms.len()) {
+                return Err(
+                    "std.native.Result/synchronize expects a value and optional options map".into(),
+                );
+            }
+            let value = eval(&forms[0], env)?;
+            let options = forms.get(1).map(|form| eval(form, env)).transpose()?;
+            let (timeout, context) = result_synchronize_options(options)?;
+            native_result::synchronize_value(value, timeout, context)
+        }
+        "result?" | "success?" | "error?" | "status" | "data" | "error-value" | "context" => {
+            if forms.len() != 1 {
+                return Err(format!("std.native.Result/{operation} expects one value"));
+            }
+            let value = eval(&forms[0], env)?;
+            if operation == "result?" {
+                return Ok(Value::Bool(matches!(value, Value::Result(_))));
+            }
+            let Value::Result(result) = value else {
+                if matches!(operation, "success?" | "error?") {
+                    return Ok(Value::Bool(false));
+                }
+                return Err(format!("std.native.Result/{operation} expects a Result"));
+            };
+            Ok(match operation {
+                "success?" => Value::Bool(result.is_success()),
+                "error?" => Value::Bool(result.is_error()),
+                "status" => result.status_value(),
+                "data" => result.data.clone(),
+                "error-value" => result.error_value(),
+                "context" => {
+                    if map_entries(&result.context).is_some_and(|entries| entries.is_empty()) {
+                        Value::Nil
+                    } else {
+                        result.context.clone()
+                    }
+                }
+                _ => unreachable!(),
+            })
+        }
+        "with-context" => {
+            if forms.len() != 2 {
+                return Err("std.native.Result/with-context expects a Result and context".into());
+            }
+            let value = eval(&forms[0], env)?;
+            let Value::Result(result) = value else {
+                return Err("std.native.Result/with-context expects a Result".into());
+            };
+            let context = eval(&forms[1], env)?;
+            Ok(Value::Result(Rc::new(result.with_context(context)?)))
+        }
+        _ => Err(format!("unknown std.native.Result operation: {operation}")),
+    }
+}
+
 fn native_error_operation(
     operation: &str,
     args: &[Form],
@@ -8403,9 +8785,13 @@ fn protocol_deref(arguments: &[Value]) -> Result<Value, String> {
         [Value::Atom(atom)] => Ok(atom.deref_value()),
         [Value::Var(var)] => Ok(var.deref_value()),
         [Value::Promise(promise)] => promise_value_result(promise),
+        [Value::Result(result)] => result.deref_value(),
         [Value::Pointer(pointer)] => {
             pointer_context_call(pointer, pointer_default(pointer)?, "pointer/deref", &[])
         }
+        [Value::Schema(schema)] => form_to_value(
+            &crate::lang::protocol::IDeref::deref(&schema.ast),
+        ),
         _ => Err("IDeref/deref has no implementation for this value".into()),
     }
 }
@@ -9421,7 +9807,11 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         }
         "IDeref" => matches!(
             value,
-            Value::Atom(_) | Value::Promise(_) | Value::Var(_) | Value::Pointer(_)
+            Value::Atom(_)
+                | Value::Promise(_)
+                | Value::Var(_)
+                | Value::Pointer(_)
+                | Value::Schema(_)
         ),
         "IReset" => matches!(value, Value::Atom(_) | Value::Var(_)),
         "ICas" | "IWatch" => matches!(value, Value::Atom(_)),
@@ -9438,6 +9828,8 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         ),
         "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
         "IPersistent" => persistent_collection || matches!(value, Value::Struct(_)),
+        "IStream" => matches!(value, Value::Stream(_)),
+        "IClose" => matches!(value, Value::Stream(_) | Value::Coroutine(_) | Value::Iterator(_)),
         _ => false,
     }
 }
@@ -13450,7 +13842,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() != 2 {
                         return Err("eval expects one form".into());
                     }
-                    eval(&fs[1], env)
+                    eval_value(eval(&fs[1], env)?, env)
                 }
                 Form::Symbol(n) if n == "load-string" => {
                     if fs.len() != 2 {
@@ -13872,8 +14264,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             "pointer/deref",
                             &[],
                         ),
+                        Value::Schema(schema) => form_to_value(
+                            &crate::lang::protocol::IDeref::deref(&schema.ast),
+                        ),
                         value => Err(format!(
-                            "deref expects a var, atom, promise, or pointer, got {}",
+                            "deref expects a var, atom, promise, pointer, or schema, got {}",
                             value.display()
                         )),
                     }
@@ -14045,7 +14440,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     require_owned_definition(env, &name)?;
                     let value = eval(&fs[2], env)?;
-                    let var = if let Some(Value::Var(var)) = env.get(&name) {
+                    let var = if namespace_registry().is_ok() {
+                        let var = vm_def_global(&name, value, metadata)?;
+                        env.insert(name, Value::Var(var.clone()));
+                        var
+                    } else if let Some(Value::Var(var)) = env.get(&name) {
                         if !binding_is_local(var) {
                             let var = KernelVar::new(local_var_name(&name), value.clone());
                             var.set_origin(definition_origin());
@@ -15954,6 +16353,12 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err("edn/pretty expects an options map".into());
                     }
                     Ok(Value::String(value.display()))
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Result/") => {
+                    native_result_operation(n, &fs[1..], env)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Stream/") => {
+                    native_stream_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Error/")

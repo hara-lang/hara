@@ -27,6 +27,21 @@ load and compile portable source. `std.lib.resp` and other library packages are
 package-tier resources. `hara.compiler`, `hara.verify`, and
 `hara.transpile.base.*` are not bootstrap dependencies.
 
+Namespace inspection and dynamic evaluation live on `std.native.Env` and use
+the same transparent Foundation-wrapper contract. Foundation exposes
+`env-current`, `env-snapshot`, `env-vars`, `env-namespaces`, `env-namespace`,
+`env-module`, `env-resolve`, `ns-alias-state`, `intern-var`, `eval-in-ns`, and
+`eval`. `Env/eval` evaluates one form value in the current namespace;
+`Env/eval-in` evaluates a collection of form values in an existing namespace.
+Java and Rust must expose identical methods and evaluation behavior.
+
+The same inline-forwarding rule applies throughout the embedded Foundation
+family. Transparent shims over `Maths`, `Numbers`, `Bits`, `String`, `Bytes`,
+`Promise`, `Coroutine`, and protocol methods carry `:inline true`, a public
+docstring, and schema metadata. A wrapper that reorders arguments, supplies a
+default, normalizes a result, performs capability policy, or composes more than
+one call is not a transparent shim and must remain ordinary HAL.
+
 ## Base surface
 
 Base includes constructors, primitive predicates, `satisfies?`, `type`, and
@@ -55,6 +70,28 @@ descriptors. Defining a struct or mutable does not generate
 A loaded namespace and an installed alias may be referenced as values without
 causing an implicit load. Resolution precedence is lexical binding, Var, loaded
 namespace or alias, then unbound-symbol error.
+
+## Pull streams
+
+`Stream` is a native, asynchronous, unidirectional pull source. It implements
+`IStream/next` and `IClose/close`; `(type stream)` is `:std.native.Stream`.
+`Stream/next` returns a Promise which fulfills with one structured Hara value,
+or `nil` at end-of-stream. Only one pull may be pending. Closing is idempotent
+and a closed stream produces `nil`.
+
+`std.lib.stream/generate` is the package-tier constructor. It owns a private
+coroutine, supplies constructor arguments only on its first resume, exposes
+yielded values one at a time, and discards the coroutine's final return value.
+Because `nil` denotes EOF, yielding `nil` rejects the pull with
+`stream/nil-item` and closes the stream. Generator errors reject the active
+pull and close the stream. The namespace is deliberately absent from the
+Foundation bootstrap bundle.
+
+A stream is not duplex. Duplex transports compose a readable `IStream` with a
+separate write operation; for example, a WebSocket exposes inbound messages as
+a stream and outbound messages through `WebSocket/send`. Stream, coroutine,
+and transport handles are worker-local and cannot cross session, HTA, snapshot,
+or worker serialization boundaries.
 
 ## Schema values and Var contracts
 
@@ -92,6 +129,11 @@ the already compiled contract.
 values; `Schema/instance?` recognizes them. `(type (schema value))` is
 `:std.native.SchemaType`. Printing is round-trippable as
 `(schema <canonical-short-form>)`.
+
+`SchemaType` implements `IDeref`. Dereferencing returns the normalized vector
+shorthand, independent of the input spelling; for example, both `(schema :int)`
+and `(schema [:int])` dereference to `[:int]`, while nested schemas dereference
+recursively to forms such as `[:map [:name [:str]]]`.
 
 `Schema/origin` returns provenance, not another schema. Consequently
 `(Schema/origin (schema #'customer-name))` is valid as an origin query even

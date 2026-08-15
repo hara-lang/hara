@@ -611,6 +611,29 @@ fn inline_metadata_lowers_forwarding_calls_to_the_declared_target() {
 }
 
 #[test]
+fn comment_compiles_to_nil_without_compiling_its_contents() {
+    assert_eq!(
+        eval("(comment missing-symbol (throw (ex-info \"boom\" {})) (def leaked 1))"),
+        "nil"
+    );
+    assert!(compile_source("(do (comment (def leaked 1)) leaked)").is_err());
+}
+
+#[test]
+fn native_result_calls_execute_in_bytecode() {
+    let registry = crate::embedding_namespace_registry();
+    let program = compile_source_with(
+        "[(Result/result? (Result/success 42)) (Result/status (Result/success 42)) (Result/data (Result/success 42))]",
+        &registry,
+    )
+    .expect("Result native methods compile against the embedded registry");
+    assert_eq!(
+        execute_program_with_globals(Rc::new(program), &registry).unwrap().display(),
+        "[true :success 42]",
+    );
+}
+
+#[test]
 fn vm_global_recursion_uses_stackless_frames() {
     assert_eq!(
         eval("(do (defn countdown [n] (if (< n 1) 0 (countdown (- n 1)))) (countdown 10000))"),
@@ -913,6 +936,10 @@ fn defstruct_forms_issue_223() {
     assert_eq!(
         eval("(do (defstruct Point [x y]) (:y (->Point 19 23)))"),
         "23"
+    );
+    assert_eq!(
+        eval("(do (defstruct Point [x y]) (let [point (map->Point {:x 1 :extra 9})] [(:x point) (:missing point 7) (:extra point) (type point)]))"),
+        "[1 7 nil :user.Point]"
     );
     assert_eq!(
         eval("(do (defstruct Point [x y]) [(get (map->Point {:x 1 :extra 9}) :x) (get (map->Point {:x 1 :extra 9}) :y)])"),

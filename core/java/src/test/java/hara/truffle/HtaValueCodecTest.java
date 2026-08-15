@@ -76,6 +76,8 @@ public class HtaValueCodecTest {
     assertEquals("demo/Point", decoded.type().name());
     assertEquals(1L, decoded.read("x"));
     assertEquals(2L, decoded.read("y"));
+    assertEquals(1L, Keyword.create("x").getArg1().apply(decoded));
+    assertEquals(7L, Keyword.create("missing").getArg2().apply(decoded, 7L));
 
     HaraMutable mutable =
         new HaraMutable(new HaraMutableType("demo/Cursor", new String[] {"x"}), new Object[] {1L});

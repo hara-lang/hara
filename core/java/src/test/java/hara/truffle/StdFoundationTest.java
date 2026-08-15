@@ -15,6 +15,22 @@ import org.junit.Test;
 
 public class StdFoundationTest {
   @Test
+  public void defoncePreservesTheExistingVarRoot() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "2",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(do (defonce retained-state (atom 1)) "
+                      + "(swap! retained-state inc) "
+                      + "(defonce retained-state (atom 99)) "
+                      + "(deref retained-state))")
+              .toString());
+    }
+  }
+
+  @Test
   public void startupDefaultsExposeEdnNativeTypesAndProtocols() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
@@ -142,13 +158,14 @@ public class StdFoundationTest {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
           "[\"Returns the portable character count of value.\" [[value]]"
-              + " [:fn [:str] :int]]",
+              + " [:fn [:str] :int] true String/length]",
           context
               .eval(
                   HaraLanguage.ID,
                   "(do (require 'std.foundation.string)"
                       + " (let [m (meta #'std.foundation.string/length)]"
-                      + "   [(get m :doc) (get m :arglists) (get m :schema)]))")
+                      + "   [(get m :doc) (get m :arglists) (get m :schema)"
+                      + "    (get m :inline) (get m :inline-target)]))")
               .toString());
       assertEquals(
           "4",

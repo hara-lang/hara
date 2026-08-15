@@ -688,8 +688,11 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
                             pointer_context_call(&pointer, runtime, "pointer/deref", &[])
                         }))
                     }
+                    Ok(Value::Schema(schema)) => k(crate::core::form_to_value(
+                        &crate::lang::protocol::IDeref::deref(&schema.ast),
+                    )),
                     Ok(value) => k(Err(format!(
-                        "deref expects a var, atom, promise, or pointer, got {}",
+                        "deref expects a var, atom, promise, pointer, or schema, got {}",
                         value.display()
                     ))),
                     Err(e) => k(Err(e)),

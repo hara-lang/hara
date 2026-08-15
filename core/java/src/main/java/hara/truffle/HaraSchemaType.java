@@ -2,11 +2,12 @@ package hara.truffle;
 
 import com.oracle.truffle.api.interop.TruffleObject;
 import hara.lang.base.G;
+import hara.lang.protocol.IDeref;
 import hara.lang.protocol.IDisplay;
 import java.util.Objects;
 
 /** Immutable, normalized portable schema value. Provenance is not structural identity. */
-public final class HaraSchemaType implements TruffleObject, IDisplay {
+public final class HaraSchemaType implements TruffleObject, IDeref<Object>, IDisplay {
   private final Object form;
   private final HalcSchema.Type ast;
   private final HaraVar origin;
@@ -27,6 +28,11 @@ public final class HaraSchemaType implements TruffleObject, IDisplay {
 
   public HaraVar origin() {
     return origin;
+  }
+
+  @Override
+  public Object deref() {
+    return HalcSchema.shorthand(ast);
   }
 
   @Override

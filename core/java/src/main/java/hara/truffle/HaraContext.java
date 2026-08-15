@@ -70,6 +70,7 @@ public final class HaraContext {
   private static final Set<String> SPECIAL_SYMBOLS =
       Set.of(
           "quote",
+          "comment",
           "do",
           "if",
           "when",
@@ -147,7 +148,11 @@ public final class HaraContext {
           Map.entry("Numbers", java.util.List.of("long", "double")),
           Map.entry("Bits", java.util.List.of("and", "or", "xor", "not", "shift-left", "shift-right")),
           Map.entry("Kernel", java.util.List.of("session-create", "session-close", "session-list", "session-info", "session-eval", "session-namespace", "session-complete", "resource-register", "resource-remove", "resource-list", "filesystem-create", "filesystem-attach", "filesystem-detach", "filesystem-info", "filesystem-close", "capabilities")),
-          Map.entry("Env", java.util.List.of("snapshot", "vars", "namespaces", "namespace", "resolve")),
+          Map.entry(
+              "Env",
+              java.util.List.of(
+                  "current", "snapshot", "vars", "namespaces", "namespace", "module", "resolve",
+                  "alias-state", "intern-var", "eval-in", "eval")),
           Map.entry("Package", java.util.List.of("catalog", "find", "ensure", "state")),
           Map.entry("String", java.util.List.of("length", "blank?", "includes?", "starts-with?", "ends-with?", "char-at", "slice", "index-of", "last-index-of", "join", "split", "split-lines", "repeat", "replace", "replace-first", "trim", "trim-left", "trim-right", "upper", "lower", "capitalize", "decapitalize", "pad-left", "pad-right", "reverse", "encode-utf8", "decode-utf8", "to-fixed")),
           Map.entry("Bytes", java.util.List.of("new", "instance?", "count", "get", "set", "copy", "slice", "u8", "s8")),
@@ -169,6 +174,7 @@ public final class HaraContext {
           Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close")),
           Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
           Map.entry("Coroutine", java.util.List.of("create", "yield", "await", "instance?")),
+          Map.entry("Stream", java.util.List.of("generate", "next", "instance?")),
           Map.entry("Arr", java.util.List.of("new", "instance?", "get", "set", "push-first", "push-last", "pop-first", "pop-last", "insert", "remove", "clone", "slice", "map", "filter", "fold-left", "fold-right")),
           Map.entry("Obj", java.util.List.of("new", "instance?", "get", "set", "has?", "delete", "clone", "assign", "keys", "vals", "pairs")),
           Map.entry("Runtime", java.util.List.of("load-string", "macroexpand-1", "gensym", "var-sym")),
@@ -186,6 +192,11 @@ public final class HaraContext {
                   "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
                   "split")),
           Map.entry("UUID", java.util.List.of("instance?")),
+          Map.entry(
+              "Result",
+              java.util.List.of(
+                  "success", "error", "synchronize", "result?", "success?", "error?", "status",
+                  "data", "error-value", "context", "with-context")),
           Map.entry("Schema", java.util.List.of("instance?", "kind", "form", "ast", "origin")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
@@ -280,7 +291,9 @@ public final class HaraContext {
         HaraVar.Origin.RUNTIME_PRIMITIVE,
         () -> {
           installNativeTypeDescriptors();
+          installNativeResultBuiltins();
           HaraJavaAdapters.install(this);
+          installNativeStreamBuiltins();
           collectBuiltins(
               FOUNDATION_NAMESPACE,
               () -> {
@@ -543,11 +556,26 @@ public final class HaraContext {
 
   private void installEnvironmentLibraries() {
     HaraNamespace env = namespace("std.native.Env");
+    env.define(
+        "current",
+        new VariadicBuiltin(
+            "std.native.Env/current",
+            values -> {
+              if (values.length != 0) {
+                throw new HaraException("std.native.Env/current expects no arguments");
+              }
+              return Symbol.create(currentNamespace.name());
+            }));
     env.define("snapshot", new VariadicBuiltin("std.native.Env/snapshot", this::environmentSnapshot));
     env.define("vars", new VariadicBuiltin("std.native.Env/vars", this::environmentVars));
     env.define("namespaces", new VariadicBuiltin("std.native.Env/namespaces", this::environmentNamespaces));
     env.define("namespace", new UnaryBuiltin("std.native.Env/namespace", this::environmentNamespace));
+    env.define("module", new UnaryBuiltin("std.native.Env/module", this::environmentModule));
     env.define("resolve", new UnaryBuiltin("std.native.Env/resolve", this::environmentResolve));
+    env.define("alias-state", new VariadicBuiltin("std.native.Env/alias-state", this::namespaceAliasState));
+    env.define("intern-var", new VariadicBuiltin("std.native.Env/intern-var", this::internVar));
+    env.define("eval-in", new VariadicBuiltin("std.native.Env/eval-in", this::evalInNamespace));
+    env.define("eval", new UnaryBuiltin("std.native.Env/eval", this::evalForm));
     namespaceStates.put("std.native.Env", NamespaceLoadState.LOADED);
 
     HaraNamespace packages = namespace("std.native.Package");
@@ -602,6 +630,29 @@ public final class HaraContext {
             .max()
             .orElse(0L),
         Keyword.create("namespace/origin"), Keyword.create(origin));
+  }
+
+  private Object environmentModule(Object value) {
+    Object raw = HaraBox.unwrap(value);
+    if (!(raw instanceof String requested)) {
+      throw new HaraException("std.native.Env/module expects a path string");
+    }
+    String key =
+        requested.startsWith("classpath:")
+            ? requested
+            : (getResource(requested) == null
+                ? canonicalPath(requested)
+                : "classpath:" + requested);
+    ModuleRecord module = modules.get(key);
+    if (module == null) return null;
+    Set<String> dependencies = moduleDependencies.getOrDefault(key, Set.of());
+    return hara.lang.data.OrderedMap.Standard.from(
+        null,
+        Keyword.create("module/path"), module.path,
+        Keyword.create("module/namespace"), Symbol.create(module.namespace),
+        Keyword.create("module/revision"), module.revision,
+        Keyword.create("module/dependencies"),
+            BuiltinStruct.vector(new LinkedHashSet<>(dependencies).toArray()));
   }
 
   private Object environmentVars(Object[] values) {
@@ -1885,6 +1936,147 @@ public final class HaraContext {
             }));
   }
 
+  private void installNativeResultBuiltins() {
+    HaraNamespace result = namespace("std.native.Result");
+    result.define(
+        "success",
+        new VariadicBuiltin(
+            "std.native.Result/success",
+            values -> {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException(
+                    "std.native.Result/success expects data and optional context");
+              }
+              return values.length == 1
+                  ? HaraResult.success(HaraBox.unwrap(values[0]))
+                  : HaraResult.success(HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+            }));
+    result.define(
+        "error",
+        new VariadicBuiltin(
+            "std.native.Result/error",
+            values -> {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException(
+                    "std.native.Result/error expects an error and optional context");
+              }
+              return values.length == 1
+                  ? HaraResult.error(HaraBox.unwrap(values[0]))
+                  : HaraResult.error(HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+            }));
+    result.define(
+        "synchronize",
+        new VariadicBuiltin(
+            "std.native.Result/synchronize",
+            values -> {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException(
+                    "std.native.Result/synchronize expects a value and optional options map");
+              }
+              return values.length == 1
+                  ? HaraResult.synchronize(HaraBox.unwrap(values[0]))
+                  : HaraResult.synchronize(HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+            }));
+    result.define(
+        "result?",
+        new UnaryBuiltin(
+            "std.native.Result/result?",
+            value -> HaraBox.unwrap(value) instanceof HaraResult));
+    result.define(
+        "success?",
+        new UnaryBuiltin(
+            "std.native.Result/success?",
+            value ->
+                HaraBox.unwrap(value) instanceof HaraResult nativeResult
+                    && nativeResult.isSuccess()));
+    result.define(
+        "error?",
+        new UnaryBuiltin(
+            "std.native.Result/error?",
+            value ->
+                HaraBox.unwrap(value) instanceof HaraResult nativeResult
+                    && nativeResult.isError()));
+    result.define(
+        "status",
+        new UnaryBuiltin(
+            "std.native.Result/status",
+            value -> requireNativeResult(value, "status").status()));
+    result.define(
+        "data",
+        new UnaryBuiltin(
+            "std.native.Result/data",
+            value -> requireNativeResult(value, "data").data()));
+    result.define(
+        "error-value",
+        new UnaryBuiltin(
+            "std.native.Result/error-value",
+            value -> requireNativeResult(value, "error-value").errorValue()));
+    result.define(
+        "context",
+        new UnaryBuiltin(
+            "std.native.Result/context",
+            value -> {
+              IMapType<Object, Object> context = requireNativeResult(value, "context").context();
+              return context.count() == 0 ? null : context;
+            }));
+    result.define(
+        "with-context",
+        new VariadicBuiltin(
+            "std.native.Result/with-context",
+            values -> {
+              if (values.length != 2) {
+                throw new HaraException(
+                    "std.native.Result/with-context expects a Result and context");
+              }
+              return requireNativeResult(values[0], "with-context")
+                  .withContext(HaraBox.unwrap(values[1]));
+            }));
+  }
+
+  private static HaraResult requireNativeResult(Object value, String operation) {
+    Object raw = HaraBox.unwrap(value);
+    if (raw instanceof HaraResult result) return result;
+    throw new HaraException("std.native.Result/" + operation + " expects a Result");
+  }
+
+  private void installNativeStreamBuiltins() {
+    HaraNamespace stream = namespace("std.native.Stream");
+    stream.define(
+        "generate",
+        new VariadicBuiltin(
+            "std.native.Stream/generate",
+            values -> {
+              if (values.length == 0) throw new HaraException("Stream/generate expects a function");
+              Object function = HaraBox.unwrap(values[0]);
+              if (!(function instanceof HaraFunction)
+                  && !(function instanceof HaraMultiFunction)
+                  && !(function instanceof HbcMachine.HbcClosure)
+                  && !(function instanceof HbcMachine.HbcMultiArity)
+                  && !(function instanceof hara.lang.protocol.IFn)) {
+                throw new HaraException("Stream/generate expects a function");
+              }
+              return new HaraStream(
+                  this, function, java.util.Arrays.copyOfRange(values, 1, values.length));
+            }));
+    stream.define(
+        "next",
+        new UnaryBuiltin(
+            "std.native.Stream/next", value -> requireStream(value, "Stream/next").next()));
+    stream.define(
+        "instance?",
+        new UnaryBuiltin(
+            "std.native.Stream/instance?",
+            value -> HaraBox.unwrap(value) instanceof hara.lang.protocol.IStream));
+  }
+
+  private hara.lang.protocol.IStream requireStream(Object value, String operation) {
+    Object input = HaraBox.unwrap(value);
+    if (!(input instanceof hara.lang.protocol.IStream)) {
+      throw new HaraException(operation + " expects a stream");
+    }
+    return (hara.lang.protocol.IStream) input;
+  }
+
   private void installNumericBuiltins(HaraNamespace target) {
     target.define("+", new VariadicBuiltin("+", values -> arithmetic("+", values)));
     target.define("-", new VariadicBuiltin("-", values -> arithmetic("-", values)));
@@ -2795,7 +2987,9 @@ public final class HaraContext {
     else if (raw instanceof HaraProtocol) type = "Protocol";
     else if (raw instanceof HaraNativeType) type = "NativeType";
     else if (raw instanceof HaraSchemaType) type = "SchemaType";
+    else if (raw instanceof HaraResult) type = "Result";
     else if (raw instanceof hara.lang.protocol.IExInfo || raw instanceof HaraException) type = "Error";
+    else if (raw instanceof hara.lang.protocol.IStream) type = "Stream";
     else if (raw instanceof hara.lang.protocol.ICoroutine) type = "Coroutine";
     else if (raw instanceof IPromise) type = "Promise";
     else if (raw instanceof hara.lang.data.Atom.Struct<?, ?>) type = "Atom";
@@ -7001,6 +7195,20 @@ public final class HaraContext {
     if (bytes != null) { entries.add(Keyword.create("bytes")); entries.add(bytes); }
     if (error != null) { entries.add(Keyword.create("error")); entries.add(error); }
     return hara.lang.data.Map.Standard.from(null, entries.toArray());
+  }
+
+  Object promiseValue(CompletableFuture<Object> future) {
+    return new HaraPromise(future);
+  }
+
+  Object completedPromise(Object value) {
+    return new HaraPromise(CompletableFuture.completedFuture(value));
+  }
+
+  Object rejectedPromise(String message) {
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    future.completeExceptionally(new HaraException(message));
+    return new HaraPromise(future);
   }
 
   private final class HaraPromise implements IPromise {

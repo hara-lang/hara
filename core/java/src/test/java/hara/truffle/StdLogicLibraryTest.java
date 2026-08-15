@@ -59,7 +59,7 @@ public class StdLogicLibraryTest {
   public void typedNormalizationIsExtensibleAndInferenceIsLoadable() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[{:kind :test/tagged :value 42} true false {:kind :primitive :name :int}]",
+          "[{:kind :test/tagged :value 42} true false [:int] [:map [:name [:str]]] true {:kind :primitive :name :int}]",
           context
               .eval(
                   HaraLanguage.ID,
@@ -73,6 +73,9 @@ public class StdLogicLibraryTest {
                       + "(pr-str [(schema/normalize [:test/tagged 42]) "
                       + "         (schema/valid? [:test/tagged 42] 42) "
                       + "         (schema/valid? [:test/tagged 42] 41) "
+                      + "         (deref (schema :int)) "
+                      + "         (deref (schema [:map [:name :str]])) "
+                      + "         (satisfies? IDeref (schema :int)) "
                       + "         (:schema (infer/literal-result 42))])")
               .asString());
     }

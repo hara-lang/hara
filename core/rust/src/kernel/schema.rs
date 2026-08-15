@@ -34,6 +34,80 @@ pub enum SchemaType {
     Unknown(Form),
 }
 
+impl crate::lang::protocol::IDeref for SchemaType {
+    type Output = Form;
+
+    fn deref(&self) -> Form {
+        schema_shorthand(self)
+    }
+}
+
+pub fn schema_shorthand(schema: &SchemaType) -> Form {
+    let nested = |value: &SchemaType| schema_shorthand(value);
+    match schema {
+        SchemaType::Primitive(name) => Form::Vector(vec![Form::Keyword(name.clone())]),
+        SchemaType::Reference(name) => Form::Vector(vec![Form::List(vec![
+            Form::Symbol("var".into()),
+            Form::Symbol(name.clone()),
+        ])]),
+        SchemaType::Union(types) => Form::Vector(
+            std::iter::once(Form::Keyword("or".into()))
+                .chain(types.iter().map(nested))
+                .collect(),
+        ),
+        SchemaType::Vector(item) => {
+            Form::Vector(vec![Form::Keyword("vector".into()), nested(item)])
+        }
+        SchemaType::Tuple(items) => Form::Vector(
+            std::iter::once(Form::Keyword("tuple".into()))
+                .chain(items.iter().map(nested))
+                .collect(),
+        ),
+        SchemaType::Map(fields) => Form::Vector(
+            std::iter::once(Form::Keyword("map".into()))
+                .chain(fields.iter().map(|field| {
+                    Form::Vector(vec![field.name.clone(), nested(&field.value_type)])
+                }))
+                .collect(),
+        ),
+        SchemaType::Function(arities) => {
+            let function = |arity: &FunctionSchema| {
+                let mut inputs = arity.fixed.iter().map(nested).collect::<Vec<_>>();
+                if let Some(rest) = &arity.rest {
+                    inputs.push(Form::Symbol("&".into()));
+                    inputs.push(nested(rest));
+                }
+                Form::Vector(vec![
+                    Form::Keyword("fn".into()),
+                    Form::Vector(inputs),
+                    nested(&arity.output),
+                ])
+            };
+            if arities.len() == 1 {
+                function(&arities[0])
+            } else {
+                Form::Vector(
+                    std::iter::once(Form::Keyword("function".into()))
+                        .chain(arities.iter().map(function))
+                        .collect(),
+                )
+            }
+        }
+        SchemaType::Enum(values) => Form::Vector(
+            std::iter::once(Form::Keyword("enum".into()))
+                .chain(values.iter().cloned())
+                .collect(),
+        ),
+        SchemaType::Extension { head, arguments } => Form::Vector(
+            std::iter::once(Form::Keyword(head.clone()))
+                .chain(arguments.iter().cloned())
+                .collect(),
+        ),
+        SchemaType::Unknown(Form::Vector(values)) => Form::Vector(values.clone()),
+        SchemaType::Unknown(surface) => Form::Vector(vec![surface.clone()]),
+    }
+}
+
 pub fn normalize_schema(schema: &Form) -> Result<SchemaType, String> {
     match schema {
         Form::Keyword(name) => Ok(SchemaType::Primitive(name.clone())),

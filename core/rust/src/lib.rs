@@ -2376,6 +2376,65 @@ pub fn version() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn defonce_preserves_the_existing_var_root() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text("(macroexpand-1 '(defonce retained-state (atom 1)))")
+                .unwrap(),
+            "(if (Env/resolve (quote user/retained-state)) (Env/resolve (quote user/retained-state)) (eval (quote (def retained-state (atom 1)))))"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(do (eval '(def eval-defined 1)) [(Env/resolve 'user/eval-defined) eval-defined])")
+                .unwrap(),
+            "[#'user/eval-defined 1]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (defonce retained-state (atom 1)) \
+                         (swap! retained-state inc) \
+                         (defonce retained-state (atom 99)) \
+                         (deref retained-state))",
+                )
+                .unwrap(),
+            "2"
+        );
+    }
+
+    #[test]
+    fn syntax_env_and_result_native_contracts_are_available() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_native(
+                    "[(comment missing-symbol (throw (ex-info \"boom\" {})) (def leaked 1)) \
+                      (special-symbol? 'comment) \
+                      (type (std.native.Result/success 1)) \
+                      (std.native.Result/status (std.native.Result/error \"boom\")) \
+                      (std.native.Result/context (std.native.Result/success 1)) \
+                      (std.native.Env/current) \
+                      (std.native.Env/eval '(+ 19 23)) \
+                      (std.foundation/eval '(+ 19 23)) \
+                      (map? (std.foundation/env-snapshot))]",
+                )
+                .unwrap(),
+            "[nil true :std.native.Result :error nil user 42 42 true]"
+        );
+        assert!(runtime.eval_native("leaked").is_err());
+        assert_eq!(
+            runtime
+                .eval_native(
+                    "[(get (std.native.Env/namespace 'user) :namespace/state) \
+                      (std.native.Env/eval-in 'user '[(+ 19 23)])]",
+                )
+                .unwrap(),
+            "[:loaded 42]"
+        );
+    }
+
     #[cfg(feature = "bytecode-vm")]
     #[test]
     fn embedding_registry_exposes_the_foundation_json_shortcut() {
@@ -3564,6 +3623,22 @@ mod tests {
             )
             .unwrap_err()
             .contains("missing protocol implementation: protocol-probe/Needed/get"));
+    }
+
+    #[test]
+    fn keyword_invocation_uses_defstruct_map_semantics() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (defstruct Point [x y]) \
+                     (let [point (map->Point {:x 1 :extra 9})] \
+                       [(:x point) (:missing point 7) (:extra point) \
+                        (get point :x) (type point)]))",
+                )
+                .unwrap(),
+            "[1 7 nil 1 :user.Point]"
+        );
     }
 
     #[test]
@@ -5209,12 +5284,13 @@ mod tests {
             runtime
                 .eval_text(concat!(
                     "(let [m (meta #'std.foundation.string/length)]",
-                    " [(get m :doc) (get m :arglists) (get m :schema)])"
+                    " [(get m :doc) (get m :arglists) (get m :schema)",
+                    "  (get m :inline) (get m :inline-target)])"
                 ))
                 .unwrap(),
             concat!(
                 "[\"Returns the portable character count of value.\"",
-                " [[value]] [:fn [:str] :int]]"
+                " [[value]] [:fn [:str] :int] true String/length]"
             )
         );
     }

@@ -544,7 +544,7 @@ public final class HbcMachine {
   }
 
   private static HaraVar resolve(HaraContext context, String name) {
-    HaraVar variable = context.resolve(Symbol.create(name));
+    HaraVar variable = context.resolve(context.canonicalSymbol(Symbol.create(name)));
     if (variable == null) throw new HaraException("Unbound var: " + name);
     return variable;
   }

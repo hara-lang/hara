@@ -581,7 +581,8 @@ impl Compiler {
         if let Form::List(values) = crate::core::form_without_metadata(form) {
             let protected = matches!(
                 values.first(),
-                Some(Form::Symbol(name)) if name == "quote" || name == "syntax-quote"
+                Some(Form::Symbol(name))
+                    if name == "quote" || name == "syntax-quote" || name == "comment"
             );
             if !protected {
                 let expanded = crate::core::vm_macroexpand(form).map_err(|message| {
@@ -780,6 +781,10 @@ impl Compiler {
                         self.compile_cond(&children, span, tail)
                     }
                     Form::Symbol(name) if name == "quote" => self.compile_quote(&children, span),
+                    Form::Symbol(name) if name == "comment" => {
+                        self.emit(Instruction::Nil, Some(span.start));
+                        Ok(())
+                    }
                     Form::Symbol(name) if name == "syntax-quote" => {
                         self.compile_syntax_quote(&children, span)
                     }

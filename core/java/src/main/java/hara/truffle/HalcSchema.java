@@ -4,6 +4,7 @@ import hara.lang.base.G;
 import hara.lang.data.Keyword;
 import hara.lang.data.Symbol;
 import hara.lang.data.types.ILinearType;
+import hara.kernel.builtin.BuiltinStruct;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -78,6 +79,75 @@ public final class HalcSchema {
   }
 
   public record Unknown(Object surface) implements Type {}
+
+  public static Object shorthand(Type schema) {
+    if (schema instanceof Primitive primitive) {
+      return vectorOf(Keyword.create(primitive.name()));
+    }
+    if (schema instanceof Reference reference) {
+      return vectorOf(
+          hara.lang.data.List.Standard.from(
+              null, Symbol.create("var"), Symbol.create(reference.name())));
+    }
+    if (schema instanceof Union union) {
+      ArrayList<Object> values = headed("or");
+      union.types().forEach(value -> values.add(shorthand(value)));
+      return vectorOf(values.toArray());
+    }
+    if (schema instanceof VectorType vector) {
+      return vectorOf(Keyword.create("vector"), shorthand(vector.item()));
+    }
+    if (schema instanceof Tuple tuple) {
+      ArrayList<Object> values = headed("tuple");
+      tuple.items().forEach(value -> values.add(shorthand(value)));
+      return vectorOf(values.toArray());
+    }
+    if (schema instanceof MapType map) {
+      ArrayList<Object> values = headed("map");
+      map.fields().forEach(
+          field -> values.add(vectorOf(field.name(), shorthand(field.type()))));
+      return vectorOf(values.toArray());
+    }
+    if (schema instanceof FunctionType function) {
+      if (function.arities().size() == 1) return functionShorthand(function.arities().get(0));
+      ArrayList<Object> values = headed("function");
+      function.arities().forEach(arity -> values.add(functionShorthand(arity)));
+      return vectorOf(values.toArray());
+    }
+    if (schema instanceof EnumType enumeration) {
+      ArrayList<Object> values = headed("enum");
+      values.addAll(enumeration.values());
+      return vectorOf(values.toArray());
+    }
+    if (schema instanceof Extension extension) {
+      ArrayList<Object> values = headed(extension.head());
+      values.addAll(extension.arguments());
+      return vectorOf(values.toArray());
+    }
+    Object surface = ((Unknown) schema).surface();
+    return vector(surface) == null ? vectorOf(surface) : surface;
+  }
+
+  private static Object functionShorthand(Function function) {
+    ArrayList<Object> inputs = new ArrayList<>();
+    function.fixed().forEach(value -> inputs.add(shorthand(value)));
+    if (function.rest() != null) {
+      inputs.add(Symbol.create("&"));
+      inputs.add(shorthand(function.rest()));
+    }
+    return vectorOf(
+        Keyword.create("fn"), vectorOf(inputs.toArray()), shorthand(function.output()));
+  }
+
+  private static ArrayList<Object> headed(String head) {
+    ArrayList<Object> values = new ArrayList<>();
+    values.add(Keyword.create(head));
+    return values;
+  }
+
+  private static Object vectorOf(Object... values) {
+    return BuiltinStruct.vector(values);
+  }
 
   public static Type normalize(Object schema) {
     if (schema instanceof Keyword keyword) return new Primitive(keyword.getName());
