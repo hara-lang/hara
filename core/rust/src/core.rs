@@ -294,7 +294,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ("Host", &["call", "describe", "capabilities", "capability?"]),
     (
         "Test",
-        &["catalog", "config", "context", "events", "result", "passed?"],
+        &["catalog", "config", "context", "events", "run", "result", "passed?"],
     ),
     ("Regex", &["instance?", "pattern", "find?"]),
     ("UUID", &["instance?"]),
@@ -4486,6 +4486,67 @@ fn native_test_result(name: Value, actual: Value, expected: Value) -> Value {
     ]))
 }
 
+fn native_test_error(name: Value, expected: Value, error: String) -> Value {
+    Value::Map(PMap::from_iter([
+        (Value::Keyword("name".into()), name),
+        (Value::Keyword("pass".into()), Value::Bool(false)),
+        (Value::Keyword("status".into()), Value::Keyword("error".into())),
+        (Value::Keyword("expected".into()), expected),
+        (Value::Keyword("error".into()), Value::String(error)),
+    ]))
+}
+
+fn native_test_run(cases: Value) -> Result<Value, String> {
+    let cases = match cases {
+        Value::Vector(cases) => cases.iter().cloned().collect::<Vec<_>>(),
+        Value::Tuple(cases) => cases.iter().cloned().collect::<Vec<_>>(),
+        _ => return Err("std.native.Test/run expects a vector of test cases".into()),
+    };
+    let state = namespace_registry()?.find_or_create("std.native.Test.state");
+    let results_symbol = crate::lang::data::Symbol::parse("results");
+    let mut results = match state.resolve(&results_symbol).map(|var| var.deref_value()) {
+        Some(Value::Vector(results)) => results.iter().cloned().collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    for (index, case) in cases.iter().enumerate() {
+        let fallback_name = Value::String(format!("invalid case {}", index + 1));
+        let Some(entries) = map_entries(case) else {
+            results.push(native_test_error(
+                fallback_name,
+                Value::Nil,
+                "Test/run case must be a map".into(),
+            ));
+            continue;
+        };
+        let _ = entries;
+        let name = map_value(case, &Value::Keyword("name".into()))
+            .cloned()
+            .unwrap_or(fallback_name);
+        let expected = map_value(case, &Value::Keyword("expected".into())).cloned();
+        let test = map_value(case, &Value::Keyword("test".into())).cloned();
+        let result = match (test, expected) {
+            (Some(test), Some(expected)) => match call_value(test, Vec::new()) {
+                Ok(actual) => native_test_result(name, actual, expected),
+                Err(error) => native_test_error(name, expected, error),
+            },
+            (None, expected) => native_test_error(
+                name,
+                expected.unwrap_or(Value::Nil),
+                "Test/run case requires :test".into(),
+            ),
+            (Some(_), None) => native_test_error(
+                name,
+                Value::Nil,
+                "Test/run case requires :expected".into(),
+            ),
+        };
+        results.push(result);
+    }
+    let output = Value::Vector(PVector::from_iter(results));
+    state.intern("results", output.clone());
+    Ok(output)
+}
+
 fn native_test_operation(
     operation: &str,
     forms: &[Form],
@@ -4573,6 +4634,13 @@ fn native_test_operation(
             let actual = eval(&forms[1], env)?;
             let expected = eval(&forms[2], env)?;
             Ok(native_test_result(name, actual, expected))
+        }
+        "run" => {
+            if forms.len() != 1 {
+                return Err("std.native.Test/run expects one vector".into());
+            }
+            let cases = eval(&forms[0], env)?;
+            native_test_run(cases)
         }
         "passed?" => {
             if forms.len() != 1 {
@@ -13751,6 +13819,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .find(&namespace)
                         .ok_or_else(|| format!("No such namespace: {namespace}"))?;
                     let mut mappings = target.mappings();
+                    mappings.retain(|(_, var)| var.symbol().get_namespace() == Some(&namespace));
                     mappings.sort_by(|(left, _), (right, _)| left.as_str().cmp(right.as_str()));
                     Ok(Value::OrderedMap(Box::new(POrderedMap::from_iter(
                         mappings.into_iter().map(|(name, var)| {

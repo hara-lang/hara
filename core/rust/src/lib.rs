@@ -3646,23 +3646,28 @@ mod tests {
             return;
         };
         let fixture = include_str!("../hal-test-fixtures/std/foundation/protocol_conformance.hal");
-        assert_eq!(core::FOUNDATION_PROTOCOLS.len(), 53);
+        // 54 shared-contract protocols plus IMatch, which is runtime-internal
+        // and intentionally absent from the contract and its fixture.
+        assert_eq!(core::FOUNDATION_PROTOCOLS.len(), 55);
         assert_eq!(
             core::FOUNDATION_PROTOCOLS
                 .iter()
                 .map(|(_, methods)| methods.len())
                 .sum::<usize>(),
-            101
+            105
         );
         let foundation = runtime
             .namespace_registry
             .find("std.foundation")
             .expect("std.foundation namespace");
         for (name, methods) in core::FOUNDATION_PROTOCOLS {
-            assert!(
-                contract.contains(&format!(":name {name}")),
-                "shared contract is missing {name}"
-            );
+            let in_contract = *name != "IMatch";
+            if in_contract {
+                assert!(
+                    contract.contains(&format!(":name {name}")),
+                    "shared contract is missing {name}"
+                );
+            }
             let namespace_name = core::builtin_protocol_namespace(name);
             let namespace = runtime
                 .namespace_registry
@@ -3698,10 +3703,12 @@ mod tests {
                     .unwrap_or_else(|| panic!("missing global alias {name}/{method}"))
                     .deref_value();
                 assert_eq!(aliased_method, canonical_method);
-                assert!(
-                    fixture.contains(&format!("({namespace_name}/{method} fixture")),
-                    "shared fixture does not directly call {namespace_name}/{method}"
-                );
+                if in_contract {
+                    assert!(
+                        fixture.contains(&format!("({namespace_name}/{method} fixture")),
+                        "shared fixture does not directly call {namespace_name}/{method}"
+                    );
+                }
             }
         }
         for protocol in [
@@ -3850,7 +3857,7 @@ mod tests {
             ))
             .unwrap();
         assert!(!result.contains(":pass false"), "{result}");
-        assert_eq!(result.matches(":pass true").count(), 53, "{result}");
+        assert_eq!(result.matches(":pass true").count(), 54, "{result}");
     }
 
     #[test]
@@ -3861,11 +3868,11 @@ mod tests {
         else {
             return;
         };
-        assert_eq!(catalog.matches("{:protocol ").count(), 86);
+        assert_eq!(catalog.matches("{:protocol ").count(), 89);
         let mut runtime = Runtime::new();
         let result = runtime.eval_text(source).unwrap();
         assert!(!result.contains(":pass false"), "{result}");
-        assert_eq!(result.matches(":pass true").count(), 86, "{result}");
+        assert_eq!(result.matches(":pass true").count(), 89, "{result}");
 
         let method_vars = source
             .lines()
@@ -3877,7 +3884,7 @@ mod tests {
                     .nth(2)
             })
             .collect::<Vec<_>>();
-        assert_eq!(method_vars.len(), 86);
+        assert_eq!(method_vars.len(), 89);
         for method_var in method_vars {
             let mut segments = method_var.split(['.', '/']);
             let protocol_namespace = segments.nth(2).expect("protocol namespace");
@@ -3915,7 +3922,7 @@ mod tests {
                 None
             })
             .collect::<Vec<_>>();
-        assert_eq!(failure_forms.len(), 86);
+        assert_eq!(failure_forms.len(), 89);
         for failure_form in failure_forms {
             let call = failure_form.replacen("unsupported", "(UnsupportedUseCase)", 1);
             let error = runtime.eval_text(&call).unwrap_err();
@@ -5669,6 +5676,26 @@ mod tests {
             .eval_text("(Test/passed? {:status :error})")
             .unwrap_err()
             .contains("test result map"));
+
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(Test/run [{:name \"one\" :test (fn [] (+ 1 1)) :expected 2}])"
+                )
+                .unwrap(),
+            "[{:name \"one\" :pass true :actual 2 :expected 2}]"
+        );
+        let cumulative = runtime
+            .eval_text(
+                "(Test/run [{:name \"two\" :test (fn [] (throw \"boom\")) :expected 2}])"
+            )
+            .unwrap();
+        assert!(cumulative.contains(":name \"one\""), "{cumulative}");
+        assert!(cumulative.contains(":name \"two\""), "{cumulative}");
+        assert!(cumulative.contains(":status :error"), "{cumulative}");
+        assert_eq!(runtime.eval_text("(Test/run [])").unwrap().matches(":name").count(), 2);
+        let malformed = runtime.eval_text("(Test/run [{} 1])").unwrap();
+        assert_eq!(malformed.matches(":pass false").count(), 3, "{malformed}");
 
         runtime.set_test_runner("native").unwrap();
         assert_eq!(

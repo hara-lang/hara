@@ -22,6 +22,8 @@ pub mod icontextlifecycle;
 pub mod icoroutine;
 #[path = "protocol/icount.rs"]
 pub mod icount;
+#[path = "protocol/ideps.rs"]
+pub mod ideps;
 #[path = "protocol/ideref.rs"]
 pub mod ideref;
 #[path = "protocol/idereftimeout.rs"]
@@ -115,6 +117,7 @@ pub use icontext::IContext;
 pub use icontextlifecycle::IContextLifeCycle;
 pub use icoroutine::ICoroutine;
 pub use icount::ICount;
+pub use ideps::IDeps;
 pub use ideref::IDeref;
 pub use idereftimeout::IDerefTimeout;
 pub use idisplay::IDisplay;

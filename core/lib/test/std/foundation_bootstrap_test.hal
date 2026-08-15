@@ -1,0 +1,73 @@
+(ns std.foundation.bootstrap-test
+  (:require [std.foundation.bootstrap :as bootstrap]
+            [std.foundation.string :as str]))
+
+(def +unordered+
+  (str "(ns sample-test)\n\n"
+       "^{:refer std.foundation.bootstrap/scaffold}\n"
+       "(Test/run [])\n\n"
+       "^{:refer std.foundation.bootstrap/public-symbols}\n"
+       "(Test/run\n"
+       " [{:name \"kept\"\n"
+       "   :test (fn [] 1)\n"
+       "   :expected 1}])\n"))
+
+^{:refer std.foundation.bootstrap/public-symbols}
+(Test/run
+ [{:name "finds only owned public functions and macros"
+   :test (fn [] (bootstrap/public-symbols 'std.foundation.bootstrap))
+   :expected ['std.foundation.bootstrap/arrange-blocks
+              'std.foundation.bootstrap/coverage
+              'std.foundation.bootstrap/public-symbols
+              'std.foundation.bootstrap/scaffold
+              'std.foundation.bootstrap/test-references]}])
+
+^{:refer std.foundation.bootstrap/arrange-blocks}
+(Test/run
+ [{:name "orders newline blocks and preserves their bodies"
+   :test (fn []
+           (let [arranged (bootstrap/arrange-blocks +unordered+)]
+             [(< (str/index-of arranged "bootstrap/public-symbols}")
+                 (str/index-of arranged "bootstrap/scaffold}"))
+              (str/includes? arranged ":name \"kept\"\n   :test")
+              (not (str/includes? arranged "\n\n\n"))]))
+   :expected [true true true]}])
+
+^{:refer std.foundation.bootstrap/scaffold}
+(Test/run
+ [{:name "creates a stable pure scaffold"
+   :test (fn []
+           (let [first-pass (bootstrap/scaffold
+                             'std.foundation.bootstrap
+                             ""
+                             {:test-namespace 'fixture-bootstrap-test
+                              :alias 'bootstrap})
+                 second-pass (bootstrap/scaffold
+                              'std.foundation.bootstrap
+                              (:after first-pass)
+                              {:test-namespace 'fixture-bootstrap-test
+                               :alias 'bootstrap})]
+             [(:write first-pass)
+              (= (:after first-pass) (:after second-pass))
+              (bootstrap/test-references (:after first-pass))]))
+   :expected [false true
+              ['std.foundation.bootstrap/arrange-blocks
+               'std.foundation.bootstrap/coverage
+               'std.foundation.bootstrap/public-symbols
+               'std.foundation.bootstrap/scaffold
+               'std.foundation.bootstrap/test-references]]}])
+
+^{:refer std.foundation.bootstrap/coverage}
+(Test/run
+ [{:name "reports covered pending missing and orphaned"
+   :test (fn []
+           (bootstrap/coverage
+            'std.foundation.bootstrap
+            (str +unordered+
+                 "\n^{:refer ghost/missing}\n(Test/run [])\n")))
+   :expected {:covered ['std.foundation.bootstrap/public-symbols]
+              :pending ['std.foundation.bootstrap/scaffold]
+              :missing ['std.foundation.bootstrap/arrange-blocks
+                        'std.foundation.bootstrap/coverage
+                        'std.foundation.bootstrap/test-references]
+              :orphaned ['ghost/missing]}}])

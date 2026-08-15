@@ -177,7 +177,7 @@ public final class HaraContext {
           Map.entry("Host", java.util.List.of("call", "describe", "capabilities", "capability?")),
           Map.entry(
               "Test",
-              java.util.List.of("catalog", "config", "context", "events", "result", "passed?")),
+              java.util.List.of("catalog", "config", "context", "events", "run", "result", "passed?")),
           Map.entry("Regex", java.util.List.of("instance?", "pattern", "find?")),
           Map.entry("UUID", java.util.List.of("instance?")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
@@ -204,6 +204,7 @@ public final class HaraContext {
           Map.entry("std.native.Coroutine", "std.foundation.coroutine"));
   private final TruffleLanguage.Env environment;
   private final Keyword testRunner;
+  private final java.util.List<Object> nativeTestResults = new ArrayList<>();
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
   private final Map<String, Map<String, String>> aliases = new ConcurrentHashMap<>();
@@ -2878,6 +2879,58 @@ public final class HaraContext {
         expected);
   }
 
+  private Object nativeTestError(Object name, Object expected, String error) {
+    return hara.lang.data.Map.Standard.from(
+        null,
+        Keyword.create("name"), name,
+        Keyword.create("pass"), false,
+        Keyword.create("status"), Keyword.create("error"),
+        Keyword.create("expected"), expected,
+        Keyword.create("error"), error);
+  }
+
+  private Object nativeTestRun(Object[] values) {
+    if (values.length != 1) {
+      throw new HaraException("std.native.Test/run expects one vector of test cases");
+    }
+    Object rawCases = HaraBox.unwrap(values[0]);
+    boolean vectorCases = rawCases instanceof hara.lang.data.Vector<?>
+        || rawCases.getClass().getName().startsWith("hara.lang.data.Tuple$");
+    if (!vectorCases) {
+      throw new HaraException("std.native.Test/run expects one vector of test cases");
+    }
+    ILinearType<?> cases = (ILinearType<?>) rawCases;
+    int index = 0;
+    for (Object rawCase : cases) {
+      index += 1;
+      Object fallbackName = "invalid case " + index;
+      if (!(HaraBox.unwrap(rawCase) instanceof IMapType<?, ?> testCase)) {
+        nativeTestResults.add(nativeTestError(fallbackName, null, "Test/run case must be a map"));
+        continue;
+      }
+      Object name = hasMapKey(testCase, Keyword.create("name"))
+          ? lookupValue(testCase, Keyword.create("name")) : fallbackName;
+      boolean hasExpected = hasMapKey(testCase, Keyword.create("expected"));
+      Object expected = hasExpected ? lookupValue(testCase, Keyword.create("expected")) : null;
+      boolean hasTest = hasMapKey(testCase, Keyword.create("test"));
+      if (!hasTest) {
+        nativeTestResults.add(nativeTestError(name, expected, "Test/run case requires :test"));
+      } else if (!hasExpected) {
+        nativeTestResults.add(nativeTestError(name, null, "Test/run case requires :expected"));
+      } else {
+        try {
+          Object actual = invokeCallable(
+              lookupValue(testCase, Keyword.create("test")), new Object[0]);
+          nativeTestResults.add(nativeTestResult(new Object[] {name, actual, expected}));
+        } catch (RuntimeException error) {
+          String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+          nativeTestResults.add(nativeTestError(name, expected, message));
+        }
+      }
+    }
+    return hara.lang.data.Vector.Standard.from(null, nativeTestResults.toArray());
+  }
+
   private Object nativeTestPassed(Object[] values) {
     if (values.length != 1 || !(HaraBox.unwrap(values[0]) instanceof IMapType<?, ?> result)) {
       throw new HaraException("std.native.Test/passed? expects a test result map");
@@ -2919,6 +2972,7 @@ public final class HaraContext {
     test.define("config", new VariadicBuiltin("std.native.Test/config", this::nativeTestConfig));
     test.define("context", new VariadicBuiltin("std.native.Test/context", this::nativeTestContext));
     test.define("events", new VariadicBuiltin("std.native.Test/events", this::nativeTestEvents));
+    test.define("run", new VariadicBuiltin("std.native.Test/run", this::nativeTestRun));
     test.define("result", new VariadicBuiltin("std.native.Test/result", this::nativeTestResult));
     test.define("passed?", new VariadicBuiltin("std.native.Test/passed?", this::nativeTestPassed));
     HaraNamespace regex = namespace("std.native.Regex");

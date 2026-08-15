@@ -1,204 +1,536 @@
 (ns std.foundation-test
-  (:use code.test)
-  (:require [std.context.registry :as registry]
-            ))
+  (:require [std.foundation :as f]))
 
-(defmacro env-line [] (:line &env))
+^{:refer std.foundation/->}
+(Test/run [])
 
-(defmacro hygienic [value]
-  `(let [x# ~value] [x# x#]))
+^{:refer std.foundation/->>}
+(Test/run [])
 
-(def results
-  [(fact "test config is inert at evaluation time"
-     (test-config {:session-scope :shared})
-     => nil)
-   (fact "comp composes right-to-left"
-     ((comp inc inc) 40)
-     => 42)
-   (fact "map is eager on vectors"
-     (map inc [1 2 3])
-     => [2 3 4])
-   (fact "has? checks collection keys, including nil-valued entries"
-     [(has? {:a nil} :a)
-      (has? {:a 1} :b)
-      (has? #{:a} :a)
-      (has? [10 20] 1)]
-     => [true false true true])
-   (fact "reload bumps module revision and keeps behaviour"
-     (let [revision (module-revision "std/foundation.hal")]
-                 (require 'std.foundation {:reload true})
-                 [(= (inc revision) (module-revision "std/foundation.hal"))
-                  (map inc [1 2 3])])
-     => [true [2 3 4]])
-   (fact "T/F/NIL constants and ordering helpers"
-     [(T 1) (F 1) (NIL 1) (compare 2 3) (min 3 1 2) (max 3 1 2)]
-     => [true false nil -1 1 3])
-   (fact "metadata wrappers preserve value identity semantics"
-     (let [source [1 2]
-           tagged (with-meta source {:source :demo})]
-       [(meta source) (meta tagged) (= source tagged)])
-     => [nil {:source :demo} true])
-   (fact "basic math functions and constants are portable"
-     [(= E 2.718281828459045)
-                (= PI 3.141592653589793)
-                (= (sin 0) 0.0)
-                (= (cos 0) 1.0)
-                (= (tan 0) 0.0)
-                (= (asin 0) 0.0)
-                (= (acos 1) 0.0)
-                (= (atan 0) 0.0)
-                (= (atan2 0 1) 0.0)
-                (= (sinh 0) 0.0)
-                (= (cosh 0) 1.0)
-                (= (tanh 0) 0.0)
-                (= (asinh 0) 0.0)
-                (= (acosh 1) 0.0)
-                (= (atanh 0) 0.0)
-                (= (floor 1.75) 1.0)
-                (= (ceil 1.25) 2.0)
-                (= (pow 2 3) 8.0)
-                (= (abs -3) 3)
-                (= (exp 0) 1.0)
-                (= (sqrt 9) 3.0)]
-     => [true true true true true true true true true true true
-                true true true true true true true true true true])
+^{:refer std.foundation/F}
+(Test/run [])
 
-   (fact "map arity/return-type variants"
-     [(vector? (map inc [1 2 3]))
-                (iter? ((map inc) [1 2 3]))
-                (vector? (map inc (array 1 2 3)))
-                (iter? ((comp (map inc) (map inc)) [1 2 3]))]
-     => [true true true true])
-   (fact "curried map returns iterator"
-     [(vec ((map inc) [1 2 3])) (vec ((comp (map inc) (map inc)) [1 2 3]))]
-     => [[2 3 4] [3 4 5]])
-   (fact "map on array"
-     (map inc (array 1 2 3))
-     => [2 3 4])
-   (fact "sequence transforms return iterator partials and eager vectors"
-     [(iter? ((filter odd?) [1 2 3]))
-      (filter odd? [1 2 3])
-      (take 2 '(1 2 3))
-      (drop 1 (array 1 2 3))
-      (take-while odd? [1 3 2 5])
-      (drop-while odd? [1 3 2 5])
-      (mapcat (fn [x] [x x]) [1 2])
-      (keep (fn [x] (if (odd? x) x nil)) [1 2 3])
-      (partition 2 [1 2 3])
-      (partition-all 2 [1 2 3])
-      (interpose :x [1 2 3])]
-     => [true [1 3] [1 2] [2 3] [1 3] [2 5]
-         [1 1 2 2] [1 3] [[1 2]] [[1 2] [3]] [1 :x 2 :x 3]])
-   (fact "source combiners are eager vectors"
-     [(zip [1 2] [3 4])
-      (interleave [1 2] [3 4])
-      (partition-pair [1 2 3 4])]
-     => [[[1 3] [2 4]] [1 3 2 4] [[1 2] [3 4]]])
-   (fact "terminal predicates have reusable unary forms"
-     [((every? odd?) [1 3 5])
-      ((any? odd?) [2 4 5])
-      (every? odd? [1 2])
-      (any? odd? [2 4])]
-     => [true true false false])
-   (fact "Iter owns the native iterator operations"
-     [(= Iter std.native.Iter)
-      (iter? (Iter/iter-map inc [1 2]))
-      (Iter/iter-finite? [1 2])
-      (Iter/iter-materialize [1 2])]
-     => [true true true [1 2]])
+^{:refer std.foundation/NIL}
+(Test/run [])
 
-   (fact "collection/ordering additions"
-     [(butlast [1 2 3])
-                (take-last 2 [1 2 3])
-                (split-at 2 [1 2 3])
-                (partition-by odd? [1 3 2 4 5])
-                (take-nth 2 [0 1 2 3 4])]
-     => [[1 2] [2 3] [[1 2] [3]] [[1 3] [2 4] [5]] [0 2 4]])
-   (fact "map and collection helpers"
-     [(sort [3 1 2])
-                (sort-by count [[:a :b] [:a] [:a :b :c]])
-                (distinct [1 2 1 3])
-                (distinct? 1 2 3)
-                (distinct? 1 2 1)
-                (zipmap [:a :b] [1 2])
-                (map-keys inc {1 :a 2 :b})
-                (map-vals inc {:a 1 :b 2})
-                (merge-with + {:a 1} {:a 2 :b 3})
-                (group-by odd? [1 2 3 4])
-                (frequencies [:a :b :a])]
-     => [[1 2 3]
-                [[:a] [:a :b] [:a :b :c]]
-                [1 2 3]
-                true
-                false
-                {:a 1 :b 2}
-                {2 :a 3 :b}
-                {:a 2 :b 3}
-                {:a 3 :b 3}
-                {true [1 3] false [2 4]}
-                {:a 2 :b 1}])
+^{:refer std.foundation/T}
+(Test/run [])
 
-   (fact "atom watches receive four arguments"
-     (let [a (atom 1)
-                     seen (atom [])]
-                 (watch-add
-                   a :log
-                   (fn [key ref old new]
-                     (swap! seen
-                            (fn [values item] (conj values item))
-                            [key old new])))
-                 (swap! a (fn [value amount] (+ value amount)) 2)
-                 (reset! a 9)
-                 [(deref a)
-                  (deref seen)
-                  (std.protocol.iiterator/iter-next?
-                    (std.protocol.iiter/iter (watch-list a)))
-                  (cas! a 9 10)
-                  (deref a)])
-     => [9 [[:log 1 3] [:log 3 9]] true true 10])
+^{:refer std.foundation/U}
+(Test/run [])
 
-   (fact "foundation macros expand portably"
-     [(if-not false :yes :no)
-                (when true :yes)
-                (if-let [x 4] (+ x 1) 0)
-                (when-let [x 4] (+ x 2))
-                (cond-> 1 true inc false (+ 10) true (* 3))
-                (cond->> [1 2] true (map inc))]
-     => [:yes :yes 5 6 6 [2 3]])
-   (fact "doto evaluates its target once and returns it"
-     (let [calls (atom 0)
-                     value (doto
-                             (do (swap! calls inc) (atom []))
-                             (swap! (fn [values item] (conj values item)) 1)
-                             (swap! (fn [values item] (conj values item)) 2))]
-                 [(deref calls) (deref value)])
-     => [1 [1 2]])
-   (fact "code-line/code-column and &env line are numbers"
-     [(number? (code-line)) (number? (code-column)) (number? (env-line))]
-     => [true true true])
-   (fact "hygienic macro gensyms do not leak"
-     [(hygienic 4) (hygienic 5)]
-     => [[4 4] [5 5]])
+^{:refer std.foundation/Y}
+(Test/run [])
 
-   (fact "pointers are first-class Foundation values"
-     (let [value (pointer {:context :null :answer 42})]
-       [(pointer? value)
-        (IPointer/ptr-context value)
-        (get value :answer)
-        (set (keys value))
-        (count value)
-        (= registry/+rt-null+ (IApplicable/apply-default value))])
-     => [true :null 42 #{:answer} 1 true])
+^{:refer std.foundation/Z}
+(Test/run [])
 
-   (fact "pointer invocation uses native context protocols"
-     (let [value (pointer {:context :null})
-           direct (IApplicable/apply-in value registry/+rt-null+ [:a :b])
-           invoked (IInvokeIn/invoke-in value registry/+rt-null+ :a :b)]
-       [[(first direct) (= value (second direct)) (nth direct 2) (nth direct 3)]
-        [(first invoked) (= value (second invoked)) (nth invoked 2) (nth invoked 3)]
-        (IContext/call registry/+rt-null+ :c)])
-     => [[:pointer/invoke true :a :b]
-         [:pointer/invoke true :a :b]
-         [:c]])])
+^{:refer std.foundation/abs}
+(Test/run [])
 
-(pr-str (run '[std.foundation-test]))
+^{:refer std.foundation/acos}
+(Test/run [])
+
+^{:refer std.foundation/acosh}
+(Test/run [])
+
+^{:refer std.foundation/any?}
+(Test/run [])
+
+^{:refer std.foundation/apply-as}
+(Test/run [])
+
+^{:refer std.foundation/apply-in}
+(Test/run [])
+
+^{:refer std.foundation/asin}
+(Test/run [])
+
+^{:refer std.foundation/asinh}
+(Test/run [])
+
+^{:refer std.foundation/assoc-in}
+(Test/run [])
+
+^{:refer std.foundation/atan}
+(Test/run [])
+
+^{:refer std.foundation/atan2}
+(Test/run [])
+
+^{:refer std.foundation/atanh}
+(Test/run [])
+
+^{:refer std.foundation/bit-and}
+(Test/run [])
+
+^{:refer std.foundation/bit-not}
+(Test/run [])
+
+^{:refer std.foundation/bit-or}
+(Test/run [])
+
+^{:refer std.foundation/bit-shift-left}
+(Test/run [])
+
+^{:refer std.foundation/bit-shift-right}
+(Test/run [])
+
+^{:refer std.foundation/bit-xor}
+(Test/run [])
+
+^{:refer std.foundation/boolean}
+(Test/run [])
+
+^{:refer std.foundation/butlast}
+(Test/run [])
+
+^{:refer std.foundation/cas!}
+(Test/run [])
+
+^{:refer std.foundation/case}
+(Test/run [])
+
+^{:refer std.foundation/ceil}
+(Test/run [])
+
+^{:refer std.foundation/code-column}
+(Test/run [])
+
+^{:refer std.foundation/code-line}
+(Test/run [])
+
+^{:refer std.foundation/comp}
+(Test/run [])
+
+^{:refer std.foundation/complement}
+(Test/run [])
+
+^{:refer std.foundation/cond->}
+(Test/run [])
+
+^{:refer std.foundation/cond->>}
+(Test/run [])
+
+^{:refer std.foundation/constantly}
+(Test/run [])
+
+^{:refer std.foundation/cos}
+(Test/run [])
+
+^{:refer std.foundation/cosh}
+(Test/run [])
+
+^{:refer std.foundation/cycle}
+(Test/run [])
+
+^{:refer std.foundation/dec}
+(Test/run [])
+
+^{:refer std.foundation/dependents-all}
+(Test/run [])
+
+^{:refer std.foundation/dependents-direct}
+(Test/run [])
+
+^{:refer std.foundation/dependents-ordered}
+(Test/run [])
+
+^{:refer std.foundation/dependents-topological}
+(Test/run [])
+
+^{:refer std.foundation/deps-map}
+(Test/run [])
+
+^{:refer std.foundation/deps-ordered}
+(Test/run [])
+
+^{:refer std.foundation/deps-resolve}
+(Test/run [])
+
+^{:refer std.foundation/difference}
+(Test/run [])
+
+^{:refer std.foundation/distinct}
+(Test/run [])
+
+^{:refer std.foundation/distinct?}
+(Test/run [])
+
+^{:refer std.foundation/doto}
+(Test/run [])
+
+^{:refer std.foundation/double}
+(Test/run [])
+
+^{:refer std.foundation/drop}
+(Test/run [])
+
+^{:refer std.foundation/drop-last}
+(Test/run [])
+
+^{:refer std.foundation/drop-while}
+(Test/run [])
+
+^{:refer std.foundation/empty?}
+(Test/run [])
+
+^{:refer std.foundation/even?}
+(Test/run [])
+
+^{:refer std.foundation/every?}
+(Test/run [])
+
+^{:refer std.foundation/exp}
+(Test/run [])
+
+^{:refer std.foundation/false?}
+(Test/run [])
+
+^{:refer std.foundation/ffirst}
+(Test/run [])
+
+^{:refer std.foundation/filter}
+(Test/run [])
+
+^{:refer std.foundation/find-cycle}
+(Test/run [])
+
+^{:refer std.foundation/first}
+(Test/run [])
+
+^{:refer std.foundation/floor}
+(Test/run [])
+
+^{:refer std.foundation/form?}
+(Test/run [])
+
+^{:refer std.foundation/frequencies}
+(Test/run [])
+
+^{:refer std.foundation/get-deps}
+(Test/run [])
+
+^{:refer std.foundation/get-entry}
+(Test/run [])
+
+^{:refer std.foundation/get-in}
+(Test/run [])
+
+^{:refer std.foundation/group-by}
+(Test/run [])
+
+^{:refer std.foundation/has?}
+(Test/run [])
+
+^{:refer std.foundation/hierarchical-sort}
+(Test/run [])
+
+^{:refer std.foundation/hierarchical-top}
+(Test/run [])
+
+^{:refer std.foundation/identity}
+(Test/run [])
+
+^{:refer std.foundation/if-let}
+(Test/run [])
+
+^{:refer std.foundation/if-not}
+(Test/run [])
+
+^{:refer std.foundation/inc}
+(Test/run [])
+
+^{:refer std.foundation/interleave}
+(Test/run [])
+
+^{:refer std.foundation/intern-all}
+(Test/run [])
+
+^{:refer std.foundation/intern-in}
+(Test/run [])
+
+^{:refer std.foundation/interpose}
+(Test/run [])
+
+^{:refer std.foundation/intersection}
+(Test/run [])
+
+^{:refer std.foundation/into}
+(Test/run [])
+
+^{:refer std.foundation/invoke-as}
+(Test/run [])
+
+^{:refer std.foundation/iterate}
+(Test/run [])
+
+^{:refer std.foundation/juxt}
+(Test/run [])
+
+^{:refer std.foundation/keep}
+(Test/run [])
+
+^{:refer std.foundation/key}
+(Test/run [])
+
+^{:refer std.foundation/keys}
+(Test/run [])
+
+^{:refer std.foundation/last}
+(Test/run [])
+
+^{:refer std.foundation/list-entries}
+(Test/run [])
+
+^{:refer std.foundation/long}
+(Test/run [])
+
+^{:refer std.foundation/macroexpand}
+(Test/run [])
+
+^{:refer std.foundation/macroexpand-all}
+(Test/run [])
+
+^{:refer std.foundation/map}
+(Test/run [])
+
+^{:refer std.foundation/map-indexed}
+(Test/run [])
+
+^{:refer std.foundation/map-keys}
+(Test/run [])
+
+^{:refer std.foundation/map-vals}
+(Test/run [])
+
+^{:refer std.foundation/mapcat}
+(Test/run [])
+
+^{:refer std.foundation/mapv}
+(Test/run [])
+
+^{:refer std.foundation/max}
+(Test/run [])
+
+^{:refer std.foundation/merge-with}
+(Test/run [])
+
+^{:refer std.foundation/meta}
+(Test/run [])
+
+^{:refer std.foundation/min}
+(Test/run [])
+
+^{:refer std.foundation/neg?}
+(Test/run [])
+
+^{:refer std.foundation/nil?}
+(Test/run [])
+
+^{:refer std.foundation/not-empty}
+(Test/run [])
+
+^{:refer std.foundation/odd?}
+(Test/run [])
+
+^{:refer std.foundation/partial}
+(Test/run [])
+
+^{:refer std.foundation/partition}
+(Test/run [])
+
+^{:refer std.foundation/partition-all}
+(Test/run [])
+
+^{:refer std.foundation/partition-by}
+(Test/run [])
+
+^{:refer std.foundation/partition-pair}
+(Test/run [])
+
+^{:refer std.foundation/pos?}
+(Test/run [])
+
+^{:refer std.foundation/postwalk}
+(Test/run [])
+
+^{:refer std.foundation/postwalk-replace}
+(Test/run [])
+
+^{:refer std.foundation/pow}
+(Test/run [])
+
+^{:refer std.foundation/prewalk}
+(Test/run [])
+
+^{:refer std.foundation/prewalk-replace}
+(Test/run [])
+
+^{:refer std.foundation/range}
+(Test/run [])
+
+^{:refer std.foundation/read-forms}
+(Test/run [])
+
+^{:refer std.foundation/remove}
+(Test/run [])
+
+^{:refer std.foundation/repeat}
+(Test/run [])
+
+^{:refer std.foundation/repeatedly}
+(Test/run [])
+
+^{:refer std.foundation/reset!}
+(Test/run [])
+
+^{:refer std.foundation/rest}
+(Test/run [])
+
+^{:refer std.foundation/reverse}
+(Test/run [])
+
+^{:refer std.foundation/second}
+(Test/run [])
+
+^{:refer std.foundation/sin}
+(Test/run [])
+
+^{:refer std.foundation/sinh}
+(Test/run [])
+
+^{:refer std.foundation/some->}
+(Test/run [])
+
+^{:refer std.foundation/some->>}
+(Test/run [])
+
+^{:refer std.foundation/sort}
+(Test/run [])
+
+^{:refer std.foundation/sort-by}
+(Test/run [])
+
+^{:refer std.foundation/split-at}
+(Test/run [])
+
+^{:refer std.foundation/split-with}
+(Test/run [])
+
+^{:refer std.foundation/sqrt}
+(Test/run [])
+
+^{:refer std.foundation/subset?}
+(Test/run [])
+
+^{:refer std.foundation/superset?}
+(Test/run [])
+
+^{:refer std.foundation/swap!}
+(Test/run [])
+
+^{:refer std.foundation/take}
+(Test/run [])
+
+^{:refer std.foundation/take-last}
+(Test/run [])
+
+^{:refer std.foundation/take-nth}
+(Test/run [])
+
+^{:refer std.foundation/take-while}
+(Test/run [])
+
+^{:refer std.foundation/tan}
+(Test/run [])
+
+^{:refer std.foundation/tanh}
+(Test/run [])
+
+^{:refer std.foundation/template-ensure}
+(Test/run [])
+
+^{:refer std.foundation/template-entries}
+(Test/run [])
+
+^{:refer std.foundation/template-meta}
+(Test/run [])
+
+^{:refer std.foundation/template-vars}
+(Test/run [])
+
+^{:refer std.foundation/test-check}
+(Test/run [])
+
+^{:refer std.foundation/test-config}
+(Test/run [])
+
+^{:refer std.foundation/test-passed?}
+(Test/run [])
+
+^{:refer std.foundation/test-result}
+(Test/run [])
+
+^{:refer std.foundation/topological-sort}
+(Test/run [])
+
+^{:refer std.foundation/topological-sort-order-by-deps}
+(Test/run [])
+
+^{:refer std.foundation/topological-top}
+(Test/run [])
+
+^{:refer std.foundation/true?}
+(Test/run [])
+
+^{:refer std.foundation/union}
+(Test/run [])
+
+^{:refer std.foundation/update}
+(Test/run [])
+
+^{:refer std.foundation/update-in}
+(Test/run [])
+
+^{:refer std.foundation/val}
+(Test/run [])
+
+^{:refer std.foundation/vals}
+(Test/run [])
+
+^{:refer std.foundation/walk}
+(Test/run [])
+
+^{:refer std.foundation/watch-add}
+(Test/run [])
+
+^{:refer std.foundation/watch-list}
+(Test/run [])
+
+^{:refer std.foundation/watch-remove}
+(Test/run [])
+
+^{:refer std.foundation/when}
+(Test/run [])
+
+^{:refer std.foundation/when-let}
+(Test/run [])
+
+^{:refer std.foundation/with-meta}
+(Test/run [])
+
+^{:refer std.foundation/with-ns}
+(Test/run [])
+
+^{:refer std.foundation/with:template-meta}
+(Test/run [])
+
+^{:refer std.foundation/zero?}
+(Test/run [])
+
+^{:refer std.foundation/zip}
+(Test/run [])
+
+^{:refer std.foundation/zipmap}
+(Test/run [])

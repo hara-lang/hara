@@ -7,30 +7,18 @@
 (defn source-position
   "Returns a one-based line/column position for a byte-compatible HAL offset."
   [source offset]
-  (loop [index 0
-         line 1
-         column 1]
-    (if (or (= index offset)
-            (= index (str/length source)))
-      {:line line :column column}
-      (if (= "\n" (str/char-at source index))
-        (recur (inc index) (inc line) 1)
-        (recur (inc index) line (inc column))))))
+  (let [position (parse/source-position source offset)]
+    {:line (:row position)
+     :column (:col position)}))
 
 (defn line-number
   [source offset]
   (:line (source-position source offset)))
 
 (defn parsed-block-value
-  "Decodes one structural block independently of the parser's host value model."
+  "Returns the canonical value already produced by std.block.parse."
   [value]
-  (let [text (block/block-string value)]
-    (if (block/expression? value)
-      (try
-        (Edn/read text)
-        (catch Throwable error
-          (block/block-value value)))
-      (block/block-value value))))
+  (block/block-value value))
 
 (defn block-record
   [source value fallback-start]
@@ -39,7 +27,7 @@
         start (or (:start-offset props) fallback-start)
         end (or (:end-offset props)
                 (+ start (str/length text)))
-        position (source-position source start)]
+        position nil]
     {:block value
      :tag (block/block-tag value)
      :text text
@@ -240,6 +228,10 @@
             docstring (if (and doc-record (string? (:value doc-record)))
                         (:value doc-record)
                         nil)
+            form-position (source-position source (:start form))
+            name-position (if name-record
+                            (source-position source (:start name-record))
+                            form-position)
             private (or (= head "defn-")
                         (= true (:private metadata-value))
                         (and name (str/starts-with? name "-")))]
@@ -248,10 +240,10 @@
          :kind (definition-kind head)
          :public (not private)
          :private private
-         :line (if name-record (:line name-record) (:line form))
-         :column (if name-record (:column name-record) (:column form))
-         :form-line (:line form)
-         :form-column (:column form)
+         :line (:line name-position)
+         :column (:column name-position)
+         :form-line (:line form-position)
+         :form-column (:column form-position)
          :start (:start form)
          :end (:end form)
          :full-start (:full-start form)
@@ -282,7 +274,7 @@
 
 (defn namespace-name
   [source]
-  (let [root (parse/parse-string source)
+  (let [root (parse/parse-ranges source)
         forms (form-records-in source root 0)]
     (namespace-name-from-forms source forms)))
 
@@ -301,7 +293,7 @@
 (defn analyse-structure
   "Returns the internal structural model used by precise source editors."
   [source]
-  (let [root (parse/parse-string source)
+  (let [root (parse/parse-ranges source)
         forms (form-records-in source root 0)
         definitions (definitions-from-forms source forms)]
     {:namespace (namespace-name-from-forms source forms)

@@ -84,6 +84,14 @@
                 '(?-splicing {:clj [alpha]})
                 :hash-cursor
                 "|"])
+   (test-check "symbol suffix syntax remains part of its token"
+               (let [gensym (block/parse-first "x#")
+                     xtalk (block/parse-first "x:arr-push")]
+                 [(block/string gensym)
+                  (block/value gensym)
+                  (block/string xtalk)
+                  (block/value xtalk)])
+               ["x#" 'x# "x:arr-push" 'x:arr-push])
    (test-check "portable check and reader APIs retain source position"
                (let [input (reader/create "ab\ncd")
                      first-two (reader/read-times input reader/read-char 2)
@@ -131,6 +139,21 @@
                 {:file "demo.hal" :start-offset 0 :end-offset 9
                  :row 1 :col 1 :end-row 1 :end-col 10}
                 2
-                [:tool.lint/reader-error :tool.lint/reader-error]])])
+                [:tool.lint/reader-error :tool.lint/reader-error]])
+   (test-check "parser indexes CRLF source positions in one pass"
+               (let [source "a\r\n[b\nc]"
+                     parsed (block/parse-string source)
+                     vector-block
+                     (first
+                      (filter
+                       (fn [child]
+                         (= :vector (block/tag child)))
+                       (block/children parsed)))]
+                 (select-keys
+                  (block/info vector-block)
+                  [:start-offset :end-offset
+                   :row :col :end-row :end-col]))
+               {:start-offset 3 :end-offset 8
+                :row 2 :col 1 :end-row 3 :end-col 3})])
 
 results

@@ -160,6 +160,26 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void nativeTestRunAccumulatesCasesAndKeepsErrorsLocal() {
+    try (Context context = context()) {
+      String first = context.eval(HaraLanguage.ID,
+          "(Test/run [{:name \"one\" :test (fn [] (+ 1 1)) :expected 2}])").toString();
+      assertTrue(first, first.contains(":name \"one\""));
+      assertTrue(first, first.contains(":pass true"));
+      String cumulative = context.eval(HaraLanguage.ID,
+          "(Test/run [{:name \"two\" :test (fn [] (throw \"boom\")) :expected 2}])")
+          .toString();
+      assertTrue(cumulative, cumulative.contains(":name \"one\""));
+      assertTrue(cumulative, cumulative.contains(":name \"two\""));
+      assertTrue(cumulative, cumulative.contains(":status :error"));
+      assertEquals(cumulative, context.eval(HaraLanguage.ID, "(Test/run [])").toString());
+      String malformed = context.eval(HaraLanguage.ID, "(Test/run [{} 1])").toString();
+      assertTrue(malformed, malformed.contains("case requires :test"));
+      assertTrue(malformed, malformed.contains("case must be a map"));
+    }
+  }
+
+  @Test
   public void intrinsicsCanExcludeAndRenameGeneratedAliases() {
     try (Context context = context()) {
       assertEquals(
