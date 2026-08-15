@@ -1,0 +1,76 @@
+# Current `std.foundation` architecture
+
+This document describes the implementation boundary represented by Hara's registered standard-library inventory. It is intentionally narrower than historical Foundation plans and annex drafts.
+
+## Loadable Foundation namespaces
+
+The current public Foundation family is:
+
+```text
+std.foundation
+std.foundation.bytes
+std.foundation.coroutine
+std.foundation.pretty
+std.foundation.promise
+std.foundation.string
+```
+
+`core/rust/standard-library.namespaces` is authoritative for loadable standard-library namespace membership. A source file, test fixture, automatic alias, or native object does not become a public namespace merely because it is present in the repository or visible to an evaluator.
+
+The root `std.foundation` namespace owns the portable value layer: composition, collections, sequence operations, set algebra, metadata, references, macros, structural traversal, and the small language-level helpers automatically referred into ordinary namespaces.
+
+The five child namespaces provide separately aliased portable/native-backed library surfaces:
+
+| Namespace | Default alias | Role |
+| --- | --- | --- |
+| `std.foundation.string` | `str` | portable string facade |
+| `std.foundation.bytes` | `bytes` | byte values and operations |
+| `std.foundation.promise` | `promise` | promises and protocol facade |
+| `std.foundation.coroutine` | `co` | coroutine facade |
+| `std.foundation.pretty` | `pretty` | document and pretty rendering |
+
+## Native static objects
+
+The schema-v2 API manifest records native static objects separately from loadable namespaces. The current cross-profile runtime configuration includes objects such as `Edn`, `Json`, `Crypto`, `File`, `Socket`, `Host`, and `Kernel`, backed by `std.native.*` runtime identities. They are available without requiring file-backed `std.native.*` namespaces.
+
+For example:
+
+```clojure
+(Edn/read "{:a 1}")
+(Json/write {"a" 1})
+(Crypto/sha256 bytes)
+```
+
+The presence of aliases such as `Edn` or identities such as `std.native.Edn` does **not** imply that `std.foundation.edn` or another retired Foundation child is loadable.
+
+`OS` remains the migration direction for the former `std.foundation.os` API, but availability and export shape are runtime-profile concerns to be proven by cross-runtime conformance. A process handle is a runtime value, not an automatic `Process` static-object alias. Neither should be presented as part of the common native-object inventory without profile evidence.
+
+## Higher-level ownership
+
+Functionality above the native substrate belongs to focused portable libraries:
+
+- portable path operations currently registered under `std.fs.path`;
+- a broader `std.fs` facade remains planned until it appears in the registered inventory;
+- formatting, tables, reports, and terminal presentation under `std.format.*`;
+- component lifecycle under `std.lib.component`;
+- cryptographic algorithms above native primitives under `std.crypto.*`;
+- collection helpers not retained in the root value layer under `std.lib.collection`.
+
+Planned replacements must be recorded as planned rather than presented as implemented.
+
+## Migration and generated API data
+
+`core/spec/std/foundation-migrations.json` records former names, their status, replacement or disposition, rewrite guidance, and evidence.
+
+`scripts/generate_foundation_api_manifest.py` combines:
+
+1. the registered namespace inventory;
+2. source-derived public binding data;
+3. runtime alias/native-object configuration; and
+4. the migration ledger.
+
+The resulting schema-v2 manifest records repository-relative provenance, a pinned source commit, and deterministic surface and migration digests. It is the source consumed by the specification registry and generated documentation. Downstream repositories must not maintain independent handwritten Foundation inventories.
+
+## Test placement
+
+Ordinary tests under `core/lib/test/std/foundation/` correspond only to current Foundation child namespaces. Root Foundation behavior lives in `core/lib/test/std/foundation*_test.hal`. Common native static-object behavior is tested without requiring retired `std.foundation.*` children. Profile-specific OS/process behavior, capability-provider behavior, and higher-level portable-library behavior belong under the runtime or library that owns them.
