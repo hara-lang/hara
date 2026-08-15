@@ -174,7 +174,7 @@ public final class HaraContext {
           Map.entry(
               "Result",
               java.util.List.of(
-                  "success", "error", "result?", "success?", "error?", "status",
+                  "success", "error", "synchronize", "result?", "success?", "error?", "status",
                   "data", "error-value", "context", "with-context")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
@@ -1775,6 +1775,20 @@ public final class HaraContext {
               return values.length == 1
                   ? HaraResult.error(HaraBox.unwrap(values[0]))
                   : HaraResult.error(
+                      HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+            }));
+    result.define(
+        "synchronize",
+        new VariadicBuiltin(
+            "std.native.Result/synchronize",
+            values -> {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException(
+                    "std.native.Result/synchronize expects a value and optional options map");
+              }
+              return values.length == 1
+                  ? HaraResult.synchronize(HaraBox.unwrap(values[0]))
+                  : HaraResult.synchronize(
                       HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
             }));
     result.define(
