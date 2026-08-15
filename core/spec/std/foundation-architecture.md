@@ -49,8 +49,7 @@ The presence of aliases such as `Edn` or identities such as `std.native.Edn` doe
 
 Functionality above the native substrate belongs to focused portable libraries:
 
-- portable path operations currently registered under `std.fs.path`;
-- a broader `std.fs` facade remains planned until it appears in the registered inventory;
+- mounted filesystem paths, deterministic traversal, and promise-based file operations under `std.fs.path`, `std.fs.walk`, and `std.fs`; see [Mounted filesystem APIs](filesystem.md);
 - formatting, tables, reports, and terminal presentation under `std.format.*`;
 - component lifecycle under `std.lib.component`;
 - cryptographic algorithms above native primitives under `std.crypto.*`;
