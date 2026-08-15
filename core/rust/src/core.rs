@@ -7,9 +7,9 @@ use crate::kernel::{NamespaceLoadState, NamespaceRegistry, Var as KernelVar, Var
 use crate::lang::data::List as PList;
 use crate::lang::data::{
     Atom as PAtom, Cons as PCons, Deque as PDeque, Keyword, Map as PMap, OrderedMap as POrderedMap,
-    OrderedSet as POrderedSet, Pointer as PPointer, Queue as PQueue, Set as PSet,
-    PriorityMap as PPriorityMap, SortedMap as PSortedMap, SortedSet as PSortedSet, Symbol, TaggedLiteral as PTaggedLiteral,
-    Trie as PTrie, Tuple as PTuple, Vector as PVector,
+    OrderedSet as POrderedSet, Pointer as PPointer, PriorityMap as PPriorityMap, Queue as PQueue,
+    Set as PSet, SortedMap as PSortedMap, SortedSet as PSortedSet, Symbol,
+    TaggedLiteral as PTaggedLiteral, Trie as PTrie, Tuple as PTuple, Vector as PVector,
 };
 use crate::lang::data::{Metadata, MetadataValue};
 use crate::lang::data::{
@@ -29,6 +29,9 @@ use std::rc::Rc;
 
 #[path = "fiber.rs"]
 mod fiber;
+#[path = "core/native_result.rs"]
+mod native_result;
+pub use native_result::{ResultStatus, ResultValue};
 #[path = "native_crypto.rs"]
 mod native_crypto;
 pub(crate) use fiber::Cont;
@@ -303,6 +306,21 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         ],
     ),
     ("UUID", &["instance?"]),
+    (
+        "Result",
+        &[
+            "success",
+            "error",
+            "result?",
+            "success?",
+            "error?",
+            "status",
+            "data",
+            "error-value",
+            "context",
+            "with-context",
+        ],
+    ),
     ("Error", &["new", "message", "class"]),
     (
         "Base",
@@ -648,6 +666,7 @@ pub enum Value {
     Protocol(Rc<GuestProtocol>),
     NativeType(Rc<NativeType>),
     Coroutine(Rc<Coroutine>),
+    Result(Rc<ResultValue>),
     ExceptionInfo(Rc<ExceptionInfo>),
     Nil,
 }
@@ -1610,17 +1629,15 @@ pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_) => {
-            Ok(Form::Map(
-                map_entries(value)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(key, value)| -> Result<(Form, Form), String> {
-                        Ok((value_to_form(&key)?, value_to_form(&value)?))
-                    })
-                    .collect::<Result<_, _>>()?,
-            ))
-        }
+        | Value::PriorityMap(_) => Ok(Form::Map(
+            map_entries(value)
+                .unwrap()
+                .into_iter()
+                .map(|(key, value)| -> Result<(Form, Form), String> {
+                    Ok((value_to_form(&key)?, value_to_form(&value)?))
+                })
+                .collect::<Result<_, _>>()?,
+        )),
         value => Err(format!("cannot use {} as code", portable_type_name(value))),
     }?;
     Ok(match value_metadata(value) {
@@ -2345,7 +2362,7 @@ fn sequential_equality(left: &Value, right: &Value) -> Option<bool> {
         match value {
             Value::List(values) => Some(values.iter().cloned().collect()),
             Value::Cons(values) => Some(values.iter().collect()),
-        Value::Queue(values) => Some(values.iter().cloned().collect()),
+            Value::Queue(values) => Some(values.iter().cloned().collect()),
             Value::Deque(values) => Some(values.iter().cloned().collect()),
             Value::Tuple(values) => Some(values.iter().cloned().collect()),
             Value::Vector(values) => Some(values.iter().cloned().collect()),
@@ -2433,13 +2450,11 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            map_entries(value).is_some_and(|entries| {
-                entries
-                    .iter()
-                    .all(|(key, value)| session_transferable(key) && session_transferable(value))
-            })
-        }
+        | Value::PriorityMap(_)) => map_entries(value).is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|(key, value)| session_transferable(key) && session_transferable(value))
+        }),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => set_items(value)
             .is_some_and(|values| values.iter().all(|value| session_transferable(value))),
         Value::List(values) => values.iter().all(session_transferable),
@@ -2474,6 +2489,7 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Protocol(_)
         | Value::NativeType(_)
         | Value::Coroutine(_)
+        | Value::Result(_)
         | Value::MutableCollection(_) => false,
     }
 }
@@ -2703,6 +2719,7 @@ impl PartialEq for Value {
             (Value::Protocol(a), Value::Protocol(b)) => Rc::ptr_eq(a, b),
             (Value::NativeType(a), Value::NativeType(b)) => a.name == b.name,
             (Value::Coroutine(a), Value::Coroutine(b)) => Rc::ptr_eq(a, b),
+            (Value::Result(a), Value::Result(b)) => a == b,
             (Value::ExceptionInfo(a), Value::ExceptionInfo(b)) => Rc::ptr_eq(a, b),
             (Value::Nil, Value::Nil) => true,
             _ => false,
@@ -2781,8 +2798,9 @@ impl Ord for Value {
                 Value::Protocol(_) => 31,
                 Value::NativeType(_) => 32,
                 Value::Coroutine(_) => 33,
-                Value::ExceptionInfo(_) => 34,
-                Value::MutableCollection(_) => 35,
+                Value::Result(_) => 34,
+                Value::ExceptionInfo(_) => 35,
+                Value::MutableCollection(_) => 36,
             }
         }
         rank(self)
@@ -2899,6 +2917,7 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Protocol(v) => opaque(30, |s| v.name.hash(s)),
             Self::NativeType(v) => opaque(31, |s| v.name.hash(s)),
             Self::Coroutine(v) => opaque(32, |s| Rc::as_ptr(v).hash(s)),
+            Self::Result(v) => v.java_hash(hash_type),
             Self::ExceptionInfo(v) => opaque(33, |s| Rc::as_ptr(v).hash(s)),
         }
     }
@@ -2976,7 +2995,11 @@ impl Value {
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            value @ (Self::Map(_) | Self::OrderedMap(_) | Self::SortedMap(_) | Self::PriorityMap(_) | Self::Trie(_)) => {
+            value @ (Self::Map(_)
+            | Self::OrderedMap(_)
+            | Self::SortedMap(_)
+            | Self::PriorityMap(_)
+            | Self::Trie(_)) => {
                 format!(
                     "{{{}}}",
                     map_entries(value)
@@ -3006,7 +3029,11 @@ impl Value {
             ),
             Self::Deque(values) => format!(
                 "#deque[{}]",
-                values.iter().map(Value::display).collect::<Vec<_>>().join(" ")
+                values
+                    .iter()
+                    .map(Value::display)
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             Self::Cons(values) => format!(
                 "({})",
@@ -3108,6 +3135,7 @@ impl Value {
                 };
                 format!("#<coroutine {status}>")
             }
+            Self::Result(value) => value.display(),
             Self::ExceptionInfo(value) => {
                 format!(
                     "#error[{} {}]",
@@ -4460,15 +4488,11 @@ fn native_test_runner(value: Value) -> Result<Value, String> {
 }
 
 fn native_test_active_runner() -> Result<Value, String> {
-    ACTIVE_TEST_RUNNER.with(|runner| {
-        native_test_runner(Value::Keyword(runner.borrow().clone().into()))
-    })
+    ACTIVE_TEST_RUNNER
+        .with(|runner| native_test_runner(Value::Keyword(runner.borrow().clone().into())))
 }
 
-fn native_test_config(
-    runner: Value,
-    options: Value,
-) -> Result<Value, String> {
+fn native_test_config(runner: Value, options: Value) -> Result<Value, String> {
     if map_entries(&options).is_none() {
         return Err("std.native.Test/config options must be a map".into());
     }
@@ -4619,7 +4643,9 @@ fn native_test_operation(
                 };
                 let runner = native_test_runner(runner)?;
                 if runner != native_test_active_runner()? {
-                    return Err("std.native.Test/context config runner does not match the runtime".into());
+                    return Err(
+                        "std.native.Test/context config runner does not match the runtime".into(),
+                    );
                 }
                 value
             };
@@ -4674,7 +4700,10 @@ fn native_regex_operation(
             if forms.len() != 1 {
                 return Err("std.native.Regex/instance? expects one value".into());
             }
-            Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Regex(_))))
+            Ok(Value::Bool(matches!(
+                eval(&forms[0], env)?,
+                Value::Regex(_)
+            )))
         }
         "compile" => {
             if forms.len() != 1 {
@@ -4709,8 +4738,8 @@ fn native_regex_operation(
                 Value::String(input) => input,
                 _ => return Err("std.native.Regex/find? expects a regexp and string".into()),
             };
-            let regexp = regex::Regex::new(&pattern)
-                .map_err(|error| format!("invalid regexp: {error}"))?;
+            let regexp =
+                regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Bool(regexp.is_match(&input)))
         }
         "find" => {
@@ -6280,6 +6309,7 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Protocol(_) => "protocol",
         Value::NativeType(_) => "native-type",
         Value::Coroutine(_) => "coroutine",
+        Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
 }
@@ -6333,6 +6363,7 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Protocol(_) => "Protocol",
         Value::NativeType(_) => "NativeType",
         Value::Coroutine(_) => "Coroutine",
+        Value::Result(_) => "Result",
         Value::ExceptionInfo(_) => "Error",
     };
     Keyword::create(Some("hara"), builtin)
@@ -6381,6 +6412,7 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::Protocol(_) => "protocol",
         Value::NativeType(_) => "native-type",
         Value::Coroutine(_) => "coroutine",
+        Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
 }
@@ -7466,6 +7498,79 @@ fn document_operation(operation: &str, values: Vec<Value>) -> Result<Value, Stri
     }
 }
 
+fn result_context(value: Option<Value>) -> Result<Value, String> {
+    let context = value.unwrap_or_else(|| Value::Map(PMap::new()));
+    map_entries(&context)
+        .is_some()
+        .then_some(context)
+        .ok_or_else(|| "Result context must be a map".into())
+}
+
+fn native_result_operation(
+    operation: &str,
+    forms: &[Form],
+    env: &mut HashMap<String, Value>,
+) -> Result<Value, String> {
+    let operation = operation
+        .strip_prefix("std.native.Result/")
+        .or_else(|| operation.strip_prefix("Result/"))
+        .unwrap_or(operation);
+    match operation {
+        "success" => {
+            if !(1..=2).contains(&forms.len()) {
+                return Err("std.native.Result/success expects data and optional context".into());
+            }
+            let data = eval(&forms[0], env)?;
+            let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
+            Ok(Value::Result(Rc::new(ResultValue::success(data, context)?)))
+        }
+        "error" => {
+            if !(1..=2).contains(&forms.len()) {
+                return Err("std.native.Result/error expects an error and optional context".into());
+            }
+            let error = eval(&forms[0], env)?;
+            let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
+            Ok(Value::Result(Rc::new(ResultValue::error(error, context)?)))
+        }
+        "result?" | "success?" | "error?" | "status" | "data" | "error-value" | "context" => {
+            if forms.len() != 1 {
+                return Err(format!("std.native.Result/{operation} expects one value"));
+            }
+            let value = eval(&forms[0], env)?;
+            if operation == "result?" {
+                return Ok(Value::Bool(matches!(value, Value::Result(_))));
+            }
+            let Value::Result(result) = value else {
+                if matches!(operation, "success?" | "error?") {
+                    return Ok(Value::Bool(false));
+                }
+                return Err(format!("std.native.Result/{operation} expects a Result"));
+            };
+            Ok(match operation {
+                "success?" => Value::Bool(result.is_success()),
+                "error?" => Value::Bool(result.is_error()),
+                "status" => result.status_value(),
+                "data" => result.data.clone(),
+                "error-value" => result.error_value(),
+                "context" => result.context.clone(),
+                _ => unreachable!(),
+            })
+        }
+        "with-context" => {
+            if forms.len() != 2 {
+                return Err("std.native.Result/with-context expects a Result and context".into());
+            }
+            let value = eval(&forms[0], env)?;
+            let Value::Result(result) = value else {
+                return Err("std.native.Result/with-context expects a Result".into());
+            };
+            let context = eval(&forms[1], env)?;
+            Ok(Value::Result(Rc::new(result.with_context(context)?)))
+        }
+        _ => Err(format!("unknown std.native.Result operation: {operation}")),
+    }
+}
+
 fn native_error_operation(
     operation: &str,
     args: &[Form],
@@ -7604,10 +7709,7 @@ fn value_to_metadata(value: &Value) -> Result<MetadataValue, String> {
                     .collect::<Result<_, _>>()?,
             ))
         }
-        value @ (Value::Map(_)
-        | Value::OrderedMap(_)
-        | Value::SortedMap(_)
-        | Value::Trie(_)) => {
+        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(MetadataValue::Map(
                 map_entries(value)
                     .unwrap()
@@ -7942,14 +8044,12 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(map_entries(value)
-                .unwrap()
-                .into_iter()
-                .find(|(candidate, _)| candidate == key)
-                .map(|(candidate, value)| pair_value(candidate, value))
-                .unwrap_or(Value::Nil))
-        }
+        | Value::PriorityMap(_)) => Ok(map_entries(value)
+            .unwrap()
+            .into_iter()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(candidate, value)| pair_value(candidate, value))
+            .unwrap_or(Value::Nil)),
         Value::Pointer(pointer) => Ok(pointer
             .fields()
             .iter()
@@ -8040,6 +8140,7 @@ fn protocol_deref(arguments: &[Value]) -> Result<Value, String> {
         [Value::Atom(atom)] => Ok(atom.deref_value()),
         [Value::Var(var)] => Ok(var.deref_value()),
         [Value::Promise(promise)] => promise_value_result(promise),
+        [Value::Result(result)] => result.deref_value(),
         [Value::Pointer(pointer)] => {
             pointer_context_call(pointer, pointer_default(pointer)?, "pointer/deref", &[])
         }
@@ -8389,9 +8490,7 @@ fn protocol_encode_with(arguments: &[Value]) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_) => {
-            ("visit-map", vec![visitor.clone(), value.clone()])
-        }
+        | Value::PriorityMap(_) => ("visit-map", vec![visitor.clone(), value.clone()]),
         Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => {
             ("visit-set", vec![visitor.clone(), value.clone()])
         }
@@ -8487,9 +8586,13 @@ fn protocol_pop_last(arguments: &[Value]) -> Result<Value, String> {
 fn protocol_push_first(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
         [Value::List(values), value] => Ok(Value::List(values.push_first(value.clone()))),
-        [Value::Cons(values), value] => Ok(Value::Cons(Box::new(PCons::new(value.clone(), values.to_list()).with_meta(values.meta().cloned())))),
+        [Value::Cons(values), value] => Ok(Value::Cons(Box::new(
+            PCons::new(value.clone(), values.to_list()).with_meta(values.meta().cloned()),
+        ))),
         [Value::Tuple(values), value] => tuple_push_first(values, value.clone()),
-        [Value::Deque(values), value] => Ok(Value::Deque(Box::new(values.push_first(value.clone())))),
+        [Value::Deque(values), value] => {
+            Ok(Value::Deque(Box::new(values.push_first(value.clone()))))
+        }
         [_, _] => Err("protocol/unsupported-receiver: IPushFirst/push-first".into()),
         _ => Err("IPushFirst/push-first expects a collection and value".into()),
     }
@@ -8500,8 +8603,12 @@ fn protocol_push_last(arguments: &[Value]) -> Result<Value, String> {
         [Value::List(values), value] => Ok(Value::List(values.push_last(value.clone()))),
         [Value::Tuple(values), value] => tuple_push_last(values, value.clone()),
         [Value::Vector(values), value] => Ok(Value::Vector(values.push_last(value.clone()))),
-        [Value::Queue(values), value] => Ok(Value::Queue(Box::new(values.push_last(value.clone())))),
-        [Value::Deque(values), value] => Ok(Value::Deque(Box::new(values.push_last(value.clone())))),
+        [Value::Queue(values), value] => {
+            Ok(Value::Queue(Box::new(values.push_last(value.clone()))))
+        }
+        [Value::Deque(values), value] => {
+            Ok(Value::Deque(Box::new(values.push_last(value.clone()))))
+        }
         [_, _] => Err("protocol/unsupported-receiver: IPushLast/push-last".into()),
         _ => Err("IPushLast/push-last expects a collection and value".into()),
     }
@@ -9838,7 +9945,9 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
         Value::Queue(values) => Ok(values.iter().cloned().collect()),
         Value::PriorityMap(values) => Ok(values
             .iter()
-            .map(|(key, value)| Value::Tuple(Box::new(PTuple::from_values(vec![key, value]).unwrap())))
+            .map(|(key, value)| {
+                Value::Tuple(Box::new(PTuple::from_values(vec![key, value]).unwrap()))
+            })
             .collect()),
         Value::String(text) => Ok(text.chars().map(|c| Value::String(c.to_string())).collect()),
         Value::Bytes(bytes) => Ok(bytes
@@ -9871,10 +9980,7 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
             .iter()
             .map(|(key, value)| pair_value(key.clone(), value.clone()))
             .collect()),
-        value @ (Value::Map(_)
-        | Value::OrderedMap(_)
-        | Value::SortedMap(_)
-        | Value::Trie(_)) => {
+        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(map_entries(&value)
                 .unwrap()
                 .into_iter()
@@ -10163,15 +10269,13 @@ fn collection_keys(value: &Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(Value::Vector(
-                map_entries(value)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(key, _)| key)
-                    .collect(),
-            ))
-        }
+        | Value::PriorityMap(_)) => Ok(Value::Vector(
+            map_entries(value)
+                .unwrap()
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect(),
+        )),
         Value::Object(values) => Ok(Value::Vector(
             values
                 .borrow()
@@ -10212,15 +10316,13 @@ fn collection_vals(value: &Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(Value::Vector(
-                map_entries(value)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(_, value)| value)
-                    .collect(),
-            ))
-        }
+        | Value::PriorityMap(_)) => Ok(Value::Vector(
+            map_entries(value)
+                .unwrap()
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect(),
+        )),
         Value::Object(values) => Ok(Value::Vector(
             values
                 .borrow()
@@ -10360,9 +10462,7 @@ fn collection_count(value: &Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            map_entries(value).unwrap().len()
-        }
+        | Value::PriorityMap(_)) => map_entries(value).unwrap().len(),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             set_items(value).unwrap().len()
         }
@@ -10476,9 +10576,7 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(map_value(value, key).cloned().unwrap_or(default))
-        }
+        | Value::PriorityMap(_)) => Ok(map_value(value, key).cloned().unwrap_or(default)),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             Ok(set_find(value, key).unwrap_or(default))
         }
@@ -10616,9 +10714,7 @@ fn collection_assoc(value: &Value, key: &Value, replacement: Value) -> Result<Va
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            map_assoc_value(value, key.clone(), replacement)
-        }
+        | Value::PriorityMap(_)) => map_assoc_value(value, key.clone(), replacement),
         Value::Object(entries) => {
             let name = marker_key(key, "object")?;
             let mut output = entries.borrow().clone();
@@ -10739,10 +10835,9 @@ fn collection_dissoc(value: &Value, keys: &[Value]) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            keys.iter()
-                .try_fold(value.clone(), |map, key| map_dissoc_value(&map, key))
-        }
+        | Value::PriorityMap(_)) => keys
+            .iter()
+            .try_fold(value.clone(), |map, key| map_dissoc_value(&map, key)),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => keys
             .iter()
             .try_fold(value.clone(), |set, key| set_dissoc_value(&set, key)),
@@ -11604,15 +11699,13 @@ pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            match arguments.as_slice() {
-                [key] => Ok(map_value(&value, key).cloned().unwrap_or(Value::Nil)),
-                [key, fallback] => Ok(map_value(&value, key)
-                    .cloned()
-                    .unwrap_or_else(|| fallback.clone())),
-                _ => Err("map invocation expects one or two arguments".into()),
-            }
-        }
+        | Value::PriorityMap(_)) => match arguments.as_slice() {
+            [key] => Ok(map_value(&value, key).cloned().unwrap_or(Value::Nil)),
+            [key, fallback] => Ok(map_value(&value, key)
+                .cloned()
+                .unwrap_or_else(|| fallback.clone())),
+            _ => Err("map invocation expects one or two arguments".into()),
+        },
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             match arguments.as_slice() {
                 [key] => Ok(set_find(&value, key).unwrap_or(Value::Nil)),
@@ -15197,6 +15290,28 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err("edn/pretty expects an options map".into());
                     }
                     Ok(Value::String(value.display()))
+                }
+                Form::Symbol(n)
+                    if (n.starts_with("std.native.Result/") || n.starts_with("Result/"))
+                        && [
+                            "success",
+                            "error",
+                            "result?",
+                            "success?",
+                            "error?",
+                            "status",
+                            "data",
+                            "error-value",
+                            "context",
+                            "with-context",
+                        ]
+                        .contains(
+                            &n.strip_prefix("std.native.Result/")
+                                .or_else(|| n.strip_prefix("Result/"))
+                                .unwrap_or(n),
+                        ) =>
+                {
+                    native_result_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Error/")

@@ -184,6 +184,11 @@ public final class HaraContext {
                   "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
                   "split"))
           Map.entry("UUID", java.util.List.of("instance?")),
+          Map.entry(
+              "Result",
+              java.util.List.of(
+                  "success", "error", "result?", "success?", "error?", "status",
+                  "data", "error-value", "context", "with-context")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
           Map.entry(
               "Base",
@@ -263,6 +268,7 @@ public final class HaraContext {
         HaraVar.Origin.RUNTIME_PRIMITIVE,
         () -> {
           installNativeTypeDescriptors();
+          installNativeResultBuiltins();
           HaraJavaAdapters.install(this);
           collectBuiltins(
               FOUNDATION_NAMESPACE,
@@ -1793,6 +1799,95 @@ public final class HaraContext {
     }
   }
 
+  private void installNativeResultBuiltins() {
+    HaraNamespace result = namespace("std.native.Result");
+    result.define(
+        "success",
+        new VariadicBuiltin(
+            "std.native.Result/success",
+            values -> {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException(
+                    "std.native.Result/success expects data and optional context");
+              }
+              return values.length == 1
+                  ? HaraResult.success(HaraBox.unwrap(values[0]))
+                  : HaraResult.success(
+                      HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+            }));
+    result.define(
+        "error",
+        new VariadicBuiltin(
+            "std.native.Result/error",
+            values -> {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException(
+                    "std.native.Result/error expects an error and optional context");
+              }
+              return values.length == 1
+                  ? HaraResult.error(HaraBox.unwrap(values[0]))
+                  : HaraResult.error(
+                      HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+            }));
+    result.define(
+        "result?",
+        new UnaryBuiltin(
+            "std.native.Result/result?",
+            value -> HaraBox.unwrap(value) instanceof HaraResult));
+    result.define(
+        "success?",
+        new UnaryBuiltin(
+            "std.native.Result/success?",
+            value ->
+                HaraBox.unwrap(value) instanceof HaraResult nativeResult
+                    && nativeResult.isSuccess()));
+    result.define(
+        "error?",
+        new UnaryBuiltin(
+            "std.native.Result/error?",
+            value ->
+                HaraBox.unwrap(value) instanceof HaraResult nativeResult
+                    && nativeResult.isError()));
+    result.define(
+        "status",
+        new UnaryBuiltin(
+            "std.native.Result/status",
+            value -> requireNativeResult(value, "status").status()));
+    result.define(
+        "data",
+        new UnaryBuiltin(
+            "std.native.Result/data",
+            value -> requireNativeResult(value, "data").data()));
+    result.define(
+        "error-value",
+        new UnaryBuiltin(
+            "std.native.Result/error-value",
+            value -> requireNativeResult(value, "error-value").errorValue()));
+    result.define(
+        "context",
+        new UnaryBuiltin(
+            "std.native.Result/context",
+            value -> requireNativeResult(value, "context").context()));
+    result.define(
+        "with-context",
+        new VariadicBuiltin(
+            "std.native.Result/with-context",
+            values -> {
+              if (values.length != 2) {
+                throw new HaraException(
+                    "std.native.Result/with-context expects a Result and context");
+              }
+              return requireNativeResult(values[0], "with-context")
+                  .withContext(HaraBox.unwrap(values[1]));
+            }));
+  }
+
+  private static HaraResult requireNativeResult(Object value, String operation) {
+    Object raw = HaraBox.unwrap(value);
+    if (raw instanceof HaraResult result) return result;
+    throw new HaraException("std.native.Result/" + operation + " expects a Result");
+  }
+
   @SuppressWarnings({"rawtypes", "unchecked"})
   private void installProjectMacro() {
     defineIntrinsicMacro(
@@ -2656,6 +2751,7 @@ public final class HaraContext {
     else if (raw instanceof HaraType) type = "StructType";
     else if (raw instanceof HaraProtocol) type = "Protocol";
     else if (raw instanceof HaraNativeType) type = "NativeType";
+    else if (raw instanceof HaraResult) type = "Result";
     else if (raw instanceof hara.lang.protocol.IExInfo || raw instanceof HaraException) type = "Error";
     else if (raw instanceof hara.lang.protocol.ICoroutine) type = "Coroutine";
     else if (raw instanceof IPromise) type = "Promise";
