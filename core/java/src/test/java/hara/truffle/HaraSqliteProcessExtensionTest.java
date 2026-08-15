@@ -126,7 +126,6 @@ public class HaraSqliteProcessExtensionTest {
               + "[std.db.sqlite :as sqlite] "
               + "[std.db.text.sql-graph :as graph] "
               + "[std.db.text.sql-util :as sql] "
-              + "[std.foundation.json :as json] "
               + "[std.foundation.string :as string])) "
               + "(def graph-schema "
               + "{\"User\" {\"id\" {\"ident\" \"id\" \"order\" 0 \"type\" \"uuid\" \"scope\" \"id\"} "
@@ -155,7 +154,7 @@ public class HaraSqliteProcessExtensionTest {
               + "(sql/sqlite-opts {}))) "
               + "(def graph-result (deref (db/query graph-connection graph-statement))) "
               + "(def graph-json (get (get (get graph-result :rows) 0) 0)) "
-              + "(def graph-data (json/read graph-json))");
+              + "(def graph-data (Json/read graph-json))");
       assertTrue(
           context.eval(HaraLanguage.ID, "(string/includes? graph-statement \"FROM \\\"Team\\\"\")").asBoolean());
       assertTrue(
