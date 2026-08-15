@@ -1,0 +1,38 @@
+(ns std.typed.result-timeout-test
+  (:require [std.typed.infer :as infer]
+            [std.typed.schema :as schema]))
+
+^{:refer std.typed.schema/result-timeout}
+(Test/run
+ [{:name "normalizes and validates timeout Result refinements"
+   :test (fn []
+           (let [timeout (res-error (ex-info "timed out" {:code :result/timeout}))
+                 ordinary (res-error (ex-info "boom" {:code :demo/boom}))
+                 surface [:result {:status :error :error-code :result/timeout} :any]]
+             [(schema/normalize surface)
+              (schema/valid? surface timeout)
+              (schema/valid? surface ordinary)
+              (get-in (schema/normalize-result
+                       [:result {:status :success :error-code :result/timeout} :any])
+                      [:error :reason])]))
+   :expected [{:kind :result
+               :properties {:status :error :error-code :result/timeout}
+               :data {:kind :primitive :name :any}}
+              true false :conflicting-result-properties]}])
+
+^{:refer std.typed.infer/result-timeout}
+(Test/run
+ [{:name "transfers and narrows Result schemas"
+   :test (fn []
+           (let [integer (schema/normalize :int)
+                 result (schema/normalize [:result :int])]
+             [(infer/result-transfer :result/success [integer])
+              (infer/result-transfer :result/synchronize [result])
+              (:properties (infer/narrow-result-schema result :result/timeout?))]))
+   :expected [{:kind :result
+               :properties {:status :success}
+               :data {:kind :primitive :name :int}}
+              {:kind :result
+               :properties {}
+               :data {:kind :primitive :name :int}}
+              {:status :error :error-code :result/timeout}]}])

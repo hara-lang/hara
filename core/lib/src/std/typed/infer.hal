@@ -306,3 +306,147 @@
     {:kind :fn
      :inputs {:fixed fixed-types :rest rest-type}
      :output (infer-sequence body (assoc context :locals locals))}))
+
+;; Native Result transfer and narrowing rules
+
+(def +result-transfer-table+
+  {'std.foundation/res-success :result/success
+   'std.foundation/res-error :result/error
+   'std.foundation/res-synchronize :result/synchronize
+   'std.foundation/res? :result/result?
+   'std.foundation/res-success? :result/success?
+   'std.foundation/res-error? :result/error?
+   'std.foundation/res-timeout? :result/timeout?
+   'std.foundation/res-status :result/status
+   'std.foundation/res-data :result/data
+   'std.foundation/res-error-value :result/error-value
+   'std.foundation/res-context :result/context
+   'std.foundation/res-with-context :result/with-context
+   'std.foundation/deref :result/deref})
+
+(defn result-schema
+  ([data] (result-schema data {}))
+  ([data properties] {:kind :result :properties properties :data data}))
+
+(defn result-schema? [schema] (= :result (:kind schema)))
+
+(defn promise-schema? [schema]
+  (or (= :promise (:kind schema))
+      (and (= :primitive (:kind schema)) (= :promise (:name schema)))))
+
+(defn result-operation [head context]
+  (if (symbol? head)
+    (let [qualified (qualify-symbol head context)
+          foundation-name (symbol "std.foundation" (name head))]
+      (or (get +result-transfer-table+ qualified)
+          (when (nil? (namespace head))
+            (get +result-transfer-table+ foundation-name))))
+    nil))
+
+(defn result-data-transfer [schema]
+  (if (result-schema? schema)
+    (let [status (get-in schema [:properties :status])]
+      (cond (= status :success) (:data schema)
+            (= status :error) (primitive :nil)
+            :else (schema/union-normal [(:data schema) (primitive :nil)])))
+    (unknown)))
+
+(defn result-error-value-transfer [schema]
+  (if (result-schema? schema)
+    (if (= :success (get-in schema [:properties :status]))
+      (primitive :nil)
+      (primitive :any))
+    (unknown)))
+
+(defn result-status-transfer [schema]
+  (if (result-schema? schema)
+    (let [status (get-in schema [:properties :status])]
+      {:kind :enum :values (if status [status] [:success :error])})
+    (unknown)))
+
+(defn result-synchronize-transfer [schema]
+  (cond
+    (result-schema? schema) schema
+    (= :promise (:kind schema)) (result-schema (or (:item schema) (primitive :any)))
+    (promise-schema? schema) (result-schema (primitive :any))
+    :else (result-schema schema)))
+
+(defn result-transfer [operation argument-schemas]
+  (let [first-argument (if (empty? argument-schemas) (unknown) (first argument-schemas))]
+    (cond
+      (= operation :result/success) (result-schema first-argument {:status :success})
+      (= operation :result/error) (result-schema (primitive :any) {:status :error})
+      (= operation :result/synchronize) (result-synchronize-transfer first-argument)
+      (has? #{:result/result? :result/success? :result/error? :result/timeout?} operation)
+      (primitive :bool)
+      (= operation :result/status) (result-status-transfer first-argument)
+      (= operation :result/data) (result-data-transfer first-argument)
+      (= operation :result/error-value) (result-error-value-transfer first-argument)
+      (= operation :result/context) (primitive :map)
+      (= operation :result/with-context) first-argument
+      (= operation :result/deref)
+      (if (result-schema? first-argument) (:data first-argument) (unknown))
+      :else (unknown))))
+
+(def +infer-known-call-before-result+ infer-known-call)
+(defn infer-known-call [head arguments context]
+  (let [operation (result-operation head context)]
+    (if operation
+      (result-transfer operation
+                       (vec (map (fn [argument] (infer-block argument context)) arguments)))
+      (+infer-known-call-before-result+ head arguments context))))
+
+(defn narrow-result-schema [schema operation]
+  (let [current (if (result-schema? schema) schema (result-schema (primitive :any)))
+        properties (:properties current)]
+    (cond
+      (= operation :result/result?) current
+      (= operation :result/success?)
+      (assoc current :properties (assoc properties :status :success))
+      (= operation :result/error?)
+      (assoc current :properties (assoc properties :status :error))
+      (= operation :result/timeout?)
+      (assoc current :properties
+             (assoc (assoc properties :status :error) :error-code :result/timeout))
+      :else current)))
+
+(defn assoc-environment-schema [context target schema]
+  (if (and (:locals context) (has? (:locals context) target))
+    (assoc context :locals (assoc (:locals context) target schema))
+    (assoc context :values (assoc (or (:values context) {}) target schema))))
+
+(defn result-condition-context [condition context]
+  (if (and condition (= :list (block/tag condition)))
+    (let [children (code-children condition)
+          head-block (first children)
+          argument-block (second children)
+          head (when head-block (block/value head-block))
+          target (when argument-block (block/value argument-block))
+          operation (result-operation head context)]
+      (if (and (symbol? target)
+               (has? #{:result/result? :result/success? :result/error? :result/timeout?}
+                     operation))
+        (assoc-environment-schema
+         context target (narrow-result-schema (environment-type target context) operation))
+        context))
+    context))
+
+(defn infer-result-if [value context]
+  (let [children (code-children value)
+        arguments (vec (rest children))
+        condition (first arguments)
+        then-branch (second arguments)
+        else-branch (nth arguments 2 nil)]
+    (if (nil? then-branch)
+      (unknown value)
+      (join [(infer-block then-branch (result-condition-context condition context))
+             (if else-branch (infer-block else-branch context) (primitive :nil))]))))
+
+(def +infer-list-before-result+ infer-list)
+(defn infer-list [value context]
+  (let [children (code-children value)
+        head-block (first children)
+        head (when head-block (block/value head-block))]
+    (if (= head 'if)
+      (infer-result-if value context)
+      (+infer-list-before-result+ value context))))

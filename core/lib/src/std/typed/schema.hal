@@ -714,3 +714,142 @@
     (if (< index (count fixed))
       (nth fixed index)
       (get-in arity [:inputs :rest]))))
+
+;; Native Result schemas
+
+(def +result-property-names+ #{:status :error-code})
+
+(defn result-property-error [message surface reason]
+  (schema-error message surface reason))
+
+(defn normalize-result-properties [properties surface]
+  (if (not (map? properties))
+    (result-property-error ":result schema properties must be a map" surface :invalid-result-properties)
+    (let [unknown (vec (filter (fn [key] (not (has? +result-property-names+ key)))
+                               (keys properties)))
+          status? (has? properties :status)
+          code? (has? properties :error-code)
+          status (get properties :status)
+          code (get properties :error-code)]
+      (cond
+        (not (empty? unknown))
+        (result-property-error (str "unsupported :result schema properties: " unknown)
+                               surface :unsupported-result-property)
+        (and status? (not (has? #{:success :error} status)))
+        (result-property-error ":result :status must be :success or :error"
+                               surface :invalid-result-status)
+        (and code? (not (keyword? code)))
+        (result-property-error ":result :error-code must be a keyword"
+                               surface :invalid-result-error-code)
+        (and code? (= :success status))
+        (result-property-error ":result :error-code cannot refine a successful Result"
+                               surface :conflicting-result-properties)
+        :else
+        (let [status (if code? :error status)
+              output (if status {:status status} {})]
+          (if code? (assoc output :error-code code) output))))))
+
+(defn normalize-result-schema [surface context]
+  (let [arguments (vec (rest surface))]
+    (cond
+      (= 1 (count arguments))
+      {:kind :result :properties {} :data (normalize-in (first arguments) context)}
+      (and (= 2 (count arguments)) (map? (first arguments)))
+      {:kind :result
+       :properties (normalize-result-properties (first arguments) surface)
+       :data (normalize-in (second arguments) context)}
+      :else
+      (schema-error ":result schema expects a data schema and optional property map"
+                    surface :invalid-result-arity))))
+
+(def +normalize-in-before-result+ normalize-in)
+(defn normalize-in [schema context]
+  (if (and (vector? schema) (not (empty? schema)) (= :result (first schema)))
+    (normalize-result-schema schema context)
+    (+normalize-in-before-result+ schema context)))
+
+(def +resolve-normal-before-result+ resolve-normal)
+(defn resolve-normal [schema definitions visited]
+  (if (= :result (:kind schema))
+    (assoc schema :data (resolve-normal (:data schema) definitions visited))
+    (+resolve-normal-before-result+ schema definitions visited)))
+
+(def +reference-names-normal-before-result+ reference-names-normal)
+(defn reference-names-normal [schema]
+  (if (= :result (:kind schema))
+    (reference-names-normal (:data schema))
+    (+reference-names-normal-before-result+ schema)))
+
+(defn result-error-code [value]
+  (if (res-error? value)
+    (get (ex-data (res-error-value value)) :code)
+    nil))
+
+(defn validate-result-normal [schema value path]
+  (if (not (res? value))
+    [(finding path schema value)]
+    (let [properties (:properties schema)
+          expected-status (get properties :status)
+          expected-code (get properties :error-code)
+          actual-status (res-status value)
+          status-findings (if (and expected-status (not= expected-status actual-status))
+                            [(finding (conj path :status) expected-status actual-status)] [])
+          actual-code (result-error-code value)
+          code-findings (if (and expected-code (not= expected-code actual-code))
+                          [(finding (conj path :error :code) expected-code actual-code)] [])
+          data-findings (if (res-success? value)
+                          (validate-normal (:data schema) (res-data value) (conj path :data)) [])]
+      (vec (concat status-findings code-findings data-findings)))))
+
+(def +validate-normal-before-result+ validate-normal)
+(defn validate-normal [schema value path]
+  (if (= :result (:kind schema))
+    (validate-result-normal schema value path)
+    (+validate-normal-before-result+ schema value path)))
+
+(defn result-status-domain [schema]
+  (let [status (get-in schema [:properties :status])]
+    (cond (= status :success) #{:success}
+          (= status :error) #{:error}
+          :else #{:success :error})))
+
+(defn result-status-overlap? [left right]
+  (any? (fn [status] (has? (result-status-domain right) status))
+        (result-status-domain left)))
+
+(defn result-success-overlap? [left right]
+  (and (has? (result-status-domain left) :success)
+       (has? (result-status-domain right) :success)))
+
+(defn result-error-code-compatible? [left right]
+  (let [left-code (get-in left [:properties :error-code])
+        right-code (get-in right [:properties :error-code])]
+    (or (nil? left-code) (nil? right-code) (= left-code right-code))))
+
+(defn compatible-result? [left right]
+  (and (result-status-overlap? left right)
+       (result-error-code-compatible? left right)
+       (or (not (result-success-overlap? left right))
+           (compatible-normal? (:data left) (:data right)))))
+
+(def +compatible-normal-before-result+ compatible-normal?)
+(defn compatible-normal? [expected actual]
+  (if (and (= :result (:kind expected)) (= :result (:kind actual)))
+    (compatible-result? expected actual)
+    (+compatible-normal-before-result+ expected actual)))
+
+(defn assignable-result? [expected actual]
+  (let [expected-statuses (result-status-domain expected)
+        actual-statuses (result-status-domain actual)
+        expected-code (get-in expected [:properties :error-code])
+        actual-code (get-in actual [:properties :error-code])]
+    (and (every? (fn [status] (has? expected-statuses status)) actual-statuses)
+         (or (not (has? actual-statuses :success))
+             (assignable-normal? (:data expected) (:data actual)))
+         (or (nil? expected-code) (= expected-code actual-code)))))
+
+(def +assignable-normal-before-result+ assignable-normal?)
+(defn assignable-normal? [expected actual]
+  (if (and (= :result (:kind expected)) (= :result (:kind actual)))
+    (assignable-result? expected actual)
+    (+assignable-normal-before-result+ expected actual)))
