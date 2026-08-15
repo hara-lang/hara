@@ -50,6 +50,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          apply_payload() {
+            local source=$1 compressed_sha=$2 patch_sha=$3 target=$4
+            echo "$compressed_sha  $source" | sha256sum -c -
+            base64 --decode "$source" | gzip --decompress > "$target"
+            echo "$patch_sha  $target" | sha256sum -c -
+            git apply --check "$target"
+            git apply "$target"
+          }
+
           shopt -s nullglob
           parts=(.github/agent-foundation.patch.part-*)
           test "${#parts[@]}" -eq 6
@@ -63,52 +72,46 @@ jobs:
           SUMS
           sha256sum -c /tmp/foundation-parts.sha256
           cat "${parts[@]}" > /tmp/agent-foundation.patch.gz.b64
-          echo '082536e59d758abe012d697aa81c52b8c1a8e9114e9500c2e8875230e972bff1  /tmp/agent-foundation.patch.gz.b64' | sha256sum -c -
-          base64 --decode /tmp/agent-foundation.patch.gz.b64 | gzip --decompress > /tmp/agent-foundation.patch
-          echo '4ec4ad5730d9a96c76b64cd2f10742e94a4ec2875ba9f9627c255804fc79370e  /tmp/agent-foundation.patch' | sha256sum -c -
-          git apply --check /tmp/agent-foundation.patch
-          git apply /tmp/agent-foundation.patch
-
-          echo 'f193b92d8e729f9f1c21f1eb6b24e9047b033de4af105720339f9994f6f694de  .github/agent-foundation-corrections.patch.gz.b64' | sha256sum -c -
-          base64 --decode .github/agent-foundation-corrections.patch.gz.b64 | gzip --decompress > /tmp/agent-foundation-corrections.patch
-          echo '4126d3f507d0ef17709a41639b7b6ce227e260d6481b80d5f7fc164f30cfa2ca  /tmp/agent-foundation-corrections.patch' | sha256sum -c -
-          git apply --check /tmp/agent-foundation-corrections.patch
-          git apply /tmp/agent-foundation-corrections.patch
-
-          echo 'f5ca5ce3025fdc8cf5f09633dc6408b722fac580c387a229c6477e7af77563e5  .github/agent-foundation-private-names.patch.gz.b64' | sha256sum -c -
-          base64 --decode .github/agent-foundation-private-names.patch.gz.b64 | gzip --decompress > /tmp/agent-foundation-private-names.patch
-          echo '2b7bc571911dd74010fc381254dc5e9ad2b278f6c9cf808f7513b9719e2ab229  /tmp/agent-foundation-private-names.patch' | sha256sum -c -
-          git apply --check /tmp/agent-foundation-private-names.patch
-          git apply /tmp/agent-foundation-private-names.patch
-
-          echo '5b7600b5c1fb221b435246249edf06eacf81d229e2db6aa907f6cb4d0ea23ae3  .github/agent-foundation-surface-mirror.patch.gz.b64' | sha256sum -c -
-          base64 --decode .github/agent-foundation-surface-mirror.patch.gz.b64 | gzip --decompress > /tmp/agent-foundation-surface-mirror.patch
-          echo '7c2641d741525e41ccf534d62dc975f3e4838e9e65db22e1465744d82180e4f9  /tmp/agent-foundation-surface-mirror.patch' | sha256sum -c -
-          git apply --check /tmp/agent-foundation-surface-mirror.patch
-          git apply /tmp/agent-foundation-surface-mirror.patch
+          apply_payload /tmp/agent-foundation.patch.gz.b64 \
+            082536e59d758abe012d697aa81c52b8c1a8e9114e9500c2e8875230e972bff1 \
+            4ec4ad5730d9a96c76b64cd2f10742e94a4ec2875ba9f9627c255804fc79370e \
+            /tmp/agent-foundation.patch
+          apply_payload .github/agent-foundation-corrections.patch.gz.b64 \
+            f193b92d8e729f9f1c21f1eb6b24e9047b033de4af105720339f9994f6f694de \
+            4126d3f507d0ef17709a41639b7b6ce227e260d6481b80d5f7fc164f30cfa2ca \
+            /tmp/agent-foundation-corrections.patch
+          apply_payload .github/agent-foundation-private-names.patch.gz.b64 \
+            f5ca5ce3025fdc8cf5f09633dc6408b722fac580c387a229c6477e7af77563e5 \
+            2b7bc571911dd74010fc381254dc5e9ad2b278f6c9cf808f7513b9719e2ab229 \
+            /tmp/agent-foundation-private-names.patch
+          apply_payload .github/agent-foundation-surface-mirror.patch.gz.b64 \
+            5b7600b5c1fb221b435246249edf06eacf81d229e2db6aa907f6cb4d0ea23ae3 \
+            7c2641d741525e41ccf534d62dc975f3e4838e9e65db22e1465744d82180e4f9 \
+            /tmp/agent-foundation-surface-mirror.patch
+          apply_payload .github/agent-foundation-nested-checkout.patch.gz.b64 \
+            268fe86cc35776fe6887ecbf06f7b3c88a33207a33afe8564abb4738a3f80a3c \
+            ea7895db1610e7648a12f3e90b274bab660ac9e0537e890baa79d042d16e8411 \
+            /tmp/agent-foundation-nested-checkout.patch
 
           rm "${parts[@]}" \
             .github/agent-foundation-corrections.patch.gz.b64 \
             .github/agent-foundation-private-names.patch.gz.b64 \
-            .github/agent-foundation-surface-mirror.patch.gz.b64
-          rm .github/workflows/agent-source-snapshot.yml
-          rm .github/workflows/agent-runtime-bootstrap.yml
+            .github/agent-foundation-surface-mirror.patch.gz.b64 \
+            .github/agent-foundation-nested-checkout.patch.gz.b64 \
+            .github/workflows/agent-source-snapshot.yml \
+            .github/workflows/agent-runtime-bootstrap.yml
           rustfmt --edition 2021 core/rust/src/core.rs core/rust/src/fiber.rs
           git diff --check
 
-      - name: Regenerate the Foundation HBX bundle
+      - name: Regenerate and verify the Foundation HBX bundle
         shell: bash
         run: |
           set -o pipefail
-          cargo run --quiet \
-            --manifest-path core/rust/Cargo.toml \
-            --features bytecode-vm \
-            --bin hara-foundation-artifact -- generate \
+          cargo run --quiet --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm --bin hara-foundation-artifact -- generate \
             2>&1 | tee /tmp/foundation-generate.log
-          cargo run --quiet \
-            --manifest-path core/rust/Cargo.toml \
-            --features bytecode-vm \
-            --bin hara-foundation-artifact -- check \
+          cargo run --quiet --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm --bin hara-foundation-artifact -- check \
             2>&1 | tee /tmp/foundation-check.log
 
       - name: Validate Foundation source surfaces
