@@ -74,6 +74,21 @@ public class DocumentationContractTest {
   }
 
   @Test
+  public void exampleProjectsUseCurrentEdnManifests() throws Exception {
+    Path examples = Path.of("lib/examples");
+    try (var paths = Files.walk(examples)) {
+      assertFalse(
+          "Legacy project manifest remains under " + examples,
+          paths.anyMatch(
+              path ->
+                  "project.hal".equals(path.getFileName().toString())
+                      || "project.hara".equals(path.getFileName().toString())));
+    }
+    assertTrue(Files.isRegularFile(examples.resolve("cluster/project.edn")));
+    assertTrue(Files.isRegularFile(examples.resolve("services/project.edn")));
+  }
+
+  @Test
   public void namespaceCatalogTracksEveryRegisteredProvider() throws Exception {
     assumeDocsSubmodule();
     String catalog =
