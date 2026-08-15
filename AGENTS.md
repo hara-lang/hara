@@ -32,7 +32,7 @@ or emitter work, `$hara-xtalk-compatibility` for target parity, and
     libraries remain under `core/lib/src-lang`, with tests in
     `core/lib/test-lang`. Examples are in `core/lib/examples/` and benchmarks
     in `../../website/hara-benchmarks/runtime/hara/`. Notable namespaces include `std.foundation`, the
-    `lang.*` compiler port, and the `std.ledger.*` consensus-free
+    `lang.*` compiler port, and the `db.ledger.*` consensus-free
     executable-chain experiments.
   - `core/spec/` — parity specifications and substrate tests for core language
     targets.
@@ -161,8 +161,9 @@ for each package to appear in the crates.io index and uploads the resulting
   `../../website/hara-www/` inside this repo).
 - The JVM runtime embeds `core/lib/src/**/*.hal` and
   `core/lib/src-lang/**/*.hal` as classpath resources via `core/java/pom.xml`.
-  The Rust runtime packages the same canonical roots through the generated
-  `core/rust/hal-src` snapshot.
+  Repository Rust builds embed those canonical roots directly. Cargo
+  publication materializes an ignored `core/rust/hal-src` snapshot because a
+  `.crate` archive cannot include files above its crate root.
 - `core/target/` is CI scratch/build artifacts; Maven output is
   `core/java/target/`. Both are gitignored.
 - Website deployment is owned by `../../website/hara-www/.github/workflows/`.

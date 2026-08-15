@@ -34,6 +34,16 @@ fn map_literals_preserve_source_order_in_bytecode() {
 }
 
 #[test]
+fn quote_compiles_to_literal_bytecode_values() {
+    let mut runtime = Runtime::core();
+    assert_eq!(runtime.eval_bytecode_native("(quote x)").unwrap(), "x");
+    assert_eq!(
+        runtime.eval_bytecode_native("(quote [x 1])").unwrap(),
+        "[x 1]"
+    );
+}
+
+#[test]
 fn a_declared_global_wins_over_a_reserved_operator_name() {
     let mut runtime = Runtime::core();
     runtime.prepare_foundation_bytecode();

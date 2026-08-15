@@ -100,7 +100,7 @@ fn unsupported_bytecode_forms_fail_at_the_handoff_without_fallback() {
         "unsupported",
         "demo.unsupported",
         "demo/unsupported.hal",
-        "(ns demo.unsupported) (quote 1)",
+        "(ns demo.unsupported) (fn ([x] x) ([x y] x))",
     );
     assert_eq!(trace.status, HalcTraceStatus::Error);
     assert!(trace.result.is_none());
@@ -127,7 +127,7 @@ fn unsupported_bytecode_forms_fail_at_the_handoff_without_fallback() {
     assert!(trace
         .error
         .as_deref()
-        .is_some_and(|message| message.contains("unsupported")));
+        .is_some_and(|message| message.contains("fn multi-arity is not supported")));
 }
 
 #[cfg(feature = "bytecode-vm")]

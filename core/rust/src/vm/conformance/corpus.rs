@@ -65,6 +65,60 @@ pub fn parse_corpus(source: &str) -> Result<Corpus, String> {
     })
 }
 
+pub fn validate_upstream(corpus: &Corpus, source: &str) -> Result<(), String> {
+    let mut forms = parse_forms(source).map_err(|error| error.to_string())?;
+    if forms.len() != 1 {
+        return Err("code.vm upstream corpus must contain one form".into());
+    }
+    let Form::Map(document) = forms.remove(0) else {
+        return Err("code.vm upstream corpus must be a map".into());
+    };
+    let Some(Form::Vector(cases)) = entry(&document, "cases") else {
+        return Err("code.vm upstream corpus :cases must be a vector".into());
+    };
+
+    for case in &corpus.cases {
+        let matches = cases
+            .iter()
+            .filter_map(|form| match form {
+                Form::Map(entries)
+                    if matches!(entry(entries, "id"), Some(Form::Keyword(id)) if id == &case.upstream_id) =>
+                {
+                    Some(entries)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            return Err(format!(
+                "code.vm case :{} expected exactly one upstream case :{}; found {}",
+                case.id,
+                case.upstream_id,
+                matches.len()
+            ));
+        }
+        let upstream = matches[0];
+        let upstream_source = required_string(upstream, "source", &case.upstream_id)?;
+        if case.source != upstream_source {
+            return Err(format!(
+                "code.vm case :{} source differs from upstream :{}",
+                case.id, case.upstream_id
+            ));
+        }
+        let Form::Map(expectation) = required(upstream, "expect", &case.upstream_id)? else {
+            return Err(format!(":{} :expect must be a map", case.upstream_id));
+        };
+        let upstream_expected = parse_expectation(expectation, &case.upstream_id)?;
+        if case.expected != upstream_expected {
+            return Err(format!(
+                "code.vm case :{} expectation differs from upstream :{}",
+                case.id, case.upstream_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn parse_case(form: &Form) -> Result<CorpusCase, String> {
     let Form::Map(entries) = form else {
         return Err("every code.vm corpus case must be a map".into());
@@ -172,5 +226,30 @@ mod tests {
             .cases
             .iter()
             .all(|case| !case.upstream_id.is_empty()));
+    }
+
+    #[test]
+    fn upstream_validation_rejects_missing_and_drifted_cases() {
+        let corpus = parse_corpus(
+            r#"{:corpus/schema "hal.code-vm-production-corpus/0-alpha"
+                :corpus/id :code.vm/test
+                :corpus/upstream "upstream.edn"
+                :cases [{:id :literal/value
+                         :upstream-id :literal/value
+                         :source "42"
+                         :expect {:display "42"}}]}"#,
+        )
+        .unwrap();
+        let matching = r#"{:cases [{:id :literal/value :source "42" :expect {:display "42"}}]}"#;
+        validate_upstream(&corpus, matching).unwrap();
+        assert!(validate_upstream(&corpus, "{:cases []}")
+            .unwrap_err()
+            .contains("expected exactly one upstream case"));
+        assert!(validate_upstream(
+            &corpus,
+            r#"{:cases [{:id :literal/value :source "41" :expect {:display "42"}}]}"#
+        )
+        .unwrap_err()
+        .contains("source differs"));
     }
 }

@@ -1,4 +1,4 @@
-name: Code VM cross-runtime conformance
+name: Code VM validation
 
 on:
   pull_request:
@@ -11,6 +11,8 @@ on:
       - 'core/java/src/main/java/hara/truffle/EvaluationJournal.java'
       - 'core/java/src/test/java/hara/truffle/CodeVmConformanceTest.java'
       - 'scripts/runtime/compare-code-vm-runtime-reports.py'
+      - 'core/rust/src/fiber.rs'
+      - 'core/rust/src/fiber/**'
       - '.github/workflows/code-vm-conformance.yml'
   push:
     branches: [main, testing]
@@ -22,6 +24,8 @@ on:
       - 'core/java/src/main/java/hara/truffle/EvaluationJournal.java'
       - 'core/java/src/test/java/hara/truffle/CodeVmConformanceTest.java'
       - 'scripts/runtime/compare-code-vm-runtime-reports.py'
+      - 'core/rust/src/fiber.rs'
+      - 'core/rust/src/fiber/**'
       - '.github/workflows/code-vm-conformance.yml'
   workflow_dispatch:
 
@@ -29,7 +33,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: code-vm-conformance-${{ github.event.pull_request.number || github.ref }}
+  group: code-vm-validation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -90,3 +94,44 @@ jobs:
           python3 scripts/runtime/compare-code-vm-runtime-reports.py \
             "$RUNNER_TEMP/code-vm/rust.json" \
             "$RUNNER_TEMP/code-vm/truffle.json"
+
+  live-interpreter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Check touched Rust formatting
+        run: |
+          rustfmt --edition 2021 --check \
+            core/rust/src/fiber.rs \
+            core/rust/src/fiber/coroutine.rs \
+            core/rust/src/fiber/coroutine/observation.rs \
+            core/rust/src/fiber/coroutine/semantic.rs \
+            core/rust/src/fiber/coroutine/snapshot.rs
+
+      - name: Test live evaluator boundaries and snapshots
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            core::fiber::coroutine --lib
+
+      - name: Compile live evaluator for browser Wasm
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib

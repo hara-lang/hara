@@ -15,7 +15,7 @@ fn case<'a>(report: &'a ProductionReport, id: &str) -> &'a CaseObservation {
 fn embedded_production_corpus_passes_real_runtime_checks() {
     let report = run_embedded().expect("production corpus runs");
     assert!(report.passed(), "{} failed checks", report.failed_checks());
-    assert_eq!(report.cases.len(), 13);
+    assert_eq!(report.cases.len(), 14);
     assert!(report
         .cases
         .iter()
@@ -62,7 +62,7 @@ fn deep_fixture_is_bounded_without_changing_its_result() {
 #[test]
 fn unsupported_bytecode_form_is_typed_and_never_falls_back() {
     let report = run_embedded().expect("production corpus runs");
-    let unsupported = case(&report, "compile/unsupported-quote");
+    let unsupported = case(&report, "compile/fn-multi-arity");
     assert_eq!(unsupported.bytecode.outcome.status, "compile-error");
     assert_eq!(
         unsupported.bytecode.outcome.category.as_deref(),

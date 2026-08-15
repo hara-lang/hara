@@ -21,18 +21,18 @@ public class StdLedgerChainTest {
   public void genesisBlockPreservesStateAndHasNoSource() {
     try (Context context = newContext()) {
       assertEquals(
-          "[{:counter 0} 0 :std.ledger/genesis true 1]",
+          "[{:counter 0} 0 :db.ledger/genesis true 1]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.ledger.chain)"
-                      + "  (let [c (std.ledger.chain/create {:counter 0})"
-                      + "        b (first (std.ledger.chain/blocks c))]"
-                      + "    [(std.ledger.chain/state c)"
+                  "(do (require 'db.ledger.chain)"
+                      + "  (let [c (db.ledger.chain/create {:counter 0})"
+                      + "        b (first (db.ledger.chain/blocks c))]"
+                      + "    [(db.ledger.chain/state c)"
                       + "     (get b :index)"
                       + "     (get b :actor)"
                       + "     (nil? (get b :source))"
-                      + "     (count (std.ledger.chain/blocks c))]))")
+                      + "     (count (db.ledger.chain/blocks c))]))")
               .toString());
     }
   }
@@ -45,17 +45,17 @@ public class StdLedgerChainTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.ledger.chain)"
-                      + "  (let [c (std.ledger.chain/append (std.ledger.chain/create {:counter 0})"
+                  "(do (require 'db.ledger.chain)"
+                      + "  (let [c (db.ledger.chain/append (db.ledger.chain/create {:counter 0})"
                       + "                              :alice"
                       + "                              1000"
                       + "                              '(fn [state ctx] (assoc state :counter 1)))"
-                      + "        h (std.ledger.chain/head c)]"
-                      + "    [(count (std.ledger.chain/blocks c))"
+                      + "        h (db.ledger.chain/head c)]"
+                      + "    [(count (db.ledger.chain/blocks c))"
                       + "     (get h :index)"
                       + "     (get h :actor)"
                       + "     (get h :timestamp)"
-                      + "     (std.ledger.chain/state c)]))")
+                      + "     (db.ledger.chain/state c)]))")
               .toString());
     }
   }
@@ -67,12 +67,12 @@ public class StdLedgerChainTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.ledger.chain)"
-                      + "  (let [c (std.ledger.chain/append (std.ledger.chain/create {:counter 0})"
+                  "(do (require 'db.ledger.chain)"
+                      + "  (let [c (db.ledger.chain/append (db.ledger.chain/create {:counter 0})"
                       + "                              :alice"
                       + "                              1000"
                       + "                              '(fn [state ctx] (assoc state :counter 1)))]"
-                      + "    (std.ledger.chain/valid? c)))")
+                      + "    (db.ledger.chain/valid? c)))")
               .asBoolean());
     }
   }
@@ -84,16 +84,16 @@ public class StdLedgerChainTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.ledger.chain)"
-                      + "  (let [c (std.ledger.chain/append (std.ledger.chain/create {:counter 0})"
+                  "(do (require 'db.ledger.chain)"
+                      + "  (let [c (db.ledger.chain/append (db.ledger.chain/create {:counter 0})"
                       + "                              :alice"
                       + "                              1000"
                       + "                              '(fn [state ctx] (assoc state :counter 1)))"
-                      + "        blocks (std.ledger.chain/blocks c)"
+                      + "        blocks (db.ledger.chain/blocks c)"
                       + "        tampered (assoc c :blocks"
                       + "                        [(first blocks)"
                       + "                         (assoc (second blocks) :state {:counter 99})])]"
-                      + "    (std.ledger.chain/valid? tampered)))")
+                      + "    (db.ledger.chain/valid? tampered)))")
               .asBoolean());
     }
   }
@@ -105,18 +105,18 @@ public class StdLedgerChainTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.ledger.chain)"
-                      + "  (let [c (std.ledger.chain/append (std.ledger.chain/create {:counter 0})"
+                  "(do (require 'db.ledger.chain)"
+                      + "  (let [c (db.ledger.chain/append (db.ledger.chain/create {:counter 0})"
                       + "                              :alice"
                       + "                              1000"
                       + "                              '(fn [state ctx] (assoc state :counter 1)))"
-                      + "        blocks (std.ledger.chain/blocks c)"
+                      + "        blocks (db.ledger.chain/blocks c)"
                       + "        tampered (assoc c :blocks"
                       + "                        [(first blocks)"
                       + "                         (assoc (second blocks)"
                       + "                                :source"
                       + "                                '(fn [state ctx] (assoc state :counter 99)))])]"
-                      + "    (std.ledger.chain/valid? tampered)))")
+                      + "    (db.ledger.chain/valid? tampered)))")
               .asBoolean());
     }
   }
@@ -128,11 +128,11 @@ public class StdLedgerChainTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.ledger.chain)"
+                  "(do (require 'db.ledger.chain)"
                       + "  (let [source '(fn [state ctx] (assoc state :counter (inc (:counter state))))"
-                      + "        c1 (std.ledger.chain/append (std.ledger.chain/create {:counter 0}) :alice 1000 source)"
-                      + "        c2 (std.ledger.chain/append (std.ledger.chain/create {:counter 0}) :alice 1000 source)]"
-                      + "    (= (std.ledger.chain/state c1) (std.ledger.chain/state c2))))")
+                      + "        c1 (db.ledger.chain/append (db.ledger.chain/create {:counter 0}) :alice 1000 source)"
+                      + "        c2 (db.ledger.chain/append (db.ledger.chain/create {:counter 0}) :alice 1000 source)]"
+                      + "    (= (db.ledger.chain/state c1) (db.ledger.chain/state c2))))")
               .asBoolean());
     }
   }
@@ -145,8 +145,8 @@ public class StdLedgerChainTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.ledger.chain)"
-                      + "  (macroexpand '(std.ledger.chain/tx (assoc state :x 1))))")
+                  "(do (require 'db.ledger.chain)"
+                      + "  (macroexpand '(db.ledger.chain/tx (assoc state :x 1))))")
               .toString());
     }
   }

@@ -12,7 +12,9 @@ mod document;
 #[path = "conformance/inspect.rs"]
 mod inspect;
 
-pub use corpus::{Corpus, CorpusCase, ExpectedOutcome, CORPUS_SCHEMA};
+pub use corpus::{
+    parse_corpus, validate_upstream, Corpus, CorpusCase, ExpectedOutcome, CORPUS_SCHEMA,
+};
 pub use inspect::normalize_error_category;
 
 use inspect::{

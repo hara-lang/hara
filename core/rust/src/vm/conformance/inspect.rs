@@ -94,7 +94,7 @@ pub(super) fn normalize_compile_marker(value: &str) -> &str {
         "unbound-symbol"
     } else if value.contains("recur") {
         "recur"
-    } else if value.contains("unsupported") {
+    } else if value.contains("unsupported") || value.contains("not supported") {
         "unsupported-form"
     } else {
         value

@@ -189,7 +189,11 @@ fn runtime_bytecode_defmacro_registers_and_expands() {
 
 #[test]
 fn foundation_source_compiles_to_bytecode() {
-    let source = include_str!("../../hal-src/std/foundation.hal");
+    let source = crate::EMBEDDED_HAL_RESOURCES
+        .iter()
+        .find(|(namespace, _, _)| *namespace == "std.foundation")
+        .expect("embedded std.foundation source")
+        .2;
     let body = source
         .split_once("(ns std.foundation)")
         .expect("foundation namespace declaration")

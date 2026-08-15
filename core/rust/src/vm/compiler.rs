@@ -58,7 +58,7 @@ use scope::ScopeStack;
 /// operator position they report as unsupported rather than as unbound
 /// symbols; everything else unbound reports as an unbound symbol,
 /// matching the evaluator.
-const UNSUPPORTED_OPERATORS: &[&str] = &["quote", "ns", "in-ns", "require", "await"];
+const UNSUPPORTED_OPERATORS: &[&str] = &["ns", "in-ns", "require", "await"];
 
 /// Compiles source text into a validated program. Multiple top-level
 /// forms compile as an implicit `do`. Without a namespace registry the

@@ -59,32 +59,73 @@ fn standard_library_namespace(namespace: &str) -> bool {
             .any(|prefix| namespace.starts_with(prefix))
 }
 
+fn source_roots(manifest: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let canonical = manifest.join("../lib");
+    let canonical_roots = [canonical.join("src"), canonical.join("src-lang")];
+    if canonical_roots.iter().all(|root| root.is_dir()) {
+        return vec![
+            (canonical_roots[0].clone(), PathBuf::from("lib/src")),
+            (canonical_roots[1].clone(), PathBuf::from("lib/src")),
+        ];
+    }
+
+    let packaged = manifest.join("hal-src");
+    if packaged.is_dir() {
+        return vec![(packaged, PathBuf::from("lib/src"))];
+    }
+
+    panic!(
+        "HAL sources are unavailable: build from the Hara repository or run \
+         scripts/runtime/sync-rust-hal-src before packaging"
+    );
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
-    // Cargo packages cannot include files above the crate root. Keep the
-    // distributable HAL snapshot inside this crate so verification from the
-    // unpacked `.crate` archive exercises the same embedded library.
-    let source_root = manifest.join("hal-src");
+    // Repository builds embed canonical core/lib sources directly. Published
+    // Cargo archives cannot include files above the crate root, so release
+    // preparation materializes the same sources into the ignored hal-src
+    // directory and explicitly includes that directory in the package.
+    let source_roots = source_roots(&manifest);
     let inventory_path = manifest.join("standard-library.namespaces");
     let hta_path = manifest.join("src/hta.rs");
-    println!("cargo:rerun-if-changed={}", source_root.display());
+    for (source_root, _) in &source_roots {
+        println!("cargo:rerun-if-changed={}", source_root.display());
+    }
     println!("cargo:rerun-if-changed={}", inventory_path.display());
     println!("cargo:rerun-if-changed={}", hta_path.display());
 
-    let mut paths = Vec::new();
-    collect_hal(&source_root, &mut paths);
     let mut resources = BTreeMap::new();
-    for path in paths {
-        println!("cargo:rerun-if-changed={}", path.display());
-        let source = fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-        let namespace = declared_namespace(&source, &path);
-        if let Some(previous) = resources.insert(namespace.clone(), path.clone()) {
-            panic!(
-                "duplicate HAL namespace {namespace}: {} and {}",
-                previous.display(),
-                path.display()
+    let mut embedded_paths = BTreeMap::new();
+    for (source_root, embedded_root) in &source_roots {
+        let mut paths = Vec::new();
+        collect_hal(source_root, &mut paths);
+        for path in paths {
+            println!("cargo:rerun-if-changed={}", path.display());
+            let source = fs::read_to_string(&path)
+                .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+            let namespace = declared_namespace(&source, &path);
+            let relative = embedded_root.join(
+                path.strip_prefix(source_root)
+                    .expect("HAL resource must be inside its source root"),
             );
+            if let Some(previous) = embedded_paths.insert(relative.clone(), path.clone()) {
+                panic!(
+                    "duplicate embedded HAL path {}: {} and {}",
+                    relative.display(),
+                    previous.display(),
+                    path.display()
+                );
+            }
+            if let Some((previous, _)) =
+                resources.insert(namespace.clone(), (path.clone(), relative))
+            {
+                panic!(
+                    "duplicate HAL namespace {namespace}: {} and {}",
+                    previous.display(),
+                    path.display()
+                );
+            }
         }
     }
 
@@ -117,17 +158,11 @@ fn main() {
         "#[cfg(target_arch = \"wasm32\")]\n#[path = {:?}]\npub mod hta;\n\npub(crate) static EMBEDDED_HAL_RESOURCES: &[(&str, &str, &str)] = &[\n",
         hta_path.to_string_lossy()
     );
-    for (namespace, path) in resources {
+    for (namespace, (path, relative)) in resources {
         let path = path
             .canonicalize()
             .unwrap_or_else(|error| panic!("cannot resolve {}: {error}", path.display()));
-        let relative = Path::new("lib/src")
-            .join(
-                path.strip_prefix(&source_root)
-                    .expect("HAL resource must be inside the packaged source root"),
-            )
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = relative.to_string_lossy().replace('\\', "/");
         generated.push_str(&format!(
             "    ({namespace:?}, {relative:?}, include_str!({path:?})),\n",
             namespace = namespace,

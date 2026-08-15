@@ -8057,9 +8057,12 @@ mod tests {
             runtime.register_resource(namespace, source);
         }
         runtime.prepare_foundation_bytecode();
-        runtime
-            .eval_text(include_str!("../hal-src/std/foundation.hal"))
-            .unwrap();
+        let foundation = EMBEDDED_HAL_RESOURCES
+            .iter()
+            .find(|(namespace, _, _)| *namespace == "std.foundation")
+            .expect("embedded std.foundation source")
+            .2;
+        runtime.eval_text(foundation).unwrap();
         runtime.eval_text("(ns user)").unwrap();
         runtime.eval_text("(require 'code.translate.rule)").unwrap();
         assert_eq!(
@@ -8115,7 +8118,7 @@ mod tests {
             runtime
                 .eval_text("(count code.translate.rule/+ruleset+)")
                 .unwrap(),
-            "99"
+            "104"
         );
         for (native_type, _) in core::NATIVE_TYPES {
             let expression = format!(
