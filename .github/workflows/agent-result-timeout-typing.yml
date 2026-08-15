@@ -1,0 +1,117 @@
+name: Implement timeout-aware Result typing
+
+on:
+  push:
+    branches:
+      - agent/667-result-timeout-typing-f
+
+permissions:
+  contents: write
+
+jobs:
+  result-timeout-typing:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/667-result-timeout-typing-f
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Fetch external conformance fixtures
+        run: |
+          if [ ! -d ../hara-specs-registry/.git ]; then
+            git clone --depth 1 https://github.com/hara-lang/hara-specs-registry.git ../hara-specs-registry
+          fi
+          ln -sfn ../hara-specs-registry hara-specs-registry
+
+      - name: Validate patch script
+        run: python3 -m py_compile .github/scripts/patch_result_timeout_typing.py
+
+      - name: Run existing focused baselines
+        run: |
+          ./scripts/runtime/run-lib-tests core/lib/test/std/typed/schema_test.hal
+          ./scripts/runtime/run-lib-tests core/lib/test/std/typed/infer_test.hal
+
+      - name: Evaluate complete candidates before writing
+        run: |
+          python3 .github/scripts/patch_result_timeout_typing.py candidate
+          candidate="$(cat core/target/result-timeout-typing/foundation.hal)
+          $(cat core/target/result-timeout-typing/schema.hal)
+          $(cat core/target/result-timeout-typing/infer.hal)"
+          ./core/hara eval "$candidate"
+          proof="$(./core/hara eval "$candidate
+          (let [timeout (std.foundation/res-error
+                         (ex-info \"timed out\" {:code :result/timeout}))
+                result-schema [:result {:status :error
+                                        :error-code :result/timeout}
+                               :any]
+                inferred (std.typed.infer/result-transfer
+                          :result/success
+                          [(std.typed.schema/normalize :int)])]
+            (and (std.foundation/res-timeout? timeout)
+                 (std.typed.schema/valid? result-schema timeout)
+                 (= :result (:kind inferred))
+                 (= :success (get-in inferred [:properties :status]))))")"
+          test "$proof" = true
+
+      - name: Apply sources, mirrors, and focused tests
+        run: python3 .github/scripts/patch_result_timeout_typing.py apply
+
+      - name: Evaluate written HAL sources in a fresh process
+        run: |
+          written="$(cat core/lib/src/std/foundation.hal)
+          $(cat core/lib/src/std/typed/schema.hal)
+          $(cat core/lib/src/std/typed/infer.hal)"
+          ./core/hara eval "$written"
+          proof="$(./core/hara eval "$written
+          (let [timeout (std.foundation/res-error
+                         (ex-info \"timed out\" {:code :result/timeout}))]
+            (and (std.foundation/res-timeout? timeout)
+                 (std.typed.schema/valid?
+                  [:result {:status :error
+                            :error-code :result/timeout}
+                   :any]
+                  timeout)))")"
+          test "$proof" = true
+
+      - name: Validate canonical and Rust HAL mirrors
+        run: |
+          cmp core/lib/src/std/foundation.hal core/rust/hal-src/std/foundation.hal
+          cmp core/lib/src/std/typed/schema.hal core/rust/hal-src/std/typed/schema.hal
+          cmp core/lib/src/std/typed/infer.hal core/rust/hal-src/std/typed/infer.hal
+          bash scripts/audit-std-typed-boundary.sh
+
+      - name: Run timeout-aware focused HAL tests
+        run: |
+          ./scripts/runtime/run-lib-tests core/lib/test/std/foundation_result_timeout_test.hal
+          ./scripts/runtime/run-lib-tests core/lib/test/std/typed/result_schema_test.hal
+          ./scripts/runtime/run-lib-tests core/lib/test/std/typed/result_infer_test.hal
+          ./scripts/runtime/run-lib-tests core/lib/test/std/typed/schema_test.hal
+          ./scripts/runtime/run-lib-tests core/lib/test/std/typed/infer_test.hal
+
+      - name: Validate runtime library discovery
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --test resource_discovery
+          mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true -Dtest=hara.truffle.HaraGeneratedLibrariesTest test
+
+      - name: Publish clean implementation commit
+        run: |
+          git diff --check
+          rm -f hara-specs-registry
+          rm -f .github/scripts/patch_result_timeout_typing.py
+          rm -f .github/workflows/agent-result-timeout-typing.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "Add timeout-aware Result typing"
+          git push origin HEAD:agent/667-result-timeout-typing-f
