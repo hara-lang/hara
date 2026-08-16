@@ -1,0 +1,165 @@
+(ns work.agent-test
+  (:require [work.agent :as agent]
+            [work.agent.openai :as openai]))
+
+(def response-one
+  {:id "resp_1"
+   :status "completed"
+   :output
+   [{:type "function_call"
+     :call_id "call_1"
+     :name "add"
+     :arguments "{\"a\":20,\"b\":22}"}]
+   :usage
+   {:input_tokens 10
+    :output_tokens 5
+    :total_tokens 15}})
+
+(def response-two
+  {:id "resp_2"
+   :status "completed"
+   :output
+   [{:type "message"
+     :role "assistant"
+     :content
+     [{:type "output_text"
+       :text "42"}]}]
+   :usage
+   {:input_tokens 20
+    :output_tokens 2
+    :total_tokens 22}})
+
+(def pending-responses
+  (atom [response-one response-two]))
+
+(def captured-requests
+  (atom []))
+
+(defn fake-transport
+  [request]
+  (swap! captured-requests conj request)
+  (let [response (first (deref pending-responses))]
+    (swap!
+     pending-responses
+     (fn [responses]
+       (vec (drop 1 responses))))
+    {:status 200
+     :body (Json/write (openai/wire-value response))}))
+
+(def add-tool
+  (agent/tool
+   "add"
+   "Adds two integers."
+   {:type "object"
+    :properties
+    {:a {:type "integer"}
+     :b {:type "integer"}}
+    :required ["a" "b"]
+    :additionalProperties false}
+   (fn [arguments]
+     (+ (get arguments "a")
+        (get arguments "b")))))
+
+(def client
+  (agent/openai-client
+   {:model "gpt-5"
+    :api-key "test-key"
+    :transport fake-transport}))
+
+(def runtime
+  (agent/host))
+
+(def reference
+  (agent/start!
+   runtime
+   {:client client
+    :instructions "Use tools when useful."
+    :tools [add-tool]
+    :max-turns 4}
+   "What is 20 plus 22?"))
+
+(def final-state
+  (agent/run! runtime reference))
+
+(def first-request
+  (Json/read (:body (nth (deref captured-requests) 0))))
+
+(def second-request
+  (Json/read (:body (nth (deref captured-requests) 1))))
+
+(def second-input
+  (get second-request "input"))
+
+(def function-output
+  (nth second-input 2))
+
+(def function-output-body
+  (Json/read (get function-output "output")))
+
+(def results
+  [(test-check
+    "OpenAI Responses tool loop completes through an ordinary Hara function"
+    [(:run/status final-state)
+     (:run/result final-state)
+     (:run/turn final-state)
+     (:run/tool-calls final-state)
+     (agent/status runtime reference)
+     (agent/result runtime reference)]
+    [:completed "42" 2 1 :completed "42"])
+
+   (test-check
+    "OpenAI request uses model, instructions, and function-tool schema"
+    [(:method (nth (deref captured-requests) 0))
+     (:url (nth (deref captured-requests) 0))
+     (get-in (nth (deref captured-requests) 0)
+             [:headers "authorization"])
+     (get first-request "model")
+     (get first-request "instructions")
+     (get-in first-request ["tools" 0 "type"])
+     (get-in first-request ["tools" 0 "name"])
+     (get-in first-request ["tools" 0 "parameters" "properties" "a" "type"])
+     (get first-request "store")]
+    ["POST"
+     "https://api.openai.com/v1/responses"
+     "Bearer test-key"
+     "gpt-5"
+     "Use tools when useful."
+     "function"
+     "add"
+     "integer"
+     false])
+
+   (test-check
+    "Tool call and output are retained in local Responses input history"
+    [(count second-input)
+     (get (nth second-input 0) "role")
+     (get (nth second-input 1) "type")
+     (get function-output "type")
+     (get function-output "call_id")
+     function-output-body]
+    [3
+     "user"
+     "function_call"
+     "function_call_output"
+     "call_1"
+     (openai/wire-value
+      {:ok true
+       :value 42})])
+
+   (test-check
+    "REPL host exposes secret-free run snapshots and event history"
+    [(count (agent/runs runtime))
+     (:run/id (first (agent/runs runtime)))
+     (nil? (:run/client (agent/state runtime reference)))
+     (vec (map :event/type (agent/events runtime reference)))]
+    [1
+     (:run/id reference)
+     true
+     [:agent/started
+      :agent/model-started
+      :agent/tools-started
+      :agent/tools-completed
+      :agent/model-started
+      :agent/completed]])])
+
+results

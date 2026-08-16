@@ -1,0 +1,134 @@
+(ns work.agent.tool
+  (:require [work.agent.result :as result]))
+
+(defn tool
+  "Creates one callable agent tool.
+
+   Names use the OpenAI function-name form. Parameters are a JSON Schema map.
+   The implementation receives the decoded JSON argument map."
+  ([name description parameters invoke]
+   (tool name description parameters invoke {}))
+  ([name description parameters invoke options]
+   {:tool/name name
+    :tool/description description
+    :tool/parameters parameters
+    :tool/strict (not (= false (:strict options)))
+    :tool/effect (or (:effect options) :pure)
+    :tool/invoke invoke}))
+
+(defn normalize
+  "Validates one tool and fills its optional fields."
+  [value]
+  (let [name (:tool/name value)
+        description (:tool/description value)
+        parameters (:tool/parameters value)
+        invoke (:tool/invoke value)]
+    (if (or (not (string? name))
+            (= name ""))
+      (throw
+       (ex-info "Agent tool name must be a non-empty string"
+                {:tool value})))
+    (if (not (string? description))
+      (throw
+       (ex-info "Agent tool description must be a string"
+                {:tool/name name})))
+    (if (not (map? parameters))
+      (throw
+       (ex-info "Agent tool parameters must be a JSON Schema map"
+                {:tool/name name})))
+    (if (not (fn? invoke))
+      (throw
+       (ex-info "Agent tool implementation must be callable"
+                {:tool/name name})))
+    (merge
+     {:tool/strict true
+      :tool/effect :pure}
+     value)))
+
+(defn normalize-all
+  "Validates tools and preserves declaration order."
+  [tools]
+  (vec (map normalize (or tools []))))
+
+(defn index
+  "Builds a unique name-to-tool index."
+  [tools]
+  (reduce
+   (fn [output value]
+     (let [value (normalize value)
+           name (:tool/name value)]
+       (if (get output name)
+         (throw
+          (ex-info "Agent tool names must be unique"
+                   {:tool/name name})))
+       (assoc output name value)))
+   {}
+   tools))
+
+(defn openai-spec
+  "Converts one tool to the OpenAI Responses function-tool shape."
+  [value]
+  (let [value (normalize value)]
+    {:type "function"
+     :name (:tool/name value)
+     :description (:tool/description value)
+     :parameters (:tool/parameters value)
+     :strict (:tool/strict value)}))
+
+(defn openai-specs
+  "Converts tools to OpenAI Responses function-tool definitions."
+  [tools]
+  (vec (map openai-spec tools)))
+
+(defn- failed-result
+  [call code message data]
+  {:call/id (:call/id call)
+   :tool/name (:tool/name call)
+   :tool/status :error
+   :tool/error
+   (merge
+    {:code code
+     :message message}
+    (or data {}))})
+
+(defn- invoke-found
+  [value call]
+  (result/attempt
+   (fn []
+     (result/then
+      ((:tool/invoke value) (:call/arguments call))
+      (fn [output]
+        {:call/id (:call/id call)
+         :tool/name (:tool/name call)
+         :tool/status :ok
+         :tool/value output})))
+   (fn [error]
+     (failed-result
+      call
+      :tool/failed
+      (str error)
+      {}))))
+
+(defn invoke
+  "Invokes one normalized model tool call.
+
+   Unknown tools and tool exceptions become structured results returned to the
+   model instead of terminating the agent run."
+  [tool-index call]
+  (let [value (get tool-index (:tool/name call))]
+    (if (nil? value)
+      (failed-result
+       call
+       :tool/unknown
+       "The requested tool is not available"
+       {})
+      (invoke-found value call))))
+
+(defn invoke-all
+  "Invokes model tool calls and resolves direct and Promise results together."
+  [tool-index calls]
+  (result/all
+   (map
+    (fn [call]
+      (invoke tool-index call))
+    calls)))

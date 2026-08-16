@@ -1,0 +1,292 @@
+(ns work.agent.openai
+  (:require [work.agent.result :as result]
+            [work.agent.tool :as tool]))
+
+(def default-endpoint
+  "https://api.openai.com/v1/responses")
+
+(defn wire-field
+  "Reads a string-keyed OpenAI wire field while accepting keyword test data."
+  [value name]
+  (cond
+    (not (map? value))
+    nil
+
+    (has? value name)
+    (get value name)
+
+    :else
+    (get value (keyword name))))
+
+(declare wire-value)
+
+(defn- named-value
+  [value]
+  (let [ns-value (namespace value)]
+    (if (nil? ns-value)
+      (name value)
+      (str ns-value "/" (name value)))))
+
+(defn- wire-map
+  [value]
+  (reduce
+   (fn [output key]
+     (let [wire-key
+           (cond
+             (string? key) key
+             (keyword? key) (named-value key)
+             (symbol? key) (str key)
+             :else
+             (throw
+              (ex-info "OpenAI JSON maps require string, keyword, or symbol keys"
+                       {:key key})))]
+       (assoc output wire-key
+              (work.agent.openai/wire-value (get value key)))))
+   {}
+   (keys value)))
+
+(defn- wire-sequence
+  [value]
+  (reduce
+   (fn [output item]
+     (conj output (work.agent.openai/wire-value item)))
+   []
+   value))
+
+(defn wire-value
+  "Converts portable Hara values into values accepted by strict JSON."
+  [value]
+  (cond
+    (map? value)
+    (wire-map value)
+
+    (or (vector? value)
+        (list? value)
+        (set? value))
+    (wire-sequence value)
+
+    (keyword? value)
+    (named-value value)
+
+    (symbol? value)
+    (str value)
+
+    :else
+    value))
+
+(defn client
+  "Creates an OpenAI Responses client around an injected HTTP transport.
+
+   The transport receives {:method :url :headers :body} and may return a direct
+   response map, JSON text, an HTTP {:status :body} envelope, or a Promise of
+   any of those values."
+  [options]
+  (let [options (or options {})
+        model (:model options)
+        transport (:transport options)]
+    (if (or (not (string? model))
+            (= model ""))
+      (throw
+       (ex-info "OpenAI client requires a model string"
+                {:model model})))
+    (if (not (fn? transport))
+      (throw
+       (ex-info "OpenAI client requires a transport function"
+                {})))
+    {:openai/model model
+     :openai/api-key (:api-key options)
+     :openai/endpoint (or (:endpoint options) default-endpoint)
+     :openai/headers (or (:headers options) {})
+     :openai/request (merge (wire-value {:store false})
+                            (wire-value (or (:request options) {})))
+     :openai/transport transport}))
+
+(defn input-message
+  "Creates one Responses API input message."
+  ([content]
+   (input-message "user" content))
+  ([role content]
+   {:role role
+    :content content}))
+
+(defn request-body
+  "Builds one strict-JSON-safe OpenAI Responses request body."
+  [client request]
+  (let [request (or request {})
+        instructions (:instructions request)
+        tools (tool/openai-specs (:tools request))
+        base
+        (merge
+         (:openai/request client)
+         (wire-value (or (:request request) {})))
+        base
+        (assoc
+         (assoc base "model" (:openai/model client))
+         "input"
+         (wire-value (:input request)))
+        base
+        (if (nil? instructions)
+          base
+          (assoc base "instructions" instructions))]
+    (if (empty? tools)
+      base
+      (assoc base "tools" (wire-value tools)))))
+
+(defn- request-headers
+  [client]
+  (let [headers
+        (merge
+         (wire-value {:content-type "application/json"})
+         (wire-value (:openai/headers client)))
+        api-key (:openai/api-key client)]
+    (if (nil? api-key)
+      headers
+      (assoc headers "authorization" (str "Bearer " api-key)))))
+
+(defn http-request
+  "Builds the transport request for one OpenAI Responses call."
+  [client request]
+  {:method "POST"
+   :url (:openai/endpoint client)
+   :headers (request-headers client)
+   :body (Json/write (request-body client request))})
+
+(defn- parsed-body
+  [body]
+  (cond
+    (map? body)
+    body
+
+    (string? body)
+    (Json/read body)
+
+    :else
+    (throw
+     (ex-info "OpenAI transport body must be JSON text or a map"
+              {:body body}))))
+
+(defn response-value
+  "Parses a direct OpenAI response or an HTTP transport envelope."
+  [value]
+  (cond
+    (string? value)
+    (Json/read value)
+
+    (map? value)
+    (let [body (wire-field value "body")]
+      (if (nil? body)
+        value
+        (let [status (wire-field value "status")
+              parsed (parsed-body body)]
+          (if (and (number? status)
+                   (>= status 400))
+            (throw
+             (ex-info "OpenAI request failed"
+                      {:status status
+                       :response parsed}))
+            parsed))))
+
+    :else
+    (throw
+     (ex-info "OpenAI transport returned an unsupported value"
+              {:value value}))))
+
+(defn- output-items
+  [response]
+  (let [output (wire-field response "output")]
+    (if (nil? output) [] (vec output))))
+
+(defn- output-text
+  [response]
+  (reduce
+   (fn [text item]
+     (if (= "message" (wire-field item "type"))
+       (reduce
+        (fn [text content]
+          (if (= "output_text" (wire-field content "type"))
+            (str text (or (wire-field content "text") ""))
+            text))
+        text
+        (or (wire-field item "content") []))
+       text))
+   ""
+   (output-items response)))
+
+(defn- decode-arguments
+  [call]
+  (let [arguments (wire-field call "arguments")]
+    (cond
+      (nil? arguments)
+      {}
+
+      (map? arguments)
+      arguments
+
+      (string? arguments)
+      (Json/read arguments)
+
+      :else
+      (throw
+       (ex-info "OpenAI function-call arguments must be JSON text or a map"
+                {:call call})))))
+
+(defn- function-call
+  [item]
+  {:call/id (wire-field item "call_id")
+   :tool/name (wire-field item "name")
+   :call/arguments (decode-arguments item)
+   :call/raw item})
+
+(defn- function-calls
+  [response]
+  (vec
+   (map
+    function-call
+    (filter
+     (fn [item]
+       (= "function_call" (wire-field item "type")))
+     (output-items response)))))
+
+(defn normalize-response
+  "Normalizes an OpenAI Responses result while retaining raw output items."
+  [response]
+  (let [response (response-value response)
+        text (output-text response)
+        text (if (= text "")
+               (wire-field response "output_text")
+               text)]
+    {:response/id (wire-field response "id")
+     :response/status (wire-field response "status")
+     :response/output (output-items response)
+     :response/text (if (= text "") nil text)
+     :response/tool-calls (function-calls response)
+     :response/usage (wire-field response "usage")
+     :response/raw response}))
+
+(defn complete
+  "Calls the injected OpenAI transport and normalizes its response."
+  [client request]
+  (result/then
+   ((:openai/transport client)
+    (http-request client request))
+   normalize-response))
+
+(defn- tool-result-body
+  [value]
+  (if (= :ok (:tool/status value))
+    {:ok true
+     :value (wire-value (:tool/value value))}
+    {:ok false
+     :error (wire-value (:tool/error value))}))
+
+(defn tool-output-item
+  "Creates one Responses API function_call_output input item."
+  [value]
+  {:type "function_call_output"
+   :call_id (:call/id value)
+   :output (Json/write (wire-value (tool-result-body value)))})
+
+(defn tool-output-items
+  "Creates Responses API function-call outputs in call order."
+  [values]
+  (vec (map tool-output-item values)))
