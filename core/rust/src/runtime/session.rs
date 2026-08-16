@@ -73,13 +73,13 @@ pub struct Session {
 }
 
 impl Session {
-    fn new(name: &str, runtime: Runtime, authority: SessionAuthorityPolicy) -> Self {
+    fn new(name: &str, runtime: Runtime) -> Self {
         Self {
             name: name.into(),
             runtime,
             active: true,
             filesystem: None,
-            authority,
+            authority: SessionAuthorityPolicy::ZERO,
         }
     }
 
@@ -213,10 +213,7 @@ impl Default for SessionKernel {
 impl SessionKernel {
     pub fn new() -> Self {
         Self {
-            sessions: HashMap::from([(
-                "ROOT".into(),
-                Session::new("ROOT", Runtime::new(), SessionAuthorityPolicy::ZERO),
-            )]),
+            sessions: HashMap::from([("ROOT".into(), Session::new("ROOT", Runtime::new()))]),
             resources: HashMap::new(),
             mounts: HashMap::new(),
             session_mounts: HashMap::new(),
@@ -244,10 +241,7 @@ impl SessionKernel {
         for (resource, source) in &self.resources {
             runtime.register_resource(resource, source);
         }
-        self.sessions.insert(
-            name.into(),
-            Session::new(name, runtime, SessionAuthorityPolicy::ZERO),
-        );
+        self.sessions.insert(name.into(), Session::new(name, runtime));
         Ok(())
     }
 
@@ -506,7 +500,12 @@ mod authority_tests {
         kernel.create_session("child").unwrap();
         let child = kernel.session("child").unwrap();
         assert_eq!(child.authority(), SessionAuthorityPolicy::ZERO);
-        assert_eq!(child.props().authority.profile(), "zero");
+        assert_eq!(
+            crate::lang::protocol::IComponent::props(child)
+                .authority
+                .profile(),
+            "zero"
+        );
 
         assert_eq!(
             kernel
