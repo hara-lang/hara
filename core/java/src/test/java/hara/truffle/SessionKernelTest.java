@@ -63,6 +63,33 @@ public class SessionKernelTest {
   }
 
   @Test
+  public void childSessionsDoNotInheritPrivilegedRootAuthority() {
+    try (SessionKernel kernel = new SessionKernel(true, true, true)) {
+      SessionKernel.Session root = kernel.root();
+      SessionKernel.Session child = kernel.create("zero-authority");
+
+      assertTrue(root.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
+      assertTrue(root.eval("(deref (Host/capability? \"network/socket\"))").asBoolean());
+      assertTrue(root.eval("(deref (Host/capability? \"process\"))").asBoolean());
+
+      assertFalse(child.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
+      assertFalse(child.eval("(deref (Host/capability? \"network/socket\"))").asBoolean());
+      assertFalse(child.eval("(deref (Host/capability? \"process\"))").asBoolean());
+
+      SessionKernel.SessionAuthorityPolicy policy = child.authority();
+      assertFalse(policy.hostFilesystem);
+      assertFalse(policy.hostNetwork);
+      assertFalse(policy.hostProcess);
+      assertFalse(policy.reflection);
+      assertFalse(policy.packages);
+      assertFalse(policy.project);
+      assertEquals(
+          "zero",
+          ((SessionKernel.Session.SessionMetadata) child.getStatus()).authority);
+    }
+  }
+
+  @Test
   public void sessionsConformToContextComponentAndApplicativeProtocols() {
     try (SessionKernel kernel = new SessionKernel(false, false)) {
       SessionKernel.Session alpha = kernel.create("alpha");
@@ -76,6 +103,9 @@ public class SessionKernelTest {
       assertEquals(
           "user",
           ((SessionKernel.Session.SessionMetadata) alpha.getProps()).namespace);
+      assertEquals(
+          "zero",
+          ((SessionKernel.Session.SessionMetadata) alpha.getProps()).authority);
 
       assertEquals(41L, alpha.call("(do (ns alpha.core) (def answer 41) answer)"));
       assertEquals("alpha.core", alpha.currentNamespace());
@@ -100,8 +130,11 @@ public class SessionKernelTest {
     Path root = Files.createTempDirectory("hara-session-files");
     try (SessionKernel kernel = new SessionKernel(true, false)) {
       SessionKernel.Session session = kernel.create("mounted");
+      assertFalse(session.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
       session.eval("(def stale-value 42)");
       kernel.attachFilesystem("mounted", root);
+      assertTrue(session.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
+      assertEquals("zero", session.authority().profile());
       session.eval("(deref (file/write \"/state.bin\" (bytes 1 2 3)))");
       assertTrue(Files.exists(root.resolve("state.bin")));
       try {

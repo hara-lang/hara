@@ -1,3 +1,45 @@
+/// Authority inherited from an embedding host by one in-process evaluator.
+///
+/// This policy describes host authority only. A filesystem mounted explicitly
+/// through [`SessionKernel::attach_filesystem`] is a separately delegated,
+/// scoped resource and does not turn a child into a host-authority session.
+/// Namespace and runtime separation remain logical isolation, not a security
+/// boundary.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionAuthorityPolicy {
+    pub host_filesystem: bool,
+    pub host_network: bool,
+    pub host_process: bool,
+    pub reflection: bool,
+    pub packages: bool,
+    pub project: bool,
+}
+
+impl SessionAuthorityPolicy {
+    pub const ZERO: Self = Self {
+        host_filesystem: false,
+        host_network: false,
+        host_process: false,
+        reflection: false,
+        packages: false,
+        project: false,
+    };
+
+    pub const fn profile(self) -> &'static str {
+        if !self.host_filesystem
+            && !self.host_network
+            && !self.host_process
+            && !self.reflection
+            && !self.packages
+            && !self.project
+        {
+            "zero"
+        } else {
+            "explicit"
+        }
+    }
+}
+
 /// A process-local kernel that multiplexes isolated evaluator sessions.
 ///
 /// Raw HTA exposes the same lifecycle over its wire targets; this native
@@ -18,6 +60,7 @@ pub struct SessionMetadata {
     pub namespace: String,
     pub state: &'static str,
     pub filesystem: Option<u64>,
+    pub authority: SessionAuthorityPolicy,
 }
 
 /// An isolated, named execution context owned by a [`SessionKernel`].
@@ -26,6 +69,7 @@ pub struct Session {
     runtime: Runtime,
     active: bool,
     filesystem: Option<u64>,
+    authority: SessionAuthorityPolicy,
 }
 
 impl Session {
@@ -35,6 +79,7 @@ impl Session {
             runtime,
             active: true,
             filesystem: None,
+            authority: SessionAuthorityPolicy::ZERO,
         }
     }
 
@@ -55,14 +100,20 @@ impl Session {
         self.runtime.current_namespace()
     }
 
+    pub fn authority(&self) -> SessionAuthorityPolicy {
+        self.authority
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub fn install_native_socket_provider(&mut self) {
         self.runtime.install_native_socket_provider();
+        self.authority.host_network = true;
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn install_native_process_provider(&mut self) {
         self.runtime.install_native_process_provider();
+        self.authority.host_process = true;
     }
 }
 
@@ -83,6 +134,7 @@ impl crate::lang::protocol::IComponent for Session {
             namespace: self.current_namespace(),
             state: if self.active { "idle" } else { "closed" },
             filesystem: self.filesystem,
+            authority: self.authority,
         }
     }
 
@@ -105,6 +157,7 @@ impl crate::lang::protocol::IComponent for Session {
     fn stop(&mut self) {
         self.active = false;
         self.filesystem = None;
+        self.authority = SessionAuthorityPolicy::ZERO;
         self.runtime.providers.set_file(None);
     }
 }
@@ -188,8 +241,7 @@ impl SessionKernel {
         for (resource, source) in &self.resources {
             runtime.register_resource(resource, source);
         }
-        self.sessions
-            .insert(name.into(), Session::new(name, runtime));
+        self.sessions.insert(name.into(), Session::new(name, runtime));
         Ok(())
     }
 
@@ -422,4 +474,69 @@ fn reject_legacy_iterator_calls(form: &Form) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
+mod authority_tests {
+    use super::*;
 
+    #[test]
+    fn named_sessions_start_with_zero_host_authority() {
+        let mut kernel = SessionKernel::new();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            kernel
+                .session_mut("ROOT")
+                .unwrap()
+                .install_native_socket_provider();
+            kernel
+                .session_mut("ROOT")
+                .unwrap()
+                .install_native_process_provider();
+            assert_eq!(
+                kernel.session("ROOT").unwrap().authority().profile(),
+                "explicit"
+            );
+        }
+
+        kernel.create_session("child").unwrap();
+        let child = kernel.session("child").unwrap();
+        assert_eq!(child.authority(), SessionAuthorityPolicy::ZERO);
+        assert_eq!(
+            crate::lang::protocol::IComponent::props(child)
+                .authority
+                .profile(),
+            "zero"
+        );
+
+        assert_eq!(
+            kernel
+                .eval("child", "(deref (Host/capability? \"filesystem\"))")
+                .unwrap(),
+            "false"
+        );
+        assert_eq!(
+            kernel
+                .eval("child", "(deref (Host/capability? \"network/socket\"))")
+                .unwrap(),
+            "false"
+        );
+        assert_eq!(
+            kernel
+                .eval("child", "(deref (Host/capability? \"process\"))")
+                .unwrap(),
+            "false"
+        );
+    }
+
+    #[test]
+    fn scoped_filesystem_mount_does_not_change_host_authority_profile() {
+        let mut kernel = SessionKernel::new();
+        kernel.create_session("mounted").unwrap();
+        let mount = kernel.create_memory_filesystem("/");
+        kernel.attach_filesystem("mounted", mount).unwrap();
+        assert_eq!(
+            kernel.session("mounted").unwrap().authority(),
+            SessionAuthorityPolicy::ZERO
+        );
+        assert_eq!(kernel.filesystem("mounted"), Some(mount));
+    }
+}
