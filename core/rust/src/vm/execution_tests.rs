@@ -645,7 +645,7 @@ fn comment_compiles_to_nil_without_compiling_its_contents() {
 fn native_result_calls_execute_in_bytecode() {
     let registry = crate::embedding_namespace_registry();
     let program = compile_source_with(
-        "[(Result/result? (Result/success 42)) (Result/status (Result/success 42)) (Result/data (Result/success 42))]",
+        "[(Result/instance? (Result/create :success 42)) (Result/status (Result/create :success 42)) (Result/data (Result/create :success 42))]",
         &registry,
     )
     .expect("Result native methods compile against the embedded registry");

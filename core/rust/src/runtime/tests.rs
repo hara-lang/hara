@@ -38,9 +38,9 @@ mod tests {
                 .eval_native(
                     "[(comment missing-symbol (throw (ex-info \"boom\" {})) (def leaked 1)) \
                       (special-symbol? 'comment) \
-                      (type (std.native.Result/success 1)) \
-                      (std.native.Result/status (std.native.Result/error \"boom\")) \
-                      (std.native.Result/context (std.native.Result/success 1)) \
+                      (type (std.native.Result/create :success 1)) \
+                      (std.native.Result/status (std.native.Result/create :error \"boom\")) \
+                      (std.native.Result/context (std.native.Result/create :success 1)) \
                       (std.native.Env/current) \
                       (std.native.Env/eval '(+ 19 23)) \
                       (std.foundation/eval '(+ 19 23)) \

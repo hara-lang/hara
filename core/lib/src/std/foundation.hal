@@ -219,21 +219,12 @@
 ;; Completed outcomes
 ;; ---------------------------------------------------------------------------
 
-(defn ^{:inline true
-        :schema [:function [:fn [:any] :any]
-                           [:fn [:any :map] :any]]}
-  res-success
-  "Creates a successful native Result carrying data and optional context."
-  ([data] (Result/success data))
-  ([data context] (Result/success data context)))
-
-(defn ^{:inline true
-        :schema [:function [:fn [:any] :any]
-                           [:fn [:any :map] :any]]}
-  res-error
-  "Creates an error native Result carrying a normalized Error and optional context."
-  ([error] (Result/error error))
-  ([error context] (Result/error error context)))
+(defn ^{:schema [:function [:fn [:keyword :any] :any]
+                           [:fn [:keyword :any :map] :any]]}
+  result
+  "Creates a native Result with status, value, and optional context."
+  ([status value] (Result/create status value))
+  ([status value context] (Result/create status value context)))
 
 (defn ^{:inline true
         :schema [:function [:fn [:any] :any]
@@ -247,7 +238,13 @@
   res-result?
   "Returns true when value is a native Result."
   [value]
-  (Result/result? value))
+  (Result/instance? value))
+
+(defn ^{:inline true :schema [:fn [:any] :bool]}
+  result?
+  "Returns true when value is a native Result."
+  [value]
+  (Result/instance? value))
 
 (defn ^{:inline true :schema [:fn [:any] :bool]}
   res-success?
@@ -536,6 +533,25 @@
       (if (ICas/cas reference old-value new-value)
         new-value
         (recur)))))
+
+(defn ^{:schema [:function
+                 [:fn [:any :fn] :any]
+                 [:fn [:any :fn :bool] :any]]}
+  swap-return!
+  "Atomically replaces reference state from a function returning
+   [output new-state]. Returns output, or [output new-state] when state? is
+   true. The returned values always belong to the successful CAS attempt."
+  ([reference function]
+   (swap-return! reference function false))
+  ([reference function state?]
+   (loop []
+     (let [old-value (IDeref/deref reference)
+           result (function old-value)
+           output (first result)
+           new-value (second result)]
+       (if (ICas/cas reference old-value new-value)
+         (if state? [output new-value] output)
+         (recur))))))
 
 (defn ^{:inline true :schema [:fn [:any :any :fn] :any]}
   watch-add

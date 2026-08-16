@@ -1081,21 +1081,22 @@ fn native_result_operation(
         .strip_prefix("std.native.Result/")
         .unwrap_or(operation);
     match operation {
-        "success" => {
-            if !(1..=2).contains(&forms.len()) {
-                return Err("std.native.Result/success expects data and optional context".into());
+        "create" => {
+            if !(2..=3).contains(&forms.len()) {
+                return Err("std.native.Result/create expects status, value, and optional context".into());
             }
-            let data = eval(&forms[0], env)?;
-            let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
-            Ok(Value::Result(Rc::new(ResultValue::success(data, context)?)))
-        }
-        "error" => {
-            if !(1..=2).contains(&forms.len()) {
-                return Err("std.native.Result/error expects an error and optional context".into());
+            let status = eval(&forms[0], env)?;
+            let value = eval(&forms[1], env)?;
+            let context = result_context(forms.get(2).map(|form| eval(form, env)).transpose()?)?;
+            match status {
+                Value::Keyword(status) if status.as_str() == "success" => {
+                    Ok(Value::Result(Rc::new(ResultValue::success(value, context)?)))
+                }
+                Value::Keyword(status) if status.as_str() == "error" => {
+                    Ok(Value::Result(Rc::new(ResultValue::error(value, context)?)))
+                }
+                _ => Err("std.native.Result/create status must be :success or :error".into()),
             }
-            let error = eval(&forms[0], env)?;
-            let context = result_context(forms.get(1).map(|form| eval(form, env)).transpose()?)?;
-            Ok(Value::Result(Rc::new(ResultValue::error(error, context)?)))
         }
         "synchronize" => {
             if !(1..=2).contains(&forms.len()) {
@@ -1108,12 +1109,12 @@ fn native_result_operation(
             let (timeout, context) = result_synchronize_options(options)?;
             native_result::synchronize_value(value, timeout, context)
         }
-        "result?" | "success?" | "error?" | "status" | "data" | "error-value" | "context" => {
+        "instance?" | "success?" | "error?" | "status" | "data" | "error-value" | "context" => {
             if forms.len() != 1 {
                 return Err(format!("std.native.Result/{operation} expects one value"));
             }
             let value = eval(&forms[0], env)?;
-            if operation == "result?" {
+            if operation == "instance?" {
                 return Ok(Value::Bool(matches!(value, Value::Result(_))));
             }
             let Value::Result(result) = value else {
@@ -1234,5 +1235,3 @@ fn value_u16_integer(value: &Value, operation: &str, allow_zero: bool) -> Result
     }
     Ok(value)
 }
-
-

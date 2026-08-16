@@ -5,17 +5,7 @@
 (def ^{:dynamic true} *namespace* nil)
 (def ^{:dynamic true} *spaces* (atom {}))
 
-(defstruct space-type [namespace state])
-
-(defn- merge-nested [left right]
-  (reduce
-   (fn [output pair]
-     (let [key (first pair) value (second pair) current (get output key)]
-       (assoc output key
-              (if (and (map? current) (map? value))
-                (merge-nested current value)
-                value))))
-   (or left {}) (or right {})))
+(defstruct Space [namespace state])
 
 (defn space-context-set [space context key config]
   (let [runtime (registry/registry-rt context key)
@@ -70,7 +60,7 @@
    space
    (keys (deref (:state space)))))
 
-(extend-type space-type ISpace
+(extend-type Space ISpace
   (context-set [space context key options]
     (space-context-set space context key options))
   (context-unset [space context]
@@ -81,9 +71,13 @@
     (space-context-get space context))
   (rt-active [space]
     (vec
-     (map first
-          (filter (fn [pair] (:instance (second pair)))
-                  (deref (:state space))))))
+     (reduce
+      (fn [output pair]
+        (if (:instance (val pair))
+          (conj output (key pair))
+          output))
+      []
+      (deref (:state space)))))
   (rt-get [space context]
     (:instance (get (deref (:state space)) context)))
   (rt-start [space context]
@@ -95,7 +89,7 @@
   (rt-stop [space context]
     (space-rt-stop space context)))
 
-(extend-type space-type IComponent
+(extend-type Space IComponent
   (props [space] {})
   (status [space] :started)
   (started? [space] true)
@@ -106,10 +100,10 @@
   (remote? [space] false))
 
 (defn space? [value]
-  (instance? space-type value))
+  (instance? Space value))
 
 (defn space-create [options]
-  (std.context.space/space-type
+  (std.context.space/Space
    (or (:namespace options) *namespace* :default)
    (atom {})))
 

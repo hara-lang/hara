@@ -197,7 +197,7 @@ public final class HaraContext {
           Map.entry(
               "Result",
               java.util.List.of(
-                  "success", "error", "synchronize", "result?", "success?", "error?", "status",
+                  "create", "synchronize", "instance?", "success?", "error?", "status",
                   "data", "error-value", "context", "with-context")),
           Map.entry("Schema", java.util.List.of("instance?", "kind", "form", "ast", "origin")),
           Map.entry("Error", java.util.List.of("new", "message", "class")),
@@ -1955,30 +1955,28 @@ public final class HaraContext {
   private void installNativeResultBuiltins() {
     HaraNamespace result = namespace("std.native.Result");
     result.define(
-        "success",
+        "create",
         new VariadicBuiltin(
-            "std.native.Result/success",
+            "std.native.Result/create",
             values -> {
-              if (values.length < 1 || values.length > 2) {
+              if (values.length < 2 || values.length > 3) {
                 throw new HaraException(
-                    "std.native.Result/success expects data and optional context");
+                    "std.native.Result/create expects status, value, and optional context");
               }
-              return values.length == 1
-                  ? HaraResult.success(HaraBox.unwrap(values[0]))
-                  : HaraResult.success(HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
-            }));
-    result.define(
-        "error",
-        new VariadicBuiltin(
-            "std.native.Result/error",
-            values -> {
-              if (values.length < 1 || values.length > 2) {
-                throw new HaraException(
-                    "std.native.Result/error expects an error and optional context");
+              Object status = HaraBox.unwrap(values[0]);
+              Object value = HaraBox.unwrap(values[1]);
+              Object context = values.length == 3 ? HaraBox.unwrap(values[2]) : null;
+              if (Keyword.create("success").equals(status)) {
+                return values.length == 2
+                    ? HaraResult.success(value)
+                    : HaraResult.success(value, context);
               }
-              return values.length == 1
-                  ? HaraResult.error(HaraBox.unwrap(values[0]))
-                  : HaraResult.error(HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
+              if (Keyword.create("error").equals(status)) {
+                return values.length == 2
+                    ? HaraResult.error(value)
+                    : HaraResult.error(value, context);
+              }
+              throw new HaraException("std.native.Result/create status must be :success or :error");
             }));
     result.define(
         "synchronize",
@@ -1994,9 +1992,9 @@ public final class HaraContext {
                   : HaraResult.synchronize(HaraBox.unwrap(values[0]), HaraBox.unwrap(values[1]));
             }));
     result.define(
-        "result?",
+        "instance?",
         new UnaryBuiltin(
-            "std.native.Result/result?",
+            "std.native.Result/instance?",
             value -> HaraBox.unwrap(value) instanceof HaraResult));
     result.define(
         "success?",

@@ -32,9 +32,9 @@ public class SyntaxEnvironmentResultTest {
                   HaraLanguage.ID,
                   "[(Env/current) (Env/eval-in 'user '[(+ 19 23)]) (Env/eval '(+ 19 23)) "
                       + "(std.foundation/eval '(+ 19 23)) (map? (std.foundation/env-snapshot)) "
-                      + "(type (Result/success 1)) "
-                      + "(Result/status (Result/success 1)) "
-                      + "(Result/context (Result/success 1))]")
+                      + "(type (Result/create :success 1)) "
+                      + "(Result/status (Result/create :success 1)) "
+                      + "(Result/context (Result/create :success 1))]")
               .toString());
     }
   }

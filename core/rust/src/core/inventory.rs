@@ -415,7 +415,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "Result",
         &[
-            "success", "error", "synchronize", "result?", "success?", "error?", "status",
+            "create", "synchronize", "instance?", "success?", "error?", "status",
             "data", "error-value", "context", "with-context",
         ],
     ),
@@ -733,5 +733,3 @@ fn builtin_protocol_arity_range(
         _ => (1, None),
     }
 }
-
-

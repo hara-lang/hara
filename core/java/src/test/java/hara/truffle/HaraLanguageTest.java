@@ -338,6 +338,15 @@ public class HaraLanguageTest {
                       + "[(first xs) (do (first xs) (deref calls))])")
               .toString());
       assertEquals(
+          "[[0 1 2 3 4] [0 1 2 3 4]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [calls (atom []) values (vec (take 5 (iterate "
+                      + "(fn [value] (do (swap! calls conj value) (inc value))) 0)))] "
+                      + "[values (deref calls)])")
+              .toString());
+      assertEquals(
           "(0 1 2 3 4 5 6 7 8 9 ...)",
           context.eval(HaraLanguage.ID, "(seq (Iter/iter-range 20))").toString());
     }

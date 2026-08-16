@@ -62,17 +62,27 @@ public class Seq<E> extends ObjPersistent implements ISequentialType<E>, ILinked
   public Iterator<E> iterator() {
     return new Iterator<E>() {
       Seq<E> current = Seq.this;
+      boolean advance;
+
+      private void advanceIfNeeded() {
+        if (advance) {
+          current = current == null ? null : current.popFirst();
+          advance = false;
+        }
+      }
 
       @Override
       public boolean hasNext() {
+        advanceIfNeeded();
         return current != null;
       }
 
       @Override
       public E next() {
+        advanceIfNeeded();
         if (current == null) throw new NoSuchElementException();
         E value = current.peekFirst();
-        current = current.popFirst();
+        advance = true;
         return value;
       }
     };
