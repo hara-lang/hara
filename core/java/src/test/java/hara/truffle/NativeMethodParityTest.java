@@ -135,6 +135,10 @@ public class NativeMethodParityTest {
       IMapType entry = (IMapType) entries.nth(index);
       String name = ((Symbol) entry.lookup(keyword("name"))).getName();
       List<String> methods = symbols(entry.lookup(keyword("methods")), name + " :methods");
+      assertEquals(
+          "Duplicate methods declared for " + name,
+          new LinkedHashSet<>(methods).size(),
+          methods.size());
       String availability = ((Keyword) entry.lookup(keyword("availability"))).getName();
       IMapType classification = map(entry, "method-classification");
       List<String> halWrappers = classified(classification.lookup(keyword("hal-wrapper")), methods);
