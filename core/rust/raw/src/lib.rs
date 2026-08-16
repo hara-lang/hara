@@ -1,5 +1,7 @@
 #[path = "../../src/core.rs"]
 mod core;
+#[path = "../../src/file.rs"]
+pub mod file;
 #[path = "../../src/hta.rs"]
 mod hta;
 #[cfg(feature = "evaluation-journal")]
@@ -924,36 +926,95 @@ struct HostFileProvider {
 }
 
 impl HostFileProvider {
-    fn promise(&self, method: &str, arguments: Vec<Value>) -> Result<Promise, core::FileError> {
+    fn promise(
+        &self,
+        method: &str,
+        arguments: Vec<Value>,
+    ) -> Result<Promise, core::FileError> {
         match (self.handler)("file".into(), method.into(), arguments) {
             Ok(Value::Promise(promise)) => Ok(promise),
-            Ok(_) => Err(core::FileError::Invalid(
+            Ok(_) => Err(core::FileError::Io(
                 "file host call did not return a promise".into(),
             )),
-            Err(error) => Err(core::FileError::Invalid(error)),
+            Err(error) => Err(core::FileError::Io(error)),
         }
     }
 }
 
 impl core::FileProvider for HostFileProvider {
-    fn resolve(&self, root: &str, path: &str) -> Result<String, core::FileError> {
-        if path.contains('\0') {
-            return Err(core::FileError::Invalid("path contains NUL".into()));
-        }
-        let combined = format!("{}/{}", root.trim_end_matches('/'), path);
-        let mut segments = Vec::new();
-        for segment in combined.split('/') {
-            match segment {
-                "" | "." => {}
-                ".." => {
-                    if segments.pop().is_none() {
-                        return Err(core::FileError::Denied);
-                    }
-                }
-                value => segments.push(value),
-            }
-        }
-        Ok(format!("/{}", segments.join("/")))
+    fn read_bytes(&self, _path: &str) -> Result<Vec<u8>, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn write_bytes(
+        &self,
+        _path: &str,
+        _bytes: Vec<u8>,
+        _options: core::WriteOptions,
+    ) -> Result<String, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn exists_value(&self, _path: &str) -> Result<bool, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn stat_entry(&self, _path: &str) -> Result<core::FileEntry, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn entries_values(&self, _path: &str) -> Result<Vec<core::FileEntry>, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn mkdir_path(
+        &self,
+        _path: &str,
+        _options: core::MkdirOptions,
+    ) -> Result<String, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn delete_path(
+        &self,
+        _path: &str,
+        _options: core::DeleteOptions,
+    ) -> Result<String, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn copy_path(
+        &self,
+        _source: &str,
+        _target: &str,
+        _options: core::CopyOptions,
+    ) -> Result<String, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn move_path(
+        &self,
+        _source: &str,
+        _target: &str,
+        _options: core::MoveOptions,
+    ) -> Result<String, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn temp_file_path(
+        &self,
+        _parent: &str,
+        _options: core::TempFileOptions,
+    ) -> Result<String, core::FileError> {
+        Err(core::FileError::Unsupported)
+    }
+
+    fn temp_directory_path(
+        &self,
+        _parent: &str,
+        _options: core::TempDirectoryOptions,
+    ) -> Result<String, core::FileError> {
+        Err(core::FileError::Unsupported)
     }
 
     fn read(&self, path: &str) -> Result<Promise, core::FileError> {
@@ -967,12 +1028,25 @@ impl core::FileProvider for HostFileProvider {
         )
     }
 
+    fn write_with_options(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        _options: core::WriteOptions,
+    ) -> Result<Promise, core::FileError> {
+        self.write(path, bytes)
+    }
+
     fn exists(&self, path: &str) -> Result<Promise, core::FileError> {
         self.promise("exists", vec![Value::String(path.into())])
     }
 
     fn stat(&self, path: &str) -> Result<Promise, core::FileError> {
         self.promise("stat", vec![Value::String(path.into())])
+    }
+
+    fn entries(&self, path: &str) -> Result<Promise, core::FileError> {
+        self.promise("entries", vec![Value::String(path.into())])
     }
 
     fn list(&self, path: &str) -> Result<Promise, core::FileError> {
@@ -987,8 +1061,64 @@ impl core::FileProvider for HostFileProvider {
         self.promise("mkdir", vec![Value::String(path.into())])
     }
 
+    fn mkdir_with_options(
+        &self,
+        path: &str,
+        _options: core::MkdirOptions,
+    ) -> Result<Promise, core::FileError> {
+        self.mkdir(path)
+    }
+
     fn delete(&self, path: &str) -> Result<Promise, core::FileError> {
         self.promise("delete", vec![Value::String(path.into())])
+    }
+
+    fn delete_with_options(
+        &self,
+        path: &str,
+        _options: core::DeleteOptions,
+    ) -> Result<Promise, core::FileError> {
+        self.delete(path)
+    }
+
+    fn copy(
+        &self,
+        source: &str,
+        target: &str,
+        _options: core::CopyOptions,
+    ) -> Result<Promise, core::FileError> {
+        self.promise(
+            "copy",
+            vec![Value::String(source.into()), Value::String(target.into())],
+        )
+    }
+
+    fn move_entry(
+        &self,
+        source: &str,
+        target: &str,
+        _options: core::MoveOptions,
+    ) -> Result<Promise, core::FileError> {
+        self.promise(
+            "move",
+            vec![Value::String(source.into()), Value::String(target.into())],
+        )
+    }
+
+    fn temp_file(
+        &self,
+        parent: &str,
+        _options: core::TempFileOptions,
+    ) -> Result<Promise, core::FileError> {
+        self.promise("temp-file", vec![Value::String(parent.into())])
+    }
+
+    fn temp_directory(
+        &self,
+        parent: &str,
+        _options: core::TempDirectoryOptions,
+    ) -> Result<Promise, core::FileError> {
+        self.promise("temp-directory", vec![Value::String(parent.into())])
     }
 }
 
