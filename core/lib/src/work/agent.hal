@@ -1,0 +1,392 @@
+(ns work.agent
+  (:require [work.agent.openai :as openai]
+            [work.agent.result :as async-result]
+            [work.agent.tool :as agent-tool]))
+
+(def terminal-statuses
+  #{:completed :failed :cancelled})
+
+(defn tool
+  "Creates one schema-backed tool callable by an agent."
+  ([name description parameters invoke]
+   (agent-tool/tool name description parameters invoke))
+  ([name description parameters invoke options]
+   (agent-tool/tool name description parameters invoke options)))
+
+(defn openai-client
+  "Creates an OpenAI Responses client with an injected HTTP transport."
+  [options]
+  (openai/client options))
+
+(defn host
+  "Creates an in-memory cooperative agent host suitable for REPL control."
+  ([]
+   (host {}))
+  ([options]
+   {:host/runs (atom {})
+    :host/run-sequence (atom 0)
+    :host/event-sequence (atom 0)
+    :host/options (or options {})}))
+
+(defn- reference-id
+  [reference]
+  (if (map? reference)
+    (:run/id reference)
+    reference))
+
+(defn- next-run-id
+  [host]
+  (str "agent-" (swap! (:host/run-sequence host) inc)))
+
+(defn- next-event-id
+  [host]
+  (swap! (:host/event-sequence host) inc))
+
+(defn- run-record
+  [host reference]
+  (let [id (reference-id reference)
+        value (get (deref (:host/runs host)) id)]
+    (if (nil? value)
+      (throw
+       (ex-info "Agent run does not exist"
+                {:run/id id})))
+    value))
+
+(defn- update-run!
+  [host reference function]
+  (let [id (reference-id reference)
+        runs
+        (swap!
+         (:host/runs host)
+         (fn [runs]
+           (let [value (get runs id)]
+             (if (nil? value)
+               (throw
+                (ex-info "Agent run does not exist"
+                         {:run/id id})))
+             (assoc runs id (function value)))))]
+    (get runs id)))
+
+(defn- transition!
+  [host reference function event data]
+  (let [id (reference-id reference)
+        event-id (next-event-id host)]
+    (update-run!
+     host
+     id
+     (fn [run]
+       (let [run (function run)
+             record
+             {:event/id event-id
+              :event/type event
+              :run/id id
+              :run/status (:run/status run)
+              :event/data (or data {})}]
+         (update run :run/events conj record))))))
+
+(defn- public-state
+  [run]
+  {:run/id (:run/id run)
+   :run/status (:run/status run)
+   :run/turn (:run/turn run)
+   :run/tool-calls (:run/tool-calls run)
+   :run/result (:run/result run)
+   :run/error (:run/error run)
+   :run/response (:run/response run)
+   :run/events (:run/events run)})
+
+(defn state
+  "Returns a secret-free snapshot of one run."
+  [host reference]
+  (public-state (run-record host reference)))
+
+(defn runs
+  "Returns secret-free snapshots of all runs in the host."
+  [host]
+  (vec
+   (map
+    public-state
+    (vals (deref (:host/runs host))))))
+
+(defn status
+  "Returns the current status of one run."
+  [host reference]
+  (:run/status (run-record host reference)))
+
+(defn result
+  "Returns the final text result of one run, or nil before completion."
+  [host reference]
+  (:run/result (run-record host reference)))
+
+(defn events
+  "Returns the structured event history of one run."
+  [host reference]
+  (:run/events (run-record host reference)))
+
+(defn start!
+  "Registers a cooperative agent run and returns its stable reference.
+
+   The run does not advance until step! or run! is called."
+  [host options input]
+  (let [options (or options {})
+        id (or (:id options) (next-run-id host))
+        tools (agent-tool/normalize-all (:tools options))
+        run
+        {:run/id id
+         :run/status :ready
+         :run/turn 0
+         :run/tool-calls 0
+         :run/input [(openai/input-message input)]
+         :run/client (:client options)
+         :run/tools tools
+         :run/tool-index (agent-tool/index tools)
+         :run/instructions (:instructions options)
+         :run/request (or (:request options) {})
+         :run/max-turns (or (:max-turns options) 8)
+         :run/max-tool-calls (or (:max-tool-calls options) 32)
+         :run/result nil
+         :run/error nil
+         :run/response nil
+         :run/events []}]
+    (if (nil? (:run/client run))
+      (throw
+       (ex-info "Agent run requires a client"
+                {:run/id id})))
+    (swap!
+     (:host/runs host)
+     (fn [runs]
+       (if (get runs id)
+         (throw
+          (ex-info "Agent run identity already exists"
+                   {:run/id id}))
+         (assoc runs id run))))
+    (transition! host id (fn [run] run) :agent/started {})
+    {:run/id id}))
+
+(defn- fail!
+  [host reference error]
+  (transition!
+   host
+   reference
+   (fn [run]
+     (assoc
+      (assoc run :run/status :failed)
+      :run/error
+      {:message (str error)}))
+   :agent/failed
+   {:message (str error)}))
+
+(defn- complete!
+  [host reference response turn]
+  (transition!
+   host
+   reference
+   (fn [run]
+     (assoc
+      (assoc
+       (assoc
+        (assoc
+         (assoc run :run/status :completed)
+         :run/turn turn)
+        :run/result (:response/text response))
+       :run/response response)
+      :run/input
+      (into (:run/input run)
+            (:response/output response))))
+   :agent/completed
+   {:turn turn}))
+
+(defn- ready!
+  [host reference response outputs turn tool-count]
+  (transition!
+   host
+   reference
+   (fn [run]
+     (assoc
+      (assoc
+       (assoc
+        (assoc
+         (assoc run :run/status :ready)
+         :run/turn turn)
+        :run/tool-calls tool-count)
+       :run/input
+       (into
+        (:run/input run)
+        (concat (:response/output response) outputs)))
+      :run/response response))
+   :agent/tools-completed
+   {:turn turn
+    :tool-calls (count outputs)}))
+
+(defn- process-response
+  [host reference response]
+  (let [run (run-record host reference)]
+    (if (= :cancelled (:run/status run))
+      (public-state run)
+      (let [calls (:response/tool-calls response)
+            turn (inc (:run/turn run))
+            tool-count (+ (:run/tool-calls run) (count calls))]
+        (cond
+          (> turn (:run/max-turns run))
+          (public-state
+           (fail!
+            host
+            reference
+            (ex-info "Agent turn limit reached"
+                     {:run/turn turn
+                      :run/max-turns (:run/max-turns run)})))
+
+          (> tool-count (:run/max-tool-calls run))
+          (public-state
+           (fail!
+            host
+            reference
+            (ex-info "Agent tool-call limit reached"
+                     {:run/tool-calls tool-count
+                      :run/max-tool-calls (:run/max-tool-calls run)})))
+
+          (empty? calls)
+          (public-state
+           (complete! host reference response turn))
+
+          :else
+          (do
+            (transition!
+             host
+             reference
+             (fn [run]
+               (assoc run :run/status :running-tools))
+             :agent/tools-started
+             {:turn turn
+              :tool-calls (count calls)})
+            (async-result/then
+             (agent-tool/invoke-all (:run/tool-index run) calls)
+             (fn [values]
+               (let [current (run-record host reference)]
+                 (if (= :cancelled (:run/status current))
+                   (public-state current)
+                   (let [outputs (openai/tool-output-items values)]
+                     (public-state
+                      (ready!
+                       host
+                       reference
+                       response
+                       outputs
+                       turn
+                       tool-count)))))))))))))
+
+(defn step!
+  "Advances one model turn and any function calls requested by that response.
+
+   The return value is a direct state snapshot or a Promise of one."
+  [host reference]
+  (let [run (run-record host reference)
+        status (:run/status run)]
+    (cond
+      (not (nil? (get terminal-statuses status)))
+      (public-state run)
+
+      (not= :ready status)
+      (throw
+       (ex-info "Agent run is already advancing"
+                {:run/id (:run/id run)
+                 :run/status status}))
+
+      (>= (:run/turn run) (:run/max-turns run))
+      (public-state
+       (fail!
+        host
+        reference
+        (ex-info "Agent turn limit reached"
+                 {:run/turn (:run/turn run)
+                  :run/max-turns (:run/max-turns run)})))
+
+      :else
+      (do
+        (transition!
+         host
+         reference
+         (fn [run]
+           (assoc run :run/status :calling-model))
+         :agent/model-started
+         {:turn (inc (:run/turn run))})
+        (async-result/attempt
+         (fn []
+           (async-result/then
+            (openai/complete
+             (:run/client run)
+             {:instructions (:run/instructions run)
+              :tools (:run/tools run)
+              :input (:run/input run)
+              :request (:run/request run)})
+            (fn [response]
+              (process-response host reference response))))
+         (fn [error]
+           (public-state (fail! host reference error))))))))
+
+(defn run!
+  "Runs cooperative turns until the run reaches a terminal state."
+  [host reference]
+  (async-result/then
+   (step! host reference)
+   (fn [snapshot]
+     (if (= :ready (:run/status snapshot))
+       (run! host reference)
+       snapshot))))
+
+(defn send!
+  "Appends a human message to a ready or completed run.
+
+   Completed and failed runs become ready again with their prior transcript."
+  [host reference message]
+  (let [run (run-record host reference)
+        status (:run/status run)]
+    (if (or (= :calling-model status)
+            (= :running-tools status)
+            (= :cancelled status))
+      (throw
+       (ex-info "Cannot redirect this agent run"
+                {:run/id (:run/id run)
+                 :run/status status})))
+    (public-state
+     (transition!
+      host
+      reference
+      (fn [run]
+        (assoc
+         (assoc
+          (assoc
+           (assoc run :run/status :ready)
+           :run/result nil)
+          :run/error nil)
+         :run/input
+         (conj (:run/input run)
+               (openai/input-message message))))
+      :agent/message-added
+      {}))))
+
+(defn cancel!
+  "Marks a run cancelled. In-flight transports are not forcibly aborted."
+  [host reference]
+  (public-state
+   (transition!
+    host
+    reference
+    (fn [run]
+      (assoc run :run/status :cancelled))
+    :agent/cancelled
+    {})))
+
+(defn ask
+  "Runs one isolated agent request and returns its final response text."
+  [options input]
+  (let [runtime (host)
+        reference (start! runtime options input)]
+    (async-result/then
+     (run! runtime reference)
+     (fn [snapshot]
+       (if (= :completed (:run/status snapshot))
+         (:run/result snapshot)
+         (throw
+          (ex-info "Agent did not complete"
+                   snapshot)))))))
