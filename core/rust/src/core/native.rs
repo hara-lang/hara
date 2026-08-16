@@ -251,7 +251,33 @@ fn native_test_error(name: Value, expected: Value, error: String) -> Value {
     ]))
 }
 
-fn native_test_run(cases: Value) -> Result<Value, String> {
+fn native_test_checked_result(name: Value, metadata: Option<Value>, checked: Value) -> Value {
+    let Some(entries) = map_entries(&checked) else {
+        return native_test_error(
+            name,
+            Value::Nil,
+            "Test/run check function must return a result map".into(),
+        );
+    };
+    if !matches!(
+        map_value(&checked, &Value::Keyword("pass".into())),
+        Some(Value::Bool(_))
+    ) {
+        return native_test_error(
+            name,
+            Value::Nil,
+            "Test/run check result requires boolean :pass".into(),
+        );
+    }
+    let mut result = PMap::from_iter(entries);
+    result = result.assoc_value(Value::Keyword("name".into()), name);
+    if let Some(metadata) = metadata {
+        result = result.assoc_value(Value::Keyword("meta".into()), metadata);
+    }
+    Value::Map(result)
+}
+
+fn native_test_run(cases: Value, check_function: Option<Value>) -> Result<Value, String> {
     let cases = match cases {
         Value::Vector(cases) => cases.iter().cloned().collect::<Vec<_>>(),
         Value::Tuple(cases) => cases.iter().cloned().collect::<Vec<_>>(),
@@ -279,10 +305,20 @@ fn native_test_run(cases: Value) -> Result<Value, String> {
             .unwrap_or(fallback_name);
         let expected = map_value(case, &Value::Keyword("expected".into())).cloned();
         let test = map_value(case, &Value::Keyword("test".into())).cloned();
+        let metadata = map_value(case, &Value::Keyword("meta".into())).cloned();
         let result = match (test, expected) {
-            (Some(test), Some(expected)) => match call_value(test, Vec::new()) {
-                Ok(actual) => native_test_result(name, actual, expected),
-                Err(error) => native_test_error(name, expected, error),
+            (Some(test), Some(expected)) => match &check_function {
+                Some(check) => match call_value(check.clone(), vec![test, expected]) {
+                    Ok(checked) => native_test_checked_result(name, metadata, checked),
+                    Err(error) => {
+                        let failed = native_test_error(name.clone(), Value::Nil, error);
+                        native_test_checked_result(name, metadata, failed)
+                    }
+                },
+                None => match call_value(test, Vec::new()) {
+                    Ok(actual) => native_test_result(name, actual, expected),
+                    Err(error) => native_test_error(name, expected, error),
+                },
             },
             (None, expected) => native_test_error(
                 name,
@@ -391,11 +427,18 @@ fn native_test_operation(
             Ok(native_test_result(name, actual, expected))
         }
         "run" => {
-            if forms.len() != 1 {
-                return Err("std.native.Test/run expects one vector".into());
+            if forms.is_empty() || forms.len() > 2 {
+                return Err(
+                    "std.native.Test/run expects cases and an optional check function".into(),
+                );
             }
             let cases = eval(&forms[0], env)?;
-            native_test_run(cases)
+            let check_function = if forms.len() == 2 {
+                Some(eval(&forms[1], env)?)
+            } else {
+                None
+            };
+            native_test_run(cases, check_function)
         }
         "passed?" => {
             if forms.len() != 1 {
@@ -410,7 +453,6 @@ fn native_test_operation(
         _ => Err(format!("unknown std.native.Test operation: {operation}")),
     }
 }
-
 fn native_regex_operation(
     operation: &str,
     forms: &[Form],
@@ -1530,5 +1572,3 @@ pub(crate) fn with_namespace_source<R>(
         result
     })
 }
-
-

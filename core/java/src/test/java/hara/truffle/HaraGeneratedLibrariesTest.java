@@ -212,6 +212,36 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void nativeTestRunAcceptsAFunctionAwareChecker() {
+    try (Context context = context()) {
+      String checked = context.eval(HaraLanguage.ID,
+          "(Test/run [{:name \"checked\" :meta {:refer (quote demo/value)} "
+              + ":test (fn [] 7) :expected odd?}] "
+              + "(fn [thunk expected] (let [actual (thunk)] "
+              + "{:pass (expected actual) :actual actual :expected :predicate})))")
+          .toString();
+      assertTrue(checked, checked.contains(":name \"checked\""));
+      assertTrue(checked, checked.contains(":pass true"));
+      assertTrue(checked, checked.contains(":meta {:refer demo/value}"));
+
+      String failures = context.eval(HaraLanguage.ID,
+          "(Test/run [{:name \"throws\" :test (fn [] 1) :expected 1} "
+              + "{:name \"continues\" :test (fn [] 2) :expected 2}] "
+              + "(fn [thunk expected] (throw \"checker boom\")))")
+          .toString();
+      assertTrue(failures, failures.contains(":name \"throws\""));
+      assertTrue(failures, failures.contains(":name \"continues\""));
+      assertEquals(2, failures.split(":status :error", -1).length - 1);
+
+      String malformed = context.eval(HaraLanguage.ID,
+          "(Test/run [{:name \"malformed\" :test (fn [] 1) :expected 1}] "
+              + "(fn [thunk expected] true))")
+          .toString();
+      assertTrue(malformed, malformed.contains("check function must return a result map"));
+    }
+  }
+
+  @Test
   public void intrinsicsCanExcludeAndRenameGeneratedAliases() {
     try (Context context = context()) {
       assertEquals(

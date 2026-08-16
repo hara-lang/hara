@@ -3476,6 +3476,47 @@ mod tests {
         let malformed = runtime.eval_text("(Test/run [{} 1])").unwrap();
         assert_eq!(malformed.matches(":pass false").count(), 3, "{malformed}");
 
+        let mut checked_runtime = Runtime::new();
+        let checked = checked_runtime
+            .eval_text(
+                "(Test/run [{:name \"checked\" :meta {:refer (quote demo/value)} \
+                              :test (fn [] 7) :expected odd?}] \
+                   (fn [thunk expected] \
+                     (let [actual (thunk)] \
+                       {:pass (expected actual) :actual actual :expected :predicate})))",
+            )
+            .unwrap();
+        assert!(checked.contains(":name \"checked\""), "{checked}");
+        assert!(checked.contains(":pass true"), "{checked}");
+        assert!(checked.contains(":meta {:refer demo/value}"), "{checked}");
+        let local_failures = checked_runtime
+            .eval_text(
+                "(Test/run [{:name \"throws\" :test (fn [] 1) :expected 1} \
+                             {:name \"continues\" :test (fn [] 2) :expected 2}] \
+                   (fn [thunk expected] (throw \"checker boom\")))",
+            )
+            .unwrap();
+        assert!(
+            local_failures.contains(":name \"throws\""),
+            "{local_failures}"
+        );
+        assert!(
+            local_failures.contains(":name \"continues\""),
+            "{local_failures}"
+        );
+        assert_eq!(
+            local_failures.matches(":status :error").count(),
+            2,
+            "{local_failures}"
+        );
+        let malformed_check = checked_runtime
+            .eval_text(
+                "(Test/run [{:name \"malformed\" :test (fn [] 1) :expected 1}] \
+                   (fn [thunk expected] true))",
+            )
+            .unwrap();
+        assert!(malformed_check.contains("check function must return a result map"));
+
         runtime.set_test_runner("native").unwrap();
         assert_eq!(
             runtime

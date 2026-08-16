@@ -172,7 +172,7 @@ public final class HaraContext {
                   "parent", "join", "resolve", "read", "write", "exists?", "stat",
                   "entries", "list", "walk", "mkdir", "delete", "copy", "move",
                   "temp-file", "temp-directory")),
-          Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "receive-stream", "duplex", "send", "close")),
+          Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close", "receive-stream", "duplex")),
           Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
           Map.entry("Coroutine", java.util.List.of("create", "yield", "await", "instance?")),
           Map.entry("Stream", java.util.List.of("generate", "next", "instance?")),
@@ -187,7 +187,7 @@ public final class HaraContext {
           Map.entry("Host", java.util.List.of("call", "describe", "capabilities", "capability?")),
           Map.entry(
               "Test",
-              java.util.List.of("catalog", "config", "context", "events", "result", "passed?")),
+              java.util.List.of("catalog", "config", "context", "events", "run", "result", "passed?")),
           Map.entry(
               "RegExp",
               java.util.List.of(
@@ -3434,9 +3434,28 @@ public final class HaraContext {
         Keyword.create("error"), error);
   }
 
+  @SuppressWarnings("unchecked")
+  private Object nativeTestCheckedResult(Object name, Object metadata, Object rawResult) {
+    Object resultValue = HaraBox.unwrap(rawResult);
+    if (!(resultValue instanceof IMapType<?, ?> rawMap)) {
+      return nativeTestError(name, null, "Test/run check function must return a result map");
+    }
+    IMapType<Object, Object> result = (IMapType<Object, Object>) rawMap;
+    Object pass = lookupValue(result, Keyword.create("pass"));
+    if (!(pass instanceof Boolean)) {
+      return nativeTestError(name, null, "Test/run check result requires boolean :pass");
+    }
+    result = (IMapType<Object, Object>) result.assoc(Keyword.create("name"), name);
+    if (metadata != null) {
+      result = (IMapType<Object, Object>) result.assoc(Keyword.create("meta"), metadata);
+    }
+    return result;
+  }
+
   private Object nativeTestRun(Object[] values) {
-    if (values.length != 1) {
-      throw new HaraException("std.native.Test/run expects one vector of test cases");
+    if (values.length < 1 || values.length > 2) {
+      throw new HaraException(
+          "std.native.Test/run expects cases and an optional check function");
     }
     Object rawCases = HaraBox.unwrap(values[0]);
     boolean vectorCases = rawCases instanceof hara.lang.data.Vector<?>
@@ -3445,6 +3464,7 @@ public final class HaraContext {
       throw new HaraException("std.native.Test/run expects one vector of test cases");
     }
     ILinearType<?> cases = (ILinearType<?>) rawCases;
+    Object checkFunction = values.length == 2 ? HaraBox.unwrap(values[1]) : null;
     int index = 0;
     for (Object rawCase : cases) {
       index += 1;
@@ -3457,6 +3477,8 @@ public final class HaraContext {
           ? lookupValue(testCase, Keyword.create("name")) : fallbackName;
       boolean hasExpected = hasMapKey(testCase, Keyword.create("expected"));
       Object expected = hasExpected ? lookupValue(testCase, Keyword.create("expected")) : null;
+      Object metadata = hasMapKey(testCase, Keyword.create("meta"))
+          ? lookupValue(testCase, Keyword.create("meta")) : null;
       boolean hasTest = hasMapKey(testCase, Keyword.create("test"));
       if (!hasTest) {
         nativeTestResults.add(nativeTestError(name, expected, "Test/run case requires :test"));
@@ -3464,9 +3486,14 @@ public final class HaraContext {
         nativeTestResults.add(nativeTestError(name, null, "Test/run case requires :expected"));
       } else {
         try {
-          Object actual = invokeCallable(
-              lookupValue(testCase, Keyword.create("test")), new Object[0]);
-          nativeTestResults.add(nativeTestResult(new Object[] {name, actual, expected}));
+          Object testFunction = lookupValue(testCase, Keyword.create("test"));
+          if (checkFunction == null) {
+            Object actual = invokeCallable(testFunction, new Object[0]);
+            nativeTestResults.add(nativeTestResult(new Object[] {name, actual, expected}));
+          } else {
+            Object checked = invokeCallable(checkFunction, new Object[] {testFunction, expected});
+            nativeTestResults.add(nativeTestCheckedResult(name, metadata, checked));
+          }
         } catch (RuntimeException error) {
           String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
           nativeTestResults.add(nativeTestError(name, expected, message));
