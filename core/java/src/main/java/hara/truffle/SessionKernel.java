@@ -23,10 +23,59 @@ import org.graalvm.polyglot.io.IOAccess;
 
 /** Owns the runtime contexts shared by local and RESP clients. */
 final class SessionKernel implements AutoCloseable {
+  /**
+   * Host authority applied when a context is created.
+   *
+   * <p>This policy does not include a filesystem mounted explicitly through
+   * {@link SessionKernel#attachFilesystem(String, Path)}. Such a mount is a separately delegated,
+   * scoped resource. In-process namespace and context separation remains logical isolation, not a
+   * security boundary.
+   */
+  static final class SessionAuthorityPolicy {
+    static final SessionAuthorityPolicy ZERO =
+        new SessionAuthorityPolicy(false, false, false, false, false, false);
+
+    final boolean hostFilesystem;
+    final boolean hostNetwork;
+    final boolean hostProcess;
+    final boolean reflection;
+    final boolean packages;
+    final boolean project;
+
+    SessionAuthorityPolicy(
+        boolean hostFilesystem,
+        boolean hostNetwork,
+        boolean hostProcess,
+        boolean reflection,
+        boolean packages,
+        boolean project) {
+      this.hostFilesystem = hostFilesystem;
+      this.hostNetwork = hostNetwork;
+      this.hostProcess = hostProcess;
+      this.reflection = reflection;
+      this.packages = packages;
+      this.project = project;
+    }
+
+    static SessionAuthorityPolicy root(
+        boolean allowFile, boolean allowNetwork, boolean allowProcess, HaraProject project) {
+      return new SessionAuthorityPolicy(
+          allowFile,
+          allowNetwork,
+          allowProcess,
+          project != null && project.hasCapability("jvm/reflection"),
+          project != null,
+          project != null);
+    }
+
+    String profile() {
+      return hostFilesystem || hostNetwork || hostProcess || reflection || packages || project
+          ? "explicit"
+          : "zero";
+    }
+  }
+
   private final boolean allowFile;
-  private final boolean allowNetwork;
-  private final boolean allowProcess;
-  private final HaraProject project;
   private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
 
   SessionKernel(boolean allowFile, boolean allowNetwork) {
@@ -40,10 +89,9 @@ final class SessionKernel implements AutoCloseable {
   SessionKernel(
       boolean allowFile, boolean allowNetwork, boolean allowProcess, HaraProject project) {
     this.allowFile = allowFile;
-    this.allowNetwork = allowNetwork;
-    this.allowProcess = allowProcess;
-    this.project = project;
-    sessions.put("ROOT", new Session("ROOT", allowFile, allowNetwork, allowProcess, project));
+    SessionAuthorityPolicy rootAuthority =
+        SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
+    sessions.put("ROOT", new Session("ROOT", rootAuthority, project));
   }
 
   Session root() {
@@ -59,7 +107,7 @@ final class SessionKernel implements AutoCloseable {
   synchronized Session create(String value) {
     String name = normalizeName(value);
     if (sessions.containsKey(name)) throw new IllegalArgumentException("SESSION_EXISTS " + name);
-    Session session = new Session(name, allowFile, allowNetwork, allowProcess, project);
+    Session session = new Session(name, SessionAuthorityPolicy.ZERO, null);
     sessions.put(name, session);
     return session;
   }
@@ -100,9 +148,7 @@ final class SessionKernel implements AutoCloseable {
   static final class Session
       implements AutoCloseable, IContext, IComponent, IApplicable, IInvokeIn {
     private final String name;
-    private final boolean allowFile;
-    private final boolean allowNetwork;
-    private final boolean allowProcess;
+    private final SessionAuthorityPolicy authority;
     private final HaraProject project;
     private Context context;
     private Path filesystemRoot;
@@ -115,12 +161,15 @@ final class SessionKernel implements AutoCloseable {
       final String namespace;
       final String state;
       final String filesystem;
+      final String authority;
 
-      SessionMetadata(String name, String namespace, String state, String filesystem) {
+      SessionMetadata(
+          String name, String namespace, String state, String filesystem, String authority) {
         this.name = name;
         this.namespace = namespace;
         this.state = state;
         this.filesystem = filesystem;
+        this.authority = authority;
       }
 
       @Override
@@ -129,34 +178,28 @@ final class SessionKernel implements AutoCloseable {
       }
     }
 
-    private Session(
-        String name,
-        boolean allowFile,
-        boolean allowNetwork,
-        boolean allowProcess,
-        HaraProject project) {
+    private Session(String name, SessionAuthorityPolicy authority, HaraProject project) {
       this.name = name;
-      this.allowFile = allowFile;
-      this.allowNetwork = allowNetwork;
-      this.allowProcess = allowProcess;
+      this.authority = authority;
       this.project = project;
       context = createContext(null);
     }
 
     private Context createContext(Path root) {
-      IOAccess.Builder io =
-          IOAccess.newBuilder().allowHostSocketAccess(allowNetwork);
+      IOAccess.Builder io = IOAccess.newBuilder().allowHostSocketAccess(authority.hostNetwork);
       if (root == null) {
-        io.allowHostFileAccess(allowFile || project != null);
+        io.allowHostFileAccess(authority.hostFilesystem);
       } else {
         io.allowHostFileAccess(false).fileSystem(new HaraMountedFileSystem(root));
       }
       Context.Builder builder =
           Context.newBuilder(HaraLanguage.ID)
-          .allowCreateProcess(allowProcess)
-          .allowIO(io.build());
-      if (project != null && root == null) builder.currentWorkingDirectory(project.root());
-      if (project != null && project.hasCapability("jvm/reflection")) {
+              .allowCreateProcess(authority.hostProcess)
+              .allowIO(io.build());
+      if (authority.project && project != null && root == null) {
+        builder.currentWorkingDirectory(project.root());
+      }
+      if (authority.reflection && project != null) {
         builder.allowHostAccess(HostAccess.ALL).allowHostClassLookup(name -> true);
       }
       return builder.build();
@@ -188,6 +231,10 @@ final class SessionKernel implements AutoCloseable {
 
     String name() {
       return name;
+    }
+
+    SessionAuthorityPolicy authority() {
+      return authority;
     }
 
     Value eval(String source) {
@@ -307,10 +354,15 @@ final class SessionKernel implements AutoCloseable {
     }
 
     List<Object> info() {
+      String filesystem =
+          filesystemRoot == null
+              ? (authority.hostFilesystem ? "HOST" : "DENIED")
+              : filesystemRoot.toString();
       return List.of(
           "NAME", name,
           "STATE", "RUNNING",
-          "FILESYSTEM", filesystemRoot == null ? "HOST" : filesystemRoot.toString());
+          "FILESYSTEM", filesystem,
+          "AUTHORITY", authority.profile());
     }
 
     @Override
@@ -334,11 +386,16 @@ final class SessionKernel implements AutoCloseable {
 
     private SessionMetadata metadata() {
       boolean running = active.get();
+      String filesystem =
+          filesystemRoot == null
+              ? (authority.hostFilesystem ? "HOST" : null)
+              : filesystemRoot.toString();
       return new SessionMetadata(
           name,
           running ? currentNamespace() : null,
           running ? (activeEvaluations.get() == 0 ? "idle" : "busy") : "closed",
-          filesystemRoot == null ? null : filesystemRoot.toString());
+          filesystem,
+          authority.profile());
     }
 
     @Override
