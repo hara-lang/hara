@@ -5,7 +5,7 @@
 (def default-endpoint
   "https://api.openai.com/v1/responses")
 
-(defn field
+(defn wire-field
   "Reads a string-keyed OpenAI wire field while accepting keyword test data."
   [value name]
   (cond
@@ -97,7 +97,7 @@
      :openai/api-key (:api-key options)
      :openai/endpoint (or (:endpoint options) default-endpoint)
      :openai/headers (or (:headers options) {})
-     :openai/request (merge {"store" false}
+     :openai/request (merge (wire-value {:store false})
                             (wire-value (or (:request options) {})))
      :openai/transport transport}))
 
@@ -106,8 +106,8 @@
   ([content]
    (input-message "user" content))
   ([role content]
-   {"role" role
-    "content" content}))
+   {:role role
+    :content content}))
 
 (defn request-body
   "Builds one strict-JSON-safe OpenAI Responses request body."
@@ -136,7 +136,7 @@
   [client]
   (let [headers
         (merge
-         {"content-type" "application/json"}
+         (wire-value {:content-type "application/json"})
          (wire-value (:openai/headers client)))
         api-key (:openai/api-key client)]
     (if (nil? api-key)
@@ -173,10 +173,10 @@
     (Json/read value)
 
     (map? value)
-    (let [body (field value "body")]
+    (let [body (wire-field value "body")]
       (if (nil? body)
         value
-        (let [status (field value "status")
+        (let [status (wire-field value "status")
               parsed (parsed-body body)]
           (if (and (number? status)
                    (>= status 400))
@@ -193,28 +193,28 @@
 
 (defn- output-items
   [response]
-  (let [output (field response "output")]
+  (let [output (wire-field response "output")]
     (if (nil? output) [] (vec output))))
 
 (defn- output-text
   [response]
   (reduce
    (fn [text item]
-     (if (= "message" (field item "type"))
+     (if (= "message" (wire-field item "type"))
        (reduce
         (fn [text content]
-          (if (= "output_text" (field content "type"))
-            (str text (or (field content "text") ""))
+          (if (= "output_text" (wire-field content "type"))
+            (str text (or (wire-field content "text") ""))
             text))
         text
-        (or (field item "content") []))
+        (or (wire-field item "content") []))
        text))
    ""
    (output-items response)))
 
 (defn- decode-arguments
   [call]
-  (let [arguments (field call "arguments")]
+  (let [arguments (wire-field call "arguments")]
     (cond
       (nil? arguments)
       {}
@@ -232,8 +232,8 @@
 
 (defn- function-call
   [item]
-  {:call/id (field item "call_id")
-   :tool/name (field item "name")
+  {:call/id (wire-field item "call_id")
+   :tool/name (wire-field item "name")
    :call/arguments (decode-arguments item)
    :call/raw item})
 
@@ -244,7 +244,7 @@
     function-call
     (filter
      (fn [item]
-       (= "function_call" (field item "type")))
+       (= "function_call" (wire-field item "type")))
      (output-items response)))))
 
 (defn normalize-response
@@ -253,14 +253,14 @@
   (let [response (response-value response)
         text (output-text response)
         text (if (= text "")
-               (field response "output_text")
+               (wire-field response "output_text")
                text)]
-    {:response/id (field response "id")
-     :response/status (field response "status")
+    {:response/id (wire-field response "id")
+     :response/status (wire-field response "status")
      :response/output (output-items response)
      :response/text (if (= text "") nil text)
      :response/tool-calls (function-calls response)
-     :response/usage (field response "usage")
+     :response/usage (wire-field response "usage")
      :response/raw response}))
 
 (defn complete
@@ -274,17 +274,17 @@
 (defn- tool-result-body
   [value]
   (if (= :ok (:tool/status value))
-    {"ok" true
-     "value" (wire-value (:tool/value value))}
-    {"ok" false
-     "error" (wire-value (:tool/error value))}))
+    {:ok true
+     :value (wire-value (:tool/value value))}
+    {:ok false
+     :error (wire-value (:tool/error value))}))
 
 (defn tool-output-item
   "Creates one Responses API function_call_output input item."
   [value]
-  {"type" "function_call_output"
-   "call_id" (:call/id value)
-   "output" (Json/write (tool-result-body value))})
+  {:type "function_call_output"
+   :call_id (:call/id value)
+   :output (Json/write (wire-value (tool-result-body value)))})
 
 (defn tool-output-items
   "Creates Responses API function-call outputs in call order."
