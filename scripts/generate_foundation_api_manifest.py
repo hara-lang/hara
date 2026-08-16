@@ -44,8 +44,14 @@ def read_inventory(path: Path) -> list[str]:
     })
 
 
+# Development-only sources that are registered but not production-bootstrapped
+# (see core/rust/bootstrap.namespaces and the closed inventory in the
+# foundation spec: exactly six production std.foundation namespaces).
+DEVELOPMENT_ONLY_NAMESPACES = ("std.foundation.bootstrap",)
+
+
 def selected_namespaces(inventory: list[str], extras: tuple[str, ...]) -> list[str]:
-    registered = set(inventory)
+    registered = set(inventory) - set(DEVELOPMENT_ONLY_NAMESPACES)
     missing = sorted(set(extras) - registered)
     if missing:
         raise ValueError("Configured API namespaces are not registered: " + ", ".join(missing))
@@ -127,7 +133,7 @@ def build_manifest(
     missing = sorted(set(selected) - raw.keys())
     unexpected = sorted(name for name in raw if (
         name == "std.foundation" or name.startswith("std.foundation.") or name in extras
-    ) and name not in selected)
+    ) and name not in selected and name not in DEVELOPMENT_ONLY_NAMESPACES)
     if missing or unexpected:
         raise ValueError(
             f"Registered/source API mismatch: missing={missing or 'none'} unexpected={unexpected or 'none'}"

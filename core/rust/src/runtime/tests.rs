@@ -87,6 +87,29 @@ mod tests {
         }
     }
 
+    fn register_lib_tree(
+        runtime: &mut Runtime,
+        root: &std::path::Path,
+        dir: &std::path::Path,
+    ) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                register_lib_tree(runtime, root, &path);
+            } else if path.extension().is_some_and(|ext| ext == "hal") {
+                let relative = path.strip_prefix(root).unwrap().with_extension("");
+                let namespace = relative
+                    .components()
+                    .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(".")
+                    .replace('_', "-");
+                let source = std::fs::read_to_string(&path).unwrap();
+                runtime.register_resource(&namespace, &source);
+            }
+        }
+    }
+
     fn module_case(id: &str) -> Vec<(Form, Form)> {
         fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
             entries
@@ -2045,6 +2068,37 @@ mod tests {
     }
 
     #[test]
+    fn foundation_bootstrap_inventory_is_the_six_namespace_family() {
+        let inventory = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bootstrap.namespaces"),
+        )
+        .unwrap();
+        let foundation = inventory
+            .lines()
+            .filter(|line| !line.is_empty())
+            .filter(|line| line.starts_with("std.foundation"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            foundation,
+            vec![
+                "std.foundation",
+                "std.foundation.bytes",
+                "std.foundation.coroutine",
+                "std.foundation.pretty",
+                "std.foundation.promise",
+                "std.foundation.string",
+            ],
+            "production Foundation bootstrap family must be exactly the six namespaces"
+        );
+        assert!(
+            !inventory
+                .lines()
+                .any(|line| line.trim() == "std.foundation.bootstrap"),
+            "std.foundation.bootstrap is development-only and must not be bootstrapped"
+        );
+    }
+
+    #[test]
     fn closed_native_method_inventory_is_classified_and_callable() {
         fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> &'a Form {
             entries
@@ -2074,11 +2128,18 @@ mod tests {
                 Some(value) => symbols(value, label),
             }
         }
-        fn wrapper_source(path: &str) -> &'static str {
-            EMBEDDED_HAL_RESOURCES
+        fn wrapper_source(path: &str) -> String {
+            if let Some(source) = EMBEDDED_HAL_RESOURCES
                 .iter()
                 .find_map(|(_, resource_path, source)| (*resource_path == path).then_some(*source))
-                .unwrap_or_else(|| panic!("unknown wrapper source: {path}"))
+            {
+                return source.to_owned();
+            }
+            let local = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(path);
+            std::fs::read_to_string(&local)
+                .unwrap_or_else(|_| panic!("unknown wrapper source: {path}"))
         }
 
         let Some(contract_source) =
@@ -2229,6 +2290,23 @@ mod tests {
                 )
             })
             .collect::<Vec<(String, Vec<String>)>>();
+        let unique_types = specified
+            .iter()
+            .map(|(name, _)| name)
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(
+            unique_types.len(),
+            specified.len(),
+            "duplicate native type names in native.edn"
+        );
+        for (name, methods) in &specified {
+            let unique_methods = methods.iter().collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                unique_methods.len(),
+                methods.len(),
+                "duplicate methods declared for {name} in native.edn"
+            );
+        }
         assert_eq!(specified, runtime_inventory);
         let Form::Map(startup_visibility) = entry(&contract, "startup-visibility") else {
             panic!(":startup-visibility must be a map")
@@ -2390,19 +2468,28 @@ mod tests {
             "Socket",
             "Promise",
             "Coroutine",
+            "Stream",
+            "Duplex",
             "Arr",
             "Obj",
             "Runtime",
             "Printer",
+            "Document",
             "Edn",
             "Json",
             "Host",
-            "Regex",
+            "Test",
+            "RegExp",
             "UUID",
+            "Result",
+            "Schema",
             "Error",
             "Base",
+            "Algo",
             "Iter",
             "Kernel",
+            "Env",
+            "Package",
         ] {
             assert!(
                 symbols.iter().any(|symbol| symbol == native_type),
@@ -6038,9 +6125,33 @@ mod tests {
 
     #[test]
     fn code_translate_resolves_required_namespace_aliases() {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                code_translate_resolves_required_namespace_aliases_body();
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn code_translate_resolves_required_namespace_aliases_body() {
         let mut runtime = Runtime::core();
         for (namespace, _, source) in EMBEDDED_HAL_RESOURCES {
             runtime.register_resource(namespace, source);
+        }
+        // code.translate.* and its std.block/std.lib.zip dependencies are not
+        // embedded bootstrap namespaces; register them from repository sources.
+        let lib_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("lib")
+            .join("src");
+        for entry in std::fs::read_dir(&lib_src)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_dir())
+        {
+            register_lib_tree(&mut runtime, &lib_src, &entry);
         }
         runtime.prepare_foundation_bytecode();
         let foundation = EMBEDDED_HAL_RESOURCES
@@ -6104,7 +6215,7 @@ mod tests {
             runtime
                 .eval_text("(count code.translate.rule/+ruleset+)")
                 .unwrap(),
-            "104"
+            "119"
         );
         for (native_type, _) in core::NATIVE_TYPES {
             let expression = format!(
@@ -6122,6 +6233,63 @@ mod tests {
                 runtime.eval_text(&expression).unwrap(),
                 "[true false false]",
                 "native static translation failed for {native_type}"
+            );
+        }
+
+        // The code.translate native type list must equal the closed native.edn
+        // inventory (both spell the canonical RegExp).
+        if let Some(contract_source) =
+            repo_text("00-unsorted/platform-language/draft/conformance/native.edn")
+        {
+            let contract = kernel::parse_forms(&contract_source).unwrap().remove(0);
+            let Form::Map(contract) = contract else {
+                panic!("native contract must be a map")
+            };
+            let types = contract
+                .iter()
+                .find_map(|(key, value)| {
+                    matches!(key, Form::Keyword(name) if name == "types").then_some(value)
+                })
+                .expect(":types present");
+            let Form::Vector(types) = types else {
+                panic!(":types must be a vector")
+            };
+            let mut contract_names = types
+                .iter()
+                .map(|entry| {
+                    let Form::Map(entry) = entry else {
+                        panic!("native type entries must be maps")
+                    };
+                    entry
+                        .iter()
+                        .find_map(|(key, value)| {
+                            match (key, value) {
+                                (Form::Keyword(k), Form::Symbol(n)) if k == "name" => {
+                                    Some(n.clone())
+                                }
+                                _ => None,
+                            }
+                        })
+                        .expect("native :name")
+                })
+                .collect::<Vec<_>>();
+            contract_names.sort();
+            let expected = format!(
+                "[{}]",
+                contract_names
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            assert_eq!(
+                runtime
+                    .eval_text(
+                        "(vec (sort code.translate.rules/+native-static-types+))",
+                    )
+                    .unwrap(),
+                expected,
+                "code.translate.rules/+native-static-types+ differs from native.edn"
             );
         }
     }
