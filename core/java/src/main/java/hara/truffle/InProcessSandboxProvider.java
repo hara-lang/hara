@@ -72,12 +72,30 @@ final class InProcessSandboxProvider implements SandboxProvider {
     }
 
     @Override
-    public Object call(String callable, List<String> argumentForms) {
-      if (callable == null || !callable.matches("[A-Za-z0-9._/?!*+-]+")) {
+    public Object call(String callable, List<Object> arguments) {
+      if (callable == null || !callable.matches("[A-Za-z0-9._-]+/[A-Za-z0-9._?!*+-]+")) {
         throw new SandboxModel.SandboxException(
             SandboxModel.ErrorCode.INVALID_SPEC, "invalid sandbox callable");
       }
-      return eval("(" + callable + argumentForms.stream().map(value -> " " + value).reduce("", String::concat) + ")");
+      requireOpen();
+      state = SandboxModel.SandboxState.RUNNING;
+      try {
+        Object result = session.callTransfer(callable, arguments);
+        if (String.valueOf(result).getBytes(StandardCharsets.UTF_8).length
+            > spec.limits().resultBytes()) {
+          state = SandboxModel.SandboxState.FAILED;
+          throw new SandboxModel.SandboxException(
+              SandboxModel.ErrorCode.LIMIT_EXCEEDED, "sandbox result limit exceeded");
+        }
+        state = SandboxModel.SandboxState.OPEN;
+        return result;
+      } catch (SandboxModel.SandboxException error) {
+        throw error;
+      } catch (RuntimeException error) {
+        state = SandboxModel.SandboxState.FAILED;
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.EVALUATION_FAILED, error.getMessage());
+      }
     }
 
     @Override

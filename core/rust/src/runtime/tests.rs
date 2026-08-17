@@ -18,14 +18,34 @@ mod tests {
                 .unwrap(),
             "41"
         );
+        let arguments = crate::hta::encode(&core::Value::Vector(
+            vec![core::Value::Number(41), core::Value::Number(1)].into(),
+        ))
+        .unwrap();
+        let result = kernel
+            .sandbox_call(sandbox, "std.foundation/+", &arguments)
+            .unwrap();
         assert_eq!(
-            kernel.sandbox_call(sandbox, "+", &["answer", "1"]).unwrap(),
-            "42"
+            crate::hta::decode(&result).unwrap(),
+            core::Value::Number(42)
+        );
+        let inert_source = "(do (def injected 99) :executed)";
+        let arguments = crate::hta::encode(&core::Value::Vector(
+            vec![core::Value::String(inert_source.into())].into(),
+        ))
+        .unwrap();
+        let result = kernel
+            .sandbox_call(sandbox, "std.foundation/identity", &arguments)
+            .unwrap();
+        assert_eq!(
+            crate::hta::decode(&result).unwrap(),
+            core::Value::String(inert_source.into())
         );
         assert_eq!(
             kernel.sandbox_status(sandbox).unwrap().state,
             SandboxState::Open
         );
+        assert!(kernel.sandbox_eval(sandbox, "injected").is_err());
         assert!(!kernel.cancel_sandbox(sandbox).unwrap());
         assert_eq!(
             kernel.sandbox_status(sandbox).unwrap().state,

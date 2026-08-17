@@ -328,8 +328,8 @@ final class SessionKernel implements AutoCloseable {
   }
 
   Object sandboxCall(
-      SandboxModel.SandboxId id, String callable, java.util.List<String> argumentForms) {
-    return requireSandbox(id).instance().call(callable, argumentForms);
+      SandboxModel.SandboxId id, String callable, java.util.List<Object> arguments) {
+    return requireSandbox(id).instance().call(callable, arguments);
   }
 
   boolean cancelSandbox(SandboxModel.SandboxId id) {
@@ -494,6 +494,25 @@ final class SessionKernel implements AutoCloseable {
 
     Object evalTransfer(String source) {
       return transferValue(eval(source));
+    }
+
+    Object callTransfer(String callable, List<Object> arguments) {
+      activeEvaluations.incrementAndGet();
+      try {
+        synchronized (this) {
+          requireActive();
+          Value function = context.eval(HaraLanguage.ID, callable);
+          if (!function.canExecute()) {
+            throw new IllegalArgumentException("SESSION_VAR_NOT_CALLABLE " + callable);
+          }
+          Value result = function.execute(arguments.toArray());
+          return transferValue(result);
+        }
+      } catch (PolyglotException error) {
+        throw new IllegalArgumentException(error.getMessage(), error);
+      } finally {
+        activeEvaluations.decrementAndGet();
+      }
     }
 
     private static Object transferValue(Value value) {

@@ -2,7 +2,7 @@
 /// cancellation, and termination details.
 pub trait SandboxInstance {
     fn eval(&mut self, source: &str) -> Result<String, SandboxError>;
-    fn call(&mut self, callable: &str, arguments: &[&str]) -> Result<String, SandboxError>;
+    fn call(&mut self, callable: &str, arguments_hta: &[u8]) -> Result<Vec<u8>, SandboxError>;
     fn cancel(&mut self) -> Result<bool, SandboxError>;
     fn state(&self) -> SandboxState;
     fn close(&mut self) -> Result<(), SandboxError>;
@@ -99,24 +99,34 @@ impl SandboxInstance for InProcessSandbox {
         self.evaluate(source)
     }
 
-    fn call(&mut self, callable: &str, arguments: &[&str]) -> Result<String, SandboxError> {
-        if callable.is_empty()
-            || !callable
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-/?!*+".contains(&byte))
+    fn call(&mut self, callable: &str, arguments_hta: &[u8]) -> Result<Vec<u8>, SandboxError> {
+        self.ensure_open()?;
+        self.state = SandboxState::Running;
+        match self
+            .session
+            .runtime_mut()
+            .map_err(|error| SandboxError::new(SandboxErrorCode::EvaluationFailed, error))?
+            .invoke_hta(callable, arguments_hta)
         {
-            return Err(SandboxError::new(
-                SandboxErrorCode::InvalidSpec,
-                "invalid sandbox callable",
-            ));
+            Ok(result) if result.len() <= self.limits.result_bytes => {
+                self.state = SandboxState::Open;
+                Ok(result)
+            }
+            Ok(_) => {
+                self.state = SandboxState::Failed;
+                Err(SandboxError::new(
+                    SandboxErrorCode::LimitExceeded,
+                    "sandbox result limit exceeded",
+                ))
+            }
+            Err(error) => {
+                self.state = SandboxState::Failed;
+                Err(SandboxError::new(
+                    SandboxErrorCode::EvaluationFailed,
+                    error.to_string(),
+                ))
+            }
         }
-        self.evaluate(&format!(
-            "({callable}{})",
-            arguments
-                .iter()
-                .map(|arg| format!(" {arg}"))
-                .collect::<String>()
-        ))
     }
 
     fn cancel(&mut self) -> Result<bool, SandboxError> {
@@ -195,9 +205,9 @@ impl SessionKernel {
         &mut self,
         id: SandboxId,
         callable: &str,
-        arguments: &[&str],
-    ) -> Result<String, SandboxError> {
-        self.sandbox_mut(id)?.instance.call(callable, arguments)
+        arguments_hta: &[u8],
+    ) -> Result<Vec<u8>, SandboxError> {
+        self.sandbox_mut(id)?.instance.call(callable, arguments_hta)
     }
 
     pub fn cancel_sandbox(&mut self, id: SandboxId) -> Result<bool, SandboxError> {

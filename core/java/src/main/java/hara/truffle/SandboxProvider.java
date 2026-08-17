@@ -13,7 +13,7 @@ interface SandboxProvider {
   interface SandboxInstance extends AutoCloseable {
     Object eval(String source);
 
-    Object call(String callable, List<String> argumentForms);
+    Object call(String callable, List<Object> arguments);
 
     boolean cancel();
 

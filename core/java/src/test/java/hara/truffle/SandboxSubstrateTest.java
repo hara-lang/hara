@@ -19,8 +19,14 @@ public class SandboxSubstrateTest {
       SandboxModel.SandboxId sandbox = kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
       assertEquals(sessionsBefore, kernel.size());
       assertEquals(41L, kernel.sandboxEval(sandbox, "(def answer 41) answer"));
-      assertEquals(42L, kernel.sandboxCall(sandbox, "+", List.of("answer", "1")));
+      assertEquals(42L, kernel.sandboxCall(sandbox, "std.foundation/+", List.of(41L, 1L)));
+      String inertSource = "(do (def injected 99) :executed)";
+      assertEquals(
+          inertSource,
+          kernel.sandboxCall(sandbox, "std.foundation/identity", List.of(inertSource)));
       assertEquals(SandboxModel.SandboxState.OPEN, kernel.sandboxStatus(sandbox).state());
+      assertThrows(
+          SandboxModel.SandboxException.class, () -> kernel.sandboxEval(sandbox, "injected"));
       assertFalse(kernel.cancelSandbox(sandbox));
       assertEquals(SandboxModel.SandboxState.CANCELLED, kernel.sandboxStatus(sandbox).state());
 
