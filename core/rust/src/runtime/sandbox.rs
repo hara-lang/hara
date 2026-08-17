@@ -148,22 +148,28 @@ struct Sandbox {
 
 impl SessionKernel {
     pub fn register_sandbox_provider(&mut self, provider: Rc<dyn SandboxProvider>) {
-        self.sandbox_providers
+        self.sandbox_provider_registry
+            .entries
             .insert(provider.name().into(), provider);
     }
 
     pub fn open_sandbox(&mut self, spec: SandboxSpec) -> Result<SandboxId, SandboxError> {
         spec.validate()?;
-        let provider = self.sandbox_providers.get(&spec.provider).ok_or_else(|| {
-            SandboxError::new(SandboxErrorCode::ProviderNotFound, spec.provider.clone())
-        })?;
+        let provider = self
+            .sandbox_provider_registry
+            .entries
+            .get(&spec.provider)
+            .ok_or_else(|| {
+                SandboxError::new(SandboxErrorCode::ProviderNotFound, spec.provider.clone())
+            })?;
         let instance = provider.open(&spec)?;
-        let id = SandboxId(self.next_sandbox_id);
-        self.next_sandbox_id = self
-            .next_sandbox_id
+        let id = SandboxId(self.sandbox_registry.next_id);
+        self.sandbox_registry.next_id = self
+            .sandbox_registry
+            .next_id
             .checked_add(1)
             .expect("sandbox identifiers exhausted");
-        self.sandboxes.insert(
+        self.sandbox_registry.entries.insert(
             id.get(),
             Sandbox {
                 id,
@@ -175,7 +181,8 @@ impl SessionKernel {
     }
 
     fn sandbox_mut(&mut self, id: SandboxId) -> Result<&mut Sandbox, SandboxError> {
-        self.sandboxes
+        self.sandbox_registry
+            .entries
             .get_mut(&id.get())
             .ok_or_else(|| SandboxError::new(SandboxErrorCode::NotFound, id.to_string()))
     }
@@ -199,7 +206,8 @@ impl SessionKernel {
 
     pub fn sandbox_status(&self, id: SandboxId) -> Result<SandboxStatus, SandboxError> {
         let sandbox = self
-            .sandboxes
+            .sandbox_registry
+            .entries
             .get(&id.get())
             .ok_or_else(|| SandboxError::new(SandboxErrorCode::NotFound, id.to_string()))?;
         Ok(SandboxStatus {
@@ -211,7 +219,8 @@ impl SessionKernel {
 
     pub fn close_sandbox(&mut self, id: SandboxId) -> Result<(), SandboxError> {
         let mut sandbox = self
-            .sandboxes
+            .sandbox_registry
+            .entries
             .remove(&id.get())
             .ok_or_else(|| SandboxError::new(SandboxErrorCode::NotFound, id.to_string()))?;
         sandbox.instance.close()
