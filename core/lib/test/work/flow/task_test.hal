@@ -1,41 +1,54 @@
 (ns work.flow.task-test
   (:require [work.flow :as flow :refer [def.workflow]]
-            [work.flow.task :as task]))
+            [work.flow.task :as task :refer [def.task deftask]]
+            [std.work :as work]))
 
 (def.workflow
   [:task]
-  {:return {:select :results
-            :package :map}})
+  {:defaults
+   {:return {:select :results
+             :package :map}}})
 
 (defn lint-project
   [input]
   (* 2 input))
 
-(def.workflow
-  lint
-  [:task]
+(def.task lint
   {:main {:fn lint-project
           :argcount 1}})
 
 (def first-lint lint)
 
-(def.workflow
-  lint
-  [:task]
+(def.task lint
   {:main {:fn (fn [input]
                 (* 3 input))
+          :argcount 1}})
+
+(def.workflow
+  [:task :summary]
+  {:extends [:task]
+   :return {:select :summary}
+   :flow/remove [[:defaults :return :package]]})
+
+(def.task summary-task
+  {:workflow [:task :summary]
+   :main {:fn lint-project
+          :argcount 1}})
+
+(deftask compatibility-task
+  {:main {:fn lint-project
           :argcount 1}})
 
 (def results
   [(test-check
     "def.workflow installs a namespace-local task profile"
     [(:workflow/path +workflow-task+)
-     (get-in +workflow-task+ [:workflow/options :return :select])
+     (get-in +workflow-task+ [:workflow/options :defaults :return :select])
      (flow/profile? +workflow-task+)]
     [[:task] :results true])
 
    (test-check
-    "def.workflow uses name, path, definition order"
+    "def.task compiles a callable historical task definition"
     [(lint 4)
      (task/task-work? lint)]
     [{4 12} true])
@@ -49,16 +62,29 @@
     [true true])
 
    (test-check
-    "named definitions can use the registered default without a local profile"
-    (let [profile (flow/profile-for 'another.namespace [:task])
-          work-value
-          (flow/define!
-           profile
+    "task profiles inherit and explicitly remove nested defaults"
+    [(:workflow/extends +workflow-task-summary+)
+     (get-in +workflow-task-summary+
+             [:workflow/options :return :select])
+     (get-in +workflow-task-summary+
+             [:workflow/options :defaults :return :package])
+     (get-in (work/work-spec summary-task)
+             [:template/definition :return :select])]
+    [[:task] :summary nil :summary])
+
+   (test-check
+    "deftask remains a thin def.task compatibility alias"
+    (task/task-work? compatibility-task)
+    true)
+
+   (test-check
+    "named tasks can use the registered default without local activation"
+    (let [work-value
+          (task/define-task!
+           'another.namespace
            'another.namespace/increment
            {:main {:fn (fn [input] (inc input))
-                   :argcount 1}
-            :return {:select :results
-                     :package :map}}
+                   :argcount 1}}
            [])]
       (work-value 5))
     {5 6})])

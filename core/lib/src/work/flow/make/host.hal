@@ -1,0 +1,81 @@
+(ns work.flow.make.host)
+
+(defn create
+  "Creates one identity-bearing live make host around an immutable plan."
+  [plan]
+  {:make/host true
+   :make/id (:make/id plan)
+   :make/state
+   (atom {:make/plan plan
+          :make/revision 1
+          :make/status :stopped
+          :make/installed-triggers []})})
+
+(defn host?
+  [value]
+  (and (map? value)
+       (= true (:make/host value))
+       (:make/state value)))
+
+(defn assert-host!
+  [value]
+  (if (not (host? value))
+    (throw
+     (ex-info "Expected a live make host"
+              {:make/value value})))
+  value)
+
+(defn state
+  [host]
+  (deref (:make/state (assert-host! host))))
+
+(defn plan
+  [host]
+  (:make/plan (state host)))
+
+(defn revision
+  [host]
+  (:make/revision (state host)))
+
+(defn status
+  [host]
+  (:make/status (state host)))
+
+(defn installed-triggers
+  [host]
+  (:make/installed-triggers (state host)))
+
+(defn running?
+  [host]
+  (= :running (status host)))
+
+(defn replace-plan!
+  "Atomically installs a completely compiled candidate plan."
+  [host candidate]
+  (let [host (assert-host! host)]
+    (swap! (:make/state host)
+           (fn [current]
+             (assoc current
+                    :make/plan candidate
+                    :make/revision (inc (:make/revision current)))))
+    host))
+
+(defn mark-running!
+  [host receipts]
+  (let [host (assert-host! host)]
+    (swap! (:make/state host)
+           (fn [current]
+             (assoc current
+                    :make/status :running
+                    :make/installed-triggers (vec receipts))))
+    host))
+
+(defn mark-stopped!
+  [host]
+  (let [host (assert-host! host)]
+    (swap! (:make/state host)
+           (fn [current]
+             (assoc current
+                    :make/status :stopped
+                    :make/installed-triggers [])))
+    host))
