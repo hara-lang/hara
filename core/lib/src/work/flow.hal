@@ -1,0 +1,235 @@
+(ns work.flow)
+
+(declare &env)
+
+(def +flows+
+  (atom {}))
+
+(def +profiles+
+  (atom {}))
+
+(def +definitions+
+  (atom {}))
+
+(defn merge-options
+  "Recursively merges workflow option maps, with right-hand values winning."
+  [left right]
+  (reduce
+   (fn [output entry]
+     (let [key (nth entry 0)
+           value (nth entry 1)
+           current (get output key)]
+       (assoc output
+              key
+              (if (and (map? current) (map? value))
+                (merge-options current value)
+                value))))
+   (or left {})
+   (or right {})))
+
+(defn flow-path?
+  "Checks that value is a non-empty workflow path of keywords."
+  [value]
+  (and (vector? value)
+       (not (empty? value))
+       (every? keyword? value)))
+
+(defn assert-flow-path!
+  [path]
+  (if (not (flow-path? path))
+    (throw
+     (ex-info "Workflow path must be a non-empty keyword vector"
+              {:workflow/path path})))
+  path)
+
+(defn assert-flow!
+  [flow]
+  (if (not (map? flow))
+    (throw
+     (ex-info "Workflow descriptor must be a map"
+              {:workflow/flow flow})))
+  (assert-flow-path! (:flow/path flow))
+  (if (not (fn? (:flow/compile flow)))
+    (throw
+     (ex-info "Workflow descriptor requires :flow/compile"
+              {:workflow/path (:flow/path flow)})))
+  flow)
+
+(defn register!
+  "Registers one workflow descriptor by :flow/path."
+  [flow]
+  (let [flow (assert-flow! flow)
+        path (:flow/path flow)]
+    (swap! +flows+ assoc path flow)
+    flow))
+
+(defn unregister!
+  "Removes one workflow descriptor."
+  [path]
+  (swap! +flows+ dissoc (assert-flow-path! path)))
+
+(defn registered
+  "Returns registered workflow descriptors."
+  []
+  (deref +flows+))
+
+(defn resolve-flow
+  "Resolves a registered workflow descriptor."
+  [path]
+  (let [path (assert-flow-path! path)
+        flow (get (deref +flows+) path)]
+    (if (nil? flow)
+      (throw
+       (ex-info "Workflow path is not registered"
+                {:workflow/path path
+                 :workflow/registered (vec (keys (deref +flows+)))}))
+      flow)))
+
+(defn profile-key
+  [namespace path]
+  [namespace (assert-flow-path! path)])
+
+(defn configure
+  "Creates one immutable workflow profile from a descriptor and overrides."
+  [path & [overrides]]
+  (let [overrides (or overrides {})]
+    (if (not (map? overrides))
+      (throw
+       (ex-info "Workflow profile overrides must be a map"
+                {:workflow/path path
+                 :workflow/overrides overrides})))
+    (let [flow (resolve-flow path)
+          configure-function (:flow/configure flow)
+          options (if configure-function
+                    (configure-function flow overrides)
+                    overrides)]
+      {:workflow/path path
+       :workflow/flow flow
+       :workflow/options options})))
+
+(defn profile?
+  [value]
+  (and (map? value)
+       (flow-path? (:workflow/path value))
+       (map? (:workflow/flow value))))
+
+(defn install-profile!
+  "Installs a namespace-local profile used by following def.workflow forms."
+  [namespace path & [overrides]]
+  (let [profile (configure path (or overrides {}))]
+    (swap! +profiles+
+           assoc
+           (profile-key namespace path)
+           profile)
+    profile))
+
+(defn profile-for
+  "Returns the installed namespace profile or a default profile."
+  [namespace path]
+  (or (get (deref +profiles+) (profile-key namespace path))
+      (configure path {})))
+
+(defn profiles
+  []
+  (deref +profiles+))
+
+(defn definition
+  "Returns the last installed workflow definition for qualified-name."
+  [qualified-name]
+  (get (deref +definitions+) qualified-name))
+
+(defn definitions
+  []
+  (deref +definitions+))
+
+(defn define!
+  "Normalises, compiles, and reconciles one named workflow definition.
+
+   The definitions registry is updated only after every flow-specific stage
+   succeeds, so a failed redefinition leaves the prior installed value intact."
+  [profile qualified-name raw-definition declaration-body]
+  (if (not (profile? profile))
+    (throw
+     (ex-info "Workflow definition requires a configured profile"
+              {:workflow/profile profile
+               :workflow/name qualified-name})))
+  (let [flow (:workflow/flow profile)
+        normalise-function (or (:flow/normalise flow)
+                               (fn [profile name definition body]
+                                 definition))
+        compile-function (:flow/compile flow)
+        reconcile-function (or (:flow/reconcile flow)
+                               (fn [profile previous candidate definition]
+                                 candidate))
+        definition
+        (normalise-function profile
+                            qualified-name
+                            raw-definition
+                            declaration-body)
+        candidate (compile-function profile definition)
+        previous (get (deref +definitions+) qualified-name)
+        installed
+        (reconcile-function profile
+                            previous
+                            candidate
+                            definition)]
+    (swap! +definitions+ assoc qualified-name installed)
+    installed))
+
+(defn path-fragment
+  [path]
+  (reduce
+   (fn [output value]
+     (if (= "" output)
+       (name value)
+       (str output "-" (name value))))
+   ""
+   path))
+
+(defn profile-symbol
+  [path]
+  (symbol (str "+workflow-" (path-fragment path) "+")))
+
+(defmacro def.workflow
+  "Configures or defines a workflow family.
+
+   (def.workflow [:task])
+   (def.workflow [:task] profile-overrides)
+   (def.workflow [:task] name definition)
+
+   Named definitions use the profile installed for the caller namespace, or
+   the registered workflow's default profile when none was installed."
+  [path & arguments]
+  (let [namespace (get &env :ns)
+        total (count arguments)
+        profile-name (profile-symbol path)]
+    (cond
+      (= total 0)
+      `(def ~profile-name
+         (work.flow/install-profile! (quote ~namespace) ~path {}))
+
+      (and (= total 1)
+           (map? (first arguments)))
+      `(def ~profile-name
+         (work.flow/install-profile! (quote ~namespace)
+                                     ~path
+                                     ~(first arguments)))
+
+      (< total 2)
+      (throw
+       (ex-info "Named workflow definitions require a name and definition"
+                {:workflow/path path
+                 :workflow/arguments arguments}))
+
+      :else
+      (let [definition-name (first arguments)
+            raw-definition (second arguments)
+            declaration-body (vec (drop 2 arguments))
+            qualified-name
+            (symbol (str namespace) (name definition-name))]
+        `(def ~definition-name
+           (work.flow/define!
+            (work.flow/profile-for (quote ~namespace) ~path)
+            (quote ~qualified-name)
+            ~raw-definition
+            (quote ~declaration-body)))))))

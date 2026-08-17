@@ -1,0 +1,64 @@
+(ns work.flow.task-test
+  (:require [work.flow :as flow :refer [def.workflow]]
+            [work.flow.task :as task]))
+
+(def.workflow
+  [:task]
+  {:main {:argcount 1}
+   :return {:select :results
+            :package :map}})
+
+(def.workflow
+  [:task]
+  double-task
+  {:main
+   {:fn (fn [input]
+          (* 2 input))}})
+
+(def first-task double-task)
+
+(def.workflow
+  [:task]
+  double-task
+  {:main
+   {:fn (fn [input]
+          (* 3 input))}})
+
+(def results
+  [(test-check
+    "def.workflow installs a namespace-local task profile"
+    [(:workflow/path +workflow-task+)
+     (get-in +workflow-task+ [:workflow/options :main :argcount])
+     (flow/profile? +workflow-task+)]
+    [[:task] 1 true])
+
+   (test-check
+    "def.workflow compiles a callable historical task definition"
+    [(double-task 4)
+     (task/task-work? double-task)]
+    [{4 12} true])
+
+   (test-check
+    "task redefinition replaces the installed work value"
+    [(not (= first-task double-task))
+     (= double-task
+        (flow/definition
+         'work.flow.task-test/double-task))]
+    [true true])
+
+   (test-check
+    "named definitions can use the registered default without a local profile"
+    (let [profile (flow/profile-for 'another.namespace [:task])
+          work-value
+          (flow/define!
+           profile
+           'another.namespace/increment
+           {:main {:fn (fn [input] (inc input))
+                   :argcount 1}
+            :return {:select :results
+                     :package :map}}
+           [])]
+      (work-value 5))
+    {5 6})])
+
+results
