@@ -1,6 +1,5 @@
 #![cfg(not(target_arch = "wasm32"))]
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
@@ -8,7 +7,7 @@ use std::sync::{mpsc, Arc};
 use crate::core::Value;
 use crate::invoke_hta::InvokeHtaError;
 use crate::lang::data::Symbol;
-use crate::Runtime;
+use crate::{Runtime, SessionId, SessionKernel};
 
 mod arguments;
 mod documentation;
@@ -347,17 +346,18 @@ fn run(
     allow_postgres: bool,
     bootstrap: RuntimeBootstrap,
 ) {
-    let mut resources = HashMap::<String, String>::new();
-    let mut sessions = HashMap::from([(
-        "ROOT".to_owned(),
+    let runtime_root = root.clone();
+    let runtime_factory: Rc<dyn Fn() -> Runtime> = Rc::new(move || {
         runtime(
-            root.as_ref(),
+            runtime_root.as_ref(),
             native_sockets,
             allow_process,
             allow_postgres,
             bootstrap,
-        ),
-    )]);
+        )
+    });
+    let root_runtime = runtime_factory();
+    let mut kernel = SessionKernel::with_runtime_factory(root_runtime, runtime_factory);
     while let Ok(request) = receiver.recv() {
         match request {
             Request::Eval {
@@ -365,17 +365,17 @@ fn run(
                 source,
                 reply,
             } => {
-                let result = sessions
-                    .get_mut(&session)
-                    .ok_or_else(|| format!("No session: {session}"))
-                    .and_then(|runtime| runtime.eval_native_traced(&source));
+                let result = broker_session_id(&session).and_then(|id| {
+                    kernel
+                        .session_mut(&id)?
+                        .runtime_mut()?
+                        .eval_native_traced(&source)
+                });
                 let _ = reply.send(result);
             }
             Request::Namespace { session, reply } => {
-                let result = sessions
-                    .get(&session)
-                    .map(Runtime::current_namespace)
-                    .ok_or_else(|| format!("No session: {session}"));
+                let result =
+                    broker_session_id(&session).and_then(|id| kernel.session_namespace(&id));
                 let _ = reply.send(result);
             }
             Request::Complete {
@@ -383,9 +383,8 @@ fn run(
                 prefix,
                 reply,
             } => {
-                let result = sessions
-                    .get(&session)
-                    .map(|runtime| {
+                let result = broker_session_id(&session).and_then(|id| {
+                    kernel.session(&id)?.runtime().map(|runtime| {
                         let mut symbols = runtime
                             .visible_symbols()
                             .into_iter()
@@ -395,7 +394,7 @@ fn run(
                         symbols.dedup();
                         symbols
                     })
-                    .ok_or_else(|| format!("No session: {session}"));
+                });
                 let _ = reply.send(result);
             }
             Request::Doc {
@@ -403,51 +402,46 @@ fn run(
                 symbol,
                 reply,
             } => {
-                let result = sessions
-                    .get(&session)
-                    .ok_or_else(|| format!("No session: {session}"))
-                    .and_then(|runtime| documentation(runtime, &symbol));
+                let result = broker_session_id(&session)
+                    .and_then(|id| documentation(kernel.session(&id)?.runtime()?, &symbol));
                 let _ = reply.send(result);
             }
             Request::Create { session, reply } => {
-                let result = if session.is_empty() || sessions.contains_key(&session) {
-                    Err(format!("Session already exists or is invalid: {session}"))
-                } else {
-                    let mut created = runtime(
-                        root.as_ref(),
-                        native_sockets,
-                        allow_process,
-                        allow_postgres,
-                        bootstrap,
-                    );
-                    for (name, source) in &resources {
-                        created.register_resource(name, source);
-                    }
-                    sessions.insert(session.clone(), created);
-                    Ok(session)
-                };
+                let result = SessionId::parse(&session)
+                    .map_err(|_| format!("Session already exists or is invalid: {session}"))
+                    .and_then(|id| {
+                        kernel
+                            .create_session(id)
+                            .map_err(|_| format!("Session already exists or is invalid: {session}"))
+                    })
+                    .map(|_| session);
                 let _ = reply.send(result);
             }
             Request::Close { session, reply } => {
-                let result = if session == "ROOT" {
-                    Err("ROOT cannot be closed".into())
-                } else if sessions.remove(&session).is_some() {
-                    Ok(session)
-                } else {
-                    Err(format!("No session: {session}"))
-                };
+                let result = broker_session_id(&session)
+                    .and_then(|id| kernel.close_session(&id))
+                    .map(|_| session)
+                    .map_err(|error| match error.as_str() {
+                        "ROOT_CANNOT_CLOSE" => "ROOT cannot be closed".into(),
+                        _ if error.starts_with("NO_SESSION ") => {
+                            format!("No session: {}", error.trim_start_matches("NO_SESSION "))
+                        }
+                        _ => error,
+                    });
                 let _ = reply.send(result);
             }
             Request::List { reply } => {
-                let mut names = sessions.keys().cloned().collect::<Vec<_>>();
-                names.sort();
+                let names = kernel
+                    .session_names()
+                    .into_iter()
+                    .map(|id| id.to_string())
+                    .collect();
                 let _ = reply.send(Ok(names));
             }
             Request::Info { session, reply } => {
-                let result = sessions
-                    .get(&session)
-                    .map(|runtime| format!("{session} {}", runtime.current_namespace()))
-                    .ok_or_else(|| format!("No session: {session}"));
+                let result = broker_session_id(&session)
+                    .and_then(|id| kernel.session_namespace(&id))
+                    .map(|namespace| format!("{session} {namespace}"));
                 let _ = reply.send(result);
             }
             Request::RegisterResource {
@@ -455,20 +449,15 @@ fn run(
                 source,
                 reply,
             } => {
-                for runtime in sessions.values_mut() {
-                    runtime.register_resource(&name, &source);
-                }
-                resources.insert(name, source);
+                kernel.register_resource(&name, &source);
                 let _ = reply.send(Ok(()));
             }
             Request::RemoveResource { name, reply } => {
-                resources.remove(&name);
+                kernel.remove_resource(&name);
                 let _ = reply.send(Ok(()));
             }
             Request::ListResources { reply } => {
-                let mut names = resources.keys().cloned().collect::<Vec<_>>();
-                names.sort();
-                let _ = reply.send(Ok(names));
+                let _ = reply.send(Ok(kernel.resource_names()));
             }
             Request::InstallModule {
                 session,
@@ -476,17 +465,15 @@ fn run(
                 module,
                 reply,
             } => {
-                let result = sessions
-                    .get_mut(&session)
-                    .ok_or_else(|| format!("No session: {session}"))
-                    .and_then(|runtime| {
-                        let provider = module.provider();
-                        let parsed =
-                            crate::extension::ExtensionManifest::parse(&manifest, "MODULE PUT")?;
-                        let namespace = parsed.namespace.clone();
-                        runtime.install_wasm_extension(&manifest, "MODULE PUT", provider)?;
-                        Ok(namespace)
-                    });
+                let result = broker_session_id(&session).and_then(|id| {
+                    let runtime = kernel.session_mut(&id)?.runtime_mut()?;
+                    let provider = module.provider();
+                    let parsed =
+                        crate::extension::ExtensionManifest::parse(&manifest, "MODULE PUT")?;
+                    let namespace = parsed.namespace.clone();
+                    runtime.install_wasm_extension(&manifest, "MODULE PUT", provider)?;
+                    Ok(namespace)
+                });
                 let _ = reply.send(result);
             }
             Request::InvokeModule {
@@ -496,29 +483,22 @@ fn run(
                 arguments,
                 reply,
             } => {
-                let result = sessions
-                    .get_mut(&session)
-                    .ok_or_else(|| format!("No session: {session}"))
-                    .and_then(|runtime| {
-                        let arguments = crate::hta::decode(&arguments)?;
-                        let arguments: Vec<crate::extension::Value> = match arguments {
-                            crate::extension::Value::Vector(values) => {
-                                values.iter().cloned().collect()
-                            }
-                            crate::extension::Value::Tuple(values) => {
-                                values.iter().cloned().collect()
-                            }
-                            other => {
-                                return Err(format!(
-                                    "hta/arguments: expected vector, got {}",
-                                    other.display()
-                                ))
-                            }
-                        };
-                        let result =
-                            runtime.invoke_wasm_extension(&namespace, &export, &arguments)?;
-                        crate::hta::encode(&result)
-                    });
+                let result = broker_session_id(&session).and_then(|id| {
+                    let runtime = kernel.session_mut(&id)?.runtime_mut()?;
+                    let arguments = crate::hta::decode(&arguments)?;
+                    let arguments: Vec<crate::extension::Value> = match arguments {
+                        crate::extension::Value::Vector(values) => values.iter().cloned().collect(),
+                        crate::extension::Value::Tuple(values) => values.iter().cloned().collect(),
+                        other => {
+                            return Err(format!(
+                                "hta/arguments: expected vector, got {}",
+                                other.display()
+                            ))
+                        }
+                    };
+                    let result = runtime.invoke_wasm_extension(&namespace, &export, &arguments)?;
+                    crate::hta::encode(&result)
+                });
                 let _ = reply.send(result);
             }
             Request::InvokeHta {
@@ -527,15 +507,25 @@ fn run(
                 arguments,
                 reply,
             } => {
-                let result = sessions
-                    .get_mut(&session)
-                    .ok_or_else(|| InvokeHtaError::SessionMissing(session.clone()))
-                    .and_then(|runtime| runtime.invoke_hta(&qualified_var, &arguments));
+                let result = SessionId::parse(&session)
+                    .map_err(|_| InvokeHtaError::SessionMissing(session.clone()))
+                    .and_then(|id| {
+                        kernel
+                            .session_mut(&id)
+                            .map_err(|_| InvokeHtaError::SessionMissing(session.clone()))?
+                            .runtime_mut()
+                            .map_err(InvokeHtaError::Execution)?
+                            .invoke_hta(&qualified_var, &arguments)
+                    });
                 let _ = reply.send(result);
             }
             Request::Shutdown => break,
         }
     }
+}
+
+fn broker_session_id(session: &str) -> Result<SessionId, String> {
+    SessionId::parse(session).map_err(|_| format!("No session: {session}"))
 }
 
 fn documentation(runtime: &Runtime, symbol: &str) -> Result<Documentation, String> {

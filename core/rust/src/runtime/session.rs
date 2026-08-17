@@ -4,15 +4,47 @@
 /// facade keeps embedding hosts from treating a `Runtime` as the process
 /// boundary when several independent sessions can share one kernel.
 pub struct SessionKernel {
-    sessions: HashMap<String, Session>,
-    resources: HashMap<String, String>,
-    mounts: HashMap<u64, FilesystemMount>,
-    session_mounts: HashMap<String, u64>,
-    next_mount_id: u64,
-    sandbox_providers: HashMap<String, Rc<dyn SandboxProvider>>,
-    sandboxes: HashMap<u64, Sandbox>,
-    next_sandbox_id: u64,
+    session_registry: SessionRegistry,
+    development_resources: DevelopmentResourceCatalog,
+    bundle_catalog: BundleCatalog,
+    mount_registry: MountRegistry,
+    sandbox_provider_registry: SandboxProviderRegistry,
+    sandbox_registry: SandboxRegistry,
+    runtime_factory: Rc<dyn Fn() -> Runtime>,
     test_runner: String,
+}
+
+#[derive(Default)]
+struct SessionRegistry {
+    entries: HashMap<String, Session>,
+}
+
+#[derive(Default)]
+struct DevelopmentResourceCatalog {
+    entries: HashMap<String, String>,
+}
+
+#[derive(Default)]
+struct BundleCatalog {
+    entries: HashMap<String, Vec<u8>>,
+}
+
+#[derive(Default)]
+struct MountRegistry {
+    entries: HashMap<u64, FilesystemMount>,
+    session_attachments: HashMap<String, u64>,
+    next_id: u64,
+}
+
+#[derive(Default)]
+struct SandboxProviderRegistry {
+    entries: HashMap<String, Rc<dyn SandboxProvider>>,
+}
+
+#[derive(Default)]
+struct SandboxRegistry {
+    entries: HashMap<u64, Sandbox>,
+    next_id: u64,
 }
 
 /// An isolated, named execution context owned by a [`SessionKernel`].
@@ -79,7 +111,14 @@ impl Session {
         }
     }
 
-    fn runtime_mut(&mut self) -> Result<&mut Runtime, String> {
+    pub(crate) fn runtime(&self) -> Result<&Runtime, String> {
+        let name = self.spec.id.to_string();
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| format!("SESSION_CLOSED {name}"))
+    }
+
+    pub(crate) fn runtime_mut(&mut self) -> Result<&mut Runtime, String> {
         let name = self.spec.id.to_string();
         self.runtime
             .as_mut()
@@ -239,22 +278,36 @@ impl Default for SessionKernel {
 
 impl SessionKernel {
     pub fn new() -> Self {
+        Self::with_runtime_factory(Runtime::new(), Rc::new(Runtime::new))
+    }
+
+    pub(crate) fn with_runtime_factory(
+        root_runtime: Runtime,
+        runtime_factory: Rc<dyn Fn() -> Runtime>,
+    ) -> Self {
         let root_id = SessionId::parse("ROOT").expect("ROOT is a valid session identifier");
         Self {
-            sessions: HashMap::from([(
-                root_id.to_string(),
-                Session::open(
-                    SessionSpec::new(root_id, SessionAuthorityPolicy::ZERO),
-                    Runtime::new(),
-                ),
-            )]),
-            resources: HashMap::new(),
-            mounts: HashMap::new(),
-            session_mounts: HashMap::new(),
-            next_mount_id: 1,
-            sandbox_providers: HashMap::new(),
-            sandboxes: HashMap::new(),
-            next_sandbox_id: 1,
+            session_registry: SessionRegistry {
+                entries: HashMap::from([(
+                    root_id.to_string(),
+                    Session::open(
+                        SessionSpec::new(root_id, SessionAuthorityPolicy::ZERO),
+                        root_runtime,
+                    ),
+                )]),
+            },
+            development_resources: DevelopmentResourceCatalog::default(),
+            bundle_catalog: BundleCatalog::default(),
+            mount_registry: MountRegistry {
+                next_id: 1,
+                ..MountRegistry::default()
+            },
+            sandbox_provider_registry: SandboxProviderRegistry::default(),
+            sandbox_registry: SandboxRegistry {
+                next_id: 1,
+                ..SandboxRegistry::default()
+            },
+            runtime_factory,
             test_runner: "code.test".into(),
         }
     }
@@ -262,7 +315,7 @@ impl SessionKernel {
     pub fn set_test_runner(&mut self, runner: &str) -> Result<(), String> {
         validate_test_runner(runner)?;
         self.test_runner = runner.into();
-        for session in self.sessions.values_mut() {
+        for session in self.session_registry.entries.values_mut() {
             session.runtime_mut()?.configure_test_runner(runner)?;
         }
         Ok(())
@@ -270,22 +323,24 @@ impl SessionKernel {
 
     pub fn create_session(&mut self, id: SessionId) -> Result<(), String> {
         let spec = SessionSpec::new(id, SessionAuthorityPolicy::ZERO);
-        if self.sessions.contains_key(spec.id.as_str()) {
+        if self.session_registry.entries.contains_key(spec.id.as_str()) {
             return Err(format!("SESSION_EXISTS {}", spec.id));
         }
-        let mut runtime = Runtime::new();
+        let mut runtime = (self.runtime_factory)();
         runtime.configure_test_runner(&self.test_runner)?;
-        for (resource, source) in &self.resources {
+        for (resource, source) in &self.development_resources.entries {
             runtime.register_resource(resource, source);
         }
-        self.sessions
+        self.session_registry
+            .entries
             .insert(spec.id.as_str().into(), Session::open(spec, runtime));
         Ok(())
     }
 
     pub fn session_names(&self) -> Vec<SessionId> {
         let mut names = self
-            .sessions
+            .session_registry
+            .entries
             .values()
             .map(|session| session.id().clone())
             .collect::<Vec<_>>();
@@ -294,39 +349,77 @@ impl SessionKernel {
     }
 
     pub fn session(&self, id: &SessionId) -> Result<&Session, String> {
-        self.sessions
+        self.session_registry
+            .entries
             .get(id.as_str())
             .ok_or_else(|| format!("NO_SESSION {id}"))
     }
 
     pub fn session_mut(&mut self, id: &SessionId) -> Result<&mut Session, String> {
-        self.sessions
+        self.session_registry
+            .entries
             .get_mut(id.as_str())
             .ok_or_else(|| format!("NO_SESSION {id}"))
     }
 
     pub fn session_namespace(&self, id: &SessionId) -> Result<String, String> {
-        self.sessions
+        self.session_registry
+            .entries
             .get(id.as_str())
             .map(Session::current_namespace)
             .ok_or_else(|| format!("NO_SESSION {id}"))
     }
 
     pub fn eval(&mut self, id: &SessionId, source: &str) -> Result<String, String> {
-        self.sessions
+        self.session_registry
+            .entries
             .get_mut(id.as_str())
             .ok_or_else(|| format!("NO_SESSION {id}"))?
             .eval(source)
     }
 
     pub fn register_resource(&mut self, name: &str, source: &str) {
-        self.resources.insert(name.into(), source.into());
-        for session in self.sessions.values_mut() {
+        self.development_resources
+            .entries
+            .insert(name.into(), source.into());
+        for session in self.session_registry.entries.values_mut() {
             session
                 .runtime_mut()
                 .expect("kernel cannot retain a closed session")
                 .register_resource(name, source);
         }
+    }
+
+    pub fn remove_resource(&mut self, name: &str) -> bool {
+        self.development_resources.entries.remove(name).is_some()
+    }
+
+    pub fn resource_names(&self) -> Vec<String> {
+        let mut names = self
+            .development_resources
+            .entries
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    pub fn register_bundle(&mut self, digest: &str, bytes: &[u8]) -> Result<(), String> {
+        match self.bundle_catalog.entries.get(digest) {
+            Some(current) if current == bytes => Ok(()),
+            Some(_) => Err(format!("BUNDLE_DIGEST_CONFLICT {digest}")),
+            None => {
+                self.bundle_catalog
+                    .entries
+                    .insert(digest.into(), bytes.into());
+                Ok(())
+            }
+        }
+    }
+
+    pub fn bundle(&self, digest: &str) -> Option<&[u8]> {
+        self.bundle_catalog.entries.get(digest).map(Vec::as_slice)
     }
 
     pub fn create_memory_filesystem(&mut self, root: &str) -> SessionMountId {
@@ -344,12 +437,13 @@ impl SessionKernel {
         kind: &'static str,
         key: &str,
     ) -> SessionMountId {
-        let id = self.next_mount_id;
-        self.next_mount_id = self
-            .next_mount_id
+        let id = self.mount_registry.next_id;
+        self.mount_registry.next_id = self
+            .mount_registry
+            .next_id
             .checked_add(1)
             .expect("filesystem mount identifiers exhausted");
-        self.mounts.insert(
+        self.mount_registry.entries.insert(
             id,
             FilesystemMount {
                 provider,
@@ -366,23 +460,38 @@ impl SessionKernel {
         session: &SessionId,
         mount_id: SessionMountId,
     ) -> Result<(), String> {
-        if !self.sessions.contains_key(session.as_str()) {
+        if !self.session_registry.entries.contains_key(session.as_str()) {
             return Err(format!("NO_SESSION {session}"));
         }
         let provider = self
-            .mounts
+            .mount_registry
+            .entries
             .get(&mount_id.get())
             .ok_or_else(|| format!("NO_FILESYSTEM {mount_id}"))?
             .provider
             .clone();
-        if self.session_mounts.get(session.as_str()) == Some(&mount_id.get()) {
+        if self
+            .mount_registry
+            .session_attachments
+            .get(session.as_str())
+            == Some(&mount_id.get())
+        {
             return Ok(());
         }
         self.detach_filesystem(session)?;
-        self.mounts.get_mut(&mount_id.get()).unwrap().attachments += 1;
-        self.session_mounts
+        self.mount_registry
+            .entries
+            .get_mut(&mount_id.get())
+            .unwrap()
+            .attachments += 1;
+        self.mount_registry
+            .session_attachments
             .insert(session.to_string(), mount_id.get());
-        let session = self.sessions.get_mut(session.as_str()).unwrap();
+        let session = self
+            .session_registry
+            .entries
+            .get_mut(session.as_str())
+            .unwrap();
         session
             .runtime_mut()?
             .providers
@@ -396,13 +505,18 @@ impl SessionKernel {
 
     pub fn detach_filesystem(&mut self, session: &SessionId) -> Result<(), String> {
         let session = self
-            .sessions
+            .session_registry
+            .entries
             .get_mut(session.as_str())
             .ok_or_else(|| format!("NO_SESSION {session}"))?;
         session.runtime_mut()?.providers.set_file(None);
         session.filesystem.take();
-        if let Some(mount_id) = self.session_mounts.remove(session.id().as_str()) {
-            if let Some(mount) = self.mounts.get_mut(&mount_id) {
+        if let Some(mount_id) = self
+            .mount_registry
+            .session_attachments
+            .remove(session.id().as_str())
+        {
+            if let Some(mount) = self.mount_registry.entries.get_mut(&mount_id) {
                 mount.attachments = mount.attachments.saturating_sub(1);
             }
         }
@@ -410,13 +524,15 @@ impl SessionKernel {
     }
 
     pub fn filesystem(&self, session: &SessionId) -> Option<SessionMountId> {
-        self.sessions
+        self.session_registry
+            .entries
             .get(session.as_str())
             .and_then(Session::filesystem_mount)
     }
 
     pub fn filesystem_info(&self, mount_id: SessionMountId) -> Result<(&str, &str, usize), String> {
-        self.mounts
+        self.mount_registry
+            .entries
             .get(&mount_id.get())
             .map(|mount| (mount.kind, mount.key.as_str(), mount.attachments))
             .ok_or_else(|| format!("NO_FILESYSTEM {mount_id}"))
@@ -424,13 +540,14 @@ impl SessionKernel {
 
     pub fn close_filesystem(&mut self, mount_id: SessionMountId) -> Result<(), String> {
         let mount = self
-            .mounts
+            .mount_registry
+            .entries
             .get(&mount_id.get())
             .ok_or_else(|| format!("NO_FILESYSTEM {mount_id}"))?;
         if mount.attachments != 0 {
             return Err(format!("FILESYSTEM_ATTACHED {mount_id}"));
         }
-        self.mounts.remove(&mount_id.get());
+        self.mount_registry.entries.remove(&mount_id.get());
         Ok(())
     }
 
@@ -438,11 +555,11 @@ impl SessionKernel {
         if id.as_str() == "ROOT" {
             return Err("ROOT_CANNOT_CLOSE".into());
         }
-        if !self.sessions.contains_key(id.as_str()) {
+        if !self.session_registry.entries.contains_key(id.as_str()) {
             return Err(format!("NO_SESSION {id}"));
         }
         self.detach_filesystem(id)?;
-        if let Some(mut session) = self.sessions.remove(id.as_str()) {
+        if let Some(mut session) = self.session_registry.entries.remove(id.as_str()) {
             crate::lang::protocol::IComponent::stop(&mut session);
         }
         Ok(())
@@ -612,21 +729,58 @@ mod authority_tests {
         let child = session_id("owned");
         kernel.create_session(child.clone()).unwrap();
         let mount = kernel.create_memory_filesystem("/");
-        assert_eq!(Rc::strong_count(&kernel.mounts[&mount.get()].provider), 1);
+        assert_eq!(
+            Rc::strong_count(&kernel.mount_registry.entries[&mount.get()].provider),
+            1
+        );
 
         kernel.attach_filesystem(&child, mount).unwrap();
-        assert_eq!(Rc::strong_count(&kernel.mounts[&mount.get()].provider), 3);
+        assert_eq!(
+            Rc::strong_count(&kernel.mount_registry.entries[&mount.get()].provider),
+            3
+        );
 
-        let mut session = kernel.sessions.remove(child.as_str()).unwrap();
+        let mut session = kernel
+            .session_registry
+            .entries
+            .remove(child.as_str())
+            .unwrap();
         let released_mount = session.release();
         assert_eq!(released_mount, Some(mount));
         assert_eq!(session.state(), SessionState::Closed);
         assert!(session.runtime.is_none());
         assert!(session.filesystem.is_none());
-        assert_eq!(Rc::strong_count(&kernel.mounts[&mount.get()].provider), 1);
+        assert_eq!(
+            Rc::strong_count(&kernel.mount_registry.entries[&mount.get()].provider),
+            1
+        );
 
         assert_eq!(session.release(), None);
         session.stop();
-        assert_eq!(Rc::strong_count(&kernel.mounts[&mount.get()].provider), 1);
+        assert_eq!(
+            Rc::strong_count(&kernel.mount_registry.entries[&mount.get()].provider),
+            1
+        );
+    }
+
+    #[test]
+    fn development_resources_and_sealed_bundles_use_distinct_catalogs() {
+        let mut kernel = SessionKernel::new();
+        kernel.register_resource("demo/value.hal", "(ns demo.value) (def value 42)");
+        assert_eq!(kernel.resource_names(), vec!["demo/value.hal"]);
+
+        kernel.register_bundle("sha256:demo", b"sealed").unwrap();
+        kernel.register_bundle("sha256:demo", b"sealed").unwrap();
+        assert_eq!(kernel.bundle("sha256:demo"), Some(b"sealed".as_slice()));
+        assert_eq!(
+            kernel
+                .register_bundle("sha256:demo", b"replacement")
+                .unwrap_err(),
+            "BUNDLE_DIGEST_CONFLICT sha256:demo"
+        );
+
+        assert!(kernel.remove_resource("demo/value.hal"));
+        assert!(kernel.resource_names().is_empty());
+        assert_eq!(kernel.bundle("sha256:demo"), Some(b"sealed".as_slice()));
     }
 }

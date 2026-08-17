@@ -15,6 +15,7 @@ import hara.lang.protocol.IInvokeIn;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 import org.junit.Test;
 
 public class SessionKernelTest {
@@ -229,6 +230,27 @@ public class SessionKernelTest {
       assertEquals(null, session.filesystemMount());
       session.close();
       assertEquals(SessionModel.SessionState.CLOSED, session.state());
+    }
+  }
+
+  @Test
+  public void developmentResourcesAndSealedBundlesUseDistinctCatalogs() {
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      kernel.registerDevelopmentResource("demo/value.hal", "(ns demo.value) (def value 42)");
+      assertEquals(Set.of("demo/value.hal"), kernel.developmentResourceNames());
+
+      byte[] sealed = new byte[] {1, 2, 3};
+      kernel.registerBundle("sha256:demo", sealed);
+      sealed[0] = 9;
+      assertTrue(java.util.Arrays.equals(new byte[] {1, 2, 3}, kernel.bundle("sha256:demo")));
+      kernel.registerBundle("sha256:demo", new byte[] {1, 2, 3});
+      assertThrows(
+          IllegalArgumentException.class,
+          () -> kernel.registerBundle("sha256:demo", new byte[] {4, 5, 6}));
+
+      assertTrue(kernel.removeDevelopmentResource("demo/value.hal"));
+      assertTrue(kernel.developmentResourceNames().isEmpty());
+      assertTrue(java.util.Arrays.equals(new byte[] {1, 2, 3}, kernel.bundle("sha256:demo")));
     }
   }
 
