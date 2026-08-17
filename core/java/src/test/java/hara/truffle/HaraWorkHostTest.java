@@ -29,7 +29,7 @@ public class HaraWorkHostTest {
                       + "     :work/execute "
                       + "     (fn [work input options run-id] "
                       + "       (promise/delay 1000 (fn [] [work input run-id])))})) "
-                      + "(:state (work/work-status live-run)))")
+                      + "(work/work-status live-run))")
               .toString();
 
       assertTrue(state.equals(":queued") || state.equals(":running"));
@@ -41,7 +41,7 @@ public class HaraWorkHostTest {
       assertEquals(
           ":completed",
           context
-              .eval(HaraLanguage.ID, "(:state (work/work-status live-run))")
+              .eval(HaraLanguage.ID, "(work/work-status live-run)")
               .toString());
     }
   }
@@ -79,7 +79,7 @@ public class HaraWorkHostTest {
                       + "\")] "
                       + "  [(work/work-id run) "
                       + "   (deref (work/work-result run)) "
-                      + "   (:state (work/work-status run))])")
+                      + "   (work/work-status run)])")
               .toString());
     }
   }
@@ -107,13 +107,8 @@ public class HaraWorkHostTest {
               () -> context.eval(HaraLanguage.ID, "(deref (work/work-result failed-run))"));
       assertTrue(failure.getMessage().contains("work failed"));
       assertEquals(
-          "[:failed false]",
-          context
-              .eval(
-                  HaraLanguage.ID,
-                  "[(:state (work/work-status failed-run)) "
-                      + " (nil? (:error (work/work-status failed-run)))]")
-              .toString());
+          ":failed",
+          context.eval(HaraLanguage.ID, "(work/work-status failed-run)").toString());
     }
   }
 
@@ -138,7 +133,7 @@ public class HaraWorkHostTest {
                       + "(let [value (deref (work/work-result terminal-run)) "
                       + "      cancelled (deref (work/work-cancel terminal-run :late))] "
                       + "  [value cancelled "
-                      + "   (:state (work/work-status terminal-run)) "
+                      + "   (work/work-status terminal-run) "
                       + "   (deref (work/work-result terminal-run))]))")
               .toString());
     }
