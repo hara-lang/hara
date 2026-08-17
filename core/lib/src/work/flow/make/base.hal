@@ -1,0 +1,154 @@
+(ns work.flow.make.base
+  (:require [work.flow :as flow]))
+
+(def +triggers+
+  (atom {}))
+
+(defn make-host?
+  "Checks that value is a live make workflow host."
+  [value]
+  (and (map? value)
+       (= true (:make/host value))
+       (not (nil? (:make/instance value)))))
+
+(defn state
+  "Returns the current immutable make host state."
+  [host]
+  (if (not (make-host? host))
+    (throw
+     (ex-info "Expected a make workflow host"
+              {:make/host host})))
+  (deref (:make/instance host)))
+
+(defn definition
+  "Returns the currently installed make definition."
+  [host]
+  (:make/definition (state host)))
+
+(defn targets
+  "Returns the currently compiled target map."
+  [host]
+  (:make/targets (state host)))
+
+(defn normalise-hooks
+  [value]
+  (cond
+    (nil? value) []
+    (vector? value) value
+    (list? value) (vec value)
+    :else [value]))
+
+(defn hook-function
+  [value]
+  (if (map? value)
+    (:fn value)
+    value))
+
+(defn invoke-hook
+  [hook arguments]
+  (let [function (hook-function hook)]
+    (if (fn? function)
+      (apply function arguments)
+      (throw
+       (ex-info "Make hook must be a function or {:fn function}"
+                {:make/hook hook})))))
+
+(defn invoke-hooks-loop
+  [hooks arguments index]
+  (if (= index (count hooks))
+    nil
+    (do
+      (invoke-hook (nth hooks index) arguments)
+      (invoke-hooks-loop hooks arguments (inc index)))))
+
+(defn invoke-hooks
+  [hooks arguments]
+  (invoke-hooks-loop (normalise-hooks hooks) arguments 0))
+
+(defn normalise-section
+  [target entries]
+  (cond
+    (nil? entries) []
+    (vector? entries) entries
+    (list? entries) (vec entries)
+    :else
+    (throw
+     (ex-info "Make target entries must be a vector or list"
+              {:make/target target
+               :make/entries entries}))))
+
+(defn normalise-sections
+  [sections]
+  (reduce
+   (fn [output pair]
+     (let [target (nth pair 0)
+           entries (nth pair 1)]
+       (assoc output
+              target
+              (normalise-section target entries))))
+   {}
+   sections))
+
+(defn normalise
+  [profile qualified-name raw-definition declaration-body]
+  (if (not (map? raw-definition))
+    (throw
+     (ex-info "Make workflow definition must be a map"
+              {:workflow/name qualified-name
+               :workflow/definition raw-definition})))
+  (let [merged
+        (flow/merge-options
+         (:workflow/options profile)
+         raw-definition)
+        id (or (:make/id merged)
+               (:id merged)
+               qualified-name)
+        default-entries
+        (if (has? merged :default)
+          (:default merged)
+          (throw
+           (ex-info "Make workflow requires a :default target"
+                    {:make/id id})))
+        sections
+        (assoc (or (:sections merged) {})
+               :default
+               default-entries)]
+    (assoc merged
+           :make/id id
+           :make/sections (normalise-sections sections)
+           :triggers (vec (or (:triggers merged) [])))))
+
+(defn install-triggers!
+  [host triggers]
+  (let [id (:make/id (state host))]
+    (swap! +triggers+
+           assoc
+           id
+           {:make/host host
+            :make/triggers (vec (or triggers []))})
+    host))
+
+(defn reconcile
+  [profile previous candidate definition]
+  (let [previous-state
+        (if (make-host? previous)
+          (state previous)
+          nil)
+        next-state
+        (assoc candidate
+               :make/revision
+               (inc (or (:make/revision previous-state) 0)))
+        previous-id (:make/id previous-state)
+        next-id (:make/id next-state)
+        _
+        (if (and previous-id (not (= previous-id next-id)))
+          (swap! +triggers+ dissoc previous-id)
+          nil)
+        host
+        (if (make-host? previous)
+          (do
+            (reset! (:make/instance previous) next-state)
+            previous)
+          {:make/host true
+           :make/instance (atom next-state)})]
+    (install-triggers! host (:triggers definition))))

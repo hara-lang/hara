@@ -1,0 +1,213 @@
+(ns work.flow.make.compile
+  (:config {:override [compile]})
+  (:require [std.work :as work]
+            [work.flow.make.base :as base]))
+
+(defn entry-id
+  [entry index]
+  (or (if (map? entry) (:id entry) nil)
+      (if (map? entry) (:name entry) nil)
+      (keyword (str "entry-" index))))
+
+(defn entry-function
+  [entry]
+  (cond
+    (fn? entry) entry
+    (and (map? entry) (fn? (:run entry))) (:run entry)
+    (and (map? entry) (fn? (:main entry))) (:main entry)
+    :else nil))
+
+(defn checked-work
+  [value details]
+  (work/work-spec value)
+  value)
+
+(defn default-entry-work
+  [definition target entry index]
+  (let [id (entry-id entry index)
+        version (or (:make/version definition) 1)]
+    (cond
+      (fn? entry)
+      (work/step
+       {:id id :version version}
+       (fn [input context]
+         (entry input context)))
+
+      (map? entry)
+      (cond
+        (not (nil? (:work entry)))
+        (checked-work
+         (:work entry)
+         {:make/id (:make/id definition)
+          :make/target target
+          :make/entry entry})
+
+        (entry-function entry)
+        (work/step
+         {:id id :version version}
+         (fn [input context]
+           ((entry-function entry) input context)))
+
+        (has? entry :value)
+        (work/pure
+         {:id id :version version}
+         (fn [input context]
+           (:value entry)))
+
+        :else
+        (throw
+         (ex-info
+          "Make entry map requires :work, :run, :main, :value, or :compile-entry"
+          {:make/id (:make/id definition)
+           :make/target target
+           :make/entry entry})))
+
+      :else
+      (checked-work
+       entry
+       {:make/id (:make/id definition)
+        :make/target target
+        :make/entry entry}))))
+
+(defn compile-entry
+  [profile definition target entry index]
+  (let [compiler (or (:compile-entry definition)
+                     (get-in profile [:workflow/options :compile-entry]))
+        compiled
+        (if compiler
+          (compiler definition target entry index)
+          (default-entry-work definition target entry index))]
+    (checked-work
+     compiled
+     {:make/id (:make/id definition)
+      :make/target target
+      :make/entry entry
+      :make/compiled compiled})))
+
+(defn entry-node
+  [profile definition target entry index]
+  (let [id (entry-id entry index)
+        compiled (compile-entry profile definition target entry index)]
+    (work/chain
+     {:id id
+      :version (or (:make/version definition) 1)}
+     [(work/pure
+       :make/entry-input
+       (fn [prepared context]
+         (:make/input prepared)))
+      compiled
+      (work/pure
+       :make/entry-result
+       (fn [value context]
+         {:entry/id id
+          :entry/value value}))])))
+
+(defn target-pre-hook
+  [definition target]
+  (get-in definition [:hooks target :pre]))
+
+(defn target-post-hook
+  [definition target]
+  (get-in definition [:hooks target :post]))
+
+(defn indexed-entries
+  [entries]
+  (loop [index 0
+         output []]
+    (if (= index (count entries))
+      output
+      (recur (inc index)
+             (conj output [index (nth entries index)])))))
+
+(defn changed-entry?
+  [record]
+  (let [value (:entry/value record)]
+    (and (not (nil? value))
+         (not (= false value))
+         (not (= :unchanged value))
+         (not (and (map? value)
+                   (= :unchanged (:status value)))))))
+
+(defn any-changed?
+  [records]
+  (reduce
+   (fn [found record]
+     (or found (changed-entry? record)))
+   false
+   records))
+
+(defn entry-nodes
+  [profile definition target entries]
+  (vec
+   (map
+    (fn [indexed]
+      (entry-node profile
+                  definition
+                  target
+                  (nth indexed 1)
+                  (nth indexed 0)))
+    (indexed-entries entries))))
+
+(defn compile-target
+  [profile definition target entries]
+  (let [version (or (:make/version definition) 1)]
+    (work/chain
+     {:id target
+      :version version
+      :make/id (:make/id definition)
+      :make/target target}
+     [(work/pure
+       :make/prepare
+       (fn [input context]
+         {:make/id (:make/id definition)
+          :make/target target
+          :make/input input
+          :make/definition definition}))
+
+      (work/step
+       :make/pre
+       (fn [prepared context]
+         (base/invoke-hooks
+          (target-pre-hook definition target)
+          [target entries])
+         prepared))
+
+      (work/all
+       {:id :make/entries}
+       (entry-nodes profile definition target entries))
+
+      (work/pure
+       :make/summarise
+       (fn [records context]
+         {:make/id (:make/id definition)
+          :make/target target
+          :make/status
+          (if (any-changed? records)
+            :changed
+            :unchanged)
+          :make/results records}))
+
+      (work/step
+       :make/post
+       (fn [bundle context]
+         (base/invoke-hooks
+          (target-post-hook definition target)
+          [target entries (:make/results bundle)])
+         bundle))])))
+
+(defn compile
+  [profile definition]
+  (let [target-map
+        (reduce
+         (fn [output pair]
+           (let [target (nth pair 0)
+                 entries (nth pair 1)]
+             (assoc output
+                    target
+                    (compile-target profile definition target entries))))
+         {}
+         (:make/sections definition))]
+    {:make/id (:make/id definition)
+     :make/definition definition
+     :make/profile profile
+     :make/targets target-map}))

@@ -1,0 +1,202 @@
+(ns work.flow.make.run
+  (:config {:override [run]})
+  (:require [std.work :as work]
+            [std.foundation.promise :as promise]
+            [std.foundation.string :as string]
+            [work.flow.make.base :as base]
+            [work.flow.make.compile :as compile]))
+
+(defn asynchronous?
+  [value]
+  (promise? value))
+
+(defn then
+  [value function]
+  (if (asynchronous? value)
+    (promise/then value function)
+    (function value)))
+
+(defn all-results
+  [values]
+  (let [values (vec values)
+        asynchronous
+        (reduce
+         (fn [found value]
+           (or found (asynchronous? value)))
+         false
+         values)]
+    (if asynchronous
+      (promise/all values)
+      values)))
+
+(defn accepted?
+  [value]
+  (not (or (nil? value) (= false value))))
+
+(defn match-value?
+  [pattern value]
+  (cond
+    (fn? pattern) (accepted? (pattern value))
+    (set? pattern) (accepted? (pattern value))
+    :else (= pattern value)))
+
+(defn matches-pattern?
+  [pattern entry]
+  (cond
+    (keyword? pattern)
+    (and (map? entry)
+         (= pattern (:type entry)))
+
+    (or (string? pattern) (symbol? pattern))
+    (and (map? entry)
+         (= (str pattern) (str (:name entry))))
+
+    (fn? pattern)
+    (accepted? (pattern entry))
+
+    (map? pattern)
+    (every?
+     (fn [pair]
+       (match-value? (nth pair 1)
+                     (get entry (nth pair 0))))
+     pattern)
+
+    :else
+    (throw
+     (ex-info "Make directive pattern is not supported"
+              {:make/pattern pattern}))))
+
+(defn matches-patterns?
+  [patterns entry]
+  (if (empty? patterns)
+    true
+    (reduce
+     (fn [matched pattern]
+       (or matched (matches-pattern? pattern entry)))
+     false
+     patterns)))
+
+(defn directive-parts
+  [directive]
+  (cond
+    (keyword? directive) [directive []]
+    (vector? directive)
+    (if (empty? directive)
+      (throw
+       (ex-info "Make directive vector cannot be empty"
+                {:make/directive directive}))
+      [(first directive) (vec (rest directive))])
+    :else
+    (throw
+     (ex-info "Make directive must be a keyword or vector"
+              {:make/directive directive}))))
+
+(defn directive-work
+  [host directive]
+  (let [[target patterns] (directive-parts directive)
+        current (base/state host)
+        definition (:make/definition current)
+        entries (get-in definition [:make/sections target])]
+    (if (nil? entries)
+      (throw
+       (ex-info "Make target is not defined"
+                {:make/id (:make/id current)
+                 :make/target target
+                 :make/directive directive
+                 :make/targets (vec (keys (:make/targets current)))})))
+    (if (empty? patterns)
+      (get-in current [:make/targets target])
+      (compile/compile-target
+       (:make/profile current)
+       definition
+       target
+       (vec
+        (filter
+         (fn [entry]
+           (matches-patterns? patterns entry))
+         entries))))))
+
+(defn run-directive
+  [host directive input]
+  (then
+   (work/run
+    (work/local-runtime)
+    (directive-work host directive)
+    input)
+   (fn [value]
+     [directive value])))
+
+(defn run-global-post
+  [host results]
+  (let [hooks (get-in (base/definition host) [:hooks :post])]
+    (base/invoke-hooks hooks [(base/definition host) results])
+    results))
+
+(defn explicit-input?
+  [value]
+  (and (map? value)
+       (= true (:make/input? value))))
+
+(defn input
+  "Wraps an explicit input value for make target work."
+  [value]
+  {:make/input? true
+   :value value})
+
+(defn run
+  "Runs one or more make directives, defaulting to :default."
+  [host & arguments]
+  (let [last-value (if (empty? arguments) nil (last arguments))
+        has-input (explicit-input? last-value)
+        input-value (if has-input (:value last-value) nil)
+        directives (if has-input
+                     (vec (drop-last arguments))
+                     (vec arguments))
+        directives (if (empty? directives)
+                     [:default]
+                     directives)
+        values
+        (vec
+         (map
+          (fn [directive]
+            (run-directive host directive input-value))
+          directives))]
+    (then
+     (all-results values)
+     (fn [results]
+       (run-global-post host results)))))
+
+(def build run)
+
+(defn trigger-matches?
+  [namespace trigger]
+  (if (string? trigger)
+    (string/starts-with? (str namespace) trigger)
+    (= trigger namespace)))
+
+(defn triggered
+  "Returns hosts matching a namespace trigger."
+  [namespace]
+  (vec
+   (keep
+    (fn [pair]
+      (let [record (nth pair 1)
+            triggers (:make/triggers record)
+            matched
+            (reduce
+             (fn [found trigger]
+               (or found (trigger-matches? namespace trigger)))
+             false
+             triggers)]
+        (if matched (:make/host record) nil)))
+    (deref base/+triggers+))))
+
+(defn run-triggered
+  "Runs the default target of every host matching namespace."
+  [namespace]
+  (all-results
+   (vec
+    (map
+     (fn [host]
+       (run host :default))
+     (triggered namespace)))))

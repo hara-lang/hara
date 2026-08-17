@@ -1,0 +1,129 @@
+(ns work.flow.make-test
+  (:require [work.flow :as flow :refer [def.workflow]]
+            [work.flow.make :as make]))
+
+(def events
+  (atom []))
+
+(def.workflow
+  [:make]
+  {:root "."
+   :build ".build"})
+
+(def.workflow
+  +project+
+  [:make]
+  {:default
+   [{:id :first
+     :name "first"
+     :type :value
+     :run
+     (fn [input context]
+       (swap! events conj [:first input])
+       (+ input 1))}
+
+    {:id :second
+     :name "second"
+     :type :value
+     :run
+     (fn [input context]
+       (swap! events conj [:second input])
+       (* input 2))}]
+
+   :sections
+   {:release
+    [{:id :release
+      :type :release
+      :run
+      (fn [input context]
+        :released)}]}
+
+   :hooks
+   {:default
+    {:pre
+     (fn [target entries]
+       (swap! events conj [:pre target (count entries)]))
+     :post
+     (fn [target entries receipts]
+       (swap! events conj [:post target (count receipts)]))}}
+
+   :triggers
+   ['app.core]})
+
+(def initial-host +project+)
+(def initial-instance (:make/instance +project+))
+(def initial-result
+  (make/run +project+ :default (make/input 3)))
+(def filtered-result
+  (make/run +project+ [:default {:name "second"}] (make/input 4)))
+
+(def.workflow
+  +project+
+  [:make]
+  {:default
+   [{:id :replacement
+     :run
+     (fn [input context]
+       (+ input 10))}]
+   :triggers ['app.core]})
+
+(def replacement-result
+  (make/run +project+ :default (make/input 2)))
+
+(def results
+  [(test-check
+    "def.workflow installs the make profile and defines a live host"
+    [(:workflow/path +workflow-make+)
+     (make/make-host? +project+)
+     (:make/revision (make/state +project+))]
+    [[:make] true 2])
+
+   (test-check
+    "make targets compile to ordinary work and preserve section hooks"
+    [initial-result
+     (deref events)]
+    [[[:default
+       {:make/id 'work.flow.make-test/+project+
+        :make/target :default
+        :make/status :changed
+        :make/results
+        [{:entry/id :first :entry/value 4}
+         {:entry/id :second :entry/value 6}]}]]
+     [[:pre :default 2]
+      [:first 3]
+      [:second 3]
+      [:post :default 2]
+      [:pre :default 1]
+      [:second 4]
+      [:post :default 1]]])
+
+   (test-check
+    "vector directives filter original make entries"
+    filtered-result
+    [[[:default {:name "second"}]
+      {:make/id 'work.flow.make-test/+project+
+       :make/target :default
+       :make/status :changed
+       :make/results
+       [{:entry/id :second :entry/value 8}]}]])
+
+   (test-check
+    "make redefinition preserves host identity while replacing its plan"
+    [(= initial-host +project+)
+     (= initial-instance (:make/instance +project+))
+     replacement-result]
+    [true
+     true
+     [[:default
+       {:make/id 'work.flow.make-test/+project+
+        :make/target :default
+        :make/status :changed
+        :make/results
+        [{:entry/id :replacement :entry/value 12}]}]]])
+
+   (test-check
+    "make triggers are reconciled with the live host"
+    (mapv :make/instance (make/triggered 'app.core))
+    [(:make/instance +project+)])])
+
+results
