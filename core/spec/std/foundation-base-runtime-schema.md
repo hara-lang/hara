@@ -27,12 +27,12 @@ load and compile portable source. `std.lib.resp` and other library packages are
 package-tier resources. `hara.compiler`, `hara.verify`, and
 `hara.transpile.base.*` are not bootstrap dependencies.
 
-Namespace inspection and dynamic evaluation live on `std.native.Env` and use
+Namespace inspection and dynamic evaluation live on `std.native.Runtime` and use
 the same transparent Foundation-wrapper contract. Foundation exposes
 `env-current`, `env-snapshot`, `env-vars`, `env-namespaces`, `env-namespace`,
 `env-module`, `env-resolve`, `ns-alias-state`, `intern-var`, `eval-in-ns`, and
-`eval`. `Env/eval` evaluates one form value in the current namespace;
-`Env/eval-in` evaluates a collection of form values in an existing namespace.
+`eval`. `Runtime/eval` evaluates one form value in the current namespace;
+`Runtime/eval-in` evaluates a collection of form values in an existing namespace.
 Java and Rust must expose identical methods and evaluation behavior.
 
 The same inline-forwarding rule applies throughout the embedded Foundation

@@ -1640,8 +1640,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n) if n.starts_with("std.native.Host/") => {
                     native_host_operation(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n.starts_with("std.native.Env/") => {
-                    native_env_operation(n, &fs[1..], env)
+                Form::Symbol(n) if n.starts_with("std.native.Runtime/") => {
+                    native_runtime_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n.starts_with("std.native.Package/") => {
                     native_package_operation(n, &fs[1..], env)

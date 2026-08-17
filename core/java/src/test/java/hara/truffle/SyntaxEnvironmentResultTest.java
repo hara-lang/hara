@@ -23,22 +23,24 @@ public class SyntaxEnvironmentResultTest {
   }
 
   @Test
-  public void portableRuntimeAndNativeResultContractsAreAvailable() {
+  public void nativeRuntimeAndFoundationEnvironmentContractsAreAvailable() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[user 42 42 42 true :std.native.Result :success nil]",
+          "[user 42 42 42 true :loaded nil nil :std.native.Result :success nil]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.lib.runtime) "
-                      + "[(std.lib.runtime/current) "
-                      + "(std.lib.runtime/eval-in 'user '[(+ 19 23)]) "
-                      + "(std.lib.runtime/eval '(+ 19 23)) "
-                      + "(std.lib.runtime/load-string \"(+ 19 23)\") "
-                      + "(map? (std.lib.runtime/snapshot)) "
+                  "[(Runtime/current) "
+                      + "(Runtime/eval-in 'user '[(+ 19 23)]) "
+                      + "(Runtime/eval '(+ 19 23)) "
+                      + "(Runtime/load-string \"(+ 19 23)\") "
+                      + "(map? (std.foundation/env-snapshot)) "
+                      + "(get (Runtime/namespace 'std.native.Runtime) :namespace/state) "
+                      + "(Runtime/namespace 'std.native.Env) "
+                      + "(std.foundation/env-resolve 'std.native.Env/current) "
                       + "(type (Result/create :success 1)) "
                       + "(Result/status (Result/create :success 1)) "
-                      + "(Result/context (Result/create :success 1))])")
+                      + "(Result/context (Result/create :success 1))]")
               .toString());
     }
   }

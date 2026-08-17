@@ -23,7 +23,6 @@ const NATIVE_TYPES: &[&str] = &[
     "Numbers",
     "Bits",
     "Kernel",
-    "Env",
     "Package",
     "String",
     "Bytes",
@@ -634,7 +633,10 @@ fn canonical(namespace: &str, method: &str) -> String {
         ("std.native.Arr", "instance?") => "array?".into(),
         ("std.native.Obj", "new") => "object".into(),
         ("std.native.Obj", "instance?") => "object?".into(),
-        ("std.native.Runtime", method) => method.into(),
+        ("std.native.Runtime", "load-string" | "macroexpand-1" | "gensym" | "var-sym") => {
+            method.into()
+        }
+        ("std.native.Runtime", method) => format!("std.native.Runtime/{method}"),
         ("std.native.Printer", method) => method.into(),
         ("std.native.Edn", method) => format!("std.native.Edn/{method}"),
         ("std.native.Json", method) => format!("std.native.Json/{method}"),

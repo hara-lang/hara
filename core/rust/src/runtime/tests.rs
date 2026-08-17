@@ -13,11 +13,11 @@ mod tests {
             runtime
                 .eval_text("(macroexpand-1 '(defonce retained-state (atom 1)))")
                 .unwrap(),
-            "(if (Env/resolve (quote user/retained-state)) (Env/resolve (quote user/retained-state)) (eval (quote (def retained-state (atom 1)))))"
+            "(if (Runtime/resolve (quote user/retained-state)) (Runtime/resolve (quote user/retained-state)) (eval (quote (def retained-state (atom 1)))))"
         );
         assert_eq!(
             runtime
-                .eval_text("(do (eval '(def eval-defined 1)) [(Env/resolve 'user/eval-defined) eval-defined])")
+                .eval_text("(do (eval '(def eval-defined 1)) [(Runtime/resolve 'user/eval-defined) eval-defined])")
                 .unwrap(),
             "[#'user/eval-defined 1]"
         );
@@ -40,26 +40,28 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_native(
-                    "(do (require 'std.lib.runtime) \
-                     [(comment missing-symbol (throw (ex-info \"boom\" {})) (def leaked 1)) \
+                    "[(comment missing-symbol (throw (ex-info \"boom\" {})) (def leaked 1)) \
                       (special-symbol? 'comment) \
                       (type (std.native.Result/create :success 1)) \
                       (std.native.Result/status (std.native.Result/create :error \"boom\")) \
                       (std.native.Result/context (std.native.Result/create :success 1)) \
-                      (std.lib.runtime/current) \
-                      (std.lib.runtime/eval '(+ 19 23)) \
-                      (std.lib.runtime/load-string \"(+ 19 23)\") \
-                      (map? (std.lib.runtime/snapshot))])",
+                      (Runtime/current) \
+                      (Runtime/eval '(+ 19 23)) \
+                      (Runtime/load-string \"(+ 19 23)\") \
+                      (map? (std.foundation/env-snapshot)) \
+                      (get (Runtime/namespace 'std.native.Runtime) :namespace/state) \
+                      (Runtime/namespace 'std.native.Env) \
+                      (std.foundation/env-resolve 'std.native.Env/current)]",
                 )
                 .unwrap(),
-            "[nil true :std.native.Result :error nil user 42 42 true]"
+            "[nil true :std.native.Result :error nil user 42 42 true :loaded nil nil]"
         );
         assert!(runtime.eval_native("leaked").is_err());
         assert_eq!(
             runtime
                 .eval_native(
-                    "[(get (std.lib.runtime/namespace 'user) :namespace/state) \
-                      (std.lib.runtime/eval-in 'user '[(+ 19 23)])]",
+                    "[(get (Runtime/namespace 'user) :namespace/state) \
+                      (Runtime/eval-in 'user '[(+ 19 23)])]",
                 )
                 .unwrap(),
             "[:loaded 42]"
@@ -2522,7 +2524,6 @@ mod tests {
             "Algo",
             "Iter",
             "Kernel",
-            "Env",
             "Package",
         ] {
             assert!(
@@ -5594,6 +5595,18 @@ mod tests {
         assert!(kernel.eval(&beta, "local-answer").is_err());
         assert_eq!(
             kernel
+                .eval(&alpha, "(boolean (Runtime/resolve 'user/local-answer))")
+                .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            kernel
+                .eval(&beta, "(boolean (Runtime/resolve 'user/local-answer))")
+                .unwrap(),
+            "false"
+        );
+        assert_eq!(
+            kernel
                 .eval(&alpha, "(module-revision 'session.module)")
                 .unwrap(),
             "1"
@@ -7405,9 +7418,8 @@ mod tests {
     }
 
     #[test]
-    fn runtime_facade_inspects_without_loading_registered_namespaces() {
+    fn foundation_environment_facade_inspects_without_loading_registered_namespaces() {
         let mut runtime = Runtime::new();
-        runtime.eval_native("(require 'std.lib.runtime)").unwrap();
         runtime.register_resource(
             "example.unloaded",
             "(ns example.unloaded) (def answer 42)",
@@ -7417,19 +7429,19 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_native(
-                    "(get (std.lib.runtime/namespace 'example.unloaded) :namespace/state)",
+                    "(get (std.foundation/env-namespace 'example.unloaded) :namespace/state)",
                 )
                 .unwrap(),
             ":unloaded"
         );
         assert_eq!(
             runtime
-                .eval_native("(std.lib.runtime/resolve 'example.unloaded/answer)")
+                .eval_native("(std.foundation/env-resolve 'example.unloaded/answer)")
                 .unwrap(),
             "nil"
         );
         assert!(runtime
-            .eval_native("(std.lib.runtime/vars)")
+            .eval_native("(std.foundation/env-vars)")
             .unwrap()
             .contains("local-value"));
         assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");

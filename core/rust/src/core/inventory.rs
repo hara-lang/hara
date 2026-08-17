@@ -221,13 +221,6 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "capabilities",
         ],
     ),
-    (
-        "Env",
-        &[
-            "current", "snapshot", "vars", "namespaces", "namespace", "module", "resolve",
-            "alias-state", "intern-var", "eval-in", "eval",
-        ],
-    ),
     ("Package", &["catalog", "find", "ensure", "load", "unload", "state"]),
     (
         "String",
@@ -375,7 +368,11 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ),
     (
         "Runtime",
-        &["load-string", "macroexpand-1", "gensym", "var-sym"],
+        &[
+            "load-string", "macroexpand-1", "gensym", "var-sym", "current", "snapshot",
+            "vars", "namespaces", "namespace", "module", "resolve", "alias-state",
+            "intern-var", "eval-in", "eval",
+        ],
     ),
     ("Printer", &["p", "println"]),
     (
