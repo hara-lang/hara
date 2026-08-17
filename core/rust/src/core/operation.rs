@@ -1563,6 +1563,24 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
             .and_then(|name| value.get(name))
             .unwrap_or(default)),
         Value::Pointer(pointer) => Ok(pointer.get(key).cloned().unwrap_or(default)),
+        Value::Result(result) => {
+            let Value::Keyword(key) = key else {
+                return Ok(default);
+            };
+            Ok(match key.as_str() {
+                "status" => result.status_value(),
+                "data" => result.data.clone(),
+                "error" => result.error_value(),
+                "context" => {
+                    if map_entries(&result.context).is_some_and(|entries| entries.is_empty()) {
+                        Value::Nil
+                    } else {
+                        result.context.clone()
+                    }
+                }
+                _ => default,
+            })
+        }
         _ => Err("get expects a collection".into()),
     }
 }

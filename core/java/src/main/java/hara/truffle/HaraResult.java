@@ -4,6 +4,7 @@ import hara.lang.base.Eq;
 import hara.lang.base.Ex;
 import hara.lang.base.G;
 import hara.lang.data.Keyword;
+import hara.lang.data.Tuple;
 import hara.lang.data.types.IMapType;
 import hara.lang.protocol.Constant;
 import hara.lang.protocol.IDeref;
@@ -12,12 +13,14 @@ import hara.lang.protocol.IDisplay;
 import hara.lang.protocol.IEquality;
 import hara.lang.protocol.IExInfo;
 import hara.lang.protocol.IHash;
+import hara.lang.protocol.ILookup;
 import hara.lang.protocol.IPromise;
+import java.util.Iterator;
 import java.util.Map.Entry;
 import java.util.Objects;
 
 /** A completed native Hara outcome. Context is diagnostic and is not part of identity. */
-public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IHash {
+public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IHash, ILookup<Object, Object> {
   public enum Status {
     SUCCESS,
     ERROR
@@ -213,6 +216,33 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
     return context;
   }
 
+  @Override
+  public Entry<Object, Object> find(Object key) {
+    if (!(key instanceof Keyword keyword) || keyword.getNamespace() != null) return null;
+    Object value = switch (keyword.getName()) {
+      case "status" -> status();
+      case "data" -> data();
+      case "error" -> errorValue();
+      case "context" -> context.count() == 0 ? null : context();
+      default -> MISSING;
+    };
+    return value == MISSING ? null : new Tuple.Tup2.L<>(null, keyword, value);
+  }
+
+  @Override
+  public Iterator<Object> keys() {
+    return java.util.List.<Object>of(
+            Keyword.create("status"), Keyword.create("data"),
+            Keyword.create("error"), Keyword.create("context"))
+        .iterator();
+  }
+
+  @Override
+  public Iterator<Object> vals() {
+    return java.util.Arrays.asList(status(), data(), errorValue(), context.count() == 0 ? null : context())
+        .iterator();
+  }
+
   public boolean isSuccess() {
     return status == Status.SUCCESS;
   }
@@ -372,4 +402,3 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
         + "]";
   }
 }
-

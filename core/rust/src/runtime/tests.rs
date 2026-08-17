@@ -121,6 +121,10 @@ mod tests {
                       (type (std.native.Result/create :success 1)) \
                       (std.native.Result/status (std.native.Result/create :error \"boom\")) \
                       (std.native.Result/context (std.native.Result/create :success 1)) \
+                      (:status (std.native.Result/create :success 1)) \
+                      (:data (std.native.Result/create :success 42)) \
+                      (:error (std.native.Result/create :success 1)) \
+                      (:context (std.native.Result/create :success 1 {:source :test})) \
                       (Runtime/current) \
                       (Runtime/eval '(+ 19 23)) \
                       (Runtime/load-string \"(+ 19 23)\") \
@@ -130,7 +134,7 @@ mod tests {
                       (std.foundation/env-resolve 'std.native.Env/current)]",
                 )
                 .unwrap(),
-            "[nil true :std.native.Result :error nil user 42 42 true :loaded nil nil]"
+            "[nil true :std.native.Result :error nil :success 42 nil {:source :test} user 42 42 true :loaded nil nil]"
         );
         assert!(runtime.eval_native("leaked").is_err());
         assert_eq!(

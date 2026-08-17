@@ -1,0 +1,132 @@
+(ns code.query.compile-test
+  (:require [code.query.compile :refer :all]
+    [std.block.navigate :as nav]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer code.query.compile/cursor-info :added "3.0"}
+(Test/run
+ [{:name "finds the information related to the cursor #1"
+   :test (fn []
+             (cursor-info (vector (list (quote defn)
+                                        (with-meta (quote _) {:?& true}) (quote |)
+                                        (quote &) (quote _)))))
+   :expected (quote [0 :form (defn _ | & _)])}
+  {:name "finds the information related to the cursor #2"
+   :test (fn []
+             (cursor-info (expand-all-metas (vector (list (quote defn)
+                                                          (with-meta (quote _) {:?& true}) (quote |)
+                                                          (quote &) (quote _))))))
+   :expected (quote [0 :form (defn _ | & _)])}
+  {:name "finds the information related to the cursor #3"
+   :test (fn [] (cursor-info (quote [defn if])))
+   :expected [nil :cursor]}
+  {:name "finds the information related to the cursor #4"
+   :test (fn [] (cursor-info (quote [defn | if])))
+   :expected [1 :cursor]}]
+ migration-test-check)
+
+^{:refer code.query.compile/expand-all-metas :added "3.0"}
+(Test/run
+ [{:name "converts the shorthand meta into a map-based meta #1"
+   :test (fn [] (meta (expand-all-metas (with-meta (quote sym?) {:%? true}))))
+   :expected {:% true :? true}}
+  {:name "converts the shorthand meta into a map-based meta #2"
+   :test (fn []
+             (-> (expand-all-metas (list (with-meta (quote +) {:%+ true}) (quote 1) (quote 2)))
+                 first meta))
+   :expected {:% true :+ true}}]
+ migration-test-check)
+
+^{:refer code.query.compile/split-path :added "3.0"}
+(Test/run
+ [{:name "splits the path into up and down #1"
+   :test (fn [] (split-path (quote [defn | if try]) [1 :cursor]))
+   :expected (quote {:down [if try] :up (defn)})}
+  {:name "splits the path into up and down #2"
+   :test (fn [] (split-path (quote [defn if try]) [nil :cursor]))
+   :expected (quote {:down [defn if try] :up []})}]
+ migration-test-check)
+
+^{:refer code.query.compile/process-special :added "3.0"}
+(Test/run
+ [{:name "converts a keyword into a map #1"
+   :test (fn [] (process-special :*))
+   :expected {:type :multi}}
+  {:name "converts a keyword into a map #2"
+   :test (fn [] (process-special :1))
+   :expected {:step 1 :type :nth}}
+  {:name "converts a keyword into a map #3"
+   :test (fn [] (process-special :5))
+   :expected {:step 5 :type :nth}}]
+ migration-test-check)
+
+^{:refer code.query.compile/process-path :added "3.0"}
+(Test/run
+ [{:name "converts a path into more information #1"
+   :test (fn [] (process-path (quote [defn if try])))
+   :expected (quote [{:element defn :type :step} {:element if :type :step}
+                     {:element try :type :step}])}
+  {:name "converts a path into more information #2"
+   :test (fn [] (process-path (quote [defn :* try :3 if])))
+   :expected (quote [{:element defn :type :step} {:element try :type :multi}
+                     {:element if :step 3 :type :nth}])}]
+ migration-test-check)
+
+^{:refer code.query.compile/compile-section-base :added "3.0"}
+(Test/run
+ [{:name "compiles an element section #1"
+   :test (fn [] (compile-section-base (quote {:element defn})))
+   :expected (quote {:form defn})}
+  {:name "compiles an element section #2"
+   :test (fn [] (compile-section-base (quote {:element (if & _)})))
+   :expected (quote {:pattern (if & _)})}
+  {:name "compiles an element section #3"
+   :test (fn [] (compile-section-base (quote {:element _})))
+   :expected {:is code.query.common/any}}]
+ migration-test-check)
+
+^{:refer code.query.compile/compile-section :added "3.0"}
+(Test/run
+ [{:name "compiles a query section based on direction, context, and element details #1"
+   :test (fn [] (compile-section :up nil (quote {:element if :step 3 :type :nth})))
+   :expected (quote {:nth-ancestor [3 {:form if}]})}
+  {:name "compiles a query section based on direction, context, and element details #2"
+   :test (fn [] (compile-section :down nil (quote {:element if :type :multi})))
+   :expected (quote {:contains {:form if}})}]
+ migration-test-check)
+
+^{:refer code.query.compile/compile-submap :added "3.0"}
+(Test/run
+ [{:name "compiles a nested sub-query map based on traversal direction and a processed path #1"
+   :test (fn [] (compile-submap :down (process-path (quote [if try]))))
+   :expected (quote {:child {:child {:form if} :form try}})}
+  {:name "compiles a nested sub-query map based on traversal direction and a processed path #2"
+   :test (fn [] (compile-submap :up (process-path (quote [defn if]))))
+   :expected (quote {:parent {:form if :parent {:form defn}}})}]
+ migration-test-check)
+
+^{:refer code.query.compile/prepare :added "3.0"}
+(Test/run
+ [{:name "prepares a query vector by compiling its sections and identifying cursor positions #1"
+   :test (fn [] (prepare (quote [defn if])))
+   :expected (quote [{:child {:form if} :form defn} [nil :cursor]])}
+  {:name "prepares a query vector by compiling its sections and identifying cursor positions #2"
+   :test (fn [] (prepare (quote [defn | if])))
+   :expected (quote [{:form if :parent {:form defn}} [1 :cursor]])}]
+ migration-test-check)

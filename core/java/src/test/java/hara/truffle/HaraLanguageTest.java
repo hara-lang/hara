@@ -138,6 +138,14 @@ public class HaraLanguageTest {
       assertEquals(0, context.eval(HaraLanguage.ID, "(count (empty [1 2]))").asLong());
       assertEquals(0, context.eval(HaraLanguage.ID, "(count nil)").asLong());
       assertEquals(7, context.eval(HaraLanguage.ID, "(get nil :missing 7)").asLong());
+      assertEquals(
+          "[:success 42 nil {:source :test}]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [result (std.native.Result/create :success 42 {:source :test})] "
+                      + "[(:status result) (:data result) (:error result) (:context result)])")
+              .toString());
       assertEquals(1, context.eval(HaraLanguage.ID, "(:a {:a 1})").asLong());
       assertEquals(7, context.eval(HaraLanguage.ID, "(:missing {} 7)").asLong());
       assertEquals(

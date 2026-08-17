@@ -1,0 +1,131 @@
+(ns code.query.compile
+  (:require [code.query.common :as common] [std.foundation :as walk]))
+
+(defn cursor-info
+  "finds the information related to the cursor\n \n   (cursor-info '[(defn ^:?& _ | & _)])\n   => '[0 :form (defn _ | & _)]\n \n   (cursor-info (expand-all-metas '[(defn ^:?& _ | & _)]))\n   => '[0 :form (defn _ | & _)]\n \n   (cursor-info '[defn if])\n   => [nil :cursor]\n \n   (cursor-info '[defn | if])\n   => [1 :cursor]"
+  {:added "3.0"}
+  [selectors]
+  (let [candidates (keep
+                    identity
+                    (map-indexed
+                     (fn
+                      [i ele]
+                      (cond
+                       (= ele (quote |))
+                       [i :cursor]
+                       (and (form? ele) (not= (common/prepare-query ele) ele))
+                       [i :form ele]))
+                     selectors))]
+    (case (count candidates)
+      0
+      (if (form? (last selectors))
+        [(dec (count selectors)) :form (last selectors)]
+        [nil :cursor])
+      1
+      (let [max         (dec (count selectors))
+            [i
+             type
+             :as
+             candidate] (first candidates)
+            _           (case
+                         type                                                                                       :form
+                         (if
+                          (not= i max) (throw (ex-info "Form should be in the last position of the selectors" {}))) :cursor
+                         (if
+                          (= i max) (throw (ex-info "Cursor cannot be in the last position of the selectors" {}))))]
+        candidate)
+      (throw (ex-info (format "There should only be one of %s in the path.")
+               {:candidates candidates})))))
+
+(defn expand-all-metas
+  "converts the shorthand meta into a map-based meta\n   (meta (expand-all-metas '^:%? sym?))\n   => {:? true, :% true}\n \n   (-> (expand-all-metas '(^:%+ + 1 2))\n       first meta)\n   => {:+ true, :% true}"
+  {:added "3.0"}
+  [selectors]
+  (common/prewalk (fn [ele]
+                    (if (and (satisfies? IObjType ele) (seq (meta ele)))
+                      (common/expand-meta ele)
+                      ele))
+    selectors))
+
+(defn split-path
+  "splits the path into up and down\n   (split-path '[defn | if try] [1 :cursor])\n   => '{:up (defn), :down [if try]}\n \n   (split-path '[defn if try] [nil :cursor])\n   => '{:up [], :down [defn if try]}"
+  {:added "3.0"}
+  [selectors [idx ctype]]
+  (let [[up down] (cond
+                   (nil? idx)        [[] selectors]
+                   (= :cursor ctype) [(reverse (subvec selectors 0 idx)) (subvec selectors (inc idx) (count selectors))]
+                   (= :form ctype)   [(reverse (subvec selectors 0 idx)) (subvec selectors idx (count selectors))]
+                   :else             (throw (ex-info "Should not be here" {})))]
+    {:down down :up up}))
+
+(defn process-special
+  "converts a keyword into a map\n   (process-special :*) => {:type :multi}\n \n   (process-special :1) => {:type :nth, :step 1}\n \n   (process-special :5) => {:type :nth, :step 5}"
+  {:added "3.0"}
+  [ele]
+  (if (keyword? ele)
+    (or (if (= :* ele) {:type :multi})
+      (if-let [step (try (parse-long (name ele)) (catch Throwable e nil))]
+        (if (> step 0) {:step step :type :nth}))
+      (throw (ex-info "Not a valid keyword (either :* or :<natural number>)" {:value ele})))))
+
+(defn process-path
+  "converts a path into more information\n   (process-path '[defn if try])\n   => '[{:type :step, :element defn}\n        {:type :step, :element if}\n        {:type :step, :element try}]\n \n   (process-path '[defn :* try :3 if])\n   => '[{:type :step, :element defn}\n        {:element try, :type :multi}\n        {:element if, :type :nth, :step 3}]"
+  {:added "3.0"}
+  ([path] (process-path path []))
+  ([migration-path out] (let [more migration-path x (first more) y (second more) xs (drop 2 more)]
+                          (if-not (empty? more)
+                            (let [xmap  (process-special x)
+                                  xmeta (meta x)
+                                  ymap  (process-special y)
+                                  ymeta (meta y)]
+                              (cond (and (nil? xmap) (= 1 (count more)))
+                                (conj out (merge {:element x :type :step} xmeta))
+                                (nil? xmap)
+                                (process-path (vec (cons y xs))
+                                  (conj out (merge {:element x :type :step} xmeta)))
+                                (and xmap ymap)
+                                (process-path (vec (cons y xs)) (conj out (assoc xmap :element (quote _))))
+                                (and xmap (= 1 (count more)))
+                                (conj out (assoc xmap :element (quote _)))
+                                :else
+                                (process-path xs (conj out (merge (assoc xmap :element y) ymeta)))))
+                            out))))
+
+(defn compile-section-base "compiles an element section\\n   (compile-section-base '{:element defn})\\n   => '{:form defn}\\n \\n   (compile-section-base '{:element (if & _)})\\n   => '{:pattern (if & _)}\\n \\n   (compile-section-base '{:element _})\\n   => {:is code.query.common/any}" {:added "3.0"} [section] (let [{:keys [element], evaluate? :%} section] (cond evaluate? (compile-section-base (-> section (assoc :element (eval element)) (dissoc :%))) (= (quote _) element) {:is common/any} (and (std.foundation/fn? element) (not (form? element))) {:is element} (map? element) (walk/postwalk (fn [ele] (cond (:% (meta ele)) (eval (with-meta ele (-> (meta ele) (dissoc :%)))) :else ele)) element) (form? element) {:pattern element} (symbol? element) {:form element} :else {:is element})))
+
+(def moves
+  {:step   {:up     :parent
+            :down   :child}
+   :multi  {:up     :ancestor
+            :down   :contains}
+   :nth    {:up     :nth-ancestor
+            :down   :nth-contains}})
+
+(defn compile-section "compile section\\n   (compile-section :up nil '{:element if, :type :nth, :step 3})\\n   => '{:nth-ancestor [3 {:form if}]}\\n \\n   (compile-section :down nil '{:element if, :type :multi})\\n   => '{:contains {:form if}}" {:added "3.0"} [direction prev {:as section, :keys [type step], optional? :?}] (let [base (-> section compile-section-base) dkey (get-in moves [type direction]) current (merge base prev) current (if optional? {:or #{(merge {:is common/any} prev) current}} current)] (if (= type :nth) {dkey [step current]} {dkey current})))
+
+(defn compile-submap
+  "compile submap\n   (compile-submap :down (process-path '[if try]))\n   => '{:child {:child {:form if}, :form try}}\n \n   (compile-submap :up (process-path '[defn if]))\n   => '{:parent {:parent {:form defn}, :form if}}"
+  {:added "3.0"}
+  [direction sections]
+  (reduce (fn [i section] (compile-section direction i section)) nil sections))
+
+(defn prepare
+  "prepare\n   (prepare '[defn if])\n   => '[{:child {:form if}, :form defn} [nil :cursor]]\n \n   (prepare '[defn | if])\n   => '[{:parent {:form defn}, :form if} [1 :cursor]]"
+  {:added "3.0"}
+  [selectors]
+  (let [selectors         (expand-all-metas selectors)
+        [cidx
+         ctype
+         cform
+         :as
+         cursor]          (cursor-info selectors)
+        qselectors        (mapv (fn [ele] (if (form? ele) (common/prepare-deletion ele) ele)) selectors)
+        {:keys [up down]} (split-path qselectors cursor)
+        up                (process-path up)
+        [curr
+         &
+         down]            (process-path down)
+        match-map         (merge (compile-section-base curr)
+                                 (compile-submap :up (reverse up))
+                                 (compile-submap :down (reverse down)))]
+    [match-map cursor]))
