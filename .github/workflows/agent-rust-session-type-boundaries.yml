@@ -6,7 +6,7 @@ on:
       - agent/rust-session-type-boundaries
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   apply:
@@ -29,38 +29,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: Apply the typed Session model
-        run: |
-          python scripts/runtime/apply-rust-session-type-boundaries.py
-          python - <<'PY'
-          from pathlib import Path
-          path = Path("core/rust/src/runtime/session_model.rs")
-          source = path.read_text()
-          legacy = "#[cfg(test)]\nmod tests {"
-          current = "#[cfg(test)]\nmod session_model_tests {"
-          if current in source:
-              pass
-          elif source.count(legacy) == 1:
-              path.write_text(source.replace(legacy, current, 1))
-          else:
-              raise SystemExit("Session model test module is missing or ambiguous")
-          PY
       - name: Format Rust
-        run: cargo fmt --manifest-path core/rust/Cargo.toml
+        run: cargo fmt --manifest-path core/rust/Cargo.toml -- --check
       - name: Check the Rust runtime
         run: cargo check --manifest-path core/rust/Cargo.toml
-      - name: Run focused Session type and behavior tests
+      - name: Run focused Session tests
         run: |
-          cargo test --manifest-path core/rust/Cargo.toml session_identity_and_mount_identifiers_are_distinct_types
-          cargo test --manifest-path core/rust/Cargo.toml zero_authority_spec_is_explicit_and_immutable
-          cargo test --manifest-path core/rust/Cargo.toml session_status_uses_typed_identity_state_and_mount
-          cargo test --manifest-path core/rust/Cargo.toml named_sessions_start_with_zero_host_authority
-          cargo test --manifest-path core/rust/Cargo.toml session_kernel_mounts_preserve_state_and_enforce_lifetime
-      - name: Commit the validated Rust slice
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add core/rust/src/lib.rs core/rust/src/runtime/session.rs core/rust/src/runtime/session_model.rs
-          git diff --cached --check
-          git commit -m "Tighten Rust Session type boundaries"
-          git push origin HEAD:agent/rust-session-type-boundaries
+          RUST_BACKTRACE=1 cargo test \
+            --manifest-path core/rust/Cargo.toml \
+            --lib session \
+            -- --nocapture --test-threads=1
+      - name: Run full Rust tests
+        run: cargo test --manifest-path core/rust/Cargo.toml

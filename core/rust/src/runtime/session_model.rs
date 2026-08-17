@@ -56,16 +56,16 @@ impl fmt::Display for SessionMountId {
 /// Observable lifecycle of one Session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
-    Idle,
-    Busy,
+    New,
+    Active,
     Closed,
 }
 
 impl SessionState {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Idle => "idle",
-            Self::Busy => "busy",
+            Self::New => "new",
+            Self::Active => "active",
             Self::Closed => "closed",
         }
     }
@@ -156,7 +156,7 @@ pub struct SessionStatus {
 pub type SessionMetadata = SessionStatus;
 
 #[cfg(test)]
-mod tests {
+mod session_model_tests {
     use super::*;
 
     #[test]
@@ -175,5 +175,12 @@ mod tests {
         assert_eq!(spec.id.as_str(), "child");
         assert_eq!(spec.authority, SessionAuthorityPolicy::ZERO);
         assert_eq!(spec.authority.profile(), "zero");
+    }
+
+    #[test]
+    fn session_lifecycle_states_are_explicit() {
+        assert_eq!(SessionState::New.as_str(), "new");
+        assert_eq!(SessionState::Active.as_str(), "active");
+        assert_eq!(SessionState::Closed.as_str(), "closed");
     }
 }
