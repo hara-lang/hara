@@ -191,45 +191,56 @@
   (symbol (str "+workflow-" (path-fragment path) "+")))
 
 (defmacro def.workflow
-  "Configures or defines a workflow family.
+  "Configures a workflow family or defines one named workflow.
 
    (def.workflow [:task])
    (def.workflow [:task] profile-overrides)
-   (def.workflow [:task] name definition)
+   (def.workflow name [:task] definition)
 
    Named definitions use the profile installed for the caller namespace, or
    the registered workflow's default profile when none was installed."
-  [path & arguments]
-  (let [namespace (get &env :ns)
-        total (count arguments)
-        profile-name (profile-symbol path)]
-    (cond
-      (= total 0)
-      `(def ~profile-name
-         (work.flow/install-profile! (quote ~namespace) ~path {}))
+  [head & arguments]
+  (let [namespace (get &env :ns)]
+    (if (flow-path? head)
+      (let [path head
+            total (count arguments)
+            profile-name (profile-symbol path)]
+        (cond
+          (= total 0)
+          `(def ~profile-name
+             (work.flow/install-profile! (quote ~namespace) ~path {}))
 
-      (and (= total 1)
-           (map? (first arguments)))
-      `(def ~profile-name
-         (work.flow/install-profile! (quote ~namespace)
-                                     ~path
-                                     ~(first arguments)))
+          (and (= total 1)
+               (map? (first arguments)))
+          `(def ~profile-name
+             (work.flow/install-profile! (quote ~namespace)
+                                         ~path
+                                         ~(first arguments)))
 
-      (< total 2)
-      (throw
-       (ex-info "Named workflow definitions require a name and definition"
-                {:workflow/path path
-                 :workflow/arguments arguments}))
-
-      :else
-      (let [definition-name (first arguments)
-            raw-definition (second arguments)
-            declaration-body (vec (drop 2 arguments))
-            qualified-name
-            (symbol (str namespace) (name definition-name))]
-        `(def ~definition-name
-           (work.flow/define!
-            (work.flow/profile-for (quote ~namespace) ~path)
-            (quote ~qualified-name)
-            ~raw-definition
-            (quote ~declaration-body)))))))
+          :else
+          (throw
+           (ex-info "Workflow profile form accepts only optional overrides"
+                    {:workflow/path path
+                     :workflow/arguments arguments}))))
+      (let [definition-name head
+            total (count arguments)]
+        (if (not (symbol? definition-name))
+          (throw
+           (ex-info "Workflow definition name must be a symbol"
+                    {:workflow/name definition-name})))
+        (if (< total 2)
+          (throw
+           (ex-info "Named workflow definitions require a path and definition"
+                    {:workflow/name definition-name
+                     :workflow/arguments arguments})))
+        (let [path (assert-flow-path! (first arguments))
+              raw-definition (second arguments)
+              declaration-body (vec (drop 2 arguments))
+              qualified-name
+              (symbol (str namespace) (name definition-name))]
+          `(def ~definition-name
+             (work.flow/define!
+              (work.flow/profile-for (quote ~namespace) ~path)
+              (quote ~qualified-name)
+              ~raw-definition
+              (quote ~declaration-body))))))))
