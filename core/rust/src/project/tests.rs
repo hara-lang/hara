@@ -54,19 +54,33 @@ fn creates_and_validates_an_empty_lock() {
 #[test]
 fn registers_project_sources_for_cross_file_requires() {
     let root = temp("resources");
+    fs::create_dir_all(root.join("packages/core/src/demo")).unwrap();
     fs::create_dir_all(root.join("src/demo")).unwrap();
-    fs::write(root.join("project.edn"), "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [\"src\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{}}").unwrap();
+    fs::write(root.join("project.edn"), "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [\"packages/core/src\" \"src\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{}}").unwrap();
     fs::write(
-        root.join("src/demo/helper.hal"),
-        "(ns demo.helper) (defn answer [] 42)",
+        root.join("packages/core/src/demo/helper.hal"),
+        "(ns demo.helper) (defn answer [] 40)",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/demo/app.hal"),
+        "(ns demo.app (:require [demo.helper :as helper])) (defn answer [] (+ 2 (helper/answer)))",
     )
     .unwrap();
     let project = read(&root).unwrap();
+    assert_eq!(
+        source_resources(&project)
+            .unwrap()
+            .into_iter()
+            .map(|(namespace, _)| namespace)
+            .collect::<Vec<_>>(),
+        vec!["demo.helper".to_owned(), "demo.app".to_owned()]
+    );
     let mut runtime = Runtime::new();
     register_sources(&project, &mut runtime).unwrap();
     assert_eq!(
         runtime
-            .eval_native("(ns demo.main (:require [demo.helper :as helper])) (helper/answer)")
+            .eval_native("(ns demo.main (:require [demo.app :as app])) (app/answer)")
             .unwrap(),
         "42"
     );

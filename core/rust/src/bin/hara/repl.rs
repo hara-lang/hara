@@ -1,5 +1,6 @@
 use crate::cli::Options;
 use hara_wasm::native_cli::RuntimeBroker;
+use hara_wasm::project;
 use hara_wasm::resp::{RespConnection, RespServer, RespValue};
 use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
@@ -109,6 +110,17 @@ pub(crate) fn parse_endpoint(value: &str, fallback_host: &str) -> Result<(String
     Ok((host.into(), port))
 }
 
+fn register_project_resources(options: &Options, broker: &RuntimeBroker) -> Result<(), String> {
+    let Some(path) = options.project.as_deref() else {
+        return Ok(());
+    };
+    let selected = project::discover(path)?;
+    for (namespace, source) in project::source_resources(&selected)? {
+        broker.register_resource(&namespace, &source)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn run_repl(options: &Options, offline: bool) -> Result<(), String> {
     let broker = RuntimeBroker::start_with(
         options.root.clone().or_else(|| options.project.clone()),
@@ -116,6 +128,7 @@ pub(crate) fn run_repl(options: &Options, offline: bool) -> Result<(), String> {
         options.allow_process,
         options.allow_postgres,
     )?;
+    register_project_resources(options, &broker)?;
     let mut resp = RespController::new(options.host.clone(), options.port, broker.clone());
     if !offline {
         resp.start(None)?;
@@ -886,7 +899,25 @@ fn exit_error(message: &str, status: i32) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{command_hint, fuzzy_score, gradient, incomplete, rendered_splash, DEFAULT_SPLASH};
+    use super::{
+        command_hint, fuzzy_score, gradient, incomplete, register_project_resources,
+        rendered_splash, DEFAULT_SPLASH,
+    };
+    use crate::cli::Options;
+    use hara_wasm::native_cli::RuntimeBroker;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "hara-repl-{name}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn multiline_detection_ignores_strings_comments_and_escapes() {
@@ -916,5 +947,50 @@ mod tests {
         assert!(fuzzy_score("zzz", "map").is_none());
         assert_eq!(command_hint("/re"), Some("sp".into()));
         assert!(command_hint("/docs").unwrap().contains("language"));
+    }
+
+    #[test]
+    fn project_resources_reach_root_and_future_sessions() {
+        let root = temp("project-resources");
+        fs::create_dir_all(root.join("packages/core/src/demo")).unwrap();
+        fs::create_dir_all(root.join("src/demo")).unwrap();
+        fs::write(root.join("project.edn"), "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/repl :project/version \"1.0.0\" :project/source-paths [\"packages/core/src\" \"src\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{}}").unwrap();
+        fs::write(
+            root.join("packages/core/src/demo/helper.hal"),
+            "(ns demo.helper) (defn answer [] 40)",
+        )
+        .unwrap();
+        fs::write(
+            root.join("src/demo/app.hal"),
+            "(ns demo.app (:require [demo.helper :as helper])) (defn answer [] (+ 2 (helper/answer)))",
+        )
+        .unwrap();
+
+        let mut options = Options::default();
+        options.project = Some(root.clone());
+        options.root = Some(root.clone());
+        let broker = RuntimeBroker::start_with(Some(root.clone()), false, false, false).unwrap();
+        register_project_resources(&options, &broker).unwrap();
+        assert_eq!(broker.resources().unwrap(), vec!["demo.app", "demo.helper"]);
+        assert_eq!(
+            broker
+                .eval(
+                    "ROOT",
+                    "(ns repl.probe (:require [demo.app :as app])) (app/answer)",
+                )
+                .unwrap(),
+            "42"
+        );
+        broker.create("SECOND").unwrap();
+        assert_eq!(
+            broker
+                .eval(
+                    "SECOND",
+                    "(ns repl.second (:require [demo.app :as app])) (app/answer)",
+                )
+                .unwrap(),
+            "42"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }

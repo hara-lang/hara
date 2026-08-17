@@ -451,8 +451,8 @@ pub fn files_in(root: &Path, paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> 
     Ok(output)
 }
 
-/// Registers namespaces from the automatically selected native Rust profile.
-pub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {
+/// Returns namespace resources from the automatically selected native Rust profile.
+pub fn source_resources(project: &Project) -> Result<Vec<(String, String)>, String> {
     let mut resources = Vec::new();
     let mut declarations = BTreeMap::new();
     for path in files_in(&project.root, &project.source_paths)? {
@@ -470,7 +470,12 @@ pub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), 
         }
         resources.push((namespace, source));
     }
-    for (namespace, source) in resources {
+    Ok(resources)
+}
+
+/// Registers namespaces from the automatically selected native Rust profile.
+pub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {
+    for (namespace, source) in source_resources(project)? {
         runtime.register_resource(&namespace, &source);
     }
     Ok(())
@@ -569,7 +574,9 @@ fn collect_hal(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String
 fn editor_artifact(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
-        .is_some_and(|name| name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#')))
+        .is_some_and(|name| {
+            name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#'))
+        })
 }
 
 fn validate_empty_lock(path: &Path) -> Result<(), String> {
