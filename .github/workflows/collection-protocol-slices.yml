@@ -13,6 +13,10 @@ on:
       - 'core/java/src/test/java/hara/kernel/builtin/**'
       - 'core/java/src/test/java/hara/truffle/**'
       - 'core/java/pom.xml'
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/src/lib.rs'
+      - 'core/rust/src/work.rs'
+      - 'core/rust/src/work/**'
       - '.github/workflows/collection-protocol-slices.yml'
   workflow_dispatch:
 
@@ -36,7 +40,7 @@ jobs:
             tests: hara.lang.data.CollectionsTest,hara.lang.data.ListTest,hara.lang.data.VectorTest,hara.lang.data.QueueTest,hara.lang.data.TupleTest,hara.lang.data.OrderedCollectionsTest,hara.lang.data.SortedCollectionsTest,hara.truffle.CollectionProtocolConformanceTest
           - id: protocol-dispatch
             name: Protocol dispatch and extension
-            tests: hara.lang.protocol.ProtocolTest,hara.truffle.HaraProtocolTest
+            tests: hara.lang.protocol.ProtocolTest,hara.truffle.HaraProtocolTest,hara.truffle.HaraWorkProtocolTest,hara.truffle.HaraWorkHostTest
           - id: java-truffle-interop
             name: Java-backed and Truffle interop
             tests: hara.truffle.HaraInteropTest,hara.truffle.HaraJavaAdaptersTest,hara.kernel.builtin.BuiltinInteropTest,hara.kernel.builtin.BuiltinCollectionTest
@@ -81,3 +85,29 @@ jobs:
           name: surefire-${{ matrix.id }}
           path: core/java/target/surefire-reports/
           if-no-files-found: ignore
+
+  rust-work-lifecycle:
+    name: Rust native work lifecycle
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Format focused Rust sources
+        run: rustfmt --edition 2021 core/rust/src/work.rs core/rust/src/work/session.rs
+
+      - name: Upload formatted Rust sources
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-work-formatted
+          path: |
+            core/rust/src/work.rs
+            core/rust/src/work/session.rs
+
+      - name: Run focused lifecycle tests
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --lib 'work::' -- --nocapture

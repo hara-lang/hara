@@ -48,6 +48,9 @@ pub mod snapshot_tool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tap;
 pub mod task;
+pub mod work;
+#[path = "work/session.rs"]
+mod work_session;
 // Experimental staged bytecode VM (issue #195). Non-default feature; the
 // default evaluator is untouched.
 #[cfg(feature = "tracing-jit")]
