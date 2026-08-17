@@ -1,0 +1,179 @@
+(ns work.flow.make
+  (:require [work.flow :as flow]
+            [work.flow.make.compile :as compiler]
+            [work.flow.make.host :as host]
+            [work.flow.make.trigger :as trigger]
+            [std.work :as work]))
+
+(declare &env)
+
+(def path [:make])
+
+(defn profile-definition-options
+  [profile]
+  (let [options (:workflow/options profile)
+        defaults (or (:defaults options) {})
+        direct (dissoc options :defaults)]
+    (flow/merge-options defaults direct)))
+
+(defn normalise
+  [profile qualified-name raw-definition declaration-body]
+  (if (not (map? raw-definition))
+    (throw
+     (ex-info "Make workflow definition must be a map"
+              {:workflow/name qualified-name
+               :workflow/definition raw-definition})))
+  (let [options (profile-definition-options profile)
+        raw-definition (dissoc raw-definition :workflow)
+        definition (flow/merge-options options raw-definition)
+        definition
+        (if (empty? declaration-body)
+          definition
+          (assoc definition :make/declaration-body declaration-body))]
+    (if (or (:make/id definition) (:id definition))
+      (assoc definition :make/id (or (:make/id definition)
+                                     (:id definition)))
+      (assoc definition :make/id qualified-name))))
+
+(defn compile
+  "Compiles one normalised make definition into an immutable plan."
+  ([definition]
+   (compiler/compile-plan definition))
+  ([profile definition]
+   (compiler/compile-plan definition)))
+
+(defn reconcile
+  "Installs a candidate plan while preserving an existing host identity."
+  [profile previous candidate definition]
+  (if (host/host? previous)
+    (let [previous-plan (host/plan previous)
+          running? (host/running? previous)]
+      (host/replace-plan! previous candidate)
+      (if running?
+        (trigger/reconcile-running! previous previous-plan candidate)
+        (if (= :on-define (:make/trigger-policy candidate))
+          (trigger/start! previous)))
+      previous)
+    (let [make-host (host/create candidate)]
+      (if (= :on-define (:make/trigger-policy candidate))
+        (trigger/start! make-host))
+      make-host)))
+
+(def +flow+
+  {:flow/path path
+   :flow/version 1
+   :flow/product :host
+   :flow/defaults {:defaults {:trigger-policy :on-define}}
+   :flow/merge flow/merge-options
+   :flow/normalise normalise
+   :flow/compile compile
+   :flow/reconcile reconcile})
+
+(flow/register! +flow+)
+
+(defn definition-path
+  [raw-definition]
+  (let [selected (or (:workflow raw-definition) path)]
+    (flow/assert-flow-path! selected)))
+
+(defn define-make!
+  [namespace qualified-name raw-definition declaration-body]
+  (let [selected (definition-path raw-definition)
+        profile (flow/profile-for namespace selected)]
+    (flow/define! profile
+                  qualified-name
+                  raw-definition
+                  declaration-body)))
+
+(defmacro def.make
+  "Defines one reloadable make host using its namespace-local profile."
+  [definition-name definition & declaration-body]
+  (if (not (symbol? definition-name))
+    (throw
+     (ex-info "def.make requires a symbol name"
+              {:make/name definition-name})))
+  (let [namespace (get &env :ns)
+        qualified-name
+        (symbol (str namespace) (name definition-name))]
+    `(def ~definition-name
+       (work.flow.make/define-make!
+        (quote ~namespace)
+        (quote ~qualified-name)
+        ~definition
+        (quote ~declaration-body)))))
+
+(defn plan
+  [make-host]
+  (host/plan make-host))
+
+(defn targets
+  [make-host]
+  (:make/targets (plan make-host)))
+
+(defn target-work
+  [make-host directive]
+  (compiler/target-work (plan make-host) directive))
+
+(defn revision
+  [make-host]
+  (host/revision make-host))
+
+(defn status
+  [make-host]
+  (host/status make-host))
+
+(def host? host/host?)
+
+(defn start!
+  [make-host]
+  (trigger/start! make-host))
+
+(defn stop!
+  [make-host]
+  (trigger/stop! make-host))
+
+(defn run
+  "Runs one make target through std.work.
+
+   A directive may be a target keyword or [target selector]."
+  ([make-host]
+   (run make-host :default nil {}))
+  ([make-host directive]
+   (run make-host directive nil {}))
+  ([make-host directive input]
+   (run make-host directive input {}))
+  ([make-host directive input options]
+   (let [runtime (or (:runtime options) (work/local-runtime))
+         run-options (dissoc options :runtime)]
+     (work/run runtime
+               (target-work make-host directive)
+               input
+               run-options))))
+
+(defn build
+  ([make-host]
+   (run make-host :default))
+  ([make-host directive]
+   (run make-host directive)))
+
+(defn clean
+  ([make-host]
+   (clean make-host nil))
+  ([make-host input]
+   (let [current-plan (plan make-host)
+         clean-target (get (:make/targets current-plan) :clean)
+         definition (:make/definition current-plan)
+         clean-function
+         (or (get-in definition [:clean :fn])
+             (if (fn? (:clean definition))
+               (:clean definition)
+               nil))]
+     (cond
+       clean-target
+       (run make-host :clean input)
+
+       clean-function
+       (clean-function definition input)
+
+       :else
+       nil))))

@@ -1,8 +1,17 @@
 (ns work.flow.task
   (:require [work.flow :as flow]
-            [std.work.template.task :as task]))
+            [std.work.template.task :as template]))
+
+(declare &env)
 
 (def path [:task])
+
+(defn profile-definition-options
+  [profile]
+  (let [options (:workflow/options profile)
+        defaults (or (:defaults options) {})
+        direct (dissoc options :defaults)]
+    (flow/merge-options defaults direct)))
 
 (defn normalise
   [profile qualified-name raw-definition declaration-body]
@@ -11,15 +20,30 @@
      (ex-info "Task workflow definition must be a map"
               {:workflow/name qualified-name
                :workflow/definition raw-definition})))
-  (let [options (:workflow/options profile)
-        definition (flow/merge-options options raw-definition)]
+  (let [options (profile-definition-options profile)
+        raw-definition (dissoc raw-definition :workflow)
+        definition (flow/merge-options options raw-definition)
+        definition
+        (if (empty? declaration-body)
+          definition
+          (assoc definition :task/declaration-body declaration-body))]
     (if (or (:task/id definition) (:id definition))
       definition
       (assoc definition :task/id qualified-name))))
 
 (defn compile
-  [profile definition]
-  (task/compile definition))
+  "Compiles a task definition through the historical task template."
+  ([definition]
+   (template/compile definition))
+  ([profile definition]
+   (template/compile definition)))
+
+(def task compile)
+
+(defn invoke
+  "Invokes one compiled task through its historical callable surface."
+  [task-value & arguments]
+  (apply task-value arguments))
 
 (defn reconcile
   [profile previous candidate definition]
@@ -29,13 +53,56 @@
   {:flow/path path
    :flow/version 1
    :flow/product :work
+   :flow/defaults {:defaults template/default-task-options}
+   :flow/merge flow/merge-options
    :flow/normalise normalise
    :flow/compile compile
-   :flow/reconcile reconcile})
+   :flow/reconcile reconcile
+   :flow/invoke invoke})
 
 (flow/register! +flow+)
 
-(def request task/request)
-(def invocation task/invocation)
-(def invocation-arguments task/invocation-arguments)
-(def task-work? task/task-work?)
+(defn definition-path
+  [raw-definition]
+  (let [selected (or (:workflow raw-definition) path)]
+    (flow/assert-flow-path! selected)))
+
+(defn define-task!
+  [namespace qualified-name raw-definition declaration-body]
+  (let [selected (definition-path raw-definition)
+        profile (flow/profile-for namespace selected)]
+    (flow/define! profile
+                  qualified-name
+                  raw-definition
+                  declaration-body)))
+
+(defmacro def.task
+  "Defines one callable task using its namespace-local workflow profile."
+  [definition-name definition & declaration-body]
+  (if (not (symbol? definition-name))
+    (throw
+     (ex-info "def.task requires a symbol name"
+              {:task/name definition-name})))
+  (let [namespace (get &env :ns)
+        qualified-name
+        (symbol (str namespace) (name definition-name))]
+    `(def ~definition-name
+       (work.flow.task/define-task!
+        (quote ~namespace)
+        (quote ~qualified-name)
+        ~definition
+        (quote ~declaration-body)))))
+
+(defmacro deftask
+  "Compatibility alias for def.task."
+  [definition-name definition & declaration-body]
+  `(work.flow.task/def.task
+    ~definition-name
+    ~definition
+    ~@declaration-body))
+
+(def request template/request)
+(def invocation template/invocation)
+(def invocation-arguments template/invocation-arguments)
+(def task-work? template/task-work?)
+(def default-task-options template/default-task-options)
