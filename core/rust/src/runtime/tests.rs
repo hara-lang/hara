@@ -3,6 +3,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn in_process_sandbox_lifecycle_is_private_and_explicitly_non_secure() {
+        let mut kernel = SessionKernel::new();
+        let provider = Rc::new(InProcessSandboxProvider);
+        assert!(!provider.secure());
+        kernel.register_sandbox_provider(provider);
+        let sessions_before = kernel.session_names();
+
+        let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+        assert_eq!(kernel.session_names(), sessions_before);
+        assert_eq!(
+            kernel
+                .sandbox_eval(sandbox, "(def answer 41) answer")
+                .unwrap(),
+            "41"
+        );
+        assert_eq!(
+            kernel.sandbox_call(sandbox, "+", &["answer", "1"]).unwrap(),
+            "42"
+        );
+        assert_eq!(
+            kernel.sandbox_status(sandbox).unwrap().state,
+            SandboxState::Open
+        );
+        assert!(!kernel.cancel_sandbox(sandbox).unwrap());
+        assert_eq!(
+            kernel.sandbox_status(sandbox).unwrap().state,
+            SandboxState::Cancelled
+        );
+        kernel.close_sandbox(sandbox).unwrap();
+        assert_eq!(
+            kernel.sandbox_status(sandbox).unwrap_err().code,
+            SandboxErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn sandbox_spec_validation_and_runtime_isolation_are_enforced() {
+        let invalid = SandboxSpec::new(
+            SANDBOX_SPEC_PROTOCOL,
+            "in-process",
+            "hara.standard/0-alpha",
+            "user",
+            SandboxLimits {
+                active_evaluations: 2,
+                ..SandboxLimits::default()
+            },
+        );
+        assert_eq!(
+            invalid.unwrap_err().code,
+            SandboxErrorCode::InvalidSpec
+        );
+
+        let mut kernel = SessionKernel::new();
+        kernel.register_sandbox_provider(Rc::new(InProcessSandboxProvider));
+        let root = SessionId::parse("ROOT").unwrap();
+        kernel
+            .eval(&root, "(do (def parent-secret 42) nil)")
+            .unwrap();
+        let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+        let error = kernel.sandbox_eval(sandbox, "parent-secret").unwrap_err();
+        assert_eq!(error.code, SandboxErrorCode::EvaluationFailed);
+    }
+
+    #[test]
     fn evaluator_owns_lexical_state_without_owning_namespace_state() {
         let registry = kernel::NamespaceRegistry::<core::Value>::new("user");
         let mut evaluator = Evaluator::new();
@@ -109,11 +173,7 @@ mod tests {
         }
     }
 
-    fn register_lib_tree(
-        runtime: &mut Runtime,
-        root: &std::path::Path,
-        dir: &std::path::Path,
-    ) {
+    fn register_lib_tree(runtime: &mut Runtime, root: &std::path::Path, dir: &std::path::Path) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
@@ -251,10 +311,7 @@ mod tests {
         let beta = session_id("beta");
         kernel.create_session(alpha.clone()).unwrap();
         kernel.create_session(beta.clone()).unwrap();
-        assert_eq!(
-            kernel.eval(&alpha, "(def answer 41) answer").unwrap(),
-            "41"
-        );
+        assert_eq!(kernel.eval(&alpha, "(def answer 41) answer").unwrap(), "41");
         assert_eq!(kernel.eval(&beta, "(def answer 6) answer").unwrap(), "6");
         let mount = kernel.create_memory_filesystem("/");
         kernel.attach_filesystem(&alpha, mount).unwrap();
@@ -272,10 +329,7 @@ mod tests {
         );
         assert_eq!(
             kernel
-                .eval(
-                    &beta,
-                    "(deref (std.native.File/exists? \"/shared.bin\"))",
-                )
+                .eval(&beta, "(deref (std.native.File/exists? \"/shared.bin\"))",)
                 .unwrap(),
             "true"
         );
@@ -430,7 +484,10 @@ mod tests {
             .construct("range", "range", &[core::Value::Number(3)])
             .unwrap();
         assert_eq!(core::receiver_category(&value), "extension");
-        runtime.evaluator.environment_mut().insert("r".into(), value);
+        runtime
+            .evaluator
+            .environment_mut()
+            .insert("r".into(), value);
         assert_eq!(runtime.eval_text("(iter-next (iter r))").unwrap(), "0");
         assert_eq!(runtime.eval_text("(iter-next (iter r))").unwrap(), "0");
         assert_eq!(runtime.require_resource("range").unwrap(), ":loaded");
@@ -685,9 +742,7 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text(
-                    "(deref (file/write \"/list/b.bin\" (bytes 2) {:parents? true}))",
-                )
+                .eval_text("(deref (file/write \"/list/b.bin\" (bytes 2) {:parents? true}))",)
                 .unwrap(),
             "\"/list/b.bin\""
         );
@@ -820,10 +875,7 @@ mod tests {
     fn memory_file_provider_exposes_one_logical_root_and_preserves_bytes() {
         use crate::core::FileProvider;
         let files = core::MemoryFileProvider::new("ignored-host-label");
-        assert_eq!(
-            files.resolve("/", "docs/../secret").unwrap(),
-            "/secret"
-        );
+        assert_eq!(files.resolve("/", "docs/../secret").unwrap(), "/secret");
         assert_eq!(
             files.resolve("/", "../escape").unwrap_err(),
             core::FileError::OutsideRoot
@@ -849,7 +901,10 @@ mod tests {
     fn unsupported_capabilities_fail_stably() {
         use crate::core::{FileProvider, SocketProvider};
         let files = core::UnsupportedFileProvider;
-        assert_eq!(files.resolve("/root", "data.bin").unwrap(), "/root/data.bin");
+        assert_eq!(
+            files.resolve("/root", "data.bin").unwrap(),
+            "/root/data.bin"
+        );
         assert!(matches!(
             files.read("data.bin").unwrap().state(),
             core::PromiseState::Rejected(_)
@@ -937,12 +992,7 @@ mod tests {
             _ => panic!("definition must be a Var"),
         };
         assert_eq!(local.symbol().as_str(), "alpha/answer");
-        let qualified = match runtime
-            .evaluator
-            .environment()
-            .get("alpha/answer")
-            .unwrap()
-        {
+        let qualified = match runtime.evaluator.environment().get("alpha/answer").unwrap() {
             core::Value::Var(var) => var.clone(),
             _ => panic!("qualified definition must be a Var"),
         };
@@ -1457,7 +1507,8 @@ mod tests {
         else {
             return;
         };
-        let fixture = include_str!("../../hal-test-fixtures/std/foundation/protocol_conformance.hal");
+        let fixture =
+            include_str!("../../hal-test-fixtures/std/foundation/protocol_conformance.hal");
         // 54 shared-contract protocols plus IMatch, which is runtime-internal
         // and intentionally absent from the contract and its fixture.
         assert_eq!(core::FOUNDATION_PROTOCOLS.len(), 55);
@@ -1674,7 +1725,8 @@ mod tests {
 
     #[test]
     fn shared_foundation_protocol_functionality_fixture_runs_in_the_native_runtime() {
-        let source = include_str!("../../hal-test-fixtures/std/foundation/protocol_functionality.hal");
+        let source =
+            include_str!("../../hal-test-fixtures/std/foundation/protocol_functionality.hal");
         let Some(catalog) =
             repo_text("00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn")
         else {
@@ -2450,7 +2502,10 @@ mod tests {
             "(Process/duplex nil)",
             "(Socket/duplex nil)",
         ] {
-            assert!(runtime.eval_text(source).is_err(), "{source} must remain absent");
+            assert!(
+                runtime.eval_text(source).is_err(),
+                "{source} must remain absent"
+            );
         }
     }
 
@@ -2658,9 +2713,7 @@ mod tests {
             .eval_text("(ns collection.runtime (:require [std.lib.collection :as collection]))")
             .unwrap();
         assert_eq!(
-            runtime
-                .eval_text("(Algo/deque? (Algo/deque 1 2))")
-                .unwrap(),
+            runtime.eval_text("(Algo/deque? (Algo/deque 1 2))").unwrap(),
             "true"
         );
         for source in [
@@ -2915,7 +2968,9 @@ mod tests {
         assert_eq!(runtime.eval_text("(identity 42)").unwrap(), "42");
         assert_eq!(runtime.eval_text("(apply-with 2 + 1 3)").unwrap(), "6");
         assert_eq!(
-            runtime.eval_text("(std.foundation/apply-with 2 + 19 21)").unwrap(),
+            runtime
+                .eval_text("(std.foundation/apply-with 2 + 19 21)")
+                .unwrap(),
             "42"
         );
         assert!(runtime.eval_text("(apply-with 2 1)").is_err());
@@ -3603,21 +3658,24 @@ mod tests {
 
         assert_eq!(
             runtime
-                .eval_text(
-                    "(Test/run [{:name \"one\" :test (fn [] (+ 1 1)) :expected 2}])"
-                )
+                .eval_text("(Test/run [{:name \"one\" :test (fn [] (+ 1 1)) :expected 2}])")
                 .unwrap(),
             "[{:name \"one\" :pass true :actual 2 :expected 2}]"
         );
         let cumulative = runtime
-            .eval_text(
-                "(Test/run [{:name \"two\" :test (fn [] (throw \"boom\")) :expected 2}])"
-            )
+            .eval_text("(Test/run [{:name \"two\" :test (fn [] (throw \"boom\")) :expected 2}])")
             .unwrap();
         assert!(cumulative.contains(":name \"one\""), "{cumulative}");
         assert!(cumulative.contains(":name \"two\""), "{cumulative}");
         assert!(cumulative.contains(":status :error"), "{cumulative}");
-        assert_eq!(runtime.eval_text("(Test/run [])").unwrap().matches(":name").count(), 2);
+        assert_eq!(
+            runtime
+                .eval_text("(Test/run [])")
+                .unwrap()
+                .matches(":name")
+                .count(),
+            2
+        );
         let malformed = runtime.eval_text("(Test/run [{} 1])").unwrap();
         assert_eq!(malformed.matches(":pass false").count(), 3, "{malformed}");
 
@@ -4737,9 +4795,15 @@ mod tests {
                 .unwrap(),
             "[:std.native.SchemaType true true :primitive true true true true true true true true true]"
         );
-        assert!(runtime.eval_text("(std.native.Base/schema #'customer-name)").is_err());
-        assert!(runtime.eval_text("(std.native.Base/schema customer-name)").is_err());
-        assert!(runtime.eval_text("(std.native.Base/schema-of customer-name)").is_err());
+        assert!(runtime
+            .eval_text("(std.native.Base/schema #'customer-name)")
+            .is_err());
+        assert!(runtime
+            .eval_text("(std.native.Base/schema customer-name)")
+            .is_err());
+        assert!(runtime
+            .eval_text("(std.native.Base/schema-of customer-name)")
+            .is_err());
         assert_eq!(
             runtime
                 .eval_bytecode_native(
@@ -6401,13 +6465,9 @@ mod tests {
                     };
                     entry
                         .iter()
-                        .find_map(|(key, value)| {
-                            match (key, value) {
-                                (Form::Keyword(k), Form::Symbol(n)) if k == "name" => {
-                                    Some(n.clone())
-                                }
-                                _ => None,
-                            }
+                        .find_map(|(key, value)| match (key, value) {
+                            (Form::Keyword(k), Form::Symbol(n)) if k == "name" => Some(n.clone()),
+                            _ => None,
                         })
                         .expect("native :name")
                 })
@@ -6423,9 +6483,7 @@ mod tests {
             );
             assert_eq!(
                 runtime
-                    .eval_text(
-                        "(vec (sort code.translate.rules/+native-static-types+))",
-                    )
+                    .eval_text("(vec (sort code.translate.rules/+native-static-types+))",)
                     .unwrap(),
                 expected,
                 "code.translate.rules/+native-static-types+ differs from native.edn"
@@ -7443,10 +7501,7 @@ mod tests {
     #[test]
     fn foundation_environment_facade_inspects_without_loading_registered_namespaces() {
         let mut runtime = Runtime::new();
-        runtime.register_resource(
-            "example.unloaded",
-            "(ns example.unloaded) (def answer 42)",
-        );
+        runtime.register_resource("example.unloaded", "(ns example.unloaded) (def answer 42)");
         runtime.eval_native("(def local-value 7)").unwrap();
 
         assert_eq!(
@@ -7467,8 +7522,17 @@ mod tests {
             .eval_native("(std.foundation/env-vars)")
             .unwrap()
             .contains("local-value"));
-        assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");
-        assert_eq!(runtime.eval_native("example.unloaded/answer").unwrap_err().contains("unbound"), true);
+        assert_eq!(
+            runtime.eval_native("(ns-state 'example.unloaded)").unwrap(),
+            ":unloaded"
+        );
+        assert_eq!(
+            runtime
+                .eval_native("example.unloaded/answer")
+                .unwrap_err()
+                .contains("unbound"),
+            true
+        );
     }
 
     #[test]
@@ -7501,16 +7565,19 @@ mod tests {
                 .unwrap(),
             ":available"
         );
-        assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");
+        assert_eq!(
+            runtime.eval_native("(ns-state 'example.unloaded)").unwrap(),
+            ":unloaded"
+        );
         let missing = runtime
             .eval_native("(require 'example.unloaded)")
             .unwrap_err();
         assert!(missing.contains("package/not-installed"), "{missing}");
-        assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");
-        runtime.register_resource(
-            "example.unloaded",
-            "(ns example.unloaded) (def answer 42)",
+        assert_eq!(
+            runtime.eval_native("(ns-state 'example.unloaded)").unwrap(),
+            ":unloaded"
         );
+        runtime.register_resource("example.unloaded", "(ns example.unloaded) (def answer 42)");
         assert_eq!(
             runtime
                 .eval_native("(deref (Package/ensure 'example.unloaded))")
@@ -7523,7 +7590,10 @@ mod tests {
                 .unwrap(),
             "example.unloaded"
         );
-        assert_eq!(runtime.eval_native("example.unloaded/answer").unwrap(), "42");
+        assert_eq!(
+            runtime.eval_native("example.unloaded/answer").unwrap(),
+            "42"
+        );
         assert_eq!(
             runtime
                 .eval_native("(deref (Package/unload 'example.unloaded {:cascade false}))")
@@ -7531,7 +7601,9 @@ mod tests {
             "[\"hara:example/package\"]"
         );
         assert_eq!(
-            runtime.eval_native("(Package/state 'example.unloaded)").unwrap(),
+            runtime
+                .eval_native("(Package/state 'example.unloaded)")
+                .unwrap(),
             ":available"
         );
     }
