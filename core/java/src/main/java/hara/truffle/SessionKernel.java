@@ -1,19 +1,18 @@
 package hara.truffle;
 
-import hara.lang.protocol.Constant;
 import hara.lang.protocol.IApplicable;
 import hara.lang.protocol.IComponent;
 import hara.lang.protocol.IContext;
 import hara.lang.protocol.IInvokeIn;
 import hara.lang.protocol.IMetadata;
 import java.io.IOException;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
@@ -26,10 +25,10 @@ final class SessionKernel implements AutoCloseable {
   /**
    * Host authority applied when a context is created.
    *
-   * <p>This policy does not include a filesystem mounted explicitly through
-   * {@link SessionKernel#attachFilesystem(String, Path)}. Such a mount is a separately delegated,
-   * scoped resource. In-process namespace and context separation remains logical isolation, not a
-   * security boundary.
+   * <p>This policy does not include a filesystem mounted explicitly through {@link
+   * SessionKernel#attachFilesystem(SessionModel.SessionId, SessionModel.SessionMountId)}. Such a
+   * mount is a separately delegated, scoped resource. In-process namespace and context separation
+   * remains logical isolation, not a security boundary.
    */
   static final class SessionAuthorityPolicy {
     static final SessionAuthorityPolicy ZERO =
@@ -77,6 +76,7 @@ final class SessionKernel implements AutoCloseable {
 
   private final boolean allowFile;
   private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
+  private static final SessionModel.SessionId ROOT_ID = SessionModel.SessionId.parse("ROOT");
 
   SessionKernel(boolean allowFile, boolean allowNetwork) {
     this(allowFile, allowNetwork, false);
@@ -91,42 +91,45 @@ final class SessionKernel implements AutoCloseable {
     this.allowFile = allowFile;
     SessionAuthorityPolicy rootAuthority =
         SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
-    sessions.put("ROOT", new Session("ROOT", rootAuthority, project));
+    sessions.put(
+        ROOT_ID.value(),
+        new Session(new SessionModel.SessionSpec(ROOT_ID, rootAuthority), project));
   }
 
   Session root() {
-    return require("ROOT");
+    return require(ROOT_ID);
   }
 
-  Session require(String name) {
-    Session session = sessions.get(name);
-    if (session == null) throw new IllegalArgumentException("NO_SESSION " + name);
+  Session require(SessionModel.SessionId id) {
+    Session session = sessions.get(id.value());
+    if (session == null) throw new IllegalArgumentException("NO_SESSION " + id);
     return session;
   }
 
-  synchronized Session create(String value) {
-    String name = normalizeName(value);
-    if (sessions.containsKey(name)) throw new IllegalArgumentException("SESSION_EXISTS " + name);
-    Session session = new Session(name, SessionAuthorityPolicy.ZERO, null);
-    sessions.put(name, session);
+  synchronized Session create(SessionModel.SessionId id) {
+    if (sessions.containsKey(id.value()))
+      throw new IllegalArgumentException("SESSION_EXISTS " + id);
+    Session session = new Session(SessionModel.SessionSpec.zeroAuthority(id), null);
+    sessions.put(id.value(), session);
     return session;
   }
 
-  void attachFilesystem(String session, Path root) {
+  void attachFilesystem(SessionModel.SessionId session, SessionModel.SessionMountId filesystem) {
     if (!allowFile) throw new IllegalArgumentException("FILE_ACCESS_DENIED");
-    require(session).attachFilesystem(root);
+    require(session).attachFilesystem(filesystem);
   }
 
-  synchronized void closeSession(String value) {
-    String name = normalizeName(value);
-    if ("ROOT".equals(name)) throw new IllegalArgumentException("ROOT_CANNOT_CLOSE");
-    Session removed = sessions.remove(name);
-    if (removed == null) throw new IllegalArgumentException("NO_SESSION " + name);
+  synchronized void closeSession(SessionModel.SessionId id) {
+    if (ROOT_ID.equals(id)) throw new IllegalArgumentException("ROOT_CANNOT_CLOSE");
+    Session removed = sessions.remove(id.value());
+    if (removed == null) throw new IllegalArgumentException("NO_SESSION " + id);
     removed.close();
   }
 
-  Set<String> sessionNames() {
-    return Collections.unmodifiableSet(sessions.keySet());
+  Set<SessionModel.SessionId> sessionIds() {
+    java.util.HashSet<SessionModel.SessionId> ids = new java.util.HashSet<>();
+    for (Session session : sessions.values()) ids.add(session.id());
+    return Collections.unmodifiableSet(ids);
   }
 
   int size() {
@@ -139,64 +142,40 @@ final class SessionKernel implements AutoCloseable {
     sessions.clear();
   }
 
-  static String normalizeName(String value) {
-    if (value == null || value.isEmpty() || !value.matches("[A-Za-z0-9_.-]+"))
-      throw new IllegalArgumentException("INVALID_SESSION_NAME");
-    return value;
-  }
-
   static final class Session
       implements AutoCloseable, IContext, IComponent, IApplicable, IInvokeIn {
-    private final String name;
+    private final SessionModel.SessionSpec spec;
     private final SessionAuthorityPolicy authority;
     private final HaraProject project;
     private Context context;
-    private Path filesystemRoot;
+    private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
-    private final java.util.concurrent.atomic.AtomicBoolean active =
-        new java.util.concurrent.atomic.AtomicBoolean(true);
+    private final AtomicReference<SessionModel.SessionState> state =
+        new AtomicReference<>(SessionModel.SessionState.NEW);
 
-    static final class SessionMetadata implements IMetadata {
-      final String name;
-      final String namespace;
-      final String state;
-      final String filesystem;
-      final String authority;
+    private record AttachedFilesystem(
+        SessionModel.SessionMountId id, HaraMountedFileSystem provider) {}
 
-      SessionMetadata(
-          String name, String namespace, String state, String filesystem, String authority) {
-        this.name = name;
-        this.namespace = namespace;
-        this.state = state;
-        this.filesystem = filesystem;
-        this.authority = authority;
-      }
-
-      @Override
-      public Constant.MetaType getMetatype() {
-        return Constant.MetaType.MAP;
-      }
-    }
-
-    private Session(String name, SessionAuthorityPolicy authority, HaraProject project) {
-      this.name = name;
-      this.authority = authority;
+    private Session(SessionModel.SessionSpec spec, HaraProject project) {
+      this.spec = spec;
+      this.authority = spec.authority();
       this.project = project;
       context = createContext(null);
+      activate();
     }
 
-    private Context createContext(Path root) {
+    private Context createContext(AttachedFilesystem filesystem) {
       IOAccess.Builder io = IOAccess.newBuilder().allowHostSocketAccess(authority.hostNetwork);
-      if (root == null) {
+      if (filesystem == null) {
         io.allowHostFileAccess(authority.hostFilesystem);
       } else {
-        io.allowHostFileAccess(false).fileSystem(new HaraMountedFileSystem(root));
+        io.allowHostFileAccess(false).fileSystem(filesystem.provider());
       }
       Context.Builder builder =
           Context.newBuilder(HaraLanguage.ID)
               .allowCreateProcess(authority.hostProcess)
               .allowIO(io.build());
-      if (authority.project && project != null && root == null) {
+      if (authority.project && project != null && filesystem == null) {
         builder.currentWorkingDirectory(project.root());
       }
       if (authority.reflection && project != null) {
@@ -206,31 +185,53 @@ final class SessionKernel implements AutoCloseable {
     }
 
     private void requireActive() {
-      if (!active.get()) throw new IllegalStateException("SESSION_CLOSED " + name);
+      SessionModel.SessionState current = state.get();
+      if (current == SessionModel.SessionState.CLOSED)
+        throw new IllegalStateException("SESSION_CLOSED " + id());
+      if (current != SessionModel.SessionState.ACTIVE)
+        throw new IllegalStateException("SESSION_NOT_ACTIVE " + id() + " " + current);
     }
 
-    void attachFilesystem(Path root) {
+    void attachFilesystem(SessionModel.SessionMountId mountId) {
       requireActive();
-      if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + name);
-      Path normalized = root.toAbsolutePath().normalize();
-      if (!java.nio.file.Files.isDirectory(normalized)) {
-        throw new IllegalArgumentException("FILESYSTEM_NOT_FOUND " + normalized);
+      if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + id());
+      if (!java.nio.file.Files.isDirectory(mountId.root())) {
+        throw new IllegalArgumentException("FILESYSTEM_NOT_FOUND " + mountId);
       }
-      Context replacement = createContext(normalized);
+      AttachedFilesystem attached =
+          new AttachedFilesystem(mountId, new HaraMountedFileSystem(mountId.root()));
+      Context replacement = createContext(attached);
       synchronized (this) {
+        if (state.get() != SessionModel.SessionState.ACTIVE) {
+          replacement.close(true);
+          requireActive();
+        }
         if (activeEvaluations.get() != 0) {
           replacement.close(true);
-          throw new IllegalArgumentException("SESSION_BUSY " + name);
+          throw new IllegalArgumentException("SESSION_BUSY " + id());
         }
         Context previous = context;
         context = replacement;
-        filesystemRoot = normalized;
+        filesystem = attached;
         previous.close(true);
       }
     }
 
+    SessionModel.SessionId id() {
+      return spec.id();
+    }
+
     String name() {
-      return name;
+      return id().value();
+    }
+
+    SessionModel.SessionState state() {
+      return state.get();
+    }
+
+    SessionModel.SessionMountId filesystemMount() {
+      AttachedFilesystem attached = filesystem;
+      return attached == null ? null : attached.id();
     }
 
     SessionAuthorityPolicy authority() {
@@ -282,8 +283,7 @@ final class SessionKernel implements AutoCloseable {
         while (entries.hasIteratorNextElement()) {
           Value entry = entries.getIteratorNextElement();
           transferred.put(
-              transferValue(entry.getArrayElement(0)),
-              transferValue(entry.getArrayElement(1)));
+              transferValue(entry.getArrayElement(0)), transferValue(entry.getArrayElement(1)));
         }
         return HaraPersistentValues.normalize(transferred);
       }
@@ -315,10 +315,10 @@ final class SessionKernel implements AutoCloseable {
     }
 
     Value eval(String source, String file, int line, int column) {
-      requireActive();
       activeEvaluations.incrementAndGet();
       try {
         synchronized (this) {
+          requireActive();
           if (file == null || file.isBlank()) return context.eval(HaraLanguage.ID, source);
           int safeLine = Math.max(1, line);
           int safeColumn = Math.max(1, column);
@@ -331,7 +331,8 @@ final class SessionKernel implements AutoCloseable {
           return context.eval(contextualSource);
         }
       } catch (IOException error) {
-        throw new IllegalArgumentException("Unable to construct Hara source: " + error.getMessage(), error);
+        throw new IllegalArgumentException(
+            "Unable to construct Hara source: " + error.getMessage(), error);
       } catch (PolyglotException error) {
         throw new IllegalArgumentException(error.getMessage(), error);
       } finally {
@@ -355,12 +356,12 @@ final class SessionKernel implements AutoCloseable {
 
     List<Object> info() {
       String filesystem =
-          filesystemRoot == null
+          this.filesystem == null
               ? (authority.hostFilesystem ? "HOST" : "DENIED")
-              : filesystemRoot.toString();
+              : this.filesystem.id().toString();
       return List.of(
-          "NAME", name,
-          "STATE", "RUNNING",
+          "NAME", name(),
+          "STATE", state().toString().toUpperCase(java.util.Locale.ROOT),
           "FILESYSTEM", filesystem,
           "AUTHORITY", authority.profile());
     }
@@ -369,7 +370,7 @@ final class SessionKernel implements AutoCloseable {
     public Object call(Object... args) {
       requireActive();
       if (args == null || args.length != 1 || !(args[0] instanceof String)) {
-        throw new IllegalArgumentException("SESSION_CALL_EXPECTS_SOURCE " + name);
+        throw new IllegalArgumentException("SESSION_CALL_EXPECTS_SOURCE " + id());
       }
       return evalTransfer((String) args[0]);
     }
@@ -384,33 +385,29 @@ final class SessionKernel implements AutoCloseable {
       return metadata();
     }
 
-    private SessionMetadata metadata() {
-      boolean running = active.get();
-      String filesystem =
-          filesystemRoot == null
-              ? (authority.hostFilesystem ? "HOST" : null)
-              : filesystemRoot.toString();
-      return new SessionMetadata(
-          name,
+    private SessionModel.SessionStatus metadata() {
+      boolean running = state.get() == SessionModel.SessionState.ACTIVE;
+      return new SessionModel.SessionStatus(
+          id(),
           running ? currentNamespace() : null,
-          running ? (activeEvaluations.get() == 0 ? "idle" : "busy") : "closed",
-          filesystem,
-          authority.profile());
+          state(),
+          filesystemMount(),
+          authority);
     }
 
     @Override
     public boolean isStarted() {
-      return active.get();
+      return state.get() == SessionModel.SessionState.ACTIVE;
     }
 
     @Override
     public boolean isStopped() {
-      return !active.get();
+      return state.get() == SessionModel.SessionState.CLOSED;
     }
 
     @Override
     public IComponent start() {
-      if (!active.get()) throw new IllegalStateException("SESSION_CLOSED " + name);
+      requireActive();
       return this;
     }
 
@@ -429,7 +426,7 @@ final class SessionKernel implements AutoCloseable {
     public Object applyIn(Object runtime, Object[] args) {
       requireActive();
       if (!(runtime instanceof IContext)) {
-        throw new IllegalArgumentException("SESSION_APPLY_EXPECTS_CONTEXT " + name);
+        throw new IllegalArgumentException("SESSION_APPLY_EXPECTS_CONTEXT " + id());
       }
       return ((IContext) runtime).call(args == null ? new Object[0] : args);
     }
@@ -451,7 +448,18 @@ final class SessionKernel implements AutoCloseable {
 
     @Override
     public synchronized void close() {
-      if (active.compareAndSet(true, false)) context.close(true);
+      if (!state.compareAndSet(SessionModel.SessionState.ACTIVE, SessionModel.SessionState.CLOSED))
+        return;
+      Context ownedContext = context;
+      context = null;
+      filesystem = null;
+      if (ownedContext != null) ownedContext.close(true);
+    }
+
+    private void activate() {
+      if (!state.compareAndSet(SessionModel.SessionState.NEW, SessionModel.SessionState.ACTIVE)) {
+        throw new IllegalStateException("SESSION_ALREADY_STARTED " + id());
+      }
     }
   }
 }
