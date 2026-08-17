@@ -44,3 +44,23 @@ fn documentation_preserves_runtime_metadata() {
     );
     assert!(broker.documentation("ROOT", "missing").is_err());
 }
+
+#[test]
+fn development_resources_are_owned_by_the_kernel_and_seed_future_sessions() {
+    let broker = RuntimeBroker::start().unwrap();
+    broker
+        .register_resource("demo.value", "(ns demo.value) (def answer 42)")
+        .unwrap();
+    assert_eq!(broker.resources().unwrap(), vec!["demo.value"]);
+
+    broker.create("APP").unwrap();
+    assert_eq!(
+        broker
+            .eval("APP", "(require [demo.value]) demo.value/answer")
+            .unwrap(),
+        "42"
+    );
+
+    broker.remove_resource("demo.value").unwrap();
+    assert!(broker.resources().unwrap().is_empty());
+}

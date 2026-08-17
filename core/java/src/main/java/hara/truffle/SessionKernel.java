@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
@@ -79,15 +80,42 @@ final class SessionKernel implements AutoCloseable {
   }
 
   private final boolean allowFile;
-  private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<Long, FilesystemMount> mounts = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<String, Long> sessionMounts = new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<String, SandboxProvider> sandboxProviders =
-      new ConcurrentHashMap<>();
-  private final ConcurrentHashMap<Long, Sandbox> sandboxes = new ConcurrentHashMap<>();
-  private final AtomicLong nextMountId = new AtomicLong(1);
-  private final AtomicLong nextSandboxId = new AtomicLong(1);
+  private final SessionRegistry sessionRegistry = new SessionRegistry();
+  private final MountRegistry mountRegistry = new MountRegistry();
+  private final DevelopmentResourceCatalog developmentResources =
+      new DevelopmentResourceCatalog();
+  private final BundleCatalog bundleCatalog = new BundleCatalog();
+  private final SandboxProviderRegistry sandboxProviderRegistry =
+      new SandboxProviderRegistry();
+  private final SandboxRegistry sandboxRegistry = new SandboxRegistry();
   private static final SessionModel.SessionId ROOT_ID = SessionModel.SessionId.parse("ROOT");
+
+  private static final class SessionRegistry {
+    final ConcurrentHashMap<String, Session> entries = new ConcurrentHashMap<>();
+  }
+
+  private static final class MountRegistry {
+    final ConcurrentHashMap<Long, FilesystemMount> entries = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<String, Long> sessionAttachments = new ConcurrentHashMap<>();
+    final AtomicLong nextId = new AtomicLong(1);
+  }
+
+  private static final class DevelopmentResourceCatalog {
+    final ConcurrentHashMap<String, String> entries = new ConcurrentHashMap<>();
+  }
+
+  private static final class BundleCatalog {
+    final ConcurrentHashMap<String, byte[]> entries = new ConcurrentHashMap<>();
+  }
+
+  private static final class SandboxProviderRegistry {
+    final ConcurrentHashMap<String, SandboxProvider> entries = new ConcurrentHashMap<>();
+  }
+
+  private static final class SandboxRegistry {
+    final ConcurrentHashMap<Long, Sandbox> entries = new ConcurrentHashMap<>();
+    final AtomicLong nextId = new AtomicLong(1);
+  }
 
   private static final class FilesystemMount {
     final HaraMountedFileSystem provider;
@@ -115,7 +143,7 @@ final class SessionKernel implements AutoCloseable {
     this.allowFile = allowFile;
     SessionAuthorityPolicy rootAuthority =
         SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
-    sessions.put(
+    sessionRegistry.entries.put(
         ROOT_ID.value(),
         new Session(
             new SessionModel.SessionSpec(ROOT_ID, rootAuthority),
@@ -128,18 +156,18 @@ final class SessionKernel implements AutoCloseable {
   }
 
   Session require(SessionModel.SessionId id) {
-    Session session = sessions.get(id.value());
+    Session session = sessionRegistry.entries.get(id.value());
     if (session == null) throw new IllegalArgumentException("NO_SESSION " + id);
     return session;
   }
 
   synchronized Session create(SessionModel.SessionId id) {
-    if (sessions.containsKey(id.value()))
+    if (sessionRegistry.entries.containsKey(id.value()))
       throw new IllegalArgumentException("SESSION_EXISTS " + id);
     Session session =
         new Session(
             SessionModel.SessionSpec.zeroAuthority(id), null, mount -> releaseMount(id, mount));
-    sessions.put(id.value(), session);
+    sessionRegistry.entries.put(id.value(), session);
     return session;
   }
 
@@ -149,10 +177,11 @@ final class SessionKernel implements AutoCloseable {
     if (!Files.isDirectory(normalized)) {
       throw new IllegalArgumentException("FILESYSTEM_NOT_FOUND " + normalized);
     }
-    long value = nextMountId.getAndIncrement();
+    long value = mountRegistry.nextId.getAndIncrement();
     if (value <= 0) throw new IllegalStateException("FILESYSTEM_IDS_EXHAUSTED");
     SessionModel.SessionMountId id = SessionModel.SessionMountId.of(value);
-    mounts.put(value, new FilesystemMount(new HaraMountedFileSystem(normalized), normalized));
+    mountRegistry.entries.put(
+        value, new FilesystemMount(new HaraMountedFileSystem(normalized), normalized));
     return id;
   }
 
@@ -160,15 +189,15 @@ final class SessionKernel implements AutoCloseable {
       SessionModel.SessionId sessionId, SessionModel.SessionMountId mountId) {
     if (!allowFile) throw new IllegalArgumentException("FILE_ACCESS_DENIED");
     Session session = require(sessionId);
-    FilesystemMount mount = mounts.get(mountId.value());
+    FilesystemMount mount = mountRegistry.entries.get(mountId.value());
     if (mount == null) throw new IllegalArgumentException("NO_FILESYSTEM " + mountId);
-    Long current = sessionMounts.get(sessionId.value());
+    Long current = mountRegistry.sessionAttachments.get(sessionId.value());
     if (current != null && current == mountId.value()) return;
 
     session.attachFilesystem(new Session.AttachedFilesystem(mountId, mount.provider));
     if (current != null) decrementMount(current);
     mount.attachments++;
-    sessionMounts.put(sessionId.value(), mountId.value());
+    mountRegistry.sessionAttachments.put(sessionId.value(), mountId.value());
   }
 
   synchronized void detachFilesystem(SessionModel.SessionId sessionId) {
@@ -182,18 +211,18 @@ final class SessionKernel implements AutoCloseable {
   }
 
   synchronized FilesystemInfo filesystemInfo(SessionModel.SessionMountId mountId) {
-    FilesystemMount mount = mounts.get(mountId.value());
+    FilesystemMount mount = mountRegistry.entries.get(mountId.value());
     if (mount == null) throw new IllegalArgumentException("NO_FILESYSTEM " + mountId);
     return new FilesystemInfo("native", mount.root, mount.attachments);
   }
 
   synchronized void closeFilesystem(SessionModel.SessionMountId mountId) {
-    FilesystemMount mount = mounts.get(mountId.value());
+    FilesystemMount mount = mountRegistry.entries.get(mountId.value());
     if (mount == null) throw new IllegalArgumentException("NO_FILESYSTEM " + mountId);
     if (mount.attachments != 0) {
       throw new IllegalArgumentException("FILESYSTEM_ATTACHED " + mountId);
     }
-    mounts.remove(mountId.value());
+    mountRegistry.entries.remove(mountId.value());
   }
 
   synchronized void mountFilesystem(SessionModel.SessionId sessionId, Path root) {
@@ -210,32 +239,58 @@ final class SessionKernel implements AutoCloseable {
 
   private synchronized void releaseMount(
       SessionModel.SessionId sessionId, SessionModel.SessionMountId mountId) {
-    Long registered = sessionMounts.get(sessionId.value());
+    Long registered = mountRegistry.sessionAttachments.get(sessionId.value());
     if (registered == null || registered != mountId.value()) return;
-    sessionMounts.remove(sessionId.value());
+    mountRegistry.sessionAttachments.remove(sessionId.value());
     decrementMount(mountId.value());
   }
 
   private void decrementMount(long mountId) {
-    FilesystemMount mount = mounts.get(mountId);
+    FilesystemMount mount = mountRegistry.entries.get(mountId);
     if (mount != null && mount.attachments > 0) mount.attachments--;
   }
 
   synchronized void closeSession(SessionModel.SessionId id) {
     if (ROOT_ID.equals(id)) throw new IllegalArgumentException("ROOT_CANNOT_CLOSE");
-    Session removed = sessions.remove(id.value());
+    Session removed = sessionRegistry.entries.remove(id.value());
     if (removed == null) throw new IllegalArgumentException("NO_SESSION " + id);
     removed.close();
   }
 
   Set<SessionModel.SessionId> sessionIds() {
     java.util.HashSet<SessionModel.SessionId> ids = new java.util.HashSet<>();
-    for (Session session : sessions.values()) ids.add(session.id());
+    for (Session session : sessionRegistry.entries.values()) ids.add(session.id());
     return Collections.unmodifiableSet(ids);
   }
 
   int size() {
-    return sessions.size();
+    return sessionRegistry.entries.size();
+  }
+
+  void registerDevelopmentResource(String name, String source) {
+    developmentResources.entries.put(name, source);
+  }
+
+  boolean removeDevelopmentResource(String name) {
+    return developmentResources.entries.remove(name) != null;
+  }
+
+  Set<String> developmentResourceNames() {
+    return Collections.unmodifiableSet(new java.util.TreeSet<>(developmentResources.entries.keySet()));
+  }
+
+  synchronized void registerBundle(String digest, byte[] bytes) {
+    byte[] frozen = Arrays.copyOf(bytes, bytes.length);
+    byte[] current = bundleCatalog.entries.get(digest);
+    if (current != null && !Arrays.equals(current, frozen)) {
+      throw new IllegalArgumentException("BUNDLE_DIGEST_CONFLICT " + digest);
+    }
+    if (current == null) bundleCatalog.entries.put(digest, frozen);
+  }
+
+  byte[] bundle(String digest) {
+    byte[] bytes = bundleCatalog.entries.get(digest);
+    return bytes == null ? null : Arrays.copyOf(bytes, bytes.length);
   }
 
   private record Sandbox(
@@ -244,24 +299,24 @@ final class SessionKernel implements AutoCloseable {
       SandboxProvider.SandboxInstance instance) {}
 
   void registerSandboxProvider(SandboxProvider provider) {
-    sandboxProviders.put(provider.name(), provider);
+    sandboxProviderRegistry.entries.put(provider.name(), provider);
   }
 
   synchronized SandboxModel.SandboxId openSandbox(SandboxModel.SandboxSpec spec) {
-    SandboxProvider provider = sandboxProviders.get(spec.provider());
+    SandboxProvider provider = sandboxProviderRegistry.entries.get(spec.provider());
     if (provider == null) {
       throw new SandboxModel.SandboxException(
           SandboxModel.ErrorCode.PROVIDER_NOT_FOUND, spec.provider());
     }
-    long value = nextSandboxId.getAndIncrement();
+    long value = sandboxRegistry.nextId.getAndIncrement();
     if (value <= 0) throw new IllegalStateException("SANDBOX_IDS_EXHAUSTED");
     SandboxModel.SandboxId id = new SandboxModel.SandboxId(value);
-    sandboxes.put(value, new Sandbox(id, provider.name(), provider.open(spec)));
+    sandboxRegistry.entries.put(value, new Sandbox(id, provider.name(), provider.open(spec)));
     return id;
   }
 
   private Sandbox requireSandbox(SandboxModel.SandboxId id) {
-    Sandbox sandbox = sandboxes.get(id.value());
+    Sandbox sandbox = sandboxRegistry.entries.get(id.value());
     if (sandbox == null) {
       throw new SandboxModel.SandboxException(SandboxModel.ErrorCode.NOT_FOUND, id.toString());
     }
@@ -288,7 +343,7 @@ final class SessionKernel implements AutoCloseable {
   }
 
   synchronized void closeSandbox(SandboxModel.SandboxId id) {
-    Sandbox sandbox = sandboxes.remove(id.value());
+    Sandbox sandbox = sandboxRegistry.entries.remove(id.value());
     if (sandbox == null) {
       throw new SandboxModel.SandboxException(SandboxModel.ErrorCode.NOT_FOUND, id.toString());
     }
@@ -297,12 +352,12 @@ final class SessionKernel implements AutoCloseable {
 
   @Override
   public synchronized void close() {
-    for (Sandbox sandbox : sandboxes.values()) sandbox.instance().close();
-    sandboxes.clear();
-    for (Session session : sessions.values()) session.close();
-    sessions.clear();
-    sessionMounts.clear();
-    mounts.clear();
+    for (Sandbox sandbox : sandboxRegistry.entries.values()) sandbox.instance().close();
+    sandboxRegistry.entries.clear();
+    for (Session session : sessionRegistry.entries.values()) session.close();
+    sessionRegistry.entries.clear();
+    mountRegistry.sessionAttachments.clear();
+    mountRegistry.entries.clear();
   }
 
   static final class Session
