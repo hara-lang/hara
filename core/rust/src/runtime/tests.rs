@@ -2,6 +2,10 @@
 mod tests {
     use super::*;
 
+    fn session_id(name: &str) -> SessionId {
+        SessionId::parse(name).unwrap()
+    }
+
     #[test]
     fn defonce_preserves_the_existing_var_root() {
         let mut runtime = Runtime::new();
@@ -225,22 +229,24 @@ mod tests {
     #[test]
     fn session_kernel_mounts_preserve_state_and_enforce_lifetime() {
         let mut kernel = SessionKernel::new();
-        kernel.create_session("alpha").unwrap();
-        kernel.create_session("beta").unwrap();
+        let alpha = session_id("alpha");
+        let beta = session_id("beta");
+        kernel.create_session(alpha.clone()).unwrap();
+        kernel.create_session(beta.clone()).unwrap();
         assert_eq!(
-            kernel.eval("alpha", "(def answer 41) answer").unwrap(),
+            kernel.eval(&alpha, "(def answer 41) answer").unwrap(),
             "41"
         );
-        assert_eq!(kernel.eval("beta", "(def answer 6) answer").unwrap(), "6");
+        assert_eq!(kernel.eval(&beta, "(def answer 6) answer").unwrap(), "6");
         let mount = kernel.create_memory_filesystem("/");
-        kernel.attach_filesystem("alpha", mount).unwrap();
-        kernel.attach_filesystem("beta", mount).unwrap();
-        assert_eq!(kernel.filesystem("alpha"), Some(mount));
-        assert_eq!(kernel.eval("alpha", "answer").unwrap(), "41");
+        kernel.attach_filesystem(&alpha, mount).unwrap();
+        kernel.attach_filesystem(&beta, mount).unwrap();
+        assert_eq!(kernel.filesystem(&alpha), Some(mount));
+        assert_eq!(kernel.eval(&alpha, "answer").unwrap(), "41");
         assert_eq!(
             kernel
                 .eval(
-                    "alpha",
+                    &alpha,
                     "(deref (std.native.File/write \"/shared.bin\" (bytes 7 8)))",
                 )
                 .unwrap(),
@@ -249,7 +255,7 @@ mod tests {
         assert_eq!(
             kernel
                 .eval(
-                    "beta",
+                    &beta,
                     "(deref (std.native.File/exists? \"/shared.bin\"))",
                 )
                 .unwrap(),
@@ -258,7 +264,7 @@ mod tests {
         assert_eq!(
             kernel
                 .eval(
-                    "alpha",
+                    &alpha,
                     "(deref (std.native.File/write \"/source.hal\" \
                        (str/encode-utf8 \"(+ 19 23)\")))",
                 )
@@ -268,7 +274,7 @@ mod tests {
         assert_eq!(
             kernel
                 .eval(
-                    "beta",
+                    &beta,
                     "(str/decode-utf8 \
                        (deref (std.native.File/read \"/source.hal\")))",
                 )
@@ -279,12 +285,12 @@ mod tests {
             kernel.close_filesystem(mount).unwrap_err(),
             format!("FILESYSTEM_ATTACHED {mount}")
         );
-        kernel.detach_filesystem("alpha").unwrap();
-        kernel.detach_filesystem("beta").unwrap();
+        kernel.detach_filesystem(&alpha).unwrap();
+        kernel.detach_filesystem(&beta).unwrap();
         kernel.close_filesystem(mount).unwrap();
         assert_eq!(
             kernel.session_names(),
-            vec!["ROOT".to_string(), "alpha".to_string(), "beta".to_string()]
+            vec![session_id("ROOT"), alpha, beta]
         );
     }
 
@@ -5568,34 +5574,36 @@ mod tests {
         );
 
         let mut kernel = SessionKernel::new();
+        let alpha = session_id("alpha");
+        let beta = session_id("beta");
         kernel.register_resource(
             "session.module",
             "(ns session.module) (defmacro chosen [] 41) (def answer 41)",
         );
-        kernel.create_session("alpha").unwrap();
-        kernel.create_session("beta").unwrap();
+        kernel.create_session(alpha.clone()).unwrap();
+        kernel.create_session(beta.clone()).unwrap();
         kernel
             .eval(
-                "alpha",
+                &alpha,
                 "(do (require [session.module :as module :refer-macros [chosen]]) \
                      (def local-answer (chosen)) nil)",
             )
             .unwrap();
-        assert_eq!(kernel.eval("alpha", "local-answer").unwrap(), "41");
-        assert!(kernel.eval("beta", "local-answer").is_err());
+        assert_eq!(kernel.eval(&alpha, "local-answer").unwrap(), "41");
+        assert!(kernel.eval(&beta, "local-answer").is_err());
         assert_eq!(
             kernel
-                .eval("alpha", "(module-revision 'session.module)")
+                .eval(&alpha, "(module-revision 'session.module)")
                 .unwrap(),
             "1"
         );
         assert_eq!(
             kernel
-                .eval("beta", "(module-revision 'session.module)")
+                .eval(&beta, "(module-revision 'session.module)")
                 .unwrap(),
             "0"
         );
-        assert!(kernel.eval("beta", "(chosen)").is_err());
+        assert!(kernel.eval(&beta, "(chosen)").is_err());
     }
 
     #[test]
@@ -5723,29 +5731,31 @@ mod tests {
         }
 
         let mut kernel = SessionKernel::new();
-        kernel.create_session("alpha").unwrap();
-        kernel.create_session("beta").unwrap();
+        let alpha = session_id("alpha");
+        let beta = session_id("beta");
+        kernel.create_session(alpha.clone()).unwrap();
+        kernel.create_session(beta.clone()).unwrap();
         assert_eq!(
             kernel
-                .eval("alpha", "(do (def ^:dynamic *answer* 1) nil)")
+                .eval(&alpha, "(do (def ^:dynamic *answer* 1) nil)")
                 .unwrap(),
             "nil"
         );
         assert_eq!(
             kernel
-                .eval("beta", "(do (def ^:dynamic *answer* 10) nil)")
+                .eval(&beta, "(do (def ^:dynamic *answer* 10) nil)")
                 .unwrap(),
             "nil"
         );
         assert!(kernel
-            .eval("alpha", "(binding [*answer* 2] (throw :binding-failed))")
+            .eval(&alpha, "(binding [*answer* 2] (throw :binding-failed))")
             .is_err());
-        assert_eq!(kernel.eval("alpha", "*answer*").unwrap(), "1");
-        assert_eq!(kernel.eval("beta", "*answer*").unwrap(), "10");
+        assert_eq!(kernel.eval(&alpha, "*answer*").unwrap(), "1");
+        assert_eq!(kernel.eval(&beta, "*answer*").unwrap(), "10");
 
         assert_eq!(
             kernel
-                .eval("alpha", "{:answer [1 2 {:nested #{:immutable}}]}")
+                .eval(&alpha, "{:answer [1 2 {:nested #{:immutable}}]}")
                 .unwrap(),
             "{:answer [1 2 {:nested #{:immutable}}]}"
         );
@@ -5755,7 +5765,7 @@ mod tests {
             "(atom 1)",
             "(iter [1 2 3])",
         ] {
-            let error = kernel.eval("alpha", source).unwrap_err();
+            let error = kernel.eval(&alpha, source).unwrap_err();
             assert!(
                 error.contains("SESSION_TRANSFER_REJECTED"),
                 "{source} unexpectedly produced {error}"
@@ -5793,19 +5803,20 @@ mod tests {
         );
 
         let mut kernel = SessionKernel::new();
-        kernel.create_session("repl").unwrap();
+        let repl = session_id("repl");
+        kernel.create_session(repl.clone()).unwrap();
         assert_eq!(
             kernel
                 .eval(
-                    "repl",
+                    &repl,
                     "(ns retained.repl)\n(def answer\n  (+ 40\n     2))\nnil"
                 )
                 .unwrap(),
             "nil"
         );
-        assert!(kernel.eval("repl", "missing-symbol").is_err());
-        assert_eq!(kernel.session_namespace("repl").unwrap(), "retained.repl");
-        assert_eq!(kernel.eval("repl", "answer").unwrap(), "42");
+        assert!(kernel.eval(&repl, "missing-symbol").is_err());
+        assert_eq!(kernel.session_namespace(&repl).unwrap(), "retained.repl");
+        assert_eq!(kernel.eval(&repl, "answer").unwrap(), "42");
     }
 
     #[test]
@@ -5862,8 +5873,9 @@ mod tests {
         assert!(!Rc::ptr_eq(&first_host, &second_host));
 
         let mut kernel = SessionKernel::new();
-        kernel.create_session("host-transfer").unwrap();
-        let error = kernel.eval("host-transfer", "Host").unwrap_err();
+        let host_transfer = session_id("host-transfer");
+        kernel.create_session(host_transfer.clone()).unwrap();
+        let error = kernel.eval(&host_transfer, "Host").unwrap_err();
         assert!(error.contains("SESSION_TRANSFER_REJECTED"), "{error}");
 
         assert_eq!(
@@ -5893,7 +5905,7 @@ mod tests {
         assert_eq!(
             kernel
                 .eval(
-                    "host-transfer",
+                    &host_transfer,
                     "(try
                        (deref (Host/call \"missing\" \"missing\" []))
                        (catch error

@@ -1,6 +1,6 @@
 use hara_wasm::kernel::{parse, parse_forms, Form};
 use hara_wasm::project;
-use hara_wasm::SessionKernel;
+use hara_wasm::{SessionId, SessionKernel};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,12 +60,13 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
             let mut kernel = SessionKernel::new();
             kernel.set_test_runner("native")?;
             register_project_sources(&root, &mut kernel)?;
+            let root_session = SessionId::parse("ROOT")?;
             let mount = kernel.create_native_filesystem(&root_text);
-            kernel.attach_filesystem("ROOT", mount)?;
-            let session = kernel.session_mut("ROOT")?;
+            kernel.attach_filesystem(&root_session, mount)?;
+            let session = kernel.session_mut(&root_session)?;
             session.install_native_socket_provider();
             session.install_native_process_provider();
-            let output = match kernel.eval("ROOT", &source) {
+            let output = match kernel.eval(&root_session, &source) {
                 Ok(output) => output,
                 Err(error) if error.starts_with("SESSION_TRANSFER_REJECTED ") => String::new(),
                 Err(error) => return Err(format!("{}: {error}", file.display())),
