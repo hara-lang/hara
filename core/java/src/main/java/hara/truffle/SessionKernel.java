@@ -82,7 +82,11 @@ final class SessionKernel implements AutoCloseable {
   private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<Long, FilesystemMount> mounts = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<String, Long> sessionMounts = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, SandboxProvider> sandboxProviders =
+      new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<Long, Sandbox> sandboxes = new ConcurrentHashMap<>();
   private final AtomicLong nextMountId = new AtomicLong(1);
+  private final AtomicLong nextSandboxId = new AtomicLong(1);
   private static final SessionModel.SessionId ROOT_ID = SessionModel.SessionId.parse("ROOT");
 
   private static final class FilesystemMount {
@@ -234,8 +238,67 @@ final class SessionKernel implements AutoCloseable {
     return sessions.size();
   }
 
+  private record Sandbox(
+      SandboxModel.SandboxId id,
+      String provider,
+      SandboxProvider.SandboxInstance instance) {}
+
+  void registerSandboxProvider(SandboxProvider provider) {
+    sandboxProviders.put(provider.name(), provider);
+  }
+
+  synchronized SandboxModel.SandboxId openSandbox(SandboxModel.SandboxSpec spec) {
+    SandboxProvider provider = sandboxProviders.get(spec.provider());
+    if (provider == null) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.PROVIDER_NOT_FOUND, spec.provider());
+    }
+    long value = nextSandboxId.getAndIncrement();
+    if (value <= 0) throw new IllegalStateException("SANDBOX_IDS_EXHAUSTED");
+    SandboxModel.SandboxId id = new SandboxModel.SandboxId(value);
+    sandboxes.put(value, new Sandbox(id, provider.name(), provider.open(spec)));
+    return id;
+  }
+
+  private Sandbox requireSandbox(SandboxModel.SandboxId id) {
+    Sandbox sandbox = sandboxes.get(id.value());
+    if (sandbox == null) {
+      throw new SandboxModel.SandboxException(SandboxModel.ErrorCode.NOT_FOUND, id.toString());
+    }
+    return sandbox;
+  }
+
+  Object sandboxEval(SandboxModel.SandboxId id, String source) {
+    return requireSandbox(id).instance().eval(source);
+  }
+
+  Object sandboxCall(
+      SandboxModel.SandboxId id, String callable, java.util.List<String> argumentForms) {
+    return requireSandbox(id).instance().call(callable, argumentForms);
+  }
+
+  boolean cancelSandbox(SandboxModel.SandboxId id) {
+    return requireSandbox(id).instance().cancel();
+  }
+
+  SandboxModel.SandboxStatus sandboxStatus(SandboxModel.SandboxId id) {
+    Sandbox sandbox = requireSandbox(id);
+    return new SandboxModel.SandboxStatus(
+        sandbox.id(), sandbox.provider(), sandbox.instance().state());
+  }
+
+  synchronized void closeSandbox(SandboxModel.SandboxId id) {
+    Sandbox sandbox = sandboxes.remove(id.value());
+    if (sandbox == null) {
+      throw new SandboxModel.SandboxException(SandboxModel.ErrorCode.NOT_FOUND, id.toString());
+    }
+    sandbox.instance().close();
+  }
+
   @Override
   public synchronized void close() {
+    for (Sandbox sandbox : sandboxes.values()) sandbox.instance().close();
+    sandboxes.clear();
     for (Session session : sessions.values()) session.close();
     sessions.clear();
     sessionMounts.clear();
@@ -267,6 +330,16 @@ final class SessionKernel implements AutoCloseable {
       this.mountRelease = mountRelease;
       context = createContext(null);
       activate();
+    }
+
+    static Session privateSandbox(String entryNamespace) {
+      Session session =
+          new Session(
+              SessionModel.SessionSpec.zeroAuthority(SessionModel.SessionId.parse("SANDBOX")),
+              null,
+              ignored -> {});
+      if (!"user".equals(entryNamespace)) session.eval("(ns " + entryNamespace + ")");
+      return session;
     }
 
     private Context createContext(AttachedFilesystem filesystem) {
