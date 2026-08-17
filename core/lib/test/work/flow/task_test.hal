@@ -1,0 +1,66 @@
+(ns work.flow.task-test
+  (:require [work.flow :as flow :refer [def.workflow]]
+            [work.flow.task :as task]))
+
+(def.workflow
+  [:task]
+  {:return {:select :results
+            :package :map}})
+
+(defn lint-project
+  [input]
+  (* 2 input))
+
+(def.workflow
+  lint
+  [:task]
+  {:main {:fn lint-project
+          :argcount 1}})
+
+(def first-lint lint)
+
+(def.workflow
+  lint
+  [:task]
+  {:main {:fn (fn [input]
+                (* 3 input))
+          :argcount 1}})
+
+(def results
+  [(test-check
+    "def.workflow installs a namespace-local task profile"
+    [(:workflow/path +workflow-task+)
+     (get-in +workflow-task+ [:workflow/options :return :select])
+     (flow/profile? +workflow-task+)]
+    [[:task] :results true])
+
+   (test-check
+    "def.workflow uses name, path, definition order"
+    [(lint 4)
+     (task/task-work? lint)]
+    [{4 12} true])
+
+   (test-check
+    "task redefinition replaces the installed work value"
+    [(not (= first-lint lint))
+     (= lint
+        (flow/definition
+         'work.flow.task-test/lint))]
+    [true true])
+
+   (test-check
+    "named definitions can use the registered default without a local profile"
+    (let [profile (flow/profile-for 'another.namespace [:task])
+          work-value
+          (flow/define!
+           profile
+           'another.namespace/increment
+           {:main {:fn (fn [input] (inc input))
+                   :argcount 1}
+            :return {:select :results
+                     :package :map}}
+           [])]
+      (work-value 5))
+    {5 6})])
+
+results
