@@ -1,0 +1,81 @@
+name: Fix and validate cooperative work scope sources
+
+on:
+  push:
+    branches:
+      - work/cooperative-cancellation-scopes
+    paths:
+      - '.github/workflows/agent-fix-work-scope.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Shorten cancellation-token borrow
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('core/rust/src/work.rs')
+          source = path.read_text()
+          old = '''        match run.inner.cancellation.borrow().as_ref() {
+              Some(request) => Err(request.rejection.clone()),
+              None => Ok(()),
+          }
+'''
+          new = '''        let result = match run.inner.cancellation.borrow().as_ref() {
+              Some(request) => Err(request.rejection.clone()),
+              None => Ok(()),
+          };
+          result
+'''
+          if old not in source:
+              raise SystemExit('expected cancellation-token block was not found')
+          path.write_text(source.replace(old, new, 1))
+
+      - uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Bridge legacy VM fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Format and test Rust work scopes
+        shell: bash
+        run: |
+          rustfmt --edition 2021 core/rust/src/work.rs
+          set -o pipefail
+          cargo test --manifest-path core/rust/Cargo.toml --lib 'work::' -- --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/rust-work-scope.log"
+
+      - name: Remove temporary validation workflows
+        run: |
+          rm -f .github/workflows/agent-fix-work-scope.yml
+          rm -f .github/workflows/agent-validate-work-scope.yml
+
+      - name: Commit validated correction
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix Rust cancellation-token borrow'
+          git push origin HEAD:work/cooperative-cancellation-scopes
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-work-scope-fix-log
+          path: ${{ runner.temp }}/rust-work-scope.log
+          if-no-files-found: ignore
