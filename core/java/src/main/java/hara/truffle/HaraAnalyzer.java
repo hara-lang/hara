@@ -1204,11 +1204,15 @@ final class HaraAnalyzer {
       Object clause = form.nth(i);
       if (clause instanceof List<?> && ((List<?>) clause).count() > 0) {
         Object name = ((List<?>) clause).nth(0);
-        if (name instanceof Symbol && "catch".equals(((Symbol) name).getName())) {
+        if (name instanceof Symbol
+            && ((Symbol) name).getNamespace() == null
+            && "catch".equals(((Symbol) name).getName())) {
           catchForms.add((List<?>) clause);
           continue;
         }
-        if (name instanceof Symbol && "finally".equals(((Symbol) name).getName())) {
+        if (name instanceof Symbol
+            && ((Symbol) name).getNamespace() == null
+            && "finally".equals(((Symbol) name).getName())) {
           if (finallyForm != null || i != form.count() - 1) {
             throw error("finally must be the last try clause and may appear once");
           }
@@ -1267,6 +1271,13 @@ final class HaraAnalyzer {
     if (operator instanceof Symbol && "do".equals(((Symbol) operator).getName())) {
       for (int i = 1; i < list.count(); i++) {
         validateTailRecurs(list.nth(i), tail && i == list.count() - 1);
+      }
+      return;
+    }
+    if (operator instanceof Symbol && "cond".equals(((Symbol) operator).getName())) {
+      for (int i = 1; i < list.count(); i += 2) {
+        validateTailRecurs(list.nth(i), false);
+        if (i + 1 < list.count()) validateTailRecurs(list.nth(i + 1), tail);
       }
       return;
     }

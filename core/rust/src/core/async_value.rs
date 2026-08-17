@@ -50,7 +50,6 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Schema(_) => "SchemaType",
         Value::Coroutine(_) => "Coroutine",
         Value::Stream(_) => "Stream",
-        Value::Duplex(_) => "Duplex",
         Value::Result(_) => "Result",
         Value::ExceptionInfo(_) => "Error",
     };
@@ -103,7 +102,6 @@ pub fn receiver_category(value: &Value) -> &'static str {
         Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
         Value::Stream(_) => "stream",
-        Value::Duplex(_) => "duplex",
         Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
@@ -136,6 +134,12 @@ fn stream_close(stream: &RuntimeStream) -> Result<(), String> {
     }
     match &stream.source {
         RuntimeStreamSource::Coroutine { coroutine, .. } => coroutine_close(coroutine),
+        RuntimeStreamSource::Guest { close, .. } => {
+            if let Some(close) = close {
+                call_function(close, Vec::new())?;
+            }
+            Ok(())
+        }
         RuntimeStreamSource::Host { close, .. } => close(),
     }
 }
@@ -157,6 +161,34 @@ fn stream_next(stream: &RuntimeStream) -> Value {
             let state = Rc::new((stream.pending.clone(), stream.closed.clone()));
             let step = fiber::coroutine::coroutine_resume(coroutine.clone(), arguments, Box::new(Step::Done));
             drive_stream_step(step, coroutine, state, promise.clone());
+        }
+        RuntimeStreamSource::Guest { next, .. } => {
+            let source = match call_function(next, Vec::new()) {
+                Ok(value) => promise_from(value),
+                Err(error) => {
+                    stream.pending.set(false);
+                    promise.reject(error);
+                    return Value::Promise(promise);
+                }
+            };
+            let pending = stream.pending.clone();
+            let closed = stream.closed.clone();
+            let output = promise.clone();
+            source.on_settle(Rc::new(move |settled| {
+                pending.set(false);
+                match settled {
+                    PromiseState::Fulfilled(value) => {
+                        if matches!(value, Value::Nil) { closed.set(true); }
+                        output.resolve(value);
+                    }
+                    PromiseState::Rejected(error) => { closed.set(true); output.reject_rejection(error); }
+                    PromiseState::Pending => {}
+                };
+            }));
+            let source_poll = source.clone();
+            promise.set_poller(Rc::new(move || { source_poll.state(); }));
+            let source_wait = source.clone();
+            promise.set_waiter(Rc::new(move || { source_wait.wait_state(); }));
         }
         RuntimeStreamSource::Host { next, .. } => match next() {
             Ok(source) => {
@@ -206,96 +238,6 @@ pub fn stream_close_value(value: &Value) -> Result<(), String> {
 
 pub fn stream_value(value: &Value) -> bool {
     matches!(value, Value::Stream(_))
-}
-
-fn duplex_close(duplex: &RuntimeDuplex) -> Result<(), String> {
-    if duplex.closed.replace(true) {
-        return Ok(());
-    }
-    stream_close_value(&duplex.receive)?;
-    if let Some(close) = &duplex.close {
-        match close {
-            DuplexClose::Guest(function) => { call_function(function, Vec::new())?; }
-            DuplexClose::Host(function) => function()?,
-        }
-    }
-    Ok(())
-}
-
-fn duplex_send(duplex: &RuntimeDuplex, value: Value) -> Value {
-    if duplex.closed.get() {
-        let promise = Promise::new();
-        promise.reject("duplex/closed: cannot send on a closed Duplex");
-        return Value::Promise(promise);
-    }
-    let sent = match &duplex.send {
-        DuplexSend::Guest(function) => call_function(function, vec![value]),
-        DuplexSend::Host(function) => function(value),
-    };
-    Value::Promise(match sent {
-        Ok(value) => promise_from(value),
-        Err(error) => {
-            let promise = Promise::new();
-            promise.reject(error);
-            promise
-        }
-    })
-}
-
-fn native_duplex_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
-    let method = operation.strip_prefix("std.native.Duplex/").unwrap_or(operation);
-    match method {
-        "create" => {
-            if !(2..=3).contains(&forms.len()) {
-                return Err("Duplex/create expects a Stream, send function, and optional close function".into());
-            }
-            let receive = eval(&forms[0], env)?;
-            if !matches!(receive, Value::Stream(_)) {
-                return Err("Duplex/create expects a Stream as its receive side".into());
-            }
-            let Value::Function(send) = eval(&forms[1], env)? else {
-                return Err("Duplex/create expects a send function".into());
-            };
-            let close = match forms.get(2).map(|form| eval(form, env)).transpose()? {
-                None | Some(Value::Nil) => None,
-                Some(Value::Function(close)) => Some(close),
-                Some(_) => return Err("Duplex/create expects a close function or nil".into()),
-            };
-            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(receive, DuplexSend::Guest(send), close.map(DuplexClose::Guest)))))
-        }
-        "instance?" => {
-            if forms.len() != 1 { return Err("Duplex/instance? expects one value".into()); }
-            Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Duplex(_))))
-        }
-        "receive" => {
-            if forms.len() != 1 { return Err("Duplex/receive expects one Duplex".into()); }
-            match eval(&forms[0], env)? {
-                Value::Duplex(duplex) => Ok(duplex.receive.clone()),
-                _ => Err("Duplex/receive expects a Duplex".into()),
-            }
-        }
-        "send" => {
-            if forms.len() != 2 { return Err("Duplex/send expects a Duplex and value".into()); }
-            let duplex = eval(&forms[0], env)?;
-            let value = eval(&forms[1], env)?;
-            match duplex {
-                Value::Duplex(duplex) => Ok(duplex_send(&duplex, value)),
-                _ => Err("Duplex/send expects a Duplex".into()),
-            }
-        }
-        "close" => {
-            if forms.len() != 1 { return Err("Duplex/close expects one Duplex".into()); }
-            match eval(&forms[0], env)? {
-                Value::Duplex(duplex) => { duplex_close(&duplex)?; Ok(Value::Duplex(duplex)) }
-                _ => Err("Duplex/close expects a Duplex".into()),
-            }
-        }
-        _ => Err(format!("unknown std.native.Duplex operation: {method}")),
-    }
 }
 
 fn drive_stream_step(
@@ -356,6 +298,20 @@ fn native_stream_operation(
 ) -> Result<Value, String> {
     let method = operation.strip_prefix("std.native.Stream/").unwrap_or(operation);
     match method {
+        "create" => {
+            if !(1..=2).contains(&forms.len()) {
+                return Err("Stream/create expects next and optional close functions".into());
+            }
+            let Value::Function(next) = eval(&forms[0], env)? else {
+                return Err("Stream/create expects a next function".into());
+            };
+            let close = match forms.get(1).map(|form| eval(form, env)).transpose()? {
+                None | Some(Value::Nil) => None,
+                Some(Value::Function(close)) => Some(close),
+                Some(_) => return Err("Stream/create expects a close function or nil".into()),
+            };
+            Ok(Value::Stream(Rc::new(RuntimeStream::guest(next, close))))
+        }
         "generate" => {
             if forms.is_empty() {
                 return Err("Stream/generate expects a function".into());
@@ -399,5 +355,3 @@ pub fn read_edn(source: &str) -> Result<Value, String> {
     }
     form_to_value(&forms[0]).map_err(|error| format!("edn/read: {error}"))
 }
-
-

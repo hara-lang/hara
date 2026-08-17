@@ -2410,6 +2410,34 @@ mod tests {
     }
 
     #[test]
+    fn duplex_is_portable_and_not_exposed_as_a_native_box() {
+        let mut runtime = Runtime::new();
+        for source in [
+            "Duplex",
+            "std.native.Duplex",
+            "(Process/duplex nil)",
+            "(Socket/duplex nil)",
+        ] {
+            assert!(runtime.eval_text(source).is_err(), "{source} must remain absent");
+        }
+    }
+
+    #[test]
+    fn native_test_run_awaits_promise_results() {
+        let mut runtime = Runtime::new();
+        let output = runtime
+            .eval_text(
+                "(Test/run [{:name \"async\" \
+                              :test (fn [] (promise/delay 1 (fn [] 42))) \
+                              :expected 42}])",
+            )
+            .unwrap();
+        assert!(output.contains(":name \"async\""), "{output}");
+        assert!(output.contains(":pass true"), "{output}");
+        assert!(output.contains(":actual 42"), "{output}");
+    }
+
+    #[test]
     fn removed_builtins_config_is_rejected_by_runtime() {
         let mut runtime = Runtime::new();
         assert!(runtime
@@ -2469,7 +2497,6 @@ mod tests {
             "Promise",
             "Coroutine",
             "Stream",
-            "Duplex",
             "Arr",
             "Obj",
             "Runtime",
@@ -7388,47 +7415,6 @@ mod tests {
             runtime.eval_native("(Package/state 'example.unloaded)").unwrap(),
             ":available"
         );
-    }
-
-    #[test]
-    fn duplex_has_stream_receive_promise_send_and_idempotent_close() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_native(
-                    "(let [closed (atom 0) \
-                           s (Stream/generate (fn [] (Coroutine/yield :received) :done)) \
-                           d (Duplex/create s (fn [value] [:sent value]) \
-                                            (fn [] (swap! closed inc)))] \
-                       (let [sent (first (deref (Duplex/send d :value)))] \
-                         (IClose/close d) \
-                         (Duplex/close d) \
-                         [(Duplex/instance? d) (type d) (satisfies? IClose d) \
-                          (= s (Duplex/receive d)) sent (= 1 (deref closed)) \
-                          (= :rejected (IPromise/state (Duplex/send d :late)))]))",
-                )
-                .unwrap(),
-            "[true :std.native.Duplex true true :sent true true]"
-        );
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn process_duplex_streams_stdout_and_writes_stdin() {
-        let mut runtime = Runtime::new();
-        runtime.install_native_process_provider();
-        assert_eq!(runtime.eval_native(
-            "(let [p (Process/spawn [\"sh\" \"-c\" \"read line; printf reply:$line\"]) d (Process/duplex p)] (deref (Duplex/send d (str/encode-utf8 \"hello\\n\"))) (Process/close-input p) [(str/decode-utf8 (deref (Stream/next (Duplex/receive d)))) (deref (Process/wait p)) (nil? (deref (Stream/next (Duplex/receive d))))])"
-        ).unwrap(), "[\"reply:hello\" 0 true]");
-    }
-
-    #[test]
-    fn socket_duplex_maps_data_and_close_events_to_a_byte_stream() {
-        let mut runtime = Runtime::new();
-        runtime.install_loopback_socket_provider();
-        assert_eq!(runtime.eval_text(
-            "(let [s (Socket/connect \"localhost\" 8080 {} (fn [error socket] socket)) d (Socket/duplex s)] (deref (Duplex/send d (bytes 1 2 3))) (let [value (deref (Stream/next (Duplex/receive d)))] (Duplex/close d) [(vec value) (nil? (deref (Stream/next (Duplex/receive d))))]))"
-        ).unwrap(), "[[1 2 3] true]");
     }
 
     #[cfg(feature = "evaluation-journal")]

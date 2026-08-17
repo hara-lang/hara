@@ -229,7 +229,7 @@ impl ProtocolRegistry {
     }
 
     pub fn satisfies(&self, protocol: &GuestProtocol, value: &Value) -> bool {
-        if protocol.name.ends_with("/IDuplex") {
+        if protocol.name.ends_with("/IStreamDuplex") {
             return ["IStream", "IStreamWrite", "IAbort"].iter().all(|name| {
                 FOUNDATION_PROTOCOLS
                     .iter()
@@ -459,10 +459,6 @@ impl ProtocolRegistry {
                     stream_close(stream)?;
                     Ok(Value::Stream(stream.clone()))
                 }
-                [Value::Duplex(duplex)] => {
-                    duplex_close(duplex)?;
-                    Ok(Value::Duplex(duplex.clone()))
-                }
                 [value] => iterator_close(value),
                 _ => Err("IClose/close expects one argument".into()),
             },
@@ -563,10 +559,6 @@ impl ProtocolRegistry {
         );
         registry.register("std.protocol.istream/IStream", "next", |arguments| match arguments {
             [Value::Stream(stream)] => Ok(stream_next(stream)),
-            [Value::Duplex(duplex)] => match &duplex.receive {
-                Value::Stream(stream) => Ok(stream_next(stream)),
-                _ => Err("IStream/next expects a stream".into()),
-            },
             [_] => Err("IStream/next expects a stream".into()),
             _ => Err("IStream/next expects one argument".into()),
         });
@@ -574,16 +566,11 @@ impl ProtocolRegistry {
             "std.protocol.istreamwrite/IStreamWrite",
             "write",
             |arguments| match arguments {
-                [Value::Duplex(duplex), value] => Ok(duplex_send(duplex, value.clone())),
                 [_target, _value] => Err("IStreamWrite/write expects a writable stream".into()),
                 _ => Err("IStreamWrite/write expects two arguments".into()),
             },
         );
         registry.register("std.protocol.iabort/IAbort", "abort", |arguments| match arguments {
-            [Value::Duplex(duplex), _error] => {
-                duplex_close(duplex)?;
-                Ok(Value::Duplex(duplex.clone()))
-            }
             [_target, _error] => Err("IAbort/abort expects an abortable stream".into()),
             _ => Err("IAbort/abort expects two arguments".into()),
         });

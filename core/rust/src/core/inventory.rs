@@ -312,7 +312,6 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "stderr",
             "stdout-stream",
             "stderr-stream",
-            "duplex",
             "wait",
             "kill",
         ],
@@ -328,7 +327,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         "Socket",
         &[
             "connect", "listen", "endpoint", "events", "next", "send", "close",
-            "receive-stream", "duplex",
+            "receive-stream",
         ],
     ),
     (
@@ -336,8 +335,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         &["run", "new", "from", "all", "delay", "instance?"],
     ),
     ("Coroutine", &["create", "yield", "await", "instance?"]),
-    ("Stream", &["generate", "next", "instance?"]),
-    ("Duplex", &["create", "receive", "send", "close", "instance?"]),
+    ("Stream", &["create", "generate", "next", "instance?"]),
     (
         "Arr",
         &[
@@ -527,7 +525,7 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
     ("IStreamOffer", &[("offer", 2)]),
     ("IClosed", &[("closed?", 1)]),
     ("IFlush", &[("flush", 1)]),
-    ("IDuplex", &[]),
+    ("IStreamDuplex", &[]),
     (
         "IComponent",
         &[
@@ -682,7 +680,7 @@ pub(crate) fn foundation_protocol_values() -> Vec<(String, Value)> {
                         .iter()
                         .map(|(method, arity)| ((*method).to_owned(), *arity))
                         .collect(),
-                    parents: if *name == "IDuplex" {
+                    parents: if *name == "IStreamDuplex" {
                         vec![
                             builtin_protocol_name("IStream"),
                             builtin_protocol_name("IStreamWrite"),

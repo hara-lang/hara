@@ -35,7 +35,6 @@ const NATIVE_TYPES: &[&str] = &[
     "Promise",
     "Coroutine",
     "Stream",
-    "Duplex",
     "Arr",
     "Obj",
     "Runtime",

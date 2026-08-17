@@ -156,7 +156,7 @@ public final class HaraJavaAdapters {
     closed.extend(IClosed.class, "closed?", (receiver, arguments) -> ((IClosed) receiver).closed());
     HaraProtocol flush = context.defineProtocol("IFlush", Map.of("flush", 1));
     flush.extend(IFlush.class, "flush", (receiver, arguments) -> ((IFlush) receiver).flush());
-    context.defineProtocol("IDuplex", Map.of(), java.util.List.of(stream, streamWrite, abort));
+    context.defineProtocol("IStreamDuplex", Map.of(), java.util.List.of(stream, streamWrite, abort));
   }
 
   public static void installIFn(HaraProtocol protocol) {

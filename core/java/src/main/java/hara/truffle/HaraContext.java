@@ -165,18 +165,17 @@ public final class HaraContext {
                   "ed25519-verify", "x25519-keypair", "x25519-public", "x25519-shared",
                   "p256-keypair", "p256-public", "p256-sign", "p256-verify", "p256-shared")),
           Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv")),
-          Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "stdout-stream", "stderr-stream", "duplex", "wait", "kill")),
+          Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "stdout-stream", "stderr-stream", "wait", "kill")),
           Map.entry(
               "File",
               java.util.List.of(
                   "parent", "join", "resolve", "read", "write", "exists?", "stat",
                   "entries", "list", "walk", "mkdir", "delete", "copy", "move",
                   "temp-file", "temp-directory")),
-          Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close", "receive-stream", "duplex")),
+          Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close", "receive-stream")),
           Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
           Map.entry("Coroutine", java.util.List.of("create", "yield", "await", "instance?")),
-          Map.entry("Stream", java.util.List.of("generate", "next", "instance?")),
-          Map.entry("Duplex", java.util.List.of("create", "receive", "send", "close", "instance?")),
+          Map.entry("Stream", java.util.List.of("create", "generate", "next", "instance?")),
           Map.entry("Arr", java.util.List.of("new", "instance?", "get", "set", "push-first", "push-last", "pop-first", "pop-last", "insert", "remove", "clone", "slice", "map", "filter", "fold-left", "fold-right")),
           Map.entry("Obj", java.util.List.of("new", "instance?", "get", "set", "has?", "delete", "clone", "assign", "keys", "vals", "pairs")),
           Map.entry("Runtime", java.util.List.of("load-string", "macroexpand-1", "gensym", "var-sym")),
@@ -296,7 +295,6 @@ public final class HaraContext {
           installNativeResultBuiltins();
           HaraJavaAdapters.install(this);
           installNativeStreamBuiltins();
-          installNativeDuplexBuiltins();
           collectBuiltins(
               FOUNDATION_NAMESPACE,
               () -> {
@@ -2067,6 +2065,22 @@ public final class HaraContext {
   private void installNativeStreamBuiltins() {
     HaraNamespace stream = namespace("std.native.Stream");
     stream.define(
+        "create",
+        new VariadicBuiltin(
+            "std.native.Stream/create",
+            values -> {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException("Stream/create expects next and optional close functions");
+              }
+              Object next = HaraBox.unwrap(values[0]);
+              Object close = values.length == 2 ? HaraBox.unwrap(values[1]) : null;
+              if (!isFunctionValue(next)
+                  || (close != null && !isFunctionValue(close))) {
+                throw new HaraException("Stream/create expects callable next and close values");
+              }
+              return new HaraCallbackStream(this, next, close);
+            }));
+    stream.define(
         "generate",
         new VariadicBuiltin(
             "std.native.Stream/generate",
@@ -2100,62 +2114,6 @@ public final class HaraContext {
       throw new HaraException(operation + " expects a stream");
     }
     return (hara.lang.protocol.IStream) input;
-  }
-
-  private void installNativeDuplexBuiltins() {
-    HaraNamespace duplex = namespace("std.native.Duplex");
-    duplex.define(
-        "create",
-        new VariadicBuiltin(
-            "std.native.Duplex/create",
-            values -> {
-              if (values.length < 2 || values.length > 3) {
-                throw new HaraException(
-                    "Duplex/create expects a Stream, send function, and optional close function");
-              }
-              Object receive = HaraBox.unwrap(values[0]);
-              if (!(receive instanceof hara.lang.protocol.IStream stream)) {
-                throw new HaraException("Duplex/create expects a Stream as its receive side");
-              }
-              Object send = HaraBox.unwrap(values[1]);
-              if (!isFunctionValue(send)) {
-                throw new HaraException("Duplex/create expects a send function");
-              }
-              Object close = values.length == 3 ? HaraBox.unwrap(values[2]) : null;
-              if (close != null && !isFunctionValue(close)) {
-                throw new HaraException("Duplex/create expects a close function or nil");
-              }
-              return new HaraDuplex(this, stream, send, close);
-            }));
-    duplex.define(
-        "receive",
-        new UnaryBuiltin("std.native.Duplex/receive", value -> requireDuplex(value, "receive").receive()));
-    duplex.define(
-        "send",
-        new VariadicBuiltin(
-            "std.native.Duplex/send",
-            values -> {
-              if (values.length != 2) throw new HaraException("Duplex/send expects a Duplex and value");
-              return requireDuplex(values[0], "send").send(values[1]);
-            }));
-    duplex.define(
-        "close",
-        new UnaryBuiltin(
-            "std.native.Duplex/close",
-            value -> {
-              HaraDuplex target = requireDuplex(value, "close");
-              try { target.close(); } catch (Exception error) { throw new HaraException(error.getMessage()); }
-              return target;
-            }));
-    duplex.define(
-        "instance?",
-        new UnaryBuiltin("std.native.Duplex/instance?", value -> HaraBox.unwrap(value) instanceof HaraDuplex));
-  }
-
-  private HaraDuplex requireDuplex(Object value, String operation) {
-    Object input = HaraBox.unwrap(value);
-    if (input instanceof HaraDuplex duplex) return duplex;
-    throw new HaraException("Duplex/" + operation + " expects a Duplex");
   }
 
   private void installNumericBuiltins(HaraNamespace target) {
@@ -3086,7 +3044,6 @@ public final class HaraContext {
     else if (raw instanceof HaraSchemaType) type = "SchemaType";
     else if (raw instanceof HaraResult) type = "Result";
     else if (raw instanceof hara.lang.protocol.IExInfo || raw instanceof HaraException) type = "Error";
-    else if (raw instanceof HaraDuplex) type = "Duplex";
     else if (raw instanceof hara.lang.protocol.IStream) type = "Stream";
     else if (raw instanceof hara.lang.protocol.ICoroutine) type = "Coroutine";
     else if (raw instanceof IPromise) type = "Promise";
@@ -3499,7 +3456,7 @@ public final class HaraContext {
         try {
           Object testFunction = lookupValue(testCase, Keyword.create("test"));
           if (checkFunction == null) {
-            Object actual = invokeCallable(testFunction, new Object[0]);
+            Object actual = nativeTestAwait(invokeCallable(testFunction, new Object[0]));
             nativeTestResults.add(nativeTestResult(new Object[] {name, actual, expected}));
           } else {
             Object checked = invokeCallable(checkFunction, new Object[] {testFunction, expected});
@@ -3512,6 +3469,11 @@ public final class HaraContext {
       }
     }
     return hara.lang.data.Vector.Standard.from(null, nativeTestResults.toArray());
+  }
+
+  private Object nativeTestAwait(Object value) {
+    Object input = HaraBox.unwrap(value);
+    return input instanceof HaraPromise promise ? promise.deref() : input;
   }
 
   private Object nativeTestPassed(Object[] values) {
@@ -4043,7 +4005,6 @@ public final class HaraContext {
     process.define("stderr", new UnaryBuiltin("std.native.Process/stderr", value -> new HaraPromise(requireProcess(value, "std.native.Process/stderr").stderr)));
     process.define("stdout-stream", new UnaryBuiltin("std.native.Process/stdout-stream", value -> requireProcess(value, "std.native.Process/stdout-stream").stdoutStream));
     process.define("stderr-stream", new UnaryBuiltin("std.native.Process/stderr-stream", value -> requireProcess(value, "std.native.Process/stderr-stream").stderrStream));
-    process.define("duplex", new UnaryBuiltin("std.native.Process/duplex", this::osProcessDuplex));
     process.define("wait", new UnaryBuiltin("std.native.Process/wait", value -> new HaraPromise(requireProcess(value, "std.native.Process/wait").exit)));
     process.define("kill", new UnaryBuiltin("std.native.Process/kill", this::osProcessKill));
   }
@@ -4144,13 +4105,6 @@ public final class HaraContext {
     return process;
   }
 
-  private Object osProcessDuplex(Object value) {
-    HaraProcess process = requireProcess(value, "std.native.Process/duplex");
-    Object send = new UnaryBuiltin("std.native.Process/duplex-send", bytes -> osProcessWrite(new Object[] {process, bytes}));
-    Object close = new VariadicBuiltin("std.native.Process/duplex-close", ignored -> osProcessCloseInput(process));
-    return new HaraDuplex(this, process.stdoutStream, send, close);
-  }
-
   private void defineSocketLibrary() {
     HaraNamespace socket = namespace("std.native.Socket");
     socket.define("connect", new VariadicBuiltin("std.native.Socket/connect", this::socketConnect));
@@ -4159,7 +4113,6 @@ public final class HaraContext {
     socket.define("events", new VariadicBuiltin("std.native.Socket/events", this::socketEvents));
     socket.define("next", new UnaryBuiltin("std.native.Socket/next", this::socketNext));
     socket.define("receive-stream", new UnaryBuiltin("std.native.Socket/receive-stream", this::socketReceiveStream));
-    socket.define("duplex", new UnaryBuiltin("std.native.Socket/duplex", this::socketDuplex));
     socket.define("send", new VariadicBuiltin("std.native.Socket/send", this::socketSend));
     socket.define("close", new UnaryBuiltin("std.native.Socket/close", this::socketClose));
   }
@@ -4718,14 +4671,6 @@ public final class HaraContext {
   private Object socketReceiveStream(Object value) {
     requireSocketIO("socket/receive-stream");
     return requireSocket(value, "socket/receive-stream").bytes();
-  }
-
-  private Object socketDuplex(Object value) {
-    requireSocketIO("socket/duplex");
-    HaraSocket connection = requireSocket(value, "socket/duplex");
-    Object send = new UnaryBuiltin("std.native.Socket/duplex-send", bytes -> socketSend(new Object[] {connection, bytes}));
-    Object close = new VariadicBuiltin("std.native.Socket/duplex-close", ignored -> socketClose(connection));
-    return new HaraDuplex(this, connection.bytes(), send, close);
   }
 
   private Object socketClose(Object value) {
@@ -7357,6 +7302,11 @@ public final class HaraContext {
 
   Object promiseValue(CompletableFuture<Object> future) {
     return new HaraPromise(future);
+  }
+
+  Object callbackStreamPromise(Object value, Runnable settled) {
+    HaraPromise promise = (HaraPromise) promiseFrom(value);
+    return new HaraPromise(promise.future.whenComplete((result, error) -> settled.run()));
   }
 
   Object completedPromise(Object value) {

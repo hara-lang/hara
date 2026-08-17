@@ -236,6 +236,33 @@ public class HaraCoreFormsTest {
   }
 
   @Test
+  public void condBranchesPreserveLoopTailPosition() {
+    try (Context context = context()) {
+      assertEquals(
+          3,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(loop [value 0] (cond (< value 3) (recur (inc value)) :else value))")
+              .asLong());
+    }
+  }
+
+  @Test
+  public void qualifiedCatchCallsRemainTryBodyExpressions() {
+    try (Context context = context()) {
+      assertEquals(
+          42,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(deref (try (promise/catch (promise/from 42) (fn [_] 0)) "
+                      + "            (catch Throwable error (promise/from -1))))")
+              .asLong());
+    }
+  }
+
+  @Test
   public void varAndDerefFailuresAreDeterministic() {
     try (Context context = context()) {
       assertTrue(

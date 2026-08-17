@@ -17,7 +17,6 @@ fn os_operation(
         "stderr" if process_operation.is_some() => "process-stderr",
         "stdout-stream" if process_operation.is_some() => "process-stdout-stream",
         "stderr-stream" if process_operation.is_some() => "process-stderr-stream",
-        "duplex" if process_operation.is_some() => "process-duplex",
         "wait" if process_operation.is_some() => "process-wait",
         "kill" if process_operation.is_some() => "process-kill",
         value => value,
@@ -157,23 +156,12 @@ fn os_operation(
                 _ => unreachable!(),
             }
         }
-        method @ ("process-stdout-stream" | "process-stderr-stream" | "process-duplex") => {
+        method @ ("process-stdout-stream" | "process-stderr-stream") => {
             if forms.len() != 1 { return Err(format!("os/{method} expects a process")); }
             let process = eval(&forms[0], env)?;
             let kind = if method == "process-stderr-stream" { "stderr" } else { "stdout" };
             let handle = crate::native_process::take_stream(&process, kind)?;
-            let receive = host_stream(Rc::new(move || Ok(crate::native_process::stream_promise(handle, kind))), Rc::new(|| Ok(())));
-            if method != "process-duplex" { return Ok(receive); }
-            let send_process = process.clone();
-            let close_process = process.clone();
-            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(
-                receive,
-                DuplexSend::Host(Rc::new(move |value| {
-                    let bytes = match value { Value::Bytes(v) => v, Value::ByteBuffer(v) => v.borrow().clone(), _ => return Err("Process/duplex send expects Bytes".into()) };
-                    Ok(Value::Number(crate::native_process::write(&send_process, &bytes)? as i64))
-                })),
-                Some(DuplexClose::Host(Rc::new(move || crate::native_process::close_input(&close_process)))),
-            ))))
+            Ok(host_stream(Rc::new(move || Ok(crate::native_process::stream_promise(handle, kind))), Rc::new(|| Ok(()))))
         }
         "process-write" => {
             if forms.len() != 2 {
@@ -315,7 +303,7 @@ fn native_test_run(cases: Value, check_function: Option<Value>) -> Result<Value,
                         native_test_checked_result(name, metadata, failed)
                     }
                 },
-                None => match call_value(test, Vec::new()) {
+                None => match call_value(test, Vec::new()).and_then(native_test_await) {
                     Ok(actual) => native_test_result(name, actual, expected),
                     Err(error) => native_test_error(name, expected, error),
                 },
@@ -336,6 +324,17 @@ fn native_test_run(cases: Value, check_function: Option<Value>) -> Result<Value,
     let output = Value::Vector(PVector::from_iter(results));
     state.intern("results", output.clone());
     Ok(output)
+}
+
+fn native_test_await(value: Value) -> Result<Value, String> {
+    match value {
+        Value::Promise(promise) => match promise.wait_state() {
+            PromiseState::Fulfilled(value) => Ok(value),
+            PromiseState::Rejected(error) => Err(promise_rejection_error(error)),
+            PromiseState::Pending => Err("asynchronous test did not settle".into()),
+        },
+        value => Ok(value),
+    }
 }
 
 fn native_test_operation(
@@ -918,20 +917,11 @@ fn socket_operation(
         .strip_prefix("std.native.Socket/")
         .unwrap_or(operation);
     match operation {
-        "receive-stream" | "duplex" | "socket/receive-stream" | "socket/duplex" => {
+        "receive-stream" | "socket/receive-stream" => {
             if forms.len() != 1 { return Err(format!("Socket/{operation} expects a socket connection")); }
             let socket = socket_handle(&eval(&forms[0], env)?, &format!("Socket/{operation}"))?;
             let events = socket_provider(operation)?.events(socket).map_err(|e| socket_error(operation, e))?;
-            let receive = host_stream(Rc::new(move || socket_receive_promise(events)), Rc::new(|| Ok(())));
-            if operation.ends_with("receive-stream") { return Ok(receive); }
-            Ok(Value::Duplex(Rc::new(RuntimeDuplex::new(
-                receive,
-                DuplexSend::Host(Rc::new(move |value| {
-                    let bytes = match value { Value::Bytes(v) => v, Value::ByteBuffer(v) => v.borrow().clone(), _ => return Err("Socket/duplex send expects Bytes".into()) };
-                    socket_provider("Socket/duplex")?.send(socket, &bytes).map(|n| Value::Number(n as i64)).map_err(|e| socket_error("Socket/duplex", e))
-                })),
-                Some(DuplexClose::Host(Rc::new(move || socket_provider("Socket/duplex")?.close(socket).map_err(|e| socket_error("Socket/duplex", e))))),
-            ))))
+            Ok(host_stream(Rc::new(move || socket_receive_promise(events)), Rc::new(|| Ok(()))))
         }
         "socket/connect" => {
             if forms.len() != 4 {
@@ -1051,7 +1041,7 @@ fn socket_operation(
                 .map(|()| Value::Nil)
                 .map_err(|error| socket_error(operation, error))
         }
-        _ => unreachable!(),
+        _ => Err(format!("unknown std.native.Socket operation: {operation}")),
     }
 }
 

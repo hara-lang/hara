@@ -2782,9 +2782,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n) if n.starts_with("std.native.Stream/") => {
                     native_stream_operation(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n.starts_with("std.native.Duplex/") => {
-                    native_duplex_operation(n, &fs[1..], env)
-                }
                 Form::Symbol(n)
                     if n.starts_with("std.native.Error/")
                         && ["new", "message", "class"]
