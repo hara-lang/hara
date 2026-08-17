@@ -63,6 +63,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.DoubleUnaryOperator;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -4010,7 +4011,18 @@ public final class HaraContext {
     process.define("stderr", new UnaryBuiltin("std.native.Process/stderr", value -> new HaraPromise(requireProcess(value, "std.native.Process/stderr").stderr)));
     process.define("stdout-stream", new UnaryBuiltin("std.native.Process/stdout-stream", value -> requireProcess(value, "std.native.Process/stdout-stream").stdoutStream));
     process.define("stderr-stream", new UnaryBuiltin("std.native.Process/stderr-stream", value -> requireProcess(value, "std.native.Process/stderr-stream").stderrStream));
-    process.define("wait", new UnaryBuiltin("std.native.Process/wait", value -> new HaraPromise(requireProcess(value, "std.native.Process/wait").exit)));
+    process.define(
+        "wait",
+        new UnaryBuiltin(
+            "std.native.Process/wait",
+            value -> {
+              HaraProcess handle = requireProcess(value, "std.native.Process/wait");
+              return new HaraPromise(
+                  handle.exit,
+                  () -> {
+                    if (handle.process.isAlive()) handle.process.destroyForcibly();
+                  });
+            }));
     process.define("kill", new UnaryBuiltin("std.native.Process/kill", this::osProcessKill));
   }
 
@@ -4457,7 +4469,8 @@ public final class HaraContext {
   }
 
   private Object promiseFrom(Object value) {
-    return new HaraPromise(flatten(value));
+    Object input = HaraBox.unwrap(value);
+    return input instanceof HaraPromise ? input : new HaraPromise(flatten(input));
   }
 
   private HaraPromise requirePromise(Object value, String operation) {
@@ -4475,8 +4488,13 @@ public final class HaraContext {
 
   private Object promiseAll(Object value) {
     ArrayList<CompletableFuture<Object>> promises = new ArrayList<>();
+    ArrayList<HaraPromise> cancellable = new ArrayList<>();
     Iterator<?> iterator = (Iterator<?>) iterValue(value);
-    while (iterator.hasNext()) promises.add(flatten(iterator.next()));
+    while (iterator.hasNext()) {
+      Object item = HaraBox.unwrap(iterator.next());
+      if (item instanceof HaraPromise promise) cancellable.add(promise);
+      promises.add(flatten(item));
+    }
     CompletableFuture<?>[] futures = promises.toArray(new CompletableFuture[0]);
     CompletableFuture<Object> result =
         CompletableFuture.allOf(futures)
@@ -4487,7 +4505,7 @@ public final class HaraContext {
                         promises.stream()
                             .map(promise -> HaraPersistentValues.normalize(promise.join()))
                             .toArray()));
-    return new HaraPromise(result);
+    return new HaraPromise(result, () -> cancellable.forEach(HaraPromise::cancel));
   }
 
   private Object promiseThen(Object[] values, boolean failure) {
@@ -4522,7 +4540,7 @@ public final class HaraContext {
                           invokeInContext(() -> invokeCallable(values[1], new Object[] {value}))))
               .thenCompose(Function.identity());
     }
-    return new HaraPromise(result);
+    return new HaraPromise(result, () -> promise.cancel());
   }
 
   private Object promiseFinally(Object[] values) {
@@ -4542,7 +4560,7 @@ public final class HaraContext {
                               return value;
                             }))
             .thenCompose(Function.identity());
-    return new HaraPromise(result);
+    return new HaraPromise(result, () -> promise.cancel());
   }
 
   private Object promiseDelay(Object[] values) {
@@ -4551,12 +4569,37 @@ public final class HaraContext {
     }
     long millis = HaraNumericConversions.toLong(values[0], "promise/delay");
     if (millis < 0) throw new HaraException("promise/delay expects non-negative milliseconds");
-    CompletableFuture<Object> future =
-        CompletableFuture.supplyAsync(
-                () -> invokeInContext(() -> invokeCallable(values[1], new Object[0])),
-                CompletableFuture.delayedExecutor(millis, TimeUnit.MILLISECONDS))
-            .thenCompose(this::flatten);
-    return new HaraPromise(future);
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    AtomicReference<CompletableFuture<Object>> active = new AtomicReference<>();
+    CompletableFuture.delayedExecutor(millis, TimeUnit.MILLISECONDS)
+        .execute(
+            () -> {
+              if (future.isDone()) return;
+              CompletableFuture<Object> source;
+              try {
+                source =
+                    flatten(invokeInContext(() -> invokeCallable(values[1], new Object[0])));
+              } catch (Throwable error) {
+                future.completeExceptionally(error);
+                return;
+              }
+              active.set(source);
+              if (future.isCancelled()) {
+                source.cancel(false);
+                return;
+              }
+              source.whenComplete(
+                  (value, error) -> {
+                    if (error == null) future.complete(value);
+                    else future.completeExceptionally(error);
+                  });
+            });
+    return new HaraPromise(
+        future,
+        () -> {
+          CompletableFuture<Object> source = active.get();
+          if (source != null) source.cancel(false);
+        });
   }
 
   <T> T invokeInContext(Supplier<T> operation) {
@@ -7317,9 +7360,15 @@ public final class HaraContext {
 
   private final class HaraPromise implements IPromise {
     private final CompletableFuture<Object> future;
+    private final Runnable cancelAction;
 
     private HaraPromise(CompletableFuture<Object> future) {
+      this(future, () -> {});
+    }
+
+    private HaraPromise(CompletableFuture<Object> future, Runnable cancelAction) {
       this.future = future;
+      this.cancelAction = cancelAction;
     }
 
     @Override
@@ -7354,7 +7403,7 @@ public final class HaraContext {
 
     @Override
     public Object cancel() {
-      future.cancel(false);
+      if (future.cancel(false)) cancelAction.run();
       return this;
     }
 

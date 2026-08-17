@@ -155,6 +155,36 @@ fn cancellation_cancels_active_promise_and_runs_finalizers_once() {
 }
 
 #[test]
+fn cancellation_prevents_a_delayed_native_effect_from_running() {
+    let host = WorkHost::new();
+    let fired = Rc::new(Cell::new(false));
+    let task_fired = fired.clone();
+    let run = host
+        .submit(Some("cancel-delay"), move || {
+            let source = Promise::new();
+            source.schedule(
+                Duration::from_millis(20),
+                Rc::new(move || {
+                    task_fired.set(true);
+                    Ok(Value::Number(42))
+                }),
+            );
+            let adopted = Promise::new();
+            adopted.adopt(&source);
+            Ok(Value::Promise(adopted))
+        })
+        .unwrap();
+    host.run(&run.work_id());
+    assert_eq!(run.work_status().state, WorkRunState::Waiting);
+
+    assert!(run.cancel(Value::Keyword("stop-timer".into())));
+    std::thread::sleep(Duration::from_millis(30));
+
+    assert!(!fired.get());
+    assert_eq!(run.work_status().state, WorkRunState::Cancelled);
+}
+
+#[test]
 fn parent_waits_for_attached_child_and_cancellation_flows_downward() {
     let host = WorkHost::new();
     let child_source = Promise::new();

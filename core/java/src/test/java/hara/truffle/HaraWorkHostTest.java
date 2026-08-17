@@ -8,11 +8,66 @@ import hara.lang.data.Keyword;
 import hara.lang.protocol.IWorkRun;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.Test;
 
 public class HaraWorkHostTest {
+  @Test
+  public void cancellationPreventsDelayedNativeEffectsFromRunning() throws Exception {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      enterNamespace(context, "work.host.cancel.delay");
+      context.eval(
+          HaraLanguage.ID,
+          "(do "
+              + "(def delay-fired (atom false)) "
+              + "(def delay-run "
+              + "  (IWorkHost/work-submit work.native/default-host :timer nil "
+              + "    {:work/execute (fn [work input options id] "
+              + "      (promise/then "
+              + "       (promise/delay 150 (fn [] (reset! delay-fired true))) identity))})) nil)");
+      awaitValue(context, "(IWorkRun/work-status delay-run)", ":waiting");
+
+      context.eval(HaraLanguage.ID, "(deref (IWorkRun/work-cancel delay-run :test/timer))");
+      Thread.sleep(250L);
+
+      assertEquals("false", context.eval(HaraLanguage.ID, "(deref delay-fired)").toString());
+      assertEquals(
+          ":cancelled",
+          context.eval(HaraLanguage.ID, "(IWorkRun/work-status delay-run)").toString());
+    }
+  }
+
+  @Test
+  public void cancellationTerminatesAnAwaitedNativeProcess() throws Exception {
+    try (Context context =
+        Context.newBuilder(HaraLanguage.ID).allowCreateProcess(true).build()) {
+      enterNamespace(context, "work.host.cancel.process");
+      context.eval(
+          HaraLanguage.ID,
+          "(do "
+              + "(def active-process (atom nil)) "
+              + "(def process-run "
+              + "  (IWorkHost/work-submit work.native/default-host :process nil "
+              + "    {:work/execute (fn [work input options id] "
+              + "      (let [process (Process/spawn [\"/bin/sh\" \"-c\" \"sleep 30\"])] "
+              + "        (reset! active-process process) "
+              + "        (promise/then (Process/wait process) identity)))})) nil)");
+      awaitValue(context, "(IWorkRun/work-status process-run)", ":waiting");
+      assertEquals(
+          "true",
+          context.eval(HaraLanguage.ID, "(Process/alive? (deref active-process))").toString());
+
+      context.eval(HaraLanguage.ID, "(deref (IWorkRun/work-cancel process-run :test/process))");
+      awaitValue(context, "(Process/alive? (deref active-process))", "false");
+
+      assertEquals(
+          ":cancelled",
+          context.eval(HaraLanguage.ID, "(IWorkRun/work-status process-run)").toString());
+    }
+  }
+
   @Test
   public void scopeHelpersAreOrdinaryWorkNativeFunctions() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
@@ -247,5 +302,16 @@ public class HaraWorkHostTest {
     context.eval(
         HaraLanguage.ID,
         "(ns " + name + ")");
+  }
+
+  private static void awaitValue(Context context, String source, String expected) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5L);
+    String actual = null;
+    while (System.nanoTime() < deadline) {
+      actual = context.eval(HaraLanguage.ID, source).toString();
+      if (expected.equals(actual)) return;
+      Thread.sleep(5L);
+    }
+    assertEquals(expected, actual);
   }
 }
