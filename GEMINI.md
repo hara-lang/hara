@@ -145,7 +145,7 @@
 * To force Maven to update dependencies from remote repositories, ignoring local caches of resolution failures, use the `-U` flag (e.g., `mvn compile -U`).
 * The build environment uses a modern JDK (21+) that no longer includes the `javah` tool, making older JNI-related Maven plugins like `nar-maven-plugin` incompatible.
 * The project implements modularity using isolated `RT.Loader` (URLClassLoader) instances for each runtime and `hara.kernel.maven.Maven` for dynamic dependency injection, rather than using the OSGi framework.
-* Significant functionality from the reference Clojure implementation (`../hara-archive/src-reference/`) is missing in the Java port, including `std.fs`, `std.concurrent`, `std.math`, `std.string`, and `std.image`.
+* Significant functionality from the reference Clojure implementation (`../hara-archive/src-reference/`) is missing in the Java port, including `std.concurrent`, `std.math`, `std.string`, and `std.image`.
 * New top-level commands are added to the system by registering an implementation of the `hara.kernel.Cmd` functional interface into the `hara.kernel.Foundation` registry, rather than extending an enum.
 * The `Foundation` service manages runtime sessions via the `SESSION` command. `NEW` accepts an optional memory limit. `INFO` returns a map of session statistics (name, path count, class count, alias count).
 * The `hara.lang.data.List` API provides a `popFirst()` method to get the list without its first element; it does not have a `next()` method for this purpose.
