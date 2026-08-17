@@ -1,0 +1,541 @@
+;; ============================================================================
+;; tool.vm — portable HALC/HBC artifact and provider contracts.
+;;
+;; This namespace describes formats and capabilities only. Binary codecs,
+;; compilers, and executors remain host providers and are wired separately.
+;; ============================================================================
+(ns tool.vm)
+
+(def +format-order+ [:hal :halc :hbc])
+
+(def +formats+
+  {:hal
+   {:format/id :hal
+    :format/name "HAL"
+    :format/kind :source
+    :format/status :draft
+    :format/extension ".hal"
+    :format/portable true
+    :format/execution :source-evaluation
+    :format/spec-path "01-lang/001-language/draft/hal-langspec.edn"}
+
+   :halc
+   {:format/id :halc
+    :format/name "HALC"
+    :format/kind :canonical-module
+    :format/status :draft
+    :format/extension ".halc"
+    :format/magic "HALC"
+    :format/version 1
+    :format/portable true
+    :format/execution :lowering-required
+    :format/spec-path "01-lang/009-halc/draft/halc-format.md"}
+
+   :hbc
+   {:format/id :hbc
+    :format/name "HBC0"
+    :format/kind :executable-module
+    :format/status :draft
+    :format/extension ".hbc"
+    :format/magic "HBC0"
+    :format/version 0
+    :format/portable true
+    :format/execution :virtual-machine
+    :format/spec-path "01-lang/010-bytecode/draft/hal-bytecode-vm.edn"}})
+
+(def +binary-formats+ #{:halc :hbc})
+
+(def +transformations+
+  [{:transform/from :hal
+    :transform/to :halc
+    :transform/kind :canonicalize
+    :transform/reversible false}
+   {:transform/from :hal
+    :transform/to :hbc
+    :transform/kind :compile
+    :transform/reversible false}
+   {:transform/from :halc
+    :transform/to :hbc
+    :transform/kind :lower
+    :transform/reversible false}])
+
+(def +operation-order+
+  [:encode :decode :validate :inspect :transform :execute :disassemble :conform])
+
+(def +operations+
+  #{:encode :decode :validate :inspect :transform :execute :disassemble :conform})
+
+(def +format-operation-order+
+  {:hal [:validate :inspect :execute :conform]
+   :halc [:encode :decode :validate :inspect :execute :conform]
+   :hbc [:encode :decode :validate :inspect :execute :disassemble :conform]})
+
+(defn- fail [message data]
+  (throw (ex-info message data)))
+
+(defn- includes? [values target]
+  (not
+   (nil?
+    (first
+     (filter (fn [value] (= value target)) values)))))
+
+(defn- unknown-keys [value allowed]
+  (vec
+   (sort-by str
+            (filter (fn [key] (not (has? allowed key)))
+                    (keys value)))))
+
+(defn- exact-map [label type allowed value]
+  (if (not (map? value))
+    (fail (str label " must be a map")
+          {:type type :field label :value value})
+    (let [unknown (unknown-keys value allowed)]
+      (if (empty? unknown)
+        value
+        (fail (str label " contains unsupported keys: " unknown)
+              {:type type :field label :unknown unknown})))))
+
+(defn- keyword-value [label type value]
+  (if (keyword? value)
+    value
+    (fail (str label " must be a keyword")
+          {:type type :field label :value value})))
+
+(defn- format-id [value]
+  (let [value (keyword-value "format" :tool.vm/unknown-format value)]
+    (if (has? +formats+ value)
+      value
+      (fail (str "Unknown tool.vm format: " value)
+            {:type :tool.vm/unknown-format
+             :format value
+             :available +format-order+}))))
+
+(defn formats
+  "Returns portable code-format descriptors in pipeline order."
+  []
+  (vec (map (fn [id] (get +formats+ id)) +format-order+)))
+
+(defn format-descriptor
+  "Returns the descriptor for a known portable code format."
+  [format]
+  (get +formats+ (format-id format)))
+
+(defn spec
+  "Returns the current specification coordinate for format."
+  [format]
+  (:format/spec-path (format-descriptor format)))
+
+(defn binary-format?
+  "Returns true only for serialized HALC and HBC module formats."
+  [format]
+  (and (keyword? format) (has? +binary-formats+ format)))
+
+(defn- find-transformation [from to]
+  (first
+   (filter (fn [edge]
+             (and (= from (:transform/from edge))
+                  (= to (:transform/to edge))))
+           +transformations+)))
+
+(defn transformations
+  "Returns the exact one-way transformation graph."
+  []
+  +transformations+)
+
+(defn legal-transform?
+  "Returns true when an exact source-to-target edge is declared."
+  [from to]
+  (and (keyword? from)
+       (keyword? to)
+       (not (nil? (find-transformation from to)))))
+
+(defn transformation
+  "Returns a declared transformation or throws for an unsupported edge."
+  [from to]
+  (let [from (format-id from)
+        to (format-id to)
+        edge (find-transformation from to)]
+    (if edge
+      edge
+      (fail (str "Unsupported tool.vm transformation: " from " -> " to)
+            {:type :tool.vm/unsupported-transformation
+             :from from
+             :to to
+             :available +transformations+}))))
+
+(defn artifact
+  "Validates and normalizes a binary HALC or HBC artifact wrapper."
+  [value]
+  (let [value (exact-map
+               "tool.vm artifact"
+               :tool.vm/invalid-artifact
+               #{:artifact/format
+                 :artifact/version
+                 :artifact/bytes
+                 :artifact/provenance}
+               value)
+        format (format-id (:artifact/format value))
+        version (:artifact/version value)
+        bytes (:artifact/bytes value)
+        provenance (:artifact/provenance value)]
+    (if (not (binary-format? format))
+      (fail "HAL source cannot be represented as a binary tool.vm artifact"
+            {:type :tool.vm/invalid-artifact
+             :field :artifact/format
+             :format format
+             :available [:halc :hbc]})
+      nil)
+    (if (not (and (integer? version) (not (neg? version))))
+      (fail ":artifact/version must be a non-negative integer"
+            {:type :tool.vm/invalid-artifact
+             :field :artifact/version
+             :value version})
+      nil)
+    (if (not (Bytes/instance? bytes))
+      (fail ":artifact/bytes must be Bytes"
+            {:type :tool.vm/invalid-artifact
+             :field :artifact/bytes
+             :value bytes})
+      nil)
+    (if (and (not (nil? provenance)) (not (map? provenance)))
+      (fail ":artifact/provenance must be a map when present"
+            {:type :tool.vm/invalid-artifact
+             :field :artifact/provenance
+             :value provenance})
+      nil)
+    (let [normalized
+          {:artifact/format format
+           :artifact/version version
+           :artifact/bytes (Bytes/copy bytes)}]
+      (if (nil? provenance)
+        normalized
+        (assoc normalized :artifact/provenance provenance)))))
+
+(defn artifact?
+  "Returns true when value is a valid binary artifact wrapper."
+  [value]
+  (try
+    (do (artifact value) true)
+    (catch Throwable error false)))
+
+(defn artifact-info
+  "Returns stable artifact information without exposing host objects."
+  [value]
+  (let [artifact (artifact value)]
+    {:artifact/format (:artifact/format artifact)
+     :artifact/version (:artifact/version artifact)
+     :artifact/bytes (Bytes/count (:artifact/bytes artifact))
+     :artifact/spec-path (spec (:artifact/format artifact))
+     :artifact/provenance (:artifact/provenance artifact)}))
+
+(defn- canonical-members [label allowed value]
+  (let [members
+        (cond
+          (set? value) value
+          (vector? value) (reduce conj #{} value)
+          :else
+          (fail (str label " must be a set or vector")
+                {:type :tool.vm/invalid-provider
+                 :field label
+                 :value value}))
+        unknown
+        (vec
+         (sort-by str
+                  (filter (fn [item] (not (includes? allowed item)))
+                          members)))]
+    (if (not (empty? unknown))
+      (fail (str label " contains unsupported values: " unknown)
+            {:type :tool.vm/invalid-provider
+             :field label
+             :unknown unknown})
+      (vec (filter (fn [item] (has? members item)) allowed)))))
+
+(defn- normalize-formats [value]
+  (let [value (exact-map
+               ":provider/formats"
+               :tool.vm/invalid-provider
+               +formats+
+               value)]
+    (reduce
+     (fn [out format]
+       (if (has? value format)
+         (assoc out
+                format
+                (canonical-members
+                 (str ":provider/formats " format)
+                 (get +format-operation-order+ format)
+                 (get value format)))
+         out))
+     {}
+     +format-order+)))
+
+(defn- normalize-transforms [value]
+  (if (not (vector? value))
+    (fail ":provider/transforms must be a vector of [from to] pairs"
+          {:type :tool.vm/invalid-provider
+           :field :provider/transforms
+           :value value})
+    (let [requested
+          (reduce
+           (fn [out pair]
+             (if (not (and (vector? pair) (= 2 (count pair))))
+               (fail ":provider/transforms must contain [from to] pairs"
+                     {:type :tool.vm/invalid-provider
+                      :field :provider/transforms
+                      :value pair})
+               (let [from (format-id (nth pair 0))
+                     to (format-id (nth pair 1))]
+                 (transformation from to)
+                 (conj out [from to]))))
+           #{}
+           value)]
+      (vec
+       (map (fn [edge]
+              [(:transform/from edge) (:transform/to edge)])
+            (filter (fn [edge]
+                      (has? requested
+                            [(:transform/from edge) (:transform/to edge)]))
+                    +transformations+))))))
+
+(defn- normalize-engines [value formats]
+  (let [value (exact-map
+               ":provider/engines"
+               :tool.vm/invalid-provider
+               +formats+
+               value)]
+    (reduce
+     (fn [out format]
+       (if (has? value format)
+         (if (not (has? formats format))
+           (fail "Execution engine format is not declared by provider"
+                 {:type :tool.vm/invalid-provider
+                  :field :provider/engines
+                  :format format})
+           (assoc out
+                  format
+                  (keyword-value
+                   ":provider/engines value"
+                   :tool.vm/invalid-provider
+                   (get value format))))
+         out))
+     {}
+     +format-order+)))
+
+(defn- derived-operations [formats transforms]
+  (let [members
+        (reduce
+         (fn [out format]
+           (reduce conj out (or (get formats format) [])))
+         (if (empty? transforms) #{} #{:transform})
+         +format-order+)]
+    (vec (filter (fn [operation] (has? members operation))
+                 +operation-order+))))
+
+(defn provider
+  "Validates and canonicalizes one exact host-provider descriptor."
+  [value]
+  (let [value (exact-map
+               "tool.vm provider"
+               :tool.vm/invalid-provider
+               #{:provider/id
+                 :provider/operations
+                 :provider/formats
+                 :provider/transforms
+                 :provider/engines}
+               value)
+        id (keyword-value
+            ":provider/id"
+            :tool.vm/invalid-provider
+            (:provider/id value))
+        formats (normalize-formats (or (:provider/formats value) {}))
+        transforms (normalize-transforms (or (:provider/transforms value) []))
+        engines (normalize-engines (or (:provider/engines value) {}) formats)
+        operations (derived-operations formats transforms)
+        declared (:provider/operations value)]
+    (if (not (nil? declared))
+      (let [declared (canonical-members
+                      ":provider/operations"
+                      +operation-order+
+                      declared)]
+        (if (not= declared operations)
+          (fail ":provider/operations does not match exact capabilities"
+                {:type :tool.vm/invalid-provider
+                 :provider id
+                 :field :provider/operations
+                 :declared declared
+                 :derived operations})
+          nil))
+      nil)
+    (reduce
+     (fn [out pair]
+       (if (and (has? formats (nth pair 0))
+                (has? formats (nth pair 1)))
+         out
+         (fail "Provider transformation formats must be declared"
+               {:type :tool.vm/invalid-provider
+                :provider id
+                :transform pair
+                :formats (vec (keys formats))})))
+     nil
+     transforms)
+    (reduce
+     (fn [out format]
+       (let [operations (or (get formats format) [])
+             executable (includes? operations :execute)
+             engine (has? engines format)]
+         (cond
+           (and executable (not engine))
+           (fail "Executable provider format requires an execution engine"
+                 {:type :tool.vm/invalid-provider
+                  :provider id
+                  :field :provider/engines
+                  :format format})
+
+           (and engine (not executable))
+           (fail "Execution engine requires :execute for its exact format"
+                 {:type :tool.vm/invalid-provider
+                  :provider id
+                  :field :provider/formats
+                  :format format})
+
+           :else out)))
+     nil
+     +format-order+)
+    {:provider/id id
+     :provider/operations operations
+     :provider/formats formats
+     :provider/transforms transforms
+     :provider/engines engines}))
+
+(defn provider?
+  "Returns true when value is a valid exact provider descriptor."
+  [value]
+  (try
+    (do (provider value) true)
+    (catch Throwable error false)))
+
+(defn capabilities
+  "Returns providers in deterministic identity order and rejects duplicates."
+  [providers]
+  (if (not (vector? providers))
+    (fail "tool.vm capabilities must be a vector of providers"
+          {:type :tool.vm/invalid-provider-set
+           :value providers})
+    (let [by-id
+          (reduce
+           (fn [out value]
+             (let [provider (provider value)
+                   id (:provider/id provider)]
+               (if (has? out id)
+                 (fail (str "Duplicate tool.vm provider: " id)
+                       {:type :tool.vm/duplicate-provider
+                        :provider id})
+                 (assoc out id provider))))
+           {}
+           providers)]
+      (vec (map (fn [id] (get by-id id))
+                (sort-by str (keys by-id)))))))
+
+(defn- request [value]
+  (let [value (if (map? value)
+                value
+                (fail "tool.vm request must be a map"
+                      {:type :tool.vm/invalid-request :value value}))
+        operation (keyword-value
+                   ":operation"
+                   :tool.vm/invalid-request
+                   (:operation value))
+        provider-value (:provider value)
+        provider (if (nil? provider-value)
+                   nil
+                   (keyword-value
+                    ":provider"
+                    :tool.vm/invalid-request
+                    provider-value))
+        options (or (:options value) {})]
+    (if (not (has? +operations+ operation))
+      (fail (str "Unknown tool.vm operation: " operation)
+            {:type :tool.vm/invalid-request
+             :operation operation
+             :available +operation-order+})
+      nil)
+    (if (not (map? options))
+      (fail ":options must be a map"
+            {:type :tool.vm/invalid-request
+             :field :options
+             :value options})
+      nil)
+    (if (= operation :transform)
+      (let [value (exact-map
+                   "tool.vm transform request"
+                   :tool.vm/invalid-request
+                   #{:operation :provider :from :to :options}
+                   value)
+            from (format-id (:from value))
+            to (format-id (:to value))]
+        (transformation from to)
+        {:operation operation
+         :provider provider
+         :from from
+         :to to
+         :options options})
+      (let [value (exact-map
+                   "tool.vm format request"
+                   :tool.vm/invalid-request
+                   #{:operation :provider :format :options}
+                   value)]
+        {:operation operation
+         :provider provider
+         :format (format-id (:format value))
+         :options options}))))
+
+(defn- supports-request? [provider request]
+  (if (= :transform (:operation request))
+    (includes? (:provider/transforms provider)
+               [(:from request) (:to request)])
+    (let [format (:format request)
+          operations (get (:provider/formats provider) format)]
+      (and (not (nil? operations))
+           (includes? operations (:operation request))
+           (if (= :execute (:operation request))
+             (has? (:provider/engines provider) format)
+             true)))))
+
+(defn available-providers
+  "Returns provider ids supporting request, ignoring its selected provider."
+  [providers value]
+  (let [providers (capabilities providers)
+        request (request value)]
+    (vec
+     (map (fn [provider] (:provider/id provider))
+          (filter (fn [provider]
+                    (supports-request? provider request))
+                  providers)))))
+
+(defn select-provider
+  "Selects only the explicitly requested provider; it never falls back."
+  [providers value]
+  (let [providers (capabilities providers)
+        request (request value)
+        requested (:provider request)
+        selected
+        (first
+         (filter (fn [provider]
+                   (= requested (:provider/id provider)))
+                 providers))]
+    (if (nil? requested)
+      (fail "tool.vm provider selection requires :provider"
+            {:type :tool.vm/invalid-request
+             :field :provider
+             :operation (:operation request)})
+      nil)
+    (if (and selected (supports-request? selected request))
+      selected
+      (fail (str "tool.vm provider cannot satisfy request: " requested)
+            {:type :tool.vm/capability-unavailable
+             :operation (:operation request)
+             :from (:from request)
+             :to (:to request)
+             :format (:format request)
+             :provider requested
+             :available (available-providers providers request)}))))
