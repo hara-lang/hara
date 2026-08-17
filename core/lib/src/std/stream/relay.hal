@@ -13,9 +13,8 @@
      (create duplex codec-or-options {})
      (create duplex nil codec-or-options)))
   ([duplex codec options]
-   (if (not (and (satisfies? IStream duplex)
-                 (satisfies? IStreamWrite duplex)))
-     (throw (ex-info "Relay requires readable and writable transport ports"
+   (if (not (satisfies? IStreamDuplex duplex))
+     (throw (ex-info "Relay requires an IStreamDuplex transport"
                      {:error/type :relay/invalid-transport
                       :value duplex})))
    (if (and codec (not (satisfies? frame/IFrameCodec codec)))
@@ -184,47 +183,56 @@
 (defn mark-eof [relay]
   (swap! (:state relay) (fn [current] (assoc current :eof true))))
 
+(defn reader-step [relay codec-state]
+  (promise/then
+   (IStream/next (:duplex relay))
+   (fn [chunk]
+     (if (nil? chunk)
+       (if (:codec relay)
+         (let [final (frame/finish-frame (:codec relay) codec-state)]
+           (dispatch-frames relay (:frames final))
+           (fail relay (ex-info "Relay receive stream reached EOF"
+                                {:error/type :relay/eof})))
+         (mark-eof relay))
+       (if (:codec relay)
+         (let [decoded (frame/feed-frame (:codec relay) codec-state chunk)]
+           (dispatch-frames relay (:frames decoded))
+           (reader-step relay (:state decoded)))
+         (do
+           (append-raw relay chunk)
+           (reader-step relay nil)))))))
+
 (defn reader-loop [relay]
-  (promise/run
-   (fn []
-     (try
-       (loop [codec-state (if (:codec relay)
-                           (frame/initial-state (:codec relay))
-                           nil)]
-         (let [chunk (deref (IStream/next (:duplex relay)))]
-           (if (nil? chunk)
-             (if (:codec relay)
-               (let [final (frame/finish-frame (:codec relay) codec-state)]
-                 (dispatch-frames relay (:frames final))
-                 (fail relay (ex-info "Relay receive stream reached EOF"
-                                      {:error/type :relay/eof})))
-               (mark-eof relay))
-             (if (:codec relay)
-               (let [decoded (frame/feed-frame (:codec relay) codec-state chunk)]
-                 (dispatch-frames relay (:frames decoded))
-                 (recur (:state decoded)))
-               (do
-                 (append-raw relay chunk)
-                 (recur nil))))))
-       (catch Throwable error
-         (fail relay error))))))
+  (promise/catch
+   (reader-step relay (if (:codec relay)
+                        (frame/initial-state (:codec relay))
+                        nil))
+   (fn [error] (fail relay error))))
 
 (defn send-bytes [relay bytes]
-  (deref (IStreamWrite/write (:duplex relay) bytes)))
+  (IStreamWrite/write (:duplex relay) bytes))
 
 (defn process-send [relay job]
   (try
-    (let [count (if (= :flush (:kind job))
-                  0
-                  (send-bytes relay
-                              (cond
-                                (= :raw (:kind job)) (:value job)
-                                (= :partial (:kind job)) (str/encode-utf8 (:value job))
-                                (= :line (:kind job)) (str/encode-utf8 (str (:value job) "\n"))
-                                :else (frame/encode-frame (:codec relay) (:value job)))))]
-      ((:resolve job) count))
+    (let [written (if (= :flush (:kind job))
+                    (promise/from 0)
+                    (send-bytes relay
+                                (cond
+                                  (= :raw (:kind job)) (:value job)
+                                  (= :partial (:kind job)) (str/encode-utf8 (:value job))
+                                  (= :line (:kind job)) (str/encode-utf8 (str (:value job) "\n"))
+                                  :else (frame/encode-frame (:codec relay) (:value job)))))]
+      (promise/catch
+       (promise/then written
+                     (fn [count]
+                       ((:resolve job) count)
+                       count))
+       (fn [error]
+         ((:reject job) error)
+         nil)))
     (catch Throwable error
-      ((:reject job) error))))
+      ((:reject job) error)
+      (promise/from nil))))
 
 (defn process-exchange [relay job]
   (let [mode (:mode (:options relay))
@@ -238,35 +246,50 @@
         (register-pending relay correlation-id job)
         (arm-timeout relay mode correlation-id timeout)
         (try
-          (send-bytes relay (frame/encode-frame (:codec relay) outgoing))
+          (promise/catch
+           (send-bytes relay (frame/encode-frame (:codec relay) outgoing))
+           (fn [error]
+             (let [entry (remove-pending relay correlation-id)]
+               (reject-entry entry error))))
           (catch Throwable error
             (let [entry (remove-pending relay correlation-id)]
-              (reject-entry entry error)))))
+              (reject-entry entry error))
+            (promise/from nil))))
       (do
         (register-serial relay job)
         (arm-timeout relay mode nil timeout)
         (try
-          (send-bytes relay (frame/encode-frame (:codec relay) (:value job)))
-          (deref (:promise job))
+          (promise/catch
+           (promise/then
+            (send-bytes relay (frame/encode-frame (:codec relay) (:value job)))
+            (fn [_] (:promise job)))
+           (fn [error]
+             (let [entry (remove-serial relay)]
+               (reject-entry entry error))))
           (catch Throwable error
             (let [entry (remove-serial relay)]
-              (reject-entry entry error))))))))
+              (reject-entry entry error))
+            (promise/from nil)))))))
+
+(defn process-job [relay job]
+  (if (= :exchange (:kind job))
+    (process-exchange relay job)
+    (process-send relay job)))
+
+(defn writer-step [relay]
+  (promise/then
+   (channel/take (:jobs relay))
+   (fn [job]
+     (if job
+       (promise/then
+        (process-job relay job)
+        (fn [_] (writer-step relay)))
+       nil))))
 
 (defn writer-loop [relay]
-  (promise/run
-   (fn []
-     (try
-       (loop []
-         (let [job (deref (channel/take (:jobs relay)))]
-           (if job
-             (do
-               (if (= :exchange (:kind job))
-                 (process-exchange relay job)
-                 (process-send relay job))
-               (recur))
-             nil)))
-       (catch Throwable error
-         (fail relay error))))))
+  (promise/catch
+   (writer-step relay)
+   (fn [error] (fail relay error))))
 
 (defn start [relay]
   (let [current (state relay)]
@@ -286,6 +309,19 @@
   ([duplex codec-or-options] (start (create duplex codec-or-options)))
   ([duplex codec options]
    (start (create duplex codec options))))
+
+(defn poll-task [holder]
+  (let [task (deref holder)]
+    (if task (promise/state task) nil)))
+
+(defn drive [relay output]
+  (poll-task (:reader relay))
+  (poll-task (:writer relay))
+  (if (= :pending (promise/state output))
+    (promise/then
+     (promise/delay 1 (fn [] nil))
+     (fn [_] (drive relay output)))
+    output))
 
 (defn enqueue [relay kind value options]
   (if (not (started? relay))
@@ -308,7 +344,7 @@
                       {:error/type :relay/job-overflow})))
           (catch Throwable error
             ((:reject job) error)))
-        output))))
+        (drive relay output)))))
 
 (defn send [relay value]
   (if (nil? (:codec relay))
@@ -377,7 +413,10 @@
   (next [relay] (std.stream.relay/receive relay)))
 
 (extend-type Relay IStreamWrite
-  (write [relay value] (std.stream.relay/send relay value)))
+  (write [relay value]
+    (if (:codec relay)
+      (std.stream.relay/send relay value)
+      (std.stream.relay/send-raw relay value))))
 
 (extend-type Relay IAbort
   (abort [relay error] (std.stream.relay/fail relay error)))
@@ -475,9 +514,11 @@
                        :available count-raw}))
 
       :else
-      (do
-        (deref (promise/delay 1 (fn [] nil)))
-        (read-buffer-loop relay operation argument (dec remaining))))))
+      (promise/then
+       (promise/delay 1 (fn [] nil))
+       (fn [_]
+         (poll-task (:reader relay))
+         (read-buffer-loop relay operation argument (dec remaining)))))))
 
 (defn read-buffer
   ([relay operation] (read-buffer relay operation nil {}))
@@ -492,8 +533,8 @@
        (throw (ex-info "read-limit requires a positive byte count"
                        {:error/type :relay/invalid-limit
                         :limit argument})))
-     (promise/run
-      (fn [] (read-buffer-loop relay operation argument timeout))))))
+     (promise/from
+      (read-buffer-loop relay operation argument timeout)))))
 
 (defn send-command [relay command]
   (let [command (if (string? command) {:op :string :line command} command)

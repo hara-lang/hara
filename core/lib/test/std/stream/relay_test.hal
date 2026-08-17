@@ -1,5 +1,6 @@
 (ns std.stream.relay-test
-  (:require [std.stream.duplex :as duplex]
+  (:require [std.stream.async :as async]
+            [std.stream.duplex :as duplex]
             [std.stream.frame :as frame]
             [std.stream.relay :as relay]))
 
@@ -10,63 +11,68 @@
 (Test/run
  [{:name "serial process exchange"
    :test (fn []
-           (let [process (echo-process)
-                 connection (relay/relay (Process/duplex process)
-                                         (frame/line)
-                                         {:timeout-ms 2000})
-                 reply (deref (relay/exchange connection "hello"))]
-             (relay/close connection)
-             (Process/close-input process)
-             [reply (deref (Process/wait process))]))
+           (async/go
+            (fn []
+              (let [process (echo-process)
+                    connection (relay/relay (duplex/from-process process)
+                                            (frame/line)
+                                            {:timeout-ms 2000})
+                    reply (co/await (relay/exchange connection "hello"))]
+                (relay/close connection)
+                (Process/close-input process)
+                [reply (co/await (Process/wait process))]))))
    :expected ["hello" 0]}
   {:name "correlated process exchanges"
    :test (fn []
-           (let [process (echo-process)
-                 connection (relay/relay
-                             (Process/duplex process)
-                             (frame/line)
-                             {:mode :correlated
-                              :timeout-ms 2000
-                              :prepare-request
-                              (fn [id request]
-                                [(str id) (str id ":" request)])
-                              :response-id
-                              (fn [response]
-                                (first (str/split response ":")))})
-                 replies (deref
-                          (promise/all
-                           [(relay/exchange connection "first")
-                            (relay/exchange connection "second")]))]
-             (relay/close connection)
-             (Process/close-input process)
-             [replies (deref (Process/wait process))]))
+           (async/go
+            (fn []
+              (let [process (echo-process)
+                    connection (relay/relay
+                                (duplex/from-process process)
+                                (frame/line)
+                                {:mode :correlated
+                                 :timeout-ms 2000
+                                 :prepare-request
+                                 (fn [id request]
+                                   [(str id) (str id ":" request)])
+                                 :response-id
+                                 (fn [response]
+                                   (first (str/split response ":")))})
+                    replies (co/await
+                             (promise/all
+                              [(relay/exchange connection "first")
+                               (relay/exchange connection "second")]))]
+                (relay/close connection)
+                (Process/close-input process)
+                [(vec replies) (co/await (Process/wait process))]))))
    :expected [["1:first" "2:second"] 0]}
   {:name "buffered relay controls byte boundaries over generic Duplex ports"
    :test (fn []
-           (let [written (atom [])
-                 source (stream
-                         (fn []
-                           (co/yield (str/encode-utf8 "hel"))
-                           (co/yield (str/encode-utf8 "lo\nwor"))
-                           (co/yield (str/encode-utf8 "ld"))))
-                 transport (duplex/create
-                            source
-                            (fn [value]
-                              (swap! written conj value)
-                              (promise/from (bytes/count value))))
-                 connection (relay/relay transport {:timeout-ms 2000})
-                 line (deref (relay/read-buffer connection :read-line))
-                 limited (deref (relay/read-buffer connection :read-limit 3))
-                 remaining (deref (relay/read-buffer connection :read-some))]
-             (deref (relay/send-partial connection "a"))
-             (deref (relay/send-line connection "b"))
-             (deref (relay/send-raw connection (str/encode-utf8 "c")))
-             (deref (relay/flush connection))
-             (let [sent (mapv str/decode-utf8 (deref written))]
-               (relay/close connection)
-               [line
-                (str/decode-utf8 limited)
-                (str/decode-utf8 remaining)
-                sent])))
+           (async/go
+            (fn []
+              (let [written (atom [])
+                    source (stream
+                            (fn []
+                              (co/yield (str/encode-utf8 "hel"))
+                              (co/yield (str/encode-utf8 "lo\nwor"))
+                              (co/yield (str/encode-utf8 "ld"))))
+                    transport (duplex/create
+                               source
+                               (fn [value]
+                                 (swap! written conj value)
+                                 (promise/from (bytes/count value))))
+                    connection (relay/relay transport {:timeout-ms 2000})
+                    line (co/await (relay/read-buffer connection :read-line))
+                    limited (co/await (relay/read-buffer connection :read-limit 3))
+                    remaining (co/await (relay/read-buffer connection :read-some))]
+                (co/await (relay/send-partial connection "a"))
+                (co/await (relay/send-line connection "b"))
+                (co/await (relay/send-raw connection (str/encode-utf8 "c")))
+                (co/await (relay/flush connection))
+                (let [sent (mapv str/decode-utf8 (deref written))]
+                  (relay/close connection)
+                  [line
+                   (str/decode-utf8 limited)
+                   (str/decode-utf8 remaining)
+                   sent])))))
    :expected ["hello" "wor" "ld" ["a" "b\n" "c"]]}])
-

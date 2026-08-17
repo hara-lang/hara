@@ -1,28 +1,26 @@
 (ns std.stream.common
-  (:config {:override [map filter take reduce]}))
-
-(defstruct ManagedStream [inner source closed])
+  (:config {:override [map filter keep remove take drop take-while drop-while
+                       concat partition partition-all partition-by interleave
+                       first last count some every? find reduce]}))
 
 (defn close-value [value]
   (try
     (IClose/close value)
     (catch Throwable error nil)))
 
-(extend-type ManagedStream IStream
-  (next [stream]
-    (IStream/next (:inner stream))))
+(defn close-values [values]
+  (if (> (std.foundation/count values) 0)
+    (do
+      (close-value (std.foundation/first values))
+      (close-values (vec (rest values))))
+    nil))
 
-(extend-type ManagedStream IClose
-  (close [stream]
-    (if (deref (:closed stream))
-      nil
-      (do
-        (reset! (:closed stream) true)
-        (close-value (:inner stream))
-        (close-value (:source stream))))))
-
-(defn managed [inner source]
-  (ManagedStream inner source (atom false)))
+(defn own [inner sources]
+  (Stream/create
+   (fn [] (IStream/next inner))
+   (fn []
+     (close-value inner)
+     (close-values sources))))
 
 (defn ^{:inline true :schema [:fn [:any] :promise]}
   next
@@ -54,7 +52,7 @@
   "Wraps a synchronous iterator as an asynchronous stream and owns its lifetime."
   [value]
   (let [iterator (iter value)]
-    (managed
+    (own
       (stream
         (fn []
           (try
@@ -65,12 +63,12 @@
                   (recur))
                 nil))
             (finally (close-value iterator)))))
-      iterator)))
+      [iterator])))
 
 (defn map
   "Lazily applies synchronous function to every asynchronous stream item."
   [function source]
-  (managed
+  (own
     (stream
       (fn []
         (try
@@ -82,12 +80,12 @@
                   (co/yield (function value))
                   (recur)))))
           (finally (close-value source)))))
-    source))
+    [source]))
 
 (defn filter
   "Lazily retains asynchronous stream items satisfying predicate."
   [predicate source]
-  (managed
+  (own
     (stream
       (fn []
         (try
@@ -99,12 +97,12 @@
                   (if (predicate value) (co/yield value) nil)
                   (recur)))))
           (finally (close-value source)))))
-    source))
+    [source]))
 
 (defn take
   "Lazily returns at most count items and then closes its source."
   [count source]
-  (managed
+  (own
     (stream
       (fn []
         (try
@@ -121,7 +119,185 @@
                 nil))
             (close-value source))
           (finally (close-value source)))))
-    source))
+    [source]))
+
+(defn keep
+  "Lazily emits non-nil results of applying function to source values."
+  [function source]
+  (own
+   (stream
+    (fn []
+      (try
+        (loop []
+          (let [value (co/await (next source))]
+            (if (nil? value)
+              nil
+              (let [output (function value)]
+                (if (nil? output) nil (co/yield output))
+                (recur)))))
+        (finally (close-value source)))))
+   [source]))
+
+(defn remove [predicate source]
+  (filter (fn [value] (not (predicate value))) source))
+
+(defn drop
+  "Skips count values, then emits the remainder."
+  [count source]
+  (own
+   (stream
+    (fn []
+      (try
+        (loop [remaining count]
+          (let [value (co/await (next source))]
+            (if (nil? value)
+              nil
+              (if (> remaining 0)
+                (recur (dec remaining))
+                (do (co/yield value) (recur 0))))))
+        (finally (close-value source)))))
+   [source]))
+
+(defn take-while [predicate source]
+  (own
+   (stream
+    (fn []
+      (try
+        (loop []
+          (let [value (co/await (next source))]
+            (if (or (nil? value) (not (predicate value)))
+              nil
+              (do (co/yield value) (recur)))))
+        (finally (close-value source)))))
+   [source]))
+
+(defn drop-while [predicate source]
+  (own
+   (stream
+    (fn []
+      (try
+        (loop [dropping true]
+          (let [value (co/await (next source))]
+            (if (nil? value)
+              nil
+              (if (and dropping (predicate value))
+                (recur true)
+                (do (co/yield value) (recur false))))))
+        (finally (close-value source)))))
+   [source]))
+
+(defn concat-source [sources]
+  (own
+   (stream
+    (fn []
+      (try
+        (loop [remaining sources]
+          (if (> (std.foundation/count remaining) 0)
+            (let [source (std.foundation/first remaining)
+                  value (co/await (next source))]
+              (if (nil? value)
+                (do (close-value source) (recur (vec (rest remaining))))
+                (do (co/yield value) (recur remaining))))
+            nil))
+        (finally (close-values sources)))))
+   sources))
+
+(defn concat [& sources]
+  (concat-source (vec sources)))
+
+(defn zip [& sources]
+  (let [sources (vec sources)]
+    (own
+     (stream
+      (fn []
+        (try
+          (loop []
+            (let [values (loop [index 0 output []]
+                           (if (= index (std.foundation/count sources))
+                             output
+                             (let [value (co/await (next (nth sources index)))]
+                               (if (nil? value)
+                                 nil
+                                 (recur (inc index) (conj output value))))))]
+              (if (nil? values)
+                nil
+                (do (co/yield values) (recur)))))
+          (finally (close-values sources)))))
+     sources)))
+
+(defn yield-values [values index]
+  (if (< index (std.foundation/count values))
+    (do (co/yield (nth values index))
+        (yield-values values (inc index)))
+    nil))
+
+(defn interleave [& sources]
+  (let [sources (vec sources)]
+    (own
+     (stream
+      (fn []
+        (try
+          (loop []
+            (let [values (loop [index 0 output []]
+                           (if (= index (std.foundation/count sources))
+                             output
+                             (let [value (co/await (next (nth sources index)))]
+                               (if (nil? value)
+                                 nil
+                                 (recur (inc index) (conj output value))))))]
+              (if (nil? values)
+                nil
+                (do (yield-values values 0) (recur)))))
+          (finally (close-values sources)))))
+     sources)))
+
+(defn partition-stream [size source partial?]
+  (if (< size 1)
+    (throw (ex-info "Partition size must be positive" {:size size})))
+  (own
+   (stream
+    (fn []
+      (try
+        (loop []
+          (let [values (loop [output []]
+                         (if (= size (std.foundation/count output))
+                           output
+                           (let [value (co/await (next source))]
+                             (if (nil? value)
+                               (if (and partial? (> (std.foundation/count output) 0)) output nil)
+                               (recur (conj output value))))))]
+            (if (nil? values)
+              nil
+              (do (co/yield values) (recur)))))
+        (finally (close-value source)))))
+   [source]))
+
+(defn partition [size source]
+  (partition-stream size source false))
+
+(defn partition-all [size source]
+  (partition-stream size source true))
+
+(defn partition-by [function source]
+  (own
+   (stream
+    (fn []
+      (try
+        (let [first-value (co/await (next source))]
+          (if (nil? first-value)
+            nil
+            (loop [group [first-value]
+                   key (function first-value)]
+              (let [value (co/await (next source))]
+                (if (nil? value)
+                  (co/yield group)
+                  (let [next-key (function value)]
+                    (if (= key next-key)
+                      (recur (conj group value) key)
+                      (do (co/yield group)
+                          (recur [value] next-key))))))))
+        (finally (close-value source)))))
+   [source])))
 
 (defn reduce-next [function result source]
   (promise/then
@@ -152,3 +328,70 @@
   (promise/finally
     (collect-next source [])
     (fn [] (close-value source))))
+
+(defn first [source]
+  (promise/finally
+   (next source)
+   (fn [] (close-value source))))
+
+(defn last-next [source output]
+  (promise/then
+   (next source)
+   (fn [value]
+     (if (nil? value) output (last-next source value)))))
+
+(defn last [source]
+  (promise/finally
+   (last-next source nil)
+   (fn [] (close-value source))))
+
+(defn count-next [source output]
+  (promise/then
+   (next source)
+   (fn [value]
+     (if (nil? value) output (count-next source (inc output))))))
+
+(defn count [source]
+  (promise/finally
+   (count-next source 0)
+   (fn [] (close-value source))))
+
+(defn some-next [predicate source]
+  (promise/then
+   (next source)
+   (fn [value]
+     (if (nil? value)
+       nil
+       (let [result (predicate value)]
+         (if result result (some-next predicate source)))))))
+
+(defn some [predicate source]
+  (promise/finally
+   (some-next predicate source)
+   (fn [] (close-value source))))
+
+(defn every-next [predicate source]
+  (promise/then
+   (next source)
+   (fn [value]
+     (if (nil? value)
+       true
+       (if (predicate value) (every-next predicate source) false)))))
+
+(defn every? [predicate source]
+  (promise/finally
+   (every-next predicate source)
+   (fn [] (close-value source))))
+
+(defn find-next [predicate source]
+  (promise/then
+   (next source)
+   (fn [value]
+     (if (nil? value)
+       nil
+       (if (predicate value) value (find-next predicate source))))))
+
+(defn find [predicate source]
+  (promise/finally
+   (find-next predicate source)
+   (fn [] (close-value source))))

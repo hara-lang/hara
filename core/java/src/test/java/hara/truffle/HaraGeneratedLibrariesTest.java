@@ -233,6 +233,19 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void nativeTestRunAwaitsPromiseResults() {
+    try (Context context = context()) {
+      String result = context.eval(HaraLanguage.ID,
+          "(Test/run [{:name \"async\" "
+              + ":test (fn [] (promise/delay 1 (fn [] 42))) "
+              + ":expected 42}])").toString();
+      assertTrue(result, result.contains(":name \"async\""));
+      assertTrue(result, result.contains(":pass true"));
+      assertTrue(result, result.contains(":actual 42"));
+    }
+  }
+
+  @Test
   public void nativeTestRunAcceptsAFunctionAwareChecker() {
     try (Context context = context()) {
       String checked = context.eval(HaraLanguage.ID,

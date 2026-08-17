@@ -56,7 +56,6 @@ pub enum Value {
     Schema(Rc<RuntimeSchema>),
     Coroutine(Rc<Coroutine>),
     Stream(Rc<RuntimeStream>),
-    Duplex(Rc<RuntimeDuplex>),
     Result(Rc<ResultValue>),
     ExceptionInfo(Rc<ExceptionInfo>),
     Nil,
@@ -290,6 +289,7 @@ pub struct RuntimeStream {
 
 enum RuntimeStreamSource {
     Coroutine { coroutine: Rc<Coroutine>, initial_arguments: RefCell<Option<Vec<Value>>> },
+    Guest { next: Rc<Function>, close: Option<Rc<Function>> },
     Host { next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>> },
 }
 
@@ -310,29 +310,11 @@ impl RuntimeStream {
     fn host(next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>>) -> Self {
         Self { source: RuntimeStreamSource::Host { next, close }, pending: Rc::new(Cell::new(false)), closed: Rc::new(Cell::new(false)) }
     }
-}
-
-pub struct RuntimeDuplex {
-    receive: Value,
-    send: DuplexSend,
-    close: Option<DuplexClose>,
-    closed: Cell<bool>,
-}
-
-enum DuplexSend { Guest(Rc<Function>), Host(Rc<dyn Fn(Value) -> Result<Value, String>>) }
-enum DuplexClose { Guest(Rc<Function>), Host(Rc<dyn Fn() -> Result<(), String>>) }
-
-impl std::fmt::Debug for RuntimeDuplex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RuntimeDuplex").field("closed", &self.closed.get()).finish()
+    fn guest(next: Rc<Function>, close: Option<Rc<Function>>) -> Self {
+        Self { source: RuntimeStreamSource::Guest { next, close }, pending: Rc::new(Cell::new(false)), closed: Rc::new(Cell::new(false)) }
     }
 }
 
-impl RuntimeDuplex {
-    fn new(receive: Value, send: DuplexSend, close: Option<DuplexClose>) -> Self {
-        Self { receive, send, close, closed: Cell::new(false) }
-    }
-}
 
 #[derive(Clone)]
 pub struct RuntimeAtom {
@@ -1932,7 +1914,6 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::Schema(_)
         | Value::Coroutine(_)
         | Value::Stream(_)
-        | Value::Duplex(_)
         | Value::Result(_)
         | Value::MutableCollection(_) => false,
     }
@@ -2165,7 +2146,6 @@ impl PartialEq for Value {
             (Value::Schema(a), Value::Schema(b)) => a.ast == b.ast,
             (Value::Coroutine(a), Value::Coroutine(b)) => Rc::ptr_eq(a, b),
             (Value::Stream(a), Value::Stream(b)) => Rc::ptr_eq(a, b),
-            (Value::Duplex(a), Value::Duplex(b)) => Rc::ptr_eq(a, b),
             (Value::Result(a), Value::Result(b)) => a == b,
             (Value::ExceptionInfo(a), Value::ExceptionInfo(b)) => Rc::ptr_eq(a, b),
             (Value::Nil, Value::Nil) => true,
@@ -2248,7 +2228,6 @@ impl Ord for Value {
                 Value::Schema(_) => 33,
                 Value::Coroutine(_) => 33,
                 Value::Stream(_) => 34,
-                Value::Duplex(_) => 35,
                 Value::Result(_) => 36,
                 Value::ExceptionInfo(_) => 37,
                 Value::MutableCollection(_) => 38,
@@ -2377,7 +2356,6 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Schema(v) => opaque(34, |s| v.form.to_string().hash(s)),
             Self::Coroutine(v) => opaque(32, |s| Rc::as_ptr(v).hash(s)),
             Self::Stream(v) => opaque(35, |s| Rc::as_ptr(v).hash(s)),
-            Self::Duplex(v) => opaque(36, |s| Rc::as_ptr(v).hash(s)),
             Self::Result(v) => v.java_hash(hash_type),
             Self::ExceptionInfo(v) => opaque(33, |s| Rc::as_ptr(v).hash(s)),
         }
@@ -2602,7 +2580,6 @@ impl Value {
                 format!("#<coroutine {status}>")
             }
             Self::Stream(value) => format!("#<stream {}>", if value.closed.get() { "closed" } else { "ready" }),
-            Self::Duplex(value) => format!("#<duplex {}>", if value.closed.get() { "closed" } else { "open" }),
             Self::Result(value) => value.display(),
             Self::ExceptionInfo(value) => {
                 format!(
@@ -2631,4 +2608,3 @@ impl Value {
         self.java_hash(crate::lang::hash::DEFAULT_HASH) as u64
     }
 }
-

@@ -927,10 +927,8 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Schema(_) => "schema",
         Value::Coroutine(_) => "coroutine",
         Value::Stream(_) => "stream",
-        Value::Duplex(_) => "duplex",
         Value::Result(_) => "result",
         Value::ExceptionInfo(_) => "error",
     }
 }
-
 

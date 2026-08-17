@@ -54,4 +54,34 @@ public class HaraStreamTest {
               .asBoolean());
     }
   }
+
+  @Test
+  public void callbackStreamAcceptsGuestHaraFunctions() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[42 true nil]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [closed (atom false) "
+                      + "s (Stream/create (fn [] (promise/from 42)) "
+                      + "                 (fn [] (reset! closed true)))] "
+                      + "  (let [value (deref (Stream/next s))] "
+                      + "    (IClose/close s) "
+                      + "    [value (deref closed) (deref (Stream/next s))]))")
+              .toString());
+    }
+  }
+
+  @Test
+  public void duplexIsPortableAndNotExposedAsANativeBox() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      for (String source :
+          new String[] {
+            "Duplex", "std.native.Duplex", "(Process/duplex nil)", "(Socket/duplex nil)"
+          }) {
+        assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, source));
+      }
+    }
+  }
 }

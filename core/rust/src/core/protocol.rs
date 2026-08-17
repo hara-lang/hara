@@ -1538,9 +1538,8 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         ),
         "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
         "IPersistent" => persistent_collection || matches!(value, Value::Struct(_)),
-        "IStream" => matches!(value, Value::Stream(_) | Value::Duplex(_)),
-        "IStreamWrite" | "IAbort" => matches!(value, Value::Duplex(_)),
-        "IClose" => matches!(value, Value::Stream(_) | Value::Duplex(_) | Value::Coroutine(_) | Value::Iterator(_)),
+        "IStream" => matches!(value, Value::Stream(_)),
+        "IClose" => matches!(value, Value::Stream(_) | Value::Coroutine(_) | Value::Iterator(_)),
         _ => false,
     }
 }

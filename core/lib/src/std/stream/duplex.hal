@@ -1,40 +1,112 @@
 (ns std.stream.duplex
-  (:config {:override [instance? send receive]})
-  (:require [std.stream.common :as common]))
+  (:config {:override [close]}))
 
-(defstruct StreamDuplex [inner])
+(defstruct Duplex [source write-fn close-fn abort-fn state])
+
+(defn rejected [error]
+  (promise/new (fn [_ reject] (reject error))))
 
 (defn create
-  ([receive send] (StreamDuplex (Duplex/create receive send)))
-  ([receive send close] (StreamDuplex (Duplex/create receive send close))))
+  ([source write-fn] (create source write-fn nil nil))
+  ([source write-fn close-fn] (create source write-fn close-fn nil))
+  ([source write-fn close-fn abort-fn]
+   (if (not (satisfies? IStream source))
+     (throw (ex-info "Duplex source must satisfy IStream"
+                     {:error/type :stream.duplex/invalid-source
+                      :source source})))
+   (if (not (fn? write-fn))
+     (throw (ex-info "Duplex write callback must be callable"
+                     {:error/type :stream.duplex/invalid-write})))
+   (Duplex source write-fn close-fn abort-fn
+           (atom {:closed false :error nil}))))
 
-(defn instance? [value]
-  (or (instance? StreamDuplex value) (Duplex/instance? value)))
+(defn duplex? [value]
+  (satisfies? IStreamDuplex value))
 
-(defn native [duplex]
-  (if (instance? StreamDuplex duplex) (:inner duplex) duplex))
+(defn state [duplex]
+  (deref (:state duplex)))
 
-(defn receive [duplex]
-  (Duplex/receive (native duplex)))
+(defn closed? [duplex]
+  (:closed (state duplex)))
 
-(defn send [duplex value]
-  (Duplex/send (native duplex) value))
+(defn next-value [duplex]
+  (let [current (state duplex)]
+    (cond
+      (:error current) (rejected (:error current))
+      (:closed current) (promise/from nil)
+      :else
+      (promise/then
+       (IStream/next (:source duplex))
+       (fn [value] value)))))
+
+(defn write-value [duplex value]
+  (let [current (state duplex)]
+    (cond
+      (:error current) (rejected (:error current))
+      (:closed current) (rejected
+                         (ex-info "Cannot write to a closed Duplex"
+                                  {:error/type :stream.duplex/closed}))
+      :else (promise/from ((:write-fn duplex) value)))))
 
 (defn close [duplex]
-  (Duplex/close (native duplex)))
+  (loop []
+    (let [current (state duplex)]
+      (if (:closed current)
+        duplex
+        (if (cas! (:state duplex) current (assoc current :closed true))
+          (do
+            (try (IClose/close (:source duplex))
+                 (catch Throwable ignored nil))
+            (if (:close-fn duplex) ((:close-fn duplex)) nil)
+            duplex)
+          (recur))))))
 
-(extend-type StreamDuplex IStream
-  (next [duplex]
-    (IStream/next (std.stream.duplex/receive duplex))))
+(defn abort [duplex error]
+  (let [error (or error
+                  (ex-info "Duplex aborted"
+                           {:error/type :stream.duplex/aborted}))]
+    (loop []
+      (let [current (state duplex)]
+        (if (:closed current)
+          duplex
+          (if (cas! (:state duplex) current {:closed true :error error})
+            (do
+              (try
+                (if (satisfies? IAbort (:source duplex))
+                  (IAbort/abort (:source duplex) error)
+                  (IClose/close (:source duplex)))
+                (catch Throwable ignored nil))
+              (if (:abort-fn duplex)
+                ((:abort-fn duplex) error)
+                (if (:close-fn duplex) ((:close-fn duplex)) nil))
+              duplex)
+            (recur)))))))
 
-(extend-type StreamDuplex IStreamWrite
-  (write [duplex value]
-    (std.stream.duplex/send duplex value)))
+(defn from-process [process]
+  (create
+   (Process/stdout-stream process)
+   (fn [value] (promise/from (Process/write process value)))
+   (fn [] (Process/close-input process))
+   (fn [_] (Process/kill process))))
 
-(extend-type StreamDuplex IAbort
-  (abort [duplex error]
-    (std.stream.duplex/close duplex)))
+(defn from-socket [socket]
+  (create
+   (Socket/receive-stream socket)
+   (fn [value] (promise/from (Socket/send socket value)))
+   (fn [] (Socket/close socket))
+   (fn [_] (Socket/close socket))))
 
-(extend-type StreamDuplex IClose
-  (close [duplex]
-    (std.stream.duplex/close duplex)))
+(extend-type Duplex IStream
+  (next [duplex] (next-value duplex)))
+
+(extend-type Duplex IStreamWrite
+  (write [duplex value] (write-value duplex value)))
+
+(extend-type Duplex IClose
+  (close [duplex] (std.stream.duplex/close duplex)))
+
+(extend-type Duplex IAbort
+  (abort [duplex error] (std.stream.duplex/abort duplex error)))
+
+(extend-type Duplex IClosed
+  (closed? [duplex] (std.stream.duplex/closed? duplex)))
