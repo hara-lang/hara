@@ -55,6 +55,38 @@ public class SandboxSubstrateTest {
               SandboxModel.SandboxException.class,
               () -> kernel.sandboxEval(sandbox, "parent-secret"));
       assertEquals(SandboxModel.ErrorCode.EVALUATION_FAILED, error.code());
+      for (String symbol :
+          List.of(
+              "Runtime",
+              "Kernel",
+              "Sandbox",
+              "File",
+              "Socket",
+              "Process",
+              "OS",
+              "Package",
+              "Host",
+              "std.native.Runtime/current",
+              "std.native.Kernel")) {
+        SandboxModel.SandboxException denied =
+            assertThrows(
+                symbol,
+                SandboxModel.SandboxException.class,
+                () -> kernel.sandboxEval(sandbox, symbol));
+        assertEquals(symbol, SandboxModel.ErrorCode.EVALUATION_FAILED, denied.code());
+      }
+      assertEquals(null, kernel.sandboxEval(sandbox, "(the-ns 'std.native.Kernel)"));
+      assertEquals(false, kernel.sandboxEval(sandbox, "(ns-loaded? 'std.native.Runtime)"));
+      assertEquals(
+          hara.lang.data.Keyword.create("unknown"),
+          kernel.sandboxEval(sandbox, "(ns-state 'std.native.Package)"));
+      assertThrows(
+          SandboxModel.SandboxException.class,
+          () -> kernel.sandboxEval(sandbox, "(ns-publics 'std.native.File)"));
+      assertEquals(
+          6L,
+          kernel.sandboxEval(
+              sandbox, "(do (defn sandbox-sum [xs] (reduce + 0 xs)) (sandbox-sum (map inc [0 1 2])))"));
     }
   }
 }

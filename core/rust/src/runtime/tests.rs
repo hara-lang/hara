@@ -81,6 +81,52 @@ mod tests {
         let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
         let error = kernel.sandbox_eval(sandbox, "parent-secret").unwrap_err();
         assert_eq!(error.code, SandboxErrorCode::EvaluationFailed);
+        for symbol in [
+            "Runtime",
+            "Kernel",
+            "Sandbox",
+            "File",
+            "Socket",
+            "Process",
+            "OS",
+            "Package",
+            "Host",
+            "std.native.Runtime/current",
+            "std.native.Kernel",
+        ] {
+            let error = kernel.sandbox_eval(sandbox, symbol).unwrap_err();
+            assert_eq!(error.code, SandboxErrorCode::EvaluationFailed, "{symbol}");
+        }
+        assert_eq!(
+            kernel
+                .sandbox_eval(sandbox, "(the-ns 'std.native.Kernel)")
+                .unwrap(),
+            "nil"
+        );
+        assert_eq!(
+            kernel
+                .sandbox_eval(sandbox, "(ns-loaded? 'std.native.Runtime)")
+                .unwrap(),
+            "false"
+        );
+        assert_eq!(
+            kernel
+                .sandbox_eval(sandbox, "(ns-state 'std.native.Package)")
+                .unwrap(),
+            ":unknown"
+        );
+        assert!(kernel
+            .sandbox_eval(sandbox, "(ns-publics 'std.native.File)")
+            .is_err());
+        assert_eq!(
+            kernel
+                .sandbox_eval(
+                    sandbox,
+                    "(do (defn sandbox-sum [xs] (reduce + 0 xs)) (sandbox-sum (map inc [0 1 2])))",
+                )
+                .unwrap(),
+            "6"
+        );
     }
 
     #[test]

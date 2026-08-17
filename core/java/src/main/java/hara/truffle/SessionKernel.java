@@ -148,7 +148,8 @@ final class SessionKernel implements AutoCloseable {
         new Session(
             new SessionModel.SessionSpec(ROOT_ID, rootAuthority),
             project,
-            mount -> releaseMount(ROOT_ID, mount)));
+            mount -> releaseMount(ROOT_ID, mount),
+            false));
   }
 
   Session root() {
@@ -166,7 +167,10 @@ final class SessionKernel implements AutoCloseable {
       throw new IllegalArgumentException("SESSION_EXISTS " + id);
     Session session =
         new Session(
-            SessionModel.SessionSpec.zeroAuthority(id), null, mount -> releaseMount(id, mount));
+            SessionModel.SessionSpec.zeroAuthority(id),
+            null,
+            mount -> releaseMount(id, mount),
+            false);
     sessionRegistry.entries.put(id.value(), session);
     return session;
   }
@@ -366,6 +370,7 @@ final class SessionKernel implements AutoCloseable {
     private final SessionAuthorityPolicy authority;
     private final HaraProject project;
     private final Consumer<SessionModel.SessionMountId> mountRelease;
+    private final boolean sandboxRestricted;
     private Context context;
     private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
@@ -378,11 +383,13 @@ final class SessionKernel implements AutoCloseable {
     private Session(
         SessionModel.SessionSpec spec,
         HaraProject project,
-        Consumer<SessionModel.SessionMountId> mountRelease) {
+        Consumer<SessionModel.SessionMountId> mountRelease,
+        boolean sandboxRestricted) {
       this.spec = spec;
       this.authority = spec.authority();
       this.project = project;
       this.mountRelease = mountRelease;
+      this.sandboxRestricted = sandboxRestricted;
       context = createContext(null);
       activate();
     }
@@ -392,7 +399,8 @@ final class SessionKernel implements AutoCloseable {
           new Session(
               SessionModel.SessionSpec.zeroAuthority(SessionModel.SessionId.parse("SANDBOX")),
               null,
-              ignored -> {});
+              ignored -> {},
+              true);
       if (!"user".equals(entryNamespace)) session.eval("(ns " + entryNamespace + ")");
       return session;
     }
@@ -406,6 +414,7 @@ final class SessionKernel implements AutoCloseable {
       }
       Context.Builder builder =
           Context.newBuilder(HaraLanguage.ID)
+              .option("hara.SandboxRestricted", Boolean.toString(sandboxRestricted))
               .allowCreateProcess(authority.hostProcess)
               .allowIO(io.build());
       if (authority.project && project != null && filesystem == null) {

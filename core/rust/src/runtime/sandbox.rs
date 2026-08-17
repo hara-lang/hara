@@ -35,7 +35,7 @@ impl SandboxProvider for InProcessSandboxProvider {
                 .map_err(|error| SandboxError::new(SandboxErrorCode::InvalidSpec, error))?,
             SessionAuthorityPolicy::ZERO,
         );
-        let mut runtime = Runtime::new();
+        let mut runtime = Runtime::sandbox();
         runtime.use_namespace(&spec.entry_namespace);
         Ok(Box::new(InProcessSandbox {
             session: Session::open(session_spec, runtime),

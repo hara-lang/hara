@@ -238,6 +238,7 @@ public final class HaraContext {
   private final TruffleLanguage.Env environment;
   private final Evaluator evaluator;
   private final Keyword testRunner;
+  private final boolean sandboxRestricted;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
@@ -287,6 +288,7 @@ public final class HaraContext {
     this.environment = environment;
     this.evaluator = new Evaluator(source -> environment.parsePublic(source).call());
     this.testRunner = runtimeTestRunner(environment.getOptions().get(HaraLanguage.TEST_RUNNER));
+    this.sandboxRestricted = environment.getOptions().get(HaraLanguage.SANDBOX_RESTRICTED);
     currentNamespace = namespace(INTRINSIC_NAMESPACE);
     Map<String, Integer> ifnMethods = new LinkedHashMap<>();
     ifnMethods.put("invoke", -1);
@@ -1194,6 +1196,7 @@ public final class HaraContext {
   }
 
   private synchronized HaraNamespace requiredNamespace(String target) {
+    if (sandboxRestricted && sandboxForbiddenNamespace(target)) return null;
     Path projectSource = resolveProjectSource(target);
     HaraNamespace existing = namespaces.get(target);
     if (existing != null
@@ -1304,6 +1307,7 @@ public final class HaraContext {
   }
 
   private synchronized HaraNamespace requiredNamespace(String target, boolean reload) {
+    if (sandboxRestricted && sandboxForbiddenNamespace(target)) return null;
     if (!reload) return requiredNamespace(target);
     NamespaceLoadState previousState = namespaceStates.get(target);
     ContextSnapshot snapshot = snapshot();
@@ -1469,6 +1473,7 @@ public final class HaraContext {
 
   @TruffleBoundary
   public HaraVar resolve(Symbol symbol) {
+    if (sandboxRestricted && sandboxForbidden(symbol)) return null;
     String namespaceName = symbol.getNamespace();
     if (namespaceName != null) {
       if ("-".equals(namespaceName)) namespaceName = currentNamespace.name();
@@ -1499,9 +1504,34 @@ public final class HaraContext {
   public Object resolveNamespaceValue(Symbol symbol) {
     if (symbol.getNamespace() != null) return null;
     String requested = symbol.getName();
+    if (sandboxRestricted && sandboxForbiddenNamespace(requested)) return null;
     String target = aliases.getOrDefault(currentNamespace.name(), Map.of()).get(requested);
     if (target != null) return namespaces.get(target);
     return namespaces.get(requested);
+  }
+
+  private static boolean sandboxForbidden(Symbol symbol) {
+    String namespace = symbol.getNamespace();
+    if (namespace != null) return sandboxForbiddenNamespace(namespace);
+    return switch (symbol.getName()) {
+      case "Runtime", "Kernel", "Sandbox", "File", "Socket", "Process", "OS", "Package", "Host" -> true;
+      default -> false;
+    };
+  }
+
+  private static boolean sandboxForbiddenNamespace(String namespace) {
+    return switch (namespace) {
+      case "std.native.Runtime",
+          "std.native.Kernel",
+          "std.native.Sandbox",
+          "std.native.File",
+          "std.native.Socket",
+          "std.native.Process",
+          "std.native.OS",
+          "std.native.Package",
+          "std.native.Host" -> true;
+      default -> false;
+    };
   }
 
   boolean namespaceQualifierTargets(String qualifier, String target) {
@@ -5745,12 +5775,16 @@ public final class HaraContext {
 
   private Object theNamespace(Object value) {
     String name = namespaceIdentifier(value, "the-ns");
+    if (sandboxRestricted && sandboxForbiddenNamespace(name)) return null;
     if (!namespaces.containsKey(name)) return null;
     return Symbol.create(name);
   }
 
   private Object namespaceName(Object value) {
     String name = namespaceIdentifier(value, "ns-name");
+    if (sandboxRestricted && sandboxForbiddenNamespace(name)) {
+      throw new HaraException("No such namespace: " + name);
+    }
     if (!namespaces.containsKey(name)) {
       throw new HaraException("No such namespace: " + name);
     }
@@ -5805,12 +5839,15 @@ public final class HaraContext {
 
   private Object namespaceState(Object value) {
     String name = namespaceIdentifier(value, "ns-state");
+    if (sandboxRestricted && sandboxForbiddenNamespace(name)) return Keyword.create("unknown");
     NamespaceLoadState state = namespaceStates.get(name);
     return Keyword.create(state == null ? "unknown" : state.keyword);
   }
 
   private Object namespaceLoaded(Object value) {
-    return namespaceStates.get(namespaceIdentifier(value, "ns-loaded?"))
+    String name = namespaceIdentifier(value, "ns-loaded?");
+    if (sandboxRestricted && sandboxForbiddenNamespace(name)) return false;
+    return namespaceStates.get(name)
         == NamespaceLoadState.LOADED;
   }
 
@@ -5865,6 +5902,9 @@ public final class HaraContext {
   @TruffleBoundary
   private Object namespacePublics(Object value) {
     String name = namespaceIdentifier(value, "ns-publics");
+    if (sandboxRestricted && sandboxForbiddenNamespace(name)) {
+      throw new HaraException("No such namespace: " + name);
+    }
     HaraNamespace target = namespaces.get(name);
     if (target == null) throw new HaraException("No such namespace: " + name);
     ArrayList<Object> entries = new ArrayList<>();
@@ -5878,6 +5918,9 @@ public final class HaraContext {
   @TruffleBoundary
   private Object namespaceAliases(Object value) {
     String name = namespaceIdentifier(value, "ns-aliases");
+    if (sandboxRestricted && sandboxForbiddenNamespace(name)) {
+      throw new HaraException("No such namespace: " + name);
+    }
     if (!namespaces.containsKey(name)) throw new HaraException("No such namespace: " + name);
     ArrayList<Object> entries = new ArrayList<>();
     aliases.getOrDefault(name, Map.of()).entrySet().stream()
