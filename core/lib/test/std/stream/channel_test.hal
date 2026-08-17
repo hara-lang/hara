@@ -1,0 +1,65 @@
+(ns std.stream.channel-test
+  (:require [std.stream.channel :as channel]
+            [std.stream.common :as common]))
+
+(Test/run
+ [{:name "unbuffered channels rendezvous between put and take"
+   :test (fn []
+           (let [port (channel/create)
+                 pending (channel/put port :value)
+                 value (deref (channel/take port))]
+             [value (deref pending)]))
+   :expected [:value true]}
+  {:name "fixed buffers park writers and preserve FIFO order"
+   :test (fn []
+           (let [port (channel/create 2)
+                 first-put (channel/put port 1)
+                 second-put (channel/put port 2)
+                 third-put (channel/put port 3)
+                 values [(deref (channel/take port))
+                         (deref (channel/take port))
+                         (deref (channel/take port))]]
+             [values (deref first-put) (deref second-put) (deref third-put)]))
+   :expected [[1 2 3] true true true]}
+  {:name "sliding and dropping buffers apply overflow policy"
+   :test (fn []
+           (let [sliding (channel/create (channel/sliding-buffer 2))
+                 dropping (channel/create (channel/dropping-buffer 2))]
+             (channel/offer sliding 1)
+             (channel/offer sliding 2)
+             (channel/offer sliding 3)
+             (channel/offer dropping 1)
+             (channel/offer dropping 2)
+             (channel/offer dropping 3)
+             [(channel/drain sliding) (channel/drain dropping)]))
+   :expected [[2 3] [1 2]]}
+  {:name "graceful close drains values before stream EOF"
+   :test (fn []
+           (let [port (channel/create 2)]
+             (channel/offer port :a)
+             (channel/offer port :b)
+             (channel/close port)
+             [(stream? port)
+              (deref (common/next port))
+              (deref (common/next port))
+              (deref (common/next port))
+              (channel/close port)]))
+   :expected [true :a :b nil false]}
+  {:name "abort rejects pending and future operations"
+   :test (fn []
+           (let [port (channel/create)
+                 pending (channel/take port)
+                 error (ex-info "failed" {:error/type :test/failure})]
+             (channel/abort port error)
+             [(deref (promise/catch pending
+                                    (fn [found] :rejected)))
+              (deref (promise/catch (channel/take port)
+                                    (fn [found] :rejected)))
+              (channel/aborted? port)]))
+   :expected [:rejected :rejected true]}
+  {:name "nil values are rejected"
+   :test (fn []
+           (try
+             (do (channel/put (channel/create 1) nil) nil)
+             (catch Throwable error (:error/type (ex-data error)))))
+   :expected :stream.channel/nil-value}])

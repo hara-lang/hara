@@ -1664,6 +1664,17 @@ public final class HaraContext {
     return defineProtocol(name, methodArities, definitionOrigin);
   }
 
+  HaraProtocol defineProtocol(
+      String name, Map<String, Integer> methodArities, java.util.List<HaraProtocol> parents) {
+    String canonicalNamespace = builtinProtocolNamespace(name);
+    HaraProtocol protocol =
+        new HaraProtocol(canonicalNamespace + "/" + name, methodArities, parents);
+    namespace(canonicalNamespace).define(name, protocol, null, definitionOrigin);
+    namespace(FOUNDATION_NAMESPACE).define(name, protocol, null, definitionOrigin);
+    defineBuiltinProtocolMethods(canonicalNamespace, protocol, definitionOrigin);
+    return protocol;
+  }
+
   private HaraProtocol defineProtocol(
       String name, Map<String, Integer> methodArities, HaraVar.Origin origin) {
     String canonicalNamespace = builtinProtocolNamespace(name);

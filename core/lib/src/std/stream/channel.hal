@@ -1,0 +1,316 @@
+(ns std.stream.channel
+  (:config {:override [take]})
+  (:require [std.stream.common :as common]))
+
+(defstruct Channel [state buffer])
+
+(defn fixed-buffer [capacity]
+  (if (< capacity 1)
+    (throw (ex-info "Fixed buffer capacity must be positive"
+                    {:error/type :stream.channel/invalid-capacity
+                     :capacity capacity})))
+  {:mode :fixed :capacity capacity})
+
+(defn sliding-buffer [capacity]
+  (if (< capacity 1)
+    (throw (ex-info "Sliding buffer capacity must be positive"
+                    {:error/type :stream.channel/invalid-capacity
+                     :capacity capacity})))
+  {:mode :sliding :capacity capacity})
+
+(defn dropping-buffer [capacity]
+  (if (< capacity 1)
+    (throw (ex-info "Dropping buffer capacity must be positive"
+                    {:error/type :stream.channel/invalid-capacity
+                     :capacity capacity})))
+  {:mode :dropping :capacity capacity})
+
+(defn normalize-buffer [buffer]
+  (cond
+    (nil? buffer) {:mode :fixed :capacity 0}
+    (integer? buffer) (if (= buffer 0)
+                        {:mode :fixed :capacity 0}
+                        (fixed-buffer buffer))
+    (and (map? buffer)
+         (not (nil? (get #{:fixed :sliding :dropping} (:mode buffer))))
+         (integer? (:capacity buffer))
+         (> (:capacity buffer) 0)) buffer
+    :else (throw (ex-info "Invalid channel buffer"
+                          {:error/type :stream.channel/invalid-buffer
+                           :buffer buffer}))))
+
+(defn create
+  ([] (create nil))
+  ([buffer]
+   (Channel (atom {:items []
+                   :takes []
+                   :puts []
+                   :closed false
+                   :error nil})
+            (normalize-buffer buffer))))
+
+(defn channel? [value]
+  (instance? Channel value))
+
+(defn state [channel]
+  (deref (:state channel)))
+
+(defn closed? [channel]
+  (:closed (state channel)))
+
+(defn aborted? [channel]
+  (not (nil? (:error (state channel)))))
+
+(defn reject-nil [value]
+  (if (nil? value)
+    (throw (ex-info "Channel values cannot be nil"
+                    {:error/type :stream.channel/nil-value})))
+  value)
+
+(defn settle [entries operation value]
+  (if (> (count entries) 0)
+    (do
+      ((operation (first entries)) value)
+      (settle (vec (rest entries)) operation value))
+    nil))
+
+(defn put-register [channel value resolve reject]
+  (loop []
+    (let [current (state channel)
+          error (:error current)
+          takes (:takes current)
+          items (:items current)
+          capacity (:capacity (:buffer channel))
+          mode (:mode (:buffer channel))]
+      (cond
+        error (reject error)
+        (:closed current) (resolve false)
+
+        (> (count takes) 0)
+        (let [taker (first takes)
+              next-state (assoc current :takes (vec (rest takes)))]
+          (if (cas! (:state channel) current next-state)
+            (do ((:resolve taker) value) (resolve true))
+            (recur)))
+
+        (< (count items) capacity)
+        (if (cas! (:state channel) current (assoc current :items (conj items value)))
+          (resolve true)
+          (recur))
+
+        (= mode :sliding)
+        (let [next-items (conj (vec (rest items)) value)]
+          (if (cas! (:state channel) current (assoc current :items next-items))
+            (resolve true)
+            (recur)))
+
+        (= mode :dropping) (resolve true)
+
+        :else
+        (if (cas! (:state channel)
+                  current
+                  (assoc current :puts
+                         (conj (:puts current)
+                               {:value value :resolve resolve :reject reject})))
+          nil
+          (recur))))))
+
+(defn put [channel value]
+  (reject-nil value)
+  (promise/new
+   (fn [resolve reject]
+     (put-register channel value resolve reject))))
+
+(defn offer [channel value]
+  (reject-nil value)
+  (loop []
+    (let [current (state channel)
+          takes (:takes current)
+          items (:items current)
+          capacity (:capacity (:buffer channel))
+          mode (:mode (:buffer channel))]
+      (cond
+        (:error current) (throw (:error current))
+        (:closed current) false
+
+        (> (count takes) 0)
+        (let [taker (first takes)
+              next-state (assoc current :takes (vec (rest takes)))]
+          (if (cas! (:state channel) current next-state)
+            (do ((:resolve taker) value) true)
+            (recur)))
+
+        (< (count items) capacity)
+        (if (cas! (:state channel) current (assoc current :items (conj items value)))
+          true
+          (recur))
+
+        (= mode :sliding)
+        (if (cas! (:state channel)
+                  current
+                  (assoc current :items (conj (vec (rest items)) value)))
+          true
+          (recur))
+
+        (= mode :dropping) true
+        :else false))))
+
+(defn take-register [channel resolve reject]
+  (loop []
+    (let [current (state channel)
+          items (:items current)
+          puts (:puts current)
+          capacity (:capacity (:buffer channel))]
+      (cond
+        (:error current) (reject (:error current))
+
+        (> (count items) 0)
+        (let [value (first items)
+              remaining (vec (rest items))
+              promote (if (and (> capacity 0) (> (count puts) 0)) (first puts) nil)
+              next-items (if promote (conj remaining (:value promote)) remaining)
+              next-puts (if promote (vec (rest puts)) puts)
+              next-state (assoc (assoc current :items next-items) :puts next-puts)]
+          (if (cas! (:state channel) current next-state)
+            (do
+              (if promote ((:resolve promote) true) nil)
+              (resolve value))
+            (recur)))
+
+        (> (count puts) 0)
+        (let [putter (first puts)
+              next-state (assoc current :puts (vec (rest puts)))]
+          (if (cas! (:state channel) current next-state)
+            (do ((:resolve putter) true) (resolve (:value putter)))
+            (recur)))
+
+        (:closed current) (resolve nil)
+
+        :else
+        (if (cas! (:state channel)
+                  current
+                  (assoc current :takes
+                         (conj (:takes current)
+                               {:resolve resolve :reject reject})))
+          nil
+          (recur))))))
+
+(defn take [channel]
+  (promise/new
+   (fn [resolve reject]
+     (take-register channel resolve reject))))
+
+(defn poll [channel]
+  (loop []
+    (let [current (state channel)
+          items (:items current)
+          puts (:puts current)
+          capacity (:capacity (:buffer channel))]
+      (cond
+        (:error current) (throw (:error current))
+
+        (> (count items) 0)
+        (let [value (first items)
+              remaining (vec (rest items))
+              promote (if (and (> capacity 0) (> (count puts) 0)) (first puts) nil)
+              next-items (if promote (conj remaining (:value promote)) remaining)
+              next-puts (if promote (vec (rest puts)) puts)
+              next-state (assoc (assoc current :items next-items) :puts next-puts)]
+          (if (cas! (:state channel) current next-state)
+            (do
+              (if promote ((:resolve promote) true) nil)
+              {:ready true :value value})
+            (recur)))
+
+        (> (count puts) 0)
+        (let [putter (first puts)
+              next-state (assoc current :puts (vec (rest puts)))]
+          (if (cas! (:state channel) current next-state)
+            (do ((:resolve putter) true)
+                {:ready true :value (:value putter)})
+            (recur)))
+
+        (:closed current) {:ready true :value nil}
+        :else nil))))
+
+(defn promote-puts [channel]
+  (loop []
+    (let [current (state channel)
+          puts (:puts current)
+          items (:items current)
+          capacity (:capacity (:buffer channel))]
+      (if (and (not (:closed current))
+               (> capacity (count items))
+               (> (count puts) 0))
+        (let [putter (first puts)
+              next-state (assoc (assoc current :puts (vec (rest puts)))
+                                :items (conj items (:value putter)))]
+          (if (cas! (:state channel) current next-state)
+            (do ((:resolve putter) true) (recur))
+            (recur)))
+        nil))))
+
+(defn drain [channel]
+  (loop []
+    (let [current (state channel)
+          items (:items current)]
+      (if (cas! (:state channel) current (assoc current :items []))
+        (do (promote-puts channel) items)
+        (recur)))))
+
+(defn close [channel]
+  (loop []
+    (let [current (state channel)]
+      (if (:closed current)
+        false
+        (let [empty? (= 0 (count (:items current)))
+              takes (if empty? (:takes current) [])
+              next-state (assoc (assoc (assoc current :closed true)
+                                       :puts [])
+                                :takes (if empty? [] (:takes current)))]
+          (if (cas! (:state channel) current next-state)
+            (do
+              (settle (:puts current) :resolve false)
+              (settle takes :resolve nil)
+              true)
+            (recur)))))))
+
+(defn abort [channel error]
+  (let [error (or error (ex-info "Channel aborted"
+                                 {:error/type :stream.channel/aborted}))]
+    (loop []
+      (let [current (state channel)]
+        (if (:closed current)
+          false
+          (let [next-state {:items []
+                            :takes []
+                            :puts []
+                            :closed true
+                            :error error}]
+            (if (cas! (:state channel) current next-state)
+              (do
+                (settle (:puts current) :reject error)
+                (settle (:takes current) :reject error)
+                true)
+              (recur))))))))
+
+(extend-type Channel IStream
+  (next [channel] (std.stream.channel/take channel)))
+
+(extend-type Channel IStreamWrite
+  (write [channel value] (std.stream.channel/put channel value)))
+
+(extend-type Channel IClose
+  (close [channel] (std.stream.channel/close channel)))
+
+(extend-type Channel IAbort
+  (abort [channel error] (std.stream.channel/abort channel error)))
+
+(extend-type Channel IStreamPoll
+  (poll [channel] (std.stream.channel/poll channel)))
+
+(extend-type Channel IStreamOffer
+  (offer [channel value] (std.stream.channel/offer channel value)))
+
+(extend-type Channel IClosed
+  (closed? [channel] (std.stream.channel/closed? channel)))

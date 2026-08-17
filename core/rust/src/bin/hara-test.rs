@@ -1,4 +1,5 @@
 use hara_wasm::kernel::{parse, parse_forms, Form};
+use hara_wasm::project;
 use hara_wasm::SessionKernel;
 use std::env;
 use std::fs;
@@ -58,33 +59,17 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
         .spawn(move || {
             let mut kernel = SessionKernel::new();
             kernel.set_test_runner("native")?;
+            register_project_sources(&root, &mut kernel)?;
             let mount = kernel.create_native_filesystem(&root_text);
             kernel.attach_filesystem("ROOT", mount)?;
             let session = kernel.session_mut("ROOT")?;
             session.install_native_socket_provider();
             session.install_native_process_provider();
             let output = match kernel.eval("ROOT", &source) {
-                Ok(output) => match parse_summary(file.clone(), &output) {
-                    Ok(summary) => return Ok(summary),
-                    Err(_) => output,
-                },
+                Ok(output) => output,
                 Err(error) if error.starts_with("SESSION_TRANSFER_REJECTED ") => String::new(),
                 Err(error) => return Err(format!("{}: {error}", file.display())),
             };
-            let namespace = test_namespace(&source).ok_or_else(|| {
-                if output.is_empty() {
-                    "test file loaded but its final value was not transferable and it has no ns declaration"
-                        .to_string()
-                } else {
-                    "test file did not return a summary and has no ns declaration".to_string()
-                }
-            })?;
-            let output = kernel
-                .eval(
-                    "ROOT",
-                    &test_run_source(&namespace),
-                )
-                .map_err(|error| format!("{}: {error}", file.display()))?;
             parse_summary(file.clone(), &output)
                 .map_err(|error| format!("{}: {error}", file.display()))
         })
@@ -96,28 +81,32 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
     }
 }
 
-fn test_run_source(namespace: &str) -> String {
-    format!(
-        "(let [summary (code.test/run {{:namespace \"{}\"}})] \
-         (assoc (dissoc summary :results :report) :results (str (:results summary))))",
-        namespace
-    )
-}
-
-fn test_namespace(source: &str) -> Option<String> {
+fn declared_namespace(source: &str) -> Option<String> {
     parse_forms(source).ok()?.into_iter().find_map(|form| {
         let Form::List(items) = form else {
             return None;
         };
         match items.as_slice() {
             [Form::Symbol(head), Form::Symbol(namespace), ..]
-                if head == "ns" && !namespace.contains('/') =>
+                if (head == "ns" || head == "ns+") && !namespace.contains('/') =>
             {
                 Some(namespace.clone())
             }
             _ => None,
         }
     })
+}
+
+fn register_project_sources(root: &Path, kernel: &mut SessionKernel) -> Result<(), String> {
+    let current_project = project::read(root)?;
+    for path in project::files_in(&current_project.root, &current_project.source_paths)? {
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+        let namespace = declared_namespace(&source)
+            .ok_or_else(|| format!("{} does not declare an ns or ns+ namespace", path.display()))?;
+        kernel.register_resource(&namespace, &source);
+    }
+    Ok(())
 }
 
 pub fn run_paths(root: &Path, paths: &[PathBuf]) -> Result<Vec<TestSummary>, String> {
@@ -171,50 +160,9 @@ fn parse_summary(path: PathBuf, output: &str) -> Result<TestSummary, String> {
     };
 
     match form {
-        Form::Map(entries) => parse_code_test_summary(path, entries, output),
         Form::Vector(items) | Form::List(items) => parse_legacy_results(path, items, output),
-        _ => Err("test file must return a code.test/run summary or test result vector".into()),
+        _ => Err("test file must return a native Test/run result vector".into()),
     }
-}
-
-fn parse_code_test_summary(
-    path: PathBuf,
-    entries: Vec<(Form, Form)>,
-    raw: &str,
-) -> Result<TestSummary, String> {
-    let status = map_get(&entries, "status")
-        .and_then(keyword)
-        .ok_or("code.test/run result is missing :status")?;
-    let counts = match map_get(&entries, "counts") {
-        Some(Form::Map(values)) => values,
-        _ => return Err("code.test/run result is missing :counts".into()),
-    };
-    let passed_facts = map_number(counts, "passed", 0);
-    let failed_facts = map_number(counts, "failed", 0);
-    let errors = map_number(counts, "error", 0);
-    let timeouts = map_number(counts, "timeout", 0);
-    let skipped = map_number(counts, "skipped", 0);
-    let cancelled = map_number(counts, "cancelled", 0);
-    let facts = map_number(
-        &entries,
-        "facts",
-        passed_facts + failed_facts + errors + timeouts + skipped + cancelled,
-    );
-    let passed_checks = map_number(&entries, "passed", passed_facts);
-    let failed_checks = map_number(&entries, "failed", failed_facts);
-    let checks = map_number(&entries, "checks", passed_checks + failed_checks);
-
-    Ok(TestSummary {
-        path,
-        passed: status == "passed",
-        facts,
-        checks,
-        passed_checks,
-        failed_checks,
-        errors,
-        timeouts,
-        raw: raw.to_owned(),
-    })
 }
 
 fn parse_legacy_results(path: PathBuf, items: Vec<Form>, raw: &str) -> Result<TestSummary, String> {
@@ -250,20 +198,6 @@ fn map_get<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
             Form::Keyword(name) if name == key => Some(value),
             _ => None,
         })
-}
-
-fn map_number(entries: &[(Form, Form)], key: &str, fallback: usize) -> usize {
-    match map_get(entries, key) {
-        Some(Form::Number(value)) if *value >= 0 => *value as usize,
-        _ => fallback,
-    }
-}
-
-fn keyword(form: &Form) -> Option<&str> {
-    match form {
-        Form::Keyword(value) => Some(value),
-        _ => None,
-    }
 }
 
 fn parse_arguments() -> Result<(PathBuf, Vec<PathBuf>), String> {

@@ -2,7 +2,6 @@ use super::Options;
 use hara_wasm::cli_app;
 use hara_wasm::kernel::{parse, Form};
 use hara_wasm::native_cli::{install_native_kernel, RuntimeBroker};
-#[cfg(feature = "bytecode-vm")]
 use hara_wasm::project;
 #[cfg(feature = "bytecode-vm")]
 use hara_wasm::task::production;
@@ -19,6 +18,10 @@ fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
     let root = capability_root(options, &cwd);
     let mut runtime = Runtime::new();
     runtime.install_native_file_provider(root.to_string_lossy().as_ref());
+    if let Some(path) = options.project.as_deref() {
+        let current_project = project::discover(path)?;
+        project::register_sources(&current_project, &mut runtime)?;
+    }
     let process_allowed = options.allow_process
         || argv
             .first()

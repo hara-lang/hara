@@ -1,157 +1,109 @@
 (ns std.stream.async
-  (:config {:override [map filter take reduce]}))
+  (:config {:override [take]})
+  (:require [std.stream.channel :as channel]
+            [std.stream.common :as common]))
 
-(defstruct ManagedStream [inner source closed])
+(defonce +alts-index+ (atom -1))
 
-(defn close-value [value]
+(defn chan
+  ([] (channel/create))
+  ([buffer] (channel/create buffer)))
+
+(defn take [source]
+  (IStream/next source))
+
+(defn put [target value]
+  (IStreamWrite/write target value))
+
+(defn offer [target value]
+  (IStreamOffer/offer target value))
+
+(defn close [target]
+  (IClose/close target))
+
+(defn abort [target error]
+  (IAbort/abort target error))
+
+(defn go [function]
+  (promise/run
+   (fn []
+     (let [coroutine (std.foundation.coroutine/create function)]
+       (std.foundation.coroutine/resume coroutine)))))
+
+(defn write-operation? [operation]
+  (and (vector? operation) (= 2 (count operation))))
+
+(defn try-operation [operation]
+  (if (write-operation? operation)
+    (let [target (nth operation 0)
+          value (nth operation 1)]
+      (if (not (and (satisfies? IStreamOffer target)
+                    (satisfies? IClosed target)))
+        (throw (ex-info "Write alternatives require offer and closed capabilities"
+                        {:error/type :stream.async/invalid-alternative
+                         :operation operation})))
+      (if (IStreamOffer/offer target value)
+        {:ready true :result [true target]}
+        (if (IClosed/closed? target)
+          {:ready true :result [false target]}
+          nil)))
+    (do
+      (if (not (satisfies? IStreamPoll operation))
+        (throw (ex-info "Read alternatives require a poll capability"
+                        {:error/type :stream.async/invalid-alternative
+                         :operation operation})))
+      (let [result (IStreamPoll/poll operation)]
+        (if result
+          {:ready true :result [(:value result) operation]}
+          nil)))))
+
+(defn try-operations [operations start index]
+  (if (= index (count operations))
+    nil
+    (let [position (mod (+ start index) (count operations))
+          result (try-operation (nth operations position))]
+      (if result
+        result
+        (try-operations operations start (inc index))))))
+
+(defn alts-loop [operations options]
+  (let [priority (:priority options)
+        start (if priority
+                0
+                (mod (swap! +alts-index+ inc) (count operations)))
+        result (try-operations operations start 0)]
+    (cond
+      result (:result result)
+      (has? options :default) [(:default options) :default]
+      :else (do
+              (co/await (promise/delay 1 (fn [] nil)))
+              (alts-loop operations options)))))
+
+(defn alts
+  ([operations] (alts operations {}))
+  ([operations options]
+   (if (= 0 (count operations))
+     (throw (ex-info "alts requires at least one operation"
+                     {:error/type :stream.async/no-alternatives})))
+   (go (fn [] (alts-loop operations options)))))
+
+(defn pump-stream [source output]
   (try
-    (IClose/close value)
-    (catch Throwable error nil)))
+    (loop []
+      (let [value (co/await (common/next source))]
+        (if (nil? value)
+          (channel/close output)
+          (if (co/await (channel/put output value))
+            (recur)
+            nil))))
+    (catch Throwable error
+      (channel/abort output error))
+    (finally
+      (common/close-value source))))
 
-(extend-type ManagedStream std.protocol.istream/IStream
-  (next [stream]
-    (IStream/next (:inner stream))))
-
-(extend-type ManagedStream std.protocol.iclose/IClose
-  (close [stream]
-    (if (deref (:closed stream))
-      nil
-      (do
-        (reset! (:closed stream) true)
-        (close-value (:inner stream))
-        (close-value (:source stream))))))
-
-(defn managed [inner source]
-  (ManagedStream inner source (atom false)))
-
-
-(defn ^{:inline true :schema [:fn [:any] :promise]}
-  next
-  "Pulls the next stream item as a promise; nil marks end of stream."
-  [stream]
-  (IStream/next stream))
-
-(defn ^{:inline true :schema [:fn [:any] :any]}
-  close
-  "Idempotently closes stream and any source owned by it."
-  [stream]
-  (IClose/close stream))
-
-(defn unfold
-  "Creates an asynchronous stream from step and seed. Step returns nil,
-   [item next-state], or a promise of either."
-  [step seed]
-  (stream
-    (fn []
-      (loop [state seed]
-        (let [result (co/await (promise/from (step state)))]
-          (if (nil? result)
-            nil
-            (let [[item next-state] result]
-              (co/yield item)
-              (recur next-state))))))))
-
-(defn from-iterator
-  "Wraps a synchronous iterator as an asynchronous stream and owns its lifetime."
-  [value]
-  (let [iterator (iter value)]
-    (managed
-      (stream
-        (fn []
-          (try
-            (loop []
-              (if (iter-next? iterator)
-                (do
-                  (co/yield (iter-next iterator))
-                  (recur))
-                nil))
-            (finally (close-value iterator)))))
-      iterator)))
-
-(defn map
-  "Lazily applies synchronous function to every asynchronous stream item."
-  [function source]
-  (managed
-    (stream
-      (fn []
-        (try
-          (loop []
-            (let [value (co/await (next source))]
-              (if (nil? value)
-                nil
-                (do
-                  (co/yield (function value))
-                  (recur)))))
-          (finally (close-value source)))))
-    source))
-
-(defn filter
-  "Lazily retains asynchronous stream items satisfying predicate."
-  [predicate source]
-  (managed
-    (stream
-      (fn []
-        (try
-          (loop []
-            (let [value (co/await (next source))]
-              (if (nil? value)
-                nil
-                (do
-                  (if (predicate value) (co/yield value) nil)
-                  (recur)))))
-          (finally (close-value source)))))
-    source))
-
-(defn take
-  "Lazily returns at most count items and then closes its source."
-  [count source]
-  (managed
-    (stream
-      (fn []
-        (try
-          (if (< 0 count)
-            (loop [index 0]
-              (if (< index count)
-                (let [value (co/await (next source))]
-                  (if (nil? value)
-                    nil
-                    (let [next-index (inc index)]
-                      (if (= next-index count) (close-value source) nil)
-                      (co/yield value)
-                      (if (< next-index count) (recur next-index) nil))))
-                nil))
-            (close-value source))
-          (finally (close-value source)))))
-    source))
-
-(defn reduce-next [function result source]
-  (promise/then
-    (next source)
-    (fn [value]
-      (if (nil? value)
-        result
-        (reduce-next function (function result value) source)))))
-
-(defn reduce
-  "Asynchronously folds source from initial and always closes it."
-  [function initial source]
-  (promise/finally
-    (reduce-next function initial source)
-    (fn [] (close-value source))))
-
-(defn collect-next [source result]
-  (promise/then
-    (next source)
-    (fn [value]
-      (if (nil? value)
-        result
-        (collect-next source (conj result value))))))
-
-(defn collect
-  "Collects all remaining stream items into a vector and closes source."
-  [source]
-  (promise/finally
-    (collect-next source [])
-    (fn [] (close-value source))))
-
-
+(defn from-stream
+  ([source] (from-stream source nil))
+  ([source buffer]
+   (let [output (channel/create buffer)]
+     (go (fn [] (pump-stream source output)))
+     output)))

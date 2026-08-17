@@ -9,15 +9,23 @@ import hara.lang.base.Ex;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
 
 @ExportLibrary(InteropLibrary.class)
 public final class HaraProtocol implements TruffleObject {
   private final String name;
   private final Map<String, HaraProtocolMethod> methods;
+  private final List<HaraProtocol> parents;
   private final HaraDispatchRegistry implementations = new HaraDispatchRegistry();
 
   public HaraProtocol(String name, Map<String, Integer> methodArities) {
+    this(name, methodArities, List.of());
+  }
+
+  public HaraProtocol(
+      String name, Map<String, Integer> methodArities, List<HaraProtocol> parents) {
     this.name = name;
+    this.parents = List.copyOf(parents);
     Map<String, HaraProtocolMethod> descriptors = new LinkedHashMap<>();
     for (Map.Entry<String, Integer> entry : methodArities.entrySet()) {
       descriptors.put(
@@ -36,6 +44,10 @@ public final class HaraProtocol implements TruffleObject {
 
   public Map<String, HaraProtocolMethod> methods() {
     return methods;
+  }
+
+  public List<HaraProtocol> parents() {
+    return parents;
   }
 
   public com.oracle.truffle.api.Assumption implementationsStable() {
@@ -122,7 +134,11 @@ public final class HaraProtocol implements TruffleObject {
   /** Returns true when receiver implements every method in this protocol. */
   @TruffleBoundary
   public boolean satisfies(Object receiver) {
+    for (HaraProtocol parent : parents) {
+      if (!parent.satisfies(receiver)) return false;
+    }
     if (methods.isEmpty()) {
+      if (!parents.isEmpty()) return true;
       if (name.endsWith("/IMutable")) return receiver instanceof hara.lang.protocol.IMutable;
       if (name.endsWith("/IPersistent")) return receiver instanceof hara.lang.protocol.IPersistent;
       return false;

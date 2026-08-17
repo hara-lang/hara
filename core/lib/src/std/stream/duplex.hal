@@ -1,19 +1,40 @@
 (ns std.stream.duplex
-  (:config {:override [instance? send receive]}))
+  (:config {:override [instance? send receive]})
+  (:require [std.stream.common :as common]))
+
+(defstruct StreamDuplex [inner])
 
 (defn create
-  ([receive send] (Duplex/create receive send))
-  ([receive send close] (Duplex/create receive send close)))
+  ([receive send] (StreamDuplex (Duplex/create receive send)))
+  ([receive send close] (StreamDuplex (Duplex/create receive send close))))
 
 (defn instance? [value]
-  (Duplex/instance? value))
+  (or (instance? StreamDuplex value) (Duplex/instance? value)))
+
+(defn native [duplex]
+  (if (instance? StreamDuplex duplex) (:inner duplex) duplex))
 
 (defn receive [duplex]
-  (Duplex/receive duplex))
+  (Duplex/receive (native duplex)))
 
 (defn send [duplex value]
-  (Duplex/send duplex value))
+  (Duplex/send (native duplex) value))
 
 (defn close [duplex]
-  (Duplex/close duplex))
+  (Duplex/close (native duplex)))
 
+(extend-type StreamDuplex IStream
+  (next [duplex]
+    (IStream/next (std.stream.duplex/receive duplex))))
+
+(extend-type StreamDuplex IStreamWrite
+  (write [duplex value]
+    (std.stream.duplex/send duplex value)))
+
+(extend-type StreamDuplex IAbort
+  (abort [duplex error]
+    (std.stream.duplex/close duplex)))
+
+(extend-type StreamDuplex IClose
+  (close [duplex]
+    (std.stream.duplex/close duplex)))

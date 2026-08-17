@@ -229,8 +229,59 @@ impl ProtocolRegistry {
     }
 
     pub fn satisfies(&self, protocol: &GuestProtocol, value: &Value) -> bool {
+        if protocol.name.ends_with("/IDuplex") {
+            return ["IStream", "IStreamWrite", "IAbort"].iter().all(|name| {
+                FOUNDATION_PROTOCOLS
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+                    .is_some_and(|(name, methods)| {
+                        self.satisfies(
+                            &GuestProtocol {
+                                name: builtin_protocol_name(name),
+                                methods: methods
+                                    .iter()
+                                    .map(|(method, arity)| ((*method).to_owned(), *arity))
+                                    .collect(),
+                                parents: if *name == "IStream" {
+                                    vec![builtin_protocol_name("IClose")]
+                                } else {
+                                    Vec::new()
+                                },
+                            },
+                            value,
+                        )
+                    })
+            });
+        }
+        if !protocol.parents.iter().all(|parent| {
+            FOUNDATION_PROTOCOLS
+                .iter()
+                .find(|(name, _)| builtin_protocol_name(name) == *parent)
+                .is_some_and(|(name, methods)| {
+                    self.satisfies(
+                        &GuestProtocol {
+                            name: builtin_protocol_name(name),
+                            methods: methods
+                                .iter()
+                                .map(|(method, arity)| ((*method).to_owned(), *arity))
+                                .collect(),
+                            parents: if *name == "IStream" {
+                                vec![builtin_protocol_name("IClose")]
+                            } else {
+                                Vec::new()
+                            },
+                        },
+                        value,
+                    )
+                })
+        }) {
+            return false;
+        }
         let protocol_name = canonical_protocol_name(&protocol.name);
         if protocol.methods.is_empty() {
+            if !protocol.parents.is_empty() {
+                return true;
+            }
             return match protocol_name.rsplit('/').next().unwrap_or("") {
                 "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
                 "IPersistent" => matches!(
@@ -512,8 +563,29 @@ impl ProtocolRegistry {
         );
         registry.register("std.protocol.istream/IStream", "next", |arguments| match arguments {
             [Value::Stream(stream)] => Ok(stream_next(stream)),
+            [Value::Duplex(duplex)] => match &duplex.receive {
+                Value::Stream(stream) => Ok(stream_next(stream)),
+                _ => Err("IStream/next expects a stream".into()),
+            },
             [_] => Err("IStream/next expects a stream".into()),
             _ => Err("IStream/next expects one argument".into()),
+        });
+        registry.register(
+            "std.protocol.istreamwrite/IStreamWrite",
+            "write",
+            |arguments| match arguments {
+                [Value::Duplex(duplex), value] => Ok(duplex_send(duplex, value.clone())),
+                [_target, _value] => Err("IStreamWrite/write expects a writable stream".into()),
+                _ => Err("IStreamWrite/write expects two arguments".into()),
+            },
+        );
+        registry.register("std.protocol.iabort/IAbort", "abort", |arguments| match arguments {
+            [Value::Duplex(duplex), _error] => {
+                duplex_close(duplex)?;
+                Ok(Value::Duplex(duplex.clone()))
+            }
+            [_target, _error] => Err("IAbort/abort expects an abortable stream".into()),
+            _ => Err("IAbort/abort expects two arguments".into()),
         });
         registry.register(
             "std.protocol.iwatch/IWatch",
@@ -1158,4 +1230,3 @@ fn require_process_access(operation: &str) -> Result<(), String> {
             .ok_or_else(|| format!("{operation} is unsupported or process access is denied"))
     })
 }
-

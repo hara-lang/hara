@@ -1,0 +1,154 @@
+(ns std.stream.common
+  (:config {:override [map filter take reduce]}))
+
+(defstruct ManagedStream [inner source closed])
+
+(defn close-value [value]
+  (try
+    (IClose/close value)
+    (catch Throwable error nil)))
+
+(extend-type ManagedStream IStream
+  (next [stream]
+    (IStream/next (:inner stream))))
+
+(extend-type ManagedStream IClose
+  (close [stream]
+    (if (deref (:closed stream))
+      nil
+      (do
+        (reset! (:closed stream) true)
+        (close-value (:inner stream))
+        (close-value (:source stream))))))
+
+(defn managed [inner source]
+  (ManagedStream inner source (atom false)))
+
+(defn ^{:inline true :schema [:fn [:any] :promise]}
+  next
+  "Pulls the next stream item as a promise; nil marks end of stream."
+  [stream]
+  (IStream/next stream))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  close
+  "Idempotently closes stream and any source owned by it."
+  [stream]
+  (IClose/close stream))
+
+(defn unfold
+  "Creates an asynchronous stream from step and seed. Step returns nil,
+   [item next-state], or a promise of either."
+  [step seed]
+  (stream
+    (fn []
+      (loop [state seed]
+        (let [result (co/await (promise/from (step state)))]
+          (if (nil? result)
+            nil
+            (let [[item next-state] result]
+              (co/yield item)
+              (recur next-state))))))))
+
+(defn from-iterator
+  "Wraps a synchronous iterator as an asynchronous stream and owns its lifetime."
+  [value]
+  (let [iterator (iter value)]
+    (managed
+      (stream
+        (fn []
+          (try
+            (loop []
+              (if (iter-next? iterator)
+                (do
+                  (co/yield (iter-next iterator))
+                  (recur))
+                nil))
+            (finally (close-value iterator)))))
+      iterator)))
+
+(defn map
+  "Lazily applies synchronous function to every asynchronous stream item."
+  [function source]
+  (managed
+    (stream
+      (fn []
+        (try
+          (loop []
+            (let [value (co/await (next source))]
+              (if (nil? value)
+                nil
+                (do
+                  (co/yield (function value))
+                  (recur)))))
+          (finally (close-value source)))))
+    source))
+
+(defn filter
+  "Lazily retains asynchronous stream items satisfying predicate."
+  [predicate source]
+  (managed
+    (stream
+      (fn []
+        (try
+          (loop []
+            (let [value (co/await (next source))]
+              (if (nil? value)
+                nil
+                (do
+                  (if (predicate value) (co/yield value) nil)
+                  (recur)))))
+          (finally (close-value source)))))
+    source))
+
+(defn take
+  "Lazily returns at most count items and then closes its source."
+  [count source]
+  (managed
+    (stream
+      (fn []
+        (try
+          (if (< 0 count)
+            (loop [index 0]
+              (if (< index count)
+                (let [value (co/await (next source))]
+                  (if (nil? value)
+                    nil
+                    (let [next-index (inc index)]
+                      (if (= next-index count) (close-value source) nil)
+                      (co/yield value)
+                      (if (< next-index count) (recur next-index) nil))))
+                nil))
+            (close-value source))
+          (finally (close-value source)))))
+    source))
+
+(defn reduce-next [function result source]
+  (promise/then
+    (next source)
+    (fn [value]
+      (if (nil? value)
+        result
+        (reduce-next function (function result value) source)))))
+
+(defn reduce
+  "Asynchronously folds source from initial and always closes it."
+  [function initial source]
+  (promise/finally
+    (reduce-next function initial source)
+    (fn [] (close-value source))))
+
+(defn collect-next [source result]
+  (promise/then
+    (next source)
+    (fn [value]
+      (if (nil? value)
+        result
+        (collect-next source (conj result value))))))
+
+(defn collect
+  "Collects all remaining stream items into a vector and closes source."
+  [source]
+  (promise/finally
+    (collect-next source [])
+    (fn [] (close-value source))))

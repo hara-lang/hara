@@ -1077,6 +1077,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     let protocol = Value::Protocol(Rc::new(GuestProtocol {
                         name: format!("{namespace}/{name}"),
                         methods,
+                        parents: Vec::new(),
                     }));
                     if let Value::Protocol(protocol_value) = &protocol {
                         let current = namespace_registry()?.current();

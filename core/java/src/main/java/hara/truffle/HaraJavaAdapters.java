@@ -126,7 +126,8 @@ public final class HaraJavaAdapters {
     installIterator(
         context.defineProtocol(
             "IIterator", Map.of("iter-next?", 1, "iter-next", 1)));
-    installClose(context.defineProtocol("IClose", Map.of("close", 1)));
+    HaraProtocol close = context.defineProtocol("IClose", Map.of("close", 1));
+    installClose(close);
     installCas(context.defineProtocol("ICas", Map.of("cas", 3)));
     installReduce(context, context.defineProtocol("IReduce", Map.of("reduce", -1)));
     installPromise(
@@ -141,7 +142,21 @@ public final class HaraJavaAdapters {
                 "cancel", 1)));
     installCoroutine(
         context.defineProtocol("ICoroutine", Map.of("status", 1, "resume", -1)));
-    installStream(context.defineProtocol("IStream", Map.of("next", 1)));
+    HaraProtocol stream = context.defineProtocol("IStream", Map.of("next", 1), java.util.List.of(close));
+    installStream(stream);
+    HaraProtocol streamWrite = context.defineProtocol("IStreamWrite", Map.of("write", 2));
+    streamWrite.extend(IStreamWrite.class, "write", (receiver, arguments) -> ((IStreamWrite) receiver).write(arguments[0]));
+    HaraProtocol abort = context.defineProtocol("IAbort", Map.of("abort", 2));
+    abort.extend(IAbort.class, "abort", (receiver, arguments) -> ((IAbort) receiver).abort(arguments[0]));
+    HaraProtocol streamPoll = context.defineProtocol("IStreamPoll", Map.of("poll", 1));
+    streamPoll.extend(IStreamPoll.class, "poll", (receiver, arguments) -> ((IStreamPoll) receiver).poll());
+    HaraProtocol streamOffer = context.defineProtocol("IStreamOffer", Map.of("offer", 2));
+    streamOffer.extend(IStreamOffer.class, "offer", (receiver, arguments) -> ((IStreamOffer) receiver).offer(arguments[0]));
+    HaraProtocol closed = context.defineProtocol("IClosed", Map.of("closed?", 1));
+    closed.extend(IClosed.class, "closed?", (receiver, arguments) -> ((IClosed) receiver).closed());
+    HaraProtocol flush = context.defineProtocol("IFlush", Map.of("flush", 1));
+    flush.extend(IFlush.class, "flush", (receiver, arguments) -> ((IFlush) receiver).flush());
+    context.defineProtocol("IDuplex", Map.of(), java.util.List.of(stream, streamWrite, abort));
   }
 
   public static void installIFn(HaraProtocol protocol) {

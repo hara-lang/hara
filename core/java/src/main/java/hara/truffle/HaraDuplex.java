@@ -1,11 +1,11 @@
 package hara.truffle;
 
-import hara.lang.protocol.IClose;
+import hara.lang.protocol.IDuplex;
 import hara.lang.protocol.IPromise;
 import hara.lang.protocol.IStream;
 
 /** Native bidirectional transport: one pull stream plus Promise-returning sends. */
-final class HaraDuplex implements IClose {
+final class HaraDuplex implements IDuplex {
   private final HaraContext context;
   private final IStream receive;
   private final Object send;
@@ -30,6 +30,26 @@ final class HaraDuplex implements IClose {
       return HaraBox.unwrap(result) instanceof IPromise ? result : context.completedPromise(result);
     } catch (Throwable error) {
       return context.rejectedPromise(error.getMessage());
+    }
+  }
+
+  @Override
+  public synchronized Object next() {
+    return receive.next();
+  }
+
+  @Override
+  public synchronized Object write(Object value) {
+    return send(value);
+  }
+
+  @Override
+  public synchronized Object abort(Object error) {
+    try {
+      close();
+      return this;
+    } catch (Exception failure) {
+      throw new HaraException("duplex/abort failed: " + failure.getMessage());
     }
   }
 

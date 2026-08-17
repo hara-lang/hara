@@ -1,0 +1,44 @@
+(ns std.stream.common-test
+  (:require [std.stream.common :as common]))
+
+(def results
+  (Test/run
+    [{:name "recognises native and managed streams"
+      :test (fn []
+              [(stream? (stream (fn [] nil)))
+               (stream? (common/from-iterator [1]))
+               (stream? [1])])
+      :expected [true true false]}
+     {:name "bridges iterators and composes transforms"
+      :test (fn []
+              (deref
+                (common/collect
+                  (common/take 3
+                    (common/filter odd?
+                      (common/map inc (common/from-iterator [0 1 2 3 4 5])))))))
+      :expected [1 3 5]}
+     {:name "unfold accepts promised steps"
+      :test (fn []
+              (deref
+                (common/collect
+                  (common/unfold
+                    (fn [index]
+                      (promise/from
+                        (if (< index 3) [index (inc index)] nil)))
+                    0))))
+      :expected [0 1 2]}
+     {:name "reduces asynchronously"
+      :test (fn []
+              (deref (common/reduce + 10 (common/from-iterator [1 2 3]))))
+      :expected 16}
+     {:name "rejects nil stream items"
+      :test (fn []
+              (try
+                (do
+                  (deref (common/next
+                           (stream (fn [] (co/yield nil)))))
+                  false)
+                (catch Throwable error true)))
+      :expected true}]))
+
+results

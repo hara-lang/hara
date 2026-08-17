@@ -46,6 +46,7 @@ pub struct MutableValue {
 pub struct GuestProtocol {
     pub name: String,
     pub methods: HashMap<String, usize>,
+    pub parents: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -520,6 +521,13 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
     ("ICas", &[("cas", 3)]),
     ("IClose", &[("close", 1)]),
     ("IStream", &[("next", 1)]),
+    ("IStreamWrite", &[("write", 2)]),
+    ("IAbort", &[("abort", 2)]),
+    ("IStreamPoll", &[("poll", 1)]),
+    ("IStreamOffer", &[("offer", 2)]),
+    ("IClosed", &[("closed?", 1)]),
+    ("IFlush", &[("flush", 1)]),
+    ("IDuplex", &[]),
     (
         "IComponent",
         &[
@@ -674,6 +682,17 @@ pub(crate) fn foundation_protocol_values() -> Vec<(String, Value)> {
                         .iter()
                         .map(|(method, arity)| ((*method).to_owned(), *arity))
                         .collect(),
+                    parents: if *name == "IDuplex" {
+                        vec![
+                            builtin_protocol_name("IStream"),
+                            builtin_protocol_name("IStreamWrite"),
+                            builtin_protocol_name("IAbort"),
+                        ]
+                    } else if *name == "IStream" {
+                        vec![builtin_protocol_name("IClose")]
+                    } else {
+                        Vec::new()
+                    },
                 })),
             )
         })
