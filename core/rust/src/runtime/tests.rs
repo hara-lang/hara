@@ -2855,12 +2855,12 @@ mod tests {
             .unwrap();
         assert!(canonical.same_identity(&referred));
         assert_eq!(runtime.eval_text("(identity 42)").unwrap(), "42");
-        assert_eq!(runtime.eval_text("(call + 1 2 3)").unwrap(), "6");
+        assert_eq!(runtime.eval_text("(apply-with 2 + 1 3)").unwrap(), "6");
         assert_eq!(
-            runtime.eval_text("(std.foundation/call + 19 23)").unwrap(),
+            runtime.eval_text("(std.foundation/apply-with 2 + 19 21)").unwrap(),
             "42"
         );
-        assert!(runtime.eval_text("(call 2 1)").is_err());
+        assert!(runtime.eval_text("(apply-with 2 1)").is_err());
         assert_eq!(runtime.eval_text("(first (range 3))").unwrap(), "0");
         assert_eq!(runtime.eval_text("(first (range 2 5))").unwrap(), "2");
 

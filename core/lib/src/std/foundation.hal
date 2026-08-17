@@ -354,7 +354,7 @@
 (defn ^{:schema [:function
                  [:fn [:any] :any]
                  [:fn [:any [:maybe :fn] & :any] :any]]}
-  call
+  apply-with
   "Returns object unchanged when function is nil, otherwise calls function
    with object prepended to the remaining arguments."
   ([object] object)
@@ -362,6 +362,14 @@
    (if (nil? function)
      object
      (apply function object arguments))))
+
+(defn ^{:schema [:fn [:any :fn & :any] :any]}
+  tap
+  "Calls function with object prepended to arguments, then returns object."
+  [object function & arguments]
+  (do
+    (apply function object arguments)
+    object))
 
 (defn ^{:schema [:fn [:num] :num]}
   inc
@@ -1899,6 +1907,60 @@
     (apply list (concat step [value]))
     (list step value)))
 
+(defn- ^{:schema [:fn [:any] :bool]}
+  thread-placeholder?
+  "Returns true when form contains an unquoted thread placeholder."
+  [form]
+  (cond (= form '%)
+        true
+
+        (list? form)
+        (if (or (= 'quote (first form))
+                (= 'syntax-quote (first form)))
+          false
+          (reduce (fn [found value]
+                    (or found (thread-placeholder? value)))
+                  false
+                  form))
+
+        (vector? form)
+        (reduce (fn [found value]
+                  (or found (thread-placeholder? value)))
+                false
+                form)
+
+        (map? form)
+        (reduce (fn [found entry]
+                  (or found
+                      (thread-placeholder? (key entry))
+                      (thread-placeholder? (val entry))))
+                false
+                form)
+
+        (set? form)
+        (reduce (fn [found value]
+                  (or found (thread-placeholder? value)))
+                false
+                form)
+
+        :else false))
+
+(defn- ^{:schema [:fn [:any :vector :bool] :any]}
+  thread-forms
+  "Builds a single-evaluation thread expansion, using an explicit percent
+   placeholder when present and positional insertion otherwise."
+  [value forms last?]
+  (if (= 0 (count forms))
+    value
+    (let [step (first forms)
+          threaded (if (thread-placeholder? step)
+                     step
+                     (if last?
+                       (thread-last-form '% step)
+                       (thread-first-form '% step)))]
+      (list 'let ['% value]
+            (thread-forms threaded (vec (rest forms)) last?)))))
+
 (defn- ^{:schema [:fn [:any :any] :any]}
   conditional-thread-form
   "Builds the nested let/if expansion of cond-> (or cond->> when last? is
@@ -1949,6 +2011,212 @@
                   nil
                   (some-thread-form threaded (vec (rest forms)) last?))))))
 
+(defn- ^{:schema [:fn [:vector :any :any] :any]}
+  if-let-form
+  "Builds sequential truth-checked bindings with one shared alternative."
+  [bindings then alternative]
+  (cond (= 0 (count bindings))
+        then
+
+        (= 1 (count bindings))
+        (throw (ex-info "if-let requires an even binding vector"
+                        {:bindings bindings}))
+
+        :else
+        (let [binding (first bindings)
+              expression (second bindings)
+              remaining (vec (drop 2 bindings))
+              result (gensym "if-let")]
+          (list 'let [result expression]
+                (list 'if result
+                      (list 'let [binding result]
+                            (if-let-form remaining then alternative))
+                      alternative)))))
+
+(defn- ^{:schema [:fn [:str :any] :any]}
+  comprehension-error
+  "Throws a comprehension binding error with the original binding form."
+  [message bindings]
+  (throw (ex-info message {:bindings bindings})))
+
+(defn- ^{:schema [:fn [:vector :vector :bool :vector] :map]}
+  comprehension-group
+  "Parses one collection binding and its following comprehension modifiers."
+  [remaining original allow-into? groups]
+  (if (< (count remaining) 2)
+    (comprehension-error "comprehension requires binding/source pairs" original)
+    (let [binding (first remaining)
+          source (second remaining)]
+      (if (keyword? binding)
+        (comprehension-error "comprehension modifier requires a preceding binding" original)
+        (loop [tail (vec (drop 2 remaining))
+               modifiers []]
+          (if (= 0 (count tail))
+            {:groups (conj groups {:binding binding
+                                   :source source
+                                   :modifiers modifiers})
+             :into? false
+             :destination nil
+             :remaining []}
+            (let [modifier (first tail)]
+              (if (not (keyword? modifier))
+                {:groups (conj groups {:binding binding
+                                       :source source
+                                       :modifiers modifiers})
+                 :into? false
+                 :destination nil
+                 :remaining tail}
+                (if (= 1 (count tail))
+                  (comprehension-error "comprehension modifier requires a value" original)
+                  (let [value (second tail)]
+                    (if (= modifier :into)
+                      (if (not allow-into?)
+                        (comprehension-error "doseq does not support :into" original)
+                        (if (not (= 2 (count tail)))
+                          (comprehension-error "comprehension :into must be final" original)
+                          {:groups (conj groups {:binding binding
+                                                 :source source
+                                                 :modifiers modifiers})
+                           :into? true
+                           :destination value
+                           :remaining []}))
+                      (if (= modifier :let)
+                        (if (or (not (vector? value))
+                                (not (= 0 (mod (count value) 2))))
+                          (comprehension-error "comprehension :let requires an even binding vector"
+                                               original)
+                          (recur (vec (drop 2 tail))
+                                 (conj modifiers [modifier value])))
+                        (if (or (= modifier :when) (= modifier :while))
+                          (recur (vec (drop 2 tail))
+                                 (conj modifiers [modifier value]))
+                          (comprehension-error "unsupported comprehension modifier" original))))))))))))))
+
+(defn- ^{:schema [:fn [:any :bool] :map]}
+  parse-comprehension
+  "Parses collection bindings, scoped modifiers, and the optional final destination."
+  [bindings allow-into?]
+  (if (not (vector? bindings))
+    (comprehension-error "comprehension requires a binding vector" bindings)
+    (if (= 0 (count bindings))
+      (comprehension-error "comprehension requires at least one binding" bindings)
+      (loop [remaining bindings
+             groups []]
+        (let [parsed (comprehension-group remaining bindings allow-into? groups)]
+          (if (= 0 (count (:remaining parsed)))
+            (dissoc parsed :remaining)
+            (recur (:remaining parsed) (:groups parsed))))))))
+
+(defn- ^{:schema [:fn [:symbol :vector] :vector]}
+  comprehension-state-bindings
+  "Builds let bindings that restore comprehension values from state."
+  [state slots]
+  (loop [index 0
+         output []]
+    (if (= index (count slots))
+      output
+      (recur (+ index 1)
+             (conj (conj output (nth slots index))
+                   (list 'nth state index))))))
+
+(defn- ^{:schema [:fn [:any :vector] :any]}
+  comprehension-extend-state
+  "Builds state with raw values appended in order."
+  [state values]
+  (reduce (fn [output value] (list 'conj output value)) state values))
+
+(defn- ^{:schema [:fn [:any :vector :vector] :vector]}
+  comprehension-let-form
+  "Adds one single-evaluation :let transformation to a comprehension iterator."
+  [pipeline slots bindings]
+  (let [state (gensym "state")]
+    (loop [remaining bindings
+           raw-values []
+           next-slots slots
+           let-bindings (comprehension-state-bindings state slots)]
+      (if (= 0 (count remaining))
+        [(list 'std.native.Iter/iter-map
+               (list 'fn [state]
+                     (list 'let
+                           let-bindings
+                           (comprehension-extend-state state raw-values)))
+               pipeline)
+         next-slots]
+        (let [binding (first remaining)
+              expression (second remaining)
+              raw (gensym "let")]
+          (recur (vec (drop 2 remaining))
+                 (conj raw-values raw)
+                 (conj next-slots binding)
+                 (conj (conj (conj (conj let-bindings raw) expression)
+                             binding)
+                       raw)))))))
+
+(defn- ^{:schema [:fn [:any :vector :vector] :vector]}
+  comprehension-modifiers-form
+  "Applies scoped :let, :when, and :while iterator transformations."
+  [pipeline slots modifiers]
+  (loop [output pipeline
+         active-slots slots
+         remaining modifiers]
+    (if (= 0 (count remaining))
+      [output active-slots]
+      (let [modifier (first remaining)
+            operation (first modifier)
+            value (second modifier)]
+        (if (= operation :let)
+          (let [result (comprehension-let-form output active-slots value)]
+            (recur (first result)
+                   (second result)
+                   (vec (rest remaining))))
+          (let [state (gensym "state")
+                native-operation (if (= operation :when)
+                                   'std.native.Iter/iter-filter
+                                   'std.native.Iter/iter-take-while)]
+            (recur (list native-operation
+                         (list 'fn [state]
+                               (list 'let
+                                     (comprehension-state-bindings state active-slots)
+                                     value))
+                         output)
+                   active-slots
+                   (vec (rest remaining)))))))))
+
+(declare comprehension-groups-form)
+
+(defn- ^{:schema [:fn [:vector :any [:maybe :symbol] :vector] :any]}
+  comprehension-groups-form
+  "Builds the lazy iterator pipeline for parsed comprehension groups."
+  [groups body outer-state outer-slots]
+  (let [group (first groups)
+        raw (gensym "item")
+        initial-state (if (nil? outer-state)
+                        [raw]
+                        (list 'conj outer-state raw))
+        initial (list 'std.native.Iter/iter-map
+                      (list 'fn [raw] initial-state)
+                      (:source group))
+        slots (conj outer-slots (:binding group))
+        modified (comprehension-modifiers-form initial slots (:modifiers group))
+        pipeline (first modified)
+        active-slots (second modified)
+        state (gensym "state")
+        callback-bindings (comprehension-state-bindings state active-slots)]
+    (if (= 1 (count groups))
+      (list 'std.native.Iter/iter-map
+            (list 'fn [state]
+                  (list 'let callback-bindings body))
+            pipeline)
+      (list 'std.native.Iter/iter-mapcat
+            (list 'fn [state]
+                  (list 'let
+                        callback-bindings
+                        (comprehension-groups-form (vec (rest groups))
+                                                   body
+                                                   state
+                                                   active-slots)))
+            pipeline))))
+
 ;; ---------------------------------------------------------------------------
 ;; Macros
 ;; ---------------------------------------------------------------------------
@@ -1963,14 +2231,16 @@
           (list 'eval (list 'quote (list 'def name expression))))))
 
 (defmacro ->
-  "Threads value through forms, inserting it as the first argument."
+  "Threads value through forms, inserting it as the first argument unless a
+   form contains an explicit percent placeholder."
   [value & forms]
-  (reduce thread-first-form value forms))
+  (thread-forms value forms false))
 
 (defmacro ->>
-  "Threads value through forms, inserting it as the last argument."
+  "Threads value through forms, inserting it as the last argument unless a
+   form contains an explicit percent placeholder."
   [value & forms]
-  (reduce thread-last-form value forms))
+  (thread-forms value forms true))
 
 (defmacro case
   "Selects the expression paired with the matching constant, or the optional default."
@@ -2044,21 +2314,88 @@
   `(if ~test (do ~@body) nil))
 
 (defmacro if-let
-  "Binds name to expression; evaluates then when the value is truthy,
-   otherwise the optional alternative."
-  [binding then & alternative]
-  (let [name (nth binding 0)
-        expression (nth binding 1)]
-    `(let [~name ~expression]
-       (if ~name ~then ~(if (= 0 (count alternative)) nil (first alternative))))))
+  "Evaluates binding pairs from left to right; evaluates then when every value
+   is truthy, otherwise the optional shared alternative."
+  [bindings then & alternative]
+  (if-let-form bindings
+               then
+               (if (= 0 (count alternative)) nil (first alternative))))
 
 (defmacro when-let
-  "Binds name to expression; when the value is truthy, evaluates body."
+  "Evaluates binding pairs from left to right; when every value is truthy,
+   evaluates body."
+  [bindings & body]
+  (if-let-form bindings (cons 'do body) nil))
+
+(defmacro for
+  "Returns an iterator-backed Seq comprehension. Supports collection bindings,
+   :let, :when, :while, and one optional final :into destination."
+  [bindings body]
+  (let [parsed (parse-comprehension bindings true)
+        iterator (comprehension-groups-form (:groups parsed) body nil [])]
+    (if (:into? parsed)
+      (let [destination (gensym "destination")]
+        (list 'let
+              [destination (:destination parsed)]
+              (list 'std.foundation/into
+                    destination
+                    (list 'std.foundation/seq iterator))))
+      (list 'std.foundation/seq iterator))))
+
+(defmacro doseq
+  "Executes body eagerly for collection bindings and :let, :when, or :while
+   modifiers, then returns nil."
+  [bindings & body]
+  (let [parsed (parse-comprehension bindings false)
+        iterator (comprehension-groups-form (:groups parsed)
+                                            (apply list (concat ['do] body [nil]))
+                                            nil
+                                            [])
+        it (gensym "iterator")
+        continue (gensym "continue")]
+    (list 'let
+          [it iterator]
+          (list 'loop
+                [continue true]
+                (list 'if
+                      (list 'std.foundation/iter-next? it)
+                      (list 'do
+                            (list 'std.foundation/iter-next it)
+                            (list 'recur true))
+                      nil)))))
+
+(defmacro dotimes
+  "Executes body with index from zero to below count, then returns nil."
   [binding & body]
-  (let [name (nth binding 0)
-        expression (nth binding 1)]
-    `(let [~name ~expression]
-       (if ~name (do ~@body) nil))))
+  (if (or (not (vector? binding))
+          (not (= 2 (count binding)))
+          (not (symbol? (first binding))))
+    (throw (ex-info "dotimes requires [index count]" {:binding binding}))
+    (let [index (first binding)
+          amount (second binding)
+          limit (gensym "limit")]
+      (list 'let
+            [limit amount]
+            (list 'loop
+                  [index 0]
+                  (list 'if
+                        (list '< index limit)
+                        (apply list
+                               (concat ['do]
+                                       body
+                                       [(list 'recur (list '+ index 1))]))
+                        nil))))))
+
+(defmacro while
+  "Repeatedly executes body while test is truthy, then returns nil."
+  [test & body]
+  (let [continue (gensym "continue")]
+    (list 'loop
+          [continue true]
+          (list 'if
+                test
+                (apply list (concat ['do] body [(list 'recur true)]))
+                nil))))
 
 (defmacro cond->
   "Threads value through each step whose condition holds, inserting it as the

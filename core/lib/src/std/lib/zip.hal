@@ -244,7 +244,7 @@
            (-> zip
                (assoc :left (rest left))
                (assoc :right (cons elem right))
-               (h/call (:update-step-left context) elem)))))
+               (h/apply-with (:update-step-left context) elem)))))
   ([zip n]
 
 
@@ -264,7 +264,7 @@
                res (-> zip
                        (assoc :left  (cons elem left))
                        (assoc :right (rest right))
-                       (h/call (:update-step-right context) elem))]
+                       (h/apply-with (:update-step-right context) elem))]
            res)))
   ([zip n]
    (nth (iterate step-right zip) n)))
@@ -291,7 +291,7 @@
                       :left ()
                       :right children
                       :parent zip)
-               (h/call (:update-step-inside context) elem)))))
+               (h/apply-with (:update-step-inside context) elem)))))
   ([zip n]
    (nth (iterate step-inside zip) n)))
 
@@ -318,7 +318,7 @@
                              :right (cons (first left) right))]
            (-> zip
                (assoc :depth (inc  depth) :left (reverse children) :right () :parent parent)
-               (h/call (:update-step-inside-left context) elem)))))
+               (h/apply-with (:update-step-inside-left context) elem)))))
   ([zip n]
    (nth (iterate step-inside-left zip) n)))
 
@@ -340,7 +340,7 @@
                         :depth  (dec depth)}]
              (cond-> (reduce (fn [output entry] (assoc output (key entry) (val entry))) zip body)
                (:changed? zip)  (update-child-elements elements)
-               :then (h/call (:update-step-outside context) left))))))
+               :then (h/apply-with (:update-step-outside context) left))))))
   ([zip n]
    (nth (iterate step-outside zip) n)))
 
@@ -375,7 +375,7 @@
      (-> zip
          (update-in [:left] (fn [migration-argument-0] (cons elem migration-argument-0)))
          (assoc :changed? true)
-         (h/call (:update-insert-left context) elem))))
+         (h/apply-with (:update-insert-left context) elem))))
   ([{:keys [context] :as zip} data & more]
    (apply insert-left (insert-left zip data) more)))
 
@@ -388,7 +388,7 @@
      (-> zip
          (update-in [:right] (fn [migration-argument-0] (cons elem migration-argument-0)))
          (assoc :changed? true)
-         (h/call (:update-insert-right context) elem))))
+         (h/apply-with (:update-insert-right context) elem))))
   ([{:keys [context] :as zip} data & more]
    (apply insert-right (insert-right zip data) more)))
 
@@ -406,7 +406,7 @@
            (-> zip
                (update-in [:left] rest)
                (assoc :changed? true)
-               (h/call (:update-delete-left context) elem)))))
+               (h/apply-with (:update-delete-left context) elem)))))
   ([{:keys [context] :as zip} n]
    (nth (iterate delete-left zip) n)))
 
@@ -424,7 +424,7 @@
            (-> zip
                (update-in [:right] rest)
                (assoc :changed? true)
-               (h/call (:update-delete-right context) elem)))))
+               (h/apply-with (:update-delete-right context) elem)))))
   ([{:keys [context] :as zip} n]
    (nth (iterate delete-right zip) n)))
 
@@ -436,7 +436,7 @@
 
 (defn at-end? "replace element right of the current status" {:added "3.0"} [{:as zip :keys [context]}] (and ((:at-right-most? context) zip) (->> (hierarchy zip) (map step-right) (every? (:at-right-most? context)))))
 
-(defn surround "nests elements in current block within another container" {:added "3.0"} [{:as zip :keys [context parent left]}] (let [list-fn (:list-elements context) update-fn (:update-elements context) add-fn (:add-element context) empty-elem ((:create-container context)) new-elem (->> (update-fn empty-elem (current-elements zip)) (add-fn empty-elem))] (cond (nil? parent) (let [elem (list-fn new-elem)] (-> zip (assoc :left () :right elem :changed? true) (h/call (:update-step-outside context) left))) :else (-> (step-outside zip) (replace-right new-elem) step-inside))))
+(defn surround "nests elements in current block within another container" {:added "3.0"} [{:as zip :keys [context parent left]}] (let [list-fn (:list-elements context) update-fn (:update-elements context) add-fn (:add-element context) empty-elem ((:create-container context)) new-elem (->> (update-fn empty-elem (current-elements zip)) (add-fn empty-elem))] (cond (nil? parent) (let [elem (list-fn new-elem)] (-> zip (assoc :left () :right elem :changed? true) (h/apply-with (:update-step-outside context) left))) :else (-> (step-outside zip) (replace-right new-elem) step-inside))))
 
 (defn root-element "accesses the top level node" {:added "3.0"} [zip] (-> zip step-outside-most step-left-most right-element))
 
@@ -464,7 +464,7 @@
 
 (defn step-prev "step status in reverse through the tree in depth first order" {:added "3.0"} [{:as zip :keys [context]}] (cond (nil? zip) nil ((:at-outside-most? context) zip) nil (can-step-left? zip) (cond (can-step-inside-left? zip) (step-prev (step-inside-left zip)) ((:is-element? context) (left-element zip)) (step-left zip) :else (step-prev (step-left zip))) :else (step-outside zip)))
 
-(defn find "helper function for the rest of the `find` series" {:added "3.0"} [zip move pred] (call zip (comp first (filter (fn [migration-argument-0] (try (pred (right-element migration-argument-0)) (catch Throwable t nil)))) (take-while right-element) (drop 1) iter (partial iterate move))))
+(defn find "helper function for the rest of the `find` series" {:added "3.0"} [zip move pred] (apply-with zip (comp first (filter (fn [migration-argument-0] (try (pred (right-element migration-argument-0)) (catch Throwable t nil)))) (take-while right-element) (drop 1) iter (partial iterate move))))
 
 (defn find-left "steps status left to search predicate" {:added "3.0"} [zip pred] (find zip (fn [current] (if (and current (can-step-left? current)) (step-left current) nil)) pred))
 

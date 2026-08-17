@@ -118,20 +118,40 @@
 ^{:refer std.foundation/identity}
 (Test/run [])
 
-^{:refer std.foundation/call}
+^{:refer std.foundation/apply-with}
 (Test/run
  [{:name "returns an object when no function is supplied"
-   :test (fn [] (f/call 2))
+   :test (fn [] (f/apply-with 2))
    :expected 2}
   {:name "prepends the object to function arguments"
-   :test (fn [] (f/call 2 + 1 2 3))
+   :test (fn [] (f/apply-with 2 + 1 2 3))
    :expected 8}
   {:name "preserves the object when function is nil"
-   :test (fn [] (f/call 2 nil 1 2))
+   :test (fn [] (f/apply-with 2 nil 1 2))
    :expected 2}
   {:name "works as an object-first threaded operation"
-   :test (fn [] (-> 2 (f/call + 1 2 3)))
+   :test (fn [] (-> 2 (f/apply-with + 1 2 3)))
    :expected 8}])
+
+^{:refer std.foundation/tap}
+(Test/run
+ [{:name "calls an observer and preserves the object"
+   :test (fn []
+           (let [seen (atom nil)
+                 object {:value 7}
+                 output (f/tap object
+                               (fn [value label]
+                                 (reset! seen [value label])
+                                 :ignored)
+                               :observed)]
+             [output @seen]))
+   :expected [{:value 7} [{:value 7} :observed]]}
+  {:name "requires an observer function"
+   :test (fn []
+           (try
+             (do (f/tap :value nil) false)
+             (catch Throwable error true)))
+   :expected true}])
 
 ^{:refer std.foundation/inc}
 (Test/run [])
@@ -721,10 +741,21 @@
 (Test/run [])
 
 ^{:refer std.foundation/->}
-(Test/run [])
+(Test/run
+ [{:name "supports positional and explicit placeholder threading"
+   :test (fn [] [(f/-> 1 inc (- 10 %))
+                 (f/-> 2 (+ % %) (* % %))])
+   :expected [8 16]}
+  {:name "does not treat quoted percent as a placeholder"
+   :test (fn [] (f/-> 1 (vector '%)))
+   :expected [1 '%]}])
 
 ^{:refer std.foundation/->>}
-(Test/run [])
+(Test/run
+ [{:name "supports thread-last insertion and explicit placement"
+   :test (fn [] [(f/->> [1 2 3] (map inc) (reduce +))
+                 (f/->> [1 2 3] (reduce + %))])
+   :expected [9 6]}])
 
 ^{:refer std.foundation/case}
 (Test/run [])
@@ -754,10 +785,118 @@
 (Test/run [])
 
 ^{:refer std.foundation/if-let}
-(Test/run [])
+(Test/run
+ [{:name "binds dependent pairs from left to right"
+   :test (fn [] (f/if-let [a 2 b (+ a 3)] (+ a b) :failed))
+   :expected 7}
+  {:name "uses the shared alternative at the first falsey binding"
+   :test (fn [] (f/if-let [a nil b (+ a 3)] (+ a b) :failed))
+   :expected :failed}
+  {:name "tests the raw value before destructuring"
+   :test (fn [] (f/if-let [[a b] [1 2]] (+ a b) :failed))
+   :expected 3}])
 
 ^{:refer std.foundation/when-let}
-(Test/run [])
+(Test/run
+ [{:name "evaluates the body after every binding succeeds"
+   :test (fn [] (f/when-let [a 2 b (+ a 3)] (+ a b)))
+   :expected 7}
+  {:name "returns nil at the first falsey binding"
+   :test (fn [] (f/when-let [a false b 3] (+ a b)))
+   :expected nil}])
+
+^{:refer std.foundation/for}
+(Test/run
+ [{:name "builds nested comprehensions with destructuring"
+   :test (fn []
+           (vec (f/for [[a b] [[1 2] [3 4]]
+                        scale [10 100]]
+                  (* (+ a b) scale))))
+   :expected [30 300 70 700]}
+  {:name "supports sequential let when and while modifiers"
+   :test (fn []
+           (vec (f/for [x (range 8)
+                        :let [y (* x 2)
+                              z (+ y 1)]
+                        :when (not (= 0 (mod z 3)))
+                        :while (< z 12)]
+                  [x y z])))
+   :expected [[0 0 1] [2 4 5] [3 6 7] [5 10 11]]}
+  {:name "scopes while to its associated inner binding"
+   :test (fn []
+           (vec (f/for [x [1 2]
+                        y [1 2 3 4]
+                        :while (< y 3)]
+                  [x y])))
+   :expected [[1 1] [1 2] [2 1] [2 2]]}
+  {:name "consumes a native iterator in order"
+   :test (fn []
+           (let [calls (atom 0)
+                 values (f/for [x (std.native.Iter/iter-range 0 3)]
+                          (do (swap! calls inc) x))]
+             [(vec values) @calls]))
+   :expected [[0 1 2] 3]}
+  {:name "collects eagerly into a final destination"
+   :test (fn []
+           [(f/for [x [1 2 2 3] :into #{}] x)
+            (f/for [x [1 2] :into [:start]] (* x 10))
+            (f/for [x [1 2] :into {:zero 0}] [x (* x x)])])
+   :expected [#{1 2 3} [:start 10 20] {:zero 0 1 1 2 4}]}
+  {:name "rejects invalid into placement"
+   :test (fn []
+           (try
+             (do (macroexpand '(std.foundation/for [x [1] :into [] :when true] x)) false)
+             (catch Throwable error true)))
+   :expected true}])
+
+^{:refer std.foundation/doseq}
+(Test/run
+ [{:name "executes eagerly with comprehension modifiers and returns nil"
+   :test (fn []
+           (let [seen (atom [])
+                 output (f/doseq [x (range 8)
+                                  :let [y (* x 2)]
+                                  :when (not (= 0 (mod y 3)))
+                                  :while (< y 11)]
+                          (swap! seen conj [x y]))]
+             [output @seen]))
+   :expected [nil [[1 2] [2 4] [4 8] [5 10]]]}
+  {:name "rejects into destinations"
+   :test (fn []
+           (try
+             (do (macroexpand '(std.foundation/doseq [x [1] :into []] x)) false)
+             (catch Throwable error true)))
+   :expected true}])
+
+^{:refer std.foundation/dotimes}
+(Test/run
+ [{:name "evaluates the bound once and returns nil"
+   :test (fn []
+           (let [bounds (atom 0)
+                 seen (atom [])
+                 output (f/dotimes [index (do (swap! bounds inc) 4)]
+                          (swap! seen conj index))]
+             [output @bounds @seen]))
+   :expected [nil 1 [0 1 2 3]]}
+  {:name "does not execute for a non-positive bound"
+   :test (fn []
+           (let [seen (atom [])]
+             [(f/dotimes [index 0] (swap! seen conj index))
+              (f/dotimes [index -2] (swap! seen conj index))
+              @seen]))
+   :expected [nil nil []]}])
+
+^{:refer std.foundation/while}
+(Test/run
+ [{:name "reevaluates its test and returns nil"
+   :test (fn []
+           (let [index (atom 0)
+                 seen (atom [])
+                 output (f/while (< @index 3)
+                          (swap! seen conj @index)
+                          (swap! index inc))]
+             [output @index @seen]))
+   :expected [nil 3 [0 1 2]]}])
 
 ^{:refer std.foundation/cond->}
 (Test/run

@@ -13,7 +13,7 @@ import org.junit.Test;
 public class FoundationFallbackDemandTest {
   @Test
   public void indexesPortableDefinitionsThatShadowJavaExports() {
-    for (String name : new String[] {"call", "has?", "identity", "if-not", "long", "map"}) {
+    for (String name : new String[] {"apply-with", "has?", "identity", "if-not", "long", "map"}) {
       assertTrue(name, FoundationFallbackDefinitions.defines(name));
     }
     for (String name : new String[] {"assoc", "nth", "read-string"}) {
@@ -96,19 +96,19 @@ public class FoundationFallbackDemandTest {
       assertEquals(
           42L,
           context
-              .eval(HaraLanguage.ID, "(ns foundation-automatic) (call + 19 23)")
+              .eval(HaraLanguage.ID, "(ns foundation-automatic) (apply-with 2 + 19 21)")
               .asLong());
 
       assertEquals(
           42L,
-          context.eval(HaraLanguage.ID, "(std.foundation/call + 19 23)").asLong());
+          context.eval(HaraLanguage.ID, "(std.foundation/apply-with 2 + 19 21)").asLong());
 
       assertEquals(
           42L,
           context
               .eval(
                   HaraLanguage.ID,
-                  "(ns foundation-alias (:require [std.foundation :as f])) (f/call + 19 23)")
+                  "(ns foundation-alias (:require [std.foundation :as f])) (f/apply-with 2 + 19 21)")
               .asLong());
 
       assertEquals(
@@ -116,8 +116,8 @@ public class FoundationFallbackDemandTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(ns foundation-refer (:require [std.foundation :refer [call]])) "
-                      + "(call + 19 23)")
+                  "(ns foundation-refer (:require [std.foundation :refer [apply-with]])) "
+                      + "(apply-with 2 + 19 21)")
               .asLong());
 
     }
@@ -127,8 +127,8 @@ public class FoundationFallbackDemandTest {
   public void previouslyEstablishedAliasDemandsPortableDefinition() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       context.eval(HaraLanguage.ID, "(ns foundation-prior-alias) (alias f std.foundation)");
-      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'call))").asBoolean());
-      assertEquals(42L, context.eval(HaraLanguage.ID, "(f/call + 19 23)").asLong());
+      assertTrue(context.eval(HaraLanguage.ID, "(= nil (resolve 'apply-with))").asBoolean());
+      assertEquals(42L, context.eval(HaraLanguage.ID, "(f/apply-with 2 + 19 21)").asLong());
     }
   }
 

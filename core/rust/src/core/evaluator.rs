@@ -3155,6 +3155,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     arguments.extend(iterator_values(eval(&fs[fs.len() - 1], env)?)?);
                     match function {
                         Some(Value::Function(function)) => call_function(&function, arguments),
+                        Some(Value::Var(var)) => match var.deref_value() {
+                            Value::Function(function) => call_function(&function, arguments),
+                            _ => Err("apply expects a function".into()),
+                        },
                         Some(_) => Err("apply expects a function".into()),
                         None => {
                             let name = builtin_name.unwrap();
