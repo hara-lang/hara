@@ -16,6 +16,7 @@ IGNORED_DIRECTORIES = {
     ".git",
     ".idea",
     ".vscode",
+    ".worktrees",
     "node_modules",
     "target",
     "dist",
@@ -23,6 +24,9 @@ IGNORED_DIRECTORIES = {
     "site",
     "coverage",
     "__pycache__",
+    # Generated cargo-publication mirror of core/lib sources (gitignored);
+    # retired-name evidence is classified against the canonical sources.
+    "hal-src",
 }
 TEXT_SUFFIXES = {
     ".clj",
@@ -48,6 +52,12 @@ ROOT_TEST_FIXTURES = {
     "alias_test.hal": "std.foundation.alias-test",
     "deps_test.hal": "std.foundation.deps-test",
 }
+# Development-only namespaces are registered in the inventory but are not
+# ordinary production children: no child test contract and no root-header
+# mention. Mirrors scripts/generate_foundation_api_manifest.py, which cites
+# core/rust/bootstrap.namespaces (exactly six production std.foundation
+# namespaces).
+DEVELOPMENT_ONLY_NAMESPACES = ("std.foundation.bootstrap",)
 REQUIRED_HEADER_DIRECTIONS = (
     "std.fs.path",
     "std.format.*",
@@ -255,7 +265,8 @@ def build_report(root: Path) -> dict[str, Any]:
     if current != source:
         errors.append(f"Registered/source Foundation mismatch: registered={current} source={source}")
 
-    current_children = sorted(name for name in current if name != "std.foundation")
+    production = [name for name in current if name not in DEVELOPMENT_ONLY_NAMESPACES]
+    current_children = sorted(name for name in production if name != "std.foundation")
     if child_tests != current_children:
         errors.append(
             f"Current child/test mismatch: children={current_children} ordinary-tests={child_tests}"
@@ -266,7 +277,7 @@ def build_report(root: Path) -> dict[str, Any]:
     if retired_current:
         errors.append("Migration names remain current: " + ", ".join(retired_current))
 
-    errors.extend(header_errors(root, current))
+    errors.extend(header_errors(root, production))
 
     reference_rows: dict[str, list[dict[str, str]]] = {}
     for name in former:

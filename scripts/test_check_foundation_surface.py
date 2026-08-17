@@ -121,6 +121,28 @@ class FoundationSurfaceTest(unittest.TestCase):
         report = MODULE.build_report(root)
         self.assertTrue(any("Stale reference classifications" in error for error in report["errors"]))
 
+    def test_bootstrap_is_development_only(self) -> None:
+        root = self.make_root()
+        namespaces = root / "core/rust/standard-library.namespaces"
+        namespaces.write_text(namespaces.read_text() + "std.foundation.bootstrap\n")
+        (root / "core/lib/src/std/foundation/bootstrap.hal").write_text(
+            "(ns std.foundation.bootstrap)\n"
+        )
+        report = MODULE.build_report(root)
+        self.assertEqual([], report["errors"])
+        self.assertEqual(
+            ["std.foundation.bytes", "std.foundation.string"],
+            report["ordinaryChildTests"],
+        )
+
+    def test_generated_hal_src_mirror_is_not_scanned(self) -> None:
+        root = self.make_root()
+        mirror = root / "core/rust/hal-src/code/translate"
+        mirror.mkdir(parents=True)
+        (mirror / "rules.hal").write_text(";; std.foundation.old\n")
+        report = MODULE.build_report(root)
+        self.assertEqual([], report["errors"])
+
 
 if __name__ == "__main__":
     unittest.main()
