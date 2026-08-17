@@ -100,6 +100,7 @@ mod tests {
             "Runtime",
             "Kernel",
             "Sandbox",
+            "Crypto",
             "File",
             "Socket",
             "Process",
@@ -138,6 +139,70 @@ mod tests {
         );
         assert!(sandbox_eval(&mut kernel, sandbox, "(ns-publics 'std.native.File)").is_err());
         kernel.close_sandbox(sandbox).unwrap();
+    }
+
+    #[test]
+    fn sandbox_bundles_and_mounts_are_resolved_and_released_by_the_kernel() {
+        let mut kernel = SessionKernel::new();
+        kernel.register_sandbox_provider(Rc::new(InProcessSandboxProvider));
+        let digest = "sha256:039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81";
+        kernel.register_bundle(digest, &[1, 2, 3]).unwrap();
+        let mount = kernel.create_memory_filesystem("sandbox-test");
+        let spec = SandboxSpec::with_inputs(
+            SANDBOX_SPEC_PROTOCOL,
+            "in-process",
+            "hara.standard/0-alpha",
+            "user",
+            vec![SandboxBundleReference::new(digest, "halc").unwrap()],
+            Some(mount),
+            Vec::new(),
+            SandboxLimits::default(),
+        )
+        .unwrap();
+        let sandbox = kernel.open_sandbox(spec).unwrap();
+        assert_eq!(kernel.filesystem_info(mount).unwrap().2, 1);
+        assert!(kernel.close_filesystem(mount).is_err());
+        kernel.close_sandbox(sandbox).unwrap();
+        assert_eq!(kernel.filesystem_info(mount).unwrap().2, 0);
+        kernel.close_filesystem(mount).unwrap();
+
+        let missing = SandboxSpec::with_inputs(
+            SANDBOX_SPEC_PROTOCOL,
+            "in-process",
+            "hara.standard/0-alpha",
+            "user",
+            vec![SandboxBundleReference::new(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "halc",
+            )
+            .unwrap()],
+            None,
+            Vec::new(),
+            SandboxLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            kernel.open_sandbox(missing).unwrap_err().code,
+            SandboxErrorCode::BundleNotFound
+        );
+
+        let mismatched = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        kernel.register_bundle(mismatched, &[9]).unwrap();
+        let mismatch = SandboxSpec::with_inputs(
+            SANDBOX_SPEC_PROTOCOL,
+            "in-process",
+            "hara.standard/0-alpha",
+            "user",
+            vec![SandboxBundleReference::new(mismatched, "halc").unwrap()],
+            None,
+            Vec::new(),
+            SandboxLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            kernel.open_sandbox(mismatch).unwrap_err().code,
+            SandboxErrorCode::BundleDigestMismatch
+        );
     }
 
     #[test]
@@ -206,6 +271,41 @@ mod tests {
             kernel.sandbox_status(sandbox).unwrap_err().code,
             SandboxErrorCode::NotFound
         );
+
+        let small_result = SandboxSpec::new(
+            SANDBOX_SPEC_PROTOCOL,
+            "in-process",
+            "hara.standard/0-alpha",
+            "user",
+            SandboxLimits {
+                result_bytes: 2,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap();
+        let sandbox = kernel.open_sandbox(small_result).unwrap();
+        assert_eq!(
+            kernel
+                .sandbox_eval(sandbox, "\"abcd\"")
+                .unwrap()
+                .wait()
+                .unwrap_err()
+                .code,
+            SandboxErrorCode::LimitExceeded
+        );
+        kernel.close_sandbox(sandbox).unwrap();
+
+        let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+        assert_eq!(
+            kernel
+                .sandbox_eval(sandbox, "(fn [] 1)")
+                .unwrap()
+                .wait()
+                .unwrap_err()
+                .code,
+            SandboxErrorCode::ResultNotTransferable
+        );
+        kernel.close_sandbox(sandbox).unwrap();
     }
 
     #[test]

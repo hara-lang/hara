@@ -104,7 +104,8 @@ impl Runtime {
 
     pub(crate) fn sandbox() -> Runtime {
         const FORBIDDEN: &[&str] = &[
-            "Runtime", "Kernel", "Sandbox", "File", "Socket", "Process", "OS", "Package", "Host",
+            "Runtime", "Kernel", "Sandbox", "Package", "Crypto", "OS", "Process", "File", "Socket",
+            "Host",
         ];
         let runtime = Runtime::new();
         for name in FORBIDDEN {
@@ -112,6 +113,7 @@ impl Runtime {
             runtime.namespace_registry.remove(&namespace);
             for owner in ["user", "std.foundation", "std.native"] {
                 if let Some(target) = runtime.namespace_registry.find(owner) {
+                    target.unalias(name);
                     target.unmap(&crate::lang::data::Symbol::parse(name));
                     target.unmap(&crate::lang::data::Symbol::parse(&namespace));
                 }

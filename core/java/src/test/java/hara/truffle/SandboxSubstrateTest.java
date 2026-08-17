@@ -33,7 +33,10 @@ public class SandboxSubstrateTest {
               .eval(
                   "(deref (std.sandbox/open {:protocol \"hara.sandbox/0-alpha\" "
                       + ":provider :in-process :runtime \"hara.standard/0-alpha\" "
-                      + ":entry-namespace \"user\"}))")
+                      + ":entry-namespace 'user :bundles [] :mount nil :provider-options {} "
+                      + ":limits {:source-bytes 65536 :result-bytes 1048576 "
+                      + ":output-bytes 1048576 :evaluation-ms 5000 :memory-bytes 67108864 "
+                      + ":active-evaluations 1}}))")
               .asLong();
       assertEquals(
           42L,
@@ -42,7 +45,7 @@ public class SandboxSubstrateTest {
           6L,
           kernel
               .root()
-              .eval("(deref (std.sandbox/call " + id + " \"std.foundation/+\" [1 2 3]))")
+              .eval("(deref (std.sandbox/call " + id + " 'std.foundation/+ [1 2 3]))")
               .asLong());
       assertFalse(
           kernel
@@ -53,6 +56,14 @@ public class SandboxSubstrateTest {
       assertThrows(
           RuntimeException.class,
           () -> kernel.root().eval("(std.sandbox/status " + id + ")"));
+      assertEquals(
+          ":sandbox/invalid-spec",
+          kernel
+              .root()
+              .eval(
+                  "(try (deref (std.sandbox/open {:unknown true})) "
+                      + "(catch Throwable error (:error/code (ex-data error))))")
+              .toString());
     }
   }
 
@@ -60,7 +71,9 @@ public class SandboxSubstrateTest {
   public void bundlesAndMountsAreResolvedAndReleasedByTheKernel() throws Exception {
     Path root = Files.createTempDirectory("hara-sandbox-mount-");
     try (SessionKernel kernel = new SessionKernel(true, false)) {
-      kernel.registerBundle("sha256:test", new byte[] {1, 2, 3});
+      String digest =
+          "sha256:039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81";
+      kernel.registerBundle(digest, new byte[] {1, 2, 3});
       SessionModel.SessionMountId mount = kernel.createFilesystem(root);
       SandboxModel.SandboxSpec spec =
           new SandboxModel.SandboxSpec(
@@ -68,7 +81,7 @@ public class SandboxSubstrateTest {
               "in-process",
               "hara.standard/0-alpha",
               "user",
-              List.of(new SandboxModel.BundleReference("sha256:test", "halc")),
+              List.of(new SandboxModel.BundleReference(digest, "halc")),
               mount,
               HaraPersistentValues.normalize(java.util.Map.of()),
               SandboxModel.SandboxLimits.defaults());
@@ -85,13 +98,34 @@ public class SandboxSubstrateTest {
               "in-process",
               "hara.standard/0-alpha",
               "user",
-              List.of(new SandboxModel.BundleReference("sha256:missing", "halc")),
+              List.of(
+                  new SandboxModel.BundleReference(
+                      "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "halc")),
               null,
               HaraPersistentValues.normalize(java.util.Map.of()),
               SandboxModel.SandboxLimits.defaults());
       SandboxModel.SandboxException error =
           assertThrows(SandboxModel.SandboxException.class, () -> kernel.openSandbox(missing));
       assertEquals(SandboxModel.ErrorCode.BUNDLE_NOT_FOUND, error.code());
+
+      String mismatched =
+          "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+      kernel.registerBundle(mismatched, new byte[] {9});
+      SandboxModel.SandboxSpec mismatch =
+          new SandboxModel.SandboxSpec(
+              SandboxModel.SPEC_PROTOCOL,
+              "in-process",
+              "hara.standard/0-alpha",
+              "user",
+              List.of(new SandboxModel.BundleReference(mismatched, "halc")),
+              null,
+              HaraPersistentValues.normalize(java.util.Map.of()),
+              SandboxModel.SandboxLimits.defaults());
+      assertEquals(
+          SandboxModel.ErrorCode.BUNDLE_DIGEST_MISMATCH,
+          assertThrows(SandboxModel.SandboxException.class, () -> kernel.openSandbox(mismatch))
+              .code());
     } finally {
       Files.deleteIfExists(root);
     }
@@ -150,30 +184,19 @@ public class SandboxSubstrateTest {
               () -> eval(kernel, parentProbe, "parent-secret"));
       assertEquals(SandboxModel.ErrorCode.EVALUATION_FAILED, error.code());
       kernel.closeSandbox(parentProbe);
-      for (String symbol :
-          List.of(
-              "Runtime",
-              "Kernel",
-              "Sandbox",
-              "File",
-              "Socket",
-              "Process",
-              "OS",
-              "Package",
-              "Host",
-              "std.native.Runtime/current",
-              "std.native.Kernel")) {
-        SandboxModel.SandboxId sandbox =
-            kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
-        SandboxModel.SandboxException denied =
-            assertThrows(
-                symbol,
-                SandboxModel.SandboxException.class,
-                () -> eval(kernel, sandbox, symbol));
-        assertEquals(symbol, SandboxModel.ErrorCode.EVALUATION_FAILED, denied.code());
-        kernel.closeSandbox(sandbox);
-      }
       SandboxModel.SandboxId sandbox = kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
+      assertEquals(
+          true,
+          eval(
+              kernel,
+              sandbox,
+              "(every? identity [(nil? (resolve 'Runtime)) (nil? (resolve 'Kernel)) "
+                  + "(nil? (resolve 'Sandbox)) (nil? (resolve 'Crypto)) "
+                  + "(nil? (resolve 'File)) (nil? (resolve 'Socket)) "
+                  + "(nil? (resolve 'Process)) (nil? (resolve 'OS)) "
+                  + "(nil? (resolve 'Package)) (nil? (resolve 'Host)) "
+                  + "(nil? (resolve 'std.native.Runtime/current)) "
+                  + "(nil? (resolve 'std.native.Kernel))])"));
       assertEquals(null, eval(kernel, sandbox, "(the-ns 'std.native.Kernel)"));
       assertEquals(false, eval(kernel, sandbox, "(ns-loaded? 'std.native.Runtime)"));
       assertEquals(
@@ -248,6 +271,32 @@ public class SandboxSubstrateTest {
       SandboxModel.SandboxException missing =
           assertThrows(SandboxModel.SandboxException.class, () -> kernel.sandboxStatus(closed));
       assertEquals(SandboxModel.ErrorCode.NOT_FOUND, missing.code());
+
+      SandboxModel.SandboxSpec smallResult =
+          new SandboxModel.SandboxSpec(
+              SandboxModel.SPEC_PROTOCOL,
+              "in-process",
+              "hara.standard/0-alpha",
+              "user",
+              new SandboxModel.SandboxLimits(64 * 1024, 2, 1024, 5_000, 1024 * 1024, 1));
+      SandboxModel.SandboxId overflowing = kernel.openSandbox(smallResult);
+      assertEquals(
+          SandboxModel.ErrorCode.LIMIT_EXCEEDED,
+          assertThrows(
+                  SandboxModel.SandboxException.class,
+                  () -> kernel.sandboxEval(overflowing, "\"abcd\"").await())
+              .code());
+      kernel.closeSandbox(overflowing);
+
+      SandboxModel.SandboxId liveValue =
+          kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
+      assertEquals(
+          SandboxModel.ErrorCode.RESULT_NOT_TRANSFERABLE,
+          assertThrows(
+                  SandboxModel.SandboxException.class,
+                  () -> kernel.sandboxEval(liveValue, "(fn [] 1)").await())
+              .code());
+      kernel.closeSandbox(liveValue);
     }
   }
 }

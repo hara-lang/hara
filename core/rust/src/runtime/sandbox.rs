@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
@@ -5,10 +6,15 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub struct SandboxPending<T> {
+    evaluation: EvaluationId,
     receiver: mpsc::Receiver<Result<T, SandboxError>>,
 }
 
 impl<T> SandboxPending<T> {
+    pub const fn evaluation(&self) -> EvaluationId {
+        self.evaluation
+    }
+
     pub fn wait(self) -> Result<T, SandboxError> {
         self.receiver.recv().unwrap_or_else(|_| {
             Err(SandboxError::new(
@@ -43,7 +49,27 @@ pub trait SandboxInstance {
 pub trait SandboxProvider {
     fn name(&self) -> &str;
     fn secure(&self) -> bool;
-    fn open(&self, spec: &SandboxSpec) -> Result<Box<dyn SandboxInstance>, SandboxError>;
+    fn open(&self, spec: &ResolvedSandboxSpec) -> Result<Box<dyn SandboxInstance>, SandboxError>;
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedSandboxBundle {
+    pub reference: SandboxBundleReference,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedSandboxMount {
+    pub id: SessionMountId,
+    pub kind: String,
+    pub key: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedSandboxSpec {
+    pub spec: SandboxSpec,
+    pub bundles: Vec<ResolvedSandboxBundle>,
+    pub mount: Option<ResolvedSandboxMount>,
 }
 
 /// Conformance-only provider. Runtime separation is logical and is not a
@@ -60,9 +86,12 @@ impl SandboxProvider for InProcessSandboxProvider {
         false
     }
 
-    fn open(&self, spec: &SandboxSpec) -> Result<Box<dyn SandboxInstance>, SandboxError> {
-        spec.validate()?;
-        InProcessSandbox::open(spec.clone()).map(|instance| Box::new(instance) as _)
+    fn open(
+        &self,
+        resolved: &ResolvedSandboxSpec,
+    ) -> Result<Box<dyn SandboxInstance>, SandboxError> {
+        resolved.spec.validate()?;
+        InProcessSandbox::open(resolved.clone()).map(|instance| Box::new(instance) as _)
     }
 }
 
@@ -103,7 +132,8 @@ struct InProcessSandbox {
 }
 
 impl InProcessSandbox {
-    fn open(spec: SandboxSpec) -> Result<Self, SandboxError> {
+    fn open(resolved: ResolvedSandboxSpec) -> Result<Self, SandboxError> {
+        let spec = resolved.spec;
         let limits = spec.limits.clone();
         let (commands, receiver) = mpsc::channel();
         let shared = Arc::new(Mutex::new(WorkerState {
@@ -256,6 +286,13 @@ fn run_controlled<T>(
             SandboxError::new(SandboxErrorCode::Cancelled, "sandbox evaluation cancelled")
         } else if error.contains("SANDBOX_TIMEOUT") {
             SandboxError::new(SandboxErrorCode::Timeout, "sandbox evaluation timed out")
+        } else if error.contains("SESSION_TRANSFER_REJECTED")
+            || error.contains("invoke-hta/result-unsupported")
+        {
+            SandboxError::new(
+                SandboxErrorCode::ResultNotTransferable,
+                "sandbox result is not transferable",
+            )
         } else {
             SandboxError::new(SandboxErrorCode::EvaluationFailed, error)
         }
@@ -316,7 +353,10 @@ impl SandboxInstance for InProcessSandbox {
             cancelled,
             reply,
         })?;
-        Ok(SandboxPending { receiver })
+        Ok(SandboxPending {
+            evaluation,
+            receiver,
+        })
     }
 
     fn call(
@@ -334,7 +374,10 @@ impl SandboxInstance for InProcessSandbox {
             cancelled,
             reply,
         })?;
-        Ok(SandboxPending { receiver })
+        Ok(SandboxPending {
+            evaluation,
+            receiver,
+        })
     }
 
     fn cancel(&mut self, evaluation: EvaluationId) -> Result<bool, SandboxError> {
@@ -392,6 +435,7 @@ struct Sandbox {
     id: SandboxId,
     provider: String,
     secure: bool,
+    mount: Option<SessionMountId>,
     next_evaluation_id: u64,
     instance: Box<dyn SandboxInstance>,
 }
@@ -422,8 +466,55 @@ impl SessionKernel {
             .get(&spec.provider)
             .ok_or_else(|| {
                 SandboxError::new(SandboxErrorCode::ProviderNotFound, spec.provider.clone())
-            })?;
-        let instance = provider.open(&spec)?;
+            })?
+            .clone();
+        let bundles = spec
+            .bundles()
+            .iter()
+            .map(|reference| {
+                self.bundle_catalog
+                    .entries
+                    .get(&reference.digest)
+                    .cloned()
+                    .map(|bytes| (reference, bytes))
+                    .ok_or_else(|| {
+                        SandboxError::new(
+                            SandboxErrorCode::BundleNotFound,
+                            reference.digest.clone(),
+                        )
+                    })
+                    .and_then(|(reference, bytes)| {
+                        let actual = format!("sha256:{:x}", Sha256::digest(&bytes));
+                        if actual == reference.digest {
+                            Ok(ResolvedSandboxBundle {
+                                reference: reference.clone(),
+                                bytes,
+                            })
+                        } else {
+                            Err(SandboxError::new(
+                                SandboxErrorCode::BundleDigestMismatch,
+                                reference.digest.clone(),
+                            ))
+                        }
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mount = spec
+            .mount()
+            .map(|id| {
+                self.mount_registry
+                    .entries
+                    .get(&id.get())
+                    .map(|mount| ResolvedSandboxMount {
+                        id,
+                        kind: mount.kind.into(),
+                        key: mount.key.clone(),
+                    })
+                    .ok_or_else(|| {
+                        SandboxError::new(SandboxErrorCode::MountNotFound, id.to_string())
+                    })
+            })
+            .transpose()?;
         let secure = provider.secure();
         let id = SandboxId(self.sandbox_registry.next_id);
         self.sandbox_registry.next_id = self
@@ -431,17 +522,51 @@ impl SessionKernel {
             .next_id
             .checked_add(1)
             .expect("sandbox identifiers exhausted");
+        if let Some(mount) = &mount {
+            self.mount_registry
+                .entries
+                .get_mut(&mount.id.get())
+                .expect("resolved mount remains registered")
+                .attachments += 1;
+            self.mount_registry
+                .sandbox_attachments
+                .insert(id.get(), mount.id.get());
+        }
+        let resolved = ResolvedSandboxSpec {
+            spec: spec.clone(),
+            bundles,
+            mount,
+        };
+        let instance = match provider.open(&resolved) {
+            Ok(instance) => instance,
+            Err(error) => {
+                self.release_sandbox_mount(id, spec.mount());
+                return Err(error);
+            }
+        };
         self.sandbox_registry.entries.insert(
             id.get(),
             Sandbox {
                 id,
-                provider: spec.provider,
+                provider: spec.provider.clone(),
                 secure,
+                mount: spec.mount(),
                 next_evaluation_id: 1,
                 instance,
             },
         );
         Ok(id)
+    }
+
+    fn release_sandbox_mount(&mut self, id: SandboxId, mount: Option<SessionMountId>) {
+        let Some(mount) = mount else {
+            return;
+        };
+        if self.mount_registry.sandbox_attachments.remove(&id.get()) == Some(mount.get()) {
+            if let Some(entry) = self.mount_registry.entries.get_mut(&mount.get()) {
+                entry.attachments = entry.attachments.saturating_sub(1);
+            }
+        }
     }
 
     fn sandbox_mut(&mut self, id: SandboxId) -> Result<&mut Sandbox, SandboxError> {
@@ -482,6 +607,14 @@ impl SessionKernel {
         sandbox.instance.cancel(evaluation)
     }
 
+    pub fn cancel_sandbox_evaluation(
+        &mut self,
+        id: SandboxId,
+        evaluation: EvaluationId,
+    ) -> Result<bool, SandboxError> {
+        self.sandbox_mut(id)?.instance.cancel(evaluation)
+    }
+
     pub fn sandbox_status(&self, id: SandboxId) -> Result<SandboxStatus, SandboxError> {
         let sandbox = self
             .sandbox_registry
@@ -504,6 +637,8 @@ impl SessionKernel {
             .entries
             .remove(&id.get())
             .ok_or_else(|| SandboxError::new(SandboxErrorCode::NotFound, id.to_string()))?;
-        sandbox.instance.close()
+        let result = sandbox.instance.close();
+        self.release_sandbox_mount(id, sandbox.mount);
+        result
     }
 }

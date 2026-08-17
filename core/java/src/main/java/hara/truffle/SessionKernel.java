@@ -357,6 +357,10 @@ final class SessionKernel implements AutoCloseable {
         throw new SandboxModel.SandboxException(
             SandboxModel.ErrorCode.BUNDLE_NOT_FOUND, reference.digest());
       }
+      if (!reference.digest().equals(sha256Digest(bytes))) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.BUNDLE_DIGEST_MISMATCH, reference.digest());
+      }
       bundles.put(reference.digest(), bytes);
     }
     FilesystemMount mount = null;
@@ -383,6 +387,15 @@ final class SessionKernel implements AutoCloseable {
       throw error;
     }
     return id;
+  }
+
+  private static String sha256Digest(byte[] bytes) {
+    try {
+      byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+      return "sha256:" + java.util.HexFormat.of().formatHex(digest);
+    } catch (java.security.NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 is required", error);
+    }
   }
 
   private void releaseSandboxMount(

@@ -7,7 +7,7 @@ fn native_sandbox_surface_uses_the_broker_kernel() {
     install_native_kernel(&mut runtime, broker);
     let sandbox = runtime
         .eval_native(
-            "(deref (Sandbox/open {:protocol \"hara.sandbox/0-alpha\" :provider :in-process :runtime \"hara.standard/0-alpha\" :entry-namespace \"user\"}))",
+            "(deref (Sandbox/open {:protocol \"hara.sandbox/0-alpha\" :provider :in-process :runtime \"hara.standard/0-alpha\" :entry-namespace 'user :bundles [] :mount nil :provider-options {} :limits {:source-bytes 65536 :result-bytes 1048576 :output-bytes 1048576 :evaluation-ms 5000 :memory-bytes 67108864 :active-evaluations 1}}))",
         )
         .unwrap();
     assert_eq!(sandbox, "1");
@@ -19,18 +19,49 @@ fn native_sandbox_surface_uses_the_broker_kernel() {
     );
     assert_eq!(
         runtime
-            .eval_native("(deref (Sandbox/call 1 \"std.foundation/+\" [1 2 3]))")
+            .eval_native("(deref (Sandbox/call 1 'std.foundation/+ [1 2 3]))")
             .unwrap(),
         "6"
     );
     assert_eq!(
-        runtime.eval_native("(:secure (Sandbox/status 1))").unwrap(),
+        runtime
+            .eval_native("(:sandbox/secure (Sandbox/status 1))")
+            .unwrap(),
         "false"
     );
     assert_eq!(
         runtime.eval_native("(deref (Sandbox/close 1))").unwrap(),
         "nil"
     );
+    assert_eq!(
+        runtime
+            .eval_native(
+                "(try (deref (Sandbox/open {:unknown true})) (catch Throwable error (:error/code (ex-data error))))",
+            )
+            .unwrap(),
+        ":sandbox/invalid-spec"
+    );
+}
+
+#[test]
+fn promise_cancellation_targets_the_original_evaluation_id() {
+    let broker = RuntimeBroker::start_core().unwrap();
+    let sandbox = broker
+        .sandbox_open(crate::SandboxSpec::in_process())
+        .unwrap();
+    let (first, first_result) = broker.sandbox_eval_receiver(sandbox, "1").unwrap();
+    assert_eq!(first_result.recv().unwrap().unwrap(), "1");
+    let (second, second_result) = broker
+        .sandbox_eval_receiver(sandbox, "(loop [] (recur))")
+        .unwrap();
+    assert!(!broker.sandbox_cancel_evaluation(sandbox, first).unwrap());
+    assert_eq!(
+        broker.sandbox_status(sandbox).unwrap().state,
+        crate::SandboxState::Running
+    );
+    assert!(broker.sandbox_cancel_evaluation(sandbox, second).unwrap());
+    assert!(second_result.recv().unwrap().is_err());
+    broker.sandbox_close(sandbox).unwrap();
 }
 
 #[test]

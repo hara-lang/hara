@@ -123,7 +123,10 @@ final class SandboxModel {
 
   record BundleReference(String digest, String format) {
     BundleReference {
-      if (digest == null || digest.isEmpty() || format == null || format.isEmpty()) {
+      if (digest == null
+          || !digest.matches("sha256:[0-9a-f]{64}")
+          || format == null
+          || format.isEmpty()) {
         throw new SandboxException(ErrorCode.INVALID_SPEC, "invalid sandbox bundle reference");
       }
     }

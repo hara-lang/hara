@@ -129,6 +129,11 @@ final class InProcessSandboxProvider implements SandboxProvider {
                 ? terminalError(evaluation)
                 : error instanceof SandboxModel.SandboxException sandboxError
                     ? sandboxError
+                    : error.getMessage() != null
+                            && error.getMessage().contains("SESSION_TRANSFER_REJECTED")
+                        ? new SandboxModel.SandboxException(
+                            SandboxModel.ErrorCode.RESULT_NOT_TRANSFERABLE,
+                            "sandbox result is not transferable")
                     : new SandboxModel.SandboxException(
                         SandboxModel.ErrorCode.EVALUATION_FAILED,
                         error.getMessage() == null ? error.getClass().getName() : error.getMessage());

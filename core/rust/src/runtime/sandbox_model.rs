@@ -67,6 +67,35 @@ pub struct SandboxLimits {
     pub active_evaluations: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxBundleReference {
+    pub digest: String,
+    pub format: String,
+}
+
+impl SandboxBundleReference {
+    pub fn new(digest: impl Into<String>, format: impl Into<String>) -> Result<Self, SandboxError> {
+        let reference = Self {
+            digest: digest.into(),
+            format: format.into(),
+        };
+        let digest = reference.digest.strip_prefix("sha256:");
+        if !digest.is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        }) || reference.format.is_empty()
+        {
+            Err(SandboxError::invalid_spec(
+                "invalid sandbox bundle reference",
+            ))
+        } else {
+            Ok(reference)
+        }
+    }
+}
+
 impl Default for SandboxLimits {
     fn default() -> Self {
         Self {
@@ -86,6 +115,9 @@ pub struct SandboxSpec {
     provider: String,
     runtime: String,
     entry_namespace: String,
+    bundles: Vec<SandboxBundleReference>,
+    mount: Option<SessionMountId>,
+    provider_options_hta: Vec<u8>,
     limits: SandboxLimits,
 }
 
@@ -102,6 +134,33 @@ impl SandboxSpec {
             provider: provider.into(),
             runtime: runtime.into(),
             entry_namespace: entry_namespace.into(),
+            bundles: Vec::new(),
+            mount: None,
+            provider_options_hta: Vec::new(),
+            limits,
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
+
+    pub fn with_inputs(
+        protocol: impl Into<String>,
+        provider: impl Into<String>,
+        runtime: impl Into<String>,
+        entry_namespace: impl Into<String>,
+        bundles: Vec<SandboxBundleReference>,
+        mount: Option<SessionMountId>,
+        provider_options_hta: Vec<u8>,
+        limits: SandboxLimits,
+    ) -> Result<Self, SandboxError> {
+        let spec = Self {
+            protocol: protocol.into(),
+            provider: provider.into(),
+            runtime: runtime.into(),
+            entry_namespace: entry_namespace.into(),
+            bundles,
+            mount,
+            provider_options_hta,
             limits,
         };
         spec.validate()?;
@@ -114,6 +173,9 @@ impl SandboxSpec {
             provider: "in-process".into(),
             runtime: "hara.standard/0-alpha".into(),
             entry_namespace: "user".into(),
+            bundles: Vec::new(),
+            mount: None,
+            provider_options_hta: Vec::new(),
             limits: SandboxLimits::default(),
         }
     }
@@ -152,6 +214,18 @@ impl SandboxSpec {
     pub fn limits(&self) -> &SandboxLimits {
         &self.limits
     }
+
+    pub fn bundles(&self) -> &[SandboxBundleReference] {
+        &self.bundles
+    }
+
+    pub const fn mount(&self) -> Option<SessionMountId> {
+        self.mount
+    }
+
+    pub fn provider_options_hta(&self) -> &[u8] {
+        &self.provider_options_hta
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,6 +259,30 @@ pub enum SandboxErrorCode {
     Unsupported,
 }
 
+impl SandboxErrorCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidSpec => "sandbox/invalid-spec",
+            Self::ProviderNotFound => "sandbox/provider-not-found",
+            Self::ProviderUnavailable => "sandbox/provider-unavailable",
+            Self::BundleNotFound => "sandbox/bundle-not-found",
+            Self::BundleDigestMismatch => "sandbox/bundle-digest-mismatch",
+            Self::MountNotFound => "sandbox/mount-not-found",
+            Self::NotFound => "sandbox/not-found",
+            Self::Closed => "sandbox/not-found",
+            Self::Busy => "sandbox/busy",
+            Self::Cancelled => "sandbox/cancelled",
+            Self::Timeout => "sandbox/timeout",
+            Self::LimitExceeded => "sandbox/limit-exceeded",
+            Self::EvaluationFailed => "sandbox/evaluation-failed",
+            Self::ResultNotTransferable => "sandbox/result-not-transferable",
+            Self::TransportFailed => "sandbox/transport-failed",
+            Self::ProviderFailed => "sandbox/provider-failed",
+            Self::Unsupported => "sandbox/provider-unavailable",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SandboxError {
     pub code: SandboxErrorCode,
@@ -192,21 +290,21 @@ pub struct SandboxError {
 }
 
 impl SandboxError {
-    fn new(code: SandboxErrorCode, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: SandboxErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
         }
     }
 
-    fn invalid_spec(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_spec(message: impl Into<String>) -> Self {
         Self::new(SandboxErrorCode::InvalidSpec, message)
     }
 }
 
 impl fmt::Display for SandboxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{:?}: {}", self.code, self.message)
+        write!(formatter, "{}: {}", self.code.as_str(), self.message)
     }
 }
 

@@ -446,6 +446,7 @@ public final class HaraContext {
     HaraNamespace foundation = namespace(FOUNDATION_NAMESPACE);
     NATIVE_TYPES.forEach(
         (name, methods) -> {
+          if (sandboxRestricted && sandboxForbiddenNamespace("std.native." + name)) return;
           String canonicalName = "std.native." + name;
           HaraVar descriptor =
               intrinsic.define(canonicalName, new HaraNativeType(name, methods));
@@ -892,12 +893,17 @@ public final class HaraContext {
     Map<String, String> namespaceAliases =
         aliases.computeIfAbsent(target.name(), ignored -> new ConcurrentHashMap<>());
     NATIVE_TYPES.keySet().forEach(
-        name -> putAlias(namespaceAliases, name, "std.native." + name));
+        name -> {
+          if (!sandboxRestricted || !sandboxForbiddenNamespace("std.native." + name)) {
+            putAlias(namespaceAliases, name, "std.native." + name);
+          }
+        });
   }
 
   private void referNativeTypeDescriptors(HaraNamespace target) {
     HaraNamespace intrinsic = namespace(INTRINSIC_NAMESPACE);
     for (String name : NATIVE_TYPES.keySet()) {
+      if (sandboxRestricted && sandboxForbiddenNamespace("std.native." + name)) continue;
       HaraVar descriptor = intrinsic.lookup(name);
       if (descriptor == null) continue;
       if (target.lookup(name) == null) target.refer(name, descriptor);
@@ -1520,7 +1526,7 @@ public final class HaraContext {
     String namespace = symbol.getNamespace();
     if (namespace != null) return sandboxForbiddenNamespace(namespace);
     return switch (symbol.getName()) {
-      case "Runtime", "Kernel", "Sandbox", "File", "Socket", "Process", "OS", "Package", "Host" -> true;
+      case "Runtime", "Kernel", "Sandbox", "Package", "Crypto", "OS", "Process", "File", "Socket", "Host" -> true;
       default -> false;
     };
   }
@@ -1530,6 +1536,7 @@ public final class HaraContext {
       case "std.native.Runtime",
           "std.native.Kernel",
           "std.native.Sandbox",
+          "std.native.Crypto",
           "std.native.File",
           "std.native.Socket",
           "std.native.Process",
@@ -3781,10 +3788,7 @@ public final class HaraContext {
         "open",
         new UnaryBuiltin(
             "std.native.Sandbox/open",
-            value ->
-                promiseValue(
-                    CompletableFuture.completedFuture(
-                        sessionKernel.openSandbox(sandboxSpec(value)).value()))));
+            value -> sandboxPromise(() -> sessionKernel.openSandbox(sandboxSpec(value)).value())));
     sandbox.define(
         "eval",
         new VariadicBuiltin(
@@ -3792,37 +3796,51 @@ public final class HaraContext {
             values -> {
               if (values.length != 2 || !(HaraBox.unwrap(values[1]) instanceof String text))
                 throw new HaraException("std.native.Sandbox/eval expects source text");
-              SandboxProvider.Pending<Object> pending =
-                  sessionKernel.sandboxEval(sandboxId(values[0]), text);
-              return cancellablePromise(pending.future(), pending::cancel);
+              try {
+                SandboxProvider.Pending<Object> pending =
+                    sessionKernel.sandboxEval(sandboxId(values[0]), text);
+                return sandboxPromise(pending);
+              } catch (SandboxModel.SandboxException error) {
+                return sandboxRejected(error);
+              }
             }));
     sandbox.define(
         "call",
         new VariadicBuiltin(
             "std.native.Sandbox/call",
             values -> {
-              if (values.length != 3 || !(HaraBox.unwrap(values[1]) instanceof String callable))
+              Object callableValue = values.length > 1 ? HaraBox.unwrap(values[1]) : null;
+              if (values.length != 3
+                  || !(callableValue instanceof Symbol callableSymbol)
+                  || callableSymbol.getNamespace() == null)
                 throw new HaraException(
-                    "std.native.Sandbox/call expects an id, callable, and argument vector");
+                    "std.native.Sandbox/call expects an id, qualified symbol, and argument vector");
+              String callable = callableSymbol.display();
               Object rawArguments = HaraBox.unwrap(values[2]);
               if (!(rawArguments instanceof hara.lang.data.types.ILinearType<?> arguments))
                 throw new HaraException("std.native.Sandbox/call expects an argument vector");
               ArrayList<Object> transferred = new ArrayList<>();
               for (int index = 0; index < arguments.count(); index++) {
-                transferred.add(arguments.nth(index));
+                Object argument = arguments.nth(index);
+                if (!sandboxPortable(argument)) {
+                  throw new HaraException(
+                      "std.native.Sandbox/call arguments must be immutable portable values");
+                }
+                transferred.add(argument);
               }
-              SandboxProvider.Pending<Object> pending =
-                  sessionKernel.sandboxCall(sandboxId(values[0]), callable, transferred);
-              return cancellablePromise(pending.future(), pending::cancel);
+              try {
+                SandboxProvider.Pending<Object> pending =
+                    sessionKernel.sandboxCall(sandboxId(values[0]), callable, transferred);
+                return sandboxPromise(pending);
+              } catch (SandboxModel.SandboxException error) {
+                return sandboxRejected(error);
+              }
             }));
     sandbox.define(
         "cancel",
         new UnaryBuiltin(
             "std.native.Sandbox/cancel",
-            id ->
-                promiseValue(
-                    CompletableFuture.completedFuture(
-                        sessionKernel.cancelSandbox(sandboxId(id))))));
+            id -> sandboxPromise(() -> sessionKernel.cancelSandbox(sandboxId(id)))));
     sandbox.define(
         "status",
         new UnaryBuiltin(
@@ -3832,10 +3850,79 @@ public final class HaraContext {
         "close",
         new UnaryBuiltin(
             "std.native.Sandbox/close",
-            id -> {
-              sessionKernel.closeSandbox(sandboxId(id));
-              return promiseValue(CompletableFuture.completedFuture(null));
-            }));
+            id ->
+                sandboxPromise(
+                    () -> {
+                      sessionKernel.closeSandbox(sandboxId(id));
+                      return null;
+                    })));
+  }
+
+  private Object sandboxPromise(java.util.function.Supplier<Object> operation) {
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    try {
+      future.complete(operation.get());
+    } catch (SandboxModel.SandboxException error) {
+      future.completeExceptionally(sandboxException(error));
+    }
+    return promiseValue(future);
+  }
+
+  private Object sandboxRejected(SandboxModel.SandboxException error) {
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    future.completeExceptionally(sandboxException(error));
+    return promiseValue(future);
+  }
+
+  private Object sandboxPromise(SandboxProvider.Pending<Object> pending) {
+    CompletableFuture<Object> structured =
+        pending
+            .future()
+            .handle(
+                (value, failure) -> {
+                  if (failure == null) return value;
+                  Throwable cause =
+                      failure instanceof CompletionException && failure.getCause() != null
+                          ? failure.getCause()
+                          : failure;
+                  if (cause instanceof SandboxModel.SandboxException sandboxError) {
+                    throw new CompletionException(sandboxException(sandboxError));
+                  }
+                  if (cause instanceof RuntimeException runtime) throw runtime;
+                  throw new CompletionException(cause);
+                });
+    return cancellablePromise(structured, pending::cancel);
+  }
+
+  private static hara.lang.base.Ex.Info sandboxException(
+      SandboxModel.SandboxException error) {
+    Object data =
+        HaraPersistentValues.normalize(
+            java.util.Map.of(
+                Keyword.create("error/code"),
+                Keyword.create(sandboxErrorCode(error.code()))));
+    return new hara.lang.base.Ex.Info(
+        error.getMessage(), (hara.lang.protocol.IMetadata) data, error);
+  }
+
+  private static String sandboxErrorCode(SandboxModel.ErrorCode code) {
+    return switch (code) {
+      case INVALID_SPEC -> "sandbox/invalid-spec";
+      case PROVIDER_NOT_FOUND -> "sandbox/provider-not-found";
+      case PROVIDER_UNAVAILABLE, UNSUPPORTED -> "sandbox/provider-unavailable";
+      case BUNDLE_NOT_FOUND -> "sandbox/bundle-not-found";
+      case BUNDLE_DIGEST_MISMATCH -> "sandbox/bundle-digest-mismatch";
+      case MOUNT_NOT_FOUND -> "sandbox/mount-not-found";
+      case NOT_FOUND, CLOSED -> "sandbox/not-found";
+      case BUSY -> "sandbox/busy";
+      case CANCELLED -> "sandbox/cancelled";
+      case TIMEOUT -> "sandbox/timeout";
+      case LIMIT_EXCEEDED -> "sandbox/limit-exceeded";
+      case EVALUATION_FAILED -> "sandbox/evaluation-failed";
+      case RESULT_NOT_TRANSFERABLE -> "sandbox/result-not-transferable";
+      case TRANSPORT_FAILED -> "sandbox/transport-failed";
+      case PROVIDER_FAILED -> "sandbox/provider-failed";
+    };
   }
 
   private static SandboxModel.SandboxId sandboxId(Object value) {
@@ -3861,15 +3948,27 @@ public final class HaraContext {
         throw new SandboxModel.SandboxException(
             SandboxModel.ErrorCode.INVALID_SPEC, "unknown sandbox spec key " + key);
     }
-    String protocol = sandboxString(map, "protocol", SandboxModel.SPEC_PROTOCOL);
-    String provider = sandboxString(map, "provider", "in-process");
-    String runtime = sandboxString(map, "runtime", "hara.standard/0-alpha");
-    String entry = sandboxString(map, "entry-namespace", "user");
+    if (map.count() != allowed.size()) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "SandboxSpec requires exactly eight keys");
+    }
+    Object protocolValue = HaraBox.unwrap(map.lookup(Keyword.create("protocol")));
+    if (!(protocolValue instanceof String protocol)) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "protocol must be a string");
+    }
+    String provider = sandboxString(map, "provider", null);
+    String runtime = sandboxString(map, "runtime", null);
+    if (provider == null || runtime == null) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "provider and runtime are required");
+    }
+    String entry = sandboxEntryNamespace(map);
     java.util.List<SandboxModel.BundleReference> bundles = sandboxBundles(map);
     SessionModel.SessionMountId mount = sandboxMount(map);
     Object providerOptions = map.lookup(Keyword.create("provider-options"));
-    if (providerOptions == null) providerOptions = HaraPersistentValues.normalize(java.util.Map.of());
-    if (!(HaraBox.unwrap(providerOptions) instanceof hara.lang.data.types.IMapType)) {
+    if (!(HaraBox.unwrap(providerOptions) instanceof hara.lang.data.types.IMapType)
+        || !sandboxPortable(providerOptions)) {
       throw new SandboxModel.SandboxException(
           SandboxModel.ErrorCode.INVALID_SPEC, "provider-options must be an immutable map");
     }
@@ -3885,10 +3984,51 @@ public final class HaraContext {
   }
 
   @SuppressWarnings("rawtypes")
+  private static String sandboxEntryNamespace(hara.lang.data.types.IMapType map) {
+    Object value = HaraBox.unwrap(map.lookup(Keyword.create("entry-namespace")));
+    if (value instanceof Symbol symbol && symbol.getNamespace() == null) return symbol.display();
+    throw new SandboxModel.SandboxException(
+        SandboxModel.ErrorCode.INVALID_SPEC, "entry-namespace must be an unqualified symbol");
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static boolean sandboxPortable(Object value) {
+    Object input = HaraBox.unwrap(value);
+    if (input == null
+        || input instanceof Boolean
+        || input instanceof String
+        || input instanceof Number
+        || input instanceof Character
+        || input instanceof Keyword
+        || input instanceof Symbol) return true;
+    if (input instanceof hara.lang.data.types.IMapType map) {
+      for (Object item : map) {
+        java.util.Map.Entry entry = (java.util.Map.Entry) item;
+        if (!sandboxPortable(entry.getKey()) || !sandboxPortable(entry.getValue())) return false;
+      }
+      return true;
+    }
+    if (input instanceof hara.lang.data.types.ILinearType<?> values) {
+      for (int index = 0; index < values.count(); index++) {
+        if (!sandboxPortable(values.nth(index))) return false;
+      }
+      return true;
+    }
+    if (input instanceof hara.lang.data.types.ISetType<?> values) {
+      for (Object item : values) if (!sandboxPortable(item)) return false;
+      return true;
+    }
+    return false;
+  }
+
+  @SuppressWarnings("rawtypes")
   private static java.util.List<SandboxModel.BundleReference> sandboxBundles(
       hara.lang.data.types.IMapType spec) {
     Object raw = HaraBox.unwrap(spec.lookup(Keyword.create("bundles")));
-    if (raw == null) return java.util.List.of();
+    if (raw == null) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "bundles must be a vector");
+    }
     if (!(raw instanceof hara.lang.data.types.ILinearType<?> bundles)) {
       throw new SandboxModel.SandboxException(
           SandboxModel.ErrorCode.INVALID_SPEC, "bundles must be a vector");
@@ -3923,7 +4063,10 @@ public final class HaraContext {
   private static SandboxModel.SandboxLimits sandboxLimits(
       hara.lang.data.types.IMapType spec) {
     Object raw = HaraBox.unwrap(spec.lookup(Keyword.create("limits")));
-    if (raw == null) return SandboxModel.SandboxLimits.defaults();
+    if (raw == null) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "limits must be a map");
+    }
     if (!(raw instanceof hara.lang.data.types.IMapType limits)) {
       throw new SandboxModel.SandboxException(
           SandboxModel.ErrorCode.INVALID_SPEC, "limits must be a map");
@@ -3938,6 +4081,10 @@ public final class HaraContext {
         throw new SandboxModel.SandboxException(
             SandboxModel.ErrorCode.INVALID_SPEC, "unknown sandbox limit " + entry.getKey());
       }
+    }
+    if (limits.count() != allowed.size()) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "limits require exactly six keys");
     }
     SandboxModel.SandboxLimits defaults = SandboxModel.SandboxLimits.defaults();
     return new SandboxModel.SandboxLimits(
