@@ -57,7 +57,56 @@ jobs:
           cache: maven
           cache-dependency-path: hara/core/java/pom.xml
 
-      # Retriggered after the raw-WASM filesystem prerequisite landed on main.
+      - name: Adapt validation driver to the current HAL test entrypoint
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("builder/scripts/agent-650-run-sync-std-fs-v3.sh")
+          source = path.read_text()
+          old = '''cargo build --manifest-path core/rust/Cargo.toml --bin hara --bin hara-test
+          HARA=core/rust/target/debug/hara
+          HARA_TEST=core/rust/target/debug/hara-test
+          "$HARA" --version
+          '''
+          new = '''cargo build --manifest-path core/rust/Cargo.toml --bin hara-test
+          HARA_TEST="$REPO/core/rust/target/debug/hara-test"
+
+          run_hal() {
+            local selected
+            local files=()
+            for selected in "$@"; do
+              if [[ "$selected" = /* ]]; then
+                files+=("$selected")
+              else
+                files+=("$REPO/$selected")
+              fi
+            done
+            "$HARA_TEST" --root "$REPO/core" "${files[@]}"
+          }
+          '''
+          if old not in source:
+              raise SystemExit("current runner bootstrap block not found")
+          source = source.replace(old, new, 1)
+          source = re.sub(
+              r'"\$HARA" --project core --offline stdin < "([^\n]+)"',
+              r'run_hal "\1"',
+              source,
+          )
+          source = re.sub(
+              r'"\$HARA" --offline run ([^\n]+)',
+              r'run_hal \1',
+              source,
+          )
+          source = source.replace('"$HARA_TEST" --root core', 'run_hal')
+          if '"$HARA"' in source:
+              raise SystemExit("stale Hara CLI invocation remains")
+          path.write_text(source)
+          PY
+          bash -n builder/scripts/agent-650-run-sync-std-fs-v3.sh
+
       - name: Build, verify, and publish synchronous std.fs
         shell: bash
         run: bash builder/scripts/agent-650-run-sync-std-fs-v3.sh hara hara-specs-registry
