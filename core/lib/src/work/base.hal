@@ -1,13 +1,33 @@
 (ns work.base
   (:config {:override [filter]})
-  (:require [std.work.protocol :as protocol]
+  (:require [work.flow :as flow]
+            [std.work.protocol :as protocol]
             [work.base.runtime :as runtime]
             [work.base.result :as async-result]))
+
+(declare &env)
 
 ;; Canonical public surface for the portable work algebra and managed runtime.
 ;; Internal std.work.* namespaces move in later migration slices; keeping their
 ;; implementations in place here preserves protocol and persisted-value
 ;; identity while callers adopt the work.* namespace family.
+
+(defmacro def.work
+  "Defines one named value through an explicitly registered workflow path."
+  [definition-name path definition]
+  (if (not (symbol? definition-name))
+    (throw
+     (ex-info "def.work requires a symbol name"
+              {:work/name definition-name})))
+  (let [path (flow/assert-flow-path! path)
+        namespace (get &env :ns)
+        qualified-name
+        (symbol (str namespace) (name definition-name))]
+    `(def ~definition-name
+       (work.flow/define-work!
+        (quote ~qualified-name)
+        ~path
+        ~definition))))
 
 (defn work-spec
   [work]

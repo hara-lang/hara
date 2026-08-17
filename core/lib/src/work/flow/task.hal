@@ -2,8 +2,6 @@
   (:require [work.flow :as flow]
             [std.work.template.task :as template]))
 
-(declare &env)
-
 (def path [:task])
 
 (defn profile-definition-options
@@ -14,19 +12,14 @@
     (flow/merge-options defaults direct)))
 
 (defn normalise
-  [profile qualified-name raw-definition declaration-body]
+  [profile qualified-name raw-definition]
   (if (not (map? raw-definition))
     (throw
      (ex-info "Task workflow definition must be a map"
               {:workflow/name qualified-name
                :workflow/definition raw-definition})))
   (let [options (profile-definition-options profile)
-        raw-definition (dissoc raw-definition :workflow)
-        definition (flow/merge-options options raw-definition)
-        definition
-        (if (empty? declaration-body)
-          definition
-          (assoc definition :task/declaration-body declaration-body))]
+        definition (flow/merge-options options raw-definition)]
     (if (or (:task/id definition) (:id definition))
       definition
       (assoc definition :task/id qualified-name))))
@@ -61,45 +54,6 @@
    :flow/invoke invoke})
 
 (flow/register! +flow+)
-
-(defn definition-path
-  [raw-definition]
-  (let [selected (or (:workflow raw-definition) path)]
-    (flow/assert-flow-path! selected)))
-
-(defn define-task!
-  [namespace qualified-name raw-definition declaration-body]
-  (let [selected (definition-path raw-definition)
-        profile (flow/profile-for namespace selected)]
-    (flow/define! profile
-                  qualified-name
-                  raw-definition
-                  declaration-body)))
-
-(defmacro def.task
-  "Defines one callable task using its namespace-local workflow profile."
-  [definition-name definition & declaration-body]
-  (if (not (symbol? definition-name))
-    (throw
-     (ex-info "def.task requires a symbol name"
-              {:task/name definition-name})))
-  (let [namespace (get &env :ns)
-        qualified-name
-        (symbol (str namespace) (name definition-name))]
-    `(def ~definition-name
-       (work.flow.task/define-task!
-        (quote ~namespace)
-        (quote ~qualified-name)
-        ~definition
-        (quote ~declaration-body)))))
-
-(defmacro deftask
-  "Compatibility alias for def.task."
-  [definition-name definition & declaration-body]
-  `(work.flow.task/def.task
-    ~definition-name
-    ~definition
-    ~@declaration-body))
 
 (def request template/request)
 (def invocation template/invocation)

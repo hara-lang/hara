@@ -1,54 +1,50 @@
 (ns work.flow.task-test
-  (:require [work.flow :as flow :refer [def.workflow]]
-            [work.flow.task :as task :refer [def.task deftask]]
-            [work.base :as work]))
+  (:require [work.flow :as flow]
+            [work.flow.task :as task]
+            [work.base :as work :refer [def.work]]))
 
-(def.workflow
-  [:task]
-  {:defaults
-   {:return {:select :results
-             :package :map}}})
+(defn test-check
+  [name actual expected]
+  {:name name
+   :actual actual
+   :expected expected
+   :pass (= actual expected)})
 
 (defn lint-project
   [input]
   (* 2 input))
 
-(def.task lint
-  {:main {:fn lint-project
+(def.work lint
+  [:task]
+  {:return {:select :results
+            :package :map}
+   :main {:fn lint-project
           :argcount 1}})
 
 (def first-lint lint)
 
-(def.task lint
-  {:main {:fn (fn [input]
+(def.work lint
+  [:task]
+  {:return {:select :results
+            :package :map}
+   :main {:fn (fn [input]
                 (* 3 input))
           :argcount 1}})
 
-(def.workflow
-  [:task :summary]
-  {:extends [:task]
-   :return {:select :summary}
-   :flow/remove [[:defaults :return :package]]})
-
-(def.task summary-task
-  {:workflow [:task :summary]
+(def.work summary-task
+  [:task]
+  {:return {:select :summary}
    :main {:fn lint-project
-          :argcount 1}})
-
-(deftask compatibility-task
-  {:main {:fn lint-project
           :argcount 1}})
 
 (def results
   [(test-check
-    "def.workflow installs a namespace-local task profile"
-    [(:workflow/path +workflow-task+)
-     (get-in +workflow-task+ [:workflow/options :defaults :return :select])
-     (flow/profile? +workflow-task+)]
-    [[:task] :results true])
+    "task flows register themselves for def.work"
+    (:flow/path (flow/registered-flow [:task]))
+    [:task])
 
    (test-check
-    "def.task compiles a callable historical task definition"
+    "def.work compiles a callable task definition"
     [(lint 4)
      (task/task-work? lint)]
     [{4 12} true])
@@ -62,31 +58,61 @@
     [true true])
 
    (test-check
-    "task profiles inherit and explicitly remove nested defaults"
-    [(:workflow/extends +workflow-task-summary+)
-     (get-in +workflow-task-summary+
-             [:workflow/options :return :select])
-     (get-in +workflow-task-summary+
-             [:workflow/options :defaults :return :package])
-     (get-in (work/work-spec summary-task)
+    "task definitions override descriptor defaults locally"
+    [(get-in (work/work-spec summary-task)
              [:template/definition :return :select])]
-    [[:task] :summary nil :summary])
+    [:summary])
 
    (test-check
-    "deftask remains a thin def.task compatibility alias"
-    (task/task-work? compatibility-task)
+    "family-specific task declarations are removed"
+    [(nil? (resolve 'work.flow.task/def.task))
+     (nil? (resolve 'work.flow.task/deftask))]
+    [true true])
+
+   (test-check
+    "named tasks can use the registered descriptor directly"
+    (let [work-value
+          (flow/define-work!
+           'another.namespace/increment
+           [:task]
+           {:main {:fn (fn [input] (inc input))
+                   :argcount 1}})]
+      (work-value 5))
+    {5 6})
+
+   (test-check
+    "the flow path cannot be hidden inside a definition"
+    (try
+      (do
+        (flow/define-work!
+         'another.namespace/invalid
+         [:task]
+         {:workflow [:task]
+          :main {:fn identity :argcount 1}})
+        false)
+      (catch Throwable error
+        (= 'another.namespace/invalid
+           (:workflow/name (ex-data error)))))
     true)
 
    (test-check
-    "named tasks can use the registered default without local activation"
-    (let [work-value
-          (task/define-task!
-           'another.namespace
-           'another.namespace/increment
-           {:main {:fn (fn [input] (inc input))
-                   :argcount 1}}
-           [])]
-      (work-value 5))
-    {5 6})])
+    "unregistered flow paths fail with the requested path"
+    (try
+      (do
+        (flow/define-work! 'another.namespace/missing [:missing] {})
+        false)
+      (catch Throwable error
+        (= [:missing] (:workflow/path (ex-data error)))))
+    true)
+
+   (test-check
+    "def.work validates names and paths during expansion"
+    [(try
+       (do (macroexpand '(def.work :invalid [:task] {})) false)
+       (catch Throwable error true))
+     (try
+       (do (macroexpand '(def.work invalid [] {})) false)
+       (catch Throwable error true))]
+    [true true])])
 
 results

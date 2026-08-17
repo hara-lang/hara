@@ -1,11 +1,6 @@
 (ns work.flow)
 
-(declare &env)
-
 (def +flows+
-  (atom {}))
-
-(def +profiles+
   (atom {}))
 
 (def +definitions+
@@ -169,10 +164,6 @@
             flow
             (recur (parent-path candidate))))))))
 
-(defn profile-key
-  [namespace path]
-  [namespace (assert-flow-path! path)])
-
 (defn profile-parent-path
   [path flow overrides]
   (let [selected (or (:extends overrides)
@@ -184,7 +175,11 @@
 
 (defn profile-cycle?
   [path ancestry]
-  (some (fn [candidate] (= path candidate)) ancestry))
+  (reduce
+   (fn [found candidate]
+     (or found (= path candidate)))
+   false
+   ancestry))
 
 (defn profile-options
   [flow parent-profile overrides]
@@ -211,7 +206,7 @@
       options)))
 
 (defn configure-for*
-  [namespace path overrides ancestry]
+  [path overrides ancestry]
   (let [path (assert-flow-path! path)
         overrides (or overrides {})]
     (if (not (map? overrides))
@@ -226,17 +221,11 @@
                  :workflow/ancestry ancestry})))
     (let [flow (resolve-flow path)
           parent (profile-parent-path path flow overrides)
-          installed-parent
-          (if (and namespace parent)
-            (get (deref +profiles+) (profile-key namespace parent))
-            nil)
           parent-profile
           (if parent
-            (or installed-parent
-                (configure-for* namespace
-                                parent
-                                {}
-                                (conj ancestry path)))
+            (configure-for* parent
+                            {}
+                            (conj ancestry path))
             nil)
           options (profile-options flow parent-profile overrides)]
       {:workflow/path path
@@ -247,7 +236,7 @@
 (defn configure
   "Creates one immutable workflow profile, including inherited defaults."
   [path & [overrides]]
-  (configure-for* nil path (or overrides {}) []))
+  (configure-for* path (or overrides {}) []))
 
 (defn profile?
   [value]
@@ -255,30 +244,6 @@
        (flow-path? (:workflow/path value))
        (map? (:workflow/flow value))
        (map? (:workflow/options value))))
-
-(defn install-profile!
-  "Installs a namespace-local workflow profile.
-
-   Installed parent profiles are preferred when configuring child paths, so
-   packages can extend local policy without using a process-global defaults
-   registry."
-  [namespace path & [overrides]]
-  (let [profile (configure-for* namespace path (or overrides {}) [])]
-    (swap! +profiles+
-           assoc
-           (profile-key namespace path)
-           profile)
-    profile))
-
-(defn profile-for
-  "Returns the installed namespace profile or configures a default profile."
-  [namespace path]
-  (or (get (deref +profiles+) (profile-key namespace path))
-      (configure-for* namespace path {} [])))
-
-(defn profiles
-  []
-  (deref +profiles+))
 
 (defn definition
   "Returns the last installed workflow definition for qualified-name."
@@ -294,7 +259,7 @@
 
    The definitions registry is updated only after every flow-specific stage
    succeeds, so a failed redefinition leaves the prior installed value intact."
-  [profile qualified-name raw-definition declaration-body]
+  [profile qualified-name raw-definition]
   (if (not (profile? profile))
     (throw
      (ex-info "Workflow definition requires a configured profile"
@@ -302,7 +267,7 @@
                :workflow/name qualified-name})))
   (let [flow (:workflow/flow profile)
         normalise-function (or (:flow/normalise flow)
-                               (fn [profile name definition body]
+                               (fn [profile name definition]
                                  definition))
         compile-function (:flow/compile flow)
         reconcile-function (or (:flow/reconcile flow)
@@ -311,8 +276,7 @@
         definition
         (normalise-function profile
                             qualified-name
-                            raw-definition
-                            declaration-body)
+                            raw-definition)
         candidate (compile-function profile definition)
         previous (get (deref +definitions+) qualified-name)
         installed
@@ -323,45 +287,17 @@
     (swap! +definitions+ assoc qualified-name installed)
     installed))
 
-(defn path-fragment
-  [path]
-  (reduce
-   (fn [output value]
-     (if (= "" output)
-       (name value)
-       (str output "-" (name value))))
-   ""
-   path))
-
-(defn profile-symbol
-  [path]
-  (symbol (str "+workflow-" (path-fragment path) "+")))
-
-(defmacro def.workflow
-  "Activates and optionally customises one namespace-local workflow profile.
-
-   (def.workflow [:task])
-   (def.workflow [:task] profile-overrides)
-
-   Named declarations belong to family-specific forms such as def.task and
-   def.make."
-  [path & arguments]
-  (let [path (assert-flow-path! path)
-        namespace (get &env :ns)
-        total (count arguments)
-        overrides
-        (cond
-          (= total 0) {}
-          (and (= total 1)
-               (map? (first arguments)))
-          (first arguments)
-          :else
-          (throw
-           (ex-info "def.workflow accepts a path and optional override map"
-                    {:workflow/path path
-                     :workflow/arguments arguments})))
-        profile-name (profile-symbol path)]
-    `(def ~profile-name
-       (work.flow/install-profile! (quote ~namespace)
-                                   ~path
-                                   ~overrides))))
+(defn define-work!
+  "Defines one named value through a registered workflow descriptor."
+  [qualified-name path raw-definition]
+  (let [path (assert-flow-path! path)]
+    (if (and (map? raw-definition)
+             (has? raw-definition :workflow))
+      (throw
+       (ex-info "Workflow path must be supplied to def.work"
+                {:workflow/name qualified-name
+                 :workflow/path path
+                 :workflow/definition raw-definition})))
+    (define! (configure path)
+             qualified-name
+             raw-definition)))

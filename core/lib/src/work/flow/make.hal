@@ -5,8 +5,6 @@
             [work.flow.make.trigger :as trigger]
             [work.base :as work]))
 
-(declare &env)
-
 (def path [:make])
 
 (defn profile-definition-options
@@ -17,19 +15,14 @@
     (flow/merge-options defaults direct)))
 
 (defn normalise
-  [profile qualified-name raw-definition declaration-body]
+  [profile qualified-name raw-definition]
   (if (not (map? raw-definition))
     (throw
      (ex-info "Make workflow definition must be a map"
               {:workflow/name qualified-name
                :workflow/definition raw-definition})))
   (let [options (profile-definition-options profile)
-        raw-definition (dissoc raw-definition :workflow)
-        definition (flow/merge-options options raw-definition)
-        definition
-        (if (empty? declaration-body)
-          definition
-          (assoc definition :make/declaration-body declaration-body))]
+        definition (flow/merge-options options raw-definition)]
     (if (or (:make/id definition) (:id definition))
       (assoc definition :make/id (or (:make/id definition)
                                      (:id definition)))
@@ -86,37 +79,6 @@
    :flow/reconcile reconcile})
 
 (flow/register! +flow+)
-
-(defn definition-path
-  [raw-definition]
-  (let [selected (or (:workflow raw-definition) path)]
-    (flow/assert-flow-path! selected)))
-
-(defn define-make!
-  [namespace qualified-name raw-definition declaration-body]
-  (let [selected (definition-path raw-definition)
-        profile (flow/profile-for namespace selected)]
-    (flow/define! profile
-                  qualified-name
-                  raw-definition
-                  declaration-body)))
-
-(defmacro def.make
-  "Defines one reloadable make host using its namespace-local profile."
-  [definition-name definition & declaration-body]
-  (if (not (symbol? definition-name))
-    (throw
-     (ex-info "def.make requires a symbol name"
-              {:make/name definition-name})))
-  (let [namespace (get &env :ns)
-        qualified-name
-        (symbol (str namespace) (name definition-name))]
-    `(def ~definition-name
-       (work.flow.make/define-make!
-        (quote ~namespace)
-        (quote ~qualified-name)
-        ~definition
-        (quote ~declaration-body)))))
 
 (defn plan
   [make-host]

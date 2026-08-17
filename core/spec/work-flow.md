@@ -1,69 +1,61 @@
-# Workflow definition families
+# Workflow definitions
 
-`work.flow` is the definition-family layer between ordinary declarations and
-ordinary work values. It does not schedule or execute work.
+`work.flow` is the registry and compilation layer between named declarations
+and ordinary work values. It does not schedule or execute work.
 
+```text
+work.base              portable work values and def.work
+work.flow              registered descriptors and atomic redefinition
+work.flow.task         callable task flow
+work.flow.make         reloadable make-plan flow
 ```
-work.base / std.work     primitive work values and runtimes
-work.flow                profile, definition, compile, and reload mechanism
-work.flow.task           historical task declaration family
-work.flow.make           reloadable make-plan declaration family
-```
 
-`std.work` remains the primitive dependency until the `work.base` move is
-complete. The declaration formats introduced here do not depend on that future
-namespace move.
+## Declaration
 
-## Profile activation
-
-A namespace activates and optionally customises a family with `def.workflow`:
+There is one declaration form:
 
 ```clojure
-(def.workflow [:task])
+(ns app.tasks
+  (:require [work.base :refer [def.work]]
+            [work.flow.task]))
 
-(def.workflow
-  [:task :lint]
-  {:extends [:task]
-   :defaults {:execution {:parallel false}}
-   :return {:select :summary}
-   :flow/remove [[:defaults :return :package]]})
-```
-
-Profiles are immutable and namespace-local. Maps deep-merge, scalar values and
-functions replace parent values, `nil` inherits, and `:flow/remove` is the only
-explicit removal operation. A child path resolves the nearest registered flow
-descriptor, so `[:task :lint]` can extend `[:task]` without registering a second
-compiler.
-
-`def.workflow` never defines a task or make value. Named declarations belong to
-the family-specific macro.
-
-## Task declarations
-
-```clojure
-(def.workflow [:task])
-
-(def.task lint
+(def.work lint
+  [:task]
   {:main {:fn lint-project
           :argcount 1}})
 ```
 
-`def.task` selects the active `[:task]` profile, or a profile named by the
-definition's `:workflow` key. It compiles through the historical task template,
-which remains an ordinary `std.work` graph and preserves the zero-to-four
-argument callable convention. `deftask` is a thin compatibility alias for
-`def.task`.
+The flow path is explicit and is the only dispatch key. A definition containing
+the obsolete `:workflow` key is rejected. Flow namespaces are required
+explicitly and register their descriptor when loaded; `work.base` does not
+auto-load built-in or third-party flows.
+
+Descriptor defaults merge with each definition locally. There is no
+namespace-local profile registry. Reusable variants register another explicit
+path rather than installing ambient namespace policy.
+
+## Task flow
+
+`work.flow.task` registers `[:task]`. Its definition compiles through the task
+template into an ordinary callable `IWork` value and preserves the historical
+zero-to-four argument convention.
 
 Task redefinition compiles a complete candidate and replaces the previous work
 value only after compilation succeeds.
 
-## Make declarations
+## Make flow
+
+`work.flow.make` registers `[:make]`:
 
 ```clojure
-(def.workflow [:make])
+(ns build
+  (:require [work.base :refer [def.work]]
+            [work.flow.make :as make]))
 
-(def.make +project+
+(def.work +project+
+  [:make]
   {:root "."
+   :trigger-policy :manual
    :compile-entry compile-entry
    :default [{:id :assets}]
    :sections {:docs [{:id :guide}]}
@@ -71,67 +63,18 @@ value only after compilation succeeds.
 ```
 
 A make definition compiles to an immutable plan containing target work graphs,
-target source specifications, triggers, and the normalised declaration. The
-public value is a live host containing that plan.
+source specifications, triggers, and its normalized definition. Its public
+value is a live host. Successful redefinition preserves host identity and
+running state while atomically installing the new plan, revision, status, and
+trigger receipts.
 
-Redefinition follows this order:
-
-1. normalise the complete declaration;
-2. validate every target hook and entry compiler;
-3. compile every target into ordinary `std.work` values;
-4. retain the current host unchanged if any earlier stage fails;
-5. prepare candidate trigger registrations before changing host state;
-6. atomically install the plan, revision, status, and trigger receipts.
-
-The host's identity and running state survive successful reloads. The revision
-number advances whenever a new plan is installed. A failed candidate trigger
-installation leaves the old host state and old registrations authoritative.
-
-Make execution is explicit:
-
-```clojure
-(make/run +project+ :default)
-(make/run +project+ :docs input)
-(make/run +project+ [:default :assets])
-```
-
-Each make entry is a checkpointed `work/step`. Preparation and completion are
-pure work. Entry compilers have the narrow signature:
-
-```clojure
-[definition entry input context] -> value
-```
-
-A compiler can be selected by the entry's `:compile`, the definition's `:types`
-or `:formats` registry, the definition's `:compile-entry`, or a function-valued
-entry `:main`.
-
-Trigger installation defaults to `:on-define`. A profile may select
-`:trigger-policy :manual`, after which `make/start!` and `make/stop!` own the
-lifecycle explicitly.
-
-## Compatibility facades
-
-Temporary facades preserve the historical entry namespaces while callers move
-to the definition-family layout:
-
-```clojure
-(ns app.tasks
-  (:require [std.task :refer [def.task deftask]]))
-
-(ns build
-  (:require [std.make :refer [def.make]]
-            [std.make :as make]))
-```
-
-`std.task` forwards `task`, `compile`, `invoke`, `def.task`, `deftask`, and the
-historical invocation helpers. `std.make` forwards `def.make`, `run`, `build`,
-`clean`, target inspection, host status, and trigger lifecycle helpers. Neither
-facade owns implementation state.
+Make execution remains explicit through `work.flow.make/run`, `build`, and
+`clean`. Trigger installation defaults to `:on-define`; a definition can select
+`:trigger-policy :manual` and use `start!` and `stop!`.
 
 ## Flow descriptor contract
 
-A definition family is an ordinary map. The generic machinery recognises:
+A flow is an ordinary registered map:
 
 ```clojure
 {:flow/path       [:family]
@@ -147,6 +90,7 @@ A definition family is an ordinary map. The generic machinery recognises:
  :flow/invoke     invoke-function}
 ```
 
-`flow/define!` updates its definition registry only after normalisation,
-compilation, and reconciliation all succeed. This is the shared atomic boundary
-for replaceable task values and identity-preserving make hosts.
+`def.work` qualifies the declared name and delegates to the descriptor selected
+by its path. `work.flow/define!` updates the definition registry only after
+normalization, compilation, and reconciliation succeed. This is the shared
+atomic boundary for replaceable task values and identity-preserving make hosts.
