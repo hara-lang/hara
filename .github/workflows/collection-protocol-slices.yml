@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: collection-slices-${{ github.event.pull_request.number || github.ref }}
@@ -93,27 +93,19 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Format focused Rust sources
-        run: rustfmt --edition 2021 core/rust/src/work.rs core/rust/src/work/session.rs
-
-      - name: Commit exact formatter output
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        shell: bash
-        run: |
-          if git diff --quiet -- core/rust/src/work.rs core/rust/src/work/session.rs; then
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add core/rust/src/work.rs core/rust/src/work/session.rs
-          git commit -m 'Format Rust work lifecycle'
-          git push origin "HEAD:${{ github.head_ref }}"
+      - name: Check focused formatting
+        run: rustfmt --edition 2021 --check core/rust/src/work.rs core/rust/src/work/session.rs
 
       - name: Run focused lifecycle tests
         shell: bash
