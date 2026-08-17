@@ -21,7 +21,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: collection-slices-${{ github.event.pull_request.number || github.ref }}
@@ -93,6 +93,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -100,14 +102,30 @@ jobs:
       - name: Format focused Rust sources
         run: rustfmt --edition 2021 core/rust/src/work.rs core/rust/src/work/session.rs
 
-      - name: Upload formatted Rust sources
-        uses: actions/upload-artifact@v4
-        with:
-          name: rust-work-formatted
-          path: |
-            core/rust/src/work.rs
-            core/rust/src/work/session.rs
+      - name: Commit exact formatter output
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        shell: bash
+        run: |
+          if git diff --quiet -- core/rust/src/work.rs core/rust/src/work/session.rs; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/rust/src/work.rs core/rust/src/work/session.rs
+          git commit -m 'Format Rust work lifecycle'
+          git push origin "HEAD:${{ github.head_ref }}"
 
       - name: Run focused lifecycle tests
+        shell: bash
         run: |
-          cargo test --manifest-path core/rust/Cargo.toml --lib 'work::' -- --nocapture
+          set -o pipefail
+          cargo test --manifest-path core/rust/Cargo.toml --lib 'work::' -- --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/rust-work-test.log"
+
+      - name: Upload Rust lifecycle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-work-test-log
+          path: ${{ runner.temp }}/rust-work-test.log
+          if-no-files-found: ignore
