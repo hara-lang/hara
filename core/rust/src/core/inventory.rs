@@ -615,6 +615,7 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
     ("IIterator", &[("iter-next?", 1), ("iter-next", 1)]),
     ("ILookup", &[("lookup", usize::MAX)]),
     ("IMatch", &[("match-value", 2)]),
+    ("IStringLike", &[("to-string", 1), ("from-string", 2)]),
     ("IMutable", &[]),
     ("INamespaced", &[("name", 1), ("namespace", 1)]),
     ("INth", &[("nth", 2)]),

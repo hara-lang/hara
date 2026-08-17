@@ -473,6 +473,16 @@ impl ProtocolRegistry {
             "namespace",
             protocol_namespaced_namespace,
         );
+        registry.register(
+            "std.protocol.istringlike/IStringLike",
+            "to-string",
+            protocol_string_like_to_string,
+        );
+        registry.register(
+            "std.protocol.istringlike/IStringLike",
+            "from-string",
+            protocol_string_like_from_string,
+        );
         registry.register("std.protocol.iobjtype/IObjType", "meta", protocol_meta);
         registry.register(
             "std.protocol.iobjtype/IObjType",

@@ -1,6 +1,12 @@
 (ns std.foundation.string-test
   (:use code.test))
 
+(defstruct WrappedName [value])
+
+(extend-type WrappedName str/IStringLike
+  (to-string [wrapped] (:value wrapped))
+  (from-string [wrapped text] (WrappedName text)))
+
 (def results
   [(fact "length"
      (str/length "hara")
@@ -131,6 +137,21 @@
       (str/snake-case "hello|World")
       (str/dot-case "a|b")]
      => ["hello|world" "hello|world" "a|b"])
+   (fact "StringLike conversions preserve built-in and custom types"
+     [(str/from-string :hello (str/to-string :hello/world))
+      (str/from-string 'hello (str/to-string 'hello/world))
+      (str/to-string (WrappedName "hello"))
+      (:value (str/from-string (WrappedName "") "world"))]
+     => [:hello/world (symbol "hello/world") "hello" "world"])
+   (fact "wrap preserves built-in and custom StringLike types"
+     [((str/wrap str/upper-case) :hello)
+      ((str/wrap str/split) (symbol "a.b") ".")
+      (:value ((str/wrap str/lower-case) (WrappedName "HELLO")))
+      ((str/wrap str/blank? true) :hello)]
+     => [:HELLO [(symbol "a") (symbol "b")] "hello" false])
+   (fact "wrap-compare compares StringLike values as strings"
+     ((str/wrap-compare str/caseless=) :hello (symbol "HELLO"))
+     => true)
    (fact "excluded-foundation-base-string-helpers-remain-absent"
      [(nil? (resolve 'str/joinl))
       (nil? (resolve (symbol "str/|")))

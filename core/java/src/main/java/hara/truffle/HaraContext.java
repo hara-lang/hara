@@ -3765,7 +3765,13 @@ public final class HaraContext {
     withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::defineStringLibrary);
   }
 
+  void installStringLikeFacade() {
+    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::defineStringLikeFacade);
+  }
+
   private void defineStringLibrary() {
+    defineStringLikeFacade();
+
     HaraNamespace string = namespace("std.foundation.string");
 
     // Spec-named symbols.
@@ -3857,6 +3863,92 @@ public final class HaraContext {
             value -> new String(bytesValue(value, "str/decode-utf8"), StandardCharsets.UTF_8)));
 
     string.define("to-fixed", new VariadicBuiltin("str/to-fixed", this::stringToFixed));
+  }
+
+  private void defineStringLikeFacade() {
+    HaraNamespace string = namespace("std.foundation.string");
+    HaraVar stringLike = namespace("std.protocol.istringlike").lookup("IStringLike");
+    string.define("IStringLike", stringLike.get());
+    string.define(
+        "string-like?",
+        new UnaryBuiltin(
+            "str/string-like?",
+            value -> ((HaraProtocol) stringLike.get()).satisfies(HaraBox.unwrap(value))));
+    string.define(
+        "to-string",
+        new UnaryBuiltin(
+            "str/to-string",
+            value -> protocolCall("IStringLike", "to-string", new Object[] {value})));
+    string.define(
+        "from-string",
+        new VariadicBuiltin(
+            "str/from-string",
+            values -> {
+              requireMethodArity("str/from-string", values, 2);
+              return protocolCall("IStringLike", "from-string", values);
+            }));
+    string.define("wrap", new VariadicBuiltin("str/wrap", this::stringWrap));
+    string.define(
+        "wrap-compare", new UnaryBuiltin("str/wrap-compare", this::stringWrapCompare));
+  }
+
+  private Object stringWrap(Object[] values) {
+    if (values.length < 1 || values.length > 2) {
+      throw new HaraException("str/wrap expects a function and optional return-value flag");
+    }
+    Object function = values[0];
+    boolean returnValue = values.length == 2 && Boolean.TRUE.equals(HaraBox.unwrap(values[1]));
+    return new VariadicBuiltin(
+        "str/wrapped",
+        arguments -> {
+          if (arguments.length == 0) throw new HaraException("str/wrapped expects an input");
+          Object input = HaraBox.unwrap(arguments[0]);
+          boolean inputSequence = input instanceof hara.lang.data.types.ISequentialType<?>;
+          Iterator<?> sampleIterator = inputSequence ? (Iterator<?>) iterValue(input) : null;
+          Object sample = inputSequence && sampleIterator.hasNext() ? sampleIterator.next() : input;
+          Object stringInput;
+          if (inputSequence) {
+            ArrayList<Object> converted = new ArrayList<>();
+            Iterator<?> iterator = (Iterator<?>) iterValue(input);
+            while (iterator.hasNext()) {
+              converted.add(protocolCall("IStringLike", "to-string", new Object[] {iterator.next()}));
+            }
+            stringInput = hara.lang.data.Vector.Standard.from(null, converted.toArray());
+          } else {
+            stringInput = protocolCall("IStringLike", "to-string", new Object[] {input});
+          }
+          Object[] call = new Object[arguments.length];
+          call[0] = stringInput;
+          System.arraycopy(arguments, 1, call, 1, arguments.length - 1);
+          Object output = HaraBox.unwrap(invokeCallable(function, call));
+          if (returnValue || sample instanceof String) return output;
+          if (output instanceof hara.lang.data.types.ISequentialType<?>) {
+            ArrayList<Object> converted = new ArrayList<>();
+            Iterator<?> iterator = (Iterator<?>) iterValue(output);
+            while (iterator.hasNext()) {
+              converted.add(
+                  protocolCall(
+                      "IStringLike", "from-string", new Object[] {sample, iterator.next()}));
+            }
+            return hara.lang.data.Vector.Standard.from(null, converted.toArray());
+          }
+          return protocolCall("IStringLike", "from-string", new Object[] {sample, output});
+        });
+  }
+
+  private Object stringWrapCompare(Object function) {
+    return new VariadicBuiltin(
+        "str/wrapped-compare",
+        arguments -> {
+          if (arguments.length < 2) {
+            throw new HaraException("str/wrapped-compare expects two operands");
+          }
+          Object[] call = new Object[arguments.length];
+          call[0] = protocolCall("IStringLike", "to-string", new Object[] {arguments[0]});
+          call[1] = protocolCall("IStringLike", "to-string", new Object[] {arguments[1]});
+          System.arraycopy(arguments, 2, call, 2, arguments.length - 2);
+          return invokeCallable(function, call);
+        });
   }
 
   void installBytesLibrary() {

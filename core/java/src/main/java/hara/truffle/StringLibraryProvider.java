@@ -9,7 +9,11 @@ public final class StringLibraryProvider implements HaraLibraryProvider {
   public int order() { return 20; }
 
   @Override
+  public boolean eager() { return true; }
+
+  @Override
   public void install(HaraContext context) {
     context.collectBuiltins(namespace(), context::installStringLibrary);
+    context.installStringLikeFacade();
   }
 }

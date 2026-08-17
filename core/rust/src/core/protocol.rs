@@ -242,6 +242,32 @@ fn protocol_namespaced_namespace(arguments: &[Value]) -> Result<Value, String> {
         .ok_or_else(|| "INamespaced/namespace has no implementation for this value".into())
 }
 
+fn protocol_string_like_to_string(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [Value::String(value)] => Ok(Value::String(value.clone())),
+        [Value::Keyword(value)] => Ok(Value::String(value.as_str().into())),
+        [Value::Symbol(value)] => Ok(Value::String(value.as_str().into())),
+        [Value::Bytes(value)] => String::from_utf8(value.clone())
+            .map(Value::String)
+            .map_err(|error| format!("IStringLike/to-string expects UTF-8 bytes: {error}")),
+        [_] => Err("IStringLike/to-string expects a string-like value".into()),
+        _ => Err("IStringLike/to-string expects one argument".into()),
+    }
+}
+
+fn protocol_string_like_from_string(arguments: &[Value]) -> Result<Value, String> {
+    let [sample, Value::String(text)] = arguments else {
+        return Err("IStringLike/from-string expects a sample and string".into());
+    };
+    match sample {
+        Value::String(_) => Ok(Value::String(text.clone())),
+        Value::Keyword(_) => Keyword::parse(text).map(Value::Keyword),
+        Value::Symbol(_) => Ok(Value::Symbol(Symbol::parse(text))),
+        Value::Bytes(_) => Ok(Value::Bytes(text.as_bytes().to_vec())),
+        _ => Err("IStringLike/from-string expects a string-like sample".into()),
+    }
+}
+
 fn protocol_lookup(arguments: &[Value]) -> Result<Value, String> {
     if arguments.len() == 2 || arguments.len() == 3 {
         collection_get(
@@ -1532,6 +1558,10 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         "IPointer" | "IApplicable" | "IInvokeIn" => matches!(value, Value::Pointer(_)),
         "IPair" => pair_parts(value).is_some(),
         "IObjType" => metadata_capable,
+        "IStringLike" => matches!(
+            value,
+            Value::String(_) | Value::Keyword(_) | Value::Symbol(_) | Value::Bytes(_)
+        ),
         "IPushLast" => matches!(
             value,
             Value::List(_) | Value::Tuple(_) | Value::Vector(_) | Value::Queue(_) | Value::Deque(_)

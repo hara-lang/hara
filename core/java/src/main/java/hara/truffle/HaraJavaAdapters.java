@@ -172,7 +172,14 @@ public final class HaraJavaAdapters {
     protocol.extend(
         String.class, "from-string", (receiver, arguments) -> String.valueOf(arguments[0]));
     protocol.extend(
-        Keyword.class, "to-string", (receiver, arguments) -> ((Keyword) receiver).pathString());
+        Keyword.class,
+        "to-string",
+        (receiver, arguments) -> {
+          Keyword keyword = (Keyword) receiver;
+          return keyword.getNamespace() == null
+              ? keyword.getName()
+              : keyword.getNamespace() + "/" + keyword.getName();
+        });
     protocol.extend(
         Keyword.class,
         "from-string",
