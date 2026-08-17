@@ -8,7 +8,7 @@ import hara.lang.protocol.IWorkRun;
 import java.util.List;
 import java.util.Map;
 
-/** Installs the native work lifecycle protocol identities. */
+/** Installs the native work lifecycle protocol identities and scope helpers. */
 public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
@@ -47,7 +47,73 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
                 "work-events", 2,
                 "work-cancel", 2),
             List.of(workRef, closed)));
+
     context.defineLibraryValue(namespace(), "default-host", HaraWorkHost.instance(), null);
+    context.defineLibraryFunction(
+        namespace(),
+        "current-context",
+        arguments -> {
+          requireArity("current-context", arguments, 0);
+          return HaraWorkHost.currentWorkContext();
+        },
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "context-id",
+        arguments -> workContext("context-id", arguments, 0).workId(),
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "context-cancelled?",
+        arguments -> workContext("context-cancelled?", arguments, 0).cancelled(),
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "context-cancel-reason",
+        arguments -> workContext("context-cancel-reason", arguments, 0).cancelReason(),
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "context-deadline-nanos",
+        arguments -> workContext("context-deadline-nanos", arguments, 0).deadlineNanos(),
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "context-check!",
+        arguments -> {
+          HaraWorkHost.WorkContext workContext = workContext("context-check!", arguments, 0);
+          workContext.checkCancelled();
+          return workContext;
+        },
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "context-submit",
+        arguments -> {
+          if (arguments.length == 3) {
+            return requireCurrent("context-submit")
+                .submitChild(arguments[0], arguments[1], arguments[2]);
+          }
+          if (arguments.length == 4) {
+            return asWorkContext("context-submit", arguments[0])
+                .submitChild(arguments[1], arguments[2], arguments[3]);
+          }
+          throw new HaraException("context-submit expects 3 or 4 arguments");
+        },
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "context-on-close!",
+        arguments -> {
+          if (arguments.length == 1) {
+            return requireCurrent("context-on-close!").onClose(arguments[0]);
+          }
+          if (arguments.length == 2) {
+            return asWorkContext("context-on-close!", arguments[0]).onClose(arguments[1]);
+          }
+          throw new HaraException("context-on-close! expects 1 or 2 arguments");
+        },
+        null);
   }
 
   static void installWork(HaraProtocol protocol) {
@@ -93,6 +159,33 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
         IWorkRun.class,
         "work-cancel",
         (receiver, arguments) -> ((IWorkRun) receiver).workCancel(arguments[0]));
+  }
+
+  private static HaraWorkHost.WorkContext workContext(
+      String name, Object[] arguments, int implicitArity) {
+    if (arguments.length == implicitArity) return requireCurrent(name);
+    if (arguments.length == implicitArity + 1) return asWorkContext(name, arguments[0]);
+    throw new HaraException(
+        name + " expects " + implicitArity + " or " + (implicitArity + 1) + " arguments");
+  }
+
+  private static HaraWorkHost.WorkContext requireCurrent(String name) {
+    HaraWorkHost.WorkContext workContext = HaraWorkHost.currentWorkContext();
+    if (workContext == null) {
+      throw new HaraException(name + " requires an active native work context");
+    }
+    return workContext;
+  }
+
+  private static HaraWorkHost.WorkContext asWorkContext(String name, Object value) {
+    if (value instanceof HaraWorkHost.WorkContext workContext) return workContext;
+    throw new HaraException(name + " requires a native work context");
+  }
+
+  private static void requireArity(String name, Object[] arguments, int arity) {
+    if (arguments.length != arity) {
+      throw new HaraException(name + " expects " + arity + " arguments");
+    }
   }
 
   private static HaraProtocol requireProtocol(HaraContext context, String name) {
