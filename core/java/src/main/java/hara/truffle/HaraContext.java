@@ -150,6 +150,7 @@ public final class HaraContext {
           Map.entry("Num", java.util.List.of("long", "double", "parse-long", "parse-double")),
           Map.entry("Bits", java.util.List.of("and", "or", "xor", "not", "shift-left", "shift-right")),
           Map.entry("Kernel", java.util.List.of("session-create", "session-close", "session-list", "session-info", "session-eval", "session-namespace", "session-complete", "resource-register", "resource-remove", "resource-list", "filesystem-create", "filesystem-attach", "filesystem-detach", "filesystem-info", "filesystem-close", "capabilities")),
+          Map.entry("Sandbox", java.util.List.of("open", "eval", "call", "cancel", "status", "close")),
           Map.entry("Package", java.util.List.of("catalog", "find", "ensure", "load", "unload", "state")),
           Map.entry("String", java.util.List.of("length", "blank?", "includes?", "starts-with?", "ends-with?", "char-at", "slice", "index-of", "last-index-of", "join", "split", "split-lines", "repeat", "replace", "replace-first", "trim", "trim-left", "trim-right", "upper", "lower", "capitalize", "decapitalize", "pad-left", "pad-right", "reverse", "encode-utf8", "decode-utf8", "to-fixed")),
           Map.entry("Bytes", java.util.List.of("new", "instance?", "count", "get", "set", "copy", "slice", "u8", "s8")),
@@ -239,6 +240,7 @@ public final class HaraContext {
   private final Evaluator evaluator;
   private final Keyword testRunner;
   private final boolean sandboxRestricted;
+  private final SessionKernel sessionKernel;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
@@ -289,6 +291,10 @@ public final class HaraContext {
     this.evaluator = new Evaluator(source -> environment.parsePublic(source).call());
     this.testRunner = runtimeTestRunner(environment.getOptions().get(HaraLanguage.TEST_RUNNER));
     this.sandboxRestricted = environment.getOptions().get(HaraLanguage.SANDBOX_RESTRICTED);
+    this.sessionKernel =
+        sandboxRestricted
+            ? null
+            : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
     currentNamespace = namespace(INTRINSIC_NAMESPACE);
     Map<String, Integer> ifnMethods = new LinkedHashMap<>();
     ifnMethods.put("invoke", -1);
@@ -3689,6 +3695,7 @@ public final class HaraContext {
                     "std.native.Kernel/" + method + " requires a kernel embedding");
               }));
     }
+    installNativeSandboxBuiltins();
     HaraNamespace jvm = namespace("hara.native.jvm");
     jvm.define(
         "set!",
@@ -3752,6 +3759,147 @@ public final class HaraContext {
               return hara.kernel.builtin.BuiltinUtil.prStr(HaraBox.unwrap(values[0]));
             }));
     installJvmNativeLibraries();
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private void installNativeSandboxBuiltins() {
+    HaraNamespace sandbox = namespace("std.native.Sandbox");
+    if (sessionKernel == null) {
+      for (String method : NATIVE_TYPES.get("Sandbox")) {
+        sandbox.define(
+            method,
+            new VariadicBuiltin(
+                "std.native.Sandbox/" + method,
+                values -> {
+                  throw new HaraException(
+                      "std.native.Sandbox/" + method + " requires a kernel embedding");
+                }));
+      }
+      return;
+    }
+    sandbox.define(
+        "open",
+        new UnaryBuiltin(
+            "std.native.Sandbox/open",
+            value ->
+                promiseValue(
+                    CompletableFuture.completedFuture(
+                        sessionKernel.openSandbox(sandboxSpec(value)).value()))));
+    sandbox.define(
+        "eval",
+        new VariadicBuiltin(
+            "std.native.Sandbox/eval",
+            values -> {
+              if (values.length != 2 || !(HaraBox.unwrap(values[1]) instanceof String text))
+                throw new HaraException("std.native.Sandbox/eval expects source text");
+              SandboxProvider.Pending<Object> pending =
+                  sessionKernel.sandboxEval(sandboxId(values[0]), text);
+              return cancellablePromise(pending.future(), pending::cancel);
+            }));
+    sandbox.define(
+        "call",
+        new VariadicBuiltin(
+            "std.native.Sandbox/call",
+            values -> {
+              if (values.length != 3 || !(HaraBox.unwrap(values[1]) instanceof String callable))
+                throw new HaraException(
+                    "std.native.Sandbox/call expects an id, callable, and argument vector");
+              Object rawArguments = HaraBox.unwrap(values[2]);
+              if (!(rawArguments instanceof hara.lang.data.types.ILinearType<?> arguments))
+                throw new HaraException("std.native.Sandbox/call expects an argument vector");
+              ArrayList<Object> transferred = new ArrayList<>();
+              for (int index = 0; index < arguments.count(); index++) {
+                transferred.add(arguments.nth(index));
+              }
+              SandboxProvider.Pending<Object> pending =
+                  sessionKernel.sandboxCall(sandboxId(values[0]), callable, transferred);
+              return cancellablePromise(pending.future(), pending::cancel);
+            }));
+    sandbox.define(
+        "cancel",
+        new UnaryBuiltin(
+            "std.native.Sandbox/cancel",
+            id ->
+                promiseValue(
+                    CompletableFuture.completedFuture(
+                        sessionKernel.cancelSandbox(sandboxId(id))))));
+    sandbox.define(
+        "status",
+        new UnaryBuiltin(
+            "std.native.Sandbox/status",
+            id -> sandboxStatusValue(sessionKernel.sandboxStatus(sandboxId(id)))));
+    sandbox.define(
+        "close",
+        new UnaryBuiltin(
+            "std.native.Sandbox/close",
+            id -> {
+              sessionKernel.closeSandbox(sandboxId(id));
+              return promiseValue(CompletableFuture.completedFuture(null));
+            }));
+  }
+
+  private static SandboxModel.SandboxId sandboxId(Object value) {
+    Object input = HaraBox.unwrap(value);
+    if (!(input instanceof Number number))
+      throw new HaraException("sandbox id must be a positive integer");
+    return new SandboxModel.SandboxId(number.longValue());
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static SandboxModel.SandboxSpec sandboxSpec(Object value) {
+    Object input = HaraBox.unwrap(value);
+    if (!(input instanceof hara.lang.data.types.IMapType map))
+      throw new HaraException("std.native.Sandbox/open expects a SandboxSpec map");
+    java.util.Set<String> allowed =
+        java.util.Set.of(
+            "protocol", "provider", "runtime", "entry-namespace", "bundles", "mount",
+            "provider-options", "limits");
+    for (Object item : map) {
+      java.util.Map.Entry entry = (java.util.Map.Entry) item;
+      Object key = entry.getKey();
+      if (!(key instanceof Keyword keyword) || !allowed.contains(keyword.getName()))
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.INVALID_SPEC, "unknown sandbox spec key " + key);
+    }
+    String protocol = sandboxString(map, "protocol", SandboxModel.SPEC_PROTOCOL);
+    String provider = sandboxString(map, "provider", "in-process");
+    String runtime = sandboxString(map, "runtime", "hara.standard/0-alpha");
+    String entry = sandboxString(map, "entry-namespace", "user");
+    return new SandboxModel.SandboxSpec(
+        protocol, provider, runtime, entry, SandboxModel.SandboxLimits.defaults());
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static String sandboxString(
+      hara.lang.data.types.IMapType map, String name, String fallback) {
+    Object value = HaraBox.unwrap(map.lookup(Keyword.create(name)));
+    if (value == null) return fallback;
+    if (value instanceof String text) return text;
+    if (value instanceof Keyword keyword) return keyword.getName();
+    if (value instanceof Symbol symbol) return symbol.display();
+    throw new SandboxModel.SandboxException(
+        SandboxModel.ErrorCode.INVALID_SPEC, name + " must be a string, keyword, or symbol");
+  }
+
+  private static Object sandboxStatusValue(SandboxModel.SandboxStatus status) {
+    java.util.LinkedHashMap<Object, Object> value = new java.util.LinkedHashMap<>();
+    value.put(Keyword.create("id"), status.id().value());
+    value.put(Keyword.create("provider"), status.provider());
+    value.put(Keyword.create("state"), Keyword.create(status.state().name().toLowerCase()));
+    value.put(Keyword.create("secure"), status.secure());
+    value.put(Keyword.create("evaluation-active"), status.evaluationActive());
+    SandboxModel.SandboxError error = status.error();
+    value.put(
+        Keyword.create("error"),
+        error == null
+            ? null
+            : HaraPersistentValues.normalize(
+                java.util.Map.of(
+                    Keyword.create("code"),
+                    Keyword.create(error.code().name().toLowerCase().replace('_', '-')),
+                    Keyword.create("message"),
+                    error.message())));
+    return HaraPersistentValues.normalize(value);
   }
 
   private void installJvmNativeLibraries() {

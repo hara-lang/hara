@@ -1,4 +1,37 @@
-use super::{DocumentationValue, RuntimeBroker};
+use super::{install_native_kernel, DocumentationValue, RuntimeBroker};
+
+#[test]
+fn native_sandbox_surface_uses_the_broker_kernel() {
+    let broker = RuntimeBroker::start_core().unwrap();
+    let mut runtime = crate::Runtime::core();
+    install_native_kernel(&mut runtime, broker);
+    let sandbox = runtime
+        .eval_native(
+            "(deref (Sandbox/open {:protocol \"hara.sandbox/0-alpha\" :provider :in-process :runtime \"hara.standard/0-alpha\" :entry-namespace \"user\"}))",
+        )
+        .unwrap();
+    assert_eq!(sandbox, "1");
+    assert_eq!(
+        runtime
+            .eval_native("(deref (Sandbox/eval 1 \"(+ 40 2)\"))")
+            .unwrap(),
+        "42"
+    );
+    assert_eq!(
+        runtime
+            .eval_native("(deref (Sandbox/call 1 \"std.foundation/+\" [1 2 3]))")
+            .unwrap(),
+        "6"
+    );
+    assert_eq!(
+        runtime.eval_native("(:secure (Sandbox/status 1))").unwrap(),
+        "false"
+    );
+    assert_eq!(
+        runtime.eval_native("(deref (Sandbox/close 1))").unwrap(),
+        "nil"
+    );
+}
 
 #[test]
 fn sessions_are_isolated_and_root_is_persistent() {

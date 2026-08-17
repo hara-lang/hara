@@ -6,6 +6,14 @@ pub const SANDBOX_SPEC_PROTOCOL: &str = "hara.sandbox/0-alpha";
 pub struct SandboxId(u64);
 
 impl SandboxId {
+    pub fn parse(value: u64) -> Result<Self, SandboxError> {
+        if value == 0 {
+            Err(SandboxError::invalid_spec("invalid sandbox identifier"))
+        } else {
+            Ok(Self(value))
+        }
+    }
+
     pub const fn get(self) -> u64 {
         self.0
     }

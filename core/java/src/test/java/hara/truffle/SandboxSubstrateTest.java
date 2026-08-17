@@ -22,6 +22,35 @@ public class SandboxSubstrateTest {
   }
 
   @Test
+  public void nativeSandboxSurfaceUsesTheOwningKernel() {
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      kernel.root().eval("(require 'std.sandbox)");
+      long id =
+          kernel
+              .root()
+              .eval(
+                  "(deref (std.sandbox/open {:protocol \"hara.sandbox/0-alpha\" "
+                      + ":provider :in-process :runtime \"hara.standard/0-alpha\" "
+                      + ":entry-namespace \"user\"}))")
+              .asLong();
+      assertEquals(
+          42L,
+          kernel.root().eval("(deref (std.sandbox/eval " + id + " \"(+ 40 2)\"))").asLong());
+      assertEquals(
+          6L,
+          kernel
+              .root()
+              .eval("(deref (std.sandbox/call " + id + " \"std.foundation/+\" [1 2 3]))")
+              .asLong());
+      assertFalse(kernel.root().eval("(:secure (std.sandbox/status " + id + "))").asBoolean());
+      kernel.root().eval("(deref (std.sandbox/close " + id + "))");
+      assertThrows(
+          RuntimeException.class,
+          () -> kernel.root().eval("(std.sandbox/status " + id + ")"));
+    }
+  }
+
+  @Test
   public void inProcessLifecycleIsPrivateAndExplicitlyNonSecure() {
     try (SessionKernel kernel = new SessionKernel(false, false)) {
       SandboxProvider provider = InProcessSandboxProvider.INSTANCE;

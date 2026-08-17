@@ -27,6 +27,12 @@ import org.graalvm.polyglot.io.IOAccess;
 
 /** Owns the runtime contexts shared by local and RESP clients. */
 final class SessionKernel implements AutoCloseable {
+  private static final ConcurrentHashMap<String, SessionKernel> EMBEDDINGS =
+      new ConcurrentHashMap<>();
+
+  static SessionKernel embedding(String token) {
+    return token == null || token.isEmpty() ? null : EMBEDDINGS.get(token);
+  }
   /**
    * Host authority applied when a context is created.
    *
@@ -80,6 +86,7 @@ final class SessionKernel implements AutoCloseable {
   }
 
   private final boolean allowFile;
+  private final String embeddingToken = java.util.UUID.randomUUID().toString();
   private final SessionRegistry sessionRegistry = new SessionRegistry();
   private final MountRegistry mountRegistry = new MountRegistry();
   private final DevelopmentResourceCatalog developmentResources =
@@ -141,6 +148,8 @@ final class SessionKernel implements AutoCloseable {
   SessionKernel(
       boolean allowFile, boolean allowNetwork, boolean allowProcess, HaraProject project) {
     this.allowFile = allowFile;
+    EMBEDDINGS.put(embeddingToken, this);
+    registerSandboxProvider(InProcessSandboxProvider.INSTANCE);
     SessionAuthorityPolicy rootAuthority =
         SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
     sessionRegistry.entries.put(
@@ -149,7 +158,8 @@ final class SessionKernel implements AutoCloseable {
             new SessionModel.SessionSpec(ROOT_ID, rootAuthority),
             project,
             mount -> releaseMount(ROOT_ID, mount),
-            false));
+            false,
+            embeddingToken));
   }
 
   Session root() {
@@ -170,7 +180,8 @@ final class SessionKernel implements AutoCloseable {
             SessionModel.SessionSpec.zeroAuthority(id),
             null,
             mount -> releaseMount(id, mount),
-            false);
+            false,
+            embeddingToken);
     sessionRegistry.entries.put(id.value(), session);
     return session;
   }
@@ -386,6 +397,7 @@ final class SessionKernel implements AutoCloseable {
 
   @Override
   public synchronized void close() {
+    EMBEDDINGS.remove(embeddingToken, this);
     for (Sandbox sandbox : sandboxRegistry.entries.values()) sandbox.instance.close();
     sandboxRegistry.entries.clear();
     for (Session session : sessionRegistry.entries.values()) session.close();
@@ -401,6 +413,7 @@ final class SessionKernel implements AutoCloseable {
     private final HaraProject project;
     private final Consumer<SessionModel.SessionMountId> mountRelease;
     private final boolean sandboxRestricted;
+    private final String kernelToken;
     private Context context;
     private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
@@ -414,12 +427,14 @@ final class SessionKernel implements AutoCloseable {
         SessionModel.SessionSpec spec,
         HaraProject project,
         Consumer<SessionModel.SessionMountId> mountRelease,
-        boolean sandboxRestricted) {
+        boolean sandboxRestricted,
+        String kernelToken) {
       this.spec = spec;
       this.authority = spec.authority();
       this.project = project;
       this.mountRelease = mountRelease;
       this.sandboxRestricted = sandboxRestricted;
+      this.kernelToken = kernelToken;
       context = createContext(null);
       activate();
     }
@@ -430,7 +445,8 @@ final class SessionKernel implements AutoCloseable {
               SessionModel.SessionSpec.zeroAuthority(SessionModel.SessionId.parse("SANDBOX")),
               null,
               ignored -> {},
-              true);
+              true,
+              null);
       if (!"user".equals(entryNamespace)) session.eval("(ns " + entryNamespace + ")");
       return session;
     }
@@ -447,6 +463,7 @@ final class SessionKernel implements AutoCloseable {
               .option("hara.SandboxRestricted", Boolean.toString(sandboxRestricted))
               .allowCreateProcess(authority.hostProcess)
               .allowIO(io.build());
+      if (kernelToken != null) builder.option("hara.KernelToken", kernelToken);
       if (authority.project && project != null && filesystem == null) {
         builder.currentWorkingDirectory(project.root());
       }

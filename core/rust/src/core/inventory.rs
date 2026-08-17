@@ -229,6 +229,10 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "Sandbox",
+        &["open", "eval", "call", "cancel", "status", "close"],
+    ),
+    (
         "Package",
         &["catalog", "find", "ensure", "load", "unload", "state"],
     ),

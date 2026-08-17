@@ -1,13 +1,17 @@
 #![cfg(not(target_arch = "wasm32"))]
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{mpsc, Arc};
 
-use crate::core::Value;
+use crate::core::{Promise, Value};
 use crate::invoke_hta::InvokeHtaError;
 use crate::lang::data::Symbol;
-use crate::{Runtime, SessionId, SessionKernel};
+use crate::{
+    InProcessSandboxProvider, Runtime, SandboxId, SandboxSpec, SandboxStatus, SessionId,
+    SessionKernel,
+};
 
 mod arguments;
 mod documentation;
@@ -97,6 +101,33 @@ enum Request {
         qualified_var: String,
         arguments: Vec<u8>,
         reply: mpsc::Sender<Result<Vec<u8>, InvokeHtaError>>,
+    },
+    SandboxOpen {
+        spec: SandboxSpec,
+        reply: mpsc::Sender<Result<SandboxId, String>>,
+    },
+    SandboxEval {
+        sandbox: SandboxId,
+        source: String,
+        reply: mpsc::Sender<Result<String, String>>,
+    },
+    SandboxCall {
+        sandbox: SandboxId,
+        callable: String,
+        arguments: Vec<u8>,
+        reply: mpsc::Sender<Result<Vec<u8>, String>>,
+    },
+    SandboxCancel {
+        sandbox: SandboxId,
+        reply: mpsc::Sender<Result<bool, String>>,
+    },
+    SandboxStatus {
+        sandbox: SandboxId,
+        reply: mpsc::Sender<Result<SandboxStatus, String>>,
+    },
+    SandboxClose {
+        sandbox: SandboxId,
+        reply: mpsc::Sender<Result<(), String>>,
     },
     Shutdown,
 }
@@ -295,6 +326,58 @@ impl RuntimeBroker {
         })
     }
 
+    fn sandbox_open(&self, spec: SandboxSpec) -> Result<SandboxId, String> {
+        self.call(|reply| Request::SandboxOpen { spec, reply })
+    }
+
+    fn sandbox_eval_receiver(
+        &self,
+        sandbox: SandboxId,
+        source: &str,
+    ) -> Result<mpsc::Receiver<Result<String, String>>, String> {
+        let (reply, response) = mpsc::channel();
+        self.handle
+            .sender
+            .send(Request::SandboxEval {
+                sandbox,
+                source: source.into(),
+                reply,
+            })
+            .map_err(|_| "runtime broker is closed".to_owned())?;
+        Ok(response)
+    }
+
+    fn sandbox_call_receiver(
+        &self,
+        sandbox: SandboxId,
+        callable: &str,
+        arguments: &[u8],
+    ) -> Result<mpsc::Receiver<Result<Vec<u8>, String>>, String> {
+        let (reply, response) = mpsc::channel();
+        self.handle
+            .sender
+            .send(Request::SandboxCall {
+                sandbox,
+                callable: callable.into(),
+                arguments: arguments.into(),
+                reply,
+            })
+            .map_err(|_| "runtime broker is closed".to_owned())?;
+        Ok(response)
+    }
+
+    fn sandbox_cancel(&self, sandbox: SandboxId) -> Result<bool, String> {
+        self.call(|reply| Request::SandboxCancel { sandbox, reply })
+    }
+
+    fn sandbox_status(&self, sandbox: SandboxId) -> Result<SandboxStatus, String> {
+        self.call(|reply| Request::SandboxStatus { sandbox, reply })
+    }
+
+    fn sandbox_close(&self, sandbox: SandboxId) -> Result<(), String> {
+        self.call(|reply| Request::SandboxClose { sandbox, reply })
+    }
+
     fn call<T>(
         &self,
         request: impl FnOnce(mpsc::Sender<Result<T, String>>) -> Request,
@@ -358,6 +441,7 @@ fn run(
     });
     let root_runtime = runtime_factory();
     let mut kernel = SessionKernel::with_runtime_factory(root_runtime, runtime_factory);
+    kernel.register_sandbox_provider(Rc::new(InProcessSandboxProvider));
     while let Ok(request) = receiver.recv() {
         match request {
             Request::Eval {
@@ -519,6 +603,59 @@ fn run(
                     });
                 let _ = reply.send(result);
             }
+            Request::SandboxOpen { spec, reply } => {
+                let _ = reply.send(kernel.open_sandbox(spec).map_err(|error| error.to_string()));
+            }
+            Request::SandboxEval {
+                sandbox,
+                source,
+                reply,
+            } => match kernel.sandbox_eval(sandbox, &source) {
+                Ok(pending) => {
+                    std::thread::spawn(move || {
+                        let _ = reply.send(pending.wait().map_err(|error| error.to_string()));
+                    });
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error.to_string()));
+                }
+            },
+            Request::SandboxCall {
+                sandbox,
+                callable,
+                arguments,
+                reply,
+            } => match kernel.sandbox_call(sandbox, &callable, &arguments) {
+                Ok(pending) => {
+                    std::thread::spawn(move || {
+                        let _ = reply.send(pending.wait().map_err(|error| error.to_string()));
+                    });
+                }
+                Err(error) => {
+                    let _ = reply.send(Err(error.to_string()));
+                }
+            },
+            Request::SandboxCancel { sandbox, reply } => {
+                let _ = reply.send(
+                    kernel
+                        .cancel_sandbox(sandbox)
+                        .map_err(|error| error.to_string()),
+                );
+            }
+            Request::SandboxStatus { sandbox, reply } => {
+                let _ = reply.send(
+                    kernel
+                        .sandbox_status(sandbox)
+                        .map_err(|error| error.to_string()),
+                );
+            }
+            Request::SandboxClose { sandbox, reply } => {
+                let _ = reply.send(
+                    kernel
+                        .close_sandbox(sandbox)
+                        .map_err(|error| error.to_string()),
+                );
+            }
             Request::Shutdown => break,
         }
     }
@@ -547,6 +684,75 @@ fn kernel_call(
     arguments: &[Value],
 ) -> Result<Value, String> {
     match operation {
+        "sandbox-open" => {
+            let spec = sandbox_spec_argument(arguments, operation)?;
+            let promise = Promise::new();
+            match broker.sandbox_open(spec) {
+                Ok(id) => {
+                    promise.resolve(Value::Number(id.get() as i64));
+                }
+                Err(error) => {
+                    promise.reject(error);
+                }
+            }
+            Ok(Value::Promise(promise))
+        }
+        "sandbox-eval" => {
+            let sandbox = sandbox_id_argument(arguments, 0, operation)?;
+            let source = string_argument(arguments, 1, operation)?;
+            let receiver = broker.sandbox_eval_receiver(sandbox, source)?;
+            Ok(Value::Promise(sandbox_string_promise(
+                broker.clone(),
+                sandbox,
+                receiver,
+            )))
+        }
+        "sandbox-call" => {
+            let sandbox = sandbox_id_argument(arguments, 0, operation)?;
+            let callable = string_argument(arguments, 1, operation)?;
+            let supplied = arguments
+                .get(2)
+                .ok_or_else(|| format!("{operation}: missing argument vector"))?;
+            let normalized = match supplied {
+                Value::Vector(_) => supplied.clone(),
+                Value::Tuple(values) => Value::Vector(values.iter().cloned().collect()),
+                _ => return Err(format!("{operation}: expected an argument vector")),
+            };
+            let encoded = crate::hta::encode(&normalized)?;
+            let receiver = broker.sandbox_call_receiver(sandbox, callable, &encoded)?;
+            Ok(Value::Promise(sandbox_hta_promise(
+                broker.clone(),
+                sandbox,
+                receiver,
+            )))
+        }
+        "sandbox-cancel" => {
+            let promise = Promise::new();
+            match broker.sandbox_cancel(sandbox_id_argument(arguments, 0, operation)?) {
+                Ok(cancelled) => {
+                    promise.resolve(Value::Bool(cancelled));
+                }
+                Err(error) => {
+                    promise.reject(error);
+                }
+            }
+            Ok(Value::Promise(promise))
+        }
+        "sandbox-status" => broker
+            .sandbox_status(sandbox_id_argument(arguments, 0, operation)?)
+            .map(sandbox_status_value),
+        "sandbox-close" => {
+            let promise = Promise::new();
+            match broker.sandbox_close(sandbox_id_argument(arguments, 0, operation)?) {
+                Ok(()) => {
+                    promise.resolve(Value::Nil);
+                }
+                Err(error) => {
+                    promise.reject(error);
+                }
+            }
+            Ok(Value::Promise(promise))
+        }
         "package-check" => {
             let (identity, version) = crate::package::check_path(std::path::Path::new(
                 string_argument(arguments, 0, operation)?,
@@ -759,6 +965,180 @@ fn kernel_call(
         }
         _ => Err(format!("unknown foundation.kernel operation: {operation}")),
     }
+}
+
+fn sandbox_id_argument(
+    arguments: &[Value],
+    index: usize,
+    operation: &str,
+) -> Result<SandboxId, String> {
+    match arguments.get(index) {
+        Some(Value::Number(value)) if *value > 0 => {
+            SandboxId::parse(*value as u64).map_err(|error| error.to_string())
+        }
+        _ => Err(format!(
+            "{operation}: sandbox id must be a positive integer"
+        )),
+    }
+}
+
+fn sandbox_spec_argument(arguments: &[Value], operation: &str) -> Result<SandboxSpec, String> {
+    let entries = match arguments.first() {
+        Some(Value::Map(entries)) => entries.iter().collect::<Vec<_>>(),
+        Some(Value::OrderedMap(entries)) => {
+            entries.iter().map(|(key, value)| (key, value)).collect()
+        }
+        _ => return Err(format!("{operation}: expected a SandboxSpec map")),
+    };
+    let allowed = [
+        "protocol",
+        "provider",
+        "runtime",
+        "entry-namespace",
+        "bundles",
+        "mount",
+        "provider-options",
+        "limits",
+    ];
+    for (key, _) in &entries {
+        let Value::Keyword(key) = key else {
+            return Err(format!("{operation}: SandboxSpec keys must be keywords"));
+        };
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!(
+                "{operation}: unknown SandboxSpec key :{}",
+                key.as_str()
+            ));
+        }
+    }
+    let lookup = |name: &str| {
+        entries
+            .iter()
+            .find(|(key, _)| matches!(key, Value::Keyword(value) if value.as_str() == name))
+            .map(|(_, value)| *value)
+    };
+    let text = |name: &str, fallback: &str| -> Result<String, String> {
+        match lookup(name) {
+            None | Some(Value::Nil) => Ok(fallback.into()),
+            Some(Value::String(value)) => Ok(value.clone()),
+            Some(Value::Keyword(value)) => Ok(value.as_str().into()),
+            Some(Value::Symbol(value)) => Ok(value.as_str().into()),
+            _ => Err(format!("{operation}: :{name} must be text-like")),
+        }
+    };
+    SandboxSpec::new(
+        text("protocol", crate::SANDBOX_SPEC_PROTOCOL)?,
+        text("provider", "in-process")?,
+        text("runtime", "hara.standard/0-alpha")?,
+        text("entry-namespace", "user")?,
+        crate::SandboxLimits::default(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn sandbox_string_promise(
+    broker: RuntimeBroker,
+    sandbox: SandboxId,
+    receiver: mpsc::Receiver<Result<String, String>>,
+) -> Promise {
+    let promise = Promise::new();
+    let waiting = Rc::new(RefCell::new(Some(receiver)));
+    let settled = promise.clone();
+    promise.set_waiter(Rc::new(move || {
+        let Some(receiver) = waiting.borrow_mut().take() else {
+            return;
+        };
+        match receiver.recv() {
+            Ok(Ok(value)) => {
+                let form =
+                    crate::kernel::parse(&value).and_then(|form| crate::core::form_to_value(&form));
+                match form {
+                    Ok(value) => {
+                        settled.resolve(value);
+                    }
+                    Err(error) => {
+                        settled.reject(error);
+                    }
+                }
+            }
+            Ok(Err(error)) => {
+                settled.reject(error);
+            }
+            Err(_) => {
+                settled.reject("sandbox provider dropped the evaluation result");
+            }
+        }
+    }));
+    promise.set_cancel_hook(Rc::new(move || {
+        let _ = broker.sandbox_cancel(sandbox);
+    }));
+    promise
+}
+
+fn sandbox_hta_promise(
+    broker: RuntimeBroker,
+    sandbox: SandboxId,
+    receiver: mpsc::Receiver<Result<Vec<u8>, String>>,
+) -> Promise {
+    let promise = Promise::new();
+    let waiting = Rc::new(RefCell::new(Some(receiver)));
+    let settled = promise.clone();
+    promise.set_waiter(Rc::new(move || {
+        let Some(receiver) = waiting.borrow_mut().take() else {
+            return;
+        };
+        match receiver.recv() {
+            Ok(Ok(value)) => match crate::hta::decode(&value) {
+                Ok(value) => {
+                    settled.resolve(value);
+                }
+                Err(error) => {
+                    settled.reject(error);
+                }
+            },
+            Ok(Err(error)) => {
+                settled.reject(error);
+            }
+            Err(_) => {
+                settled.reject("sandbox provider dropped the call result");
+            }
+        }
+    }));
+    promise.set_cancel_hook(Rc::new(move || {
+        let _ = broker.sandbox_cancel(sandbox);
+    }));
+    promise
+}
+
+fn sandbox_status_value(status: SandboxStatus) -> Value {
+    let error = status.error.map_or(Value::Nil, |error| {
+        Value::Map(
+            [
+                (
+                    keyword("code"),
+                    keyword(&format!("{:?}", error.code).to_ascii_lowercase()),
+                ),
+                (keyword("message"), Value::String(error.message)),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    });
+    Value::Map(
+        [
+            (keyword("id"), Value::Number(status.id.get() as i64)),
+            (keyword("provider"), Value::String(status.provider)),
+            (keyword("state"), keyword(status.state.as_str())),
+            (keyword("secure"), Value::Bool(status.secure)),
+            (
+                keyword("evaluation-active"),
+                Value::Bool(status.evaluation_active),
+            ),
+            (keyword("error"), error),
+        ]
+        .into_iter()
+        .collect(),
+    )
 }
 
 #[cfg(test)]
