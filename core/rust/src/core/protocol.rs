@@ -451,6 +451,54 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
             .and_then(|name| value.get(name).map(|item| (name, item)))
             .map(|(name, item)| pair_value(named_field_key(name), item))
             .unwrap_or(Value::Nil)),
+        Value::MutableCollection(collection) => {
+            let borrowed = collection.borrow();
+            let mutable = borrowed
+                .as_ref()
+                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
+            match mutable {
+                MutableCollection::Map(values) => Ok(values
+                    .find_entry(key)
+                    .map(|(candidate, value)| pair_value(candidate.clone(), value.clone()))
+                    .unwrap_or(Value::Nil)),
+                MutableCollection::OrderedMap(values) => Ok(values
+                    .find_entry(key)
+                    .map(|(candidate, value)| pair_value(candidate.clone(), value.clone()))
+                    .unwrap_or(Value::Nil)),
+                MutableCollection::SortedMap(values) => Ok(values
+                    .find_entry(key)
+                    .map(|(candidate, value)| pair_value(candidate.clone(), value.clone()))
+                    .unwrap_or(Value::Nil)),
+                MutableCollection::Trie(values) => {
+                    let key = marker_key(key, "IFind/find trie")?;
+                    Ok(values
+                        .get(&key)
+                        .map(|value| pair_value(Value::String(key), value.clone()))
+                        .unwrap_or(Value::Nil))
+                }
+                MutableCollection::Set(values) => {
+                    Ok(values.get(key).cloned().unwrap_or(Value::Nil))
+                }
+                MutableCollection::OrderedSet(values) => {
+                    Ok(values.get(key).cloned().unwrap_or(Value::Nil))
+                }
+                MutableCollection::SortedSet(values) => {
+                    Ok(values.get(key).cloned().unwrap_or(Value::Nil))
+                }
+                MutableCollection::List(values) => {
+                    let index = value_index(key)?;
+                    indexed_find(values.get(index), index)
+                }
+                MutableCollection::Queue(values) => {
+                    let index = value_index(key)?;
+                    indexed_find(values.get(index), index)
+                }
+                MutableCollection::Vector(values) => {
+                    let index = value_index(key)?;
+                    indexed_find(values.get(index), index)
+                }
+            }
+        }
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             Ok(set_find(value, key).unwrap_or(Value::Nil))
         }
@@ -1576,6 +1624,7 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
                         | Value::Object(_)
                         | Value::Struct(_)
                         | Value::Mutable(_)
+                        | Value::MutableCollection(_)
                 )
         }
         "ILookup" => {

@@ -6643,6 +6643,25 @@ mod tests {
     }
 
     #[test]
+    fn mutable_collections_preserve_ifind_dispatch_and_satisfaction() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [m (IToMutable/to-mutable {:a 1})
+                           s (IToMutable/to-mutable #{:a})
+                           v (IToMutable/to-mutable (vec [10 20]))]
+                       [(satisfies? IFind m) (findable? m) (IFind/find m :a)
+                        (IFind/find m :missing)
+                        (satisfies? IFind s) (IFind/find s :a)
+                        (satisfies? IFind v) (IFind/find v 1)])",
+                )
+                .unwrap(),
+            "[true true [:a 1] nil true :a true [1 20]]"
+        );
+    }
+
+    #[test]
     fn code_translate_resolves_required_namespace_aliases() {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)

@@ -216,4 +216,22 @@ public class CollectionProtocolConformanceTest {
       assertEquals(0L, count.invoke("count", receiver, new Object[0]));
     }
   }
+
+  @Test
+  public void mutableCollectionsPreserveFindDispatchAndProtocolSatisfaction() {
+    try (org.graalvm.polyglot.Context context =
+        org.graalvm.polyglot.Context.newBuilder(HaraLanguage.ID).build()) {
+      org.graalvm.polyglot.Value result =
+          context.eval(
+              HaraLanguage.ID,
+              "(let [m (IToMutable/to-mutable {:a 1}) "
+                  + "      s (IToMutable/to-mutable #{:a}) "
+                  + "      v (IToMutable/to-mutable (vec [10 20]))] "
+                  + "  [(satisfies? IFind m) (findable? m) (IFind/find m :a) "
+                  + "   (IFind/find m :missing) "
+                  + "   (satisfies? IFind s) (IFind/find s :a) "
+                  + "   (satisfies? IFind v) (IFind/find v 1)])");
+      assertEquals("[true true [:a 1] nil true :a true [1 20]]", result.toString());
+    }
+  }
 }
