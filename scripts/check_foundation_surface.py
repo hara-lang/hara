@@ -59,7 +59,7 @@ ROOT_TEST_FIXTURES = {
 # namespaces).
 DEVELOPMENT_ONLY_NAMESPACES = ("std.foundation.bootstrap",)
 REQUIRED_HEADER_DIRECTIONS = (
-    "std.fs.path",
+    "std.lib.fs.path",
     "std.format.*",
     "std.lib.component",
     "std.crypto.*",
