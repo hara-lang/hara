@@ -59,14 +59,14 @@ pub mod wasmtime_provider;
 #[cfg(feature = "whole-wasm")]
 pub mod whole_wasm;
 use crate::kernel::Form;
+use crate::lang::data::{OrderedMap as POrderedMap, Vector as PVector};
 use crate::lang::protocol::INamespaced;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use crate::lang::data::{OrderedMap as POrderedMap, Vector as PVector};
-
 
 include!("runtime/model.rs");
+include!("runtime/session_model.rs");
 include!("runtime/session.rs");
 include!("runtime/runtime.rs");
 include!("runtime/bytecode.rs");
