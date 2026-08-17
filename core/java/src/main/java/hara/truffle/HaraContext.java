@@ -235,6 +235,7 @@ public final class HaraContext {
           Map.entry("std.native.Promise", "std.foundation.promise"),
           Map.entry("std.native.Coroutine", "std.foundation.coroutine"));
   private final TruffleLanguage.Env environment;
+  private final Evaluator evaluator;
   private final Keyword testRunner;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
@@ -283,6 +284,7 @@ public final class HaraContext {
   private final AtomicLong gensymCounter = new AtomicLong();
   HaraContext(TruffleLanguage.Env environment) {
     this.environment = environment;
+    this.evaluator = new Evaluator(source -> environment.parsePublic(source).call());
     this.testRunner = runtimeTestRunner(environment.getOptions().get(HaraLanguage.TEST_RUNNER));
     currentNamespace = namespace(INTRINSIC_NAMESPACE);
     Map<String, Integer> ifnMethods = new LinkedHashMap<>();
@@ -5494,8 +5496,7 @@ public final class HaraContext {
   }
 
   private Object evalForm(Object value) {
-    return parseAndExecute(
-        hara.kernel.builtin.BuiltinUtil.prStr(HaraBox.unwrap(value)), "<eval>");
+    return evaluator.evalForm(value, "<eval>");
   }
 
   private Object loadFile(Object value) {
@@ -5661,7 +5662,7 @@ public final class HaraContext {
       currentNamespace = namespaces.get(target);
       Object result = null;
       for (Object form : (ILinearType<?>) forms) {
-        result = parseAndExecute(hara.kernel.builtin.BuiltinUtil.prStr(HaraBox.unwrap(form)), "<with-ns>");
+        result = evaluator.evalForm(form, "<with-ns>");
       }
       return result;
     } finally {
@@ -6996,15 +6997,7 @@ public final class HaraContext {
 
   @TruffleBoundary
   private Object parseAndExecute(String sourceText, String name) {
-    try {
-      Source source = Source.newBuilder(HaraLanguage.ID, sourceText, name).build();
-      return environment.parsePublic(source).call();
-    } catch (RuntimeException error) {
-      if (error instanceof HaraException) {
-        throw (HaraException) error;
-      }
-      throw new HaraException("Unable to evaluate Hara source " + name + ": " + error.getMessage());
-    }
+    return evaluator.evalSource(sourceText, name);
   }
 
   private static final class HaraArray extends ArrayList<Object>

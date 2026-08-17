@@ -55,7 +55,7 @@ struct InterpreterContext {
 impl InterpreterContext {
     fn fresh() -> (Self, HashMap<String, Value>) {
         let runtime = Runtime::new();
-        let environment = runtime.env.clone();
+        let environment = runtime.evaluator.snapshot();
         (Self { runtime }, environment)
     }
 
