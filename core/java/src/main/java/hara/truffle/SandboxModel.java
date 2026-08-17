@@ -4,7 +4,7 @@ import java.util.Objects;
 
 /** Immutable data contracts for Kernel-managed sandboxes. */
 final class SandboxModel {
-  static final String SPEC_PROTOCOL = "hara.sandbox-spec/0-alpha";
+  static final String SPEC_PROTOCOL = "hara.sandbox/0-alpha";
 
   private SandboxModel() {}
 
@@ -27,24 +27,33 @@ final class SandboxModel {
   enum SandboxState {
     OPEN,
     RUNNING,
+    CANCELLING,
     CANCELLED,
     FAILED,
     CLOSED
   }
 
   record SandboxLimits(
-      int sourceBytes, int resultBytes, long evaluationMillis, int activeEvaluations) {
+      int sourceBytes,
+      int resultBytes,
+      int outputBytes,
+      long evaluationMillis,
+      long memoryBytes,
+      int activeEvaluations) {
     SandboxLimits {
       if (sourceBytes <= 0
           || resultBytes <= 0
+          || outputBytes <= 0
           || evaluationMillis <= 0
+          || memoryBytes <= 0
           || activeEvaluations != 1) {
         throw new SandboxException(ErrorCode.INVALID_SPEC, "invalid sandbox limits");
       }
     }
 
     static SandboxLimits defaults() {
-      return new SandboxLimits(64 * 1024, 1024 * 1024, 5_000, 1);
+      return new SandboxLimits(
+          64 * 1024, 1024 * 1024, 1024 * 1024, 5_000, 64L * 1024 * 1024, 1);
     }
   }
 
@@ -83,16 +92,33 @@ final class SandboxModel {
     }
   }
 
-  record SandboxStatus(SandboxId id, String provider, SandboxState state) {}
+  record SandboxError(ErrorCode code, String message) {}
+
+  record SandboxStatus(
+      SandboxId id,
+      String provider,
+      SandboxState state,
+      boolean secure,
+      boolean evaluationActive,
+      SandboxError error) {}
 
   enum ErrorCode {
     INVALID_SPEC,
     PROVIDER_NOT_FOUND,
+    PROVIDER_UNAVAILABLE,
+    BUNDLE_NOT_FOUND,
+    BUNDLE_DIGEST_MISMATCH,
+    MOUNT_NOT_FOUND,
     NOT_FOUND,
     CLOSED,
     BUSY,
+    CANCELLED,
+    TIMEOUT,
     LIMIT_EXCEEDED,
     EVALUATION_FAILED,
+    RESULT_NOT_TRANSFERABLE,
+    TRANSPORT_FAILED,
+    PROVIDER_FAILED,
     UNSUPPORTED
   }
 

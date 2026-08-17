@@ -42,7 +42,7 @@ public class SandboxSubstrateTest {
     SandboxModel.SandboxException invalid =
         assertThrows(
             SandboxModel.SandboxException.class,
-            () -> new SandboxModel.SandboxLimits(1, 1, 1, 2));
+            () -> new SandboxModel.SandboxLimits(1, 1, 1, 1, 1, 2));
     assertEquals(SandboxModel.ErrorCode.INVALID_SPEC, invalid.code());
 
     try (SessionKernel kernel = new SessionKernel(false, false)) {

@@ -19,6 +19,8 @@ interface SandboxProvider {
 
     SandboxModel.SandboxState state();
 
+    SandboxModel.SandboxError error();
+
     @Override
     void close();
   }

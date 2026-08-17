@@ -300,6 +300,7 @@ final class SessionKernel implements AutoCloseable {
   private record Sandbox(
       SandboxModel.SandboxId id,
       String provider,
+      boolean secure,
       SandboxProvider.SandboxInstance instance) {}
 
   void registerSandboxProvider(SandboxProvider provider) {
@@ -315,7 +316,8 @@ final class SessionKernel implements AutoCloseable {
     long value = sandboxRegistry.nextId.getAndIncrement();
     if (value <= 0) throw new IllegalStateException("SANDBOX_IDS_EXHAUSTED");
     SandboxModel.SandboxId id = new SandboxModel.SandboxId(value);
-    sandboxRegistry.entries.put(value, new Sandbox(id, provider.name(), provider.open(spec)));
+    sandboxRegistry.entries.put(
+        value, new Sandbox(id, provider.name(), provider.secure(), provider.open(spec)));
     return id;
   }
 
@@ -343,7 +345,12 @@ final class SessionKernel implements AutoCloseable {
   SandboxModel.SandboxStatus sandboxStatus(SandboxModel.SandboxId id) {
     Sandbox sandbox = requireSandbox(id);
     return new SandboxModel.SandboxStatus(
-        sandbox.id(), sandbox.provider(), sandbox.instance().state());
+        sandbox.id(),
+        sandbox.provider(),
+        sandbox.instance().state(),
+        sandbox.secure(),
+        sandbox.instance().state() == SandboxModel.SandboxState.RUNNING,
+        sandbox.instance().error());
   }
 
   synchronized void closeSandbox(SandboxModel.SandboxId id) {

@@ -1,6 +1,6 @@
 use std::error::Error;
 
-pub const SANDBOX_SPEC_PROTOCOL: &str = "hara.sandbox-spec/0-alpha";
+pub const SANDBOX_SPEC_PROTOCOL: &str = "hara.sandbox/0-alpha";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SandboxId(u64);
@@ -21,6 +21,7 @@ impl fmt::Display for SandboxId {
 pub enum SandboxState {
     Open,
     Running,
+    Cancelling,
     Cancelled,
     Failed,
     Closed,
@@ -31,6 +32,7 @@ impl SandboxState {
         match self {
             Self::Open => "open",
             Self::Running => "running",
+            Self::Cancelling => "cancelling",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
             Self::Closed => "closed",
@@ -42,7 +44,9 @@ impl SandboxState {
 pub struct SandboxLimits {
     pub source_bytes: usize,
     pub result_bytes: usize,
+    pub output_bytes: usize,
     pub evaluation_ms: u64,
+    pub memory_bytes: usize,
     pub active_evaluations: usize,
 }
 
@@ -51,7 +55,9 @@ impl Default for SandboxLimits {
         Self {
             source_bytes: 64 * 1024,
             result_bytes: 1024 * 1024,
+            output_bytes: 1024 * 1024,
             evaluation_ms: 5_000,
+            memory_bytes: 64 * 1024 * 1024,
             active_evaluations: 1,
         }
     }
@@ -108,7 +114,9 @@ impl SandboxSpec {
             .map_err(|_| SandboxError::invalid_spec("invalid entry namespace"))?;
         if self.limits.source_bytes == 0
             || self.limits.result_bytes == 0
+            || self.limits.output_bytes == 0
             || self.limits.evaluation_ms == 0
+            || self.limits.memory_bytes == 0
             || self.limits.active_evaluations != 1
         {
             return Err(SandboxError::invalid_spec("invalid sandbox limits"));
@@ -134,17 +142,29 @@ pub struct SandboxStatus {
     pub id: SandboxId,
     pub provider: String,
     pub state: SandboxState,
+    pub secure: bool,
+    pub evaluation_active: bool,
+    pub error: Option<SandboxError>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SandboxErrorCode {
     InvalidSpec,
     ProviderNotFound,
+    ProviderUnavailable,
+    BundleNotFound,
+    BundleDigestMismatch,
+    MountNotFound,
     NotFound,
     Closed,
     Busy,
+    Cancelled,
+    Timeout,
     LimitExceeded,
     EvaluationFailed,
+    ResultNotTransferable,
+    TransportFailed,
+    ProviderFailed,
     Unsupported,
 }
 

@@ -28,6 +28,7 @@ final class InProcessSandboxProvider implements SandboxProvider {
     private final SandboxModel.SandboxSpec spec;
     private final SessionKernel.Session session;
     private SandboxModel.SandboxState state = SandboxModel.SandboxState.OPEN;
+    private SandboxModel.SandboxError lastError;
 
     private Instance(SandboxModel.SandboxSpec spec, SessionKernel.Session session) {
       this.spec = spec;
@@ -52,12 +53,13 @@ final class InProcessSandboxProvider implements SandboxProvider {
             SandboxModel.ErrorCode.LIMIT_EXCEEDED, "sandbox source limit exceeded");
       }
       state = SandboxModel.SandboxState.RUNNING;
+      lastError = null;
       try {
         Object result = session.evalTransfer(source);
         if (String.valueOf(result).getBytes(StandardCharsets.UTF_8).length
             > spec.limits().resultBytes()) {
           state = SandboxModel.SandboxState.FAILED;
-          throw new SandboxModel.SandboxException(
+          throw failure(
               SandboxModel.ErrorCode.LIMIT_EXCEEDED, "sandbox result limit exceeded");
         }
         state = SandboxModel.SandboxState.OPEN;
@@ -66,8 +68,7 @@ final class InProcessSandboxProvider implements SandboxProvider {
         throw error;
       } catch (RuntimeException error) {
         state = SandboxModel.SandboxState.FAILED;
-        throw new SandboxModel.SandboxException(
-            SandboxModel.ErrorCode.EVALUATION_FAILED, error.getMessage());
+        throw failure(SandboxModel.ErrorCode.EVALUATION_FAILED, error.getMessage());
       }
     }
 
@@ -79,12 +80,13 @@ final class InProcessSandboxProvider implements SandboxProvider {
       }
       requireOpen();
       state = SandboxModel.SandboxState.RUNNING;
+      lastError = null;
       try {
         Object result = session.callTransfer(callable, arguments);
         if (String.valueOf(result).getBytes(StandardCharsets.UTF_8).length
             > spec.limits().resultBytes()) {
           state = SandboxModel.SandboxState.FAILED;
-          throw new SandboxModel.SandboxException(
+          throw failure(
               SandboxModel.ErrorCode.LIMIT_EXCEEDED, "sandbox result limit exceeded");
         }
         state = SandboxModel.SandboxState.OPEN;
@@ -93,8 +95,7 @@ final class InProcessSandboxProvider implements SandboxProvider {
         throw error;
       } catch (RuntimeException error) {
         state = SandboxModel.SandboxState.FAILED;
-        throw new SandboxModel.SandboxException(
-            SandboxModel.ErrorCode.EVALUATION_FAILED, error.getMessage());
+        throw failure(SandboxModel.ErrorCode.EVALUATION_FAILED, error.getMessage());
       }
     }
 
@@ -108,6 +109,17 @@ final class InProcessSandboxProvider implements SandboxProvider {
     @Override
     public SandboxModel.SandboxState state() {
       return state;
+    }
+
+    @Override
+    public SandboxModel.SandboxError error() {
+      return lastError;
+    }
+
+    private SandboxModel.SandboxException failure(
+        SandboxModel.ErrorCode code, String message) {
+      lastError = new SandboxModel.SandboxError(code, message);
+      return new SandboxModel.SandboxException(code, message);
     }
 
     @Override

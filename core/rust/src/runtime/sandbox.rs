@@ -5,6 +5,7 @@ pub trait SandboxInstance {
     fn call(&mut self, callable: &str, arguments_hta: &[u8]) -> Result<Vec<u8>, SandboxError>;
     fn cancel(&mut self) -> Result<bool, SandboxError>;
     fn state(&self) -> SandboxState;
+    fn error(&self) -> Option<SandboxError>;
     fn close(&mut self) -> Result<(), SandboxError>;
 }
 
@@ -41,6 +42,7 @@ impl SandboxProvider for InProcessSandboxProvider {
             session: Session::open(session_spec, runtime),
             limits: spec.limits.clone(),
             state: SandboxState::Open,
+            error: None,
         }))
     }
 }
@@ -49,6 +51,7 @@ struct InProcessSandbox {
     session: Session,
     limits: SandboxLimits,
     state: SandboxState,
+    error: Option<SandboxError>,
 }
 
 impl InProcessSandbox {
@@ -74,6 +77,7 @@ impl InProcessSandbox {
             ));
         }
         self.state = SandboxState::Running;
+        self.error = None;
         match self.session.eval(source) {
             Ok(result) if result.len() <= self.limits.result_bytes => {
                 self.state = SandboxState::Open;
@@ -81,14 +85,18 @@ impl InProcessSandbox {
             }
             Ok(_) => {
                 self.state = SandboxState::Failed;
-                Err(SandboxError::new(
+                let error = SandboxError::new(
                     SandboxErrorCode::LimitExceeded,
                     "sandbox result limit exceeded",
-                ))
+                );
+                self.error = Some(error.clone());
+                Err(error)
             }
             Err(error) => {
                 self.state = SandboxState::Failed;
-                Err(SandboxError::new(SandboxErrorCode::EvaluationFailed, error))
+                let error = SandboxError::new(SandboxErrorCode::EvaluationFailed, error);
+                self.error = Some(error.clone());
+                Err(error)
             }
         }
     }
@@ -102,6 +110,7 @@ impl SandboxInstance for InProcessSandbox {
     fn call(&mut self, callable: &str, arguments_hta: &[u8]) -> Result<Vec<u8>, SandboxError> {
         self.ensure_open()?;
         self.state = SandboxState::Running;
+        self.error = None;
         match self
             .session
             .runtime_mut()
@@ -114,17 +123,19 @@ impl SandboxInstance for InProcessSandbox {
             }
             Ok(_) => {
                 self.state = SandboxState::Failed;
-                Err(SandboxError::new(
+                let error = SandboxError::new(
                     SandboxErrorCode::LimitExceeded,
                     "sandbox result limit exceeded",
-                ))
+                );
+                self.error = Some(error.clone());
+                Err(error)
             }
             Err(error) => {
                 self.state = SandboxState::Failed;
-                Err(SandboxError::new(
-                    SandboxErrorCode::EvaluationFailed,
-                    error.to_string(),
-                ))
+                let error =
+                    SandboxError::new(SandboxErrorCode::EvaluationFailed, error.to_string());
+                self.error = Some(error.clone());
+                Err(error)
             }
         }
     }
@@ -141,6 +152,10 @@ impl SandboxInstance for InProcessSandbox {
         self.state
     }
 
+    fn error(&self) -> Option<SandboxError> {
+        self.error.clone()
+    }
+
     fn close(&mut self) -> Result<(), SandboxError> {
         if self.state != SandboxState::Closed {
             self.session.release();
@@ -153,6 +168,7 @@ impl SandboxInstance for InProcessSandbox {
 struct Sandbox {
     id: SandboxId,
     provider: String,
+    secure: bool,
     instance: Box<dyn SandboxInstance>,
 }
 
@@ -173,6 +189,7 @@ impl SessionKernel {
                 SandboxError::new(SandboxErrorCode::ProviderNotFound, spec.provider.clone())
             })?;
         let instance = provider.open(&spec)?;
+        let secure = provider.secure();
         let id = SandboxId(self.sandbox_registry.next_id);
         self.sandbox_registry.next_id = self
             .sandbox_registry
@@ -184,6 +201,7 @@ impl SessionKernel {
             Sandbox {
                 id,
                 provider: spec.provider,
+                secure,
                 instance,
             },
         );
@@ -224,6 +242,9 @@ impl SessionKernel {
             id: sandbox.id,
             provider: sandbox.provider.clone(),
             state: sandbox.instance.state(),
+            secure: sandbox.secure,
+            evaluation_active: sandbox.instance.state() == SandboxState::Running,
+            error: sandbox.instance.error(),
         })
     }
 
