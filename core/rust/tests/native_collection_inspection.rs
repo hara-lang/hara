@@ -5,7 +5,7 @@ fn keyword_names(values: Vec<core::Value>) -> Vec<String> {
         .into_iter()
         .map(|value| match value {
             core::Value::Keyword(keyword) => keyword.as_str().to_owned(),
-            value => panic!("expected keyword set member, got {}", value.display()),
+            value => panic!("expected keyword set member, got {value:?}"),
         })
         .collect::<Vec<_>>();
     names.sort();
@@ -24,7 +24,7 @@ fn native_set_inspection_accepts_literal_and_constructed_families() {
         let value = runtime.eval_native_value(source).unwrap();
         assert_eq!(
             keyword_names(core::set_values(&value).expect("expected persistent set")),
-            ["alpha", "beta"]
+            vec!["alpha".to_owned(), "beta".to_owned()]
         );
     }
 }
