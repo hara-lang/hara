@@ -174,6 +174,9 @@ impl ProtocolRegistry {
             qualified = canonical_protocol_name(protocol);
             qualified.as_str()
         };
+        if let Some(Value::Extension(receiver)) = arguments.first() {
+            return self.invoke_extension(receiver, protocol, method, arguments);
+        }
         let named_type = match arguments.first() {
             Some(Value::Struct(receiver)) => Some(receiver.ty.name.as_str()),
             Some(Value::Mutable(receiver)) => Some(receiver.ty.name.as_str()),
@@ -567,11 +570,15 @@ impl ProtocolRegistry {
             "resume",
             protocol_coroutine_resume,
         );
-        registry.register("std.protocol.istream/IStream", "next", |arguments| match arguments {
-            [Value::Stream(stream)] => Ok(stream_next(stream)),
-            [_] => Err("IStream/next expects a stream".into()),
-            _ => Err("IStream/next expects one argument".into()),
-        });
+        registry.register(
+            "std.protocol.istream/IStream",
+            "next",
+            |arguments| match arguments {
+                [Value::Stream(stream)] => Ok(stream_next(stream)),
+                [_] => Err("IStream/next expects a stream".into()),
+                _ => Err("IStream/next expects one argument".into()),
+            },
+        );
         registry.register(
             "std.protocol.istreamwrite/IStreamWrite",
             "write",
@@ -580,10 +587,14 @@ impl ProtocolRegistry {
                 _ => Err("IStreamWrite/write expects two arguments".into()),
             },
         );
-        registry.register("std.protocol.iabort/IAbort", "abort", |arguments| match arguments {
-            [_target, _error] => Err("IAbort/abort expects an abortable stream".into()),
-            _ => Err("IAbort/abort expects two arguments".into()),
-        });
+        registry.register(
+            "std.protocol.iabort/IAbort",
+            "abort",
+            |arguments| match arguments {
+                [_target, _error] => Err("IAbort/abort expects an abortable stream".into()),
+                _ => Err("IAbort/abort expects two arguments".into()),
+            },
+        );
         registry.register(
             "std.protocol.iwatch/IWatch",
             "watch-add",

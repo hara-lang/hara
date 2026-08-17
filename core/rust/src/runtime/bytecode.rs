@@ -127,7 +127,11 @@ impl Runtime {
     ) -> Result<core::Value, String> {
         let result = self.execute_compiled_bytecode_registry_value(program);
         let current = self.namespace_registry.current().name().as_str().to_owned();
-        core::select_namespace_environment(&self.namespace_registry, &mut self.env, &current);
+        core::select_namespace_environment(
+            &self.namespace_registry,
+            self.evaluator.environment_mut(),
+            &current,
+        );
         result
     }
 
@@ -216,9 +220,12 @@ impl Runtime {
                 .extend(inferred_function_types);
         }
         let current = self.namespace_registry.current().name().as_str().to_owned();
-        core::select_namespace_environment(&self.namespace_registry, &mut self.env, &current);
+        core::select_namespace_environment(
+            &self.namespace_registry,
+            self.evaluator.environment_mut(),
+            &current,
+        );
         result
     }
 }
-
 

@@ -1,70 +1,27 @@
-use crate::core::{Promise, PromiseRejection, Value};
+use crate::core::{Promise, PromiseRejection, PromiseState, Value};
 use crate::lang::protocol::IComponent;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::rc::{Rc, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Validated portable identifier for one native work run.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct WorkId(String);
+pub(crate) mod guest;
+mod scope;
+mod types;
 
-impl WorkId {
-    pub fn new(value: impl Into<String>) -> Result<Self, String> {
-        let value = value.into();
-        if value.trim().is_empty() {
-            return Err("work run ID cannot be blank".into());
-        }
-        Ok(Self(value))
-    }
+pub use scope::{
+    current_work_context, monotonic_nanos, process_work_host, WorkCancellationToken, WorkContext,
+};
+pub use types::{WorkHostStatus, WorkId, WorkOptions, WorkRunState, WorkRunStatus};
 
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
+use scope::{
+    cancellation_rejection, deadline_remaining_millis, install_progress_hooks, next_work_id,
+    now_millis, resolve_deadline, with_current_work_context, work_failure,
+};
 
-impl fmt::Display for WorkId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// Monotonic state of a live native work run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WorkRunState {
-    Queued,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl WorkRunState {
-    pub fn terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
-    }
-}
-
-/// Non-blocking status snapshot for a live work run.
-#[derive(Clone, Debug, PartialEq)]
-pub struct WorkRunStatus {
-    pub id: WorkId,
-    pub state: WorkRunState,
-    pub started_at_millis: u64,
-    pub finished_at_millis: Option<u64>,
-    pub error: Option<PromiseRejection>,
-}
-
-/// Process-host lifecycle metadata.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WorkHostStatus {
-    pub state: &'static str,
-    pub run_count: usize,
-    pub queued_count: usize,
-}
-
-type WorkTask = Box<dyn FnOnce() -> Result<Value, PromiseRejection>>;
+type WorkTask = Box<dyn FnOnce(WorkContext) -> Result<Value, PromiseRejection>>;
+type WorkFinalizer = Box<dyn FnOnce(WorkContext) -> Result<(), PromiseRejection>>;
 
 struct PendingWork {
     id: WorkId,
@@ -121,7 +78,11 @@ impl WorkHost {
     where
         F: FnOnce() -> Result<Value, String> + 'static,
     {
-        self.submit_rejection(id, move || task().map_err(work_failure))
+        let options = WorkOptions {
+            id: id.map(WorkId::new).transpose()?,
+            ..WorkOptions::default()
+        };
+        self.submit_scoped(options, move |_| task())
     }
 
     /// Submit work whose executor already returns a native structured rejection.
@@ -129,16 +90,61 @@ impl WorkHost {
     where
         F: FnOnce() -> Result<Value, PromiseRejection> + 'static,
     {
+        let options = WorkOptions {
+            id: id.map(WorkId::new).transpose()?,
+            ..WorkOptions::default()
+        };
+        self.submit_scoped_rejection(options, move |_| task())
+    }
+
+    pub fn submit_scoped<F>(&self, options: WorkOptions, task: F) -> Result<WorkRun, String>
+    where
+        F: FnOnce(WorkContext) -> Result<Value, String> + 'static,
+    {
+        self.submit_scoped_rejection(options, move |context| task(context).map_err(work_failure))
+    }
+
+    pub fn submit_scoped_rejection<F>(
+        &self,
+        options: WorkOptions,
+        task: F,
+    ) -> Result<WorkRun, String>
+    where
+        F: FnOnce(WorkContext) -> Result<Value, PromiseRejection> + 'static,
+    {
+        let parent = if options.detached {
+            None
+        } else {
+            current_work_context()
+                .filter(|context| context.host.same_identity(self))
+                .map(|context| context.run)
+        };
+        self.submit_with_parent(parent, options, Box::new(task))
+    }
+
+    fn submit_with_parent(
+        &self,
+        parent: Option<WorkRun>,
+        options: WorkOptions,
+        task: WorkTask,
+    ) -> Result<WorkRun, String> {
         let mut host = self.inner.borrow_mut();
         if !host.started {
             return Err("native work host is stopped".into());
         }
-        let id = match id {
-            Some(id) => WorkId::new(id)?,
+        let deadline = resolve_deadline(&options, parent.as_ref());
+        let id = match options.id.clone() {
+            Some(id) => id,
             None => next_work_id(&mut host)?,
         };
         if host.runs.contains_key(&id) {
             return Err(format!("work run ID already exists: {id}"));
+        }
+        if parent
+            .as_ref()
+            .is_some_and(|parent| !parent.accepts_children())
+        {
+            return Err("parent work scope is closed".into());
         }
 
         let result = Promise::new();
@@ -152,16 +158,45 @@ impl WorkHost {
                     started_at_millis: now_millis(),
                     finished_at_millis: None,
                     error: None,
+                    cancel_reason: None,
+                    parent_id: parent.as_ref().map(WorkRun::work_id),
+                    child_count: 0,
+                    deadline_remaining_millis: deadline.map(deadline_remaining_millis),
+                    detached: options.detached,
                 }),
                 host: Rc::downgrade(&self.inner),
+                parent: parent.as_ref().map(|parent| Rc::downgrade(&parent.inner)),
+                children: RefCell::new(HashMap::new()),
+                deadline,
+                cancellation: RefCell::new(None),
+                body_done: Cell::new(false),
+                body_outcome: RefCell::new(None),
+                finalizers: RefCell::new(Vec::new()),
+                finalizers_started: Cell::new(false),
+                active_promise: RefCell::new(None),
+                parent_notified: Cell::new(false),
+                events: Rc::new(RefCell::new(WorkEventLog {
+                    values: vec![work_event(
+                        &id,
+                        1,
+                        "work/run-queued",
+                        WorkRunState::Queued,
+                        None,
+                    )],
+                    ..WorkEventLog::default()
+                })),
             }),
         };
+        if let Some(parent) = &parent {
+            if !parent.attach_child(run.clone()) {
+                return Err("parent work scope is closed".into());
+            }
+        }
         install_progress_hooks(self, &run);
         host.runs.insert(id.clone(), run.clone());
-        host.queue.push_back(PendingWork {
-            id,
-            task: Box::new(task),
-        });
+        host.queue.push_back(PendingWork { id, task });
+        drop(host);
+        run.check_deadline();
         Ok(run)
     }
 
@@ -172,12 +207,15 @@ impl WorkHost {
     }
 
     pub fn resolve_id(&self, id: &WorkId) -> Result<WorkRun, String> {
-        self.inner
+        let run = self
+            .inner
             .borrow()
             .runs
             .get(id)
             .cloned()
-            .ok_or_else(|| format!("unknown work run: {id}"))
+            .ok_or_else(|| format!("unknown work run: {id}"))?;
+        run.check_deadline();
+        Ok(run)
     }
 
     /// Run one queued item by ID. Returns false when no runnable item remains.
@@ -195,12 +233,18 @@ impl WorkHost {
                 .expect("queued work has no live run");
             (run, pending.task)
         };
+        run.check_deadline();
         if !run.mark_running() {
             return false;
         }
-        match task() {
-            Ok(value) => run.settle_value(value),
-            Err(error) => run.fail(error),
+        let context = WorkContext {
+            host: self.clone(),
+            run: run.clone(),
+        };
+        let result = with_current_work_context(context.clone(), || task(context));
+        match result {
+            Ok(value) => run.settle_body(value),
+            Err(error) => run.fail_body(error),
         }
         true
     }
@@ -217,6 +261,30 @@ impl WorkHost {
 
     pub fn drain(&self) {
         while self.run_next() {}
+    }
+
+    fn progress(&self, id: &WorkId) {
+        let _ = self.run(id);
+        let run = self.resolve_id(id).ok();
+        if let Some(run) = &run {
+            run.progress_active_promise();
+        }
+        while run.as_ref().is_some_and(|run| !run.closed()) && self.run_next() {}
+        if let Some(run) = run {
+            run.progress_active_promise();
+            run.check_deadline();
+        }
+    }
+
+    fn wait_for(&self, id: &WorkId) {
+        self.progress(id);
+        if let Ok(run) = self.resolve_id(id) {
+            let active = run.inner.active_promise.borrow().clone();
+            if let Some(active) = active {
+                active.wait_state();
+            }
+            self.progress(id);
+        }
     }
 
     pub fn status(&self) -> WorkHostStatus {
@@ -237,6 +305,10 @@ impl WorkHost {
     }
 
     pub fn stop(&self) {
+        self.inner.borrow_mut().started = false;
+    }
+
+    pub fn kill(&self) {
         let runs = {
             let mut host = self.inner.borrow_mut();
             host.started = false;
@@ -278,6 +350,16 @@ impl IComponent for WorkHost {
     fn stop(&mut self) {
         WorkHost::stop(self);
     }
+
+    fn kill(&mut self) {
+        WorkHost::kill(self);
+    }
+}
+
+#[derive(Clone)]
+struct CancellationRequest {
+    reason: Value,
+    rejection: PromiseRejection,
 }
 
 struct WorkRunInner {
@@ -285,6 +367,30 @@ struct WorkRunInner {
     result: Promise,
     status: RefCell<WorkRunStatus>,
     host: Weak<RefCell<WorkHostInner>>,
+    parent: Option<Weak<WorkRunInner>>,
+    children: RefCell<HashMap<WorkId, WorkRun>>,
+    deadline: Option<Instant>,
+    cancellation: RefCell<Option<CancellationRequest>>,
+    body_done: Cell<bool>,
+    body_outcome: RefCell<Option<Result<Value, PromiseRejection>>>,
+    finalizers: RefCell<Vec<WorkFinalizer>>,
+    finalizers_started: Cell<bool>,
+    active_promise: RefCell<Option<Promise>>,
+    parent_notified: Cell<bool>,
+    events: Rc<RefCell<WorkEventLog>>,
+}
+
+#[derive(Default)]
+struct WorkEventLog {
+    values: Vec<Value>,
+    closed: bool,
+    cursors: Vec<Weak<RefCell<WorkEventCursor>>>,
+}
+
+struct WorkEventCursor {
+    next: usize,
+    pending: Option<Promise>,
+    closed: bool,
 }
 
 /// Live process-owned handle returned immediately from submission.
@@ -308,7 +414,21 @@ impl WorkRun {
     }
 
     pub fn work_status(&self) -> WorkRunStatus {
-        self.inner.status.borrow().clone()
+        self.check_deadline();
+        let mut status = self.inner.status.borrow().clone();
+        status.child_count = self.inner.children.borrow().len();
+        status.deadline_remaining_millis = self.inner.deadline.map(deadline_remaining_millis);
+        status
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.inner.deadline
+    }
+
+    pub fn cancellation_token(&self) -> WorkCancellationToken {
+        WorkCancellationToken {
+            run: Rc::downgrade(&self.inner),
+        }
     }
 
     /// Return the same native result Promise on every call.
@@ -322,17 +442,92 @@ impl WorkRun {
         result
     }
 
+    pub fn work_events(&self, after: usize) -> Value {
+        let cursor = Rc::new(RefCell::new(WorkEventCursor {
+            next: after,
+            pending: None,
+            closed: false,
+        }));
+        self.inner
+            .events
+            .borrow_mut()
+            .cursors
+            .push(Rc::downgrade(&cursor));
+        let events = self.inner.events.clone();
+        let next_cursor = cursor.clone();
+        let next = Rc::new(move || event_next(&events, &next_cursor));
+        let events = self.inner.events.clone();
+        let close_cursor = cursor;
+        let close = Rc::new(move || {
+            let pending = {
+                let mut cursor = close_cursor.borrow_mut();
+                cursor.closed = true;
+                cursor.pending.take()
+            };
+            if let Some(pending) = pending {
+                pending.resolve(Value::Nil);
+            }
+            events.borrow_mut().cursors.retain(|candidate| {
+                candidate
+                    .upgrade()
+                    .is_some_and(|candidate| !Rc::ptr_eq(&candidate, &close_cursor))
+            });
+            Ok(())
+        });
+        crate::core::host_stream(next, close)
+    }
+
     pub fn cancel(&self, reason: Value) -> bool {
-        let rejection = cancellation_rejection(reason);
-        if !self.transition_terminal(WorkRunState::Cancelled, Some(rejection.clone())) {
-            return false;
+        let rejection = cancellation_rejection(reason.clone());
+        {
+            let mut cancellation = self.inner.cancellation.borrow_mut();
+            if cancellation.is_some() || self.closed() {
+                return false;
+            }
+            *cancellation = Some(CancellationRequest {
+                reason: reason.clone(),
+                rejection: rejection.clone(),
+            });
         }
-        if let Some(host) = self.inner.host.upgrade() {
-            host.borrow_mut()
-                .queue
-                .retain(|pending| pending.id != self.inner.id);
+
+        let previous = {
+            let mut status = self.inner.status.borrow_mut();
+            let previous = status.state;
+            if !previous.terminal() {
+                status.state = WorkRunState::Cancelling;
+                status.cancel_reason = Some(reason.clone());
+            }
+            previous
+        };
+        self.publish_event(
+            "work/run-cancelling",
+            WorkRunState::Cancelling,
+            Some(reason.clone()),
+            false,
+        );
+        if previous == WorkRunState::Queued {
+            if let Some(host) = self.inner.host.upgrade() {
+                host.borrow_mut()
+                    .queue
+                    .retain(|pending| pending.id != self.inner.id);
+            }
+            self.inner.body_done.set(true);
         }
-        self.inner.result.reject_rejection(rejection);
+        let active = self.inner.active_promise.borrow().clone();
+        if let Some(active) = active {
+            active.cancel();
+        }
+        let children = self
+            .inner
+            .children
+            .borrow()
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for child in children {
+            child.cancel(reason.clone());
+        }
+        self.finish_if_ready();
         true
     }
 
@@ -344,250 +539,382 @@ impl WorkRun {
         Rc::ptr_eq(&self.inner, &other.inner)
     }
 
+    fn accepts_children(&self) -> bool {
+        !self.inner.body_done.get()
+            && !self.inner.finalizers_started.get()
+            && self.inner.cancellation.borrow().is_none()
+            && !self.closed()
+    }
+
+    fn attach_child(&self, child: WorkRun) -> bool {
+        if !self.accepts_children() {
+            return false;
+        }
+        self.inner
+            .children
+            .borrow_mut()
+            .insert(child.work_id(), child);
+        true
+    }
+
+    fn child_closed(&self, child: &WorkRun) {
+        self.inner.children.borrow_mut().remove(&child.work_id());
+        self.finish_if_ready();
+    }
+
     fn mark_running(&self) -> bool {
+        self.check_deadline();
         let mut status = self.inner.status.borrow_mut();
         if status.state != WorkRunState::Queued {
             return false;
         }
         status.state = WorkRunState::Running;
+        drop(status);
+        self.publish_event("work/run-running", WorkRunState::Running, None, false);
         true
     }
 
-    fn settle_value(&self, value: Value) {
+    fn settle_body(&self, value: Value) {
         if let Value::Promise(source) = value {
-            self.adopt(source);
-            return;
-        }
-        if self.transition_terminal(WorkRunState::Completed, None) {
-            self.inner.result.resolve(value);
-        }
-    }
-
-    fn adopt(&self, source: Promise) {
-        if source.same_identity(&self.inner.result) {
-            self.fail(work_failure("work result promise adoption cycle".into()));
-            return;
-        }
-        let run = Rc::downgrade(&self.inner);
-        source.on_settle(Rc::new(move |state| {
-            let Some(inner) = run.upgrade() else {
+            if source.same_identity(&self.inner.result) {
+                self.fail_body(work_failure("work result promise adoption cycle".into()));
                 return;
-            };
-            let run = WorkRun { inner };
-            match state {
-                crate::core::PromiseState::Pending => {}
-                crate::core::PromiseState::Fulfilled(_) => {
-                    run.transition_terminal(WorkRunState::Completed, None);
-                }
-                crate::core::PromiseState::Rejected(error) => {
-                    run.transition_terminal(WorkRunState::Failed, Some(error));
-                }
             }
-        }));
-        self.inner.result.adopt(&source);
+            *self.inner.active_promise.borrow_mut() = Some(source.clone());
+            if self.inner.cancellation.borrow().is_some() {
+                source.cancel();
+            }
+            let run = Rc::downgrade(&self.inner);
+            source.on_settle(Rc::new(move |state| {
+                let Some(inner) = run.upgrade() else {
+                    return;
+                };
+                let run = WorkRun { inner };
+                run.inner.active_promise.borrow_mut().take();
+                match state {
+                    PromiseState::Pending => return,
+                    PromiseState::Fulfilled(value) => {
+                        *run.inner.body_outcome.borrow_mut() = Some(Ok(value));
+                    }
+                    PromiseState::Rejected(error) => {
+                        *run.inner.body_outcome.borrow_mut() = Some(Err(error));
+                    }
+                }
+                run.inner.body_done.set(true);
+                run.finish_if_ready();
+            }));
+            self.set_nonterminal_state(if self.inner.cancellation.borrow().is_some() {
+                WorkRunState::Cancelling
+            } else {
+                WorkRunState::Waiting
+            });
+            source.state();
+            return;
+        }
+        *self.inner.body_outcome.borrow_mut() = Some(Ok(value));
+        self.inner.body_done.set(true);
+        self.finish_if_ready();
     }
 
-    fn fail(&self, error: PromiseRejection) {
-        if self.transition_terminal(WorkRunState::Failed, Some(error.clone())) {
-            self.inner.result.reject_rejection(error);
+    fn fail_body(&self, error: PromiseRejection) {
+        *self.inner.body_outcome.borrow_mut() = Some(Err(error));
+        self.inner.body_done.set(true);
+        self.finish_if_ready();
+    }
+
+    fn progress_active_promise(&self) {
+        let active = self.inner.active_promise.borrow().clone();
+        if let Some(active) = active {
+            active.state();
         }
     }
 
-    fn transition_terminal(&self, state: WorkRunState, error: Option<PromiseRejection>) -> bool {
-        let mut status = self.inner.status.borrow_mut();
-        if status.state.terminal() {
+    fn check_deadline(&self) {
+        if self
+            .inner
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
+            self.cancel(Value::Keyword("deadline-exceeded".into()));
+        }
+    }
+
+    fn register_finalizer(&self, finalizer: WorkFinalizer) -> bool {
+        if self.inner.finalizers_started.get() || self.closed() {
             return false;
         }
-        status.state = state;
-        status.finished_at_millis = Some(now_millis());
-        status.error = error;
+        self.inner.finalizers.borrow_mut().push(finalizer);
         true
     }
-}
 
-thread_local! {
-    static PROCESS_WORK_HOST: WorkHost = WorkHost::new();
-}
-
-/// Return the process/evaluator-thread host shared by independent sessions.
-pub fn process_work_host() -> WorkHost {
-    PROCESS_WORK_HOST.with(Clone::clone)
-}
-
-fn install_progress_hooks(host: &WorkHost, run: &WorkRun) {
-    let weak_host = Rc::downgrade(&host.inner);
-    let id = run.work_id();
-    run.inner.result.set_poller(Rc::new(move || {
-        if let Some(inner) = weak_host.upgrade() {
-            WorkHost { inner }.run(&id);
+    fn finish_if_ready(&self) {
+        if !self.inner.body_done.get() {
+            return;
         }
-    }));
-
-    let weak_host = Rc::downgrade(&host.inner);
-    let id = run.work_id();
-    run.inner.result.set_waiter(Rc::new(move || {
-        if let Some(inner) = weak_host.upgrade() {
-            WorkHost { inner }.run(&id);
+        if !self.inner.children.borrow().is_empty() {
+            self.set_nonterminal_state(if self.inner.cancellation.borrow().is_some() {
+                WorkRunState::Cancelling
+            } else {
+                WorkRunState::Waiting
+            });
+            return;
         }
-    }));
-}
+        if self.inner.finalizers_started.replace(true) {
+            return;
+        }
 
-fn next_work_id(host: &mut WorkHostInner) -> Result<WorkId, String> {
-    loop {
-        let id = WorkId(format!("run-{}", host.next_id));
-        host.next_id = host
-            .next_id
-            .checked_add(1)
-            .ok_or_else(|| "work run identifiers exhausted".to_string())?;
-        if !host.runs.contains_key(&id) {
-            return Ok(id);
+        let context = self.context();
+        let mut finalizer_error = None;
+        let mut finalizers = std::mem::take(&mut *self.inner.finalizers.borrow_mut());
+        while let Some(finalizer) = finalizers.pop() {
+            let result = with_current_work_context(context.clone(), || finalizer(context.clone()));
+            if finalizer_error.is_none() {
+                if let Err(error) = result {
+                    finalizer_error = Some(error);
+                }
+            }
+        }
+
+        if let Some(cancellation) = self.inner.cancellation.borrow().clone() {
+            self.settle_terminal(
+                WorkRunState::Cancelled,
+                Some(cancellation.rejection.clone()),
+                Some(cancellation.reason),
+                None,
+            );
+            return;
+        }
+        if let Some(error) = finalizer_error {
+            self.settle_terminal(WorkRunState::Failed, Some(error), None, None);
+            return;
+        }
+        match self.inner.body_outcome.borrow_mut().take() {
+            Some(Ok(value)) => {
+                self.settle_terminal(WorkRunState::Completed, None, None, Some(value));
+            }
+            Some(Err(error)) => {
+                self.settle_terminal(WorkRunState::Failed, Some(error), None, None);
+            }
+            None => {
+                self.settle_terminal(
+                    WorkRunState::Failed,
+                    Some(work_failure("work body produced no outcome".into())),
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+
+    fn settle_terminal(
+        &self,
+        state: WorkRunState,
+        error: Option<PromiseRejection>,
+        cancel_reason: Option<Value>,
+        value: Option<Value>,
+    ) -> bool {
+        {
+            let mut status = self.inner.status.borrow_mut();
+            if status.state.terminal() {
+                return false;
+            }
+            status.state = state;
+            status.finished_at_millis = Some(now_millis());
+            status.error = error.clone();
+            status.cancel_reason = cancel_reason.clone();
+        }
+        let event_detail = if state == WorkRunState::Failed {
+            error.as_ref().map(PromiseRejection::value)
+        } else {
+            cancel_reason
+        };
+        match state {
+            WorkRunState::Completed => {
+                self.inner.result.resolve(value.unwrap_or(Value::Nil));
+            }
+            WorkRunState::Failed | WorkRunState::Cancelled => {
+                self.inner
+                    .result
+                    .reject_rejection(error.expect("terminal failure requires rejection"));
+            }
+            _ => unreachable!("non-terminal state passed to settle_terminal"),
+        }
+        self.publish_event(work_event_type(state), state, event_detail, true);
+        self.notify_parent();
+        true
+    }
+
+    fn set_nonterminal_state(&self, state: WorkRunState) {
+        let mut status = self.inner.status.borrow_mut();
+        let changed = !status.state.terminal() && status.state != state;
+        if changed {
+            status.state = state;
+        }
+        drop(status);
+        if changed && state == WorkRunState::Waiting {
+            self.publish_event("work/run-waiting", state, None, false);
+        }
+    }
+
+    fn notify_parent(&self) {
+        if self.inner.parent_notified.replace(true) {
+            return;
+        }
+        let Some(parent) = self.inner.parent.as_ref().and_then(Weak::upgrade) else {
+            return;
+        };
+        WorkRun { inner: parent }.child_closed(self);
+    }
+
+    fn context(&self) -> WorkContext {
+        let host = self
+            .inner
+            .host
+            .upgrade()
+            .map(|inner| WorkHost { inner })
+            .expect("work host was dropped while run remained live");
+        WorkContext {
+            host,
+            run: self.clone(),
+        }
+    }
+
+    fn publish_event(
+        &self,
+        kind: &str,
+        state: WorkRunState,
+        detail: Option<Value>,
+        terminal: bool,
+    ) {
+        let pending = {
+            let mut events = self.inner.events.borrow_mut();
+            let sequence = events.values.len() + 1;
+            events
+                .values
+                .push(work_event(&self.inner.id, sequence, kind, state, detail));
+            if terminal {
+                events.closed = true;
+            }
+            let mut pending = Vec::new();
+            let mut retained = Vec::new();
+            for weak in std::mem::take(&mut events.cursors) {
+                let Some(cursor) = weak.upgrade() else {
+                    continue;
+                };
+                if let Some(settlement) = event_take(&events, &mut cursor.borrow_mut()) {
+                    pending.push(settlement);
+                }
+                retained.push(Rc::downgrade(&cursor));
+            }
+            events.cursors = retained;
+            pending
+        };
+        for (promise, value) in pending {
+            promise.resolve(value);
         }
     }
 }
 
-fn work_failure(message: String) -> PromiseRejection {
-    PromiseRejection::Value(Value::Map(
+fn work_event(
+    id: &WorkId,
+    sequence: usize,
+    kind: &str,
+    state: WorkRunState,
+    detail: Option<Value>,
+) -> Value {
+    let data = Value::Map(
         [
             (
-                Value::Keyword("code".into()),
-                Value::Keyword("work/failed".into()),
+                Value::Keyword("state".into()),
+                Value::Keyword(work_state_name(state).into()),
             ),
-            (Value::Keyword("message".into()), Value::String(message)),
-            (Value::Keyword("retryable".into()), Value::Bool(false)),
+            (
+                Value::Keyword("detail".into()),
+                detail.unwrap_or(Value::Nil),
+            ),
         ]
         .into_iter()
         .collect(),
-    ))
-}
-
-fn cancellation_rejection(reason: Value) -> PromiseRejection {
-    PromiseRejection::Cancelled(Value::Map(
+    );
+    Value::Map(
         [
             (
-                Value::Keyword("code".into()),
-                Value::Keyword("work/cancelled".into()),
+                Value::Keyword("event/type".into()),
+                Value::Keyword(kind.into()),
             ),
-            (Value::Keyword("reason".into()), reason),
-            (Value::Keyword("retryable".into()), Value::Bool(false)),
+            (
+                Value::Keyword("event/run".into()),
+                Value::String(id.to_string()),
+            ),
+            (
+                Value::Keyword("event/sequence".into()),
+                Value::Number(sequence as i64),
+            ),
+            (Value::Keyword("event/data".into()), data),
         ]
         .into_iter()
         .collect(),
-    ))
+    )
 }
 
-fn now_millis() -> u64 {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    u64::try_from(millis).unwrap_or(u64::MAX)
+fn work_state_name(state: WorkRunState) -> &'static str {
+    match state {
+        WorkRunState::Queued => "queued",
+        WorkRunState::Running => "running",
+        WorkRunState::Waiting => "waiting",
+        WorkRunState::Cancelling => "cancelling",
+        WorkRunState::Completed => "completed",
+        WorkRunState::Failed => "failed",
+        WorkRunState::Cancelled => "cancelled",
+    }
+}
+
+fn work_event_type(state: WorkRunState) -> &'static str {
+    match state {
+        WorkRunState::Completed => "work/run-completed",
+        WorkRunState::Failed => "work/run-failed",
+        WorkRunState::Cancelled => "work/run-cancelled",
+        _ => unreachable!("terminal work event requires a terminal state"),
+    }
+}
+
+fn event_take(events: &WorkEventLog, cursor: &mut WorkEventCursor) -> Option<(Promise, Value)> {
+    let promise = cursor.pending.take()?;
+    if cursor.next < events.values.len() {
+        let value = events.values[cursor.next].clone();
+        cursor.next += 1;
+        return Some((promise, value));
+    }
+    if events.closed || cursor.closed {
+        cursor.closed = true;
+        return Some((promise, Value::Nil));
+    }
+    cursor.pending = Some(promise);
+    None
+}
+
+fn event_next(
+    events: &Rc<RefCell<WorkEventLog>>,
+    cursor: &Rc<RefCell<WorkEventCursor>>,
+) -> Result<Promise, String> {
+    let promise = Promise::new();
+    let settlement = {
+        let events = events.borrow();
+        let mut cursor = cursor.borrow_mut();
+        if cursor.closed {
+            Some((promise.clone(), Value::Nil))
+        } else if cursor.pending.is_some() {
+            return Err("stream/pending-pull: only one Stream/next may be pending".into());
+        } else {
+            cursor.pending = Some(promise.clone());
+            event_take(&events, &mut cursor)
+        }
+    };
+    if let Some((target, value)) = settlement {
+        target.resolve(value);
+    }
+    Ok(promise)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::PromiseState;
-    use std::cell::Cell;
-
-    #[test]
-    fn submission_returns_a_queued_handle_before_execution() {
-        let host = WorkHost::new();
-        let executed = Rc::new(Cell::new(false));
-        let task_executed = executed.clone();
-        let run = host
-            .submit(Some("immediate"), move || {
-                task_executed.set(true);
-                Ok(Value::Number(7))
-            })
-            .unwrap();
-
-        assert_eq!(run.work_status().state, WorkRunState::Queued);
-        assert!(!executed.get());
-        assert_eq!(
-            run.work_result().state(),
-            PromiseState::Fulfilled(Value::Number(7))
-        );
-        assert!(executed.get());
-        assert_eq!(run.work_status().state, WorkRunState::Completed);
-    }
-
-    #[test]
-    fn independent_session_kernels_resolve_the_same_live_handle() {
-        let first = crate::SessionKernel::new().work_host();
-        let second = crate::SessionKernel::new().work_host();
-        assert!(first.same_identity(&second));
-
-        let run = first
-            .submit(None, || Ok(Value::String("shared".into())))
-            .unwrap();
-        let resolved = second.resolve_id(&run.work_id()).unwrap();
-        assert!(run.same_identity(&resolved));
-        assert!(run.work_result().same_identity(&resolved.work_result()));
-        assert_eq!(
-            resolved.work_result().state(),
-            PromiseState::Fulfilled(Value::String("shared".into()))
-        );
-    }
-
-    #[test]
-    fn failure_is_retained_and_rejects_the_cached_result() {
-        let host = WorkHost::new();
-        let run = host
-            .submit(Some("failed"), || Err("executor failed".into()))
-            .unwrap();
-        let result = run.work_result();
-        assert!(result.same_identity(&run.work_result()));
-        assert!(matches!(result.state(), PromiseState::Rejected(_)));
-
-        let status = run.work_status();
-        assert_eq!(status.state, WorkRunState::Failed);
-        let Some(PromiseRejection::Value(Value::Map(fields))) = status.error else {
-            panic!("work failure was not retained as a structured value");
-        };
-        assert_eq!(
-            fields.get(&Value::Keyword("code".into())),
-            Some(&Value::Keyword("work/failed".into()))
-        );
-    }
-
-    #[test]
-    fn cancelling_queued_work_prevents_its_executor_from_starting() {
-        let host = WorkHost::new();
-        let executed = Rc::new(Cell::new(false));
-        let task_executed = executed.clone();
-        let run = host
-            .submit(Some("cancelled"), move || {
-                task_executed.set(true);
-                Ok(Value::Number(1))
-            })
-            .unwrap();
-
-        assert!(run.cancel(Value::Keyword("test".into())));
-        host.drain();
-        assert!(!executed.get());
-        assert_eq!(run.work_status().state, WorkRunState::Cancelled);
-        assert!(matches!(
-            run.work_result().state(),
-            PromiseState::Rejected(ref error) if error.is_cancelled()
-        ));
-    }
-
-    #[test]
-    fn adopted_promises_settle_status_and_result_once() {
-        let host = WorkHost::new();
-        let source = Promise::new();
-        let task_source = source.clone();
-        let run = host
-            .submit(Some("adopted"), move || Ok(Value::Promise(task_source)))
-            .unwrap();
-        let result = run.work_result();
-
-        assert_eq!(result.state(), PromiseState::Pending);
-        assert_eq!(run.work_status().state, WorkRunState::Running);
-        source.resolve(Value::Number(42));
-        assert_eq!(run.work_status().state, WorkRunState::Completed);
-        assert_eq!(result.state(), PromiseState::Fulfilled(Value::Number(42)));
-        assert!(!run.cancel(Value::Keyword("late".into())));
-        assert_eq!(result.state(), PromiseState::Fulfilled(Value::Number(42)));
-    }
-}
+mod tests;

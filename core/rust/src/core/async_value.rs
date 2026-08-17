@@ -155,11 +155,18 @@ fn stream_next(stream: &RuntimeStream) -> Value {
         return Value::Promise(promise);
     }
     match &stream.source {
-        RuntimeStreamSource::Coroutine { coroutine, initial_arguments } => {
+        RuntimeStreamSource::Coroutine {
+            coroutine,
+            initial_arguments,
+        } => {
             let arguments = initial_arguments.borrow_mut().take().unwrap_or_default();
             let coroutine = coroutine.clone();
             let state = Rc::new((stream.pending.clone(), stream.closed.clone()));
-            let step = fiber::coroutine::coroutine_resume(coroutine.clone(), arguments, Box::new(Step::Done));
+            let step = fiber::coroutine::coroutine_resume(
+                coroutine.clone(),
+                arguments,
+                Box::new(Step::Done),
+            );
             drive_stream_step(step, coroutine, state, promise.clone());
         }
         RuntimeStreamSource::Guest { next, .. } => {
@@ -178,42 +185,70 @@ fn stream_next(stream: &RuntimeStream) -> Value {
                 pending.set(false);
                 match settled {
                     PromiseState::Fulfilled(value) => {
-                        if matches!(value, Value::Nil) { closed.set(true); }
+                        if matches!(value, Value::Nil) {
+                            closed.set(true);
+                        }
                         output.resolve(value);
                     }
-                    PromiseState::Rejected(error) => { closed.set(true); output.reject_rejection(error); }
+                    PromiseState::Rejected(error) => {
+                        closed.set(true);
+                        output.reject_rejection(error);
+                    }
                     PromiseState::Pending => {}
                 };
             }));
             let source_poll = source.clone();
-            promise.set_poller(Rc::new(move || { source_poll.state(); }));
+            promise.set_poller(Rc::new(move || {
+                source_poll.state();
+            }));
             let source_wait = source.clone();
-            promise.set_waiter(Rc::new(move || { source_wait.wait_state(); }));
+            promise.set_waiter(Rc::new(move || {
+                source_wait.wait_state();
+            }));
         }
         RuntimeStreamSource::Host { next, .. } => match next() {
             Ok(source) => {
                 let pending = stream.pending.clone();
+                let closed = stream.closed.clone();
                 let output = promise.clone();
                 source.on_settle(Rc::new(move |settled| {
                     pending.set(false);
                     match settled {
-                        PromiseState::Fulfilled(value) => { output.resolve(value); }
-                        PromiseState::Rejected(error) => { output.reject_rejection(error); }
+                        PromiseState::Fulfilled(value) => {
+                            if matches!(value, Value::Nil) {
+                                closed.set(true);
+                            }
+                            output.resolve(value);
+                        }
+                        PromiseState::Rejected(error) => {
+                            closed.set(true);
+                            output.reject_rejection(error);
+                        }
                         PromiseState::Pending => {}
                     };
                 }));
                 let source_poll = source.clone();
-                promise.set_poller(Rc::new(move || { source_poll.state(); }));
+                promise.set_poller(Rc::new(move || {
+                    source_poll.state();
+                }));
                 let source_wait = source.clone();
-                promise.set_waiter(Rc::new(move || { source_wait.wait_state(); }));
+                promise.set_waiter(Rc::new(move || {
+                    source_wait.wait_state();
+                }));
             }
-            Err(error) => { stream.pending.set(false); promise.reject(error); }
+            Err(error) => {
+                stream.pending.set(false);
+                promise.reject(error);
+            }
         },
     }
     Value::Promise(promise)
 }
 
-fn host_stream(next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>>) -> Value {
+pub(crate) fn host_stream(
+    next: Rc<dyn Fn() -> Result<Promise, String>>,
+    close: Rc<dyn Fn() -> Result<(), String>>,
+) -> Value {
     Value::Stream(Rc::new(RuntimeStream::host(next, close)))
 }
 
@@ -260,7 +295,9 @@ fn drive_stream_step(
                         let _ = coroutine_close(&coroutine);
                         output.reject("stream/nil-item: a stream coroutine may not yield nil");
                     }
-                    Ok(value) => { output.resolve(value); }
+                    Ok(value) => {
+                        output.resolve(value);
+                    }
                     Err(error) => {
                         state.1.set(true);
                         output.reject(error);
@@ -276,7 +313,12 @@ fn drive_stream_step(
                 let output_next = output.clone();
                 promise.on_settle(Rc::new(move |settled| {
                     if let Some(resume) = resume.borrow_mut().take() {
-                        drive_stream_step(resume(settled), coroutine_next.clone(), state_next.clone(), output_next.clone());
+                        drive_stream_step(
+                            resume(settled),
+                            coroutine_next.clone(),
+                            state_next.clone(),
+                            output_next.clone(),
+                        );
                     }
                 }));
                 return;
@@ -296,7 +338,9 @@ fn native_stream_operation(
     forms: &[Form],
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
-    let method = operation.strip_prefix("std.native.Stream/").unwrap_or(operation);
+    let method = operation
+        .strip_prefix("std.native.Stream/")
+        .unwrap_or(operation);
     match method {
         "create" => {
             if !(1..=2).contains(&forms.len()) {
@@ -327,11 +371,18 @@ fn native_stream_operation(
             Ok(Value::Stream(Rc::new(RuntimeStream::new(body, arguments))))
         }
         "instance?" => {
-            if forms.len() != 1 { return Err("Stream/instance? expects one value".into()); }
-            Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Stream(_))))
+            if forms.len() != 1 {
+                return Err("Stream/instance? expects one value".into());
+            }
+            Ok(Value::Bool(matches!(
+                eval(&forms[0], env)?,
+                Value::Stream(_)
+            )))
         }
         "next" => {
-            if forms.len() != 1 { return Err("Stream/next expects one stream".into()); }
+            if forms.len() != 1 {
+                return Err("Stream/next expects one stream".into());
+            }
             match eval(&forms[0], env)? {
                 Value::Stream(stream) => Ok(stream_next(&stream)),
                 _ => Err("Stream/next expects a stream".into()),

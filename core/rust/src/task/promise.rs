@@ -260,9 +260,15 @@ impl Promise {
     }
 
     pub(crate) fn notify_cancel(&self) {
-        let cancel = self.inner.borrow().hooks.cancel.clone();
+        let (cancel, adopted_from) = {
+            let inner = self.inner.borrow();
+            (inner.hooks.cancel.clone(), inner.adopted_from.clone())
+        };
         if let Some(cancel) = cancel {
             cancel();
+        }
+        if let Some(source) = adopted_from.and_then(|source| source.upgrade()) {
+            Promise { inner: source }.cancel();
         }
     }
 

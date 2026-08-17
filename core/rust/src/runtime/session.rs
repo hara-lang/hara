@@ -9,6 +9,9 @@ pub struct SessionKernel {
     mounts: HashMap<u64, FilesystemMount>,
     session_mounts: HashMap<String, u64>,
     next_mount_id: u64,
+    sandbox_providers: HashMap<String, Rc<dyn SandboxProvider>>,
+    sandboxes: HashMap<u64, Sandbox>,
+    next_sandbox_id: u64,
     test_runner: String,
 }
 
@@ -249,6 +252,9 @@ impl SessionKernel {
             mounts: HashMap::new(),
             session_mounts: HashMap::new(),
             next_mount_id: 1,
+            sandbox_providers: HashMap::new(),
+            sandboxes: HashMap::new(),
+            next_sandbox_id: 1,
             test_runner: "code.test".into(),
         }
     }
@@ -377,7 +383,10 @@ impl SessionKernel {
         self.session_mounts
             .insert(session.to_string(), mount_id.get());
         let session = self.sessions.get_mut(session.as_str()).unwrap();
-        session.runtime_mut()?.providers.set_file(Some(provider.clone()));
+        session
+            .runtime_mut()?
+            .providers
+            .set_file(Some(provider.clone()));
         session.filesystem = Some(AttachedFilesystem {
             id: mount_id,
             _provider: provider,
@@ -406,10 +415,7 @@ impl SessionKernel {
             .and_then(Session::filesystem_mount)
     }
 
-    pub fn filesystem_info(
-        &self,
-        mount_id: SessionMountId,
-    ) -> Result<(&str, &str, usize), String> {
+    pub fn filesystem_info(&self, mount_id: SessionMountId) -> Result<(&str, &str, usize), String> {
         self.mounts
             .get(&mount_id.get())
             .map(|mount| (mount.kind, mount.key.as_str(), mount.attachments))

@@ -1736,7 +1736,7 @@ public class HaraLanguageTest {
     while (names.find()) {
       protocols.add(names.group(1));
     }
-    assertEquals(54, protocols.size());
+    assertEquals(55, protocols.size());
     Set<String> unavailableProtocols =
         Set.of(
             "IColl",
@@ -1854,7 +1854,7 @@ public class HaraLanguageTest {
     String catalog =
         Files.readString(
             Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn"));
-    assertEquals(89, catalog.split("\\{:protocol ", -1).length - 1);
+    assertEquals(90, catalog.split("\\{:protocol ", -1).length - 1);
     Matcher methodVars =
         Pattern.compile(
                 "(?m)^\\s*\\[?\\(protocol-case\\s+:[^\\s]+\\s+:[^\\s]+\\s+"

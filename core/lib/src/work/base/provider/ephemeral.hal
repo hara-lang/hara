@@ -1,0 +1,82 @@
+(ns work.base.provider.ephemeral
+  (:require [work.base.host :as host]
+            [work.native :as native]))
+
+(def default-locator
+  {:host/type :ephemeral
+   :host/id "process-default"
+   :host/api :std.work.host/v1})
+
+(defn- component-status
+  [native-host]
+  (let [value (IComponent/status native-host)]
+    (if (map? value)
+      (:state value)
+      value)))
+
+(defn provider
+  ([]
+   (provider {}))
+  ([options]
+   (let [native-host (or (:native-host options)
+                         native/default-host)
+         locator
+         (host/normalise-locator
+          {:host/type :ephemeral
+           :host/id (or (:id options) "process-default")
+           :host/api :std.work.host/v1})]
+     {:provider/role :work/host
+      :provider/api :std.work.host/v1
+      :provider/id :ephemeral
+      :provider/locator locator
+      :provider/capabilities #{:inline-work
+                               :process-owned
+                               :structured-cancellation}
+      :provider/native-host native-host
+      :provider/operations
+      {:start
+       (fn []
+         (IComponent/start native-host))
+       :stop
+       (fn []
+         (IComponent/stop native-host))
+       :kill
+       (fn []
+         (IComponent/kill native-host))
+       :status
+       (fn []
+         (component-status native-host))
+       :submit
+       (fn [work input submit-options]
+         (let [run
+               (IWorkHost/work-submit native-host
+                                      work
+                                      input
+                                      submit-options)]
+           {:run/id (IWorkRef/work-id run)
+            :run/handle run}))
+       :resolve
+       (fn [reference]
+         {:run/handle
+          (IWorkHost/work-resolve native-host
+                                  (IWorkRef/work-id reference))})
+       :run-status
+       (fn [reference run]
+         (IWorkRun/work-status run))
+       :run-result
+       (fn [reference run]
+         (IWorkRun/work-result run))
+       :run-events
+       (fn [reference run options]
+         (IWorkRun/work-events run options))
+       :run-cancel
+       (fn [reference run reason]
+         (IWorkRun/work-cancel run reason))}})))
+
+(defn ephemeral-host
+  ([]
+   (ephemeral-host {}))
+  ([options]
+   (let [provider (provider options)]
+     (host/host (:provider/locator provider)
+                provider))))

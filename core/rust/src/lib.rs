@@ -69,9 +69,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+include!("runtime/evaluator.rs");
 include!("runtime/model.rs");
 include!("runtime/session_model.rs");
+include!("runtime/sandbox_model.rs");
 include!("runtime/session.rs");
+include!("runtime/sandbox.rs");
 include!("runtime/runtime.rs");
 include!("runtime/bytecode.rs");
 include!("runtime/evaluation.rs");

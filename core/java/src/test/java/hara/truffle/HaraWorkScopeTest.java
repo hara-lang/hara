@@ -203,7 +203,7 @@ public class HaraWorkScopeTest {
   }
 
   private static Object status(IWorkRun run, Keyword key) {
-    return ((IMapType) run.workStatus()).lookup(key);
+    return ((IMapType) HaraWorkHost.workStatusSnapshot(run)).lookup(key);
   }
 
   private static void awaitState(IWorkRun run, Keyword expected) throws Exception {

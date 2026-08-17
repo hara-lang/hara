@@ -1204,25 +1204,25 @@ fn namespace_descriptor(registry: &NamespaceRegistry<Value>, name: &str) -> Valu
     Value::OrderedMap(Box::new(POrderedMap::from_iter(fields)))
 }
 
-fn native_env_operation(
+fn native_runtime_operation(
     operation: &str,
     forms: &[Form],
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
     let method = operation
-        .strip_prefix("std.native.Env/")
+        .strip_prefix("std.native.Runtime/")
         .unwrap_or(operation);
     let registry = namespace_registry()?;
     match method {
         "current" => {
             if !forms.is_empty() {
-                return Err("std.native.Env/current expects no arguments".into());
+                return Err("std.native.Runtime/current expects no arguments".into());
             }
             Ok(Value::Symbol(registry.current().name().clone()))
         }
         "snapshot" => {
             if !forms.is_empty() {
-                return Err("std.native.Env/snapshot expects no arguments".into());
+                return Err("std.native.Runtime/snapshot expects no arguments".into());
             }
             let namespaces = registry
                 .known_names()
@@ -1242,7 +1242,7 @@ fn native_env_operation(
         }
         "namespaces" => {
             if !forms.is_empty() {
-                return Err("std.native.Env/namespaces expects no arguments".into());
+                return Err("std.native.Runtime/namespaces expects no arguments".into());
             }
             Ok(Value::Vector(PVector::from(
                 registry
@@ -1254,7 +1254,7 @@ fn native_env_operation(
         }
         "namespace" => {
             if forms.len() != 1 {
-                return Err("std.native.Env/namespace expects one namespace".into());
+                return Err("std.native.Runtime/namespace expects one namespace".into());
             }
             let name = namespace_identifier(eval(&forms[0], env)?, operation)?;
             if registry.load_state(&name).is_none() && registry.find(&name).is_none() {
@@ -1265,12 +1265,12 @@ fn native_env_operation(
         }
         "module" => {
             if forms.len() != 1 {
-                return Err("std.native.Env/module expects one module path".into());
+                return Err("std.native.Runtime/module expects one module path".into());
             }
             let requested = match eval(&forms[0], env)? {
                 Value::String(path) => path,
                 Value::Symbol(name) => name.as_str().to_owned(),
-                _ => return Err("std.native.Env/module expects a path string or namespace symbol".into()),
+                _ => return Err("std.native.Runtime/module expects a path string or namespace symbol".into()),
             };
             let source = requested.strip_prefix("classpath:").unwrap_or(&requested);
             let namespace = if source.ends_with(".hal") || source.ends_with(".hrl") {
@@ -1314,7 +1314,7 @@ fn native_env_operation(
         }
         "vars" => {
             if forms.len() > 1 {
-                return Err("std.native.Env/vars expects zero or one namespace".into());
+                return Err("std.native.Runtime/vars expects zero or one namespace".into());
             }
             let name = if forms.is_empty() {
                 registry.current().name().as_str().to_owned()
@@ -1338,18 +1338,18 @@ fn native_env_operation(
         }
         "resolve" => {
             if forms.len() != 1 {
-                return Err("std.native.Env/resolve expects one symbol".into());
+                return Err("std.native.Runtime/resolve expects one symbol".into());
             }
             let Value::Symbol(symbol) = eval(&forms[0], env)? else {
-                return Err("std.native.Env/resolve expects a symbol".into());
+                return Err("std.native.Runtime/resolve expects a symbol".into());
             };
-            // Deliberately bypass force_lazy_alias: Env inspection must never
+            // Deliberately bypass force_lazy_alias: Runtime inspection must never
             // load source or invoke a package provider.
             Ok(registry.resolve(&symbol).map(Value::Var).unwrap_or(Value::Nil))
         }
         "eval" => {
             if forms.len() != 1 {
-                return Err("std.native.Env/eval expects one form".into());
+                return Err("std.native.Runtime/eval expects one form".into());
             }
             eval_value(eval(&forms[0], env)?, env)
         }
@@ -1364,7 +1364,7 @@ fn native_env_operation(
             delegated.extend_from_slice(forms);
             eval(&Form::List(delegated), env)
         }
-        _ => Err(format!("unknown std.native.Env method: {method}")),
+        _ => Err(format!("unknown std.native.Runtime method: {method}")),
     }
 }
 
