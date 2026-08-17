@@ -6148,6 +6148,69 @@ mod tests {
     }
 
     #[test]
+    fn guest_types_satisfy_and_dispatch_native_work_protocols() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do
+                       (defstruct TestWork [spec])
+                       (defstruct TestWorkRef [id])
+                       (defstruct TestWorkHost [value])
+                       (defstruct TestWorkRun [id])
+
+                       (extend-type TestWork std.protocol.iwork/IWork
+                         (work-spec [work] (:spec work)))
+
+                       (extend-type TestWorkRef std.protocol.iworkref/IWorkRef
+                         (work-id [reference] (:id reference)))
+
+                       (extend-type TestWorkHost IComponent
+                         (props [host] {})
+                         (status [host] :started)
+                         (started? [host] true)
+                         (stopped? [host] false)
+                         (start [host] host)
+                         (stop [host] host)
+                         (kill [host] host)
+                         (remote? [host] false))
+                       (extend-type TestWorkHost std.protocol.iworkhost/IWorkHost
+                         (work-submit [host work input options]
+                           [work input options])
+                         (work-resolve [host reference] reference))
+
+                       (extend-type TestWorkRun std.protocol.iworkref/IWorkRef
+                         (work-id [run] (:id run)))
+                       (extend-type TestWorkRun IClosed
+                         (closed? [run] true))
+                       (extend-type TestWorkRun std.protocol.iworkrun/IWorkRun
+                         (work-status [run] :completed)
+                         (work-result [run] nil)
+                         (work-events [run options] nil)
+                         (work-cancel [run reason] nil))
+
+                       (let [work (TestWork {:op :pure})
+                             reference (TestWorkRef \"run-ref\")
+                             host (TestWorkHost nil)
+                             run (TestWorkRun \"run-live\")]
+                         [(satisfies? std.protocol.iwork/IWork work)
+                          (std.protocol.iwork/work-spec work)
+                          (satisfies? std.protocol.iworkref/IWorkRef reference)
+                          (std.protocol.iworkref/work-id reference)
+                          (satisfies? std.protocol.iworkhost/IWorkHost host)
+                          (std.protocol.iworkhost/work-submit host :work :input {:priority :high})
+                          (std.protocol.iworkhost/work-resolve host \"run-live\")
+                          (satisfies? std.protocol.iworkrun/IWorkRun run)
+                          (std.protocol.iworkrun/work-status run)
+                          (std.protocol.iworkref/work-id run)
+                          (std.protocol.iclosed/closed? run)]))",
+                )
+                .unwrap(),
+            "[true {:op :pure} true \"run-ref\" true [:work :input {:priority :high}] \"run-live\" true :completed \"run-live\" true]"
+        );
+    }
+
+    #[test]
     fn map_iteration_and_find_return_canonical_pair_tuples() {
         let mut runtime = Runtime::core();
         assert_eq!(
