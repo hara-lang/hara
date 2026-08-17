@@ -451,26 +451,13 @@ pub fn files_in(root: &Path, paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> 
     Ok(output)
 }
 
+#[path = "project/resources.rs"]
+mod resources;
+pub use resources::source_resources;
+
 /// Registers namespaces from the automatically selected native Rust profile.
 pub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {
-    let mut resources = Vec::new();
-    let mut declarations = BTreeMap::new();
-    for path in files_in(&project.root, &project.source_paths)? {
-        let source = fs::read_to_string(&path)
-            .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
-        let namespace = declared_namespace(&source)
-            .map_err(|error| format!("{}: {error}", path.display()))?
-            .ok_or_else(|| format!("{} does not declare an ns or ns+ namespace", path.display()))?;
-        if let Some(previous) = declarations.insert(namespace.clone(), path.clone()) {
-            return Err(format!(
-                "duplicate namespace {namespace} in effective :rust profile: {} and {}",
-                previous.display(),
-                path.display()
-            ));
-        }
-        resources.push((namespace, source));
-    }
-    for (namespace, source) in resources {
+    for (namespace, source) in source_resources(project)? {
         runtime.register_resource(&namespace, &source);
     }
     Ok(())
@@ -569,7 +556,9 @@ fn collect_hal(directory: &Path, output: &mut Vec<PathBuf>) -> Result<(), String
 fn editor_artifact(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
-        .is_some_and(|name| name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#')))
+        .is_some_and(|name| {
+            name.starts_with(".#") || (name.starts_with('#') && name.ends_with('#'))
+        })
 }
 
 fn validate_empty_lock(path: &Path) -> Result<(), String> {
