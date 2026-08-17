@@ -18,11 +18,29 @@ jobs:
         with:
           ref: agent/rust-session-type-boundaries
           fetch-depth: 0
+      - name: Checkout Hara specifications
+        uses: actions/checkout@v5
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Expose specification fixtures
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - name: Apply the typed Session model
-        run: python scripts/runtime/apply-rust-session-type-boundaries.py
+        run: |
+          python scripts/runtime/apply-rust-session-type-boundaries.py
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("core/rust/src/runtime/session_model.rs")
+          source = path.read_text()
+          marker = "#[cfg(test)]\nmod tests {"
+          if source.count(marker) != 1:
+              raise SystemExit("expected one Session model test module")
+          path.write_text(source.replace(marker, "#[cfg(test)]\nmod session_model_tests {", 1))
+          PY
       - name: Format Rust
         run: cargo fmt --manifest-path core/rust/Cargo.toml
       - name: Check the Rust runtime
