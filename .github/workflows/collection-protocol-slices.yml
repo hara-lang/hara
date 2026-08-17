@@ -94,20 +94,33 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Bridge legacy VM fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Format focused Rust sources
-        run: rustfmt --edition 2021 core/rust/src/work.rs core/rust/src/work/session.rs
-
-      - name: Upload formatted Rust sources
-        uses: actions/upload-artifact@v4
-        with:
-          name: rust-work-formatted
-          path: |
-            core/rust/src/work.rs
-            core/rust/src/work/session.rs
+      - name: Check focused formatting
+        run: rustfmt --edition 2021 --check core/rust/src/work.rs core/rust/src/work/session.rs
 
       - name: Run focused lifecycle tests
+        shell: bash
         run: |
-          cargo test --manifest-path core/rust/Cargo.toml --lib 'work::' -- --nocapture
+          set -o pipefail
+          cargo test --manifest-path core/rust/Cargo.toml --lib 'work::' -- --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/rust-work-test.log"
+
+      - name: Upload Rust lifecycle diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-work-test-log
+          path: ${{ runner.temp }}/rust-work-test.log
+          if-no-files-found: ignore

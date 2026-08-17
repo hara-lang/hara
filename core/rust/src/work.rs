@@ -393,11 +393,7 @@ impl WorkRun {
         }
     }
 
-    fn transition_terminal(
-        &self,
-        state: WorkRunState,
-        error: Option<PromiseRejection>,
-    ) -> bool {
+    fn transition_terminal(&self, state: WorkRunState, error: Option<PromiseRejection>) -> bool {
         let mut status = self.inner.status.borrow_mut();
         if status.state.terminal() {
             return false;
@@ -456,10 +452,7 @@ fn work_failure(message: String) -> PromiseRejection {
                 Value::Keyword("code".into()),
                 Value::Keyword("work/failed".into()),
             ),
-            (
-                Value::Keyword("message".into()),
-                Value::String(message),
-            ),
+            (Value::Keyword("message".into()), Value::String(message)),
             (Value::Keyword("retryable".into()), Value::Bool(false)),
         ]
         .into_iter()
@@ -529,9 +522,7 @@ mod tests {
             .unwrap();
         let resolved = second.resolve_id(&run.work_id()).unwrap();
         assert!(run.same_identity(&resolved));
-        assert!(run
-            .work_result()
-            .same_identity(&resolved.work_result()));
+        assert!(run.work_result().same_identity(&resolved.work_result()));
         assert_eq!(
             resolved.work_result().state(),
             PromiseState::Fulfilled(Value::String("shared".into()))
