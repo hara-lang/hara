@@ -212,6 +212,11 @@ impl SandboxSpec {
         &self.provider
     }
 
+    /// Returns the immutable runtime profile selected for the provider.
+    pub fn runtime(&self) -> &str {
+        &self.runtime
+    }
+
     pub fn entry_namespace(&self) -> &str {
         &self.entry_namespace
     }

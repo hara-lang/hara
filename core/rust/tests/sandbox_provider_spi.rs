@@ -21,6 +21,7 @@ impl SandboxProvider for ExternalProvider {
         resolved: &ResolvedSandboxSpec,
     ) -> Result<Box<dyn SandboxInstance>, SandboxError> {
         resolved.spec.validate()?;
+        assert_eq!(resolved.spec.runtime(), "hara.standard/0-alpha");
         Ok(Box::new(ExternalInstance {
             state: SandboxState::Open,
             active: None,
