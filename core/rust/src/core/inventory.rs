@@ -539,6 +539,21 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
             ("remote?", 1),
         ],
     ),
+    ("IWork", &[("work-spec", 1)]),
+    ("IWorkRef", &[("work-id", 1)]),
+    (
+        "IWorkHost",
+        &[("work-submit", 4), ("work-resolve", 2)],
+    ),
+    (
+        "IWorkRun",
+        &[
+            ("work-status", 1),
+            ("work-result", 1),
+            ("work-events", 2),
+            ("work-cancel", 2),
+        ],
+    ),
     ("IConj", &[("conj", 2)]),
     ("ICons", &[("cons", 2)]),
     ("IContext", &[("call", usize::MAX)]),
@@ -688,6 +703,13 @@ pub(crate) fn foundation_protocol_values() -> Vec<(String, Value)> {
                         ]
                     } else if *name == "IStream" {
                         vec![builtin_protocol_name("IClose")]
+                    } else if *name == "IWorkHost" {
+                        vec![builtin_protocol_name("IComponent")]
+                    } else if *name == "IWorkRun" {
+                        vec![
+                            builtin_protocol_name("IWorkRef"),
+                            builtin_protocol_name("IClosed"),
+                        ]
                     } else {
                         Vec::new()
                     },
@@ -748,5 +770,63 @@ fn builtin_protocol_arity_range(
         ("ILookup", "lookup") | ("IReduce", "reduce") => (2, Some(3)),
         ("IInvokeIn", "invoke-in") => (2, None),
         _ => (1, None),
+    }
+}
+
+#[cfg(test)]
+mod native_work_protocol_tests {
+    use super::*;
+
+    fn methods(name: &str) -> Vec<(&'static str, usize)> {
+        FOUNDATION_PROTOCOLS
+            .iter()
+            .find(|(candidate, _)| *candidate == name)
+            .map(|(_, methods)| methods.to_vec())
+            .expect("protocol must exist")
+    }
+
+    fn protocol(name: &str) -> Rc<GuestProtocol> {
+        foundation_protocol_values()
+            .into_iter()
+            .find(|(candidate, _)| candidate == name)
+            .and_then(|(_, value)| match value {
+                Value::Protocol(protocol) => Some(protocol),
+                _ => None,
+            })
+            .expect("protocol value must exist")
+    }
+
+    #[test]
+    fn native_work_protocol_methods_are_stable() {
+        assert_eq!(methods("IWork"), vec![("work-spec", 1)]);
+        assert_eq!(methods("IWorkRef"), vec![("work-id", 1)]);
+        assert_eq!(
+            methods("IWorkHost"),
+            vec![("work-submit", 4), ("work-resolve", 2)]
+        );
+        assert_eq!(
+            methods("IWorkRun"),
+            vec![
+                ("work-status", 1),
+                ("work-result", 1),
+                ("work-events", 2),
+                ("work-cancel", 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_work_protocol_parents_match_the_lifecycle_contract() {
+        assert_eq!(
+            protocol("IWorkHost").parents,
+            vec![builtin_protocol_name("IComponent")]
+        );
+        assert_eq!(
+            protocol("IWorkRun").parents,
+            vec![
+                builtin_protocol_name("IWorkRef"),
+                builtin_protocol_name("IClosed"),
+            ]
+        );
     }
 }
