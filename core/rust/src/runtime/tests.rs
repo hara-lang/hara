@@ -2,6 +2,23 @@
 mod tests {
     use super::*;
 
+    fn sandbox_eval(
+        kernel: &mut SessionKernel,
+        sandbox: SandboxId,
+        source: &str,
+    ) -> Result<String, SandboxError> {
+        kernel.sandbox_eval(sandbox, source)?.wait()
+    }
+
+    fn sandbox_call(
+        kernel: &mut SessionKernel,
+        sandbox: SandboxId,
+        callable: &str,
+        arguments: &[u8],
+    ) -> Result<Vec<u8>, SandboxError> {
+        kernel.sandbox_call(sandbox, callable, arguments)?.wait()
+    }
+
     #[test]
     fn in_process_sandbox_lifecycle_is_private_and_explicitly_non_secure() {
         let mut kernel = SessionKernel::new();
@@ -13,18 +30,14 @@ mod tests {
         let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
         assert_eq!(kernel.session_names(), sessions_before);
         assert_eq!(
-            kernel
-                .sandbox_eval(sandbox, "(def answer 41) answer")
-                .unwrap(),
+            sandbox_eval(&mut kernel, sandbox, "(def answer 41) answer").unwrap(),
             "41"
         );
         let arguments = crate::hta::encode(&core::Value::Vector(
             vec![core::Value::Number(41), core::Value::Number(1)].into(),
         ))
         .unwrap();
-        let result = kernel
-            .sandbox_call(sandbox, "std.foundation/+", &arguments)
-            .unwrap();
+        let result = sandbox_call(&mut kernel, sandbox, "std.foundation/+", &arguments).unwrap();
         assert_eq!(
             crate::hta::decode(&result).unwrap(),
             core::Value::Number(42)
@@ -34,9 +47,8 @@ mod tests {
             vec![core::Value::String(inert_source.into())].into(),
         ))
         .unwrap();
-        let result = kernel
-            .sandbox_call(sandbox, "std.foundation/identity", &arguments)
-            .unwrap();
+        let result =
+            sandbox_call(&mut kernel, sandbox, "std.foundation/identity", &arguments).unwrap();
         assert_eq!(
             crate::hta::decode(&result).unwrap(),
             core::Value::String(inert_source.into())
@@ -45,17 +57,19 @@ mod tests {
             kernel.sandbox_status(sandbox).unwrap().state,
             SandboxState::Open
         );
-        assert!(kernel.sandbox_eval(sandbox, "injected").is_err());
         assert!(!kernel.cancel_sandbox(sandbox).unwrap());
         assert_eq!(
             kernel.sandbox_status(sandbox).unwrap().state,
-            SandboxState::Cancelled
+            SandboxState::Open
         );
         kernel.close_sandbox(sandbox).unwrap();
         assert_eq!(
             kernel.sandbox_status(sandbox).unwrap_err().code,
             SandboxErrorCode::NotFound
         );
+        let injection_probe = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+        assert!(sandbox_eval(&mut kernel, injection_probe, "injected").is_err());
+        kernel.close_sandbox(injection_probe).unwrap();
     }
 
     #[test]
@@ -78,9 +92,10 @@ mod tests {
         kernel
             .eval(&root, "(do (def parent-secret 42) nil)")
             .unwrap();
-        let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
-        let error = kernel.sandbox_eval(sandbox, "parent-secret").unwrap_err();
+        let parent_probe = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+        let error = sandbox_eval(&mut kernel, parent_probe, "parent-secret").unwrap_err();
         assert_eq!(error.code, SandboxErrorCode::EvaluationFailed);
+        kernel.close_sandbox(parent_probe).unwrap();
         for symbol in [
             "Runtime",
             "Kernel",
@@ -94,38 +109,102 @@ mod tests {
             "std.native.Runtime/current",
             "std.native.Kernel",
         ] {
-            let error = kernel.sandbox_eval(sandbox, symbol).unwrap_err();
+            let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+            let error = sandbox_eval(&mut kernel, sandbox, symbol).unwrap_err();
             assert_eq!(error.code, SandboxErrorCode::EvaluationFailed, "{symbol}");
+            kernel.close_sandbox(sandbox).unwrap();
         }
+        let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
         assert_eq!(
-            kernel
-                .sandbox_eval(sandbox, "(the-ns 'std.native.Kernel)")
-                .unwrap(),
+            sandbox_eval(&mut kernel, sandbox, "(the-ns 'std.native.Kernel)").unwrap(),
             "nil"
         );
         assert_eq!(
-            kernel
-                .sandbox_eval(sandbox, "(ns-loaded? 'std.native.Runtime)")
-                .unwrap(),
+            sandbox_eval(&mut kernel, sandbox, "(ns-loaded? 'std.native.Runtime)").unwrap(),
             "false"
         );
         assert_eq!(
-            kernel
-                .sandbox_eval(sandbox, "(ns-state 'std.native.Package)")
-                .unwrap(),
+            sandbox_eval(&mut kernel, sandbox, "(ns-state 'std.native.Package)").unwrap(),
             ":unknown"
         );
-        assert!(kernel
-            .sandbox_eval(sandbox, "(ns-publics 'std.native.File)")
-            .is_err());
         assert_eq!(
-            kernel
-                .sandbox_eval(
-                    sandbox,
-                    "(do (defn sandbox-sum [xs] (reduce + 0 xs)) (sandbox-sum (map inc [0 1 2])))",
-                )
-                .unwrap(),
+            sandbox_eval(
+                &mut kernel,
+                sandbox,
+                "(do (defn sandbox-sum [xs] (reduce + 0 xs)) (sandbox-sum (map inc [0 1 2])))",
+            )
+            .unwrap(),
             "6"
+        );
+        assert!(sandbox_eval(&mut kernel, sandbox, "(ns-publics 'std.native.File)").is_err());
+        kernel.close_sandbox(sandbox).unwrap();
+    }
+
+    #[test]
+    fn sandbox_evaluations_are_busy_cancellable_timed_and_terminal() {
+        let mut kernel = SessionKernel::new();
+        kernel.register_sandbox_provider(Rc::new(InProcessSandboxProvider));
+
+        let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+        let pending = kernel.sandbox_eval(sandbox, "(loop [] (recur))").unwrap();
+        assert_eq!(
+            kernel.sandbox_eval(sandbox, "42").unwrap_err().code,
+            SandboxErrorCode::Busy
+        );
+        assert!(kernel.cancel_sandbox(sandbox).unwrap());
+        assert!(matches!(
+            kernel.sandbox_status(sandbox).unwrap().state,
+            SandboxState::Cancelling | SandboxState::Cancelled
+        ));
+        assert_eq!(
+            pending.wait().unwrap_err().code,
+            SandboxErrorCode::Cancelled
+        );
+        assert_eq!(
+            kernel.sandbox_status(sandbox).unwrap().state,
+            SandboxState::Cancelled
+        );
+        assert!(!kernel.cancel_sandbox(sandbox).unwrap());
+        assert_eq!(
+            kernel.sandbox_eval(sandbox, "42").unwrap_err().code,
+            SandboxErrorCode::Closed
+        );
+        kernel.close_sandbox(sandbox).unwrap();
+
+        let timeout_spec = SandboxSpec::new(
+            SANDBOX_SPEC_PROTOCOL,
+            "in-process",
+            "hara.standard/0-alpha",
+            "user",
+            SandboxLimits {
+                evaluation_ms: 5,
+                ..SandboxLimits::default()
+            },
+        )
+        .unwrap();
+        let sandbox = kernel.open_sandbox(timeout_spec).unwrap();
+        let error = kernel
+            .sandbox_eval(sandbox, "(loop [] (recur))")
+            .unwrap()
+            .wait()
+            .unwrap_err();
+        assert_eq!(error.code, SandboxErrorCode::Timeout);
+        assert_eq!(
+            kernel.sandbox_status(sandbox).unwrap().state,
+            SandboxState::Failed
+        );
+        kernel.close_sandbox(sandbox).unwrap();
+
+        let sandbox = kernel.open_sandbox(SandboxSpec::in_process()).unwrap();
+        let pending = kernel.sandbox_eval(sandbox, "(loop [] (recur))").unwrap();
+        kernel.close_sandbox(sandbox).unwrap();
+        assert_eq!(
+            pending.wait().unwrap_err().code,
+            SandboxErrorCode::Cancelled
+        );
+        assert_eq!(
+            kernel.sandbox_status(sandbox).unwrap_err().code,
+            SandboxErrorCode::NotFound
         );
     }
 

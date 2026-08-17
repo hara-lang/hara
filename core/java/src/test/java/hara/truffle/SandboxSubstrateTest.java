@@ -8,6 +8,19 @@ import java.util.List;
 import org.junit.Test;
 
 public class SandboxSubstrateTest {
+  private static Object eval(
+      SessionKernel kernel, SandboxModel.SandboxId sandbox, String source) {
+    return kernel.sandboxEval(sandbox, source).await();
+  }
+
+  private static Object call(
+      SessionKernel kernel,
+      SandboxModel.SandboxId sandbox,
+      String callable,
+      List<Object> arguments) {
+    return kernel.sandboxCall(sandbox, callable, arguments).await();
+  }
+
   @Test
   public void inProcessLifecycleIsPrivateAndExplicitlyNonSecure() {
     try (SessionKernel kernel = new SessionKernel(false, false)) {
@@ -18,22 +31,27 @@ public class SandboxSubstrateTest {
 
       SandboxModel.SandboxId sandbox = kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
       assertEquals(sessionsBefore, kernel.size());
-      assertEquals(41L, kernel.sandboxEval(sandbox, "(def answer 41) answer"));
-      assertEquals(42L, kernel.sandboxCall(sandbox, "std.foundation/+", List.of(41L, 1L)));
+      assertEquals(41L, eval(kernel, sandbox, "(def answer 41) answer"));
+      assertEquals(42L, call(kernel, sandbox, "std.foundation/+", List.of(41L, 1L)));
       String inertSource = "(do (def injected 99) :executed)";
       assertEquals(
           inertSource,
-          kernel.sandboxCall(sandbox, "std.foundation/identity", List.of(inertSource)));
+          call(kernel, sandbox, "std.foundation/identity", List.of(inertSource)));
       assertEquals(SandboxModel.SandboxState.OPEN, kernel.sandboxStatus(sandbox).state());
-      assertThrows(
-          SandboxModel.SandboxException.class, () -> kernel.sandboxEval(sandbox, "injected"));
       assertFalse(kernel.cancelSandbox(sandbox));
-      assertEquals(SandboxModel.SandboxState.CANCELLED, kernel.sandboxStatus(sandbox).state());
+      assertEquals(SandboxModel.SandboxState.OPEN, kernel.sandboxStatus(sandbox).state());
 
       kernel.closeSandbox(sandbox);
       SandboxModel.SandboxException error =
           assertThrows(SandboxModel.SandboxException.class, () -> kernel.sandboxStatus(sandbox));
       assertEquals(SandboxModel.ErrorCode.NOT_FOUND, error.code());
+
+      SandboxModel.SandboxId injectionProbe =
+          kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
+      assertThrows(
+          SandboxModel.SandboxException.class,
+          () -> eval(kernel, injectionProbe, "injected"));
+      kernel.closeSandbox(injectionProbe);
     }
   }
 
@@ -48,13 +66,14 @@ public class SandboxSubstrateTest {
     try (SessionKernel kernel = new SessionKernel(false, false)) {
       kernel.registerSandboxProvider(InProcessSandboxProvider.INSTANCE);
       kernel.root().eval("(def parent-secret 42)");
-      SandboxModel.SandboxId sandbox = kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
-
+      SandboxModel.SandboxId parentProbe =
+          kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
       SandboxModel.SandboxException error =
           assertThrows(
               SandboxModel.SandboxException.class,
-              () -> kernel.sandboxEval(sandbox, "parent-secret"));
+              () -> eval(kernel, parentProbe, "parent-secret"));
       assertEquals(SandboxModel.ErrorCode.EVALUATION_FAILED, error.code());
+      kernel.closeSandbox(parentProbe);
       for (String symbol :
           List.of(
               "Runtime",
@@ -68,25 +87,91 @@ public class SandboxSubstrateTest {
               "Host",
               "std.native.Runtime/current",
               "std.native.Kernel")) {
+        SandboxModel.SandboxId sandbox =
+            kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
         SandboxModel.SandboxException denied =
             assertThrows(
                 symbol,
                 SandboxModel.SandboxException.class,
-                () -> kernel.sandboxEval(sandbox, symbol));
+                () -> eval(kernel, sandbox, symbol));
         assertEquals(symbol, SandboxModel.ErrorCode.EVALUATION_FAILED, denied.code());
+        kernel.closeSandbox(sandbox);
       }
-      assertEquals(null, kernel.sandboxEval(sandbox, "(the-ns 'std.native.Kernel)"));
-      assertEquals(false, kernel.sandboxEval(sandbox, "(ns-loaded? 'std.native.Runtime)"));
+      SandboxModel.SandboxId sandbox = kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
+      assertEquals(null, eval(kernel, sandbox, "(the-ns 'std.native.Kernel)"));
+      assertEquals(false, eval(kernel, sandbox, "(ns-loaded? 'std.native.Runtime)"));
       assertEquals(
           hara.lang.data.Keyword.create("unknown"),
-          kernel.sandboxEval(sandbox, "(ns-state 'std.native.Package)"));
-      assertThrows(
-          SandboxModel.SandboxException.class,
-          () -> kernel.sandboxEval(sandbox, "(ns-publics 'std.native.File)"));
+          eval(kernel, sandbox, "(ns-state 'std.native.Package)"));
       assertEquals(
           6L,
-          kernel.sandboxEval(
+          eval(
+              kernel,
               sandbox, "(do (defn sandbox-sum [xs] (reduce + 0 xs)) (sandbox-sum (map inc [0 1 2])))"));
+      assertThrows(
+          SandboxModel.SandboxException.class,
+          () -> eval(kernel, sandbox, "(ns-publics 'std.native.File)"));
+      kernel.closeSandbox(sandbox);
+    }
+  }
+
+  @Test
+  public void evaluationsAreBusyCancellableTimedAndTerminal() {
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      kernel.registerSandboxProvider(InProcessSandboxProvider.INSTANCE);
+      SandboxModel.SandboxId cancellable =
+          kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
+      SandboxProvider.Pending<Object> pending =
+          kernel.sandboxEval(cancellable, "(loop [] (recur))");
+      SandboxModel.SandboxException busy =
+          assertThrows(
+              SandboxModel.SandboxException.class,
+              () -> kernel.sandboxEval(cancellable, "42"));
+      assertEquals(SandboxModel.ErrorCode.BUSY, busy.code());
+      org.junit.Assert.assertTrue(kernel.cancelSandbox(cancellable));
+      SandboxModel.SandboxException cancelled =
+          assertThrows(SandboxModel.SandboxException.class, pending::await);
+      assertEquals(SandboxModel.ErrorCode.CANCELLED, cancelled.code());
+      assertEquals(
+          SandboxModel.SandboxState.CANCELLED, kernel.sandboxStatus(cancellable).state());
+      assertFalse(kernel.cancelSandbox(cancellable));
+      SandboxModel.SandboxException terminal =
+          assertThrows(
+              SandboxModel.SandboxException.class,
+              () -> kernel.sandboxEval(cancellable, "42"));
+      assertEquals(SandboxModel.ErrorCode.CLOSED, terminal.code());
+      kernel.closeSandbox(cancellable);
+
+      SandboxModel.SandboxSpec timeoutSpec =
+          new SandboxModel.SandboxSpec(
+              SandboxModel.SPEC_PROTOCOL,
+              "in-process",
+              "hara.standard/0-alpha",
+              "user",
+              new SandboxModel.SandboxLimits(
+                  64 * 1024, 1024 * 1024, 1024 * 1024, 5, 64L * 1024 * 1024, 1));
+      SandboxModel.SandboxId timedSandbox = kernel.openSandbox(timeoutSpec);
+      SandboxProvider.Pending<Object> timed =
+          kernel.sandboxEval(timedSandbox, "(loop [] (recur))");
+      SandboxModel.SandboxException timeout =
+          assertThrows(SandboxModel.SandboxException.class, timed::await);
+      assertEquals(SandboxModel.ErrorCode.TIMEOUT, timeout.code());
+      assertEquals(
+          SandboxModel.SandboxState.FAILED, kernel.sandboxStatus(timedSandbox).state());
+      kernel.closeSandbox(timedSandbox);
+
+      SandboxModel.SandboxId closingSandbox =
+          kernel.openSandbox(SandboxModel.SandboxSpec.inProcess());
+      SandboxProvider.Pending<Object> closing =
+          kernel.sandboxEval(closingSandbox, "(loop [] (recur))");
+      kernel.closeSandbox(closingSandbox);
+      SandboxModel.SandboxException closeCancellation =
+          assertThrows(SandboxModel.SandboxException.class, closing::await);
+      assertEquals(SandboxModel.ErrorCode.CANCELLED, closeCancellation.code());
+      SandboxModel.SandboxId closed = closingSandbox;
+      SandboxModel.SandboxException missing =
+          assertThrows(SandboxModel.SandboxException.class, () -> kernel.sandboxStatus(closed));
+      assertEquals(SandboxModel.ErrorCode.NOT_FOUND, missing.code());
     }
   }
 }

@@ -1,4 +1,5 @@
 pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, String> {
+    check_evaluation_interrupt()?;
     match form {
         Form::Number(v) => Ok(Value::Number(*v)),
         Form::String(v) => Ok(Value::String(v.clone())),

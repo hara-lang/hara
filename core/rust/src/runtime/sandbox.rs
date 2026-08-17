@@ -1,9 +1,40 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+#[derive(Debug)]
+pub struct SandboxPending<T> {
+    receiver: mpsc::Receiver<Result<T, SandboxError>>,
+}
+
+impl<T> SandboxPending<T> {
+    pub fn wait(self) -> Result<T, SandboxError> {
+        self.receiver.recv().unwrap_or_else(|_| {
+            Err(SandboxError::new(
+                SandboxErrorCode::TransportFailed,
+                "sandbox provider dropped the evaluation result",
+            ))
+        })
+    }
+}
+
 /// Provider-side live sandbox. Implementations own backend launch, execution,
 /// cancellation, and termination details.
 pub trait SandboxInstance {
-    fn eval(&mut self, source: &str) -> Result<String, SandboxError>;
-    fn call(&mut self, callable: &str, arguments_hta: &[u8]) -> Result<Vec<u8>, SandboxError>;
-    fn cancel(&mut self) -> Result<bool, SandboxError>;
+    fn eval(
+        &mut self,
+        evaluation: EvaluationId,
+        source: String,
+    ) -> Result<SandboxPending<String>, SandboxError>;
+    fn call(
+        &mut self,
+        evaluation: EvaluationId,
+        callable: String,
+        arguments_hta: Vec<u8>,
+    ) -> Result<SandboxPending<Vec<u8>>, SandboxError>;
+    fn cancel(&mut self, evaluation: EvaluationId) -> Result<bool, SandboxError>;
+    fn active_evaluation(&self) -> Option<EvaluationId>;
     fn state(&self) -> SandboxState;
     fn error(&self) -> Option<SandboxError>;
     fn close(&mut self) -> Result<(), SandboxError>;
@@ -31,135 +62,327 @@ impl SandboxProvider for InProcessSandboxProvider {
 
     fn open(&self, spec: &SandboxSpec) -> Result<Box<dyn SandboxInstance>, SandboxError> {
         spec.validate()?;
-        let session_spec = SessionSpec::new(
-            SessionId::parse("SANDBOX")
-                .map_err(|error| SandboxError::new(SandboxErrorCode::InvalidSpec, error))?,
-            SessionAuthorityPolicy::ZERO,
-        );
-        let mut runtime = Runtime::sandbox();
-        runtime.use_namespace(&spec.entry_namespace);
-        Ok(Box::new(InProcessSandbox {
-            session: Session::open(session_spec, runtime),
-            limits: spec.limits.clone(),
-            state: SandboxState::Open,
-            error: None,
-        }))
+        InProcessSandbox::open(spec.clone()).map(|instance| Box::new(instance) as _)
     }
 }
 
-struct InProcessSandbox {
-    session: Session,
-    limits: SandboxLimits,
+#[derive(Clone)]
+struct ActiveEvaluation {
+    id: EvaluationId,
+    cancelled: Arc<AtomicBool>,
+}
+
+struct WorkerState {
     state: SandboxState,
+    active: Option<ActiveEvaluation>,
     error: Option<SandboxError>,
 }
 
+enum SandboxCommand {
+    Eval {
+        evaluation: EvaluationId,
+        source: String,
+        cancelled: Arc<AtomicBool>,
+        reply: mpsc::Sender<Result<String, SandboxError>>,
+    },
+    Call {
+        evaluation: EvaluationId,
+        callable: String,
+        arguments_hta: Vec<u8>,
+        cancelled: Arc<AtomicBool>,
+        reply: mpsc::Sender<Result<Vec<u8>, SandboxError>>,
+    },
+    Close,
+}
+
+struct InProcessSandbox {
+    commands: mpsc::Sender<SandboxCommand>,
+    worker: Option<JoinHandle<()>>,
+    shared: Arc<Mutex<WorkerState>>,
+    limits: SandboxLimits,
+}
+
 impl InProcessSandbox {
-    fn ensure_open(&self) -> Result<(), SandboxError> {
-        if self.state == SandboxState::Closed {
-            Err(SandboxError::new(
-                SandboxErrorCode::Closed,
-                "sandbox is closed",
-            ))
-        } else if self.state == SandboxState::Running {
-            Err(SandboxError::new(SandboxErrorCode::Busy, "sandbox is busy"))
-        } else {
-            Ok(())
-        }
+    fn open(spec: SandboxSpec) -> Result<Self, SandboxError> {
+        let limits = spec.limits.clone();
+        let (commands, receiver) = mpsc::channel();
+        let shared = Arc::new(Mutex::new(WorkerState {
+            state: SandboxState::Open,
+            active: None,
+            error: None,
+        }));
+        let worker_shared = Arc::clone(&shared);
+        let worker = std::thread::Builder::new()
+            .name("hara-in-process-sandbox".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || sandbox_worker(spec, receiver, worker_shared))
+            .map_err(|error| {
+                SandboxError::new(SandboxErrorCode::ProviderFailed, error.to_string())
+            })?;
+        Ok(Self {
+            commands,
+            worker: Some(worker),
+            shared,
+            limits,
+        })
     }
 
-    fn evaluate(&mut self, source: &str) -> Result<String, SandboxError> {
-        self.ensure_open()?;
+    fn begin(&self, evaluation: EvaluationId) -> Result<Arc<AtomicBool>, SandboxError> {
+        let mut shared = self.shared.lock().expect("sandbox state poisoned");
+        if shared.state != SandboxState::Open || shared.active.is_some() {
+            return Err(if shared.state == SandboxState::Running {
+                SandboxError::new(SandboxErrorCode::Busy, "sandbox is busy")
+            } else {
+                SandboxError::new(
+                    SandboxErrorCode::Closed,
+                    "sandbox is terminal and cannot be reused",
+                )
+            });
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        shared.state = SandboxState::Running;
+        shared.error = None;
+        shared.active = Some(ActiveEvaluation {
+            id: evaluation,
+            cancelled: Arc::clone(&cancelled),
+        });
+        Ok(cancelled)
+    }
+
+    fn send(&self, command: SandboxCommand) -> Result<(), SandboxError> {
+        self.commands.send(command).map_err(|_| {
+            SandboxError::new(
+                SandboxErrorCode::TransportFailed,
+                "sandbox provider command channel is closed",
+            )
+        })
+    }
+}
+
+fn sandbox_worker(
+    spec: SandboxSpec,
+    commands: mpsc::Receiver<SandboxCommand>,
+    shared: Arc<Mutex<WorkerState>>,
+) {
+    let session_spec = match SessionId::parse("SANDBOX") {
+        Ok(id) => SessionSpec::new(id, SessionAuthorityPolicy::ZERO),
+        Err(error) => {
+            finish_provider_failure(&shared, error);
+            return;
+        }
+    };
+    let mut runtime = Runtime::sandbox();
+    runtime.use_namespace(&spec.entry_namespace);
+    let mut session = Session::open(session_spec, runtime);
+    while let Ok(command) = commands.recv() {
+        match command {
+            SandboxCommand::Eval {
+                evaluation,
+                source,
+                cancelled,
+                reply,
+            } => {
+                let result = run_controlled(evaluation, &spec.limits, &cancelled, || {
+                    session.eval(&source)
+                })
+                .and_then(|result| {
+                    if result.len() > spec.limits.result_bytes {
+                        Err(SandboxError::new(
+                            SandboxErrorCode::LimitExceeded,
+                            "sandbox result limit exceeded",
+                        ))
+                    } else {
+                        Ok(result)
+                    }
+                });
+                finish_evaluation(&shared, evaluation, &result);
+                let _ = reply.send(result);
+            }
+            SandboxCommand::Call {
+                evaluation,
+                callable,
+                arguments_hta,
+                cancelled,
+                reply,
+            } => {
+                let result = run_controlled(evaluation, &spec.limits, &cancelled, || {
+                    session
+                        .runtime_mut()?
+                        .invoke_hta(&callable, &arguments_hta)
+                        .map_err(|error| error.to_string())
+                })
+                .and_then(|result| {
+                    if result.len() > spec.limits.result_bytes {
+                        Err(SandboxError::new(
+                            SandboxErrorCode::LimitExceeded,
+                            "sandbox result limit exceeded",
+                        ))
+                    } else {
+                        Ok(result)
+                    }
+                });
+                finish_evaluation(&shared, evaluation, &result);
+                let _ = reply.send(result);
+            }
+            SandboxCommand::Close => break,
+        }
+    }
+    session.release();
+}
+
+fn run_controlled<T>(
+    _evaluation: EvaluationId,
+    limits: &SandboxLimits,
+    cancelled: &Arc<AtomicBool>,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, SandboxError> {
+    let started = Instant::now();
+    let deadline = Duration::from_millis(limits.evaluation_ms);
+    let cancellation = Arc::clone(cancelled);
+    let result = core::with_evaluation_interrupt(
+        Rc::new(move || {
+            if cancellation.load(Ordering::Acquire) {
+                Some("SANDBOX_CANCELLED".into())
+            } else if started.elapsed() >= deadline {
+                Some("SANDBOX_TIMEOUT".into())
+            } else {
+                None
+            }
+        }),
+        operation,
+    );
+    result.map_err(|error| {
+        if error.contains("SANDBOX_CANCELLED") {
+            SandboxError::new(SandboxErrorCode::Cancelled, "sandbox evaluation cancelled")
+        } else if error.contains("SANDBOX_TIMEOUT") {
+            SandboxError::new(SandboxErrorCode::Timeout, "sandbox evaluation timed out")
+        } else {
+            SandboxError::new(SandboxErrorCode::EvaluationFailed, error)
+        }
+    })
+}
+
+fn finish_evaluation<T>(
+    shared: &Arc<Mutex<WorkerState>>,
+    evaluation: EvaluationId,
+    result: &Result<T, SandboxError>,
+) {
+    let mut shared = shared.lock().expect("sandbox state poisoned");
+    if !shared
+        .active
+        .as_ref()
+        .is_some_and(|active| active.id == evaluation)
+    {
+        return;
+    }
+    shared.active = None;
+    match result {
+        Ok(_) => shared.state = SandboxState::Open,
+        Err(error) => {
+            shared.state = match error.code {
+                SandboxErrorCode::Cancelled => SandboxState::Cancelled,
+                _ => SandboxState::Failed,
+            };
+            shared.error = Some(error.clone());
+        }
+    }
+}
+
+fn finish_provider_failure(shared: &Arc<Mutex<WorkerState>>, message: String) {
+    let error = SandboxError::new(SandboxErrorCode::ProviderFailed, message);
+    let mut shared = shared.lock().expect("sandbox state poisoned");
+    shared.state = SandboxState::Failed;
+    shared.error = Some(error);
+    shared.active = None;
+}
+
+impl SandboxInstance for InProcessSandbox {
+    fn eval(
+        &mut self,
+        evaluation: EvaluationId,
+        source: String,
+    ) -> Result<SandboxPending<String>, SandboxError> {
         if source.len() > self.limits.source_bytes {
             return Err(SandboxError::new(
                 SandboxErrorCode::LimitExceeded,
                 "sandbox source limit exceeded",
             ));
         }
-        self.state = SandboxState::Running;
-        self.error = None;
-        match self.session.eval(source) {
-            Ok(result) if result.len() <= self.limits.result_bytes => {
-                self.state = SandboxState::Open;
-                Ok(result)
-            }
-            Ok(_) => {
-                self.state = SandboxState::Failed;
-                let error = SandboxError::new(
-                    SandboxErrorCode::LimitExceeded,
-                    "sandbox result limit exceeded",
-                );
-                self.error = Some(error.clone());
-                Err(error)
-            }
-            Err(error) => {
-                self.state = SandboxState::Failed;
-                let error = SandboxError::new(SandboxErrorCode::EvaluationFailed, error);
-                self.error = Some(error.clone());
-                Err(error)
-            }
+        let cancelled = self.begin(evaluation)?;
+        let (reply, receiver) = mpsc::channel();
+        self.send(SandboxCommand::Eval {
+            evaluation,
+            source,
+            cancelled,
+            reply,
+        })?;
+        Ok(SandboxPending { receiver })
+    }
+
+    fn call(
+        &mut self,
+        evaluation: EvaluationId,
+        callable: String,
+        arguments_hta: Vec<u8>,
+    ) -> Result<SandboxPending<Vec<u8>>, SandboxError> {
+        let cancelled = self.begin(evaluation)?;
+        let (reply, receiver) = mpsc::channel();
+        self.send(SandboxCommand::Call {
+            evaluation,
+            callable,
+            arguments_hta,
+            cancelled,
+            reply,
+        })?;
+        Ok(SandboxPending { receiver })
+    }
+
+    fn cancel(&mut self, evaluation: EvaluationId) -> Result<bool, SandboxError> {
+        let mut shared = self.shared.lock().expect("sandbox state poisoned");
+        let Some(active) = shared.active.as_ref() else {
+            return Ok(false);
+        };
+        if active.id != evaluation {
+            return Ok(false);
         }
-    }
-}
-
-impl SandboxInstance for InProcessSandbox {
-    fn eval(&mut self, source: &str) -> Result<String, SandboxError> {
-        self.evaluate(source)
+        active.cancelled.store(true, Ordering::Release);
+        shared.state = SandboxState::Cancelling;
+        Ok(true)
     }
 
-    fn call(&mut self, callable: &str, arguments_hta: &[u8]) -> Result<Vec<u8>, SandboxError> {
-        self.ensure_open()?;
-        self.state = SandboxState::Running;
-        self.error = None;
-        match self
-            .session
-            .runtime_mut()
-            .map_err(|error| SandboxError::new(SandboxErrorCode::EvaluationFailed, error))?
-            .invoke_hta(callable, arguments_hta)
-        {
-            Ok(result) if result.len() <= self.limits.result_bytes => {
-                self.state = SandboxState::Open;
-                Ok(result)
-            }
-            Ok(_) => {
-                self.state = SandboxState::Failed;
-                let error = SandboxError::new(
-                    SandboxErrorCode::LimitExceeded,
-                    "sandbox result limit exceeded",
-                );
-                self.error = Some(error.clone());
-                Err(error)
-            }
-            Err(error) => {
-                self.state = SandboxState::Failed;
-                let error =
-                    SandboxError::new(SandboxErrorCode::EvaluationFailed, error.to_string());
-                self.error = Some(error.clone());
-                Err(error)
-            }
-        }
-    }
-
-    fn cancel(&mut self) -> Result<bool, SandboxError> {
-        self.ensure_open()?;
-        // The conformance provider evaluates synchronously. It can record a
-        // cancellation between calls but cannot preempt host execution.
-        self.state = SandboxState::Cancelled;
-        Ok(false)
+    fn active_evaluation(&self) -> Option<EvaluationId> {
+        self.shared
+            .lock()
+            .expect("sandbox state poisoned")
+            .active
+            .as_ref()
+            .map(|active| active.id)
     }
 
     fn state(&self) -> SandboxState {
-        self.state
+        self.shared.lock().expect("sandbox state poisoned").state
     }
 
     fn error(&self) -> Option<SandboxError> {
-        self.error.clone()
+        self.shared
+            .lock()
+            .expect("sandbox state poisoned")
+            .error
+            .clone()
     }
 
     fn close(&mut self) -> Result<(), SandboxError> {
-        if self.state != SandboxState::Closed {
-            self.session.release();
-            self.state = SandboxState::Closed;
+        if let Some(active) = self.active_evaluation() {
+            let _ = self.cancel(active)?;
+        }
+        let _ = self.commands.send(SandboxCommand::Close);
+        if let Some(worker) = self.worker.take() {
+            worker.join().map_err(|_| {
+                SandboxError::new(
+                    SandboxErrorCode::ProviderFailed,
+                    "sandbox provider worker panicked",
+                )
+            })?;
         }
         Ok(())
     }
@@ -169,7 +392,19 @@ struct Sandbox {
     id: SandboxId,
     provider: String,
     secure: bool,
+    next_evaluation_id: u64,
     instance: Box<dyn SandboxInstance>,
+}
+
+impl Sandbox {
+    fn allocate_evaluation(&mut self) -> EvaluationId {
+        let id = EvaluationId::new(self.next_evaluation_id);
+        self.next_evaluation_id = self
+            .next_evaluation_id
+            .checked_add(1)
+            .expect("sandbox evaluation identifiers exhausted");
+        id
+    }
 }
 
 impl SessionKernel {
@@ -202,6 +437,7 @@ impl SessionKernel {
                 id,
                 provider: spec.provider,
                 secure,
+                next_evaluation_id: 1,
                 instance,
             },
         );
@@ -215,8 +451,14 @@ impl SessionKernel {
             .ok_or_else(|| SandboxError::new(SandboxErrorCode::NotFound, id.to_string()))
     }
 
-    pub fn sandbox_eval(&mut self, id: SandboxId, source: &str) -> Result<String, SandboxError> {
-        self.sandbox_mut(id)?.instance.eval(source)
+    pub fn sandbox_eval(
+        &mut self,
+        id: SandboxId,
+        source: &str,
+    ) -> Result<SandboxPending<String>, SandboxError> {
+        let sandbox = self.sandbox_mut(id)?;
+        let evaluation = sandbox.allocate_evaluation();
+        sandbox.instance.eval(evaluation, source.to_owned())
     }
 
     pub fn sandbox_call(
@@ -224,12 +466,20 @@ impl SessionKernel {
         id: SandboxId,
         callable: &str,
         arguments_hta: &[u8],
-    ) -> Result<Vec<u8>, SandboxError> {
-        self.sandbox_mut(id)?.instance.call(callable, arguments_hta)
+    ) -> Result<SandboxPending<Vec<u8>>, SandboxError> {
+        let sandbox = self.sandbox_mut(id)?;
+        let evaluation = sandbox.allocate_evaluation();
+        sandbox
+            .instance
+            .call(evaluation, callable.to_owned(), arguments_hta.to_vec())
     }
 
     pub fn cancel_sandbox(&mut self, id: SandboxId) -> Result<bool, SandboxError> {
-        self.sandbox_mut(id)?.instance.cancel()
+        let sandbox = self.sandbox_mut(id)?;
+        let Some(evaluation) = sandbox.instance.active_evaluation() else {
+            return Ok(false);
+        };
+        sandbox.instance.cancel(evaluation)
     }
 
     pub fn sandbox_status(&self, id: SandboxId) -> Result<SandboxStatus, SandboxError> {
@@ -243,7 +493,7 @@ impl SessionKernel {
             provider: sandbox.provider.clone(),
             state: sandbox.instance.state(),
             secure: sandbox.secure,
-            evaluation_active: sandbox.instance.state() == SandboxState::Running,
+            evaluation_active: sandbox.instance.active_evaluation().is_some(),
             error: sandbox.instance.error(),
         })
     }

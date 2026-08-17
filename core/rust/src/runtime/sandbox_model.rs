@@ -11,6 +11,15 @@ impl SandboxId {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EvaluationId(u64);
+
+impl EvaluationId {
+    pub(crate) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 impl fmt::Display for SandboxId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)

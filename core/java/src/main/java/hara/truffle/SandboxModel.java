@@ -24,6 +24,12 @@ final class SandboxModel {
     }
   }
 
+  record EvaluationId(long value) {
+    EvaluationId {
+      if (value <= 0) throw new IllegalArgumentException("INVALID_EVALUATION_ID");
+    }
+  }
+
   enum SandboxState {
     OPEN,
     RUNNING,

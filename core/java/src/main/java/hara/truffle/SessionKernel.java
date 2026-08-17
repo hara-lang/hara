@@ -297,11 +297,30 @@ final class SessionKernel implements AutoCloseable {
     return bytes == null ? null : Arrays.copyOf(bytes, bytes.length);
   }
 
-  private record Sandbox(
-      SandboxModel.SandboxId id,
-      String provider,
-      boolean secure,
-      SandboxProvider.SandboxInstance instance) {}
+  private static final class Sandbox {
+    final SandboxModel.SandboxId id;
+    final String provider;
+    final boolean secure;
+    final SandboxProvider.SandboxInstance instance;
+    private final AtomicLong nextEvaluationId = new AtomicLong(1);
+
+    Sandbox(
+        SandboxModel.SandboxId id,
+        String provider,
+        boolean secure,
+        SandboxProvider.SandboxInstance instance) {
+      this.id = id;
+      this.provider = provider;
+      this.secure = secure;
+      this.instance = instance;
+    }
+
+    SandboxModel.EvaluationId allocateEvaluation() {
+      long value = nextEvaluationId.getAndIncrement();
+      if (value <= 0) throw new IllegalStateException("SANDBOX_EVALUATION_IDS_EXHAUSTED");
+      return new SandboxModel.EvaluationId(value);
+    }
+  }
 
   void registerSandboxProvider(SandboxProvider provider) {
     sandboxProviderRegistry.entries.put(provider.name(), provider);
@@ -329,28 +348,32 @@ final class SessionKernel implements AutoCloseable {
     return sandbox;
   }
 
-  Object sandboxEval(SandboxModel.SandboxId id, String source) {
-    return requireSandbox(id).instance().eval(source);
+  SandboxProvider.Pending<Object> sandboxEval(SandboxModel.SandboxId id, String source) {
+    Sandbox sandbox = requireSandbox(id);
+    return sandbox.instance.eval(sandbox.allocateEvaluation(), source);
   }
 
-  Object sandboxCall(
+  SandboxProvider.Pending<Object> sandboxCall(
       SandboxModel.SandboxId id, String callable, java.util.List<Object> arguments) {
-    return requireSandbox(id).instance().call(callable, arguments);
+    Sandbox sandbox = requireSandbox(id);
+    return sandbox.instance.call(sandbox.allocateEvaluation(), callable, arguments);
   }
 
   boolean cancelSandbox(SandboxModel.SandboxId id) {
-    return requireSandbox(id).instance().cancel();
+    SandboxProvider.SandboxInstance instance = requireSandbox(id).instance;
+    SandboxModel.EvaluationId evaluation = instance.activeEvaluation();
+    return evaluation != null && instance.cancel(evaluation);
   }
 
   SandboxModel.SandboxStatus sandboxStatus(SandboxModel.SandboxId id) {
     Sandbox sandbox = requireSandbox(id);
     return new SandboxModel.SandboxStatus(
-        sandbox.id(),
-        sandbox.provider(),
-        sandbox.instance().state(),
-        sandbox.secure(),
-        sandbox.instance().state() == SandboxModel.SandboxState.RUNNING,
-        sandbox.instance().error());
+        sandbox.id,
+        sandbox.provider,
+        sandbox.instance.state(),
+        sandbox.secure,
+        sandbox.instance.activeEvaluation() != null,
+        sandbox.instance.error());
   }
 
   synchronized void closeSandbox(SandboxModel.SandboxId id) {
@@ -358,12 +381,12 @@ final class SessionKernel implements AutoCloseable {
     if (sandbox == null) {
       throw new SandboxModel.SandboxException(SandboxModel.ErrorCode.NOT_FOUND, id.toString());
     }
-    sandbox.instance().close();
+    sandbox.instance.close();
   }
 
   @Override
   public synchronized void close() {
-    for (Sandbox sandbox : sandboxRegistry.entries.values()) sandbox.instance().close();
+    for (Sandbox sandbox : sandboxRegistry.entries.values()) sandbox.instance.close();
     sandboxRegistry.entries.clear();
     for (Session session : sessionRegistry.entries.values()) session.close();
     sessionRegistry.entries.clear();
@@ -529,6 +552,11 @@ final class SessionKernel implements AutoCloseable {
       } finally {
         activeEvaluations.decrementAndGet();
       }
+    }
+
+    void cancelEvaluation() {
+      Context active = context;
+      if (active != null) active.close(true);
     }
 
     private static Object transferValue(Value value) {

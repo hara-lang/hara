@@ -7535,6 +7535,10 @@ public final class HaraContext {
     return new HaraPromise(future);
   }
 
+  Object cancellablePromise(CompletableFuture<Object> future, Runnable cancelAction) {
+    return new HaraPromise(future, cancelAction, true);
+  }
+
   Object callbackStreamPromise(Object value, Runnable settled) {
     HaraPromise promise = (HaraPromise) promiseFrom(value);
     return new HaraPromise(promise.future.whenComplete((result, error) -> settled.run()));
@@ -7553,14 +7557,25 @@ public final class HaraContext {
   private final class HaraPromise implements IPromise {
     private final CompletableFuture<Object> future;
     private final Runnable cancelAction;
+    private final boolean providerSettlesCancellation;
+    private final java.util.concurrent.atomic.AtomicBoolean cancellationRequested =
+        new java.util.concurrent.atomic.AtomicBoolean();
 
     private HaraPromise(CompletableFuture<Object> future) {
       this(future, () -> {});
     }
 
     private HaraPromise(CompletableFuture<Object> future, Runnable cancelAction) {
+      this(future, cancelAction, false);
+    }
+
+    private HaraPromise(
+        CompletableFuture<Object> future,
+        Runnable cancelAction,
+        boolean providerSettlesCancellation) {
       this.future = future;
       this.cancelAction = cancelAction;
+      this.providerSettlesCancellation = providerSettlesCancellation;
     }
 
     @Override
@@ -7595,7 +7610,11 @@ public final class HaraContext {
 
     @Override
     public Object cancel() {
-      if (future.cancel(false)) cancelAction.run();
+      if (providerSettlesCancellation) {
+        if (!future.isDone() && cancellationRequested.compareAndSet(false, true)) cancelAction.run();
+      } else if (future.cancel(false)) {
+        cancelAction.run();
+      }
       return this;
     }
 

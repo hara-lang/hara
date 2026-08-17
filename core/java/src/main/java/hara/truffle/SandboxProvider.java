@@ -1,6 +1,8 @@
 package hara.truffle;
 
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /** Trusted host SPI for a sandbox backend. */
 interface SandboxProvider {
@@ -11,11 +13,14 @@ interface SandboxProvider {
   SandboxInstance open(SandboxModel.SandboxSpec spec);
 
   interface SandboxInstance extends AutoCloseable {
-    Object eval(String source);
+    Pending<Object> eval(SandboxModel.EvaluationId evaluation, String source);
 
-    Object call(String callable, List<Object> arguments);
+    Pending<Object> call(
+        SandboxModel.EvaluationId evaluation, String callable, List<Object> arguments);
 
-    boolean cancel();
+    boolean cancel(SandboxModel.EvaluationId evaluation);
+
+    SandboxModel.EvaluationId activeEvaluation();
 
     SandboxModel.SandboxState state();
 
@@ -23,5 +28,24 @@ interface SandboxProvider {
 
     @Override
     void close();
+  }
+
+  record Pending<T>(
+      SandboxModel.EvaluationId evaluation,
+      CompletableFuture<T> future,
+      java.util.function.Predicate<SandboxModel.EvaluationId> cancellation) {
+    T await() {
+      try {
+        return future.join();
+      } catch (CompletionException error) {
+        Throwable cause = error.getCause() == null ? error : error.getCause();
+        if (cause instanceof RuntimeException runtime) throw runtime;
+        throw error;
+      }
+    }
+
+    boolean cancel() {
+      return cancellation.test(evaluation);
+    }
   }
 }
