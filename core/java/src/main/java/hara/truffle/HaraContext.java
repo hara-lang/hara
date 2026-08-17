@@ -3865,8 +3865,101 @@ public final class HaraContext {
     String provider = sandboxString(map, "provider", "in-process");
     String runtime = sandboxString(map, "runtime", "hara.standard/0-alpha");
     String entry = sandboxString(map, "entry-namespace", "user");
+    java.util.List<SandboxModel.BundleReference> bundles = sandboxBundles(map);
+    SessionModel.SessionMountId mount = sandboxMount(map);
+    Object providerOptions = map.lookup(Keyword.create("provider-options"));
+    if (providerOptions == null) providerOptions = HaraPersistentValues.normalize(java.util.Map.of());
+    if (!(HaraBox.unwrap(providerOptions) instanceof hara.lang.data.types.IMapType)) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "provider-options must be an immutable map");
+    }
     return new SandboxModel.SandboxSpec(
-        protocol, provider, runtime, entry, SandboxModel.SandboxLimits.defaults());
+        protocol,
+        provider,
+        runtime,
+        entry,
+        bundles,
+        mount,
+        providerOptions,
+        sandboxLimits(map));
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static java.util.List<SandboxModel.BundleReference> sandboxBundles(
+      hara.lang.data.types.IMapType spec) {
+    Object raw = HaraBox.unwrap(spec.lookup(Keyword.create("bundles")));
+    if (raw == null) return java.util.List.of();
+    if (!(raw instanceof hara.lang.data.types.ILinearType<?> bundles)) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "bundles must be a vector");
+    }
+    ArrayList<SandboxModel.BundleReference> resolved = new ArrayList<>();
+    for (int index = 0; index < bundles.count(); index++) {
+      Object item = HaraBox.unwrap(bundles.nth(index));
+      if (!(item instanceof hara.lang.data.types.IMapType bundle) || bundle.count() != 2) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.INVALID_SPEC, "bundle references require digest and format");
+      }
+      resolved.add(
+          new SandboxModel.BundleReference(
+              sandboxString(bundle, "digest", null), sandboxString(bundle, "format", null)));
+    }
+    return resolved;
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static SessionModel.SessionMountId sandboxMount(
+      hara.lang.data.types.IMapType spec) {
+    Object raw = HaraBox.unwrap(spec.lookup(Keyword.create("mount")));
+    if (raw == null) return null;
+    if (!(raw instanceof Number number) || number.longValue() <= 0) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "mount must be an opaque positive mount id");
+    }
+    return SessionModel.SessionMountId.of(number.longValue());
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static SandboxModel.SandboxLimits sandboxLimits(
+      hara.lang.data.types.IMapType spec) {
+    Object raw = HaraBox.unwrap(spec.lookup(Keyword.create("limits")));
+    if (raw == null) return SandboxModel.SandboxLimits.defaults();
+    if (!(raw instanceof hara.lang.data.types.IMapType limits)) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, "limits must be a map");
+    }
+    java.util.Set<String> allowed =
+        java.util.Set.of(
+            "source-bytes", "result-bytes", "output-bytes", "evaluation-ms", "memory-bytes",
+            "active-evaluations");
+    for (Object item : limits) {
+      java.util.Map.Entry entry = (java.util.Map.Entry) item;
+      if (!(entry.getKey() instanceof Keyword keyword) || !allowed.contains(keyword.getName())) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.INVALID_SPEC, "unknown sandbox limit " + entry.getKey());
+      }
+    }
+    SandboxModel.SandboxLimits defaults = SandboxModel.SandboxLimits.defaults();
+    return new SandboxModel.SandboxLimits(
+        Math.toIntExact(sandboxPositive(limits, "source-bytes", defaults.sourceBytes())),
+        Math.toIntExact(sandboxPositive(limits, "result-bytes", defaults.resultBytes())),
+        Math.toIntExact(sandboxPositive(limits, "output-bytes", defaults.outputBytes())),
+        sandboxPositive(limits, "evaluation-ms", defaults.evaluationMillis()),
+        sandboxPositive(limits, "memory-bytes", defaults.memoryBytes()),
+        Math.toIntExact(
+            sandboxPositive(limits, "active-evaluations", defaults.activeEvaluations())));
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static long sandboxPositive(
+      hara.lang.data.types.IMapType map, String name, long fallback) {
+    Object raw = HaraBox.unwrap(map.lookup(Keyword.create(name)));
+    if (raw == null) return fallback;
+    if (!(raw instanceof Number number) || number.longValue() <= 0) {
+      throw new SandboxModel.SandboxException(
+          SandboxModel.ErrorCode.INVALID_SPEC, name + " must be a positive integer");
+    }
+    return number.longValue();
   }
 
   @SuppressWarnings("rawtypes")
@@ -3883,14 +3976,15 @@ public final class HaraContext {
 
   private static Object sandboxStatusValue(SandboxModel.SandboxStatus status) {
     java.util.LinkedHashMap<Object, Object> value = new java.util.LinkedHashMap<>();
-    value.put(Keyword.create("id"), status.id().value());
-    value.put(Keyword.create("provider"), status.provider());
-    value.put(Keyword.create("state"), Keyword.create(status.state().name().toLowerCase()));
-    value.put(Keyword.create("secure"), status.secure());
-    value.put(Keyword.create("evaluation-active"), status.evaluationActive());
+    value.put(Keyword.create("sandbox/id"), status.id().value());
+    value.put(Keyword.create("sandbox/provider"), status.provider());
+    value.put(
+        Keyword.create("sandbox/state"), Keyword.create(status.state().name().toLowerCase()));
+    value.put(Keyword.create("sandbox/secure"), status.secure());
+    value.put(Keyword.create("sandbox/evaluation-active"), status.evaluationActive());
     SandboxModel.SandboxError error = status.error();
     value.put(
-        Keyword.create("error"),
+        Keyword.create("sandbox/error"),
         error == null
             ? null
             : HaraPersistentValues.normalize(

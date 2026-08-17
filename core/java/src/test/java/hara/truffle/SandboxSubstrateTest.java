@@ -5,6 +5,8 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 
 import java.util.List;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.junit.Test;
 
 public class SandboxSubstrateTest {
@@ -42,11 +44,56 @@ public class SandboxSubstrateTest {
               .root()
               .eval("(deref (std.sandbox/call " + id + " \"std.foundation/+\" [1 2 3]))")
               .asLong());
-      assertFalse(kernel.root().eval("(:secure (std.sandbox/status " + id + "))").asBoolean());
+      assertFalse(
+          kernel
+              .root()
+              .eval("(:sandbox/secure (std.sandbox/status " + id + "))")
+              .asBoolean());
       kernel.root().eval("(deref (std.sandbox/close " + id + "))");
       assertThrows(
           RuntimeException.class,
           () -> kernel.root().eval("(std.sandbox/status " + id + ")"));
+    }
+  }
+
+  @Test
+  public void bundlesAndMountsAreResolvedAndReleasedByTheKernel() throws Exception {
+    Path root = Files.createTempDirectory("hara-sandbox-mount-");
+    try (SessionKernel kernel = new SessionKernel(true, false)) {
+      kernel.registerBundle("sha256:test", new byte[] {1, 2, 3});
+      SessionModel.SessionMountId mount = kernel.createFilesystem(root);
+      SandboxModel.SandboxSpec spec =
+          new SandboxModel.SandboxSpec(
+              SandboxModel.SPEC_PROTOCOL,
+              "in-process",
+              "hara.standard/0-alpha",
+              "user",
+              List.of(new SandboxModel.BundleReference("sha256:test", "halc")),
+              mount,
+              HaraPersistentValues.normalize(java.util.Map.of()),
+              SandboxModel.SandboxLimits.defaults());
+      SandboxModel.SandboxId sandbox = kernel.openSandbox(spec);
+      assertEquals(1, kernel.filesystemInfo(mount).attachments());
+      assertThrows(IllegalArgumentException.class, () -> kernel.closeFilesystem(mount));
+      kernel.closeSandbox(sandbox);
+      assertEquals(0, kernel.filesystemInfo(mount).attachments());
+      kernel.closeFilesystem(mount);
+
+      SandboxModel.SandboxSpec missing =
+          new SandboxModel.SandboxSpec(
+              SandboxModel.SPEC_PROTOCOL,
+              "in-process",
+              "hara.standard/0-alpha",
+              "user",
+              List.of(new SandboxModel.BundleReference("sha256:missing", "halc")),
+              null,
+              HaraPersistentValues.normalize(java.util.Map.of()),
+              SandboxModel.SandboxLimits.defaults());
+      SandboxModel.SandboxException error =
+          assertThrows(SandboxModel.SandboxException.class, () -> kernel.openSandbox(missing));
+      assertEquals(SandboxModel.ErrorCode.BUNDLE_NOT_FOUND, error.code());
+    } finally {
+      Files.deleteIfExists(root);
     }
   }
 

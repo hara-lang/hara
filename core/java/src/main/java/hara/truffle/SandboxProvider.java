@@ -10,7 +10,12 @@ interface SandboxProvider {
 
   boolean secure();
 
-  SandboxInstance open(SandboxModel.SandboxSpec spec);
+  record ResolvedSpec(
+      SandboxModel.SandboxSpec spec,
+      java.util.Map<String, byte[]> bundles,
+      HaraMountedFileSystem mountProvider) {}
+
+  SandboxInstance open(ResolvedSpec spec);
 
   interface SandboxInstance extends AutoCloseable {
     Pending<Object> eval(SandboxModel.EvaluationId evaluation, String source);

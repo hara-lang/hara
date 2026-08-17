@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import java.util.Objects;
+import java.util.List;
 
 /** Immutable data contracts for Kernel-managed sandboxes. */
 final class SandboxModel {
@@ -68,12 +69,17 @@ final class SandboxModel {
       String provider,
       String runtime,
       String entryNamespace,
+      List<BundleReference> bundles,
+      SessionModel.SessionMountId mount,
+      Object providerOptions,
       SandboxLimits limits) {
     SandboxSpec {
       Objects.requireNonNull(protocol, "protocol");
       Objects.requireNonNull(provider, "provider");
       Objects.requireNonNull(runtime, "runtime");
       Objects.requireNonNull(entryNamespace, "entryNamespace");
+      bundles = List.copyOf(bundles);
+      Objects.requireNonNull(providerOptions, "providerOptions");
       Objects.requireNonNull(limits, "limits");
       if (!SPEC_PROTOCOL.equals(protocol)) {
         throw new SandboxException(ErrorCode.INVALID_SPEC, "unsupported sandbox protocol");
@@ -88,6 +94,23 @@ final class SandboxModel {
       }
     }
 
+    SandboxSpec(
+        String protocol,
+        String provider,
+        String runtime,
+        String entryNamespace,
+        SandboxLimits limits) {
+      this(
+          protocol,
+          provider,
+          runtime,
+          entryNamespace,
+          List.of(),
+          null,
+          HaraPersistentValues.normalize(java.util.Map.of()),
+          limits);
+    }
+
     static SandboxSpec inProcess() {
       return new SandboxSpec(
           SPEC_PROTOCOL,
@@ -95,6 +118,14 @@ final class SandboxModel {
           "hara.standard/0-alpha",
           "user",
           SandboxLimits.defaults());
+    }
+  }
+
+  record BundleReference(String digest, String format) {
+    BundleReference {
+      if (digest == null || digest.isEmpty() || format == null || format.isEmpty()) {
+        throw new SandboxException(ErrorCode.INVALID_SPEC, "invalid sandbox bundle reference");
+      }
     }
   }
 

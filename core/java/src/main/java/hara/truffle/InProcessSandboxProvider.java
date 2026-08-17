@@ -25,8 +25,13 @@ final class InProcessSandboxProvider implements SandboxProvider {
   }
 
   @Override
-  public SandboxInstance open(SandboxModel.SandboxSpec spec) {
-    return new Instance(spec, SessionKernel.Session.privateSandbox(spec.entryNamespace()));
+  public SandboxInstance open(ResolvedSpec resolved) {
+    SandboxModel.SandboxSpec spec = resolved.spec();
+    SessionKernel.Session session = SessionKernel.Session.privateSandbox(spec.entryNamespace());
+    if (spec.mount() != null) {
+      session.attachSandboxFilesystem(spec.mount(), resolved.mountProvider());
+    }
+    return new Instance(spec, session);
   }
 
   private static final class ActiveEvaluation {

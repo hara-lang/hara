@@ -104,6 +104,7 @@ final class SessionKernel implements AutoCloseable {
   private static final class MountRegistry {
     final ConcurrentHashMap<Long, FilesystemMount> entries = new ConcurrentHashMap<>();
     final ConcurrentHashMap<String, Long> sessionAttachments = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<Long, Long> sandboxAttachments = new ConcurrentHashMap<>();
     final AtomicLong nextId = new AtomicLong(1);
   }
 
@@ -312,6 +313,7 @@ final class SessionKernel implements AutoCloseable {
     final SandboxModel.SandboxId id;
     final String provider;
     final boolean secure;
+    final SessionModel.SessionMountId mount;
     final SandboxProvider.SandboxInstance instance;
     private final AtomicLong nextEvaluationId = new AtomicLong(1);
 
@@ -319,10 +321,12 @@ final class SessionKernel implements AutoCloseable {
         SandboxModel.SandboxId id,
         String provider,
         boolean secure,
+        SessionModel.SessionMountId mount,
         SandboxProvider.SandboxInstance instance) {
       this.id = id;
       this.provider = provider;
       this.secure = secure;
+      this.mount = mount;
       this.instance = instance;
     }
 
@@ -346,9 +350,46 @@ final class SessionKernel implements AutoCloseable {
     long value = sandboxRegistry.nextId.getAndIncrement();
     if (value <= 0) throw new IllegalStateException("SANDBOX_IDS_EXHAUSTED");
     SandboxModel.SandboxId id = new SandboxModel.SandboxId(value);
-    sandboxRegistry.entries.put(
-        value, new Sandbox(id, provider.name(), provider.secure(), provider.open(spec)));
+    java.util.LinkedHashMap<String, byte[]> bundles = new java.util.LinkedHashMap<>();
+    for (SandboxModel.BundleReference reference : spec.bundles()) {
+      byte[] bytes = bundle(reference.digest());
+      if (bytes == null) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.BUNDLE_NOT_FOUND, reference.digest());
+      }
+      bundles.put(reference.digest(), bytes);
+    }
+    FilesystemMount mount = null;
+    if (spec.mount() != null) {
+      mount = mountRegistry.entries.get(spec.mount().value());
+      if (mount == null) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.MOUNT_NOT_FOUND, spec.mount().toString());
+      }
+      mount.attachments++;
+      mountRegistry.sandboxAttachments.put(id.value(), spec.mount().value());
+    }
+    try {
+      SandboxProvider.ResolvedSpec resolved =
+          new SandboxProvider.ResolvedSpec(
+              spec,
+              java.util.Collections.unmodifiableMap(bundles),
+              mount == null ? null : mount.provider);
+      sandboxRegistry.entries.put(
+          value,
+          new Sandbox(id, provider.name(), provider.secure(), spec.mount(), provider.open(resolved)));
+    } catch (RuntimeException error) {
+      releaseSandboxMount(id, spec.mount());
+      throw error;
+    }
     return id;
+  }
+
+  private void releaseSandboxMount(
+      SandboxModel.SandboxId sandboxId, SessionModel.SessionMountId mountId) {
+    if (mountId == null) return;
+    Long registered = mountRegistry.sandboxAttachments.remove(sandboxId.value());
+    if (registered != null && registered == mountId.value()) decrementMount(registered);
   }
 
   private Sandbox requireSandbox(SandboxModel.SandboxId id) {
@@ -392,7 +433,11 @@ final class SessionKernel implements AutoCloseable {
     if (sandbox == null) {
       throw new SandboxModel.SandboxException(SandboxModel.ErrorCode.NOT_FOUND, id.toString());
     }
-    sandbox.instance.close();
+    try {
+      sandbox.instance.close();
+    } finally {
+      releaseSandboxMount(id, sandbox.mount);
+    }
   }
 
   @Override
@@ -403,6 +448,7 @@ final class SessionKernel implements AutoCloseable {
     for (Session session : sessionRegistry.entries.values()) session.close();
     sessionRegistry.entries.clear();
     mountRegistry.sessionAttachments.clear();
+    mountRegistry.sandboxAttachments.clear();
     mountRegistry.entries.clear();
   }
 
@@ -449,6 +495,11 @@ final class SessionKernel implements AutoCloseable {
               null);
       if (!"user".equals(entryNamespace)) session.eval("(ns " + entryNamespace + ")");
       return session;
+    }
+
+    void attachSandboxFilesystem(
+        SessionModel.SessionMountId mountId, HaraMountedFileSystem provider) {
+      attachFilesystem(new AttachedFilesystem(mountId, provider));
     }
 
     private Context createContext(AttachedFilesystem filesystem) {
