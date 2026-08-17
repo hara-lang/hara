@@ -17,7 +17,12 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -41,12 +46,25 @@ public final class HaraWorkHost implements IWorkHost {
   private static final Keyword CREATED = Keyword.create("created");
   private static final Keyword QUEUED = Keyword.create("queued");
   private static final Keyword RUNNING = Keyword.create("running");
+  private static final Keyword WAITING = Keyword.create("waiting");
+  private static final Keyword CANCELLING = Keyword.create("cancelling");
   private static final Keyword COMPLETED = Keyword.create("completed");
   private static final Keyword FAILED = Keyword.create("failed");
   private static final Keyword CANCELLED = Keyword.create("cancelled");
   private static final Keyword STARTED_AT = Keyword.create("started-at");
   private static final Keyword FINISHED_AT = Keyword.create("finished-at");
   private static final Keyword ERROR = Keyword.create("error");
+  private static final Keyword CANCEL_REASON = Keyword.create("cancel-reason");
+  private static final Keyword DEADLINE_NANOS = Keyword.create("deadline-nanos");
+  private static final Keyword TIMEOUT_MS = Keyword.create("timeout-ms");
+  private static final Keyword DETACHED = Keyword.create("detached");
+  private static final Keyword PARENT_ID = Keyword.create("parent-id");
+  private static final Keyword CHILD_COUNT = Keyword.create("child-count");
+  private static final Keyword DEADLINE_EXCEEDED = Keyword.create("deadline-exceeded");
+  private static final Keyword HOST_STOPPED = Keyword.create("host-stopped");
+
+  private static final ThreadLocal<WorkContext> CURRENT_CONTEXT = new ThreadLocal<>();
+  private static final ScheduledThreadPoolExecutor DEADLINES = deadlineScheduler();
 
   private final ConcurrentMap<Object, HaraWorkRun> runs = new ConcurrentHashMap<>();
   private final AtomicBoolean started = new AtomicBoolean(true);
@@ -57,12 +75,26 @@ public final class HaraWorkHost implements IWorkHost {
     return INSTANCE;
   }
 
+  static WorkContext currentWorkContext() {
+    return CURRENT_CONTEXT.get();
+  }
+
   @Override
   public IWorkRun workSubmit(Object work, Object input, Object options) {
     return workSubmit(HaraLanguage.currentContext(), work, input, options);
   }
 
   IWorkRun workSubmit(HaraContext context, Object work, Object input, Object options) {
+    WorkContext current = CURRENT_CONTEXT.get();
+    HaraWorkRun parent =
+        current != null && current.host == this && !truthy(option(options, DETACHED))
+            ? current.run
+            : null;
+    return workSubmit(context, parent, work, input, options);
+  }
+
+  private IWorkRun workSubmit(
+      HaraContext context, HaraWorkRun parent, Object work, Object input, Object options) {
     if (!started.get()) {
       throw new HaraException("Native work host is stopped");
     }
@@ -80,10 +112,26 @@ public final class HaraWorkHost implements IWorkHost {
             option(options, ID),
             firstNonNull(option(options, RUN_ID), option(options, WORK_ID)));
     Object runId = requestedId == null ? nextRunId() : validateRunId(requestedId);
-    HaraWorkRun run = new HaraWorkRun(context, runId, work, input, options, executor);
+    long deadlineNanos = resolveDeadlineNanos(options, parent);
+    boolean detached = parent == null && truthy(option(options, DETACHED));
+    HaraWorkRun run =
+        new HaraWorkRun(
+            context,
+            runId,
+            work,
+            input,
+            options,
+            executor,
+            parent,
+            deadlineNanos,
+            detached);
     HaraWorkRun previous = runs.putIfAbsent(runId, run);
     if (previous != null) {
       throw new HaraException("Work run ID is already active: " + runId);
+    }
+    if (parent != null && !parent.attachChild(run)) {
+      runs.remove(runId, run);
+      throw new HaraException("Parent work scope is closed: " + parent.runId);
     }
     run.start();
     return run;
@@ -130,7 +178,7 @@ public final class HaraWorkHost implements IWorkHost {
   public IWorkHost stop() {
     if (started.compareAndSet(true, false)) {
       for (HaraWorkRun run : runs.values()) {
-        run.cancel(Keyword.create("host-stopped"));
+        run.requestCancellation(HOST_STOPPED);
       }
     }
     return this;
@@ -174,6 +222,58 @@ public final class HaraWorkHost implements IWorkHost {
     return validateRunId(id == null ? reference : id);
   }
 
+  private static long resolveDeadlineNanos(Object options, HaraWorkRun parent) {
+    long inherited = parent == null ? 0L : parent.deadlineNanos;
+    long explicit = positiveLong(option(options, DEADLINE_NANOS), DEADLINE_NANOS);
+    Object timeoutValue = option(options, TIMEOUT_MS);
+    long relative = 0L;
+    if (timeoutValue != null) {
+      if (!(timeoutValue instanceof Number number)) {
+        throw new HaraException(":timeout-ms must be a non-negative number");
+      }
+      long timeoutMillis = number.longValue();
+      if (timeoutMillis < 0L) {
+        throw new HaraException(":timeout-ms must be non-negative");
+      }
+      relative = saturatingAdd(System.nanoTime(), saturatingMultiply(timeoutMillis, 1_000_000L));
+    }
+    return minimumPositive(inherited, minimumPositive(explicit, relative));
+  }
+
+  private static long positiveLong(Object value, Keyword key) {
+    if (value == null) return 0L;
+    if (!(value instanceof Number number)) {
+      throw new HaraException(key + " must be a positive number");
+    }
+    long result = number.longValue();
+    if (result <= 0L) {
+      throw new HaraException(key + " must be positive");
+    }
+    return result;
+  }
+
+  private static long minimumPositive(long first, long second) {
+    if (first <= 0L) return second;
+    if (second <= 0L) return first;
+    return Math.min(first, second);
+  }
+
+  private static long saturatingAdd(long first, long second) {
+    try {
+      return Math.addExact(first, second);
+    } catch (ArithmeticException ignored) {
+      return Long.MAX_VALUE;
+    }
+  }
+
+  private static long saturatingMultiply(long first, long second) {
+    try {
+      return Math.multiplyExact(first, second);
+    } catch (ArithmeticException ignored) {
+      return Long.MAX_VALUE;
+    }
+  }
+
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static Object option(Object options, Keyword key) {
     if (options instanceof IMapType map) {
@@ -185,21 +285,99 @@ public final class HaraWorkHost implements IWorkHost {
     return null;
   }
 
+  private static boolean truthy(Object value) {
+    return value != null && !Boolean.FALSE.equals(value);
+  }
+
   private static Object firstNonNull(Object first, Object second) {
     return first == null ? second : first;
   }
 
-  private static final class HaraWorkRun implements IWorkRun {
+  private static ScheduledThreadPoolExecutor deadlineScheduler() {
+    ThreadFactory factory =
+        task -> Thread.ofPlatform().daemon().name("hara-work-deadline").unstarted(task);
+    ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1, factory);
+    scheduler.setRemoveOnCancelPolicy(true);
+    scheduler.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
+    return scheduler;
+  }
+
+  /** Opaque native context for the currently executing work scope. */
+  public static final class WorkContext {
+    private final HaraWorkHost host;
+    private final HaraWorkRun run;
+
+    private WorkContext(HaraWorkHost host, HaraWorkRun run) {
+      this.host = host;
+      this.run = run;
+    }
+
+    public Object workId() {
+      return run.runId;
+    }
+
+    public boolean cancelled() {
+      return run.cancellation.get() != null;
+    }
+
+    public Object cancelReason() {
+      CancellationRequest request = run.cancellation.get();
+      return request == null ? null : request.reason;
+    }
+
+    public Long deadlineNanos() {
+      return run.deadlineNanos <= 0L ? null : run.deadlineNanos;
+    }
+
+    public void checkCancelled() {
+      CancellationRequest request = run.cancellation.get();
+      if (request != null) {
+        throw request.failure;
+      }
+      if (run.deadlineNanos > 0L && System.nanoTime() >= run.deadlineNanos) {
+        run.requestCancellation(DEADLINE_EXCEEDED);
+        throw run.cancellation.get().failure;
+      }
+    }
+
+    public IWorkRun submitChild(Object work, Object input, Object options) {
+      checkCancelled();
+      boolean detached = truthy(option(options, DETACHED));
+      return host.workSubmit(run.context, detached ? null : run, work, input, options);
+    }
+
+    public boolean onClose(Object function) {
+      if (function == null) {
+        throw new HaraException("Work finalizer cannot be nil");
+      }
+      return run.registerFinalizer(function);
+    }
+  }
+
+  private final class HaraWorkRun implements IWorkRun {
     private final HaraContext context;
     private final Object runId;
     private final Object work;
     private final Object input;
     private final Object options;
     private final Object executor;
+    private final HaraWorkRun parent;
+    private final boolean detached;
+    private final long deadlineNanos;
     private final CompletableFuture<Object> resultFuture = new CompletableFuture<>();
     private final IPromise result;
     private final AtomicReference<RunSnapshot> snapshot;
     private final AtomicReference<Thread> worker = new AtomicReference<>();
+    private final AtomicReference<IPromise> activePromise = new AtomicReference<>();
+    private final AtomicReference<CancellationRequest> cancellation = new AtomicReference<>();
+    private final AtomicReference<BodyOutcome> bodyOutcome = new AtomicReference<>();
+    private final AtomicBoolean bodyDone = new AtomicBoolean(false);
+    private final AtomicBoolean finalizersStarted = new AtomicBoolean(false);
+    private final AtomicBoolean parentNotified = new AtomicBoolean(false);
+    private final ConcurrentMap<Object, HaraWorkRun> children = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedDeque<Object> finalizers = new ConcurrentLinkedDeque<>();
+    private final WorkContext workContext;
+    private volatile ScheduledFuture<?> deadlineTask;
 
     HaraWorkRun(
         HaraContext context,
@@ -207,22 +385,36 @@ public final class HaraWorkHost implements IWorkHost {
         Object work,
         Object input,
         Object options,
-        Object executor) {
+        Object executor,
+        HaraWorkRun parent,
+        long deadlineNanos,
+        boolean detached) {
       this.context = context;
       this.runId = runId;
       this.work = work;
       this.input = input;
       this.options = options;
       this.executor = executor;
+      this.parent = parent;
+      this.deadlineNanos = deadlineNanos;
+      this.detached = detached;
       this.result = (IPromise) context.promiseValue(resultFuture);
-      this.snapshot = new AtomicReference<>(new RunSnapshot(CREATED, 0L, 0L, null));
+      this.snapshot = new AtomicReference<>(new RunSnapshot(CREATED, 0L, 0L, null, null));
+      this.workContext = new WorkContext(HaraWorkHost.this, this);
     }
 
     void start() {
       long startedAt = System.currentTimeMillis();
       RunSnapshot current = snapshot.get();
       if (!CREATED.equals(current.state)
-          || !snapshot.compareAndSet(current, new RunSnapshot(QUEUED, startedAt, 0L, null))) {
+          || !snapshot.compareAndSet(
+              current, new RunSnapshot(QUEUED, startedAt, 0L, null, null))) {
+        return;
+      }
+      scheduleDeadline();
+      if (cancellation.get() != null) {
+        bodyDone.set(true);
+        finishIfReady();
         return;
       }
       Thread thread = Thread.ofVirtual().name("hara-work-" + runId).unstarted(this::execute);
@@ -230,62 +422,217 @@ public final class HaraWorkHost implements IWorkHost {
       thread.start();
     }
 
+    private void scheduleDeadline() {
+      if (deadlineNanos <= 0L) return;
+      long delay = Math.max(0L, deadlineNanos - System.nanoTime());
+      deadlineTask =
+          DEADLINES.schedule(
+              () -> requestCancellation(DEADLINE_EXCEEDED), delay, TimeUnit.NANOSECONDS);
+    }
+
     private void execute() {
-      if (!transition(QUEUED, RUNNING, null)) {
+      if (!transition(QUEUED, RUNNING, null, null)) {
+        bodyDone.set(true);
+        finishIfReady();
         return;
       }
+      CURRENT_CONTEXT.set(workContext);
       try {
+        workContext.checkCancelled();
         Object value =
             context.invokeInContext(
                 () -> context.invokeCallable(executor, new Object[] {work, input, options, runId}));
         if (value instanceof IPromise promise) {
-          value = promise.deref();
+          activePromise.set(promise);
+          if (cancellation.get() != null) promise.cancel();
+          try {
+            value = promise.deref();
+          } finally {
+            activePromise.compareAndSet(promise, null);
+          }
         }
-        complete(value);
+        bodyOutcome.set(BodyOutcome.success(value));
       } catch (Throwable error) {
-        fail(unwrap(error));
+        bodyOutcome.set(BodyOutcome.failure(unwrap(error)));
+      } finally {
+        CURRENT_CONTEXT.remove();
+        bodyDone.set(true);
+        finishIfReady();
       }
     }
 
-    private void complete(Object value) {
-      if (transitionTerminal(COMPLETED, null)) {
-        resultFuture.complete(value);
-      }
-    }
-
-    private void fail(Throwable error) {
-      if (transitionTerminal(FAILED, error)) {
-        resultFuture.completeExceptionally(error);
-      }
-    }
-
-    boolean cancel(Object reason) {
-      HaraException failure = new HaraException("Work run cancelled: " + String.valueOf(reason));
-      if (!transitionTerminal(CANCELLED, failure)) {
+    boolean attachChild(HaraWorkRun child) {
+      if (cancellation.get() != null || snapshot.get().terminal() || bodyDone.get()) {
         return false;
       }
-      Thread thread = worker.get();
-      if (thread != null) thread.interrupt();
-      resultFuture.completeExceptionally(failure);
+      children.put(child.runId, child);
+      if (cancellation.get() != null || snapshot.get().terminal()) {
+        children.remove(child.runId, child);
+        return false;
+      }
       return true;
     }
 
-    private boolean transition(Keyword expected, Keyword next, Throwable error) {
+    void childClosed(HaraWorkRun child) {
+      children.remove(child.runId, child);
+      finishIfReady();
+    }
+
+    boolean registerFinalizer(Object function) {
+      if (finalizersStarted.get() || snapshot.get().terminal()) return false;
+      finalizers.push(function);
+      if (finalizersStarted.get() || snapshot.get().terminal()) {
+        finalizers.removeFirstOccurrence(function);
+        return false;
+      }
+      return true;
+    }
+
+    boolean requestCancellation(Object reason) {
+      HaraException failure =
+          new HaraException("Work run cancelled: " + String.valueOf(reason));
+      CancellationRequest request = new CancellationRequest(reason, failure);
+      if (!cancellation.compareAndSet(null, request)) {
+        return false;
+      }
+
+      Keyword previousState = transitionToCancelling(request);
+      cancelDeadlineTask();
+      IPromise promise = activePromise.get();
+      if (promise != null) promise.cancel();
+      for (HaraWorkRun child : children.values()) {
+        child.requestCancellation(reason);
+      }
+      if (previousState == null || CREATED.equals(previousState) || QUEUED.equals(previousState)) {
+        bodyDone.set(true);
+      }
+      finishIfReady();
+      return true;
+    }
+
+    private Keyword transitionToCancelling(CancellationRequest request) {
+      while (true) {
+        RunSnapshot current = snapshot.get();
+        if (current.terminal()) return null;
+        if (CANCELLING.equals(current.state)) return current.state;
+        RunSnapshot update =
+            new RunSnapshot(
+                CANCELLING,
+                current.startedAt,
+                current.finishedAt,
+                current.error,
+                request.reason);
+        if (snapshot.compareAndSet(current, update)) return current.state;
+      }
+    }
+
+    private void finishIfReady() {
+      if (!bodyDone.get()) return;
+      CancellationRequest request = cancellation.get();
+      if (!children.isEmpty()) {
+        transitionAnyNonTerminal(request == null ? WAITING : CANCELLING, request);
+        return;
+      }
+      if (!finalizersStarted.compareAndSet(false, true)) return;
+
+      Throwable finalizerError = runFinalizers();
+      request = cancellation.get();
+      if (request != null) {
+        settleTerminal(CANCELLED, request.failure, request.reason, null);
+        return;
+      }
+      BodyOutcome outcome = bodyOutcome.get();
+      if (finalizerError != null) {
+        settleTerminal(FAILED, finalizerError, null, null);
+      } else if (outcome == null) {
+        settleTerminal(FAILED, new HaraException("Work body produced no outcome"), null, null);
+      } else if (outcome.error != null) {
+        settleTerminal(FAILED, outcome.error, null, null);
+      } else {
+        settleTerminal(COMPLETED, null, null, outcome.value);
+      }
+    }
+
+    private Throwable runFinalizers() {
+      Throwable first = null;
+      WorkContext previous = CURRENT_CONTEXT.get();
+      CURRENT_CONTEXT.set(workContext);
+      try {
+        Object function;
+        while ((function = finalizers.poll()) != null) {
+          try {
+            Object finalizer = function;
+            context.invokeInContext(
+                () -> context.invokeCallable(finalizer, new Object[] {workContext}));
+          } catch (Throwable error) {
+            if (first == null) first = unwrap(error);
+          }
+        }
+      } finally {
+        if (previous == null) CURRENT_CONTEXT.remove();
+        else CURRENT_CONTEXT.set(previous);
+      }
+      return first;
+    }
+
+    private void settleTerminal(
+        Keyword state, Throwable error, Object cancelReason, Object value) {
+      while (true) {
+        RunSnapshot current = snapshot.get();
+        if (current.terminal()) return;
+        RunSnapshot update =
+            new RunSnapshot(
+                state,
+                current.startedAt,
+                System.currentTimeMillis(),
+                error,
+                cancelReason);
+        if (!snapshot.compareAndSet(current, update)) continue;
+        cancelDeadlineTask();
+        if (COMPLETED.equals(state)) {
+          resultFuture.complete(value);
+        } else {
+          resultFuture.completeExceptionally(error);
+        }
+        notifyParent();
+        return;
+      }
+    }
+
+    private void notifyParent() {
+      if (parent != null && parentNotified.compareAndSet(false, true)) {
+        parent.childClosed(this);
+      }
+    }
+
+    private void cancelDeadlineTask() {
+      ScheduledFuture<?> scheduled = deadlineTask;
+      if (scheduled != null) scheduled.cancel(false);
+    }
+
+    private boolean transition(
+        Keyword expected, Keyword next, Throwable error, Object cancelReason) {
       while (true) {
         RunSnapshot current = snapshot.get();
         if (!expected.equals(current.state) || current.terminal()) return false;
-        RunSnapshot update = new RunSnapshot(next, current.startedAt, 0L, error);
+        RunSnapshot update =
+            new RunSnapshot(next, current.startedAt, 0L, error, cancelReason);
         if (snapshot.compareAndSet(current, update)) return true;
       }
     }
 
-    private boolean transitionTerminal(Keyword state, Throwable error) {
+    private void transitionAnyNonTerminal(Keyword state, CancellationRequest request) {
       while (true) {
         RunSnapshot current = snapshot.get();
-        if (current.terminal()) return false;
+        if (current.terminal() || state.equals(current.state)) return;
         RunSnapshot update =
-            new RunSnapshot(state, current.startedAt, System.currentTimeMillis(), error);
-        if (snapshot.compareAndSet(current, update)) return true;
+            new RunSnapshot(
+                state,
+                current.startedAt,
+                current.finishedAt,
+                current.error,
+                request == null ? current.cancelReason : request.reason);
+        if (snapshot.compareAndSet(current, update)) return;
       }
     }
 
@@ -296,12 +643,29 @@ public final class HaraWorkHost implements IWorkHost {
 
     @Override
     public Object workStatus() {
+      if (deadlineNanos > 0L && System.nanoTime() >= deadlineNanos) {
+        requestCancellation(DEADLINE_EXCEEDED);
+      }
       RunSnapshot current = snapshot.get();
       List<Object> entries = new ArrayList<>();
       entries.add(STATE);
       entries.add(current.state);
       entries.add(STATUS_WORK_ID);
       entries.add(runId);
+      entries.add(CHILD_COUNT);
+      entries.add((long) children.size());
+      if (parent != null) {
+        entries.add(PARENT_ID);
+        entries.add(parent.runId);
+      }
+      if (detached) {
+        entries.add(DETACHED);
+        entries.add(true);
+      }
+      if (deadlineNanos > 0L) {
+        entries.add(DEADLINE_NANOS);
+        entries.add(deadlineNanos);
+      }
       if (current.startedAt != 0L) {
         entries.add(STARTED_AT);
         entries.add(current.startedAt);
@@ -313,6 +677,10 @@ public final class HaraWorkHost implements IWorkHost {
       if (current.error != null) {
         entries.add(ERROR);
         entries.add(current.error);
+      }
+      if (current.cancelReason != null) {
+        entries.add(CANCEL_REASON);
+        entries.add(current.cancelReason);
       }
       return Map.Standard.from(null, entries.toArray());
     }
@@ -330,20 +698,13 @@ public final class HaraWorkHost implements IWorkHost {
     @Override
     public IPromise workCancel(Object reason) {
       return (IPromise)
-          context.promiseValue(CompletableFuture.completedFuture(cancel(reason)));
+          context.promiseValue(
+              CompletableFuture.completedFuture(requestCancellation(reason)));
     }
 
     @Override
     public boolean closed() {
       return snapshot.get().terminal();
-    }
-
-    private static Throwable unwrap(Throwable error) {
-      Throwable current = error;
-      while ((current instanceof CompletionException) && current.getCause() != null) {
-        current = current.getCause();
-      }
-      return current;
     }
   }
 
@@ -363,9 +724,34 @@ public final class HaraWorkHost implements IWorkHost {
     public void close() {}
   }
 
-  private record RunSnapshot(Keyword state, long startedAt, long finishedAt, Throwable error) {
+  private record CancellationRequest(Object reason, HaraException failure) {}
+
+  private record BodyOutcome(Object value, Throwable error) {
+    static BodyOutcome success(Object value) {
+      return new BodyOutcome(value, null);
+    }
+
+    static BodyOutcome failure(Throwable error) {
+      return new BodyOutcome(null, error);
+    }
+  }
+
+  private record RunSnapshot(
+      Keyword state,
+      long startedAt,
+      long finishedAt,
+      Throwable error,
+      Object cancelReason) {
     boolean terminal() {
       return COMPLETED.equals(state) || FAILED.equals(state) || CANCELLED.equals(state);
     }
+  }
+
+  private static Throwable unwrap(Throwable error) {
+    Throwable current = error;
+    while ((current instanceof CompletionException) && current.getCause() != null) {
+      current = current.getCause();
+    }
+    return current;
   }
 }
