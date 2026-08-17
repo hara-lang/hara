@@ -474,6 +474,7 @@ public final class HaraWorkHost implements IWorkHost {
                 () -> context.invokeCallable(executor, new Object[] {work, input, options, runId}));
         if (value instanceof IPromise promise) {
           activePromise.set(promise);
+          transitionAnyNonTerminal(WAITING, null);
           if (snapshot.get().cancellation != null) promise.cancel();
           try {
             value = promise.deref();
