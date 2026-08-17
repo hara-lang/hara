@@ -1,0 +1,249 @@
+(ns tool.vm-test
+  (:require [tool.vm :as vm]))
+
+(defn- failure-data
+  [function]
+  (try
+    (do
+      (function)
+      nil)
+    (catch Throwable error
+      (ex-data error))))
+
+(def rust-provider
+  {:provider/id :rust
+   :provider/formats {:hal #{:validate :inspect :conform}
+                      :halc #{:encode :decode :validate :inspect :execute :conform}
+                      :hbc #{:encode :decode :validate :inspect :execute :disassemble :conform}}
+   :provider/transforms [[:halc :hbc]
+                         [:hal :hbc]
+                         [:hal :halc]
+                         [:hal :hbc]]
+   :provider/engines {:halc :lower-and-run
+                      :hbc :stack-vm}})
+
+(def truffle-provider
+  {:provider/id :truffle
+   :provider/formats {:halc #{:encode :decode :validate :inspect :execute :conform}
+                      :hbc #{:encode :decode :validate :inspect :execute :disassemble :conform}}
+   :provider/transforms []
+   :provider/engines {:halc :ast-lowering
+                      :hbc :reference-vm}})
+
+(def results
+  [(test-check "tool.vm formats remain in the public pipeline order"
+               (vec
+                (map (fn [descriptor]
+                       (:format/id descriptor))
+                     (vm/formats)))
+               [:hal :halc :hbc])
+
+   (test-check "format descriptors retain exact current wire identities"
+               [(select-keys (vm/format-descriptor :halc)
+                             [:format/name
+                              :format/version
+                              :format/execution
+                              :format/spec-path])
+                (select-keys (vm/format-descriptor :hbc)
+                             [:format/name
+                              :format/version
+                              :format/execution
+                              :format/spec-path])]
+               [{:format/name "HALC"
+                 :format/version 1
+                 :format/execution :lowering-required
+                 :format/spec-path "01-lang/009-halc/draft/halc-format.md"}
+                {:format/name "HBC0"
+                 :format/version 0
+                 :format/execution :virtual-machine
+                 :format/spec-path "01-lang/010-bytecode/draft/hal-bytecode-vm.edn"}])
+
+   (test-check "the transformation graph is exact and one-way"
+               [(vm/legal-transform? :hal :halc)
+                (vm/legal-transform? :hal :hbc)
+                (vm/legal-transform? :halc :hbc)
+                (vm/legal-transform? :hbc :halc)
+                (vm/legal-transform? :halc :halc)]
+               [true true true false false])
+
+   (test-check "unsupported transformations retain source and target data"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/transformation :hbc :halc)))
+                [:type :from :to])
+               {:type :tool.vm/unsupported-transformation
+                :from :hbc
+                :to :halc})
+
+   (test-check "binary artifacts normalize Bytes without accepting HAL source"
+               (let [artifact
+                     (vm/artifact
+                      {:artifact/format :halc
+                       :artifact/version 1
+                       :artifact/bytes (str/encode-utf8 "HALC")
+                       :artifact/provenance {:provider :rust}})]
+                 [(vm/artifact? artifact)
+                  (select-keys (vm/artifact-info artifact)
+                               [:artifact/format
+                                :artifact/version
+                                :artifact/bytes
+                                :artifact/spec-path
+                                :artifact/provenance])
+                  (:type
+                   (failure-data
+                    (fn []
+                      (vm/artifact
+                       {:artifact/format :hal
+                        :artifact/version 0
+                        :artifact/bytes (str/encode-utf8 "source")}))))])
+               [true
+                {:artifact/format :halc
+                 :artifact/version 1
+                 :artifact/bytes 4
+                 :artifact/spec-path "01-lang/009-halc/draft/halc-format.md"
+                 :artifact/provenance {:provider :rust}}
+                :tool.vm/invalid-artifact])
+
+   (test-check "artifact validation rejects non-Bytes, negative versions, and unknown keys"
+               [(select-keys
+                 (failure-data
+                  (fn []
+                    (vm/artifact
+                     {:artifact/format :hbc
+                      :artifact/version 0
+                      :artifact/bytes "HBC0"})))
+                 [:type :field])
+                (select-keys
+                 (failure-data
+                  (fn []
+                    (vm/artifact
+                     {:artifact/format :hbc
+                      :artifact/version -1
+                      :artifact/bytes (str/encode-utf8 "HBC0")})))
+                 [:type :field])
+                (select-keys
+                 (failure-data
+                  (fn []
+                    (vm/artifact
+                     {:artifact/format :hbc
+                      :artifact/version 0
+                      :artifact/bytes (str/encode-utf8 "HBC0")
+                      :artifact/runtime :live})))
+                 [:type :field :unknown])]
+               [{:type :tool.vm/invalid-artifact
+                 :field :artifact/bytes}
+                {:type :tool.vm/invalid-artifact
+                 :field :artifact/version}
+                {:type :tool.vm/invalid-artifact
+                 :field "tool.vm artifact"
+                 :unknown [:artifact/runtime]}])
+
+   (test-check "providers canonicalize operations, formats, and transforms"
+               (let [providers
+                     (vm/capabilities
+                      [truffle-provider rust-provider])
+                     rust (first providers)]
+                 [(vec
+                   (map (fn [provider]
+                          (:provider/id provider))
+                        providers))
+                  (:provider/operations rust)
+                  (:provider/formats rust)
+                  (:provider/transforms rust)])
+               [[:rust :truffle]
+                [:encode :decode :validate :inspect :transform :execute :disassemble :conform]
+                {:hal [:validate :inspect :conform]
+                 :halc [:encode :decode :validate :inspect :execute :conform]
+                 :hbc [:encode :decode :validate :inspect :execute :disassemble :conform]}
+                [[:hal :halc]
+                 [:hal :hbc]
+                 [:halc :hbc]]])
+
+   (test-check "provider selection honors the exact requested provider"
+               [(:provider/id
+                 (vm/select-provider
+                  [truffle-provider rust-provider]
+                  {:operation :transform
+                   :provider :rust
+                   :from :halc
+                   :to :hbc}))
+                (:provider/id
+                 (vm/select-provider
+                  [truffle-provider rust-provider]
+                  {:operation :execute
+                   :provider :truffle
+                   :format :hbc}))]
+               [:rust :truffle])
+
+   (test-check "provider selection never falls back silently"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/select-provider
+                    [truffle-provider rust-provider]
+                    {:operation :transform
+                     :provider :truffle
+                     :from :halc
+                     :to :hbc})))
+                [:type :operation :from :to :provider :available])
+               {:type :tool.vm/capability-unavailable
+                :operation :transform
+                :from :halc
+                :to :hbc
+                :provider :truffle
+                :available [:rust]})
+
+   (test-check "available provider discovery does not require a selected provider"
+               (vm/available-providers
+                [truffle-provider rust-provider]
+                {:operation :transform
+                 :from :halc
+                 :to :hbc})
+               [:rust])
+
+   (test-check "format operations do not expand into a provider-wide Cartesian product"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/select-provider
+                    [truffle-provider rust-provider]
+                    {:operation :disassemble
+                     :provider :rust
+                     :format :halc})))
+                [:type :operation :format :provider :available])
+               {:type :tool.vm/capability-unavailable
+                :operation :disassemble
+                :format :halc
+                :provider :rust
+                :available []})
+
+   (test-check "provider selection itself remains explicit"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/select-provider
+                    [truffle-provider rust-provider]
+                    {:operation :execute
+                     :format :hbc})))
+                [:type :field :operation])
+               {:type :tool.vm/invalid-request
+                :field :provider
+                :operation :execute})
+
+   (test-check "execute capabilities require a declared engine"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/provider
+                    {:provider/id :codec-only
+                     :provider/formats {:hbc #{:execute}}
+                     :provider/transforms []
+                     :provider/engines {}})))
+                [:type :provider :field :format])
+               {:type :tool.vm/invalid-provider
+                :provider :codec-only
+                :field :provider/engines
+                :format :hbc})])
+
+results
