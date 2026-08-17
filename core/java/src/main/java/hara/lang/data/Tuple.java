@@ -9,13 +9,18 @@ import hara.lang.data.types.ObjPersistent;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
 import hara.lang.protocol.IPair;
+import hara.lang.protocol.IPopFirst;
+import hara.lang.protocol.IPopLast;
+import hara.lang.protocol.IPushFirst;
+import hara.lang.protocol.IPushLast;
 
 import java.util.Iterator;
 
 public interface Tuple {
 
   @SuppressWarnings({"unchecked", "rawtypes"})
-  public class Tup0 extends ObjEmpty implements ISequentialType, ILinearType {
+  public class Tup0 extends ObjEmpty
+      implements ISequentialType, ILinearType, IPushFirst, IPushLast, IPopFirst, IPopLast {
 
     public static final Tup0 EMPTY = new Tup0(null);
 
@@ -60,7 +65,8 @@ public interface Tuple {
   }
 
   @SuppressWarnings({"unchecked", "rawtypes"})
-  public interface Tup1<A> extends ISequentialType, ILinearType {
+  public interface Tup1<A>
+      extends ISequentialType, ILinearType, IPushFirst, IPushLast, IPopFirst, IPopLast {
 
     @Override
     default long count() {
@@ -904,12 +910,12 @@ public interface Tuple {
       }
 
       @Override
-      public ILinearType pushFirst(Object x) {
+      public IPushFirst pushFirst(Object x) {
         return List.Standard.from(_meta, x, _a, _b, _c, _d, _e, _f, _g, _h);
       }
 
       @Override
-      public ILinearType pushLast(Object x) {
+      public IPushLast pushLast(Object x) {
         return Vector.Standard.from(_meta, _a, _b, _c, _d, _e, _f, _g, _h, x);
       }
 

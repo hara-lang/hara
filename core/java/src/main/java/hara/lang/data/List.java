@@ -13,7 +13,7 @@ import java.util.NoSuchElementException;
 
 import static hara.lang.base.primitive.Bits.log2Ceil;
 
-public interface List<E> extends IVectorType<E> {
+public interface List<E> extends IVectorType<E>, IPushFirst<E>, IPopFirst {
 
   public static int CHUNK_SIZE = 32;
   public static int DEFAULT_CAPACITY = 4;

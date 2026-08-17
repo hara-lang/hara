@@ -1,13 +1,10 @@
 (ns tool.cli.handlers
-  (:require [code.deploy.cli :as deploy]
-            [code.manage.cli :as manage]
-            [code.test.cli :as code-test]
-            [tool.cli.asset :as asset]
-            [tool.cli.extension :as extension]
+  (:require [tool.cli.asset :as asset]
             [tool.cli.identity :as identity]
             [tool.cli.host :as cli-host]
             [tool.cli.language :as language]
             [tool.cli.lint :as lint]
+            [tool.cli.model :as model]
             [tool.cli.package :as package]
             [tool.cli.project-command :as project-command]
             [tool.cli.snapshot :as snapshot]
@@ -15,6 +12,16 @@
             [tool.cli.tap :as tap]
             [tool.cli.template :as template]
             [lang.seedgen.cli :as seedgen]))
+
+(defn unavailable-handler
+  "Returns a stable result for a temporarily disconnected command family."
+  [feature]
+  (fn [_]
+    (model/failure
+     :tool.cli.outcome/unavailable
+     :tool.cli/feature-unavailable
+     (str (name feature) " is temporarily unavailable")
+     {:feature feature})))
 
 (defn registered-handler
   "Closes one implementation handler through the shared CLI template. Existing
@@ -38,9 +45,10 @@
    :tool.cli.handler/lint
    (registered-handler :tool.cli.handler/lint lint/handler)
    :tool.cli.handler/manage
-   (registered-handler :tool.cli.handler/manage manage/handler)
+   (registered-handler :tool.cli.handler/manage (unavailable-handler :manage))
    :tool.cli.handler/project-test
-   (registered-handler :tool.cli.handler/project-test code-test/handler)
+   (registered-handler :tool.cli.handler/project-test
+                       (unavailable-handler :project-test))
    :tool.cli.handler/project-new
    (registered-handler :tool.cli.handler/project-new project-command/handler)
    :tool.cli.handler/project-check
@@ -58,7 +66,8 @@
    :tool.cli.handler/asset
    (registered-handler :tool.cli.handler/asset asset/handler)
    :tool.cli.handler/extension
-   (registered-handler :tool.cli.handler/extension extension/handler)
+   (registered-handler :tool.cli.handler/extension
+                       (unavailable-handler :extension))
    :tool.cli.handler/identity
    (registered-handler :tool.cli.handler/identity identity/handler)
    :tool.cli.handler/stdin
@@ -81,7 +90,8 @@
    (registered-handler :tool.cli.handler/spec spec/handler)
    :tool.cli.handler/seedgen
    (registered-handler :tool.cli.handler/seedgen seedgen/handler)
-   :tool.cli.handler/deploy deploy/handler})
+   :tool.cli.handler/deploy
+   (registered-handler :tool.cli.handler/deploy (unavailable-handler :deploy))})
 
 (defn registry
   ([] +registry+)

@@ -15,12 +15,50 @@ import hara.lang.data.SortedSet;
 import hara.lang.data.Tuple;
 import hara.lang.data.Vector;
 import hara.lang.protocol.IConj;
+import hara.lang.protocol.IPopFirst;
+import hara.lang.protocol.IPopLast;
+import hara.lang.protocol.IPushFirst;
+import hara.lang.protocol.IPushLast;
 import java.util.Iterator;
 import java.util.Map.Entry;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.junit.Test;
 
 /** Protocol-level collection checks shared by Hara-native and Java-backed values. */
 public class CollectionProtocolConformanceTest {
+  @Test
+  public void sharedNativeValueProtocolMatrixPasses() throws Exception {
+    String source =
+        Files.readString(
+            Path.of("lib/test-fixtures/std/foundation/native_value_protocol_matrix.hal"));
+    try (org.graalvm.polyglot.Context context =
+        org.graalvm.polyglot.Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[true true true true true true true true true true true true]",
+          context.eval(HaraLanguage.ID, source).toString());
+    }
+  }
+
+  @Test
+  public void linearCapabilitiesAreExplicitAndQueueSupportsBothEnds() {
+    Queue.Standard<Long> queue = Queue.Standard.from(null, 1L, 2L);
+    Queue.Standard<Long> prepended = queue.pushFirst(0L);
+
+    assertTrue(queue instanceof IPushFirst<?>);
+    assertTrue(queue instanceof IPushLast<?>);
+    assertTrue(queue instanceof IPopFirst);
+    assertTrue(queue instanceof IPopLast);
+    assertEquals("[0 1 2]", prepended.display());
+    assertEquals("[1 2]", queue.display());
+
+    Vector.Standard<Long> vector = Vector.Standard.from(null, 1L, 2L);
+    assertFalse(vector instanceof IPushFirst<?>);
+    assertFalse(vector instanceof IPopFirst);
+    assertTrue(vector instanceof IPushLast<?>);
+    assertTrue(vector instanceof IPopLast);
+  }
+
   @Test
   public void lookupPreservesMissingAndPresentNullValues() {
     HaraProtocol lookup = new HaraProtocol("ILookup", java.util.Map.of("lookup", -1));

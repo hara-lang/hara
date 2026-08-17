@@ -2,8 +2,8 @@ use crate::lang::data::{List, Vector};
 use crate::lang::hash::JavaHash;
 use crate::lang::protocol::{
     HashType, IColl, IConj, ICount, IDisplay, IEmpty, IEquality, IHash, IMetadata, IMutable, INth,
-    IObjType, IPeekFirst, IPeekLast, IPersistent, IPopFirst, IPopLast, IPushLast, IToMutable,
-    IToPersistent, ObjType,
+    IObjType, IPeekFirst, IPeekLast, IPersistent, IPopFirst, IPopLast, IPushFirst, IPushLast,
+    IToMutable, IToPersistent, ObjType,
 };
 use std::rc::Rc;
 
@@ -102,6 +102,12 @@ impl<E: Clone> Standard<E> {
                 ..self.clone()
             }
         }
+    }
+    pub fn push_first(&self, value: E) -> Self {
+        std::iter::once(value)
+            .chain(self.iter().cloned())
+            .collect::<Self>()
+            .with_meta(self.metadata.clone())
     }
     pub fn pop_first_value(&self) -> Self {
         if self.size == 0 {
@@ -203,6 +209,12 @@ impl<E: Clone> IPushLast<E> for Standard<E> {
     type Output = Self;
     fn push_last(&self, value: E) -> Self {
         Standard::push_last(self, value)
+    }
+}
+impl<E: Clone> IPushFirst<E> for Standard<E> {
+    type Output = Self;
+    fn push_first(&self, value: E) -> Self {
+        Standard::push_first(self, value)
     }
 }
 impl<E: Clone> IConj<E> for Standard<E> {
@@ -322,6 +334,10 @@ impl<E: Clone> Mutable<E> {
         self.value = self.value.push_last(value);
         self
     }
+    pub fn push_first(&mut self, value: E) -> &mut Self {
+        self.value = self.value.push_first(value);
+        self
+    }
     pub fn pop_first(&mut self) -> &mut Self {
         self.value = self.value.pop_first_value();
         self
@@ -380,6 +396,13 @@ mod tests {
         let p = q.pop_last_value();
         assert_eq!(q.peek_last(), Some(&1029));
         assert_eq!(p.peek_last(), Some(&1028));
+    }
+    #[test]
+    fn push_first_preserves_order_and_previous_value() {
+        let queue = (1..=3).collect::<Standard<_>>();
+        let pushed = queue.push_first(0);
+        assert_eq!(queue.iter().copied().collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(pushed.iter().copied().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
     }
     #[test]
     fn persistent_operations_preserve_metadata() {

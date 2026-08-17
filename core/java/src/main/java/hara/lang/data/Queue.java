@@ -9,13 +9,24 @@ import hara.lang.data.types.ObjMutable;
 import hara.lang.data.types.ObjPersistent;
 import hara.lang.protocol.IColl;
 import hara.lang.protocol.IMetadata;
+import hara.lang.protocol.IPopFirst;
+import hara.lang.protocol.IPopLast;
+import hara.lang.protocol.IPushFirst;
+import hara.lang.protocol.IPushLast;
 import hara.lang.protocol.IToMutable;
 import hara.lang.protocol.IToPersistent;
 
 import java.util.ArrayList;
 import java.util.Iterator;
 
-public interface Queue<E> extends IColl<E>, ILinearType<E>, ISequentialLookupType<E> {
+public interface Queue<E>
+    extends IColl<E>,
+        ILinearType<E>,
+        ISequentialLookupType<E>,
+        IPushFirst<E>,
+        IPushLast<E>,
+        IPopFirst,
+        IPopLast {
 
   public static int MAX_LENGTH = 1024;
 
@@ -160,6 +171,21 @@ public interface Queue<E> extends IColl<E>, ILinearType<E>, ISequentialLookupTyp
 
     public static <E> Mutable<E> into(Mutable<E> coll, Iterator<E> it) {
       return Iter.reduce(it, coll, (m, e) -> m.pushLast(e));
+    }
+
+    @SuppressWarnings({"unchecked"})
+    @Override
+    public Mutable<E> pushFirst(E e) {
+      ArrayList<E> values = new ArrayList<>();
+      iterator().forEachRemaining(values::add);
+      _size = 0;
+      _offset = 0;
+      _head = Vector.Mutable.empty(null);
+      _tail = Vector.Mutable.empty(null);
+      _buffer = new List.Mutable<Vector<E>>(null, List.DEFAULT_CAPACITY);
+      pushLast(e);
+      values.forEach(this::pushLast);
+      return this;
     }
 
     @SuppressWarnings({"unchecked"})
@@ -324,6 +350,13 @@ public interface Queue<E> extends IColl<E>, ILinearType<E>, ISequentialLookupTyp
     @SuppressWarnings("unchecked")
     public static <E> Standard<E> into(Standard<E> coll, Iterator<E> it) {
       return Mutable.into(coll.toMutable(), it).toPersistent();
+    }
+
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    @Override
+    public Standard<E> pushFirst(E e) {
+      Standard<E> output = Standard.<E>empty(_meta).pushLast(e);
+      return into(output, iterator());
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

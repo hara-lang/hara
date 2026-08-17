@@ -6,12 +6,23 @@ import hara.lang.data.types.ISequentialLookupType;
 import hara.lang.data.types.ObjPersistent;
 import hara.lang.protocol.IAssoc;
 import hara.lang.protocol.IMetadata;
+import hara.lang.protocol.IPopFirst;
+import hara.lang.protocol.IPopLast;
+import hara.lang.protocol.IPushFirst;
+import hara.lang.protocol.IPushLast;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 
 /** Persistent deque backed by a count-measured finger tree. */
-public interface Deque<E> extends ILinearType<E>, ISequentialLookupType<E>, IAssoc<Long, E> {
+public interface Deque<E>
+    extends ILinearType<E>,
+        ISequentialLookupType<E>,
+        IAssoc<Long, E>,
+        IPushFirst<E>,
+        IPushLast<E>,
+        IPopFirst,
+        IPopLast {
   abstract class Item<E> {
     abstract long measure();
     abstract E get(long index);

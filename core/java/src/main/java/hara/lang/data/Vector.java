@@ -215,15 +215,6 @@ public interface Vector<E> extends IVectorType<E>, IAssoc<Integer, E> {
       return rangedIterator(0, _size());
     }
 
-    @Override
-    default IPushFirst<E> pushFirst(E e) {
-      throw new Ex.Unsupported();
-    }
-
-    @Override
-    default IPopFirst popFirst() {
-      throw new Ex.Unsupported();
-    }
   }
 
   public class Mutable<E> extends ObjMutable implements Base<E>, IToPersistent {

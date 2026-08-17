@@ -6662,6 +6662,44 @@ mod tests {
     }
 
     #[test]
+    fn linear_protocol_satisfaction_matches_dispatch() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [q (std.native.Algo/queue 1 2)
+                           mq (IToMutable/to-mutable q)
+                           v (vec [1 2])]
+                       [(satisfies? IPushFirst q)
+                        (IPushFirst/push-first q 0)
+                        (satisfies? IPushFirst mq)
+                        (IPushFirst/push-first mq 0)
+                        (satisfies? IPopFirst mq)
+                        (IPopFirst/pop-first mq)
+                        (satisfies? IPushFirst v)
+                        (satisfies? IPopFirst v)
+                        (satisfies? IPushLast v)
+                        (satisfies? IPopLast v)])",
+                )
+                .unwrap(),
+            "[true #queue[0 1 2] true #<mutable-queue> true #<mutable-queue> false false true true]"
+        );
+    }
+
+    #[test]
+    fn shared_native_value_protocol_matrix_passes() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(include_str!(
+                    "../../../lib/test-fixtures/std/foundation/native_value_protocol_matrix.hal"
+                ))
+                .unwrap(),
+            "[true true true true true true true true true true true true]"
+        );
+    }
+
+    #[test]
     fn code_translate_resolves_required_namespace_aliases() {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)

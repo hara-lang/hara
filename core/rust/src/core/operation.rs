@@ -824,6 +824,37 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
             .into_iter()
             .map(|(key, value)| pair_value(key, value))
             .collect()),
+        Value::MutableCollection(collection) => {
+            let borrowed = collection.borrow();
+            let collection = borrowed
+                .as_ref()
+                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
+            match collection {
+                MutableCollection::Map(values) => Ok(values
+                    .iter()
+                    .map(|(key, value)| pair_value(key.clone(), value.clone()))
+                    .collect()),
+                MutableCollection::OrderedMap(values) => Ok(values
+                    .iter()
+                    .map(|(key, value)| pair_value(key.clone(), value.clone()))
+                    .collect()),
+                MutableCollection::SortedMap(values) => Ok(values
+                    .iter()
+                    .map(|(key, value)| pair_value(key.clone(), value.clone()))
+                    .collect()),
+                MutableCollection::Trie(values) => Ok(values
+                    .entries()
+                    .into_iter()
+                    .map(|(key, value)| pair_value(Value::String(key.clone()), value.clone()))
+                    .collect()),
+                MutableCollection::Set(values) => Ok(values.iter().cloned().collect()),
+                MutableCollection::OrderedSet(values) => Ok(values.iter().cloned().collect()),
+                MutableCollection::SortedSet(values) => Ok(values.iter().cloned().collect()),
+                MutableCollection::List(values) => Ok(values.iter().cloned().collect()),
+                MutableCollection::Queue(values) => Ok(values.iter().cloned().collect()),
+                MutableCollection::Vector(values) => Ok(values.iter().cloned().collect()),
+            }
+        }
         Value::Pointer(pointer) => Ok(pointer
             .fields()
             .iter()
@@ -871,6 +902,7 @@ fn make_iterator(value: Value) -> Result<Value, String> {
         | Value::Object(_)
         | Value::Struct(_)
         | Value::Mutable(_)
+        | Value::MutableCollection(_)
         | Value::Map(_)
         | Value::OrderedMap(_)
         | Value::SortedMap(_)

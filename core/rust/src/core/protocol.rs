@@ -1220,20 +1220,40 @@ fn protocol_pair_value(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_peek_first(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
-        [value] => collection_first(value.clone()),
+        [value] if builtin_protocol_satisfies("IPeekFirst", value) => {
+            collection_first(value.clone())
+        }
+        [_] => Err("protocol/unsupported-receiver: IPeekFirst/peek-first".into()),
         _ => Err("IPeekFirst/peek-first expects one collection".into()),
     }
 }
 
 fn protocol_peek_last(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
-        [value] => collection_last(value.clone()),
+        [value] if builtin_protocol_satisfies("IPeekLast", value) => collection_last(value.clone()),
+        [_] => Err("protocol/unsupported-receiver: IPeekLast/peek-last".into()),
         _ => Err("IPeekLast/peek-last expects one collection".into()),
     }
 }
 
 fn protocol_pop_first(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
+        [Value::MutableCollection(collection)] => {
+            let mut borrowed = collection.borrow_mut();
+            let mutable = borrowed
+                .as_mut()
+                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
+            match mutable {
+                MutableCollection::List(values) => {
+                    values.pop_first();
+                }
+                MutableCollection::Queue(values) => {
+                    values.pop_first();
+                }
+                _ => return Err("protocol/unsupported-receiver: IPopFirst/pop-first".into()),
+            }
+            Ok(Value::MutableCollection(collection.clone()))
+        }
         [Value::List(values)] => Ok(Value::List(values.pop_first())),
         [Value::Cons(values)] => Ok(Value::List(values.clone().pop_first())),
         [Value::Tuple(values)] => Ok(Value::Tuple(Box::new(values.pop_first()))),
@@ -1248,6 +1268,25 @@ fn protocol_pop_first(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_pop_last(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
+        [Value::MutableCollection(collection)] => {
+            let mut borrowed = collection.borrow_mut();
+            let mutable = borrowed
+                .as_mut()
+                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
+            match mutable {
+                MutableCollection::List(values) => {
+                    values.pop_last();
+                }
+                MutableCollection::Queue(values) => {
+                    values.pop_last();
+                }
+                MutableCollection::Vector(values) => {
+                    values.pop_last();
+                }
+                _ => return Err("protocol/unsupported-receiver: IPopLast/pop-last".into()),
+            }
+            Ok(Value::MutableCollection(collection.clone()))
+        }
         [Value::List(values)] => Ok(Value::List(values.pop_last())),
         [Value::Tuple(values)] => Ok(Value::Tuple(Box::new(values.pop_last()))),
         [Value::Vector(values)] => Ok(Value::Vector(values.pop_last())),
@@ -1261,6 +1300,22 @@ fn protocol_pop_last(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_push_first(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
+        [Value::MutableCollection(collection), value] => {
+            let mut borrowed = collection.borrow_mut();
+            let mutable = borrowed
+                .as_mut()
+                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
+            match mutable {
+                MutableCollection::List(values) => {
+                    values.push_first(value.clone());
+                }
+                MutableCollection::Queue(values) => {
+                    values.push_first(value.clone());
+                }
+                _ => return Err("protocol/unsupported-receiver: IPushFirst/push-first".into()),
+            }
+            Ok(Value::MutableCollection(collection.clone()))
+        }
         [Value::List(values), value] => Ok(Value::List(values.push_first(value.clone()))),
         [Value::Cons(values), value] => Ok(Value::Cons(Box::new(
             PCons::new(value.clone(), values.to_list()).with_meta(values.meta().cloned()),
@@ -1269,6 +1324,9 @@ fn protocol_push_first(arguments: &[Value]) -> Result<Value, String> {
         [Value::Deque(values), value] => {
             Ok(Value::Deque(Box::new(values.push_first(value.clone()))))
         }
+        [Value::Queue(values), value] => {
+            Ok(Value::Queue(Box::new(values.push_first(value.clone()))))
+        }
         [_, _] => Err("protocol/unsupported-receiver: IPushFirst/push-first".into()),
         _ => Err("IPushFirst/push-first expects a collection and value".into()),
     }
@@ -1276,6 +1334,25 @@ fn protocol_push_first(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_push_last(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
+        [Value::MutableCollection(collection), value] => {
+            let mut borrowed = collection.borrow_mut();
+            let mutable = borrowed
+                .as_mut()
+                .ok_or_else(|| "mutable collection used after to-persistent".to_string())?;
+            match mutable {
+                MutableCollection::List(values) => {
+                    values.push_last(value.clone());
+                }
+                MutableCollection::Queue(values) => {
+                    values.push_last(value.clone());
+                }
+                MutableCollection::Vector(values) => {
+                    values.push_last(value.clone());
+                }
+                _ => return Err("protocol/unsupported-receiver: IPushLast/push-last".into()),
+            }
+            Ok(Value::MutableCollection(collection.clone()))
+        }
         [Value::List(values), value] => Ok(Value::List(values.push_last(value.clone()))),
         [Value::Tuple(values), value] => tuple_push_last(values, value.clone()),
         [Value::Vector(values), value] => Ok(Value::Vector(values.push_last(value.clone()))),
@@ -1486,6 +1563,21 @@ fn extension_has_category(receiver: &ExtensionValue, category: &str) -> bool {
     })
 }
 
+fn mutable_linear_satisfies(value: &Value, list_or_queue: bool, vector: bool) -> bool {
+    let Value::MutableCollection(collection) = value else {
+        return false;
+    };
+    let borrowed = collection.borrow();
+    let Some(collection) = borrowed.as_ref() else {
+        return false;
+    };
+    matches!(
+        collection,
+        MutableCollection::List(_) | MutableCollection::Queue(_)
+    ) && list_or_queue
+        || matches!(collection, MutableCollection::Vector(_)) && vector
+}
+
 fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
     let name = protocol.rsplit('/').next().unwrap_or(protocol);
     let persistent_collection = matches!(
@@ -1548,6 +1640,7 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
                 | Value::Object(_)
                 | Value::Struct(_)
                 | Value::Mutable(_)
+                | Value::MutableCollection(_)
                 | Value::Pointer(_)
         );
     let metadata_capable = persistent_collection
@@ -1580,7 +1673,31 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         }
         "IToMutable" => mutable_convertible,
         "IToPersistent" => matches!(value, Value::MutableCollection(_)),
-        "IIter" | "IReduce" | "IPeekFirst" | "IPeekLast" => iterable,
+        "IIter" | "IReduce" => iterable,
+        "IPeekFirst" => {
+            matches!(
+                value,
+                Value::List(_)
+                    | Value::Cons(_)
+                    | Value::Queue(_)
+                    | Value::Deque(_)
+                    | Value::Tuple(_)
+                    | Value::Vector(_)
+                    | Value::Seq(_)
+                    | Value::PriorityMap(_)
+            ) || mutable_linear_satisfies(value, true, true)
+        }
+        "IPeekLast" => {
+            matches!(
+                value,
+                Value::List(_)
+                    | Value::Queue(_)
+                    | Value::Deque(_)
+                    | Value::Tuple(_)
+                    | Value::Vector(_)
+                    | Value::PriorityMap(_)
+            ) || mutable_linear_satisfies(value, true, true)
+        }
         "IIterator" => matches!(value, Value::Iterator(_)),
         "ICount" => {
             persistent_collection
@@ -1655,10 +1772,49 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
             value,
             Value::String(_) | Value::Keyword(_) | Value::Symbol(_) | Value::Bytes(_)
         ),
-        "IPushLast" => matches!(
-            value,
-            Value::List(_) | Value::Tuple(_) | Value::Vector(_) | Value::Queue(_) | Value::Deque(_)
-        ),
+        "IPushFirst" => {
+            matches!(
+                value,
+                Value::List(_)
+                    | Value::Cons(_)
+                    | Value::Tuple(_)
+                    | Value::Queue(_)
+                    | Value::Deque(_)
+            ) || mutable_linear_satisfies(value, true, false)
+        }
+        "IPushLast" => {
+            matches!(
+                value,
+                Value::List(_)
+                    | Value::Tuple(_)
+                    | Value::Vector(_)
+                    | Value::Queue(_)
+                    | Value::Deque(_)
+            ) || mutable_linear_satisfies(value, true, true)
+        }
+        "IPopFirst" => {
+            matches!(
+                value,
+                Value::List(_)
+                    | Value::Cons(_)
+                    | Value::Tuple(_)
+                    | Value::Queue(_)
+                    | Value::Deque(_)
+                    | Value::PriorityMap(_)
+                    | Value::Seq(_)
+            ) || mutable_linear_satisfies(value, true, false)
+        }
+        "IPopLast" => {
+            matches!(
+                value,
+                Value::List(_)
+                    | Value::Tuple(_)
+                    | Value::Vector(_)
+                    | Value::Queue(_)
+                    | Value::Deque(_)
+                    | Value::PriorityMap(_)
+            ) || mutable_linear_satisfies(value, true, true)
+        }
         "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
         "IPersistent" => persistent_collection || matches!(value, Value::Struct(_)),
         "IStream" => matches!(value, Value::Stream(_)),
