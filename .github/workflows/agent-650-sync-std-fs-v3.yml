@@ -73,18 +73,27 @@ jobs:
           '''
           new = '''cargo build --manifest-path core/rust/Cargo.toml --bin hara-test
           HARA_TEST="$REPO/core/rust/target/debug/hara-test"
+          HAL_SCRATCH="$REPO/core/.agent-650-hal"
 
           run_hal() {
             local selected
+            local copied
+            local index=0
             local files=()
+            rm -rf "$HAL_SCRATCH"
+            mkdir -p "$HAL_SCRATCH"
             for selected in "$@"; do
               if [[ "$selected" = /* ]]; then
-                files+=("$selected")
+                copied="$HAL_SCRATCH/$index-$(basename "$selected")"
+                cp "$selected" "$copied"
+                files+=("$copied")
               else
                 files+=("$REPO/$selected")
               fi
+              index=$((index + 1))
             done
             "$HARA_TEST" --root "$REPO/core" "${files[@]}"
+            rm -rf "$HAL_SCRATCH"
           }
           '''
           if old not in source:
@@ -102,18 +111,6 @@ jobs:
           )
           source = source.replace('"$HARA_TEST" --root core', 'run_hal')
 
-          old_walk = '''WALK_CANDIDATE="$CANDIDATES/core/lib/src/std/fs/walk.hal"
-          run_hal "$WALK_CANDIDATE"
-          cat "$WALK_CANDIDATE" > "$RUNNER_TEMP/walk-candidate-check.hal"
-          '''
-          new_walk = '''PATH_SOURCE="$REPO/core/lib/src/std/fs/path.hal"
-          WALK_CANDIDATE="$CANDIDATES/core/lib/src/std/fs/walk.hal"
-          cat "$PATH_SOURCE" "$WALK_CANDIDATE" > "$RUNNER_TEMP/walk-candidate-check.hal"
-          '''
-          if old_walk not in source:
-              raise SystemExit("walk candidate block not found")
-          source = source.replace(old_walk, new_walk, 1)
-
           for marker in (
               ":walk-candidate-ok",
               ":walk-written-ok",
@@ -126,6 +123,11 @@ jobs:
                   raise SystemExit(f"assertion marker not found: {marker}")
               source = source.replace(marker, "[{:pass true}]", 1)
 
+          source = source.replace(
+              'git diff --check\n',
+              'rm -rf "$HAL_SCRATCH"\ngit diff --check\n',
+              1,
+          )
           if '"$HARA"' in source:
               raise SystemExit("stale Hara CLI invocation remains")
           path.write_text(source)
