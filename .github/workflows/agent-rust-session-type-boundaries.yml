@@ -1,0 +1,44 @@
+name: Validate Rust session type boundaries
+
+on:
+  push:
+    branches:
+      - agent/rust-session-type-boundaries
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/rust-session-type-boundaries
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Apply the typed Session model
+        run: python scripts/runtime/apply-rust-session-type-boundaries.py
+      - name: Format Rust
+        run: cargo fmt --manifest-path core/rust/Cargo.toml
+      - name: Check the Rust runtime
+        run: cargo check --manifest-path core/rust/Cargo.toml
+      - name: Run focused Session type and behavior tests
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml session_identity_and_mount_identifiers_are_distinct_types
+          cargo test --manifest-path core/rust/Cargo.toml zero_authority_spec_is_explicit_and_immutable
+          cargo test --manifest-path core/rust/Cargo.toml session_status_uses_typed_identity_state_and_mount
+          cargo test --manifest-path core/rust/Cargo.toml named_sessions_start_with_zero_host_authority
+          cargo test --manifest-path core/rust/Cargo.toml session_kernel_mounts_preserve_state_and_enforce_lifetime
+      - name: Commit the validated Rust slice
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add core/rust/src/lib.rs core/rust/src/runtime/session.rs core/rust/src/runtime/session_model.rs
+          git diff --cached --check
+          git commit -m "Tighten Rust Session type boundaries"
+          git push origin HEAD:agent/rust-session-type-boundaries
