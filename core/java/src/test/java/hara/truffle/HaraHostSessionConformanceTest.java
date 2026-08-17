@@ -28,8 +28,8 @@ public class HaraHostSessionConformanceTest {
     requireCase("host/namespace-loaded");
 
     try (SessionKernel kernel = new SessionKernel(false, false)) {
-      SessionKernel.Session alpha = kernel.create("alpha");
-      SessionKernel.Session beta = kernel.create("beta");
+      SessionKernel.Session alpha = kernel.create(SessionModel.SessionId.parse("alpha"));
+      SessionKernel.Session beta = kernel.create(SessionModel.SessionId.parse("beta"));
       assertTrue(
           alpha
               .eval("(= Host std.native.Host std.foundation/Host)")
@@ -75,7 +75,7 @@ public class HaraHostSessionConformanceTest {
     requireCase("host/no-live-transfer");
 
     try (SessionKernel kernel = new SessionKernel(false, false)) {
-      SessionKernel.Session session = kernel.create("transfer");
+      SessionKernel.Session session = kernel.create(SessionModel.SessionId.parse("transfer"));
       IllegalArgumentException error =
           assertThrows(
               IllegalArgumentException.class,
@@ -122,7 +122,7 @@ public class HaraHostSessionConformanceTest {
           ":host/method-unavailable",
           hara.lang.base.G.display(
               kernel
-                  .create("host-error")
+                  .create(SessionModel.SessionId.parse("host-error"))
                   .evalTransfer(
                       """
                       (try

@@ -17,6 +17,10 @@ import java.nio.file.Path;
 import org.junit.Test;
 
 public class SessionKernelTest {
+  private static SessionModel.SessionId sessionId(String value) {
+    return SessionModel.SessionId.parse(value);
+  }
+
   @Test
   public void localAndRespClientsShareRootAcrossListenerRestarts() throws Exception {
     try (SessionKernel kernel = new SessionKernel(false, false)) {
@@ -53,8 +57,8 @@ public class SessionKernelTest {
   @Test
   public void sessionsIsolateDefinitionsInsideOneBroker() {
     try (SessionKernel kernel = new SessionKernel(false, false)) {
-      SessionKernel.Session alpha = kernel.create("alpha");
-      SessionKernel.Session beta = kernel.create("beta");
+      SessionKernel.Session alpha = kernel.create(sessionId("alpha"));
+      SessionKernel.Session beta = kernel.create(sessionId("beta"));
       alpha.eval("(def answer 41)");
       beta.eval("(def answer 6)");
       assertEquals("41", alpha.eval("answer").toString());
@@ -66,7 +70,7 @@ public class SessionKernelTest {
   public void childSessionsDoNotInheritPrivilegedRootAuthority() {
     try (SessionKernel kernel = new SessionKernel(true, true, true)) {
       SessionKernel.Session root = kernel.root();
-      SessionKernel.Session child = kernel.create("zero-authority");
+      SessionKernel.Session child = kernel.create(sessionId("zero-authority"));
 
       assertTrue(root.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
       assertTrue(root.eval("(deref (Host/capability? \"network/socket\"))").asBoolean());
@@ -84,28 +88,24 @@ public class SessionKernelTest {
       assertFalse(policy.packages);
       assertFalse(policy.project);
       assertEquals(
-          "zero",
-          ((SessionKernel.Session.SessionMetadata) child.getStatus()).authority);
+          "zero", ((SessionModel.SessionStatus) child.getStatus()).authority().profile());
     }
   }
 
   @Test
   public void sessionsConformToContextComponentAndApplicativeProtocols() {
     try (SessionKernel kernel = new SessionKernel(false, false)) {
-      SessionKernel.Session alpha = kernel.create("alpha");
-      SessionKernel.Session beta = kernel.create("beta");
+      SessionKernel.Session alpha = kernel.create(sessionId("alpha"));
+      SessionKernel.Session beta = kernel.create(sessionId("beta"));
 
       assertTrue(alpha instanceof IContext);
       assertTrue(alpha instanceof IComponent);
       assertTrue(alpha instanceof IApplicable);
       assertTrue(alpha instanceof IInvokeIn);
       assertTrue(alpha.isStarted());
+      assertEquals("user", ((SessionModel.SessionStatus) alpha.getProps()).namespace());
       assertEquals(
-          "user",
-          ((SessionKernel.Session.SessionMetadata) alpha.getProps()).namespace);
-      assertEquals(
-          "zero",
-          ((SessionKernel.Session.SessionMetadata) alpha.getProps()).authority);
+          "zero", ((SessionModel.SessionStatus) alpha.getProps()).authority().profile());
 
       assertEquals(41L, alpha.call("(do (ns alpha.core) (def answer 41) answer)"));
       assertEquals("alpha.core", alpha.currentNamespace());
@@ -129,13 +129,18 @@ public class SessionKernelTest {
   public void filesystemAttachmentConfinesFilesAndResetsSessionState() throws Exception {
     Path root = Files.createTempDirectory("hara-session-files");
     try (SessionKernel kernel = new SessionKernel(true, false)) {
-      SessionKernel.Session session = kernel.create("mounted");
+      SessionKernel.Session session = kernel.create(sessionId("mounted"));
       assertFalse(session.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
+      assertEquals(SessionModel.SessionState.ACTIVE, session.state());
+      assertEquals(null, session.filesystemMount());
+      assertEquals(null, ((SessionModel.SessionStatus) session.getStatus()).filesystem());
       session.eval("(def stale-value 42)");
-      kernel.attachFilesystem("mounted", root);
+      SessionModel.SessionMountId mount = SessionModel.SessionMountId.from(root);
+      kernel.attachFilesystem(session.id(), mount);
+      assertEquals(mount, session.filesystemMount());
       assertTrue(session.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
       assertEquals("zero", session.authority().profile());
-      session.eval("(deref (file/write \"/state.bin\" (bytes 1 2 3)))");
+      session.eval("(deref (std.native.File/write \"/state.bin\" (bytes 1 2 3)))");
       assertTrue(Files.exists(root.resolve("state.bin")));
       try {
         session.eval("stale-value");
@@ -146,6 +151,26 @@ public class SessionKernelTest {
     } finally {
       Files.deleteIfExists(root.resolve("state.bin"));
       Files.deleteIfExists(root);
+    }
+  }
+
+  @Test
+  public void sessionBoundariesValidateIdentityAndExposeExplicitLifecycle() {
+    assertThrows(IllegalArgumentException.class, () -> sessionId("bad/name"));
+    SessionModel.SessionId id = sessionId("workspace.alpha");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(id);
+      assertEquals(id, session.id());
+      assertEquals(SessionModel.SessionState.ACTIVE, session.state());
+      assertEquals(
+          SessionModel.SessionState.ACTIVE,
+          ((SessionModel.SessionStatus) session.getStatus()).state());
+
+      kernel.closeSession(id);
+      assertEquals(SessionModel.SessionState.CLOSED, session.state());
+      assertEquals(null, session.filesystemMount());
+      session.close();
+      assertEquals(SessionModel.SessionState.CLOSED, session.state());
     }
   }
 

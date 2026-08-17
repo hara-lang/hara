@@ -324,8 +324,8 @@ public class HaraModuleConformanceTest {
         cases, "session/dynamic-unwind", "restored-after-error", Boolean.TRUE);
 
     try (SessionKernel kernel = new SessionKernel(false, false)) {
-      SessionKernel.Session alpha = kernel.create("alpha");
-      SessionKernel.Session beta = kernel.create("beta");
+      SessionKernel.Session alpha = kernel.create(SessionModel.SessionId.parse("alpha"));
+      SessionKernel.Session beta = kernel.create(SessionModel.SessionId.parse("beta"));
       alpha.eval("(def ^:dynamic *answer* 1)");
       beta.eval("(def ^:dynamic *answer* 10)");
       assertThrows(
@@ -353,7 +353,7 @@ public class HaraModuleConformanceTest {
     }
 
     try (SessionKernel kernel = new SessionKernel(false, false)) {
-      SessionKernel.Session session = kernel.create("transfer");
+      SessionKernel.Session session = kernel.create(SessionModel.SessionId.parse("transfer"));
       assertEquals(
           "{:answer [1 2 {:nested #{:immutable}}]}",
           hara.lang.base.G.display(

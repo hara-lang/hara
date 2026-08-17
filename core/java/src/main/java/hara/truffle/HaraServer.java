@@ -74,8 +74,7 @@ public final class HaraServer implements AutoCloseable {
     this(kernel, host, port, logRequests, null);
   }
 
-  HaraServer(
-      SessionKernel kernel, String host, int port, boolean logRequests, Path projectRoot) {
+  HaraServer(SessionKernel kernel, String host, int port, boolean logRequests, Path projectRoot) {
     this(kernel, host, port, logRequests, false, projectRoot);
   }
 
@@ -152,9 +151,9 @@ public final class HaraServer implements AutoCloseable {
     }
 
     public void attach(String name) {
-      String target = SessionKernel.normalizeName(name);
-      server.requireSession(target);
-      state.attached = target;
+      SessionModel.SessionId target = SessionModel.SessionId.parse(name);
+      server.kernel.require(target);
+      state.attached = target.toString();
     }
 
     public void detach() {
@@ -174,7 +173,7 @@ public final class HaraServer implements AutoCloseable {
     }
 
     public Set<String> sessionNames() {
-      return server.kernel.sessionNames();
+      return server.sessionNames();
     }
   }
 
@@ -311,12 +310,12 @@ public final class HaraServer implements AutoCloseable {
     String sub = request.argument(0).toUpperCase(Locale.ROOT);
     switch (sub) {
       case "NEW":
-        String created = SessionKernel.normalizeName(request.argument(1));
+        SessionModel.SessionId created = SessionModel.SessionId.parse(request.argument(1));
         kernel.create(created);
-        responder.result(created);
+        responder.result(created.toString());
         break;
       case "LIST":
-        ArrayList<String> names = new ArrayList<>(kernel.sessionNames());
+        ArrayList<String> names = new ArrayList<>(sessionNames());
         Collections.sort(names);
         responder.result(names);
         break;
@@ -329,29 +328,30 @@ public final class HaraServer implements AutoCloseable {
         responder.result("DETACHED");
         break;
       case "INFO":
-        String target =
+        SessionModel.SessionId target =
             request.arguments().size() > 1
-                ? SessionKernel.normalizeName(request.argument(1))
-                : request.session();
+                ? SessionModel.SessionId.parse(request.argument(1))
+                : SessionModel.SessionId.parse(request.session());
         responder.result(requireSession(target).info());
         break;
       case "FILESYSTEM":
-        String filesystemSession = SessionKernel.normalizeName(request.argument(1));
-        kernel.attachFilesystem(filesystemSession, Path.of(request.argument(2)));
+        SessionModel.SessionId filesystemSession =
+            SessionModel.SessionId.parse(request.argument(1));
+        kernel.attachFilesystem(
+            filesystemSession, SessionModel.SessionMountId.from(Path.of(request.argument(2))));
         responder.result(requireSession(filesystemSession).info());
         break;
       case "CLOSE":
       case "KILL":
-        String closed = SessionKernel.normalizeName(request.argument(1));
+        SessionModel.SessionId closed = SessionModel.SessionId.parse(request.argument(1));
         kernel.closeSession(closed);
-        if (closed.equals(request.state.attached)) request.detach();
+        if (closed.toString().equals(request.state.attached)) request.detach();
         responder.result(true);
         break;
       default:
         throw new IllegalArgumentException("UNKNOWN_SESSION_COMMAND " + sub);
     }
   }
-
 
   public synchronized HaraServer start() throws IOException {
     if (running.get()) return this;
@@ -378,7 +378,9 @@ public final class HaraServer implements AutoCloseable {
   }
 
   public Set<String> sessionNames() {
-    return kernel.sessionNames();
+    java.util.HashSet<String> names = new java.util.HashSet<>();
+    for (SessionModel.SessionId id : kernel.sessionIds()) names.add(id.toString());
+    return Collections.unmodifiableSet(names);
   }
 
   public synchronized void stop() {
@@ -441,11 +443,9 @@ public final class HaraServer implements AutoCloseable {
           } else if ("INFO".equals(command) || "STATUS".equals(command)) {
             conn.write(info(state.connectionId, state.attached, state.protocol));
           } else if ("SESSION".equals(command)) {
-            state.attached =
-                sessionCommand(conn, request, state.attached, state.protocol == 3);
+            state.attached = sessionCommand(conn, request, state.attached, state.protocol == 3);
           } else if ("EVAL".equals(command) || "LOAD".equals(command)) {
-            state.attached =
-                evaluate(conn, request, state.attached, state.protocol == 3, command);
+            state.attached = evaluate(conn, request, state.attached, state.protocol == 3, command);
           } else if ("DOC".equals(command)) {
             evaluateDoc(conn, request, state.attached, state.protocol == 3);
           } else if ("COMPLETE".equals(command)) {
@@ -475,11 +475,8 @@ public final class HaraServer implements AutoCloseable {
     if (id.isBlank()) throw new IllegalArgumentException("MISSING_REQUEST_ID");
     Handler handler = handlers.get(command);
     if (handler == null) throw new UnknownOperationException(command);
-    Request request =
-        new Request(this, state, command, id, values.subList(2, values.size()));
-    handler.handle(
-        request,
-        value -> conn.write(Arrays.asList("RESULT", id, valueAsWire(value))));
+    Request request = new Request(this, state, command, id, values.subList(2, values.size()));
+    handler.handle(request, value -> conn.write(Arrays.asList("RESULT", id, valueAsWire(value))));
     conn.write(Arrays.asList("DONE", id, "OK"));
   }
 
@@ -533,55 +530,62 @@ public final class HaraServer implements AutoCloseable {
   }
 
   private String sessionCommand(
-      RespConnection conn, List<String> request, String attached, boolean negotiated) throws IOException {
+      RespConnection conn, List<String> request, String attached, boolean negotiated)
+      throws IOException {
     require(request, 2);
     String sub = request.get(1).toUpperCase(java.util.Locale.ROOT);
     switch (sub) {
       case "NEW":
         require(request, 3);
-        String created = SessionKernel.normalizeName(request.get(2));
+        SessionModel.SessionId created = SessionModel.SessionId.parse(request.get(2));
         kernel.create(created);
-        respond(conn, negotiated, request, created);
+        respond(conn, negotiated, request, created.toString());
         return attached;
       case "LIST":
-        List<String> names = new ArrayList<>(kernel.sessionNames());
+        List<String> names = new ArrayList<>(sessionNames());
         Collections.sort(names);
         respond(conn, negotiated, request, names);
         return attached;
       case "ATTACH":
         require(request, 3);
-        String target = SessionKernel.normalizeName(request.get(2));
+        SessionModel.SessionId target = SessionModel.SessionId.parse(request.get(2));
         requireSession(target);
-        respond(conn, negotiated, request, target);
-        return target;
+        respond(conn, negotiated, request, target.toString());
+        return target.toString();
       case "DETACH":
         respond(conn, negotiated, request, "DETACHED");
         return null;
       case "INFO":
-        String targetInfo = request.size() > 2 ? SessionKernel.normalizeName(request.get(2)) : attached;
+        SessionModel.SessionId targetInfo =
+            SessionModel.SessionId.parse(request.size() > 2 ? request.get(2) : attached);
         SessionKernel.Session sessionInfo = requireSession(targetInfo);
         respond(conn, negotiated, request, sessionInfo.info());
         return attached;
       case "FILESYSTEM":
         require(request, 4);
-        String filesystemSession = SessionKernel.normalizeName(request.get(2));
-        kernel.attachFilesystem(filesystemSession, Path.of(request.get(3)));
+        SessionModel.SessionId filesystemSession = SessionModel.SessionId.parse(request.get(2));
+        kernel.attachFilesystem(
+            filesystemSession, SessionModel.SessionMountId.from(Path.of(request.get(3))));
         respond(conn, negotiated, request, requireSession(filesystemSession).info());
         return attached;
       case "CLOSE":
       case "KILL":
         require(request, 3);
-        String targetClose = SessionKernel.normalizeName(request.get(2));
+        SessionModel.SessionId targetClose = SessionModel.SessionId.parse(request.get(2));
         kernel.closeSession(targetClose);
         respond(conn, negotiated, request, true);
-        return targetClose.equals(attached) ? null : attached;
+        return targetClose.toString().equals(attached) ? null : attached;
       default:
         throw new IllegalArgumentException("UNKNOWN_SESSION_COMMAND " + sub);
     }
   }
 
   private String evaluate(
-      RespConnection conn, List<String> request, String attached, boolean negotiated, String command)
+      RespConnection conn,
+      List<String> request,
+      String attached,
+      boolean negotiated,
+      String command)
       throws IOException {
     String requestId = negotiated ? requireValue(request, 1) : "";
     String sessionName;
@@ -590,7 +594,7 @@ public final class HaraServer implements AutoCloseable {
       sessionName = requireSessionName(attached);
       source = requireValue(request, 2);
     } else {
-      sessionName = SessionKernel.normalizeName(requireValue(request, 1));
+      sessionName = SessionModel.SessionId.parse(requireValue(request, 1)).toString();
       source = requireValue(request, 2);
     }
     SessionKernel.Session session = requireSession(sessionName);
@@ -619,11 +623,7 @@ public final class HaraServer implements AutoCloseable {
     String requestId = negotiated ? requireValue(request, 1) : "";
     String prefix = negotiated ? requireValue(request, 2) : requireValue(request, 1);
     respond(
-        conn,
-        negotiated,
-        request,
-        completions(requireSessionName(attached), prefix),
-        requestId);
+        conn, negotiated, request, completions(requireSessionName(attached), prefix), requestId);
   }
 
   private Object evaluateDocumentation(Request request, String symbol) {
@@ -758,7 +758,11 @@ public final class HaraServer implements AutoCloseable {
   }
 
   private SessionKernel.Session requireSession(String name) {
-    return kernel.require(name);
+    return requireSession(SessionModel.SessionId.parse(name));
+  }
+
+  private SessionKernel.Session requireSession(SessionModel.SessionId id) {
+    return kernel.require(id);
   }
 
   private static String requireSessionName(String name) {
@@ -820,5 +824,4 @@ public final class HaraServer implements AutoCloseable {
       super(message, cause);
     }
   }
-
 }
