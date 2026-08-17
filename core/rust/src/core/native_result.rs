@@ -636,4 +636,3 @@ mod tests {
         assert!(result.display().contains("#hara/Result[:error"));
     }
 }
-

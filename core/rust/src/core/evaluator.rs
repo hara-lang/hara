@@ -1,4 +1,5 @@
 pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, String> {
+    check_evaluation_interrupt()?;
     match form {
         Form::Number(v) => Ok(Value::Number(*v)),
         Form::String(v) => Ok(Value::String(v.clone())),
@@ -1676,6 +1677,15 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .map(|form| eval(form, env))
                         .collect::<Result<Vec<_>, _>>()?;
                     kernel_provider(operation)?(operation.to_owned(), arguments)
+                }
+                Form::Symbol(n) if n.starts_with("std.native.Sandbox/") => {
+                    let method = n.strip_prefix("std.native.Sandbox/").unwrap_or(n);
+                    let operation = format!("sandbox-{method}");
+                    let arguments = fs[1..]
+                        .iter()
+                        .map(|form| eval(form, env))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    kernel_provider(&operation)?(operation, arguments)
                 }
                 Form::Symbol(n)
                     if n.starts_with("std.native.OS/") || n.starts_with("std.native.Process/") =>
