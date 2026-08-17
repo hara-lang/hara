@@ -80,11 +80,12 @@ Redefinition follows this order:
 2. validate every target hook and entry compiler;
 3. compile every target into ordinary `std.work` values;
 4. retain the current host unchanged if any earlier stage fails;
-5. atomically replace the installed plan;
-6. reconcile triggers when the host is running.
+5. prepare candidate trigger registrations before changing host state;
+6. atomically install the plan, revision, status, and trigger receipts.
 
 The host's identity and running state survive successful reloads. The revision
-number advances whenever a new plan is installed.
+number advances whenever a new plan is installed. A failed candidate trigger
+installation leaves the old host state and old registrations authoritative.
 
 Make execution is explicit:
 
@@ -108,6 +109,25 @@ entry `:main`.
 Trigger installation defaults to `:on-define`. A profile may select
 `:trigger-policy :manual`, after which `make/start!` and `make/stop!` own the
 lifecycle explicitly.
+
+## Compatibility facades
+
+Temporary facades preserve the historical entry namespaces while callers move
+to the definition-family layout:
+
+```clojure
+(ns app.tasks
+  (:require [std.task :refer [def.task deftask]]))
+
+(ns build
+  (:require [std.make :refer [def.make]]
+            [std.make :as make]))
+```
+
+`std.task` forwards `task`, `compile`, `invoke`, `def.task`, `deftask`, and the
+historical invocation helpers. `std.make` forwards `def.make`, `run`, `build`,
+`clean`, target inspection, host status, and trigger lifecycle helpers. Neither
+facade owns implementation state.
 
 ## Flow descriptor contract
 

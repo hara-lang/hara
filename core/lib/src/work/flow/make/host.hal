@@ -49,16 +49,27 @@
   [host]
   (= :running (status host)))
 
-(defn replace-plan!
-  "Atomically installs a completely compiled candidate plan."
-  [host candidate]
+(defn install-plan!
+  "Atomically installs a plan and its complete live-host state."
+  [host candidate status receipts]
   (let [host (assert-host! host)]
     (swap! (:make/state host)
            (fn [current]
              (assoc current
                     :make/plan candidate
-                    :make/revision (inc (:make/revision current)))))
+                    :make/revision (inc (:make/revision current))
+                    :make/status status
+                    :make/installed-triggers (vec receipts))))
     host))
+
+(defn replace-plan!
+  "Atomically replaces a plan while retaining current live-host state."
+  [host candidate]
+  (let [current (state host)]
+    (install-plan! host
+                   candidate
+                   (:make/status current)
+                   (:make/installed-triggers current))))
 
 (defn mark-running!
   [host receipts]
