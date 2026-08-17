@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh — install Hara runtimes from GitHub Release packages.
 #
-#   curl -fsSL https://www.hara-lang.org/install.sh | sh -- --rust --truffle
+#   curl -fsSL https://www.hara-lang.org/install.sh | sh -- --rust-lite
 #
 # Environment overrides:
 #   HARA_VERSION          release tag to install (default: latest release)
@@ -11,6 +11,7 @@
 #   HARA_TARGET_TRIPLE    override platform detection (for testing)
 #
 # --rust installs hara for Linux x86_64, macOS arm64, and macOS x86_64.
+# --rust-lite installs the dependency-light Rust CLI and its HAL source bundle.
 # --truffle installs the hara-truffle native image.
 # At least one runtime flag is required.
 set -eu
@@ -25,24 +26,26 @@ need() {
 }
 
 INSTALL_RUST=false
+INSTALL_RUST_LITE=false
 INSTALL_TRUFFLE=false
 for arg in "$@"; do
   case "$arg" in
     --rust) INSTALL_RUST=true ;;
+    --rust-lite) INSTALL_RUST_LITE=true ;;
     --truffle) INSTALL_TRUFFLE=true ;;
     -h|--help)
       cat <<'EOF'
-Usage: install.sh [--rust] [--truffle]
+Usage: install.sh [--rust] [--rust-lite] [--truffle]
 
 Install one or both Hara runtimes from GitHub Releases.
 EOF
       exit 0
       ;;
-    *) die "unknown option: $arg (use --rust and/or --truffle)" ;;
+    *) die "unknown option: $arg (use --rust, --rust-lite, and/or --truffle)" ;;
   esac
 done
-[ "$INSTALL_RUST" = true ] || [ "$INSTALL_TRUFFLE" = true ] \
-  || die "choose at least one runtime: --rust and/or --truffle"
+[ "$INSTALL_RUST" = true ] || [ "$INSTALL_RUST_LITE" = true ] || [ "$INSTALL_TRUFFLE" = true ] \
+  || die "choose at least one runtime: --rust, --rust-lite, and/or --truffle"
 
 # --- platform detection -----------------------------------------------------
 detect_triple() {
@@ -66,7 +69,7 @@ detect_triple() {
   esac
 }
 
-if [ "$INSTALL_RUST" = true ] || [ "$INSTALL_TRUFFLE" = true ]; then
+if [ "$INSTALL_RUST" = true ] || [ "$INSTALL_RUST_LITE" = true ] || [ "$INSTALL_TRUFFLE" = true ]; then
   if [ "${HARA_TARGET_TRIPLE:-}" ]; then
     TRIPLE=$HARA_TARGET_TRIPLE
   else
@@ -148,6 +151,27 @@ install_rust() {
   info "location:  $DEST"
 }
 
+install_rust_lite() {
+  TARBALL="hara-rust-lite-$VERSION-$TRIPLE.tar.gz"
+  info "downloading $TARBALL ($TRIPLE)..."
+  fetch_to "$BASE_URL/$TARBALL" "$TMP/$TARBALL" \
+    || die "download failed: $BASE_URL/$TARBALL"
+  verify "$TARBALL" || die "checksum mismatch for $TARBALL; aborting (files not installed)"
+  tar -xzf "$TMP/$TARBALL" -C "$TMP" || die "failed to extract $TARBALL"
+  [ -f "$TMP/hara-lite" ] || die "archive did not contain a hara-lite binary"
+  [ -f "$TMP/share/hara-lite/project.edn" ] \
+    || die "archive did not contain the Hara lite project"
+  DEST="$INSTALL_DIR/hara-lite"
+  SHARE_DIR=$(CDPATH='' cd -- "$INSTALL_DIR/.." && pwd)/share/hara-lite
+  [ ! -e "$DEST" ] || info "Existing installation found at $DEST, overwriting"
+  cp "$TMP/hara-lite" "$DEST"
+  chmod 755 "$DEST"
+  mkdir -p "$SHARE_DIR"
+  cp -R "$TMP/share/hara-lite/." "$SHARE_DIR/"
+  info "installed Rust lite runtime: $("$DEST" --version 2>/dev/null || echo "hara lite $VERSION")"
+  info "location:  $DEST"
+}
+
 install_truffle() {
   TARBALL="hara-truffle-$VERSION-$TRIPLE.tar.gz"
   info "downloading $TARBALL ($TRIPLE)..."
@@ -164,6 +188,7 @@ install_truffle() {
 }
 
 [ "$INSTALL_RUST" = true ] && install_rust
+[ "$INSTALL_RUST_LITE" = true ] && install_rust_lite
 [ "$INSTALL_TRUFFLE" = true ] && install_truffle
 
 # --- PATH hint ---------------------------------------------------------------

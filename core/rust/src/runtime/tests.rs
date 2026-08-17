@@ -50,10 +50,7 @@ mod tests {
                 ..SandboxLimits::default()
             },
         );
-        assert_eq!(
-            invalid.unwrap_err().code,
-            SandboxErrorCode::InvalidSpec
-        );
+        assert_eq!(invalid.unwrap_err().code, SandboxErrorCode::InvalidSpec);
 
         let mut kernel = SessionKernel::new();
         kernel.register_sandbox_provider(Rc::new(InProcessSandboxProvider));
@@ -1390,6 +1387,27 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_primitives_cover_renamed_maps_cons_and_parsing() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(let [{answer :answer :as whole} {:answer 42}] [answer whole]) \
+                     (let [[first second & more] (cons 1 (cons 2 (cons 3 nil)))] \
+                       [first second more]) \
+                     (list? (cons 1 nil)) (cons? (cons 1 nil)) \
+                     (std.native.Num/parse-long \"42\") \
+                     (std.native.Num/parse-long \"4x\") \
+                     (std.native.Num/parse-double \"3x\") \
+                     (std.native.String/split \"\" \",\") \
+                     (std.native.RegExp/split (std.native.RegExp/compile \",\") \"\")]",
+                )
+                .unwrap(),
+            "[[42 {:answer 42}] [1 2 [3]] false true 42 nil nil nil nil]"
+        );
+    }
+
+    #[test]
     fn guest_mutables_share_storage_and_reject_persistent_updates() {
         let mut runtime = Runtime::new();
         assert_eq!(
@@ -2572,7 +2590,7 @@ mod tests {
         assert!(symbols.iter().any(|symbol| symbol == "edn/pretty"));
         for native_type in [
             "Maths",
-            "Numbers",
+            "Num",
             "Bits",
             "String",
             "Bytes",

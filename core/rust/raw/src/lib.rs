@@ -2799,7 +2799,7 @@ mod tests {
         assert!(runtime.env.contains_key("ICount"));
         for native_type in [
             "Maths",
-            "Numbers",
+            "Num",
             "Bits",
             "Kernel",
             "String",

@@ -49,7 +49,7 @@ public class StdFoundationTest {
                       + "  (Iter/iter-any? (fn [x] (= x \"edn/pretty\")) (current-symbols))"
                       + "  (Iter/iter-any? (fn [x] (= x \"Maths\")) (current-symbols))"
                       + "  (every? (fn [type] (not (nil? (resolve type))))"
-                      + "    '[Maths Numbers Bits String Bytes File Socket Promise Coroutine"
+                      + "    '[Maths Num Bits String Bytes File Socket Promise Coroutine"
                       + "      Arr Obj Runtime Printer Edn Json Regex UUID Error])]")
               .toString());
     }

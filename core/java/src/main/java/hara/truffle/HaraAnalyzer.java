@@ -1099,18 +1099,18 @@ final class HaraAnalyzer {
           continue;
         }
         java.util.Map.Entry<?, ?> entry = (java.util.Map.Entry<?, ?>) entryValue;
-        Object key = entry.getKey();
-        if (key instanceof Keyword
-            && ("as".equals(((Keyword) key).getName())
-                || "keys".equals(((Keyword) key).getName())
-                || "strs".equals(((Keyword) key).getName())
-                || "syms".equals(((Keyword) key).getName())
-                || "or".equals(((Keyword) key).getName()))) {
+        Object binding = entry.getKey();
+        if (binding instanceof Keyword
+            && ("as".equals(((Keyword) binding).getName())
+                || "keys".equals(((Keyword) binding).getName())
+                || "strs".equals(((Keyword) binding).getName())
+                || "syms".equals(((Keyword) binding).getName())
+                || "or".equals(((Keyword) binding).getName()))) {
           continue;
         }
         addPatternBindings(
-            entry.getValue(),
-            new HaraNodes.Lookup(source, key),
+            binding,
+            new HaraNodes.Lookup(source, entry.getValue()),
             patternFrames,
             patternLocals,
             patternSlots,

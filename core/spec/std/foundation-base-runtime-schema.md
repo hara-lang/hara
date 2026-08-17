@@ -36,7 +36,7 @@ the same transparent Foundation-wrapper contract. Foundation exposes
 Java and Rust must expose identical methods and evaluation behavior.
 
 The same inline-forwarding rule applies throughout the embedded Foundation
-family. Transparent shims over `Maths`, `Numbers`, `Bits`, `String`, `Bytes`,
+family. Transparent shims over `Maths`, `Num`, `Bits`, `String`, `Bytes`,
 `Promise`, `Coroutine`, and protocol methods carry `:inline true`, a public
 docstring, and schema metadata. A wrapper that reorders arguments, supplies a
 default, normalizes a result, performs capability policy, or composes more than

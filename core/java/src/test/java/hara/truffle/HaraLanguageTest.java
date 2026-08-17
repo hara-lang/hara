@@ -1500,6 +1500,41 @@ public class HaraLanguageTest {
           context
               .eval(HaraLanguage.ID, "((fn [{:keys [age] :or {age 41}}] (+ age 1)) {})")
               .asLong());
+      assertEquals(
+          "[42 {:answer 42}]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [{answer :answer :as whole} {:answer 42}] [answer whole])")
+              .toString());
+    }
+  }
+
+  @Test
+  public void destructuresConsSequencesAndExposesPortableCompatibilityPrimitives() {
+    try (Context context = context()) {
+      assertEquals(
+          "[1 2 [3]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [[first second & more] (cons 1 (cons 2 (cons 3 nil)))] "
+                      + "[first second more])")
+              .toString());
+      assertEquals(
+          "[true false 42 nil true nil nil nil]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(cons? (cons 1 nil)) (list? (cons 1 nil)) "
+                      + "(std.native.Num/parse-long \"42\") "
+                      + "(std.native.Num/parse-long \"4x\") "
+                      + "(= (std.native.Num/parse-double \"3.5\") "
+                      + "   (std.native.Num/double 3.5)) "
+                      + "(std.native.Num/parse-double \"3x\") "
+                      + "(std.native.String/split \"\" \",\") "
+                      + "(std.native.RegExp/split (std.native.RegExp/compile \",\") \"\")]" )
+              .toString());
     }
   }
 

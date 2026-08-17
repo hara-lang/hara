@@ -590,8 +590,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     let Form::Symbol(name) = &reference[1] else {
                         return Err("schema-of expects a Var reference".into());
                     };
-                    let variable = binding_var(env, name)
-                        .ok_or_else(|| format!("unbound var: {name}"))?;
+                    let variable =
+                        binding_var(env, name).ok_or_else(|| format!("unbound var: {name}"))?;
                     schema_contract(&variable)
                 }
                 Form::Symbol(n)
@@ -683,9 +683,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             "pointer/deref",
                             &[],
                         ),
-                        Value::Schema(schema) => form_to_value(
-                            &crate::lang::protocol::IDeref::deref(&schema.ast),
-                        ),
+                        Value::Schema(schema) => {
+                            form_to_value(&crate::lang::protocol::IDeref::deref(&schema.ast))
+                        }
                         value => Err(format!(
                             "deref expects a var, atom, promise, pointer, or schema, got {}",
                             value.display()
@@ -2337,7 +2337,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         }
                     }
                     if n == "map" || n == "filter" {
-                        transform_like(raw_collection.as_ref().unwrap(), iterator_from_values(output))
+                        transform_like(
+                            raw_collection.as_ref().unwrap(),
+                            iterator_from_values(output),
+                        )
                     } else {
                         Ok(iterator_from_values(output))
                     }
@@ -2733,9 +2736,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     bit_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n)
-                    if n.starts_with("std.native.Numbers/")
-                        && ["long", "double"]
-                            .contains(&n.trim_start_matches("std.native.Numbers/")) =>
+                    if n.starts_with("std.native.Num/")
+                        && ["long", "double", "parse-long", "parse-double"]
+                            .contains(&n.trim_start_matches("std.native.Num/")) =>
                 {
                     number_conversion(n, &fs[1..], env)
                 }
@@ -2986,8 +2989,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             },
                         };
                         while let Some(value) = iterator_try_next(&iterator)? {
-                            accumulator =
-                                call_value(function.clone(), vec![accumulator, value])?;
+                            accumulator = call_value(function.clone(), vec![accumulator, value])?;
                             if is_reduced_value(&accumulator) {
                                 return Ok(unreduced_value(accumulator));
                             }
@@ -3267,6 +3269,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n)
                     if [
                         "list?",
+                        "cons?",
                         "vector?",
                         "tuple?",
                         "sequential?",
@@ -3293,9 +3296,8 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     let value = eval(&fs[1], env)?;
                     Ok(Value::Bool(match n.as_str() {
-                        "list?" => {
-                            matches!(value, Value::List(_) | Value::Cons(_) | Value::Queue(_))
-                        }
+                        "list?" => matches!(value, Value::List(_)),
+                        "cons?" => matches!(value, Value::Cons(_)),
                         "vector?" => matches!(value, Value::Vector(_) | Value::Tuple(_)),
                         "tuple?" => matches!(value, Value::Tuple(_)),
                         "sequential?" => matches!(
@@ -3719,7 +3721,6 @@ pub fn eval_traced(form: &Form, env: &mut HashMap<String, Value>) -> Result<Valu
     let _guard = StackTraceGuard::enable();
     eval(form, env).map_err(append_trace)
 }
-
 
 pub fn eval_text(source: &str, env: &mut HashMap<String, Value>) -> Result<String, String> {
     Ok(eval_value_text(source, env)?.display())

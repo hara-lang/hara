@@ -288,33 +288,57 @@ pub struct RuntimeStream {
 }
 
 enum RuntimeStreamSource {
-    Coroutine { coroutine: Rc<Coroutine>, initial_arguments: RefCell<Option<Vec<Value>>> },
-    Guest { next: Rc<Function>, close: Option<Rc<Function>> },
-    Host { next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>> },
+    Coroutine {
+        coroutine: Rc<Coroutine>,
+        initial_arguments: RefCell<Option<Vec<Value>>>,
+    },
+    Guest {
+        next: Rc<Function>,
+        close: Option<Rc<Function>>,
+    },
+    Host {
+        next: Rc<dyn Fn() -> Result<Promise, String>>,
+        close: Rc<dyn Fn() -> Result<(), String>>,
+    },
 }
 
 impl std::fmt::Debug for RuntimeStream {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RuntimeStream").field("closed", &self.closed.get()).finish()
+        f.debug_struct("RuntimeStream")
+            .field("closed", &self.closed.get())
+            .finish()
     }
 }
 
 impl RuntimeStream {
     fn new(body: Value, initial_arguments: Vec<Value>) -> Self {
         Self {
-            source: RuntimeStreamSource::Coroutine { coroutine: Rc::new(Coroutine::new(body)), initial_arguments: RefCell::new(Some(initial_arguments)) },
+            source: RuntimeStreamSource::Coroutine {
+                coroutine: Rc::new(Coroutine::new(body)),
+                initial_arguments: RefCell::new(Some(initial_arguments)),
+            },
             pending: Rc::new(Cell::new(false)),
             closed: Rc::new(Cell::new(false)),
         }
     }
-    fn host(next: Rc<dyn Fn() -> Result<Promise, String>>, close: Rc<dyn Fn() -> Result<(), String>>) -> Self {
-        Self { source: RuntimeStreamSource::Host { next, close }, pending: Rc::new(Cell::new(false)), closed: Rc::new(Cell::new(false)) }
+    fn host(
+        next: Rc<dyn Fn() -> Result<Promise, String>>,
+        close: Rc<dyn Fn() -> Result<(), String>>,
+    ) -> Self {
+        Self {
+            source: RuntimeStreamSource::Host { next, close },
+            pending: Rc::new(Cell::new(false)),
+            closed: Rc::new(Cell::new(false)),
+        }
     }
     fn guest(next: Rc<Function>, close: Option<Rc<Function>>) -> Self {
-        Self { source: RuntimeStreamSource::Guest { next, close }, pending: Rc::new(Cell::new(false)), closed: Rc::new(Cell::new(false)) }
+        Self {
+            source: RuntimeStreamSource::Guest { next, close },
+            pending: Rc::new(Cell::new(false)),
+            closed: Rc::new(Cell::new(false)),
+        }
     }
 }
-
 
 #[derive(Clone)]
 pub struct RuntimeAtom {
@@ -781,6 +805,7 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
         .chain([
             "disj",
             "list?",
+            "cons?",
             "vector?",
             "tuple?",
             "sequential?",
@@ -1015,17 +1040,15 @@ pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_) => {
-            Ok(Form::Map(
-                map_entries(value)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(key, value)| -> Result<(Form, Form), String> {
-                        Ok((value_to_form(&key)?, value_to_form(&value)?))
-                    })
-                    .collect::<Result<_, _>>()?,
-            ))
-        }
+        | Value::PriorityMap(_) => Ok(Form::Map(
+            map_entries(value)
+                .unwrap()
+                .into_iter()
+                .map(|(key, value)| -> Result<(Form, Form), String> {
+                    Ok((value_to_form(&key)?, value_to_form(&value)?))
+                })
+                .collect::<Result<_, _>>()?,
+        )),
         value => Err(format!("cannot use {} as code", portable_type_name(value))),
     }?;
     Ok(match value_metadata(value) {
@@ -1782,7 +1805,7 @@ fn sequential_equality(left: &Value, right: &Value) -> Option<bool> {
             Value::Seq(values) => values.iter().collect::<Result<Vec<_>, _>>().ok(),
             Value::List(values) => Some(values.iter().cloned().collect()),
             Value::Cons(values) => Some(values.iter().collect()),
-        Value::Queue(values) => Some(values.iter().cloned().collect()),
+            Value::Queue(values) => Some(values.iter().cloned().collect()),
             Value::Deque(values) => Some(values.iter().cloned().collect()),
             Value::Tuple(values) => Some(values.iter().cloned().collect()),
             Value::Vector(values) => Some(values.iter().cloned().collect()),
@@ -1870,13 +1893,11 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            map_entries(value).is_some_and(|entries| {
-                entries
-                    .iter()
-                    .all(|(key, value)| session_transferable(key) && session_transferable(value))
-            })
-        }
+        | Value::PriorityMap(_)) => map_entries(value).is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|(key, value)| session_transferable(key) && session_transferable(value))
+        }),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => set_items(value)
             .is_some_and(|values| values.iter().all(|value| session_transferable(value))),
         Value::List(values) => values.iter().all(session_transferable),
@@ -2434,7 +2455,11 @@ impl Value {
                     .collect::<Vec<_>>()
                     .join(" ")
             ),
-            value @ (Self::Map(_) | Self::OrderedMap(_) | Self::SortedMap(_) | Self::PriorityMap(_) | Self::Trie(_)) => {
+            value @ (Self::Map(_)
+            | Self::OrderedMap(_)
+            | Self::SortedMap(_)
+            | Self::PriorityMap(_)
+            | Self::Trie(_)) => {
                 format!(
                     "{{{}}}",
                     map_entries(value)
@@ -2464,7 +2489,11 @@ impl Value {
             ),
             Self::Deque(values) => format!(
                 "#deque[{}]",
-                values.iter().map(Value::display).collect::<Vec<_>>().join(" ")
+                values
+                    .iter()
+                    .map(Value::display)
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             Self::Cons(values) => format!(
                 "({})",
@@ -2579,7 +2608,14 @@ impl Value {
                 };
                 format!("#<coroutine {status}>")
             }
-            Self::Stream(value) => format!("#<stream {}>", if value.closed.get() { "closed" } else { "ready" }),
+            Self::Stream(value) => format!(
+                "#<stream {}>",
+                if value.closed.get() {
+                    "closed"
+                } else {
+                    "ready"
+                }
+            ),
             Self::Result(value) => value.display(),
             Self::ExceptionInfo(value) => {
                 format!(

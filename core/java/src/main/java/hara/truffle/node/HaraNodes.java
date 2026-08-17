@@ -748,6 +748,16 @@ public final class HaraNodes {
         hara.lang.data.types.ILinearType<?> linear = (hara.lang.data.types.ILinearType<?>) value;
         return index < 0 || index >= linear.count() ? null : linear.nth(index);
       }
+      if (key instanceof Number && value instanceof hara.lang.data.types.ILinkedType<?>) {
+        long index = keyIndex();
+        if (index < 0) return null;
+        java.util.Iterator<?> values = ((hara.lang.data.types.ILinkedType<?>) value).iterator();
+        for (long position = 0; values.hasNext(); position++) {
+          Object current = values.next();
+          if (position == index) return current;
+        }
+        return null;
+      }
       if (value instanceof String) {
         int index = (int) keyIndex();
         return index < 0 || index >= ((String) value).length()
@@ -822,6 +832,9 @@ public final class HaraNodes {
         }
         return restLinear(linear);
       }
+      if (value instanceof hara.lang.data.types.ILinkedType<?>) {
+        return restLinked((hara.lang.data.types.ILinkedType<?>) value);
+      }
       if (value instanceof String) {
         return restString((String) value);
       }
@@ -840,6 +853,19 @@ public final class HaraNodes {
         values[i] = linear.nth(start + i);
       }
       return BuiltinStruct.vector(values);
+    }
+
+    @TruffleBoundary
+    private Object restLinked(hara.lang.data.types.ILinkedType<?> linked) {
+      java.util.Iterator<?> iterator = linked.iterator();
+      java.util.ArrayList<Object> values = new java.util.ArrayList<>();
+      long position = 0;
+      while (iterator.hasNext()) {
+        Object value = iterator.next();
+        if (position >= start) values.add(value);
+        position++;
+      }
+      return BuiltinStruct.vector(values.toArray());
     }
 
     @TruffleBoundary

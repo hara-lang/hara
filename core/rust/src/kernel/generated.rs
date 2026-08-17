@@ -20,7 +20,7 @@ mod rewrite;
 
 const NATIVE_TYPES: &[&str] = &[
     "Maths",
-    "Numbers",
+    "Num",
     "Bits",
     "Kernel",
     "Package",
@@ -616,7 +616,7 @@ fn canonical(namespace: &str, method: &str) -> String {
     match (normalize_namespace(namespace), method) {
         ("std.foundation", method) => method.into(),
         ("std.native.Maths", method) => format!("std.native.Maths/{method}"),
-        ("std.native.Numbers", method) => format!("std.native.Numbers/{method}"),
+        ("std.native.Num", method) => format!("std.native.Num/{method}"),
         ("std.native.Bits", method) => format!("std.native.Bits/{method}"),
         ("std.native.String", method) => format!("str/{method}"),
         ("std.native.Bytes", "new") => "bytes".into(),

@@ -93,7 +93,7 @@ public class HaraWorkProtocolTest {
               .eval(
                   HaraLanguage.ID,
                   "(ns work.protocol.legacy "
-                      + "(:require [std.work.runtime.base :as base])) "
+                      + "(:require [work.base.model :as base])) "
                       + "(let [work (base/work-value {:op :pure}) "
                       + "      reference (base/work-reference \"run-legacy\")] "
                       + "  [(IWork/work-spec work) (IWorkRef/work-id reference)])")

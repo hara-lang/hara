@@ -120,6 +120,9 @@ fn string_operation(operation: &str, values: Vec<Value>) -> Result<Value, String
                 return Err("str/split expects a string and string or regexp separator".into());
             }
             let text = string_value(&values[0], operation)?;
+            if text.is_empty() {
+                return Ok(Value::Nil);
+            }
             let parts = match &values[1] {
                 Value::String(separator) => text
                     .split(separator)
@@ -136,11 +139,7 @@ fn string_operation(operation: &str, values: Vec<Value>) -> Result<Value, String
                     }
                     parts
                 }
-                _ => {
-                    return Err(
-                        "str/split expects a string and string or regexp separator".into(),
-                    )
-                }
+                _ => return Err("str/split expects a string and string or regexp separator".into()),
             };
             Ok(Value::Array(Rc::new(RefCell::new(parts))))
         }
@@ -775,9 +774,7 @@ fn byte_set(value: &Value, index: &Value, item: &Value) -> Result<Value, String>
 
 fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
     match value {
-        Value::Seq(values) => values
-            .iter()
-            .collect::<Result<Vec<_>, _>>(),
+        Value::Seq(values) => values.iter().collect::<Result<Vec<_>, _>>(),
         Value::Extension(receiver) => {
             let value = Value::Extension(receiver.clone());
             let iterator = extension_protocol_call(
@@ -797,7 +794,9 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
         Value::Queue(values) => Ok(values.iter().cloned().collect()),
         Value::PriorityMap(values) => Ok(values
             .iter()
-            .map(|(key, value)| Value::Tuple(Box::new(PTuple::from_values(vec![key, value]).unwrap())))
+            .map(|(key, value)| {
+                Value::Tuple(Box::new(PTuple::from_values(vec![key, value]).unwrap()))
+            })
             .collect()),
         Value::String(text) => Ok(text.chars().map(|c| Value::String(c.to_string())).collect()),
         Value::Bytes(bytes) => Ok(bytes
@@ -830,10 +829,7 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
             .iter()
             .map(|(key, value)| pair_value(key.clone(), value.clone()))
             .collect()),
-        value @ (Value::Map(_)
-        | Value::OrderedMap(_)
-        | Value::SortedMap(_)
-        | Value::Trie(_)) => {
+        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(map_entries(&value)
                 .unwrap()
                 .into_iter()
@@ -956,8 +952,7 @@ fn transform_like(source: &Value, result: Value) -> Result<Value, String> {
                         .with_meta(template.meta().cloned()),
                 )),
                 Value::Tuple(template) if values.len() <= 8 => Value::Tuple(Box::new(
-                    PTuple::from_values(values)?
-                        .with_meta(template.meta().cloned()),
+                    PTuple::from_values(values)?.with_meta(template.meta().cloned()),
                 )),
                 Value::Vector(template) => Value::Vector(
                     values
@@ -1076,12 +1071,7 @@ fn iterator_interpose(separator: Value, value: Value) -> Result<Value, String> {
         value => make_iterator(value)?,
     };
     Ok(Value::Iterator(Rc::new(RefCell::new(
-        IteratorState::generated(IteratorGenerator::Interpose(
-            source,
-            separator,
-            true,
-            None,
-        )),
+        IteratorState::generated(IteratorGenerator::Interpose(source, separator, true, None)),
     ))))
 }
 
@@ -1215,15 +1205,13 @@ fn collection_keys(value: &Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(Value::Vector(
-                map_entries(value)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(key, _)| key)
-                    .collect(),
-            ))
-        }
+        | Value::PriorityMap(_)) => Ok(Value::Vector(
+            map_entries(value)
+                .unwrap()
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect(),
+        )),
         Value::Object(values) => Ok(Value::Vector(
             values
                 .borrow()
@@ -1264,15 +1252,13 @@ fn collection_vals(value: &Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(Value::Vector(
-                map_entries(value)
-                    .unwrap()
-                    .into_iter()
-                    .map(|(_, value)| value)
-                    .collect(),
-            ))
-        }
+        | Value::PriorityMap(_)) => Ok(Value::Vector(
+            map_entries(value)
+                .unwrap()
+                .into_iter()
+                .map(|(_, value)| value)
+                .collect(),
+        )),
         Value::Object(values) => Ok(Value::Vector(
             values
                 .borrow()
@@ -1297,9 +1283,10 @@ fn collection_vals(value: &Value) -> Result<Value, String> {
 
 fn collection_first(value: Value) -> Result<Value, String> {
     match value {
-        Value::Seq(sequence) => sequence.peek_first().transpose()?.ok_or_else(|| {
-            "invalid empty Seq value".to_string()
-        }),
+        Value::Seq(sequence) => sequence
+            .peek_first()
+            .transpose()?
+            .ok_or_else(|| "invalid empty Seq value".to_string()),
         Value::Iterator(iterator) => Ok(iterator.borrow_mut().try_next()?.unwrap_or(Value::Nil)),
         value => Ok(iterator_values(value)?
             .into_iter()
@@ -1378,9 +1365,7 @@ fn collection_empty_value(value: Value) -> Result<Value, String> {
         Value::Array(_) => Ok(Value::Array(Rc::new(RefCell::new(Vec::new())))),
         Value::Object(_) => Ok(Value::Object(Rc::new(RefCell::new(Vec::new())))),
         Value::List(values) => Ok(Value::List(values.empty())),
-        Value::Cons(values) => Ok(Value::List(
-            PList::new().with_meta(values.meta().cloned()),
-        )),
+        Value::Cons(values) => Ok(Value::List(PList::new().with_meta(values.meta().cloned()))),
         Value::Queue(values) => Ok(Value::Queue(Box::new(values.empty()))),
         Value::Deque(values) => Ok(Value::Deque(Box::new(values.empty()))),
         Value::Vector(values) => Ok(Value::Vector(values.empty())),
@@ -1431,9 +1416,7 @@ fn collection_count(value: &Value) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            map_entries(value).unwrap().len()
-        }
+        | Value::PriorityMap(_)) => map_entries(value).unwrap().len(),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             set_items(value).unwrap().len()
         }
@@ -1555,9 +1538,7 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(map_value(value, key).cloned().unwrap_or(default))
-        }
+        | Value::PriorityMap(_)) => Ok(map_value(value, key).cloned().unwrap_or(default)),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             Ok(set_find(value, key).unwrap_or(default))
         }
@@ -1695,9 +1676,7 @@ fn collection_assoc(value: &Value, key: &Value, replacement: Value) -> Result<Va
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            map_assoc_value(value, key.clone(), replacement)
-        }
+        | Value::PriorityMap(_)) => map_assoc_value(value, key.clone(), replacement),
         Value::Object(entries) => {
             let name = marker_key(key, "object")?;
             let mut output = entries.borrow().clone();
@@ -1818,10 +1797,9 @@ fn collection_dissoc(value: &Value, keys: &[Value]) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            keys.iter()
-                .try_fold(value.clone(), |map, key| map_dissoc_value(&map, key))
-        }
+        | Value::PriorityMap(_)) => keys
+            .iter()
+            .try_fold(value.clone(), |map, key| map_dissoc_value(&map, key)),
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => keys
             .iter()
             .try_fold(value.clone(), |set, key| set_dissoc_value(&set, key)),

@@ -106,15 +106,19 @@ impl PackageCatalog {
     }
 
     fn find(&self, target: &str) -> Option<(String, Value)> {
-        self.entries.borrow().iter().find_map(|(coordinate, entry)| {
-            (coordinate == target || entry.namespaces.iter().any(|namespace| namespace == target))
+        self.entries
+            .borrow()
+            .iter()
+            .find_map(|(coordinate, entry)| {
+                (coordinate == target
+                    || entry.namespaces.iter().any(|namespace| namespace == target))
                 .then(|| {
                     (
                         coordinate.clone(),
                         package_descriptor_state(&entry.descriptor, &entry.state),
                     )
                 })
-        })
+            })
     }
 
     pub fn contains_namespace(&self, namespace: &str) -> bool {
@@ -125,13 +129,16 @@ impl PackageCatalog {
     }
 
     fn coordinate_for_namespace(&self, namespace: &str) -> Option<String> {
-        self.entries.borrow().iter().find_map(|(coordinate, entry)| {
-            entry
-                .namespaces
-                .iter()
-                .any(|name| name == namespace)
-                .then(|| coordinate.clone())
-        })
+        self.entries
+            .borrow()
+            .iter()
+            .find_map(|(coordinate, entry)| {
+                entry
+                    .namespaces
+                    .iter()
+                    .any(|name| name == namespace)
+                    .then(|| coordinate.clone())
+            })
     }
 
     fn state(&self, coordinate: &str) -> Option<String> {
@@ -195,7 +202,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "cosh", "exp", "floor", "pow", "sin", "sinh", "sqrt", "tan", "tanh",
         ],
     ),
-    ("Numbers", &["long", "double"]),
+    ("Num", &["long", "double", "parse-long", "parse-double"]),
     (
         "Bits",
         &["and", "or", "xor", "not", "shift-left", "shift-right"],
@@ -221,7 +228,10 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "capabilities",
         ],
     ),
-    ("Package", &["catalog", "find", "ensure", "load", "unload", "state"]),
+    (
+        "Package",
+        &["catalog", "find", "ensure", "load", "unload", "state"],
+    ),
     (
         "String",
         &[
@@ -294,7 +304,9 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ),
     (
         "OS",
-        &["platform", "arch", "cwd", "env", "getenv", "time-ms", "time-ns"],
+        &[
+            "platform", "arch", "cwd", "env", "getenv", "time-ms", "time-ns",
+        ],
     ),
     (
         "Process",
@@ -315,14 +327,34 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "File",
         &[
-            "parent", "join", "resolve", "read", "write", "exists?", "stat", "entries", "list",
-            "walk", "mkdir", "delete", "copy", "move", "temp-file", "temp-directory",
+            "parent",
+            "join",
+            "resolve",
+            "read",
+            "write",
+            "exists?",
+            "stat",
+            "entries",
+            "list",
+            "walk",
+            "mkdir",
+            "delete",
+            "copy",
+            "move",
+            "temp-file",
+            "temp-directory",
         ],
     ),
     (
         "Socket",
         &[
-            "connect", "listen", "endpoint", "events", "next", "send", "close",
+            "connect",
+            "listen",
+            "endpoint",
+            "events",
+            "next",
+            "send",
+            "close",
             "receive-stream",
         ],
     ),
@@ -372,9 +404,21 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "Runtime",
         &[
-            "load-string", "macroexpand-1", "gensym", "var-sym", "current", "snapshot",
-            "vars", "namespaces", "namespace", "module", "resolve", "alias-state",
-            "intern-var", "eval-in", "eval",
+            "load-string",
+            "macroexpand-1",
+            "gensym",
+            "var-sym",
+            "current",
+            "snapshot",
+            "vars",
+            "namespaces",
+            "namespace",
+            "module",
+            "resolve",
+            "alias-state",
+            "intern-var",
+            "eval-in",
+            "eval",
         ],
     ),
     ("Printer", &["p", "println"]),
@@ -402,20 +446,37 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     ("Host", &["call", "describe", "capabilities", "capability?"]),
     (
         "Test",
-        &["catalog", "config", "context", "events", "run", "result", "passed?"],
+        &[
+            "catalog", "config", "context", "events", "run", "result", "passed?",
+        ],
     ),
     (
         "RegExp",
         &[
-            "instance?", "compile", "pattern", "find?", "find", "matches", "replace", "split",
+            "instance?",
+            "compile",
+            "pattern",
+            "find?",
+            "find",
+            "matches",
+            "replace",
+            "split",
         ],
     ),
     ("UUID", &["instance?"]),
     (
         "Result",
         &[
-            "create", "synchronize", "instance?", "success?", "error?", "status",
-            "data", "error-value", "context", "with-context",
+            "create",
+            "synchronize",
+            "instance?",
+            "success?",
+            "error?",
+            "status",
+            "data",
+            "error-value",
+            "context",
+            "with-context",
         ],
     ),
     ("Schema", &["instance?", "kind", "form", "ast", "origin"]),
@@ -438,19 +499,61 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "reduced",
             "reduced?",
             "unreduced",
-            "nil?", "not-nil?", "boolean?", "false?", "true?", "string?", "char?", "number?", "integer?", "decimal?",
-            "long?", "double?", "keyword?", "symbol?", "pointer?", "atom?", "fn?",
-            "bytes?", "array?", "object?", "list?", "pair?", "vector?", "tuple?", "map?",
-            "map-entry?", "set?", "sequential?", "satisfies?", "type", "instance?",
-            "schema", "schema-of",
+            "nil?",
+            "not-nil?",
+            "boolean?",
+            "false?",
+            "true?",
+            "string?",
+            "char?",
+            "number?",
+            "integer?",
+            "decimal?",
+            "long?",
+            "double?",
+            "keyword?",
+            "symbol?",
+            "pointer?",
+            "atom?",
+            "fn?",
+            "bytes?",
+            "array?",
+            "object?",
+            "list?",
+            "cons?",
+            "pair?",
+            "vector?",
+            "tuple?",
+            "map?",
+            "map-entry?",
+            "set?",
+            "sequential?",
+            "satisfies?",
+            "type",
+            "instance?",
+            "schema",
+            "schema-of",
         ],
     ),
     (
         "Algo",
         &[
-            "deque", "ordered-map", "ordered-set", "priority-map", "queue", "sorted-map",
-            "sorted-set", "trie", "deque?", "ordered-map?", "ordered-set?", "priority-map?",
-            "queue?", "sorted-map?", "sorted-set?", "trie?",
+            "deque",
+            "ordered-map",
+            "ordered-set",
+            "priority-map",
+            "queue",
+            "sorted-map",
+            "sorted-set",
+            "trie",
+            "deque?",
+            "ordered-map?",
+            "ordered-set?",
+            "priority-map?",
+            "queue?",
+            "sorted-map?",
+            "sorted-set?",
+            "trie?",
         ],
     ),
     (
@@ -541,10 +644,7 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
     ),
     ("IWork", &[("work-spec", 1)]),
     ("IWorkRef", &[("work-id", 1)]),
-    (
-        "IWorkHost",
-        &[("work-submit", 4), ("work-resolve", 2)],
-    ),
+    ("IWorkHost", &[("work-submit", 4), ("work-resolve", 2)]),
     (
         "IWorkRun",
         &[

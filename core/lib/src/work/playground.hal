@@ -1,0 +1,21 @@
+(ns work-playground
+    (:require [work.base :as work]
+     [work.provider.ephemeral :as ephemeral]))
+
+(declare execute-pure)
+(defn execute-pure
+  [definition input]
+  (let [spec (work/work-spec definition)]
+    (cond
+     (= :pure (:op spec))
+     ((:fn spec)
+      input
+      {:run (work.native/current-run)
+       :cancelled? work.native/cancelled?
+       :deadline-nanos (work.native/deadline-nanos)})
+     (= :chain (:op spec))
+     (reduce execute-pure input (:children spec))
+     :else
+     (throw
+      (ex-info "Unsupported playground operation"
+               {:operation (:op spec)})))))

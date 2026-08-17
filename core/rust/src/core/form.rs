@@ -122,9 +122,8 @@ pub(crate) fn definition_metadata(
     };
     metadata = assoc_metadata(metadata, "arglists", MetadataValue::Vector(arglists));
     if metadata.as_ref().is_some_and(|value| value.flag("inline")) {
-        let target = inline_forward_target(rest).ok_or_else(|| {
-            ":inline true requires a transparent forwarding function".to_string()
-        })?;
+        let target = inline_forward_target(rest)
+            .ok_or_else(|| ":inline true requires a transparent forwarding function".to_string())?;
         metadata = assoc_metadata(
             metadata,
             "inline-target",
@@ -185,7 +184,10 @@ fn inline_forward_target(forms: &[Form]) -> Option<String> {
         (arguments == parameter_names).then(|| target.clone())
     }
 
-    if matches!(forms.first().map(form_without_metadata), Some(Form::Vector(_))) {
+    if matches!(
+        forms.first().map(form_without_metadata),
+        Some(Form::Vector(_))
+    ) {
         return clause_target(forms.first()?, &forms[1..]);
     }
     let mut target = None;
@@ -619,7 +621,7 @@ pub(crate) fn bind_pattern(
                         }
                         bind_pattern(
                             &patterns[index + 1],
-                            Value::List(values.iter().skip(position).cloned().collect()),
+                            Value::Vector(values.iter().skip(position).cloned().collect()),
                             env,
                             bound,
                             defaults,
@@ -658,16 +660,16 @@ pub(crate) fn bind_pattern(
             let defaults = entries.iter().find_map(|(key, value)| {
                 matches!(key, Form::Keyword(keyword) if keyword.as_str() == "or").then_some(value)
             });
-            for (key, binding) in entries {
-                match key {
+            for (binding, key) in entries {
+                match binding {
                     Form::Keyword(keyword) if keyword.as_str() == "or" => {}
                     Form::Keyword(keyword) if keyword.as_str() == "as" => {
-                        bind_pattern(binding, value.clone(), env, bound, defaults)?;
+                        bind_pattern(key, value.clone(), env, bound, defaults)?;
                     }
                     Form::Keyword(keyword)
                         if ["keys", "strs", "syms"].contains(&keyword.as_str()) =>
                     {
-                        let Form::Vector(names) = binding else {
+                        let Form::Vector(names) = key else {
                             return Err(format!(
                                 ":{} destructuring expects a vector of symbols",
                                 keyword.as_str()
@@ -695,7 +697,7 @@ pub(crate) fn bind_pattern(
                             )?;
                         }
                     }
-                    key => {
+                    binding => {
                         let lookup = literal_value(key)?;
                         bind_pattern(
                             binding,
@@ -888,15 +890,13 @@ pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            match arguments.as_slice() {
-                [key] => Ok(map_value(&value, key).cloned().unwrap_or(Value::Nil)),
-                [key, fallback] => Ok(map_value(&value, key)
-                    .cloned()
-                    .unwrap_or_else(|| fallback.clone())),
-                _ => Err("map invocation expects one or two arguments".into()),
-            }
-        }
+        | Value::PriorityMap(_)) => match arguments.as_slice() {
+            [key] => Ok(map_value(&value, key).cloned().unwrap_or(Value::Nil)),
+            [key, fallback] => Ok(map_value(&value, key)
+                .cloned()
+                .unwrap_or_else(|| fallback.clone())),
+            _ => Err("map invocation expects one or two arguments".into()),
+        },
         value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)) => {
             match arguments.as_slice() {
                 [key] => Ok(set_find(&value, key).unwrap_or(Value::Nil)),
@@ -1133,5 +1133,3 @@ fn syntax_quote_value(form: &Form, env: &mut HashMap<String, Value>) -> Result<V
         _ => literal_value(form),
     }
 }
-
-

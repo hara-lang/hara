@@ -147,7 +147,7 @@ public final class HaraContext {
   private static final Map<String, java.util.List<String>> NATIVE_TYPES =
       Map.ofEntries(
           Map.entry("Maths", java.util.List.of("abs", "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "ceil", "cos", "cosh", "exp", "floor", "pow", "sin", "sinh", "sqrt", "tan", "tanh")),
-          Map.entry("Numbers", java.util.List.of("long", "double")),
+          Map.entry("Num", java.util.List.of("long", "double", "parse-long", "parse-double")),
           Map.entry("Bits", java.util.List.of("and", "or", "xor", "not", "shift-left", "shift-right")),
           Map.entry("Kernel", java.util.List.of("session-create", "session-close", "session-list", "session-info", "session-eval", "session-namespace", "session-complete", "resource-register", "resource-remove", "resource-list", "filesystem-create", "filesystem-attach", "filesystem-detach", "filesystem-info", "filesystem-close", "capabilities")),
           Map.entry("Package", java.util.List.of("catalog", "find", "ensure", "load", "unload", "state")),
@@ -208,7 +208,7 @@ public final class HaraContext {
                   "pointer", "symbol", "keyword", "reduced", "reduced?", "unreduced",
                   "nil?", "not-nil?", "boolean?", "false?", "true?", "string?", "char?", "number?", "integer?",
                   "decimal?", "long?", "double?", "keyword?", "symbol?", "pointer?",
-                  "atom?", "fn?", "bytes?", "array?", "object?", "list?", "pair?", "vector?",
+                  "atom?", "fn?", "bytes?", "array?", "object?", "list?", "cons?", "pair?", "vector?",
                   "tuple?", "map?", "map-entry?", "set?", "sequential?", "satisfies?",
                   "type", "instance?", "schema", "schema-of")),
           Map.entry(
@@ -451,7 +451,7 @@ public final class HaraContext {
     if (exports.isEmpty()) return;
     if (FOUNDATION_NAMESPACE.equals(sourceNamespace)) {
       installNativeExportGroup("Maths", exports, NATIVE_TYPES.get("Maths"), Map.of());
-      installNativeExportGroup("Numbers", exports, NATIVE_TYPES.get("Numbers"), Map.of());
+      installNativeExportGroup("Num", exports, NATIVE_TYPES.get("Num"), Map.of());
       installNativeExportGroup(
           "Bits",
           exports,
@@ -2138,9 +2138,11 @@ public final class HaraContext {
     target.define("<=", new VariadicBuiltin("<=", values -> compare("<=", values)));
     target.define(">", new VariadicBuiltin(">", values -> compare(">", values)));
     target.define(">=", new VariadicBuiltin(">=", values -> compare(">=", values)));
-    HaraNamespace numbers = namespace("std.native.Numbers");
-    numbers.define("long", new UnaryBuiltin("std.native.Numbers/long", HaraNumericConversions::toLong));
-    numbers.define("double", new UnaryBuiltin("std.native.Numbers/double", HaraNumericConversions::toDouble));
+    HaraNamespace num = namespace("std.native.Num");
+    num.define("long", new UnaryBuiltin("std.native.Num/long", HaraNumericConversions::toLong));
+    num.define("double", new UnaryBuiltin("std.native.Num/double", HaraNumericConversions::toDouble));
+    num.define("parse-long", new UnaryBuiltin("std.native.Num/parse-long", this::parseLong));
+    num.define("parse-double", new UnaryBuiltin("std.native.Num/parse-double", this::parseDouble));
     target.define(
         "not", new UnaryBuiltin("not", value -> value == null || Boolean.FALSE.equals(value)));
     target.define("boolean?", new UnaryBuiltin("boolean?", value ->
@@ -2965,6 +2967,9 @@ public final class HaraContext {
     target.define(
         "list?",
         new UnaryBuiltin("list?", value -> HaraBox.unwrap(value) instanceof hara.lang.data.List<?>));
+    target.define(
+        "cons?",
+        new UnaryBuiltin("cons?", value -> HaraBox.unwrap(value) instanceof hara.lang.data.Cons<?>));
     target.define("promise", new UnaryBuiltin("promise", this::promiseRun));
     target.define("bytes", new VariadicBuiltin("bytes", this::createBytes));
     target.define("array", new VariadicBuiltin("array", HaraArray::new));
@@ -3639,6 +3644,7 @@ public final class HaraContext {
                 throw new HaraException(
                     "std.native.RegExp/split expects a regexp and string");
               }
+              if (input.isEmpty()) return null;
               String[] parts = pattern.split(input, -1);
               return hara.lang.data.Vector.Standard.from(null, (Object[]) parts);
             }));
@@ -4348,6 +4354,7 @@ public final class HaraContext {
       throw new HaraException("str/split expects a string and string or regexp separator");
     }
     String input = stringValue(values[0], "str/split");
+    if (input.isEmpty()) return null;
     Object separator = HaraBox.unwrap(values[1]);
     String[] parts;
     if (separator instanceof java.util.regex.Pattern pattern) {
@@ -4358,6 +4365,33 @@ public final class HaraContext {
       throw new HaraException("str/split expects a string and string or regexp separator");
     }
     return hara.lang.data.Vector.Standard.from(null, (Object[]) parts);
+  }
+
+  private Object parseLong(Object value) {
+    String input = stringValue(value, "parse-long");
+    if (input.isEmpty() || !input.equals(input.trim())) return null;
+    try {
+      return Long.parseLong(input);
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
+  }
+
+  private Object parseDouble(Object value) {
+    String input = stringValue(value, "parse-double");
+    if (input.isEmpty() || !input.equals(input.trim())) return null;
+    if (!(input.equals("NaN")
+        || input.equals("Infinity")
+        || input.equals("+Infinity")
+        || input.equals("-Infinity")
+        || input.matches("[+-]?(?:(?:[0-9]+(?:\\.[0-9]*)?)|(?:\\.[0-9]+))(?:[eE][+-]?[0-9]+)?"))) {
+      return null;
+    }
+    try {
+      return Double.parseDouble(input);
+    } catch (NumberFormatException ignored) {
+      return null;
+    }
   }
 
   private Object stringSplitLines(Object[] values) {

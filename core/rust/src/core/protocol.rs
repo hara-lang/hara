@@ -54,10 +54,7 @@ fn value_to_metadata(value: &Value) -> Result<MetadataValue, String> {
                     .collect::<Result<_, _>>()?,
             ))
         }
-        value @ (Value::Map(_)
-        | Value::OrderedMap(_)
-        | Value::SortedMap(_)
-        | Value::Trie(_)) => {
+        value @ (Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_)) => {
             Ok(MetadataValue::Map(
                 map_entries(value)
                     .unwrap()
@@ -419,14 +416,12 @@ fn protocol_find(arguments: &[Value]) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_)) => {
-            Ok(map_entries(value)
-                .unwrap()
-                .into_iter()
-                .find(|(candidate, _)| candidate == key)
-                .map(|(candidate, value)| pair_value(candidate, value))
-                .unwrap_or(Value::Nil))
-        }
+        | Value::PriorityMap(_)) => Ok(map_entries(value)
+            .unwrap()
+            .into_iter()
+            .find(|(candidate, _)| candidate == key)
+            .map(|(candidate, value)| pair_value(candidate, value))
+            .unwrap_or(Value::Nil)),
         Value::Pointer(pointer) => Ok(pointer
             .fields()
             .iter()
@@ -521,9 +516,9 @@ fn protocol_deref(arguments: &[Value]) -> Result<Value, String> {
         [Value::Pointer(pointer)] => {
             pointer_context_call(pointer, pointer_default(pointer)?, "pointer/deref", &[])
         }
-        [Value::Schema(schema)] => form_to_value(
-            &crate::lang::protocol::IDeref::deref(&schema.ast),
-        ),
+        [Value::Schema(schema)] => {
+            form_to_value(&crate::lang::protocol::IDeref::deref(&schema.ast))
+        }
         _ => Err("IDeref/deref has no implementation for this value".into()),
     }
 }
@@ -676,7 +671,10 @@ fn schema_ast_form(schema: &crate::kernel::SchemaType) -> Form {
                 }
                 Form::Map(vec![
                     (Form::Keyword("inputs".into()), Form::Vector(inputs)),
-                    (Form::Keyword("output".into()), schema_ast_form(&arity.output)),
+                    (
+                        Form::Keyword("output".into()),
+                        schema_ast_form(&arity.output),
+                    ),
                 ])
             })
             .collect(),
@@ -771,7 +769,9 @@ fn native_schema_operation(
             _ => Err("Schema/ast expects a schema".into()),
         },
         "origin" => match value {
-            Value::Schema(schema) => Ok(schema.origin.clone().map(Value::Var).unwrap_or(Value::Nil)),
+            Value::Schema(schema) => {
+                Ok(schema.origin.clone().map(Value::Var).unwrap_or(Value::Nil))
+            }
             _ => Err("Schema/origin expects a schema".into()),
         },
         _ => Err(format!("unknown Schema operation: {operation}")),
@@ -800,11 +800,15 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
         "list" => Ok(Value::List(values.to_vec().into())),
         "vector" => Ok(Value::Vector(values.to_vec().into())),
         "vec" => match values {
-            [value] => Ok(Value::Vector(PVector::from_iter(iterator_values(value.clone())?))),
+            [value] => Ok(Value::Vector(PVector::from_iter(iterator_values(
+                value.clone(),
+            )?))),
             _ => Err("Base/vec expects one collection".into()),
         },
         "set" => match values {
-            [value] => Ok(Value::Set(unique_values(iterator_values(value.clone())?).into())),
+            [value] => Ok(Value::Set(
+                unique_values(iterator_values(value.clone())?).into(),
+            )),
             _ => Err("Base/set expects one collection".into()),
         },
         "pair" => match values {
@@ -844,9 +848,11 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [Value::String(name)] => Keyword::parse(name)
                 .map(Value::Keyword)
                 .map_err(|error| format!("Base/keyword failed: {error}")),
-            [Value::String(namespace), Value::String(name)] => Keyword::create(Some(namespace), name)
-                .map(Value::Keyword)
-                .map_err(|error| format!("Base/keyword failed: {error}")),
+            [Value::String(namespace), Value::String(name)] => {
+                Keyword::create(Some(namespace), name)
+                    .map(Value::Keyword)
+                    .map_err(|error| format!("Base/keyword failed: {error}"))
+            }
             _ => Err("Base/keyword expects a name or namespace and name".into()),
         },
         "reduced" => match values {
@@ -862,7 +868,9 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             _ => Err("Base/unreduced expects one value".into()),
         },
         "satisfies?" => match values {
-            [Value::Protocol(protocol), value] => Ok(Value::Bool(protocol_satisfies(protocol, value))),
+            [Value::Protocol(protocol), value] => {
+                Ok(Value::Bool(protocol_satisfies(protocol, value)))
+            }
             _ => Err("Base/satisfies? expects a protocol and value".into()),
         },
         "type" => match values {
@@ -873,10 +881,16 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [Value::StructType(_), value] | [Value::MutableType(_), value] => {
                 named_instance_of(&values[0], value)
             }
-            [Value::NativeType(native), value] if native.methods.iter().any(|method| method == "instance?") => {
-                Ok(Value::Bool(portable_type_keyword(value)?.as_str() == format!("std.native.{}", native.name)))
+            [Value::NativeType(native), value]
+                if native.methods.iter().any(|method| method == "instance?") =>
+            {
+                Ok(Value::Bool(
+                    portable_type_keyword(value)?.as_str() == format!("std.native.{}", native.name),
+                ))
             }
-            [Value::NativeType(_), _] => Err("Base/instance? descriptor does not define instance?".into()),
+            [Value::NativeType(_), _] => {
+                Err("Base/instance? descriptor does not define instance?".into())
+            }
             _ => Err("Base/instance? expects a type descriptor and value".into()),
         },
         "schema" => match values {
@@ -913,14 +927,33 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
                 "bytes?" => matches!(value, Value::Bytes(_) | Value::ByteBuffer(_)),
                 "array?" => matches!(value, Value::Array(_)),
                 "object?" => matches!(value, Value::Object(_)),
-                "list?" => matches!(value, Value::List(_) | Value::Cons(_)),
+                "list?" => matches!(value, Value::List(_)),
+                "cons?" => matches!(value, Value::Cons(_)),
                 "pair?" => matches!(value, Value::Tuple(tuple) if tuple.len() == 2),
                 "vector?" => matches!(value, Value::Vector(_) | Value::Tuple(_)),
                 "tuple?" => matches!(value, Value::Tuple(_)),
-                "map?" => matches!(value, Value::Map(_) | Value::OrderedMap(_) | Value::SortedMap(_) | Value::Trie(_) | Value::PriorityMap(_)),
+                "map?" => matches!(
+                    value,
+                    Value::Map(_)
+                        | Value::OrderedMap(_)
+                        | Value::SortedMap(_)
+                        | Value::Trie(_)
+                        | Value::PriorityMap(_)
+                ),
                 "map-entry?" => pair_parts(value).is_some(),
-                "set?" => matches!(value, Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)),
-                "sequential?" => matches!(value, Value::List(_) | Value::Cons(_) | Value::Queue(_) | Value::Deque(_) | Value::Vector(_) | Value::Tuple(_)),
+                "set?" => matches!(
+                    value,
+                    Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)
+                ),
+                "sequential?" => matches!(
+                    value,
+                    Value::List(_)
+                        | Value::Cons(_)
+                        | Value::Queue(_)
+                        | Value::Deque(_)
+                        | Value::Vector(_)
+                        | Value::Tuple(_)
+                ),
                 _ => return Err(format!("unknown Base predicate: {predicate}")),
             })),
             _ => Err(format!("Base/{predicate} expects one value")),
@@ -955,10 +988,8 @@ fn native_algo_operation(
         }));
     }
     match method {
-        "deque" | "ordered-map" | "ordered-set" | "priority-map" | "queue"
-        | "sorted-map" | "sorted-set" | "trie" => {
-            eval_collection_constructor(method, forms, env)
-        }
+        "deque" | "ordered-map" | "ordered-set" | "priority-map" | "queue" | "sorted-map"
+        | "sorted-set" | "trie" => eval_collection_constructor(method, forms, env),
         _ => Err(format!("unknown Algo operation: {operation}")),
     }
 }
@@ -1086,9 +1117,7 @@ fn protocol_encode_with(arguments: &[Value]) -> Result<Value, String> {
         | Value::OrderedMap(_)
         | Value::SortedMap(_)
         | Value::Trie(_)
-        | Value::PriorityMap(_) => {
-            ("visit-map", vec![visitor.clone(), value.clone()])
-        }
+        | Value::PriorityMap(_) => ("visit-map", vec![visitor.clone(), value.clone()]),
         Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_) => {
             ("visit-set", vec![visitor.clone(), value.clone()])
         }
@@ -1185,9 +1214,13 @@ fn protocol_pop_last(arguments: &[Value]) -> Result<Value, String> {
 fn protocol_push_first(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
         [Value::List(values), value] => Ok(Value::List(values.push_first(value.clone()))),
-        [Value::Cons(values), value] => Ok(Value::Cons(Box::new(PCons::new(value.clone(), values.to_list()).with_meta(values.meta().cloned())))),
+        [Value::Cons(values), value] => Ok(Value::Cons(Box::new(
+            PCons::new(value.clone(), values.to_list()).with_meta(values.meta().cloned()),
+        ))),
         [Value::Tuple(values), value] => tuple_push_first(values, value.clone()),
-        [Value::Deque(values), value] => Ok(Value::Deque(Box::new(values.push_first(value.clone())))),
+        [Value::Deque(values), value] => {
+            Ok(Value::Deque(Box::new(values.push_first(value.clone()))))
+        }
         [_, _] => Err("protocol/unsupported-receiver: IPushFirst/push-first".into()),
         _ => Err("IPushFirst/push-first expects a collection and value".into()),
     }
@@ -1198,8 +1231,12 @@ fn protocol_push_last(arguments: &[Value]) -> Result<Value, String> {
         [Value::List(values), value] => Ok(Value::List(values.push_last(value.clone()))),
         [Value::Tuple(values), value] => tuple_push_last(values, value.clone()),
         [Value::Vector(values), value] => Ok(Value::Vector(values.push_last(value.clone()))),
-        [Value::Queue(values), value] => Ok(Value::Queue(Box::new(values.push_last(value.clone())))),
-        [Value::Deque(values), value] => Ok(Value::Deque(Box::new(values.push_last(value.clone())))),
+        [Value::Queue(values), value] => {
+            Ok(Value::Queue(Box::new(values.push_last(value.clone()))))
+        }
+        [Value::Deque(values), value] => {
+            Ok(Value::Deque(Box::new(values.push_last(value.clone()))))
+        }
         [_, _] => Err("protocol/unsupported-receiver: IPushLast/push-last".into()),
         _ => Err("IPushLast/push-last expects a collection and value".into()),
     }
@@ -1266,12 +1303,9 @@ fn protocol_conj(arguments: &[Value]) -> Result<Value, String> {
     let collection = &arguments[0];
     let item = &arguments[1];
     match collection {
-        Value::Extension(receiver) => extension_protocol_call(
-            receiver,
-            "std.protocol.iconj/IConj",
-            "conj",
-            arguments,
-        ),
+        Value::Extension(receiver) => {
+            extension_protocol_call(receiver, "std.protocol.iconj/IConj", "conj", arguments)
+        }
         Value::MutableCollection(collection) => {
             let mut borrowed = collection.borrow_mut();
             let mutable = borrowed
@@ -1482,10 +1516,20 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         );
     match name {
         "IColl" => persistent_collection,
-        "IConj" => (persistent_collection && !matches!(value, Value::Seq(_)))
-            || matches!(value, Value::Array(_) | Value::Object(_) | Value::MutableCollection(_)),
-        "IEmpty" => persistent_collection
-            || matches!(value, Value::Nil | Value::Array(_) | Value::Object(_) | Value::Struct(_)),
+        "IConj" => {
+            (persistent_collection && !matches!(value, Value::Seq(_)))
+                || matches!(
+                    value,
+                    Value::Array(_) | Value::Object(_) | Value::MutableCollection(_)
+                )
+        }
+        "IEmpty" => {
+            persistent_collection
+                || matches!(
+                    value,
+                    Value::Nil | Value::Array(_) | Value::Object(_) | Value::Struct(_)
+                )
+        }
         "IToMutable" => mutable_convertible,
         "IToPersistent" => matches!(value, Value::MutableCollection(_)),
         "IIter" | "IReduce" | "IPeekFirst" | "IPeekLast" => iterable,
@@ -1569,7 +1613,10 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
         "IPersistent" => persistent_collection || matches!(value, Value::Struct(_)),
         "IStream" => matches!(value, Value::Stream(_)),
-        "IClose" => matches!(value, Value::Stream(_) | Value::Coroutine(_) | Value::Iterator(_)),
+        "IClose" => matches!(
+            value,
+            Value::Stream(_) | Value::Coroutine(_) | Value::Iterator(_)
+        ),
         _ => false,
     }
 }

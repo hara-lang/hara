@@ -169,11 +169,20 @@ fn os_operation(
             }
         }
         method @ ("process-stdout-stream" | "process-stderr-stream") => {
-            if forms.len() != 1 { return Err(format!("os/{method} expects a process")); }
+            if forms.len() != 1 {
+                return Err(format!("os/{method} expects a process"));
+            }
             let process = eval(&forms[0], env)?;
-            let kind = if method == "process-stderr-stream" { "stderr" } else { "stdout" };
+            let kind = if method == "process-stderr-stream" {
+                "stderr"
+            } else {
+                "stdout"
+            };
             let handle = crate::native_process::take_stream(&process, kind)?;
-            Ok(host_stream(Rc::new(move || Ok(crate::native_process::stream_promise(handle, kind))), Rc::new(|| Ok(()))))
+            Ok(host_stream(
+                Rc::new(move || Ok(crate::native_process::stream_promise(handle, kind))),
+                Rc::new(|| Ok(())),
+            ))
         }
         "process-write" => {
             if forms.len() != 2 {
@@ -210,15 +219,11 @@ fn native_test_runner(value: Value) -> Result<Value, String> {
 }
 
 fn native_test_active_runner() -> Result<Value, String> {
-    ACTIVE_TEST_RUNNER.with(|runner| {
-        native_test_runner(Value::Keyword(runner.borrow().clone().into()))
-    })
+    ACTIVE_TEST_RUNNER
+        .with(|runner| native_test_runner(Value::Keyword(runner.borrow().clone().into())))
 }
 
-fn native_test_config(
-    runner: Value,
-    options: Value,
-) -> Result<Value, String> {
+fn native_test_config(runner: Value, options: Value) -> Result<Value, String> {
     if map_entries(&options).is_none() {
         return Err("std.native.Test/config options must be a map".into());
     }
@@ -245,7 +250,10 @@ fn native_test_error(name: Value, expected: Value, error: String) -> Value {
     Value::Map(PMap::from_iter([
         (Value::Keyword("name".into()), name),
         (Value::Keyword("pass".into()), Value::Bool(false)),
-        (Value::Keyword("status".into()), Value::Keyword("error".into())),
+        (
+            Value::Keyword("status".into()),
+            Value::Keyword("error".into()),
+        ),
         (Value::Keyword("expected".into()), expected),
         (Value::Keyword("error".into()), Value::String(error)),
     ]))
@@ -325,11 +333,9 @@ fn native_test_run(cases: Value, check_function: Option<Value>) -> Result<Value,
                 expected.unwrap_or(Value::Nil),
                 "Test/run case requires :test".into(),
             ),
-            (Some(_), None) => native_test_error(
-                name,
-                Value::Nil,
-                "Test/run case requires :expected".into(),
-            ),
+            (Some(_), None) => {
+                native_test_error(name, Value::Nil, "Test/run case requires :expected".into())
+            }
         };
         results.push(result);
     }
@@ -416,7 +422,9 @@ fn native_test_operation(
                 };
                 let runner = native_test_runner(runner)?;
                 if runner != native_test_active_runner()? {
-                    return Err("std.native.Test/context config runner does not match the runtime".into());
+                    return Err(
+                        "std.native.Test/context config runner does not match the runtime".into(),
+                    );
                 }
                 value
             };
@@ -477,7 +485,10 @@ fn native_regex_operation(
             if forms.len() != 1 {
                 return Err("std.native.RegExp/instance? expects one value".into());
             }
-            Ok(Value::Bool(matches!(eval(&forms[0], env)?, Value::Regex(_))))
+            Ok(Value::Bool(matches!(
+                eval(&forms[0], env)?,
+                Value::Regex(_)
+            )))
         }
         "compile" => {
             if forms.len() != 1 {
@@ -487,8 +498,7 @@ fn native_regex_operation(
                 Value::String(pattern) => pattern,
                 _ => return Err("std.native.RegExp/compile expects one string".into()),
             };
-            regex::Regex::new(&pattern)
-                .map_err(|error| format!("invalid regexp: {error}"))?;
+            regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Regex(pattern))
         }
         "pattern" => {
@@ -512,8 +522,8 @@ fn native_regex_operation(
                 Value::String(input) => input,
                 _ => return Err("std.native.RegExp/find? expects a regexp and string".into()),
             };
-            let regexp = regex::Regex::new(&pattern)
-                .map_err(|error| format!("invalid regexp: {error}"))?;
+            let regexp =
+                regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Bool(regexp.is_match(&input)))
         }
         "find" => {
@@ -528,8 +538,8 @@ fn native_regex_operation(
                 Value::String(input) => input,
                 _ => return Err("std.native.RegExp/find expects a regexp and string".into()),
             };
-            let regexp = regex::Regex::new(&pattern)
-                .map_err(|error| format!("invalid regexp: {error}"))?;
+            let regexp =
+                regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(regexp
                 .find(&input)
                 .map(|matched| Value::String(matched.as_str().to_owned()))
@@ -548,8 +558,8 @@ fn native_regex_operation(
                 _ => return Err("std.native.RegExp/matches expects a regexp and string".into()),
             };
             let anchored = format!(r"\A(?:{pattern})\z");
-            let regexp = regex::Regex::new(&anchored)
-                .map_err(|error| format!("invalid regexp: {error}"))?;
+            let regexp =
+                regex::Regex::new(&anchored).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Bool(regexp.is_match(&input)))
         }
         "replace" => {
@@ -585,10 +595,12 @@ fn native_regex_operation(
                     )
                 }
             };
-            let regexp = regex::Regex::new(&pattern)
-                .map_err(|error| format!("invalid regexp: {error}"))?;
+            let regexp =
+                regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::String(
-                regexp.replace_all(&input, replacement.as_str()).into_owned(),
+                regexp
+                    .replace_all(&input, replacement.as_str())
+                    .into_owned(),
             ))
         }
         "split" => {
@@ -603,8 +615,11 @@ fn native_regex_operation(
                 Value::String(input) => input,
                 _ => return Err("std.native.RegExp/split expects a regexp and string".into()),
             };
-            let regexp = regex::Regex::new(&pattern)
-                .map_err(|error| format!("invalid regexp: {error}"))?;
+            if input.is_empty() {
+                return Ok(Value::Nil);
+            }
+            let regexp =
+                regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Vector(PVector::from_iter(
                 regexp
                     .split(&input)
@@ -930,10 +945,17 @@ fn socket_operation(
         .unwrap_or(operation);
     match operation {
         "receive-stream" | "socket/receive-stream" => {
-            if forms.len() != 1 { return Err(format!("Socket/{operation} expects a socket connection")); }
+            if forms.len() != 1 {
+                return Err(format!("Socket/{operation} expects a socket connection"));
+            }
             let socket = socket_handle(&eval(&forms[0], env)?, &format!("Socket/{operation}"))?;
-            let events = socket_provider(operation)?.events(socket).map_err(|e| socket_error(operation, e))?;
-            Ok(host_stream(Rc::new(move || socket_receive_promise(events)), Rc::new(|| Ok(()))))
+            let events = socket_provider(operation)?
+                .events(socket)
+                .map_err(|e| socket_error(operation, e))?;
+            Ok(host_stream(
+                Rc::new(move || socket_receive_promise(events)),
+                Rc::new(|| Ok(())),
+            ))
         }
         "socket/connect" => {
             if forms.len() != 4 {
@@ -1058,28 +1080,59 @@ fn socket_operation(
 }
 
 fn socket_receive_promise(stream: SocketHandle) -> Result<Promise, String> {
-    let source = socket_provider("Socket/receive-stream")?.next(stream).map_err(|e| socket_error("Socket/receive-stream", e))?;
+    let source = socket_provider("Socket/receive-stream")?
+        .next(stream)
+        .map_err(|e| socket_error("Socket/receive-stream", e))?;
     let output = Promise::new();
     let settled = output.clone();
     source.on_settle(Rc::new(move |result| match result {
-        PromiseState::Rejected(error) => { settled.reject_rejection(error); }
+        PromiseState::Rejected(error) => {
+            settled.reject_rejection(error);
+        }
         PromiseState::Pending => {}
         PromiseState::Fulfilled(event) => {
             let entries = map_entries(&event).unwrap_or_default();
-            let kind = entries.iter().find_map(|(k, v)| if matches!(k, Value::Keyword(key) if key.as_str() == "type") { Some(v.clone()) } else { None });
+            let kind = entries.iter().find_map(|(k, v)| {
+                if matches!(k, Value::Keyword(key) if key.as_str() == "type") {
+                    Some(v.clone())
+                } else {
+                    None
+                }
+            });
             match kind {
                 Some(Value::Keyword(kind)) if kind.as_str() == "data" => {
-                    let bytes = entries.into_iter().find_map(|(k, v)| if matches!(k, Value::Keyword(key) if key.as_str() == "bytes") { Some(v) } else { None }).unwrap_or(Value::Nil);
+                    let bytes = entries
+                        .into_iter()
+                        .find_map(|(k, v)| {
+                            if matches!(k, Value::Keyword(key) if key.as_str() == "bytes") {
+                                Some(v)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(Value::Nil);
                     settled.resolve(bytes);
                 }
-                Some(Value::Keyword(kind)) if kind.as_str() == "close" => { settled.resolve(Value::Nil); }
-                Some(Value::Keyword(kind)) if kind.as_str() == "error" => { settled.reject("socket receive failed"); }
-                _ => { settled.reject("Socket/receive-stream received an invalid event"); }
+                Some(Value::Keyword(kind)) if kind.as_str() == "close" => {
+                    settled.resolve(Value::Nil);
+                }
+                Some(Value::Keyword(kind)) if kind.as_str() == "error" => {
+                    settled.reject("socket receive failed");
+                }
+                _ => {
+                    settled.reject("Socket/receive-stream received an invalid event");
+                }
             }
         }
     }));
-    let poll = source.clone(); output.set_poller(Rc::new(move || { poll.state(); }));
-    let wait = source.clone(); output.set_waiter(Rc::new(move || { wait.wait_state(); }));
+    let poll = source.clone();
+    output.set_poller(Rc::new(move || {
+        poll.state();
+    }));
+    let wait = source.clone();
+    output.set_waiter(Rc::new(move || {
+        wait.wait_state();
+    }));
     Ok(output)
 }
 
@@ -1270,7 +1323,12 @@ fn native_runtime_operation(
             let requested = match eval(&forms[0], env)? {
                 Value::String(path) => path,
                 Value::Symbol(name) => name.as_str().to_owned(),
-                _ => return Err("std.native.Runtime/module expects a path string or namespace symbol".into()),
+                _ => {
+                    return Err(
+                        "std.native.Runtime/module expects a path string or namespace symbol"
+                            .into(),
+                    )
+                }
             };
             let source = requested.strip_prefix("classpath:").unwrap_or(&requested);
             let namespace = if source.ends_with(".hal") || source.ends_with(".hrl") {
@@ -1297,7 +1355,10 @@ fn native_runtime_operation(
                 })
                 .collect::<Vec<_>>();
             Ok(Value::OrderedMap(Box::new(POrderedMap::from_iter([
-                (Value::Keyword("module/path".into()), Value::String(requested)),
+                (
+                    Value::Keyword("module/path".into()),
+                    Value::String(requested),
+                ),
                 (
                     Value::Keyword("module/namespace".into()),
                     Value::Symbol(Symbol::parse(&namespace)),
@@ -1345,7 +1406,10 @@ fn native_runtime_operation(
             };
             // Deliberately bypass force_lazy_alias: Runtime inspection must never
             // load source or invoke a package provider.
-            Ok(registry.resolve(&symbol).map(Value::Var).unwrap_or(Value::Nil))
+            Ok(registry
+                .resolve(&symbol)
+                .map(Value::Var)
+                .unwrap_or(Value::Nil))
         }
         "eval" => {
             if forms.len() != 1 {
@@ -1400,16 +1464,20 @@ fn native_package_operation(
     if method == "catalog" {
         return Ok(catalog.catalog_value());
     }
-    let target = match arguments.first() {
-        Some(Value::Symbol(value)) => value.as_str().to_owned(),
-        Some(Value::String(value)) => value.clone(),
-        Some(Value::Keyword(value)) => value.as_str().to_owned(),
-        Some(value @ Value::OrderedMap(_)) if method == "ensure" || method == "unload" =>
-            package_descriptor_coordinate(value).ok_or_else(|| {
-                format!("std.native.Package/{method} descriptor requires :package/coordinate")
-            })?,
-        _ => return Err(format!("std.native.Package/{method} expects a namespace, coordinate, or exact descriptor")),
-    };
+    let target =
+        match arguments.first() {
+            Some(Value::Symbol(value)) => value.as_str().to_owned(),
+            Some(Value::String(value)) => value.clone(),
+            Some(Value::Keyword(value)) => value.as_str().to_owned(),
+            Some(value @ Value::OrderedMap(_)) if method == "ensure" || method == "unload" => {
+                package_descriptor_coordinate(value).ok_or_else(|| {
+                    format!("std.native.Package/{method} descriptor requires :package/coordinate")
+                })?
+            }
+            _ => return Err(format!(
+                "std.native.Package/{method} expects a namespace, coordinate, or exact descriptor"
+            )),
+        };
     let found = catalog.find(&target);
     if method == "find" {
         return Ok(found.map(|(_, value)| value).unwrap_or(Value::Nil));
@@ -1422,7 +1490,10 @@ fn native_package_operation(
     };
     if method == "state" {
         return Ok(Value::Keyword(
-            catalog.state(&coordinate).unwrap_or_else(|| "available".into()).into(),
+            catalog
+                .state(&coordinate)
+                .unwrap_or_else(|| "available".into())
+                .into(),
         ));
     }
     if method == "load" {
@@ -1430,7 +1501,9 @@ fn native_package_operation(
             return Err("std.native.Package/load expects a locked namespace".into());
         }
         if catalog.state(&coordinate).as_deref() != Some("ready") {
-            return Err(format!("package/not-ready: {coordinate}; call Package/ensure first"));
+            return Err(format!(
+                "package/not-ready: {coordinate}; call Package/ensure first"
+            ));
         }
         let registry = namespace_registry()?;
         require_namespace(&registry, env, &target)?;
@@ -1464,8 +1537,17 @@ fn native_package_operation(
             }
         }
     }
-    let previous_state = catalog.state(&coordinate).unwrap_or_else(|| "available".into());
-    catalog.set_state(&coordinate, if method == "ensure" { "ensuring" } else { "unloading" });
+    let previous_state = catalog
+        .state(&coordinate)
+        .unwrap_or_else(|| "available".into());
+    catalog.set_state(
+        &coordinate,
+        if method == "ensure" {
+            "ensuring"
+        } else {
+            "unloading"
+        },
+    );
     HOST_CALL_HANDLER.with(|active| {
         let Some(handler) = active.borrow().as_ref().cloned() else {
             let promise = Promise::new();
@@ -1473,7 +1555,14 @@ fn native_package_operation(
                 "package/unsupported",
                 "Package capability provider is unavailable",
             ));
-            catalog.set_state(&coordinate, if method == "ensure" { "failed" } else { &previous_state });
+            catalog.set_state(
+                &coordinate,
+                if method == "ensure" {
+                    "failed"
+                } else {
+                    &previous_state
+                },
+            );
             return Ok(Value::Promise(promise));
         };
         let mut provider_arguments = vec![descriptor];
@@ -1497,9 +1586,23 @@ fn native_package_operation(
                 state.set_pending(&coordinate, None);
             }));
         } else if result.is_ok() {
-            catalog.set_state(&coordinate, if method == "ensure" { "ready" } else { "available" });
+            catalog.set_state(
+                &coordinate,
+                if method == "ensure" {
+                    "ready"
+                } else {
+                    "available"
+                },
+            );
         } else {
-            catalog.set_state(&coordinate, if method == "ensure" { "failed" } else { &previous_state });
+            catalog.set_state(
+                &coordinate,
+                if method == "ensure" {
+                    "failed"
+                } else {
+                    &previous_state
+                },
+            );
         }
         result
     })

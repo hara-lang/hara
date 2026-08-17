@@ -30,8 +30,8 @@ public class HaraSqliteProcessExtensionTest {
         first.eval(
             HaraLanguage.ID,
             "(ns sqlite-restart-first "
-                + "(:require [std.work.provider.conformance :as conformance] "
-                + "[std.work.provider.sqlite :as sqlite])) "
+                + "(:require [work.provider.conformance :as conformance] "
+                + "[work.provider.sqlite :as sqlite])) "
                 + "(def provider (deref (sqlite/sqlite-store "
                 + "{:storage :filesystem :path \"" + path + "\"}))) "
                 + "(def corpus (conformance/run-store-corpus (fn [] provider))) "
@@ -48,8 +48,8 @@ public class HaraSqliteProcessExtensionTest {
         second.eval(
             HaraLanguage.ID,
             "(ns sqlite-restart-second "
-                + "(:require [std.work.runtime.store :as store] "
-                + "[std.work.provider.sqlite :as sqlite])) "
+                + "(:require [work.base.store :as store] "
+                + "[work.provider.sqlite :as sqlite])) "
                 + "(def provider (deref (sqlite/sqlite-store "
                 + "{:storage :filesystem :path \"" + path + "\"}))) "
                 + "(def run (deref (store/call provider :load-run \"store-conformance\"))) "

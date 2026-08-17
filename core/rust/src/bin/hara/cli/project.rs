@@ -67,6 +67,10 @@ fn project_for(options: &Options, args: &[String]) -> Result<project::Project, S
 
 fn eval_runtime(options: &Options) -> Result<Runtime, String> {
     let mut runtime = Runtime::new();
+    if let Some(path) = options.lite_project.as_deref() {
+        let project = project::discover(path)?;
+        project::register_sources(&project, &mut runtime)?;
+    }
     if options.project.is_some() {
         let project = project_for(options, &[])?;
         project::register_sources(&project, &mut runtime)?;
@@ -875,6 +879,15 @@ pub(crate) fn run_headless(options: &Options) -> Result<(), String> {
         options.allow_process,
         options.allow_postgres,
     )?;
+    for path in [options.lite_project.as_deref(), options.project.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let selected = project::discover(path)?;
+        for (namespace, source) in project::source_resources(&selected)? {
+            broker.register_resource(&namespace, &source)?;
+        }
+    }
     let server = RespServer::start(&options.host, options.port, broker)?;
     println!("HARA RESP {} · session ROOT", server.endpoint());
     loop {

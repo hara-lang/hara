@@ -17,8 +17,31 @@
      (fn [value context]
        (* 2 value)))]))
 
+(def area-graph
+  (work/graph
+   {:width (work/input :width)
+    :height (work/input :height)
+    :area (work/node [:width :height]
+                     (fn [width height]
+                       (* width height)))
+    :label (work/node [:area]
+                      (fn [area]
+                        (str "Area: " area)))}))
+
 (def results
   [(test-check
+    "work graphs expose their dependency context through IDeps"
+    [(satisfies? IDeps area-graph)
+     (set (IDeps/dep-keys area-graph))
+     (set (IDeps/dep-entries area-graph :area))
+     (instance? work.base/GraphNode
+                (IDeps/dep-get area-graph :area))]
+    [true
+     #{:width :height :area :label}
+     #{:width :height}
+     true])
+
+   (test-check
     "work.base preserves the current work algebra"
     [(get (work/work-spec increment) :id)
      (get (work/work-spec increment) :op)
@@ -42,6 +65,22 @@
    (test-check
     "work.base executes through the existing local runtime"
     (work/run (work/local-runtime) pipeline 4)
-    10)])
+    10)
+
+   (test-check
+    "work.base eagerly executes a named computation graph"
+    (work/run (work/local-runtime)
+              area-graph
+              {:width 6 :height 7})
+    {:width 6 :height 7 :area 42 :label "Area: 42"})
+
+   (test-check
+    "work.base lazily executes only a requested dependency closure"
+    (work/run (work/local-runtime)
+              area-graph
+              {:width 6 :height 7}
+              {:evaluation :lazy
+               :outputs [:area]})
+    {:area 42})])
 
 results

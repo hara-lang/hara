@@ -596,10 +596,10 @@ fn number_conversion(
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
     let operation = operation
-        .strip_prefix("std.native.Numbers/")
+        .strip_prefix("std.native.Num/")
         .unwrap_or(operation);
     if args.len() != 1 {
-        return Err(format!("{operation} expects one numeric value"));
+        return Err(format!("{operation} expects one value"));
     }
     let value = eval(&args[0], env)?;
     match operation {
@@ -609,8 +609,64 @@ fn number_conversion(
         "double" => Ok(Value::Float(
             numeric::to_f64_explicit(&value).map_err(|error| format!("double: {error}"))?,
         )),
+        "parse-long" => match value {
+            Value::String(value) if !value.is_empty() && value.trim() == value => Ok(value
+                .parse::<i64>()
+                .map(Value::Number)
+                .unwrap_or(Value::Nil)),
+            Value::String(_) => Ok(Value::Nil),
+            _ => Err("parse-long expects a string".into()),
+        },
+        "parse-double" => match value {
+            Value::String(value) if !value.is_empty() && value.trim() == value => {
+                let parsed = match value.as_str() {
+                    "NaN" => Some(f64::NAN),
+                    "Infinity" | "+Infinity" => Some(f64::INFINITY),
+                    "-Infinity" => Some(f64::NEG_INFINITY),
+                    _ if decimal_double_text(&value) => value.parse::<f64>().ok(),
+                    _ => None,
+                };
+                Ok(parsed.map(Value::Float).unwrap_or(Value::Nil))
+            }
+            Value::String(_) => Ok(Value::Nil),
+            _ => Err("parse-double expects a string".into()),
+        },
         _ => Err(format!("unknown number conversion: {operation}")),
     }
+}
+
+fn decimal_double_text(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
+    let mut digits = 0usize;
+    while matches!(bytes.get(index), Some(b'0'..=b'9')) {
+        digits += 1;
+        index += 1;
+    }
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        while matches!(bytes.get(index), Some(b'0'..=b'9')) {
+            digits += 1;
+            index += 1;
+        }
+    }
+    if digits == 0 {
+        return false;
+    }
+    if matches!(bytes.get(index), Some(b'e') | Some(b'E')) {
+        index += 1;
+        if matches!(bytes.get(index), Some(b'+') | Some(b'-')) {
+            index += 1;
+        }
+        let exponent_start = index;
+        while matches!(bytes.get(index), Some(b'0'..=b'9')) {
+            index += 1;
+        }
+        if index == exponent_start {
+            return false;
+        }
+    }
+    index == bytes.len()
 }
 
 fn numeric_to_f64(value: &Value, operation: &str) -> Result<f64, String> {
@@ -1083,15 +1139,17 @@ fn native_result_operation(
     match operation {
         "create" => {
             if !(2..=3).contains(&forms.len()) {
-                return Err("std.native.Result/create expects status, value, and optional context".into());
+                return Err(
+                    "std.native.Result/create expects status, value, and optional context".into(),
+                );
             }
             let status = eval(&forms[0], env)?;
             let value = eval(&forms[1], env)?;
             let context = result_context(forms.get(2).map(|form| eval(form, env)).transpose()?)?;
             match status {
-                Value::Keyword(status) if status.as_str() == "success" => {
-                    Ok(Value::Result(Rc::new(ResultValue::success(value, context)?)))
-                }
+                Value::Keyword(status) if status.as_str() == "success" => Ok(Value::Result(
+                    Rc::new(ResultValue::success(value, context)?),
+                )),
                 Value::Keyword(status) if status.as_str() == "error" => {
                     Ok(Value::Result(Rc::new(ResultValue::error(value, context)?)))
                 }

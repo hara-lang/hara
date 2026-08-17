@@ -148,6 +148,8 @@
 (defn ^{:inline true :schema [:fn [:any] :bool]}
   list? "Returns true when value is a persistent list." [value] (Base/list? value))
 (defn ^{:inline true :schema [:fn [:any] :bool]}
+  cons? "Returns true when value is a Cons sequence." [value] (Base/cons? value))
+(defn ^{:inline true :schema [:fn [:any] :bool]}
   vector? "Returns true when value is a persistent vector." [value] (Base/vector? value))
 (defn ^{:inline true :schema [:fn [:any] :bool]}
   tuple? "Returns true when value is a tuple." [value] (Base/tuple? value))
@@ -518,7 +520,7 @@
   [pattern input replacement]
   (RegExp/replace (regexp pattern) input replacement))
 
-(defn ^{:schema [:fn [[:or :str :regex] :str] [:vector :str]]}
+(defn ^{:schema [:fn [[:or :str :regex] :str] [:maybe [:vector :str]]]}
   re-split
   "Splits input around matches and returns the resulting vector."
   [pattern input]
@@ -907,6 +909,21 @@
      (transform-like value (Iter/iter-drop amount value))))
   ([amount value] (transform-like value (Iter/iter-drop amount value))))
 
+(defn ^{:schema [:function [:fn [:vector :int] :vector]
+                            [:fn [:vector :int :int] :vector]]}
+  subvec
+  "Returns the vector slice from start (inclusive) to end (exclusive)."
+  ([value start]
+   (subvec value start (count value)))
+  ([value start end]
+   (if (and (vector? value)
+            (<= 0 start)
+            (<= start end)
+            (<= end (count value)))
+     (vec (take (- end start) (drop start value)))
+     (throw (ex-info "subvec requires a vector and valid bounds"
+                     {:value value :start start :end end})))))
+
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :any]]}
   mapcat
@@ -974,13 +991,25 @@
   long
   "Converts a numeric value to a signed 64-bit integer by truncating toward zero."
   [value]
-  (Numbers/long value))
+  (Num/long value))
 
 (defn ^{:inline true :schema [:fn [:num] :float]}
   double
   "Converts a numeric value to an IEEE-754 double."
   [value]
-  (Numbers/double value))
+  (Num/double value))
+
+(defn ^{:inline true :schema [:fn [:str] [:maybe :int]]}
+  parse-long
+  "Parses a signed 64-bit integer string, returning nil when invalid."
+  [value]
+  (Num/parse-long value))
+
+(defn ^{:inline true :schema [:fn [:str] [:maybe :float]]}
+  parse-double
+  "Parses an IEEE-754 double string, returning nil when invalid."
+  [value]
+  (Num/parse-double value))
 
 (defn ^{:inline true :schema [:fn [& :any] :any]}
   bit-and
@@ -1753,13 +1782,13 @@
   form?
   "Returns true when value is a persistent Hara source form."
   [value]
-  (list? value))
+  (or (cons? value) (list? value) (seq? value)))
 
 (defn ^{:schema [:fn [:fn :fn :any] :any]}
   walk
   "Traverses persistent data while preserving collection kinds and metadata."
   [inner outer form]
-  (cond (list? form)
+  (cond (form? form)
         (outer (with-meta (apply list (map inner form)) (meta form)))
 
         (vector? form)

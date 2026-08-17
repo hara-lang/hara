@@ -111,12 +111,14 @@ pub(crate) fn parse_endpoint(value: &str, fallback_host: &str) -> Result<(String
 }
 
 fn register_project_resources(options: &Options, broker: &RuntimeBroker) -> Result<(), String> {
-    let Some(path) = options.project.as_deref() else {
-        return Ok(());
-    };
-    let selected = project::discover(path)?;
-    for (namespace, source) in project::source_resources(&selected)? {
-        broker.register_resource(&namespace, &source)?;
+    for path in [options.lite_project.as_deref(), options.project.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let selected = project::discover(path)?;
+        for (namespace, source) in project::source_resources(&selected)? {
+            broker.register_resource(&namespace, &source)?;
+        }
     }
     Ok(())
 }

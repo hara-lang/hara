@@ -1,0 +1,81 @@
+name: Release hara-lite CLI
+run-name: Release hara-lite ${{ inputs.tag || github.ref_name }}
+
+on:
+  push:
+    tags: ['v*-lite.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Lite release tag, for example v0.1.6-lite.1'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-lite-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - { runner: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+        - { runner: macos-15-intel, target: x86_64-apple-darwin }
+        - { runner: [self-hosted, macOS, ARM64, hara-macos], target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ inputs.tag || github.ref }}
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+    - name: Build and smoke-test hara-lite
+      run: |
+        cargo build --release --manifest-path core/rust/Cargo.toml --target ${{ matrix.target }} --features native-jit --bin hara-lite
+        BIN=core/rust/target/${{ matrix.target }}/release/hara-lite
+        VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' core/rust/Cargo.toml | head -n 1)
+        [ "$("$BIN" --version)" = "hara lite $VERSION" ]
+        [ "$("$BIN" --project core eval '(+ 19 23)')" = "42" ]
+        OUTPUT=$("$BIN" --project core eval '(let [run (IWorkHost/work-submit work.native/default-host (fn [work input options id] input) 42 {:id "release-lite-work"})] (deref (IWorkRun/work-result run)))')
+        [ "$OUTPUT" = "42" ]
+    - name: Package hara-lite
+      run: |
+        TAG="${{ inputs.tag || github.ref_name }}"
+        DEST="hara-rust-lite-$TAG-${{ matrix.target }}.tar.gz"
+        mkdir -p target/hara-lite/share/hara-lite
+        cp core/rust/target/${{ matrix.target }}/release/hara-lite target/hara-lite/hara-lite
+        cp core/project.edn target/hara-lite/share/hara-lite/project.edn
+        cp -R core/lib target/hara-lite/share/hara-lite/lib
+        tar -czf "$DEST" -C target/hara-lite hara-lite share
+        echo "asset=$DEST" >> "$GITHUB_ENV"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: release-lite-${{ matrix.target }}
+        path: ${{ env.asset }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: github-release
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: release-lite-*
+        path: dist
+        merge-multiple: true
+    - name: Publish prerelease
+      run: |
+        cd dist
+        sha256sum hara-rust-lite-*.tar.gz > SHA256SUMS
+        TAG="${{ inputs.tag || github.ref_name }}"
+        gh release create "$TAG" --prerelease --title "hara-lite $TAG" \
+          --notes "Dependency-light native Rust Hara CLI with the portable work library." \
+          hara-rust-lite-*.tar.gz SHA256SUMS

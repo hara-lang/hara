@@ -1,8 +1,8 @@
 (ns work.base
   (:config {:override [filter]})
   (:require [std.work.protocol :as protocol]
-            [std.work.runtime :as runtime]
-            [std.work.runtime.result :as async-result]))
+            [work.base.runtime :as runtime]
+            [work.base.result :as async-result]))
 
 ;; Canonical public surface for the portable work algebra and managed runtime.
 ;; Internal std.work.* namespaces move in later migration slices; keeping their
@@ -26,6 +26,203 @@
      (merge options
             {:op :pure
              :fn function}))))
+
+(defstruct GraphInput [key])
+(defstruct GraphNode [dependencies function])
+(defstruct GraphDeps [entries])
+(defstruct GraphWork [spec dependencies])
+
+(extend-type GraphDeps IDeps
+  (dep-get [context key]
+    (get (:entries context) key))
+  (dep-entries [context key]
+    (let [entry (get (:entries context) key)]
+      (if (instance? work.base/GraphNode entry)
+        (set (:dependencies entry))
+        #{})))
+  (dep-keys [context]
+    (keys (:entries context))))
+
+(extend-type GraphWork IWork
+  (work-spec [graph]
+    (:spec graph)))
+
+(extend-type GraphWork IDeps
+  (dep-get [graph key]
+    (IDeps/dep-get (:dependencies graph) key))
+  (dep-entries [graph key]
+    (IDeps/dep-entries (:dependencies graph) key))
+  (dep-keys [graph]
+    (IDeps/dep-keys (:dependencies graph))))
+
+(defn input
+  "Declares one named graph input."
+  [key]
+  (work.base/GraphInput key))
+
+(defn node
+  "Declares a graph computation with explicit ordered dependencies."
+  [dependencies function]
+  (work.base/GraphNode (vec dependencies) function))
+
+(defn- contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= candidate value)))
+   false
+   values))
+
+(defn- graph-input-keys
+  [definitions]
+  (vec
+   (sort-by
+    str
+    (filter
+     (fn [key]
+       (instance? work.base/GraphInput (get definitions key)))
+     (keys definitions)))))
+
+(defn- graph-node-keys
+  [definitions]
+  (vec
+   (sort-by
+    str
+    (filter
+     (fn [key]
+       (instance? work.base/GraphNode (get definitions key)))
+     (keys definitions)))))
+
+(defn- assert-graph-definitions!
+  [definitions]
+  (if (not (map? definitions))
+    (throw
+     (ex-info "Work graph definitions must be a map"
+              {:work/error :work/invalid-graph})))
+  (reduce
+   (fn [_ key]
+     (let [definition (get definitions key)]
+       (if (not (or (instance? work.base/GraphInput definition)
+                    (instance? work.base/GraphNode definition)))
+         (throw
+          (ex-info "Work graph entry must be an input or node"
+                   {:work/error :work/invalid-graph-entry
+                    :graph/key key
+                    :graph/value definition})))
+       (if (and (instance? work.base/GraphNode definition)
+                (not (fn? (:function definition))))
+         (throw
+          (ex-info "Work graph node requires a function"
+                   {:work/error :work/invalid-graph-node
+                    :graph/key key})))
+       true))
+   true
+   (keys definitions))
+  definitions)
+
+(defn- assert-graph-dependencies!
+  [dependencies node-keys]
+  (let [all-keys (IDeps/dep-keys dependencies)]
+    (reduce
+     (fn [_ key]
+       (reduce
+        (fn [_ dependency]
+          (if (not (contains-value? all-keys dependency))
+            (throw
+             (ex-info "Work graph dependency does not exist"
+                      {:work/error :work/missing-graph-dependency
+                       :graph/key key
+                       :graph/dependency dependency})))
+          true)
+        true
+        (IDeps/dep-entries dependencies key)))
+     true
+     node-keys))
+  dependencies)
+
+(defn- graph-ready?
+  [dependencies resolved key]
+  (every?
+   (fn [dependency]
+     (contains-value? resolved dependency))
+   (IDeps/dep-entries dependencies key)))
+
+(defn- graph-order-loop
+  [dependencies resolved remaining order]
+  (if (empty? remaining)
+    order
+    (let [ready
+          (vec
+           (filter
+            (fn [key]
+              (graph-ready? dependencies resolved key))
+            remaining))]
+      (if (empty? ready)
+        (throw
+         (ex-info "Work graph contains a dependency cycle"
+                  {:work/error :work/graph-cycle
+                   :graph/remaining remaining})))
+      (graph-order-loop
+       dependencies
+       (concat resolved ready)
+       (vec
+        (filter
+         (fn [key]
+           (not (contains-value? ready key)))
+         remaining))
+       (concat order ready)))))
+
+(defn- graph-order
+  [dependencies input-keys node-keys]
+  (vec (graph-order-loop dependencies input-keys node-keys [])))
+
+(defn- graph-node-work
+  [key definition]
+  (pure
+   key
+   (fn [values context]
+     (apply (:function definition) values))))
+
+(defn graph
+  "Creates a portable named computation graph.
+
+   Entries are produced with `input` and `node`. Evaluation defaults to
+   `:eager`; use `{:evaluation :lazy :outputs [...]}` at construction or run
+   time to select only the requested dependency closure."
+  ([definitions]
+   (graph {} definitions))
+  ([options definitions]
+   (let [definitions (assert-graph-definitions! definitions)
+         input-keys (graph-input-keys definitions)
+         node-keys (graph-node-keys definitions)
+         dependencies (work.base/GraphDeps definitions)
+         _ (assert-graph-dependencies! dependencies node-keys)
+         order (graph-order dependencies input-keys node-keys)
+         evaluation (or (:evaluation options) :eager)]
+     (if (not (or (= :eager evaluation) (= :lazy evaluation)))
+       (throw
+        (ex-info "Work graph evaluation must be :eager or :lazy"
+                 {:work/error :work/invalid-graph-evaluation
+                  :evaluation evaluation})))
+     (work.base/GraphWork
+      (merge
+       options
+       {:op :graph
+        :evaluation evaluation
+        :inputs input-keys
+        :dependencies dependencies
+        :nodes
+        (reduce
+         (fn [nodes key]
+           (let [node-definition (get definitions key)]
+             (assoc nodes
+                    key
+                    {:dependencies (:dependencies node-definition)
+                     :work (graph-node-work key node-definition)})))
+         {}
+         node-keys)
+        :order order})
+      dependencies))))
 
 (defn step
   [id-or-options function]

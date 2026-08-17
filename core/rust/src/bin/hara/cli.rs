@@ -1,6 +1,7 @@
 use hara_wasm::cli_app;
 use hara_wasm::project as project_model;
 use std::env;
+use std::io::{self, Read};
 use std::path::PathBuf;
 
 #[path = "cli/build.rs"]
@@ -22,6 +23,7 @@ mod spec;
 pub(crate) struct Options {
     pub(crate) root: Option<PathBuf>,
     pub(crate) project: Option<PathBuf>,
+    pub(crate) lite_project: Option<PathBuf>,
     pub(crate) native_sockets: bool,
     pub(crate) allow_file: bool,
     pub(crate) allow_process: bool,
@@ -150,6 +152,76 @@ pub(crate) fn run(options: Options) -> Result<(), String> {
         Err(_) => options.command.clone(),
     };
     hara::run(&options, &expanded)
+}
+
+/// Runs the dependency-light native CLI surface without loading `tool.cli`.
+///
+/// This path is intentionally limited to evaluator and REPL operations so a
+/// source checkout remains usable while higher-level HAL tooling is being
+/// repaired. Project sources are still registered by the ordinary native
+/// evaluator when `--project` is supplied.
+pub(crate) fn run_lite(mut options: Options) -> Result<(), String> {
+    options.lite_project = bundled_lite_project();
+    let command = options.command.clone();
+    match command.first().map(String::as_str) {
+        Some("--help" | "-h" | "help") => {
+            usage_lite();
+            Ok(())
+        }
+        Some("--version" | "-V") => {
+            println!("hara lite {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+        Some("eval") => project::direct_eval(&options, &command[1..].join(" ")),
+        Some("run" | "--file") => project::run_file(
+            &options,
+            command
+                .get(1)
+                .ok_or_else(|| "run requires a file path".to_owned())?,
+        ),
+        Some("stdin") => {
+            let mut source = String::new();
+            io::stdin()
+                .read_to_string(&mut source)
+                .map_err(|error| format!("stdin: {error}"))?;
+            project::direct_eval(&options, &source)
+        }
+        Some("headless" | "server") => project::run_headless(&options),
+        Some("remote") => project::run_remote(
+            command
+                .get(1)
+                .ok_or_else(|| "remote requires HOST:PORT".to_owned())?,
+        ),
+        Some("repl") | None => crate::repl::run_repl(&options, true),
+        Some(command) => Err(format!("unknown lite command: {command}")),
+    }
+}
+
+fn bundled_lite_project() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("HARA_LITE_PROJECT") {
+        return Some(PathBuf::from(path));
+    }
+    let executable = env::current_exe().ok()?;
+    let prefix = executable.parent()?.parent()?;
+    let project = prefix.join("share/hara-lite");
+    project.join("project.edn").is_file().then_some(project)
+}
+
+pub(crate) fn usage_lite() {
+    println!("Hara Lite · native Rust runtime");
+    println!();
+    println!("Usage:");
+    println!("  hara-lite [OPTIONS] repl");
+    println!("  hara-lite [OPTIONS] eval EXPRESSION");
+    println!("  hara-lite [OPTIONS] run FILE");
+    println!("  hara-lite [OPTIONS] stdin");
+    println!("  hara-lite [OPTIONS] headless");
+    println!("  hara-lite remote HOST:PORT");
+    println!();
+    println!("Options:");
+    println!("  --project PATH, --root PATH");
+    println!("  --allow-file, --allow-net, --allow-process, --allow-postgres");
+    println!("  --no-history, --no-splash, --no-color");
 }
 
 pub(crate) fn error_exit_code(error: &str) -> i32 {
