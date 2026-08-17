@@ -40,6 +40,7 @@ pub use fiber::{EvalFiber, EvalFiberState, Step};
 
 include!("core/inventory.rs");
 include!("core/value.rs");
+include!("core/inspection.rs");
 include!("core/environment.rs");
 include!("core/native.rs");
 include!("core/provider.rs");
