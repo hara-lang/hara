@@ -42,6 +42,15 @@ docstring, and schema metadata. A wrapper that reorders arguments, supplies a
 default, normalizes a result, performs capability policy, or composes more than
 one call is not a transparent shim and must remain ordinary HAL.
 
+`std.foundation/time-ms` transparently forwards to `OS/time-ms` and returns
+Unix wall-clock milliseconds. It is suitable for timestamps, but may jump when
+the host clock is corrected. `std.foundation/time-ns` transparently forwards to
+`OS/time-ns` and returns a runtime-local monotonic counter expressed in
+nanoseconds. Only differences between values from the same process or browser
+worker are meaningful; the unit does not imply nanosecond precision. These two
+integer primitives are the complete native time surface. Calendar, duration,
+formatting, and parsing behavior belongs in portable HAL libraries.
+
 ## Base surface
 
 Base includes constructors, primitive predicates, `satisfies?`, `type`, and

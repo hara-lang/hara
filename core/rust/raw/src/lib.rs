@@ -1,5 +1,7 @@
 #[path = "../../src/core.rs"]
 mod core;
+#[path = "../../src/clock.rs"]
+mod clock;
 #[path = "../../src/file.rs"]
 pub mod file;
 #[path = "../../src/hta.rs"]
@@ -112,7 +114,7 @@ pub extern "C" fn hta_dealloc(pointer: *mut u8, size: usize) {
 }
 #[no_mangle]
 pub extern "C" fn hta_abi_version() -> i32 {
-    3
+    4
 }
 
 struct Session {

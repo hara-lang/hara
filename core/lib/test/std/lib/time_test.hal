@@ -1,0 +1,104 @@
+(ns std.lib.time-test
+  (:require [std.lib.time :as time]))
+
+(Test/run
+ [{:name "constructs canonical time values"
+   :test (fn [] [(time/instant? (time/instant 0))
+                 (time/duration? (time/duration 1000))
+                 (time/datetime? (time/datetime {:year 2026 :month 8 :day 18}))])
+   :expected [true true true]}
+
+  {:name "converts the Unix epoch in UTC"
+   :test (fn [] (time/to-map (time/instant->datetime (time/epoch) 0)))
+   :expected {:year 1970 :month 1 :day 1 :hour 0 :minute 0 :second 0
+              :millisecond 0 :offset-minutes 0}}
+
+  {:name "round trips instants through fixed-offset civil time"
+   :test (fn []
+           (let [source (time/instant 1787025600123)
+                 civil (time/instant->datetime source 600)]
+             [(time/to-long (time/datetime->instant civil))
+              (select-keys (time/to-map civil)
+                           [:year :month :day :hour :minute :millisecond])]))
+   :expected [1787025600123
+              {:year 2026 :month 8 :day 18 :hour 14 :minute 0 :millisecond 123}]}
+
+  {:name "uses the complete Gregorian leap-year rule"
+   :test (fn [] [(time/leap-year? 2000) (time/leap-year? 2100)
+                 (time/days-in-month 2000 2) (time/days-in-month 2100 2)])
+   :expected [true false 29 28]}
+
+  {:name "keeps fixed durations separate from calendar adjustments"
+   :test (fn [] [(time/to-long (time/duration {:days 1 :hours 2}))
+                 (try (do (time/duration {:months 1}) false)
+                      (catch Throwable error true))])
+   :expected [93600000 true]}
+
+  {:name "adds and subtracts timeline values"
+   :test (fn [] [(time/to-long (time/plus (time/instant 1000) (time/duration 500)))
+                 (time/to-long (time/minus (time/instant 1000) (time/duration 500)))
+                 (time/to-long (time/minus (time/instant 1500) (time/instant 1000)))])
+   :expected [1500 500 500]}
+
+  {:name "compares civil and instant representations on the timeline"
+   :test (fn []
+           (let [instant-value (time/instant 0)
+                 civil (time/datetime {:year 1970 :month 1 :day 1})]
+             [(time/equal instant-value civil)
+              (time/before instant-value (time/instant 1))
+              (time/after (time/instant 1) civil)]))
+   :expected [true true true]}
+
+  {:name "adjusts and truncates civil values"
+   :test (fn []
+           [(select-keys
+             (time/to-map
+              (time/adjust (time/datetime {:year 2024 :month 1 :day 31}) {:months 1}))
+             [:year :month :day])
+            (select-keys
+             (time/to-map
+              (time/truncate
+               (time/datetime {:year 2026 :month 8 :day 18
+                               :hour 14 :minute 22 :second 9}) :day))
+             [:year :month :day :hour :minute :second])])
+   :expected [{:year 2024 :month 2 :day 29}
+              {:year 2026 :month 8 :day 18 :hour 0 :minute 0 :second 0}]}
+
+  {:name "reports ISO weekday numbers"
+   :test (fn [] [(time/day-of-week (time/datetime {:year 1970 :month 1 :day 1}))
+                 (time/day-of-week (time/datetime {:year 2026 :month 8 :day 18}))])
+   :expected [4 2]}
+
+  {:name "formats the original numeric pattern vocabulary"
+   :test (fn []
+           (time/format
+            (time/datetime {:year 2026 :month 8 :day 18 :hour 14 :minute 3
+                            :second 9 :millisecond 12 :offset-minutes 600})
+            "yyyy-MM-dd'T'HH:mm:ss.SSS Z XXX"))
+   :expected "2026-08-18T14:03:09.012 +1000 +10:00"}
+
+  {:name "strictly parses and formats canonical ISO time"
+   :test (fn []
+           (let [source "2026-08-18T14:00:00.123+10:00"
+                 parsed (time/parse source "yyyy-MM-dd'T'HH:mm:ss.SSSXXX")]
+             [(time/format-iso parsed)
+              (time/to-long (time/parse-iso source))]))
+   :expected ["2026-08-18T14:00:00.123+10:00" 1787025600123]}
+
+  {:name "rejects malformed fixed-offset components"
+   :test (fn []
+           [(try (do (time/parse "2026-08-18T14:00:00.123+10:60"
+                                 "yyyy-MM-dd'T'HH:mm:ss.SSSXXX") false)
+                 (catch Throwable error true))
+            (try (do (time/parse "2026-08-18T14:00:00.123+18:01"
+                                 "yyyy-MM-dd'T'HH:mm:ss.SSSXXX") false)
+                 (catch Throwable error true))])
+   :expected [true true]}
+
+  {:name "reads native clocks through typed vocabulary"
+   :test (fn []
+           (let [wall (time/now)
+                 before (time/elapsed-ns)
+                 after (time/elapsed-ns)]
+             [(time/instant? wall) (< 0 (time/to-long wall)) (<= before after)]))
+   :expected [true true true]}])

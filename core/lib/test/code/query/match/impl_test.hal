@@ -1,0 +1,65 @@
+(ns code.query.match.impl-test
+  (:require [code.query.match.impl :refer :all]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer code.query.match.impl/actual-pattern :added "3.0"}
+(Test/run
+ [{:name "constructs a pattern used for direct comparison #1"
+   :test (fn [] (:expression (actual-pattern (quote _))))
+   :expected (quote _)}
+  {:name "constructs a pattern used for direct comparison #2"
+   :test (fn [] (:expression (actual-pattern #{1 3 2})))
+   :expected #{1 3 2}}]
+ migration-test-check)
+
+^{:refer code.query.match.impl/actual-pattern? :added "3.0"}
+(Test/run
+ [{:name "checks if input is an actual pattern #1"
+   :test (fn [] (actual-pattern? (quote _)))
+   :expected false}
+  {:name "checks if input is an actual pattern #2"
+   :test (fn [] (-> (actual-pattern (quote _)) actual-pattern?))
+   :expected true}]
+ migration-test-check)
+
+^{:refer code.query.match.impl/eval-pattern :added "3.0"}
+(Test/run
+ [{:name "constructs a pattern that is evaluated before comparison #1"
+   :test (fn [] (:expression (eval-pattern (quote (keyword "a")))))
+   :expected (quote (keyword "a"))}
+  {:name "constructs a pattern that is evaluated before comparison #2"
+   :test (fn [] (:expression (eval-pattern (quote symbol?))))
+   :expected (quote symbol?)}]
+ migration-test-check)
+
+^{:refer code.query.match.impl/eval-pattern? :added "3.0"}
+(Test/run
+ [{:name "checks if input is an eval pattern"
+   :test (fn [] (-> (eval-pattern (quote symbol?)) eval-pattern?))
+   :expected true}]
+ migration-test-check)
+
+^{:refer code.query.match.impl/match-inner :added "3.0"}
+(Test/run
+ [{:name "matches the inner contents of a array"
+   :test (fn []
+             (match-inner [number? {:a {:b (var symbol?)}} (quote &) (quote _)]
+                          [1 {:a {:b (quote o)}} 5 67 89 100]))
+   :expected true}]
+ migration-test-check)

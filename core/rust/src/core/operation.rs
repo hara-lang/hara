@@ -116,11 +116,32 @@ fn string_operation(operation: &str, values: Vec<Value>) -> Result<Value, String
             code_point_char_at(text, index).map(Value::String)
         }
         "str/split" => {
-            let (text, separator) = pair(&values)?;
-            let parts = text
-                .split(&separator)
-                .map(|part| Value::String(part.into()))
-                .collect();
+            if values.len() != 2 {
+                return Err("str/split expects a string and string or regexp separator".into());
+            }
+            let text = string_value(&values[0], operation)?;
+            let parts = match &values[1] {
+                Value::String(separator) => text
+                    .split(separator)
+                    .map(|part| Value::String(part.into()))
+                    .collect(),
+                Value::Regex(pattern) => {
+                    let mut parts: Vec<Value> = regex::Regex::new(pattern)
+                        .map_err(|error| format!("invalid regexp: {error}"))?
+                        .split(text)
+                        .map(|part| Value::String(part.into()))
+                        .collect();
+                    while matches!(parts.last(), Some(Value::String(value)) if value.is_empty()) {
+                        parts.pop();
+                    }
+                    parts
+                }
+                _ => {
+                    return Err(
+                        "str/split expects a string and string or regexp separator".into(),
+                    )
+                }
+            };
             Ok(Value::Array(Rc::new(RefCell::new(parts))))
         }
         "str/split-lines" => {

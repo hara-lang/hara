@@ -55,13 +55,15 @@ async function instantiate(message) {
       hara_random_fill(pointer, length) {
         crypto.getRandomValues(new Uint8Array(instance.exports.memory.buffer, pointer, length));
         return 0;
-      }
+      },
+      hara_time_ms() { return BigInt(Math.trunc(Date.now())); },
+      hara_time_ns() { return BigInt(Math.trunc(performance.now() * 1_000_000)); }
     }
   })).instance;
   for (const name of ["memory", "hta_abi_version", "hta_alloc", "hta_dealloc", "hta_start", "hta_next_event", "hta_deliver", "hta_cancel", "hta_drop_task", "hta_release"]) {
     if (!(name in instance.exports)) throw new Error(`hta/export-missing: ${name}`);
   }
-  if (![1, 2, 3].includes(instance.exports.hta_abi_version())) throw new Error("hta/version-unsupported");
+  if (![1, 2, 3, 4].includes(instance.exports.hta_abi_version())) throw new Error("hta/version-unsupported");
 }
 
 function callFrame(fn, frame) {

@@ -167,3 +167,307 @@
                 value)
               form)
     (deref found)))
+
+(defn- nav-key-step?
+  [step]
+  (or (keyword? step) (string? step)))
+
+(defn- nav-check-path
+  [path]
+  (if (not (vector? path))
+    (throw (ex-info "select/transform expect a literal vector path"
+                    {:path path})))
+  (let [bad (filter (fn [step]
+                      (not (or (keyword? step) (string? step)
+                               (integer? step) (symbol? step)
+                               (list? step) (seq? step) (vector? step))))
+                    path)]
+    (if (seq bad)
+      (throw (ex-info "select/transform path steps must be keywords, strings, integers, predicates, or sub-path vectors"
+                      {:steps (vec bad)}))))
+  (mapv nav-check-path (filter vector? path))
+  path)
+
+(defn- nav-check-predicate-step
+  [remaining step-name]
+  (if (or (empty? remaining)
+          (keyword? (first remaining))
+          (string? (first remaining))
+          (integer? (first remaining))
+          (vector? (first remaining)))
+    (throw (ex-info (str step-name " must be followed by a predicate step")
+                    {:step step-name :remaining (vec remaining)})))
+  remaining)
+
+(defn- nav-check-walk
+  [remaining]
+  (nav-check-predicate-step remaining ":walk"))
+
+(defn- nav-select-body
+  [path current]
+  (if (empty? path)
+    (list 'vector current)
+    (let [step (first path)
+          remaining (rest path)]
+      (cond
+        (= :each step)
+        (list 'mapcat
+              (list 'fn ['item__] (nav-select-body remaining 'item__))
+              current)
+
+        (= :map-vals step)
+        (list 'mapcat
+              (list 'fn ['entry__]
+                    (nav-select-body remaining (list 'val 'entry__)))
+              current)
+
+        (= :map-keys step)
+        (list 'mapcat
+              (list 'fn ['entry__]
+                    (nav-select-body remaining (list 'key 'entry__)))
+              current)
+
+        (= :map-entries step)
+        (list 'mapcat
+              (list 'fn ['entry__] (nav-select-body remaining 'entry__))
+              current)
+
+        (= :set step)
+        (list 'mapcat
+              (list 'fn ['item__] (nav-select-body remaining 'item__))
+              current)
+
+        (= :tree step)
+        (list 'let ['found__ (list 'atom [])]
+              (list 'postwalk
+                    (list 'fn ['node__]
+                          (list 'do (list 'swap! 'found__ 'conj 'node__) 'node__))
+                    current)
+              (list 'mapcat
+                    (list 'fn ['item__] (nav-select-body remaining 'item__))
+                    (list 'deref 'found__)))
+
+        (= :first step)
+        (nav-select-body remaining (list 'first current))
+
+        (= :last step)
+        (nav-select-body remaining (list 'last current))
+
+        (= :walk step)
+        (do (nav-check-walk remaining)
+            (list 'let ['found__ (list 'atom [])]
+                  (list 'postwalk
+                        (list 'fn ['node__]
+                              (list 'do
+                                    (list 'if (list (first remaining) 'node__)
+                                          (list 'swap! 'found__ 'conj 'node__)
+                                          nil)
+                                    'node__))
+                        current)
+                  (list 'mapcat
+                        (list 'fn ['item__]
+                              (nav-select-body (rest remaining) 'item__))
+                        (list 'deref 'found__))))
+
+        (= :when step)
+        (do (nav-check-predicate-step remaining ":when")
+            (list 'if (list (first remaining) current)
+                  (nav-select-body (rest remaining) current)
+                  []))
+
+        (= :unless step)
+        (do (nav-check-predicate-step remaining ":unless")
+            (list 'if (list (first remaining) current)
+                  []
+                  (nav-select-body (rest remaining) current)))
+
+        (= :multi step)
+        (let [sub-paths (take-while vector? remaining)
+              rest-path (drop-while vector? remaining)]
+          (if (empty? sub-paths)
+            (throw (ex-info ":multi must be followed by at least one sub-path vector"
+                            {})))
+          (list 'mapcat
+                (list 'fn ['item__] (nav-select-body rest-path 'item__))
+                (reduce (fn [group__ sub-path]
+                          (list 'into group__ (nav-select-body sub-path current)))
+                        []
+                        sub-paths)))
+
+        (integer? step)
+        (nav-select-body remaining (list 'nth current step))
+
+        (vector? step)
+        (throw (ex-info "sub-path vectors must follow :multi"
+                        {:step step}))
+
+        (and (list? step) (= 'view (first step)))
+        (nav-select-body remaining (list (second step) current))
+
+        (nav-key-step? step)
+        (nav-select-body remaining (list 'get current step))
+
+        :else
+        (list 'if (list step current)
+              (nav-select-body remaining current)
+              [])))))
+
+(defn- nav-transform-group
+  [paths remaining function current]
+  (if (empty? paths)
+    current
+    (list 'let ['group__
+                (nav-transform-body (concat (first paths) remaining)
+                                    function
+                                    current)]
+          (nav-transform-group (rest paths) remaining function 'group__))))
+
+(defn- nav-transform-body
+  [path function current]
+  (if (empty? path)
+    (list function current)
+    (let [step (first path)
+          remaining (rest path)]
+      (cond
+        (= :each step)
+        (list 'mapv
+              (list 'fn ['item__] (nav-transform-body remaining function 'item__))
+              current)
+
+        (= :map-vals step)
+        (list 'reduce-kv
+              (list 'fn ['out__ 'key__ 'item__]
+                    (list 'assoc 'out__ 'key__
+                          (nav-transform-body remaining function 'item__)))
+              (list 'empty current)
+              current)
+
+        (= :map-keys step)
+        (list 'reduce-kv
+              (list 'fn ['out__ 'key__ 'item__]
+                    (list 'assoc 'out__
+                          (nav-transform-body remaining function 'key__)
+                          'item__))
+              (list 'empty current)
+              current)
+
+        (= :map-entries step)
+        (list 'reduce
+              (list 'fn ['out__ 'entry__]
+                    (list 'conj 'out__
+                          (nav-transform-body remaining function 'entry__)))
+              (list 'empty current)
+              current)
+
+        (= :set step)
+        (list 'set
+              (list 'mapv
+                    (list 'fn ['item__]
+                          (nav-transform-body remaining function 'item__))
+                    current))
+
+        (= :tree step)
+        (list 'postwalk
+              (list 'fn ['node__]
+                    (nav-transform-body remaining function 'node__))
+              current)
+
+        (= :first step)
+        (list 'update current 0
+              (list 'fn ['item__]
+                    (nav-transform-body remaining function 'item__)))
+
+        (= :last step)
+        (list 'update current (list 'dec (list 'count current))
+              (list 'fn ['item__]
+                    (nav-transform-body remaining function 'item__)))
+
+        (= :walk step)
+        (do (nav-check-walk remaining)
+            (list 'postwalk
+                  (list 'fn ['node__]
+                        (list 'if (list (first remaining) 'node__)
+                              (nav-transform-body (rest remaining) function 'node__)
+                              'node__))
+                  current))
+
+        (= :when step)
+        (do (nav-check-predicate-step remaining ":when")
+            (list 'if (list (first remaining) current)
+                  (nav-transform-body (rest remaining) function current)
+                  current))
+
+        (= :unless step)
+        (do (nav-check-predicate-step remaining ":unless")
+            (list 'if (list (first remaining) current)
+                  current
+                  (nav-transform-body (rest remaining) function current)))
+
+        (= :multi step)
+        (let [sub-paths (take-while vector? remaining)
+              rest-path (drop-while vector? remaining)]
+          (if (empty? sub-paths)
+            (throw (ex-info ":multi must be followed by at least one sub-path vector"
+                            {})))
+          (nav-transform-group sub-paths rest-path function current))
+
+        (integer? step)
+        (list 'update current step
+              (list 'fn ['item__]
+                    (nav-transform-body remaining function 'item__)))
+
+        (vector? step)
+        (throw (ex-info "sub-path vectors must follow :multi"
+                        {:step step}))
+
+        (and (list? step) (= 'view (first step)))
+        (nav-transform-body remaining function (list (second step) current))
+
+        (nav-key-step? step)
+        (list 'update current step
+              (list 'fn ['item__]
+                    (nav-transform-body remaining function 'item__)))
+
+        :else
+        (list 'if (list step current)
+              (nav-transform-body remaining function current)
+              current)))))
+
+(defmacro select
+  "Selects the values addressed by a literal vector path, returning a vector.
+
+   Path steps compile at macroexpansion: keywords and strings look up map
+   keys, integers index sequences, :each traverses sequence elements,
+   :map-vals and :map-keys traverse map values and keys, :map-entries
+   traverses entries as pairs, :set traverses set members, :first and :last
+   address sequence ends, :walk followed by a predicate descends into every
+   matching nested node, :tree descends into every nested node, :when and
+   :unless guard on a predicate, (view f) applies a function without
+   filtering, :multi followed by sub-path vectors navigates every branch,
+   and any other form is a predicate filtering the current value."
+  [value path]
+  (nav-check-path path)
+  (list (list 'fn ['value__] (nav-select-body path 'value__))
+        value))
+
+(defmacro transform
+  "Transforms the values addressed by a literal vector path, rebuilding the
+   surrounding structure.
+
+   Steps follow select semantics; a predicate step transforms only the
+   values it matches. The path compiles to direct traversal code at
+   macroexpansion, so there is no runtime path interpretation."
+  [value path function]
+  (nav-check-path path)
+  (list (list 'fn ['value__] (nav-transform-body path function 'value__))
+        value))
+
+(defmacro setval
+  "Replaces the values addressed by a literal vector path with replacement,
+   evaluating replacement once."
+  [value path replacement]
+  (nav-check-path path)
+  (list 'let ['replacement__ replacement]
+        (list (list 'fn ['value__]
+                    (nav-transform-body path '(fn [ignored__] replacement__) 'value__))
+              value)))

@@ -22,6 +22,18 @@ fn os_operation(
         value => value,
     };
     match operation {
+        "time-ms" => {
+            if !forms.is_empty() {
+                return Err("os/time-ms expects no arguments".into());
+            }
+            return Ok(Value::Number(crate::clock::time_ms()));
+        }
+        "time-ns" => {
+            if !forms.is_empty() {
+                return Err("os/time-ns expects no arguments".into());
+            }
+            return Ok(Value::Number(crate::clock::time_ns()));
+        }
         "platform" => {
             if !forms.is_empty() {
                 return Err("os/platform expects no arguments".into());

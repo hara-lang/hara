@@ -18,6 +18,7 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 import java.util.function.Consumer;
 
 /** Compatibility adapters from existing Java protocol interfaces to Hara protocol dispatch. */
@@ -28,6 +29,9 @@ public final class HaraJavaAdapters {
     installIFn(context.ifnProtocol());
     installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));
     context.defineProtocol("IMatch", Map.of("match-value", 2));
+    installStringLike(
+        context.defineProtocol(
+            "IStringLike", Map.of("to-string", 1, "from-string", 2)));
     installAssoc(context.defineProtocol("IAssoc", Map.of("assoc", 3)));
     installCount(context.defineProtocol("ICount", Map.of("count", 1)));
     installDeps(
@@ -161,6 +165,32 @@ public final class HaraJavaAdapters {
 
   public static void installIFn(HaraProtocol protocol) {
     protocol.extend(IFn.class, "invoke", HaraJavaAdapters::invokeFunction);
+  }
+
+  public static void installStringLike(HaraProtocol protocol) {
+    protocol.extend(String.class, "to-string", (receiver, arguments) -> receiver);
+    protocol.extend(
+        String.class, "from-string", (receiver, arguments) -> String.valueOf(arguments[0]));
+    protocol.extend(
+        Keyword.class, "to-string", (receiver, arguments) -> ((Keyword) receiver).pathString());
+    protocol.extend(
+        Keyword.class,
+        "from-string",
+        (receiver, arguments) -> Keyword.create(String.valueOf(arguments[0])));
+    protocol.extend(
+        Symbol.class, "to-string", (receiver, arguments) -> ((Symbol) receiver).pathString());
+    protocol.extend(
+        Symbol.class,
+        "from-string",
+        (receiver, arguments) -> Symbol.create(String.valueOf(arguments[0])));
+    protocol.extend(
+        byte[].class,
+        "to-string",
+        (receiver, arguments) -> new String((byte[]) receiver, StandardCharsets.UTF_8));
+    protocol.extend(
+        byte[].class,
+        "from-string",
+        (receiver, arguments) -> String.valueOf(arguments[0]).getBytes(StandardCharsets.UTF_8));
   }
 
   public static void installApplicable(HaraProtocol protocol) {

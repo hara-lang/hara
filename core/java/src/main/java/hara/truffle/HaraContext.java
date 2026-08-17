@@ -164,7 +164,7 @@ public final class HaraContext {
                   "secure-equal?", "ed25519-keypair", "ed25519-public", "ed25519-sign",
                   "ed25519-verify", "x25519-keypair", "x25519-public", "x25519-shared",
                   "p256-keypair", "p256-public", "p256-sign", "p256-verify", "p256-shared")),
-          Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv")),
+          Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv", "time-ms", "time-ns")),
           Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "stdout-stream", "stderr-stream", "wait", "kill")),
           Map.entry(
               "File",
@@ -3995,6 +3995,8 @@ public final class HaraContext {
     os.define("cwd", new VariadicBuiltin("std.native.OS/cwd", this::osCwd));
     os.define("env", new VariadicBuiltin("std.native.OS/env", this::osEnv));
     os.define("getenv", new UnaryBuiltin("std.native.OS/getenv", this::osGetenv));
+    os.define("time-ms", new VariadicBuiltin("std.native.OS/time-ms", this::osTimeMs));
+    os.define("time-ns", new VariadicBuiltin("std.native.OS/time-ns", this::osTimeNs));
     HaraNamespace process = namespace("std.native.Process");
     process.define("spawn", new VariadicBuiltin("std.native.Process/spawn", this::osSpawn));
     process.define("instance?", new UnaryBuiltin("std.native.Process/instance?", value -> HaraBox.unwrap(value) instanceof HaraProcess));
@@ -4017,6 +4019,16 @@ public final class HaraContext {
     requireMethodArity("os/platform", values, 0);
     String name = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT);
     return Keyword.create(name.contains("win") ? "windows" : name.contains("mac") ? "macos" : name.contains("nux") ? "linux" : "unknown");
+  }
+
+  private Object osTimeMs(Object[] values) {
+    requireMethodArity("os/time-ms", values, 0);
+    return System.currentTimeMillis();
+  }
+
+  private Object osTimeNs(Object[] values) {
+    requireMethodArity("os/time-ns", values, 0);
+    return System.nanoTime();
   }
 
   private Object osArch(Object[] values) {
@@ -4223,8 +4235,19 @@ public final class HaraContext {
   }
 
   private Object stringSplit(Object[] values) {
-    String[] pair = stringPair(values, "str/split");
-    String[] parts = pair[0].split(java.util.regex.Pattern.quote(pair[1]), -1);
+    if (values.length != 2) {
+      throw new HaraException("str/split expects a string and string or regexp separator");
+    }
+    String input = stringValue(values[0], "str/split");
+    Object separator = HaraBox.unwrap(values[1]);
+    String[] parts;
+    if (separator instanceof java.util.regex.Pattern pattern) {
+      parts = pattern.split(input);
+    } else if (separator instanceof String text) {
+      parts = input.split(java.util.regex.Pattern.quote(text), -1);
+    } else {
+      throw new HaraException("str/split expects a string and string or regexp separator");
+    }
     return hara.lang.data.Vector.Standard.from(null, (Object[]) parts);
   }
 

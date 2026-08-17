@@ -6,6 +6,7 @@ pub mod cli_app;
 // Public embedding surface used by native hosts such as Hoplite. The module's
 // value, protocol, promise, and host-call types form the runtime integration ABI.
 pub mod core;
+mod clock;
 pub mod extension;
 pub mod file;
 #[cfg(not(target_arch = "wasm32"))]

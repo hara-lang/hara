@@ -299,7 +299,10 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "p256-shared",
         ],
     ),
-    ("OS", &["platform", "arch", "cwd", "env", "getenv"]),
+    (
+        "OS",
+        &["platform", "arch", "cwd", "env", "getenv", "time-ms", "time-ns"],
+    ),
     (
         "Process",
         &[
