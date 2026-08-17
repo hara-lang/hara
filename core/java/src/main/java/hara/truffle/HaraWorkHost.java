@@ -231,7 +231,9 @@ public final class HaraWorkHost implements IWorkHost {
     }
 
     private void execute() {
-      transition(QUEUED, RUNNING, null);
+      if (!transition(QUEUED, RUNNING, null)) {
+        return;
+      }
       try {
         Object value =
             context.invokeInContext(
@@ -268,12 +270,12 @@ public final class HaraWorkHost implements IWorkHost {
       return true;
     }
 
-    private void transition(Keyword expected, Keyword next, Throwable error) {
+    private boolean transition(Keyword expected, Keyword next, Throwable error) {
       while (true) {
         RunSnapshot current = snapshot.get();
-        if (!expected.equals(current.state) || current.terminal()) return;
+        if (!expected.equals(current.state) || current.terminal()) return false;
         RunSnapshot update = new RunSnapshot(next, current.startedAt, 0L, error);
-        if (snapshot.compareAndSet(current, update)) return;
+        if (snapshot.compareAndSet(current, update)) return true;
       }
     }
 
