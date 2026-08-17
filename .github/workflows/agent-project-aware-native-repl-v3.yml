@@ -1,0 +1,138 @@
+name: Bootstrap project-aware native REPL v3
+
+on:
+  push:
+    branches:
+      - agent/project-aware-native-repl-v3
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/project-aware-native-repl-v3
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply project-aware REPL support
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path: Path, old: str, new: str) -> None:
+              text = path.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}: {old[:80]!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          project = Path("core/rust/src/project.rs")
+          replace_once(
+              project,
+              "/// Registers namespaces from the automatically selected native Rust profile.\npub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {",
+              "/// Returns namespace resources from the automatically selected native Rust profile.\npub fn source_resources(project: &Project) -> Result<Vec<(String, String)>, String> {",
+          )
+          replace_once(
+              project,
+              "        resources.push((namespace, source));\n    }\n    for (namespace, source) in resources {\n        runtime.register_resource(&namespace, &source);\n    }\n    Ok(())\n}",
+              "        resources.push((namespace, source));\n    }\n    Ok(resources)\n}\n\n/// Registers namespaces from the automatically selected native Rust profile.\npub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {\n    for (namespace, source) in source_resources(project)? {\n        runtime.register_resource(&namespace, &source);\n    }\n    Ok(())\n}",
+          )
+
+          repl = Path("core/rust/src/bin/hara/repl.rs")
+          replace_once(
+              repl,
+              "use hara_wasm::native_cli::RuntimeBroker;\nuse hara_wasm::resp::{RespConnection, RespServer, RespValue};",
+              "use hara_wasm::native_cli::RuntimeBroker;\nuse hara_wasm::project;\nuse hara_wasm::resp::{RespConnection, RespServer, RespValue};",
+          )
+          replace_once(
+              repl,
+              "pub(crate) fn run_repl(options: &Options, offline: bool) -> Result<(), String> {",
+              "fn register_project_resources(options: &Options, broker: &RuntimeBroker) -> Result<(), String> {\n    let Some(path) = options.project.as_deref() else {\n        return Ok(());\n    };\n    let selected = project::discover(path)?;\n    for (namespace, source) in project::source_resources(&selected)? {\n        broker.register_resource(&namespace, &source)?;\n    }\n    Ok(())\n}\n\npub(crate) fn run_repl(options: &Options, offline: bool) -> Result<(), String> {",
+          )
+          replace_once(
+              repl,
+              "        options.allow_postgres,\n    )?;\n    let mut resp = RespController::new(options.host.clone(), options.port, broker.clone());",
+              "        options.allow_postgres,\n    )?;\n    register_project_resources(options, &broker)?;\n    let mut resp = RespController::new(options.host.clone(), options.port, broker.clone());",
+          )
+
+          tests = Path("core/rust/src/project/tests.rs")
+          source = tests.read_text()
+          pattern = re.compile(
+              r"#\[test\]\nfn registers_project_sources_for_cross_file_requires\(\) \{.*?\n\}\n\n#\[test\]\nfn source_discovery_ignores_editor_artifacts",
+              re.S,
+          )
+          replacement = r'''#[test]
+fn registers_project_sources_for_cross_file_requires() {
+    let root = temp("resources");
+    fs::create_dir_all(root.join("packages/core/src/demo")).unwrap();
+    fs::create_dir_all(root.join("src/demo")).unwrap();
+    fs::write(
+        root.join("project.edn"),
+        "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [\"packages/core/src\" \"src\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{}}",
+    )
+    .unwrap();
+    fs::write(
+        root.join("packages/core/src/demo/helper.hal"),
+        "(ns demo.helper) (defn answer [] 40)",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/demo/app.hal"),
+        "(ns demo.app (:require [demo.helper :as helper])) (defn answer [] (+ 2 (helper/answer)))",
+    )
+    .unwrap();
+    let project = read(&root).unwrap();
+    assert_eq!(
+        source_resources(&project)
+            .unwrap()
+            .into_iter()
+            .map(|(namespace, _)| namespace)
+            .collect::<Vec<_>>(),
+        vec!["demo.helper".to_owned(), "demo.app".to_owned()]
+    );
+    let mut runtime = Runtime::new();
+    register_sources(&project, &mut runtime).unwrap();
+    assert_eq!(
+        runtime
+            .eval_native("(ns demo.main (:require [demo.app :as app])) (app/answer)")
+            .unwrap(),
+        "42"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn source_discovery_ignores_editor_artifacts'''
+          updated, count = pattern.subn(replacement, source, count=1)
+          if count != 1:
+              raise SystemExit(f"{tests}: expected one test replacement, found {count}")
+          tests.write_text(updated)
+          PY
+
+          cargo fmt --manifest-path core/rust/Cargo.toml
+
+      - name: Validate project resources and native REPL compilation
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml project::tests::registers_project_sources_for_cross_file_requires
+          cargo test --manifest-path core/rust/Cargo.toml --bin hara
+
+      - name: Publish clean branch
+        shell: bash
+        run: |
+          rm .github/workflows/agent-project-aware-native-repl-v3.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add core/rust/src/project.rs core/rust/src/project/tests.rs core/rust/src/bin/hara/repl.rs .github/workflows/agent-project-aware-native-repl-v3.yml
+          git commit -m "Register project sources in the native REPL (#691)"
+          git push origin HEAD:agent/project-aware-native-repl-v3
