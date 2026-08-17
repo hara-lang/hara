@@ -1,0 +1,47 @@
+(ns work.base-test
+  (:require [work.base :as work]
+            [std.work :as legacy]))
+
+(def increment
+  (work/pure
+   :increment
+   (fn [value context]
+     (inc value))))
+
+(def pipeline
+  (work/chain
+   {:id :pipeline}
+   [increment
+    (work/step
+     :double
+     (fn [value context]
+       (* 2 value)))]))
+
+(def results
+  [(test-check
+    "work.base preserves the current work algebra"
+    [(get (work/work-spec increment) :id)
+     (get (work/work-spec increment) :op)
+     (get (work/work-spec pipeline) :id)
+     (get (work/work-spec pipeline) :op)]
+    [:increment :pure :pipeline :chain])
+
+   (test-check
+    "work.base and std.work construct equivalent definitions"
+    [(select-keys
+      (work/work-spec
+       (work/pure :value identity))
+      [:id :op])
+     (select-keys
+      (legacy/work-spec
+       (legacy/pure :value identity))
+      [:id :op])]
+    [{:id :value :op :pure}
+     {:id :value :op :pure}])
+
+   (test-check
+    "work.base executes through the existing local runtime"
+    (work/run (work/local-runtime) pipeline 4)
+    10)])
+
+results
