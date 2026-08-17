@@ -1,0 +1,334 @@
+(ns std.block.parse-test
+  (:require [std.block.base :as base]
+    [std.block.parse :refer :all]
+    [std.block.reader :as reader]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer std.block.parse/read-dispatch :added "3.0"}
+(Test/run
+ [{:name "dispatches on first symbol #1"
+   :test (fn [] (read-dispatch \tab))
+   :expected :void}
+  {:name "dispatches on first symbol #2"
+   :test (fn [] (read-dispatch (first "#")))
+   :expected :hash}]
+ migration-test-check)
+
+^{:refer std.block.parse/-parse :added "3.0"}
+(Test/run
+ [{:name "extendable parsing function #1"
+   :test (fn [] (base/block-info (-parse (reader/create ":a"))))
+   :expected {:height 0 :string ":a" :tag :keyword :type :token :width 2}}
+  {:name "extendable parsing function #2"
+   :test (fn [] (base/block-info (-parse (reader/create "\"\\\\n\""))))
+   :expected {:height 0 :string "\"\\\\n\"" :tag :string :type :token :width 5}}
+  {:name "extendable parsing function #3"
+   :test (fn [] (base/block-info (-parse (reader/create "\"\\n\""))))
+   :expected {:height 0 :string "\"\\n\"" :tag :string :type :token :width 4}}
+  {:name "extendable parsing function #4"
+   :test (fn [] (base/block-info (-parse (reader/create "\"\n\""))))
+   :expected {:height 1 :string "\"\n\"" :tag :string :type :token :width 1}}
+  {:name "extendable parsing function #5"
+   :test (fn []
+             (base/block-info (-parse (reader/create (str/decode-utf8 (base64/decode "Cgo="))))))
+   :expected {:height 1 :string "\n" :tag :linebreak :type :void :width 0}}
+  {:name "extendable parsing function #6"
+   :test (fn []
+             (base/block-info (-parse (reader/create (str/decode-utf8 (base64/decode "IgoKIg=="))))))
+   :expected {:height 2 :string "\"\n\n\"" :tag :string :type :token :width 1}}
+  {:name "extendable parsing function #7"
+   :test (fn []
+             (base/block-info (-parse (reader/create (str/decode-utf8 (base64/decode "IlxuIg=="))))))
+   :expected {:height 0 :string "\"\\n\"" :tag :string :type :token :width 4}}
+  {:name "extendable parsing function #8"
+   :test (fn []
+             (base/block-info (-parse (reader/create (str/decode-utf8 (base64/decode "IlxuCiI="))))))
+   :expected {:height 1 :string "\"\\n\n\"" :tag :string :type :token :width 1}}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-void :added "3.0"}
+(Test/run
+ [{:name "reads a void block from reader"
+   :test (fn []
+             (->> (reader/read-repeatedly (reader/create " \t\n\f") parse-void eof-block?)
+                  (take 5) (map std.block.base/block-representation)))
+   :expected ["␣" "\\t" "\\n" "\\f"]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-comment :added "3.0"}
+(Test/run
+ [{:name "creates a comment"
+   :test (fn []
+             (-> (reader/create ";this is a comment") parse-comment (base/block-info)))
+   :expected {:width 18
+              :type :comment
+              :string ";this is a comment"
+              :tag :comment
+              :height 0}}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-token :added "3.0"}
+(Test/run
+ [{:name "reads token block from the reader #1"
+   :test (fn [] (-> (reader/create "abc") (parse-token) (base/block-value)))
+   :expected (quote abc)}
+  {:name "reads token block from the reader #2"
+   :test (fn [] (-> (reader/create "3/5") (parse-token) (base/block-value)))
+   :expected (/ 3 5)}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-keyword :added "3.0"}
+(Test/run
+ [{:name "reads a keyword block from the reader #1"
+   :test (fn [] (-> (reader/create ":a/b") (parse-keyword) (base/block-value)))
+   :expected :a/b}
+  {:name "reads a keyword block from the reader #2"
+   :test (fn [] (-> (reader/create "::hello") (parse-keyword) (base/block-value)))
+   :expected (keyword ":hello")}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-reader :added "3.0"}
+(Test/run
+ [{:name "reads a :char block from the reader"
+   :test (fn [] (-> (reader/create "\\c") (parse-reader) (base/block-info)))
+   :expected (collection/contains {:string "\\c" :tag :char :type :token})}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-string-data :added "3.0"}
+(Test/run
+ [{:name "reads string data from the reader #1"
+   :test (fn [] (read-string-data (reader/create "\"hello\"")))
+   :expected "hello"}
+  {:name "reads string data from the reader #2"
+   :test (fn [] (read-string-data (reader/create "\"\\\"hello\\\"\"")))
+   :expected "\\\"hello\\\""}
+  {:name "reads string data from the reader #3"
+   :test (fn []
+             (read-string-data (reader/create (str/decode-utf8 (base64/decode "Cgo=")))))
+   :expected (checker/throws)}
+  {:name "reads string data from the reader #4"
+   :test (fn []
+             (read-string-data (reader/create (str/decode-utf8 (base64/decode "IgoKIg==")))))
+   :expected "\n\n"}
+  {:name "reads string data from the reader #5"
+   :test (fn []
+             (read-string-data (reader/create (str/decode-utf8 (base64/decode "IlxuIg==")))))
+   :expected "\\n"}
+  {:name "reads string data from the reader #6"
+   :test (fn []
+             (read-string-data (reader/create (str/decode-utf8 (base64/decode "IlxuCiI=")))))
+   :expected "\\n\n"}]
+ migration-test-check)
+
+^{:refer std.block.parse/eof-block? :added "3.0"}
+(Test/run
+ [{:name "checks if block is of tag :eof"
+   :test (fn [] (eof-block? (-parse (reader/create ""))))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.parse/delimiter-block? :added "3.0"}
+(Test/run
+ [{:name "checks if block is of tag :delimiter"
+   :test (fn []
+             (delimiter-block? (binding [*end-delimiter* (first "}")] (-parse (reader/create "}")))))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-whitespace :added "3.0"}
+(Test/run
+ [{:name "reads whitespace blocks as vector"
+   :test (fn [] (count (read-whitespace (reader/create "   "))))
+   :expected 3}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-non-expressions :added "3.0"}
+(Test/run
+ [{:name "parses whitespace until next token"
+   :test (fn []
+             (std.block.base/block-representation (parse-non-expressions (reader/create " \na"))))
+   :expected "[(␣ \\n) a]"}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-start :added "3.0"}
+(Test/run
+ [{:name "helper to verify that the beginning has been read"
+   :test (fn [] (read-start (reader/create "~@") "~#"))
+   :expected (checker/throws)}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-collection :added "3.0"}
+(Test/run
+ [{:name "reads all children, taking a delimiter as option"
+   :test (fn []
+             (apply str
+                    (map std.block.base/block-representation
+                         (read-collection (reader/create "(1 2 3 4 5)") "(" (first ")")))))
+   :expected "1␣2␣3␣4␣5"}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-cons :added "3.0"}
+(Test/run
+ [{:name "helper method for reading  #1"
+   :test (fn [] (->> (read-cons (reader/create "@hello") "@") (map base/block-string)))
+   :expected (quote ("hello"))}
+  {:name "helper method for reading  #2"
+   :test (fn []
+             (->> (read-cons (reader/create "^hello {}") "^" 2) (map base/block-string)))
+   :expected (quote ("hello" " " "{}"))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-collection :added "3.0"}
+(Test/run
+ [{:name "parses a collection #1"
+   :test (fn []
+             (-> (parse-collection (reader/create "#(+ 1 2 3 4)") :fn) (base/block-value)))
+   :expected (quote (fn [] (+ 1 2 3 4)))}
+  {:name "parses a collection #2"
+   :test (fn []
+             (-> (parse-collection (reader/create "(1 2 3 4)") :list) (base/block-value)))
+   :expected (quote (1 2 3 4))}
+  {:name "parses a collection #3"
+   :test (fn []
+             (-> (parse-collection (reader/create "[1 2 3 4]") :vector) (base/block-value)))
+   :expected [1 2 3 4]}
+  {:name "parses a collection #4"
+   :test (fn []
+             (-> (parse-collection (reader/create "{1 2 3 4}") :map) (base/block-value)))
+   :expected {1 2 3 4}}
+  {:name "parses a collection #5"
+   :test (fn []
+             (-> (parse-collection (reader/create "#{1 2 3 4}") :set) (base/block-value)))
+   :expected #{1 4 3 2}}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-cons :added "3.0"}
+(Test/run
+ [{:name "parses a cons #1"
+   :test (fn [] (-> (parse-cons (reader/create "~hello") :unquote) (base/block-value)))
+   :expected (quote (unquote hello))}
+  {:name "parses a cons #2"
+   :test (fn []
+             (-> (parse-cons (reader/create "~@hello") :unquote-splice) (base/block-value)))
+   :expected (quote (unquote-splicing hello))}
+  {:name "parses a cons #3"
+   :test (fn []
+             (-> (parse-cons (reader/create "^tag {:a 1}") :meta)
+                 (base/block-value) ((juxt meta identity))))
+   :expected [{:tag (quote tag)} {:a 1}]}
+  {:name "parses a cons #4"
+   :test (fn [] (-> (parse-cons (reader/create "@hello") :deref) (base/block-value)))
+   :expected (quote (deref hello))}
+  {:name "parses a cons #5"
+   :test (fn [] (-> (parse-cons (reader/create "`hello") :syntax) (base/block-value)))
+   :expected (quote (syntax-quote hello))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-unquote :added "3.0"}
+(Test/run
+ [{:name "parses a block starting with `~` from the reader #1"
+   :test (fn [] (-> (parse-unquote (reader/create "~hello")) (base/block-value)))
+   :expected (quote (unquote hello))}
+  {:name "parses a block starting with `~` from the reader #2"
+   :test (fn [] (-> (parse-unquote (reader/create "~@hello")) (base/block-value)))
+   :expected (quote (unquote-splicing hello))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-select :added "3.0"}
+(Test/run
+ [{:name "parses a block starting with `#?` from the reader #1"
+   :test (fn [] (-> (parse-select (reader/create "#?(:cljs a)")) (base/block-value)))
+   :expected (quote (? {:cljs a}))}
+  {:name "parses a block starting with `#?` from the reader #2"
+   :test (fn [] (-> (parse-select (reader/create "#?@(:cljs a)")) (base/block-value)))
+   :expected (quote (?-splicing {:cljs a}))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-hash-uneval :added "3.0"}
+(Test/run
+ [{:name "parses the hash-uneval string"
+   :test (fn []
+             (std.block.base/block-representation (parse-hash-uneval (reader/create "#_"))))
+   :expected "#_"}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-hash-cursor :added "3.0"}
+(Test/run
+ [{:name "parses the hash-cursor string"
+   :test (fn []
+             (std.block.base/block-representation (parse-hash-cursor (reader/create "#|"))))
+   :expected "|"}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-hash :added "3.0"}
+(Test/run
+ [{:name "parses a block starting with `#` from the reader #1"
+   :test (fn [] (-> (parse-hash (reader/create "#{1 2 3}")) (base/block-value)))
+   :expected #{1 3 2}}
+  {:name "parses a block starting with `#` from the reader #2"
+   :test (fn [] (-> (parse-hash (reader/create "#(+ 1 2)")) (base/block-value)))
+   :expected (quote (fn [] (+ 1 2)))}
+  {:name "parses a block starting with `#` from the reader #3"
+   :test (fn [] (-> (parse-hash (reader/create "#\"hello\"")) (base/block-value)))
+   :expected #"hello"}
+  {:name "parses a block starting with `#` from the reader #4"
+   :test (fn [] (-> (parse-hash (reader/create "#^hello {}")) (base/block-value)))
+   :expected (with-meta {} {:tag (quote hello)})}
+  {:name "parses a block starting with `#` from the reader #5"
+   :test (fn [] (-> (parse-hash (reader/create "#'hello")) (base/block-value)))
+   :expected (quote (var hello))}
+  {:name "parses a block starting with `#` from the reader #6"
+   :test (fn [] (-> (parse-hash (reader/create "#=(list 1 2 3)")) (base/block-value)))
+   :expected (quote (1 2 3))}
+  {:name "parses a block starting with `#` from the reader #7"
+   :test (fn [] (-> (parse-hash (reader/create "#?(:clj true)")) (base/block-value)))
+   :expected (quote (? {:clj true}))}
+  {:name "parses a block starting with `#` from the reader #8"
+   :test (fn [] (-> (parse-hash (reader/create "#?@(:clj [1 2 3])")) (base/block-value)))
+   :expected (quote (?-splicing {:clj [1 2 3]}))}
+  {:name "parses a block starting with `#` from the reader #9"
+   :test (fn []
+             (-> (parse-hash (reader/create "#:hello {:a 1 :b 2}")) (base/block-value)))
+   :expected {:hello/a 1 :hello/b 2}}
+  {:name "parses a block starting with `#` from the reader #10"
+   :test (fn []
+             (-> (parse-hash (reader/create "#inst \"2018-08-06T06:01:40.682-00:00\""))
+                 (base/block-value)))
+   :expected #inst "2018-08-06T06:01:40.682-00:00"}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-string :added "3.0"}
+(Test/run
+ [{:name "parses a block from a string input"
+   :test (fn [] (-> (parse-string "#(:b {:b 1})") (base/block-value)))
+   :expected (quote (fn [] ((keyword "b") {(keyword "b") 1})))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-root :added "3.0"}
+(Test/run
+ [{:name "parses a root"
+   :test (fn [] (std.block.base/block-representation (parse-root "a b c")))
+   :expected "a b c"}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-first :added "4.0"}
+(Test/run
+ [{:name "gets the first element in root"
+   :test (fn [] (std.block.base/block-representation (parse-first "a b c")))
+   :expected "a"}]
+ migration-test-check)

@@ -1,0 +1,132 @@
+(ns std.block.reader-test
+  (:require [std.block.check :as check]
+    [std.block.reader :as reader :refer :all]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection])
+  (:config {:override [peek next slurp]}))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer std.block.reader/create :added "3.0"}
+(Test/run
+ [{:name "create reader from string"
+   :test (fn [] (type (create "hello world")))
+   :expected :std.block.reader.Reader}]
+ migration-test-check)
+
+^{:refer std.block.reader/reader-position :added "3.0"}
+(Test/run
+ [{:name "returns the position of the reader"
+   :test (fn [] (-> (create "abc") step-char step-char reader-position))
+   :expected [1 3]}]
+ migration-test-check)
+
+^{:refer std.block.reader/throw-reader :added "3.0"}
+(Test/run
+ [{:name "throws a reader message"
+   :test (fn [] (throw-reader (create "abc") "Message" {:data true}))
+   :expected (checker/throws)}]
+ migration-test-check)
+
+^{:refer std.block.reader/step-char :added "3.0"}
+(Test/run
+ [{:name "moves reader one char forward"
+   :test (fn [] (-> (create "abc") step-char read-char str))
+   :expected "b"}]
+ migration-test-check)
+
+^{:refer std.block.reader/read-char :added "3.0"}
+(Test/run
+ [{:name "reads single char and move forward"
+   :test (fn [] (->> read-char (read-repeatedly (create "abc")) (take 3) (apply str)))
+   :expected "abc"}]
+ migration-test-check)
+
+^{:refer std.block.reader/ignore-char :added "3.0"}
+(Test/run
+ [{:name "returns nil and moves reader one char forward"
+   :test (fn [] (->> ignore-char (read-repeatedly (create "abc")) (take 3) (apply str)))
+   :expected ""}]
+ migration-test-check)
+
+^{:refer std.block.reader/unread-char :added "3.0"}
+(Test/run
+ [{:name "move reader one char back, along with char"
+   :test (fn [] (-> (create "abc") (step-char) (unread-char \A) (reader/slurp)))
+   :expected "Abc"}]
+ migration-test-check)
+
+^{:refer std.block.reader/peek-char :added "3.0"}
+(Test/run
+ [{:name "returns the current reader char with moving"
+   :test (fn [] (->> (read-times (create "abc") peek-char 3) (apply str)))
+   :expected "aaa"}]
+ migration-test-check)
+
+^{:refer std.block.reader/read-while :added "3.0"}
+(Test/run
+ [{:name "reads input while the predicate is true"
+   :test (fn [] (read-while (create "abcde") (fn [ch] (not= (str ch) "d"))))
+   :expected "abc"}]
+ migration-test-check)
+
+^{:refer std.block.reader/read-until :added "3.0"}
+(Test/run
+ [{:name "reads inputs until the predicate is reached"
+   :test (fn [] (read-until (create "abcde") (fn [ch] (= (str ch) "d"))))
+   :expected "abc"}]
+ migration-test-check)
+
+^{:refer std.block.reader/read-times :added "3.0"}
+(Test/run
+ [{:name "reads input repeatedly"
+   :test (fn []
+             (->> (read-times (create "abcdefg")
+                              (fn [migration-argument-0]
+                                  (str (read-char migration-argument-0) (read-char migration-argument-0))) 2)))
+   :expected ["ab" "cd"]}]
+ migration-test-check)
+
+^{:refer std.block.reader/read-repeatedly :added "3.0"}
+(Test/run
+ [{:name "reads input repeatedly"
+   :test (fn []
+             (->> (read-repeatedly (create "abcdefg")
+                                   (fn [migration-argument-0]
+                                       (str (read-char migration-argument-0) (read-char migration-argument-0))) empty?)
+                  (take 5)))
+   :expected ["ab" "cd" "ef" "g"]}]
+ migration-test-check)
+
+^{:refer std.block.reader/read-include :added "3.0"}
+(Test/run
+ [{:name "reads up to a given predicate"
+   :test (fn [] (read-include (create "  a") read-char (complement check/voidspace?)))
+   :expected [[\space \space] \a]}]
+ migration-test-check)
+
+^{:refer std.block.reader/slurp :added "3.0"}
+(Test/run
+ [{:name "reads rest of input from reader"
+   :test (fn [] (reader/slurp (reader/step-char (create "abc efg"))))
+   :expected "bc efg"}]
+ migration-test-check)
+
+^{:refer std.block.reader/read-to-boundary :added "3.0"}
+(Test/run
+ [{:name "reads to an input boundary"
+   :test (fn [] (read-to-boundary (create "abc efg")))
+   :expected "abc"}]
+ migration-test-check)

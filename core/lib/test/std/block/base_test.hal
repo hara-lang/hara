@@ -1,0 +1,183 @@
+(ns std.block.base-test
+  (:require [std.block.base :refer :all]
+    [std.block.construct :as construct]
+    [std.block.parse :as parse]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer std.block.base/block? :added "3.0"}
+(Test/run
+ [{:name "check whether an object is a block #1"
+   :test (fn [] (block? (construct/void nil)))
+   :expected true}
+  {:name "check whether an object is a block #2"
+   :test (fn [] (block? (construct/token "hello")))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.base/block-type :added "3.0"}
+(Test/run
+ [{:name "returns block type as keyword #1"
+   :test (fn [] (block-type (construct/void nil)))
+   :expected :void}
+  {:name "returns block type as keyword #2"
+   :test (fn [] (block-type (construct/token "hello")))
+   :expected :token}]
+ migration-test-check)
+
+^{:refer std.block.base/block-tag :added "3.0"}
+(Test/run
+ [{:name "returns block tag as keyword #1"
+   :test (fn [] (block-tag (construct/void nil)))
+   :expected :eof}
+  {:name "returns block tag as keyword #2"
+   :test (fn [] (block-tag (construct/void \space)))
+   :expected :linespace}]
+ migration-test-check)
+
+^{:refer std.block.base/block-string :added "3.0"}
+(Test/run
+ [{:name "returns block string as representated in the file #1"
+   :test (fn [] (block-string (construct/token-from-string "3/4" (/ 3.0 4.0))))
+   :expected "3/4"}
+  {:name "returns block string as representated in the file #2"
+   :test (fn [] (block-string (construct/void \space)))
+   :expected " "}]
+ migration-test-check)
+
+^{:refer std.block.base/block-length :added "3.0"}
+(Test/run
+ [{:name "return the length of the string #1"
+   :test (fn [] (block-length (construct/void)))
+   :expected 1}
+  {:name "return the length of the string #2"
+   :test (fn [] (block-length (construct/block [1 2 3 4])))
+   :expected 9}]
+ migration-test-check)
+
+^{:refer std.block.base/block-width :added "3.0"}
+(Test/run
+ [{:name "returns the width of a block"
+   :test (fn [] (block-width (construct/token (quote hello))))
+   :expected 5}]
+ migration-test-check)
+
+^{:refer std.block.base/block-height :added "3.0"}
+(Test/run
+ [{:name "returns the height of a block"
+   :test (fn []
+             (block-height (construct/block [(construct/newline) (construct/newline)])))
+   :expected 2}]
+ migration-test-check)
+
+^{:refer std.block.base/block-prefixed :added "3.0"}
+(Test/run
+ [{:name "returns the length of the starting characters"
+   :test (fn [] (block-prefixed (construct/block #{})))
+   :expected 2}]
+ migration-test-check)
+
+^{:refer std.block.base/block-suffixed :added "3.0"}
+(Test/run
+ [{:name "returns the length of the ending characters"
+   :test (fn [] (block-suffixed (construct/block #{})))
+   :expected 1}]
+ migration-test-check)
+
+^{:refer std.block.base/block-verify :added "3.0"}
+(Test/run
+ [{:name "checks that the block has correct data"
+   :test (fn [] (block-verify (construct/token "hello")))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.base/expression? :added "3.0"}
+(Test/run
+ [{:name "checks if the block has a value associated with it"
+   :test (fn [] (expression? (construct/token 1.2)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.base/block-value :added "3.0"}
+(Test/run
+ [{:name "returns the value of the block"
+   :test (fn [] (block-value (construct/token 1.2)))
+   :expected 1.2}]
+ migration-test-check)
+
+^{:refer std.block.base/block-value-string :added "3.0"}
+(Test/run
+ [{:name "returns the string for which a value will be generated"
+   :test (fn [] (block-value-string (parse/parse-string "#(+ 1 ::2)")))
+   :expected "#(+ 1 (keyword \":2\"))"}]
+ migration-test-check)
+
+^{:refer std.block.base/modifier? :added "3.0"}
+(Test/run
+ [{:name "checks if the block is of type INodeModifier"
+   :test (fn [] (modifier? (construct/uneval)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.base/block-modify :added "3.0"}
+(Test/run
+ [{:name "allows the block to modify an accumulator"
+   :test (fn [] (block-modify (construct/uneval) [1 2] (quote ANYTHING)))
+   :expected [1 2]}]
+ migration-test-check)
+
+^{:refer std.block.base/container? :added "3.0"}
+(Test/run
+ [{:name "determines whether a block has children #1"
+   :test (fn [] (container? (parse/parse-string "[1 2 3]")))
+   :expected true}
+  {:name "determines whether a block has children #2"
+   :test (fn [] (container? (parse/parse-string " ")))
+   :expected false}]
+ migration-test-check)
+
+^{:refer std.block.base/block-children :added "3.0"}
+(Test/run
+ [{:name "returns the children in the block"
+   :test (fn []
+             (apply str
+                    (map std.block.base/block-representation
+                         (block-children (parse/parse-string "[1   2]")))))
+   :expected "1␣␣␣2"}]
+ migration-test-check)
+
+^{:refer std.block.base/replace-children :added "3.0"}
+(Test/run
+ [{:name "replace childer"
+   :test (fn []
+             (std.block.base/block-representation (replace-children (construct/block [])
+                                                                    (conj (vec (block-children (construct/block [1 2])))
+                                                                          (construct/void \space) (construct/block [3 4])))))
+   :expected "[1 2 [3 4]]"}]
+ migration-test-check)
+
+^{:refer std.block.base/block-info :added "3.0"}
+(do
+ {:string "true" :tag :boolean :type :token}
+ (Test/run
+  [{:name "returns the data associated with the block #1"
+    :test (fn [] (block-info (construct/token true)))
+    :expected {:height 0 :string "true" :tag :boolean :type :token :width 4}}
+   {:name "returns the data associated with the block #2"
+    :test (fn [] (block-info (construct/void \tab)))
+    :expected {:height 0 :string "\t" :tag :linetab :type :void :width 4}}]
+  migration-test-check))

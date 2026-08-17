@@ -1,0 +1,191 @@
+(ns std.block.type-test
+  (:require [std.block.base :as base]
+    [std.block.construct :as construct]
+    [std.block.parse :as parse]
+    [std.block.type :refer :all]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer std.block.type/block-compare :added "3.0"}
+(Test/run
+ [{:name "compares equality of two blocks"
+   :test (fn [] (block-compare (construct/void \space) (construct/void \space)))
+   :expected 0}]
+ migration-test-check)
+
+^{:refer std.block.type/void-block? :added "3.0"}
+(Test/run
+ [{:name "checks if the block is a void block"
+   :test (fn [] (void-block? (construct/void)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/void-block :added "3.0"}
+(Test/run
+ [{:name "constructs a void block"
+   :test (fn [] (-> (void-block :linespace \tab 1 0) (base/block-info)))
+   :expected {:height 0 :string "\t" :tag :linespace :type :void :width 1}}]
+ migration-test-check)
+
+^{:refer std.block.type/space-block? :added "3.0"}
+(Test/run
+ [{:name "checks if block is of type \\space"
+   :test (fn [] (space-block? (construct/space)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/linebreak-block? :added "3.0"}
+(Test/run
+ [{:name "checks if block is of type :linebreak"
+   :test (fn [] (linebreak-block? (construct/newline)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/linespace-block? :added "3.0"}
+(Test/run
+ [{:name "checks if block is of type :linespace"
+   :test (fn [] (linespace-block? (construct/space)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/eof-block? :added "3.0"}
+(Test/run
+ [{:name "checks if input is an eof block"
+   :test (fn [] (eof-block? (construct/void nil)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/nil-void? :added "3.0"}
+(Test/run
+ [{:name "checks if block is nil or type void block #1"
+   :test (fn [] (nil-void? nil))
+   :expected true}
+  {:name "checks if block is nil or type void block #2"
+   :test (fn [] (nil-void? (construct/block nil)))
+   :expected false}
+  {:name "checks if block is nil or type void block #3"
+   :test (fn [] (nil-void? (construct/space)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/comment-block? :added "3.0"}
+(Test/run
+ [{:name "checks if the block is a token block"
+   :test (fn [] (comment-block? (construct/comment ";;hello")))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/comment-block :added "3.0"}
+(Test/run
+ [{:name "constructs a comment block"
+   :test (fn [] (-> (comment-block ";hello") (base/block-info)))
+   :expected {:height 0 :string ";hello" :tag :comment :type :comment :width 6}}]
+ migration-test-check)
+
+^{:refer std.block.type/token-block? :added "3.0"}
+(Test/run
+ [{:name "checks if the block is a token block"
+   :test (fn [] (token-block? (construct/token "hello")))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/token-block :added "3.0"}
+(Test/run
+ [{:name "creates a token block"
+   :test (fn [] (base/block-info (token-block :symbol "abc" (quote abc) "abc" 3 0)))
+   :expected {:height 0 :string "abc" :tag :symbol :type :token :width 3}}]
+ migration-test-check)
+
+^{:refer std.block.type/container-width :added "3.0"}
+(Test/run
+ [{:name "calculates the width of a container"
+   :test (fn [] (container-width (construct/block [1 2 3 4])))
+   :expected 9}]
+ migration-test-check)
+
+^{:refer std.block.type/container-height :added "3.0"}
+(Test/run
+ [{:name "calculates the height of a container #1"
+   :test (fn [] (container-height (construct/block [])))
+   :expected 0}
+  {:name "calculates the height of a container #2"
+   :test (fn [] (container-height (construct/block [(construct/newline)])))
+   :expected 1}
+  {:name "calculates the height of a container #3"
+   :test (fn []
+             (container-height (construct/block [(construct/newline) (construct/newline)])))
+   :expected 2}]
+ migration-test-check)
+
+^{:refer std.block.type/container-string :added "3.0"}
+(Test/run
+ [{:name "returns the string for the container"
+   :test (fn [] (container-string (construct/block [1 2 3])))
+   :expected "[1 2 3]"}]
+ migration-test-check)
+
+^{:refer std.block.type/container-value-string :added "3.0"}
+(Test/run
+ [{:name "returns the string for  #1"
+   :test (fn []
+             (container-value-string (construct/block [:std.block.type-test/a :b :c])))
+   :expected "[:std.block.type-test/a :b :c]"}
+  {:name "returns the string for  #2"
+   :test (fn [] (container-value-string (parse/parse-string "[::a :b :c]")))
+   :expected "[(keyword \":a\") (keyword \"b\") (keyword \"c\")]"}]
+ migration-test-check)
+
+^{:refer std.block.type/container-block? :added "3.0"}
+(Test/run
+ [{:name "checks if block is a container block"
+   :test (fn [] (container-block? (construct/block [])))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/container-block :added "3.0"}
+(Test/run
+ [{:name "constructs a container block"
+   :test (fn []
+             (-> (container-block :fn
+                                  [(construct/token (quote +)) (construct/void) (construct/token (quote 1))] (construct/*container-props* :fn))
+                 (base/block-value)))
+   :expected (quote (fn [] (+ 1)))}]
+ migration-test-check)
+
+^{:refer std.block.type/modifier-block? :added "3.0"}
+(Test/run
+ [{:name "checks if block is a modifier block"
+   :test (fn [] (modifier-block? (construct/uneval)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.type/modifier-block :added "3.0"}
+(Test/run
+ [{:name "creates a modifier block, specifically #_"
+   :test (fn [] (modifier-block :hash-uneval "#_" (fn [acc _] acc)))
+   :expected modifier-block?}]
+ migration-test-check)
+
+^{:refer std.block.type/code-block? :added "4.0"}
+(Test/run
+ [{:name "checks if a block can be representated as code #1"
+   :test (fn [] (code-block? (construct/void)))
+   :expected false}
+  {:name "checks if a block can be representated as code #2"
+   :test (fn [] (code-block? (construct/token (quote +))))
+   :expected true}]
+ migration-test-check)

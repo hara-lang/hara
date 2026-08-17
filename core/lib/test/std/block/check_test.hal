@@ -1,0 +1,148 @@
+(ns std.block.check-test
+  (:require [std.block.check :refer :all]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer std.block.check/boundary? :added "3.0"}
+(Test/run
+ [{:name "returns whether a char is of a boundary type #1"
+   :test (fn [] (boundary? (first "[")))
+   :expected true}
+  {:name "returns whether a char is of a boundary type #2"
+   :test (fn [] (boundary? (first (pr-str ""))))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/whitespace? :added "3.0"}
+(Test/run
+ [{:name "returns whether a char is of a whitespace type"
+   :test (fn [] (whitespace? \space))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/comma? :added "3.0"}
+(Test/run
+ [{:name "returns whether a char is a comma"
+   :test (fn [] (comma? (first ",")))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/linebreak? :added "3.0"}
+(Test/run
+ [{:name "returns whether a char is a linebreak type"
+   :test (fn [] (linebreak? \newline))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/delimiter? :added "3.0"}
+(Test/run
+ [{:name "check for delimiter char"
+   :test (fn [] (delimiter? (first ")")))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/voidspace? :added "3.0"}
+(Test/run
+ [{:name "determines if an input is a void input"
+   :test (fn [] (voidspace? \newline))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/linetab? :added "3.0"}
+(Test/run
+ [{:name "checs if character is a tab"
+   :test (fn [] (linetab? \tab))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/linespace? :added "3.0"}
+(Test/run
+ [{:name "returs whether a char is a linespace type"
+   :test (fn [] (linespace? \space))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/voidspace-or-boundary? :added "3.0"}
+(Test/run
+ [{:name "check for void or boundary type"
+   :test (fn []
+             (->> (map voidspace-or-boundary? (concat *boundaries* *linebreaks*))
+                  (every? true?)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/tag :added "3.0"}
+(Test/run
+ [{:name "takes a set of checks and returns the key #1"
+   :test (fn [] (tag *void-checks* \space))
+   :expected :linespace}
+  {:name "takes a set of checks and returns the key #2"
+   :test (fn [] (tag *collection-checks* []))
+   :expected :vector}]
+ migration-test-check)
+
+^{:refer std.block.check/void-tag :added "3.0"}
+(Test/run
+ [{:name "returns the tag associated with input"
+   :test (fn [] (void-tag \newline))
+   :expected :linebreak}]
+ migration-test-check)
+
+^{:refer std.block.check/void? :added "3.0"}
+(Test/run
+ [{:name "determines if an input is a void input"
+   :test (fn [] (void? \newline))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/token-tag :added "3.0"}
+(Test/run
+ [{:name "returns the tag associated with the input"
+   :test (fn [] (token-tag (quote hello)))
+   :expected :symbol}]
+ migration-test-check)
+
+^{:refer std.block.check/token? :added "3.0"}
+(Test/run
+ [{:name "determines if an input is a token"
+   :test (fn [] (token? (/ 3 4)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/collection-tag :added "3.0"}
+(Test/run
+ [{:name "returns th tag associated with the input"
+   :test (fn [] (collection-tag []))
+   :expected :vector}]
+ migration-test-check)
+
+^{:refer std.block.check/collection? :added "3.0"}
+(Test/run
+ [{:name "determines if an input is a token"
+   :test (fn [] (collection? {}))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.check/comment? :added "3.0"}
+(Test/run
+ [{:name "determines if an input is a comment string #1"
+   :test (fn [] (comment? "hello"))
+   :expected false}
+  {:name "determines if an input is a comment string #2"
+   :test (fn [] (comment? ";hello"))
+   :expected true}]
+ migration-test-check)
