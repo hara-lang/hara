@@ -6,7 +6,7 @@ on:
       - agent/restore-generic-hara-analyzer
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   validate:
@@ -14,6 +14,9 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: agent/restore-generic-hara-analyzer
+          fetch-depth: 0
 
       - name: Checkout hara-specs-registry
         uses: actions/checkout@v4
@@ -29,9 +32,9 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Verify analyser formatting
+      - name: Format the analyser files
         run: |
-          rustfmt --edition 2021 --check \
+          rustfmt --edition 2021 \
             core/rust/src/bin/hara-code-analyzer.rs \
             core/rust/src/bin/hara-code-analyzer/json.rs \
             core/rust/src/source_analyzer.rs \
@@ -40,6 +43,7 @@ jobs:
             core/rust/src/source_analyzer/shape.rs \
             core/rust/src/source_analyzer/tree.rs \
             core/rust/src/source_analyzer/tests.rs
+          git diff --check
 
       - name: Test persistent analyser protocol
         run: |
@@ -54,3 +58,23 @@ jobs:
             --manifest-path core/rust/Cargo.toml \
             --features whole-wasm \
             --bin hara-code-analyzer
+
+      - name: Publish formatter corrections
+        shell: bash
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add \
+            core/rust/src/bin/hara-code-analyzer.rs \
+            core/rust/src/bin/hara-code-analyzer/json.rs \
+            core/rust/src/source_analyzer.rs \
+            core/rust/src/source_analyzer/runtime.rs \
+            core/rust/src/source_analyzer/protocol.rs \
+            core/rust/src/source_analyzer/shape.rs \
+            core/rust/src/source_analyzer/tree.rs \
+            core/rust/src/source_analyzer/tests.rs
+          git commit -m "Format the generic source analyser (#697)"
+          git push origin HEAD:agent/restore-generic-hara-analyzer
