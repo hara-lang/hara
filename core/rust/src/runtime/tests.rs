@@ -5905,7 +5905,7 @@ mod tests {
         assert_eq!(
             kernel
                 .eval(
-                    "host-transfer",
+                    &host_transfer,
                     "(try
                        (deref (Host/call \"missing\" \"missing\" []))
                        (catch error
