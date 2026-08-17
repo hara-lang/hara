@@ -33,6 +33,7 @@ struct BundleCatalog {
 struct MountRegistry {
     entries: HashMap<u64, FilesystemMount>,
     session_attachments: HashMap<String, u64>,
+    sandbox_attachments: HashMap<u64, u64>,
     next_id: u64,
 }
 

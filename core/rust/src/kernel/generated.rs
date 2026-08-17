@@ -23,6 +23,7 @@ const NATIVE_TYPES: &[&str] = &[
     "Num",
     "Bits",
     "Kernel",
+    "Sandbox",
     "Package",
     "String",
     "Bytes",

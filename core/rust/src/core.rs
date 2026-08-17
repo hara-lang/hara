@@ -27,6 +27,33 @@ pub use crate::task::{
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+thread_local! {
+    static ACTIVE_EVALUATION_INTERRUPT: RefCell<Option<Rc<dyn Fn() -> Option<String>>>> =
+        const { RefCell::new(None) };
+}
+
+pub(crate) fn with_evaluation_interrupt<R>(
+    interrupt: Rc<dyn Fn() -> Option<String>>,
+    operation: impl FnOnce() -> R,
+) -> R {
+    ACTIVE_EVALUATION_INTERRUPT.with(|active| {
+        let previous = active.replace(Some(interrupt));
+        let result = operation();
+        active.replace(previous);
+        result
+    })
+}
+
+pub(crate) fn check_evaluation_interrupt() -> Result<(), String> {
+    ACTIVE_EVALUATION_INTERRUPT.with(|active| {
+        active
+            .borrow()
+            .as_ref()
+            .and_then(|interrupt| interrupt())
+            .map_or(Ok(()), Err)
+    })
+}
+
 #[path = "fiber.rs"]
 mod fiber;
 #[path = "core/native_result.rs"]

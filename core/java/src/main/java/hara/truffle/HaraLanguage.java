@@ -41,6 +41,20 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
       stability = OptionStability.STABLE)
   static final OptionKey<String> TEST_RUNNER = new OptionKey<>("code.test");
 
+  @Option(
+      name = "SandboxRestricted",
+      help = "Hide host control-plane namespaces inside a private sandbox Runtime.",
+      category = OptionCategory.INTERNAL,
+      stability = OptionStability.STABLE)
+  static final OptionKey<Boolean> SANDBOX_RESTRICTED = new OptionKey<>(false);
+
+  @Option(
+      name = "KernelToken",
+      help = "Internal token for a trusted SessionKernel embedding.",
+      category = OptionCategory.INTERNAL,
+      stability = OptionStability.STABLE)
+  static final OptionKey<String> KERNEL_TOKEN = new OptionKey<>("");
+
   private static final ContextReference<HaraContext> CONTEXT_REFERENCE =
       ContextReference.create(HaraLanguage.class);
 

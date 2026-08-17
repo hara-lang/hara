@@ -102,6 +102,26 @@ impl Runtime {
         runtime
     }
 
+    pub(crate) fn sandbox() -> Runtime {
+        const FORBIDDEN: &[&str] = &[
+            "Runtime", "Kernel", "Sandbox", "Package", "Crypto", "OS", "Process", "File", "Socket",
+            "Host",
+        ];
+        let runtime = Runtime::new();
+        for name in FORBIDDEN {
+            let namespace = format!("std.native.{name}");
+            runtime.namespace_registry.remove(&namespace);
+            for owner in ["user", "std.foundation", "std.native"] {
+                if let Some(target) = runtime.namespace_registry.find(owner) {
+                    target.unalias(name);
+                    target.unmap(&crate::lang::data::Symbol::parse(name));
+                    target.unmap(&crate::lang::data::Symbol::parse(&namespace));
+                }
+            }
+        }
+        runtime
+    }
+
     /// Creates the portable L0 evaluator without loading the language-level
     /// foundation. This is useful for small embedded surfaces whose commands
     /// only require core forms and should become interactive immediately.

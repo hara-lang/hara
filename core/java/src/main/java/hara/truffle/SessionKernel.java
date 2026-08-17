@@ -27,6 +27,12 @@ import org.graalvm.polyglot.io.IOAccess;
 
 /** Owns the runtime contexts shared by local and RESP clients. */
 final class SessionKernel implements AutoCloseable {
+  private static final ConcurrentHashMap<String, SessionKernel> EMBEDDINGS =
+      new ConcurrentHashMap<>();
+
+  static SessionKernel embedding(String token) {
+    return token == null || token.isEmpty() ? null : EMBEDDINGS.get(token);
+  }
   /**
    * Host authority applied when a context is created.
    *
@@ -80,6 +86,7 @@ final class SessionKernel implements AutoCloseable {
   }
 
   private final boolean allowFile;
+  private final String embeddingToken = java.util.UUID.randomUUID().toString();
   private final SessionRegistry sessionRegistry = new SessionRegistry();
   private final MountRegistry mountRegistry = new MountRegistry();
   private final DevelopmentResourceCatalog developmentResources =
@@ -97,6 +104,7 @@ final class SessionKernel implements AutoCloseable {
   private static final class MountRegistry {
     final ConcurrentHashMap<Long, FilesystemMount> entries = new ConcurrentHashMap<>();
     final ConcurrentHashMap<String, Long> sessionAttachments = new ConcurrentHashMap<>();
+    final ConcurrentHashMap<Long, Long> sandboxAttachments = new ConcurrentHashMap<>();
     final AtomicLong nextId = new AtomicLong(1);
   }
 
@@ -141,6 +149,8 @@ final class SessionKernel implements AutoCloseable {
   SessionKernel(
       boolean allowFile, boolean allowNetwork, boolean allowProcess, HaraProject project) {
     this.allowFile = allowFile;
+    EMBEDDINGS.put(embeddingToken, this);
+    registerSandboxProvider(InProcessSandboxProvider.INSTANCE);
     SessionAuthorityPolicy rootAuthority =
         SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
     sessionRegistry.entries.put(
@@ -148,7 +158,9 @@ final class SessionKernel implements AutoCloseable {
         new Session(
             new SessionModel.SessionSpec(ROOT_ID, rootAuthority),
             project,
-            mount -> releaseMount(ROOT_ID, mount)));
+            mount -> releaseMount(ROOT_ID, mount),
+            false,
+            embeddingToken));
   }
 
   Session root() {
@@ -166,7 +178,11 @@ final class SessionKernel implements AutoCloseable {
       throw new IllegalArgumentException("SESSION_EXISTS " + id);
     Session session =
         new Session(
-            SessionModel.SessionSpec.zeroAuthority(id), null, mount -> releaseMount(id, mount));
+            SessionModel.SessionSpec.zeroAuthority(id),
+            null,
+            mount -> releaseMount(id, mount),
+            false,
+            embeddingToken);
     sessionRegistry.entries.put(id.value(), session);
     return session;
   }
@@ -293,10 +309,33 @@ final class SessionKernel implements AutoCloseable {
     return bytes == null ? null : Arrays.copyOf(bytes, bytes.length);
   }
 
-  private record Sandbox(
-      SandboxModel.SandboxId id,
-      String provider,
-      SandboxProvider.SandboxInstance instance) {}
+  private static final class Sandbox {
+    final SandboxModel.SandboxId id;
+    final String provider;
+    final boolean secure;
+    final SessionModel.SessionMountId mount;
+    final SandboxProvider.SandboxInstance instance;
+    private final AtomicLong nextEvaluationId = new AtomicLong(1);
+
+    Sandbox(
+        SandboxModel.SandboxId id,
+        String provider,
+        boolean secure,
+        SessionModel.SessionMountId mount,
+        SandboxProvider.SandboxInstance instance) {
+      this.id = id;
+      this.provider = provider;
+      this.secure = secure;
+      this.mount = mount;
+      this.instance = instance;
+    }
+
+    SandboxModel.EvaluationId allocateEvaluation() {
+      long value = nextEvaluationId.getAndIncrement();
+      if (value <= 0) throw new IllegalStateException("SANDBOX_EVALUATION_IDS_EXHAUSTED");
+      return new SandboxModel.EvaluationId(value);
+    }
+  }
 
   void registerSandboxProvider(SandboxProvider provider) {
     sandboxProviderRegistry.entries.put(provider.name(), provider);
@@ -311,8 +350,59 @@ final class SessionKernel implements AutoCloseable {
     long value = sandboxRegistry.nextId.getAndIncrement();
     if (value <= 0) throw new IllegalStateException("SANDBOX_IDS_EXHAUSTED");
     SandboxModel.SandboxId id = new SandboxModel.SandboxId(value);
-    sandboxRegistry.entries.put(value, new Sandbox(id, provider.name(), provider.open(spec)));
+    java.util.LinkedHashMap<String, byte[]> bundles = new java.util.LinkedHashMap<>();
+    for (SandboxModel.BundleReference reference : spec.bundles()) {
+      byte[] bytes = bundle(reference.digest());
+      if (bytes == null) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.BUNDLE_NOT_FOUND, reference.digest());
+      }
+      if (!reference.digest().equals(sha256Digest(bytes))) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.BUNDLE_DIGEST_MISMATCH, reference.digest());
+      }
+      bundles.put(reference.digest(), bytes);
+    }
+    FilesystemMount mount = null;
+    if (spec.mount() != null) {
+      mount = mountRegistry.entries.get(spec.mount().value());
+      if (mount == null) {
+        throw new SandboxModel.SandboxException(
+            SandboxModel.ErrorCode.MOUNT_NOT_FOUND, spec.mount().toString());
+      }
+      mount.attachments++;
+      mountRegistry.sandboxAttachments.put(id.value(), spec.mount().value());
+    }
+    try {
+      SandboxProvider.ResolvedSpec resolved =
+          new SandboxProvider.ResolvedSpec(
+              spec,
+              java.util.Collections.unmodifiableMap(bundles),
+              mount == null ? null : mount.provider);
+      sandboxRegistry.entries.put(
+          value,
+          new Sandbox(id, provider.name(), provider.secure(), spec.mount(), provider.open(resolved)));
+    } catch (RuntimeException error) {
+      releaseSandboxMount(id, spec.mount());
+      throw error;
+    }
     return id;
+  }
+
+  private static String sha256Digest(byte[] bytes) {
+    try {
+      byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes);
+      return "sha256:" + java.util.HexFormat.of().formatHex(digest);
+    } catch (java.security.NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 is required", error);
+    }
+  }
+
+  private void releaseSandboxMount(
+      SandboxModel.SandboxId sandboxId, SessionModel.SessionMountId mountId) {
+    if (mountId == null) return;
+    Long registered = mountRegistry.sandboxAttachments.remove(sandboxId.value());
+    if (registered != null && registered == mountId.value()) decrementMount(registered);
   }
 
   private Sandbox requireSandbox(SandboxModel.SandboxId id) {
@@ -323,23 +413,32 @@ final class SessionKernel implements AutoCloseable {
     return sandbox;
   }
 
-  Object sandboxEval(SandboxModel.SandboxId id, String source) {
-    return requireSandbox(id).instance().eval(source);
+  SandboxProvider.Pending<Object> sandboxEval(SandboxModel.SandboxId id, String source) {
+    Sandbox sandbox = requireSandbox(id);
+    return sandbox.instance.eval(sandbox.allocateEvaluation(), source);
   }
 
-  Object sandboxCall(
-      SandboxModel.SandboxId id, String callable, java.util.List<String> argumentForms) {
-    return requireSandbox(id).instance().call(callable, argumentForms);
+  SandboxProvider.Pending<Object> sandboxCall(
+      SandboxModel.SandboxId id, String callable, java.util.List<Object> arguments) {
+    Sandbox sandbox = requireSandbox(id);
+    return sandbox.instance.call(sandbox.allocateEvaluation(), callable, arguments);
   }
 
   boolean cancelSandbox(SandboxModel.SandboxId id) {
-    return requireSandbox(id).instance().cancel();
+    SandboxProvider.SandboxInstance instance = requireSandbox(id).instance;
+    SandboxModel.EvaluationId evaluation = instance.activeEvaluation();
+    return evaluation != null && instance.cancel(evaluation);
   }
 
   SandboxModel.SandboxStatus sandboxStatus(SandboxModel.SandboxId id) {
     Sandbox sandbox = requireSandbox(id);
     return new SandboxModel.SandboxStatus(
-        sandbox.id(), sandbox.provider(), sandbox.instance().state());
+        sandbox.id,
+        sandbox.provider,
+        sandbox.instance.state(),
+        sandbox.secure,
+        sandbox.instance.activeEvaluation() != null,
+        sandbox.instance.error());
   }
 
   synchronized void closeSandbox(SandboxModel.SandboxId id) {
@@ -347,16 +446,22 @@ final class SessionKernel implements AutoCloseable {
     if (sandbox == null) {
       throw new SandboxModel.SandboxException(SandboxModel.ErrorCode.NOT_FOUND, id.toString());
     }
-    sandbox.instance().close();
+    try {
+      sandbox.instance.close();
+    } finally {
+      releaseSandboxMount(id, sandbox.mount);
+    }
   }
 
   @Override
   public synchronized void close() {
-    for (Sandbox sandbox : sandboxRegistry.entries.values()) sandbox.instance().close();
+    EMBEDDINGS.remove(embeddingToken, this);
+    for (Sandbox sandbox : sandboxRegistry.entries.values()) sandbox.instance.close();
     sandboxRegistry.entries.clear();
     for (Session session : sessionRegistry.entries.values()) session.close();
     sessionRegistry.entries.clear();
     mountRegistry.sessionAttachments.clear();
+    mountRegistry.sandboxAttachments.clear();
     mountRegistry.entries.clear();
   }
 
@@ -366,6 +471,8 @@ final class SessionKernel implements AutoCloseable {
     private final SessionAuthorityPolicy authority;
     private final HaraProject project;
     private final Consumer<SessionModel.SessionMountId> mountRelease;
+    private final boolean sandboxRestricted;
+    private final String kernelToken;
     private Context context;
     private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
@@ -378,11 +485,15 @@ final class SessionKernel implements AutoCloseable {
     private Session(
         SessionModel.SessionSpec spec,
         HaraProject project,
-        Consumer<SessionModel.SessionMountId> mountRelease) {
+        Consumer<SessionModel.SessionMountId> mountRelease,
+        boolean sandboxRestricted,
+        String kernelToken) {
       this.spec = spec;
       this.authority = spec.authority();
       this.project = project;
       this.mountRelease = mountRelease;
+      this.sandboxRestricted = sandboxRestricted;
+      this.kernelToken = kernelToken;
       context = createContext(null);
       activate();
     }
@@ -392,9 +503,16 @@ final class SessionKernel implements AutoCloseable {
           new Session(
               SessionModel.SessionSpec.zeroAuthority(SessionModel.SessionId.parse("SANDBOX")),
               null,
-              ignored -> {});
+              ignored -> {},
+              true,
+              null);
       if (!"user".equals(entryNamespace)) session.eval("(ns " + entryNamespace + ")");
       return session;
+    }
+
+    void attachSandboxFilesystem(
+        SessionModel.SessionMountId mountId, HaraMountedFileSystem provider) {
+      attachFilesystem(new AttachedFilesystem(mountId, provider));
     }
 
     private Context createContext(AttachedFilesystem filesystem) {
@@ -406,8 +524,10 @@ final class SessionKernel implements AutoCloseable {
       }
       Context.Builder builder =
           Context.newBuilder(HaraLanguage.ID)
+              .option("hara.SandboxRestricted", Boolean.toString(sandboxRestricted))
               .allowCreateProcess(authority.hostProcess)
               .allowIO(io.build());
+      if (kernelToken != null) builder.option("hara.KernelToken", kernelToken);
       if (authority.project && project != null && filesystem == null) {
         builder.currentWorkingDirectory(project.root());
       }
@@ -494,6 +614,30 @@ final class SessionKernel implements AutoCloseable {
 
     Object evalTransfer(String source) {
       return transferValue(eval(source));
+    }
+
+    Object callTransfer(String callable, List<Object> arguments) {
+      activeEvaluations.incrementAndGet();
+      try {
+        synchronized (this) {
+          requireActive();
+          Value function = context.eval(HaraLanguage.ID, callable);
+          if (!function.canExecute()) {
+            throw new IllegalArgumentException("SESSION_VAR_NOT_CALLABLE " + callable);
+          }
+          Value result = function.execute(arguments.toArray());
+          return transferValue(result);
+        }
+      } catch (PolyglotException error) {
+        throw new IllegalArgumentException(error.getMessage(), error);
+      } finally {
+        activeEvaluations.decrementAndGet();
+      }
+    }
+
+    void cancelEvaluation() {
+      Context active = context;
+      if (active != null) active.close(true);
     }
 
     private static Object transferValue(Value value) {

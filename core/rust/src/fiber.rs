@@ -580,6 +580,9 @@ fn values_cps(
     )
 }
 fn one(form: Form, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step {
+    if let Err(error) = super::check_evaluation_interrupt() {
+        return k(Err(error));
+    }
     match form {
         Form::Map(entries) => {
             let flat = Rc::new(entries.into_iter().flat_map(|(a, b)| [a, b]).collect());
