@@ -47,6 +47,7 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
                 "work-events", 2,
                 "work-cancel", 2),
             List.of(workRef, closed)));
+    context.defineLibraryValue(namespace(), "default-host", HaraWorkHost.instance(), null);
   }
 
   static void installWork(HaraProtocol protocol) {
