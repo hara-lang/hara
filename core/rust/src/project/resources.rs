@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[path = "resources/installed.rs"]
 mod installed;
 
 /// Returns namespace resources from installed dependencies followed by the
