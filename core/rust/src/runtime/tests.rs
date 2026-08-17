@@ -2,6 +2,21 @@
 mod tests {
     use super::*;
 
+    #[test]
+    fn evaluator_owns_lexical_state_without_owning_namespace_state() {
+        let registry = kernel::NamespaceRegistry::<core::Value>::new("user");
+        let mut evaluator = Evaluator::new();
+        evaluator
+            .environment_mut()
+            .insert("local".into(), core::Value::Number(42));
+
+        assert_eq!(
+            evaluator.environment().get("local"),
+            Some(&core::Value::Number(42))
+        );
+        assert!(registry.current().mappings().is_empty());
+    }
+
     fn session_id(name: &str) -> SessionId {
         SessionId::parse(name).unwrap()
     }
@@ -13,11 +28,11 @@ mod tests {
             runtime
                 .eval_text("(macroexpand-1 '(defonce retained-state (atom 1)))")
                 .unwrap(),
-            "(if (Env/resolve (quote user/retained-state)) (Env/resolve (quote user/retained-state)) (eval (quote (def retained-state (atom 1)))))"
+            "(if (Runtime/resolve (quote user/retained-state)) (Runtime/resolve (quote user/retained-state)) (eval (quote (def retained-state (atom 1)))))"
         );
         assert_eq!(
             runtime
-                .eval_text("(do (eval '(def eval-defined 1)) [(Env/resolve 'user/eval-defined) eval-defined])")
+                .eval_text("(do (eval '(def eval-defined 1)) [(Runtime/resolve 'user/eval-defined) eval-defined])")
                 .unwrap(),
             "[#'user/eval-defined 1]"
         );
@@ -35,7 +50,7 @@ mod tests {
     }
 
     #[test]
-    fn syntax_env_and_result_native_contracts_are_available() {
+    fn syntax_runtime_and_result_native_contracts_are_available() {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
@@ -45,20 +60,23 @@ mod tests {
                       (type (std.native.Result/create :success 1)) \
                       (std.native.Result/status (std.native.Result/create :error \"boom\")) \
                       (std.native.Result/context (std.native.Result/create :success 1)) \
-                      (std.native.Env/current) \
-                      (std.native.Env/eval '(+ 19 23)) \
-                      (std.foundation/eval '(+ 19 23)) \
-                      (map? (std.foundation/env-snapshot))]",
+                      (Runtime/current) \
+                      (Runtime/eval '(+ 19 23)) \
+                      (Runtime/load-string \"(+ 19 23)\") \
+                      (map? (std.foundation/env-snapshot)) \
+                      (get (Runtime/namespace 'std.native.Runtime) :namespace/state) \
+                      (Runtime/namespace 'std.native.Env) \
+                      (std.foundation/env-resolve 'std.native.Env/current)]",
                 )
                 .unwrap(),
-            "[nil true :std.native.Result :error nil user 42 42 true]"
+            "[nil true :std.native.Result :error nil user 42 42 true :loaded nil nil]"
         );
         assert!(runtime.eval_native("leaked").is_err());
         assert_eq!(
             runtime
                 .eval_native(
-                    "[(get (std.native.Env/namespace 'user) :namespace/state) \
-                      (std.native.Env/eval-in 'user '[(+ 19 23)])]",
+                    "[(get (Runtime/namespace 'user) :namespace/state) \
+                      (Runtime/eval-in 'user '[(+ 19 23)])]",
                 )
                 .unwrap(),
             "[:loaded 42]"
@@ -412,7 +430,7 @@ mod tests {
             .construct("range", "range", &[core::Value::Number(3)])
             .unwrap();
         assert_eq!(core::receiver_category(&value), "extension");
-        runtime.env.insert("r".into(), value);
+        runtime.evaluator.environment_mut().insert("r".into(), value);
         assert_eq!(runtime.eval_text("(iter-next (iter r))").unwrap(), "0");
         assert_eq!(runtime.eval_text("(iter-next (iter r))").unwrap(), "0");
         assert_eq!(runtime.require_resource("range").unwrap(), ":loaded");
@@ -493,7 +511,10 @@ mod tests {
             .extensions
             .construct("lazy-map", "request", &[core::Value::Number(42)])
             .unwrap();
-        runtime.env.insert("request".into(), value);
+        runtime
+            .evaluator
+            .environment_mut()
+            .insert("request".into(), value);
         assert_eq!(runtime.eval_text("(:value request)").unwrap(), "42");
         assert_eq!(
             runtime
@@ -911,12 +932,17 @@ mod tests {
         runtime
             .eval_text("(def ^{:dynamic true} answer 41)")
             .unwrap();
-        let local = match runtime.env.get("answer").unwrap() {
+        let local = match runtime.evaluator.environment().get("answer").unwrap() {
             core::Value::Var(var) => var.clone(),
             _ => panic!("definition must be a Var"),
         };
         assert_eq!(local.symbol().as_str(), "alpha/answer");
-        let qualified = match runtime.env.get("alpha/answer").unwrap() {
+        let qualified = match runtime
+            .evaluator
+            .environment()
+            .get("alpha/answer")
+            .unwrap()
+        {
             core::Value::Var(var) => var.clone(),
             _ => panic!("qualified definition must be a Var"),
         };
@@ -924,7 +950,7 @@ mod tests {
         assert!(qualified.is_dynamic());
         runtime.use_namespace("user");
         runtime.alias_namespace("a", "alpha");
-        let alias = match runtime.env.get("a/answer").unwrap() {
+        let alias = match runtime.evaluator.environment().get("a/answer").unwrap() {
             core::Value::Var(var) => var.clone(),
             _ => panic!("alias must resolve to a Var"),
         };
@@ -2521,7 +2547,6 @@ mod tests {
             "Algo",
             "Iter",
             "Kernel",
-            "Env",
             "Package",
         ] {
             assert!(
@@ -5593,6 +5618,18 @@ mod tests {
         assert!(kernel.eval(&beta, "local-answer").is_err());
         assert_eq!(
             kernel
+                .eval(&alpha, "(boolean (Runtime/resolve 'user/local-answer))")
+                .unwrap(),
+            "true"
+        );
+        assert_eq!(
+            kernel
+                .eval(&beta, "(boolean (Runtime/resolve 'user/local-answer))")
+                .unwrap(),
+            "false"
+        );
+        assert_eq!(
+            kernel
                 .eval(&alpha, "(module-revision 'session.module)")
                 .unwrap(),
             "1"
@@ -7404,7 +7441,7 @@ mod tests {
     }
 
     #[test]
-    fn environment_facade_inspects_without_loading_registered_namespaces() {
+    fn foundation_environment_facade_inspects_without_loading_registered_namespaces() {
         let mut runtime = Runtime::new();
         runtime.register_resource(
             "example.unloaded",
@@ -7414,13 +7451,20 @@ mod tests {
 
         assert_eq!(
             runtime
-                .eval_native("(get (Env/namespace 'example.unloaded) :namespace/state)")
+                .eval_native(
+                    "(get (std.foundation/env-namespace 'example.unloaded) :namespace/state)",
+                )
                 .unwrap(),
             ":unloaded"
         );
-        assert_eq!(runtime.eval_native("(Env/resolve 'example.unloaded/answer)").unwrap(), "nil");
+        assert_eq!(
+            runtime
+                .eval_native("(std.foundation/env-resolve 'example.unloaded/answer)")
+                .unwrap(),
+            "nil"
+        );
         assert!(runtime
-            .eval_native("(Env/vars)")
+            .eval_native("(std.foundation/env-vars)")
             .unwrap()
             .contains("local-value"));
         assert_eq!(runtime.eval_native("(ns-state 'example.unloaded)").unwrap(), ":unloaded");

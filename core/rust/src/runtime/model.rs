@@ -74,7 +74,7 @@ impl PromiseHandle {
 
 #[wasm_bindgen]
 pub struct Runtime {
-    env: HashMap<String, core::Value>,
+    evaluator: Evaluator,
     test_runner: String,
     protocols: core::ProtocolRegistry,
     extensions: core::ExtensionRegistry,
@@ -125,9 +125,8 @@ impl Drop for Runtime {
                 }
             }
         }
-        self.env.clear();
+        self.evaluator.clear();
         self.wasm_extensions.clear();
     }
 }
-
 
