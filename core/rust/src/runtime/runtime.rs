@@ -50,7 +50,7 @@ impl Runtime {
             }
         }
         Runtime {
-            env: HashMap::new(),
+            evaluator: Evaluator::new(),
             test_runner: "code.test".into(),
             protocols: core::ProtocolRegistry::core(),
             extensions: core::ExtensionRegistry::new(),
@@ -389,7 +389,7 @@ impl Runtime {
                     }
 
                     let registry_before = self.namespace_registry.snapshot();
-                    let environment_before = self.env.clone();
+                    let environment_before = self.evaluator.snapshot();
                     let macros_before = self.macros.borrow().clone();
                     let configs_before = self.generated_configs.clone();
                     let loaded_before = self.loaded_resources.clone();
@@ -435,7 +435,7 @@ impl Runtime {
                         );
                         if let Err(error) = self.eval_form(require_form, traced) {
                             self.namespace_registry.restore(registry_before);
-                            self.env = environment_before;
+                            self.evaluator.restore(environment_before);
                             *self.macros.borrow_mut() = macros_before;
                             self.generated_configs = configs_before;
                             self.loaded_resources = loaded_before;
@@ -537,16 +537,16 @@ impl Runtime {
                                             let handler = handler.clone();
                                             return core::with_host_calls(
                                                 host_call_bridge(handler),
-                                                || core::eval_traced(&form, &mut self.env),
+                                                || self.evaluator.eval_tree(&form),
                                             );
                                         }
                                         #[cfg(not(target_arch = "wasm32"))]
                                         if let Some(handler) = &self.native_host_handler {
                                             return core::with_host_calls(handler.clone(), || {
-                                                core::eval_traced(&form, &mut self.env)
+                                                self.evaluator.eval_tree(&form)
                                             });
                                         }
-                                        core::eval_traced(&form, &mut self.env)
+                                        self.evaluator.eval_tree(&form)
                                     })
                                 })
                             })
@@ -555,7 +555,6 @@ impl Runtime {
                 },
             ));
         }
-        let env = self.env.clone();
         let (result, fiber) = core::with_test_runner(&self.test_runner, || core::with_capability_providers(
             self.providers.file(),
             self.providers.socket(),
@@ -568,8 +567,7 @@ impl Runtime {
                         core::with_namespace_registry(&self.namespace_registry, || {
                             core::with_namespace_source(namespace_source, || {
                                 core::with_protocols(&self.protocols, || -> Result<(Result<core::Value, String>, core::EvalFiber), String> {
-                                    let mut fiber =
-                                        core::EvalFiber::start_forms(vec![form], env)?;
+                                    let mut fiber = self.evaluator.start_fiber(form)?;
                                     #[cfg(target_arch = "wasm32")]
                                     if let Some(handler) = &self.host_handler {
                                         let handler = handler.clone();
@@ -594,16 +592,22 @@ impl Runtime {
                 })})
             },
         ))?;
-        self.env = fiber.environment();
+        self.evaluator.finish_fiber(&fiber);
         result
     }
 
     fn refresh_qualified_bindings(&mut self) {
-        core::refresh_namespace_environment(&self.namespace_registry, &mut self.env);
+        core::refresh_namespace_environment(
+            &self.namespace_registry,
+            self.evaluator.environment_mut(),
+        );
     }
 
     fn save_namespace(&mut self) {
-        core::save_namespace_environment(&self.namespace_registry, &mut self.env);
+        core::save_namespace_environment(
+            &self.namespace_registry,
+            self.evaluator.environment_mut(),
+        );
     }
 
     pub fn create_namespace(&mut self, name: &str) -> bool {
@@ -655,14 +659,18 @@ impl Runtime {
                     .is_some_and(|var| var.symbol().get_namespace() == Some("std.foundation"))
                 {
                     target.unmap(&local);
-                    self.env.remove(&excluded);
+                    self.evaluator.environment_mut().remove(&excluded);
                 }
                 self.macros
                     .borrow_mut()
                     .remove(&(name.to_owned(), excluded));
             }
         }
-        core::select_namespace_environment(&self.namespace_registry, &mut self.env, name);
+        core::select_namespace_environment(
+            &self.namespace_registry,
+            self.evaluator.environment_mut(),
+            name,
+        );
         self.sync_generated_aliases(&config);
         self.refresh_qualified_bindings();
         true
@@ -1016,7 +1024,11 @@ impl Runtime {
             core::with_namespace_source(namespace_source, || {
                 core::with_protocols(&self.protocols, || {
                     core::with_namespace_registry(&self.namespace_registry, || {
-                        core::require_namespace(&self.namespace_registry, &mut self.env, name)
+                        core::require_namespace(
+                            &self.namespace_registry,
+                            self.evaluator.environment_mut(),
+                            name,
+                        )
                     })
                 })
             })
@@ -1168,4 +1180,3 @@ impl Runtime {
         self.eval_text_mode(source, true)
     }
 }
-
