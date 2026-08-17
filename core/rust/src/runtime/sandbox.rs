@@ -11,6 +11,19 @@ pub struct SandboxPending<T> {
 }
 
 impl<T> SandboxPending<T> {
+    /// Creates a provider result tied to the evaluation allocated by the
+    /// Kernel. External providers send exactly one terminal result through the
+    /// receiver; dropping the sender is reported as a transport failure.
+    pub const fn new(
+        evaluation: EvaluationId,
+        receiver: mpsc::Receiver<Result<T, SandboxError>>,
+    ) -> Self {
+        Self {
+            evaluation,
+            receiver,
+        }
+    }
+
     pub const fn evaluation(&self) -> EvaluationId {
         self.evaluation
     }

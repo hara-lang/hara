@@ -26,6 +26,11 @@ impl EvaluationId {
     pub(crate) const fn new(value: u64) -> Self {
         Self(value)
     }
+
+    /// Returns the Kernel-allocated provider-local evaluation identifier.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 impl fmt::Display for SandboxId {
@@ -290,7 +295,8 @@ pub struct SandboxError {
 }
 
 impl SandboxError {
-    pub(crate) fn new(code: SandboxErrorCode, message: impl Into<String>) -> Self {
+    /// Creates a stable sandbox error at an external provider boundary.
+    pub fn new(code: SandboxErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
