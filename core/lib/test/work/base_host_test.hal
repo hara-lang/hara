@@ -1,0 +1,95 @@
+(ns work.base-host-test
+  (:use code.test)
+  (:require [work.base.host :as host]
+            [work.base.provider.ephemeral :as ephemeral]))
+
+(defn test-provider
+  [locator]
+  (let [state (atom {:status :started :runs {}})]
+    {:provider/role :work/host
+     :provider/api :std.work.host/v1
+     :provider/locator locator
+     :provider/capabilities #{:inline-work}
+     :provider/state state
+     :provider/operations
+     {:start (fn [] (swap! state assoc :status :started))
+      :stop (fn [] (swap! state assoc :status :stopped))
+      :kill (fn [] (swap! state assoc :status :stopped))
+      :status (fn [] (:status (deref state)))
+      :submit
+      (fn [work input options]
+        (let [id (or (:id options) "run-1")
+              handle {:status :completed :result input}]
+          (swap! state assoc-in [:runs id] handle)
+          {:run/id id :run/handle handle}))
+      :resolve
+      (fn [reference]
+        {:run/handle (get-in (deref state) [:runs (:id reference)])})
+      :run-status (fn [reference handle] (:status handle))
+      :run-result (fn [reference handle] (promise/from (:result handle)))
+      :run-events (fn [reference handle options] nil)
+      :run-cancel (fn [reference handle reason] (promise/from false))}}))
+
+(def locator
+  {:host/type :ephemeral
+   :host/id "test"})
+
+(fact "portable HAL hosts submit and resolve live run facades"
+  (let [scheduler (host/host locator (test-provider locator))
+        run (deref (IWorkHost/work-submit scheduler :work 42 {:id "portable"}))
+        reference (host/reference run)
+        resolved (deref (IWorkHost/work-resolve scheduler reference))]
+    [(satisfies? IWorkHost scheduler)
+     (satisfies? IWorkRun run)
+     (promise? (IWorkHost/work-submit scheduler :work 1 {:id "second"}))
+     (IWorkRef/work-id reference)
+     (:host reference)
+     (IWorkRun/work-status run)
+     (deref (IWorkRun/work-result resolved))
+     (IClosed/closed? run)])
+  => [true true true "portable"
+      {:host/type :ephemeral
+       :host/id "test"
+       :host/api :std.work.host/v1}
+      :completed 42 true])
+
+(fact "portable references reject resolution through another host"
+  (let [first-locator {:host/type :ephemeral :host/id "first"}
+        second-locator {:host/type :ephemeral :host/id "second"}
+        first (host/host first-locator (test-provider first-locator))
+        second (host/host second-locator (test-provider second-locator))
+        run (deref (host/submit first :work 1 {:id "owned"}))]
+    (try
+      (host/resolve second (host/reference run))
+      :not-rejected
+      (catch Throwable error
+        (:work/error (ex-data error)))))
+  => :work/host-mismatch)
+
+(fact "host lifecycle delegates through the unified provider"
+  (let [scheduler (host/host locator (test-provider locator))]
+    [(IComponent/started? scheduler)
+     (= scheduler (IComponent/stop scheduler))
+     (IComponent/stopped? scheduler)
+     (= scheduler (IComponent/start scheduler))
+     (IComponent/started? scheduler)
+     (IComponent/remote? scheduler)])
+  => [true true true true true false])
+
+(fact "the ephemeral provider adapts the native host without protocol aliases"
+  (let [scheduler (ephemeral/ephemeral-host)
+        run (deref
+             (IWorkHost/work-submit
+              scheduler
+              :payload
+              42
+              {:work/execute
+               (fn [work input options id]
+                 input)}))]
+    [(satisfies? IWorkHost scheduler)
+     (satisfies? IWorkRun run)
+     (deref (IWorkRun/work-result run))
+     (IWorkRun/work-status run)])
+  => [true true 42 :completed])
+
+(pr-str (run '[work.base-host-test]))

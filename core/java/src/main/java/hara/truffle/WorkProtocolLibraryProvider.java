@@ -12,7 +12,7 @@ import java.util.Map;
 public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
-    return "work.native.protocol";
+    return "work.native";
   }
 
   @Override
@@ -65,6 +65,14 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
         null);
     context.defineLibraryFunction(
         namespace(),
+        "check-cancelled",
+        arguments -> {
+          requireCurrent("check-cancelled", arguments, 0).checkCancelled();
+          return null;
+        },
+        null);
+    context.defineLibraryFunction(
+        namespace(),
         "deadline-nanos",
         arguments -> requireCurrent("deadline-nanos", arguments, 0).deadlineNanos(),
         null);
@@ -81,6 +89,22 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
                 .submitChild(arguments[0], arguments[1], arguments[2]);
           }
           throw new HaraException("submit-child expects 2 or 3 arguments");
+        },
+        null);
+    context.defineLibraryFunction(
+        namespace(),
+        "on-close",
+        arguments -> {
+          requireArity("on-close", arguments, 1);
+          Object function = arguments[0];
+          Object wrapper =
+              context.libraryFunction(
+                  "work.native/on-close-finalizer",
+                  ignored ->
+                      context.invokeCallable(
+                          function,
+                          new Object[] {requireCurrent("on-close", new Object[0], 0).currentRun()}));
+          return requireCurrent("on-close", arguments, 1).onClose(wrapper);
         },
         null);
   }

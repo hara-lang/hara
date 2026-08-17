@@ -4,12 +4,116 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
+import hara.lang.data.Keyword;
+import hara.lang.protocol.IWorkRun;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.junit.Test;
 
 public class HaraWorkHostTest {
+  @Test
+  public void scopeHelpersAreOrdinaryWorkNativeFunctions() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      enterNamespace(context, "work.host.scope.functions");
+      assertEquals(
+          "[\"jvm-scope-functions\" false true 42]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [run (IWorkHost/work-submit "
+                      + "work.native/default-host :payload 42 "
+                      + "{:id \"jvm-scope-functions\" "
+                      + ":work/execute (fn [work input options id] "
+                      + "[(IWorkRef/work-id (work.native/current-run)) "
+                      + " (work.native/cancelled?) "
+                      + " (work.native/on-close (fn [context] nil)) input])})] "
+                      + "(deref (IWorkRun/work-result run)))")
+              .toString());
+    }
+  }
+
+  @Test
+  public void stopDrainsWhileKillCancelsAdmittedRuns() {
+    try (Context polyglot = Context.newBuilder(HaraLanguage.ID).build()) {
+      polyglot.eval(HaraLanguage.ID, "nil");
+      polyglot.enter();
+      try {
+        HaraContext context = HaraLanguage.currentContext();
+        HaraWorkHost host = HaraWorkHost.instance();
+        host.start();
+        CompletableFuture<Object> body = new CompletableFuture<>();
+        Object executor =
+            context.libraryFunction("work.host/drain", arguments -> context.promiseValue(body));
+        IWorkRun draining =
+            host.workSubmit(
+                context,
+                Keyword.create("payload"),
+                null,
+                java.util.Map.of(
+                    Keyword.create("id"), "stop-drain-" + UUID.randomUUID(),
+                    Keyword.create("work", "execute"), executor));
+        host.stop();
+        assertThrows(
+            RuntimeException.class,
+            () ->
+                host.workSubmit(
+                    context,
+                    Keyword.create("payload"),
+                    null,
+                    java.util.Map.of(Keyword.create("work", "execute"), executor)));
+        body.complete(7L);
+        assertEquals(7L, draining.workResult().deref());
+
+        host.start();
+        CompletableFuture<Object> never = new CompletableFuture<>();
+        Object blocking =
+            context.libraryFunction("work.host/kill", arguments -> context.promiseValue(never));
+        IWorkRun cancelled =
+            host.workSubmit(
+                context,
+                Keyword.create("payload"),
+                null,
+                java.util.Map.of(
+                    Keyword.create("id"), "kill-cancel-" + UUID.randomUUID(),
+                    Keyword.create("work", "execute"), blocking));
+        host.kill();
+        assertThrows(RuntimeException.class, () -> cancelled.workResult().deref());
+        host.start();
+      } finally {
+        polyglot.leave();
+      }
+    }
+  }
+
+  @Test
+  public void lifecycleEventsAreOrderedReplayableStreams() {
+    String id = "events-" + UUID.randomUUID();
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      enterNamespace(context, "work.host.events");
+      assertEquals(
+          "[[:work/run-queued 1] [:work/run-running 2] [:work/run-completed 3] nil]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [run (IWorkHost/work-submit work.native/default-host "
+                      + "              :payload 42 {:id \""
+                      + id
+                      + "\" :work/execute (fn [work input options id] input)}) "
+                      + "      events (IWorkRun/work-events run {}) "
+                      + "      _ (deref (IWorkRun/work-result run)) "
+                      + "      first (deref (IStream/next events)) "
+                      + "      second (deref (IStream/next events)) "
+                      + "      third (deref (IStream/next events))] "
+                      + "  [[(:event/type first) (:event/sequence first)] "
+                      + "   [(:event/type second) (:event/sequence second)] "
+                      + "   [(:event/type third) (:event/sequence third)] "
+                      + "   (deref (IStream/next events))])")
+              .toString());
+    }
+  }
+
   @Test
   public void submissionReturnsBeforeTheNativeResultSettles() {
     String id = "immediate-" + UUID.randomUUID();
@@ -21,7 +125,7 @@ public class HaraWorkHostTest {
                   HaraLanguage.ID,
                   "(do "
                       + "(def live-run "
-                      + "  (work/work-submit work.native.protocol/default-host "
+                      + "  (IWorkHost/work-submit work.native/default-host "
                       + "    :payload 7 "
                       + "    {:id \""
                       + id
@@ -29,19 +133,19 @@ public class HaraWorkHostTest {
                       + "     :work/execute "
                       + "     (fn [work input options run-id] "
                       + "       (promise/delay 1000 (fn [] [work input run-id])))})) "
-                      + "(work/work-status live-run))")
+                      + "(IWorkRun/work-status live-run))")
               .toString();
 
       assertTrue(state.equals(":queued") || state.equals(":running"));
       assertEquals(
           "[:payload 7 \"" + id + "\"]",
           context
-              .eval(HaraLanguage.ID, "(deref (work/work-result live-run))")
+              .eval(HaraLanguage.ID, "(deref (IWorkRun/work-result live-run))")
               .toString());
       assertEquals(
           ":completed",
           context
-              .eval(HaraLanguage.ID, "(work/work-status live-run)")
+              .eval(HaraLanguage.ID, "(IWorkRun/work-status live-run)")
               .toString());
     }
   }
@@ -59,13 +163,13 @@ public class HaraWorkHostTest {
                   HaraLanguage.ID,
                   "(do "
                       + "(def cross-run "
-                      + "  (work/work-submit work.native.protocol/default-host "
+                      + "  (IWorkHost/work-submit work.native/default-host "
                       + "    :payload nil "
                       + "    {:id \""
                       + id
                       + "\" "
                       + "     :work/execute (fn [work input options run-id] 42)})) "
-                      + "(deref (work/work-result cross-run)))")
+                      + "(deref (IWorkRun/work-result cross-run)))")
               .toString());
 
       enterNamespace(second, "work.host.second");
@@ -74,12 +178,12 @@ public class HaraWorkHostTest {
           second
               .eval(
                   HaraLanguage.ID,
-                  "(let [run (work/work-resolve work.native.protocol/default-host \""
+                  "(let [run (IWorkHost/work-resolve work.native/default-host \""
                       + id
                       + "\")] "
-                      + "  [(work/work-id run) "
-                      + "   (deref (work/work-result run)) "
-                      + "   (work/work-status run)])")
+                      + "  [(IWorkRef/work-id run) "
+                      + "   (deref (IWorkRun/work-result run)) "
+                      + "   (IWorkRun/work-status run)])")
               .toString());
     }
   }
@@ -92,7 +196,7 @@ public class HaraWorkHostTest {
       context.eval(
           HaraLanguage.ID,
           "(def failed-run "
-              + "  (work/work-submit work.native.protocol/default-host "
+              + "  (IWorkHost/work-submit work.native/default-host "
               + "    :payload nil "
               + "    {:id \""
               + id
@@ -104,11 +208,11 @@ public class HaraWorkHostTest {
       PolyglotException failure =
           assertThrows(
               PolyglotException.class,
-              () -> context.eval(HaraLanguage.ID, "(deref (work/work-result failed-run))"));
+              () -> context.eval(HaraLanguage.ID, "(deref (IWorkRun/work-result failed-run))"));
       assertTrue(failure.getMessage().contains("work failed"));
       assertEquals(
           ":failed",
-          context.eval(HaraLanguage.ID, "(work/work-status failed-run)").toString());
+          context.eval(HaraLanguage.ID, "(IWorkRun/work-status failed-run)").toString());
     }
   }
 
@@ -124,17 +228,17 @@ public class HaraWorkHostTest {
                   HaraLanguage.ID,
                   "(do "
                       + "(def terminal-run "
-                      + "  (work/work-submit work.native.protocol/default-host "
+                      + "  (IWorkHost/work-submit work.native/default-host "
                       + "    :payload nil "
                       + "    {:id \""
                       + id
                       + "\" "
                       + "     :work/execute (fn [work input options run-id] 42)})) "
-                      + "(let [value (deref (work/work-result terminal-run)) "
-                      + "      cancelled (deref (work/work-cancel terminal-run :late))] "
+                      + "(let [value (deref (IWorkRun/work-result terminal-run)) "
+                      + "      cancelled (deref (IWorkRun/work-cancel terminal-run :late))] "
                       + "  [value cancelled "
-                      + "   (work/work-status terminal-run) "
-                      + "   (deref (work/work-result terminal-run))]))")
+                      + "   (IWorkRun/work-status terminal-run) "
+                      + "   (deref (IWorkRun/work-result terminal-run))]))")
               .toString());
     }
   }
@@ -142,6 +246,6 @@ public class HaraWorkHostTest {
   private static void enterNamespace(Context context, String name) {
     context.eval(
         HaraLanguage.ID,
-        "(ns " + name + " (:require [std.work.protocol :as work]))");
+        "(ns " + name + ")");
   }
 }

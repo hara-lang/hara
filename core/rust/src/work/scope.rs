@@ -66,6 +66,14 @@ impl WorkContext {
         self.run.deadline()
     }
 
+    pub fn deadline_nanos(&self) -> Option<u64> {
+        let deadline = self.deadline()?;
+        let now = Instant::now();
+        let remaining =
+            u64::try_from(deadline.saturating_duration_since(now).as_nanos()).unwrap_or(u64::MAX);
+        Some(monotonic_nanos().saturating_add(remaining))
+    }
+
     pub fn check_cancelled(&self) -> Result<(), PromiseRejection> {
         self.token().check()
     }
@@ -116,6 +124,11 @@ impl WorkContext {
 thread_local! {
     static PROCESS_WORK_HOST: WorkHost = WorkHost::new();
     static CURRENT_WORK_CONTEXT: RefCell<Option<WorkContext>> = const { RefCell::new(None) };
+    static MONOTONIC_ORIGIN: Instant = Instant::now();
+}
+
+pub fn monotonic_nanos() -> u64 {
+    MONOTONIC_ORIGIN.with(|origin| origin.elapsed().as_nanos() as u64)
 }
 
 /// Return the process/evaluator-thread host shared by independent sessions.

@@ -1,4 +1,26 @@
 use super::*;
+
+#[test]
+fn stop_drains_admitted_work_while_kill_cancels_it() {
+    let host = WorkHost::new();
+    let draining = host
+        .submit(Some("stop-drain"), || Ok(Value::Number(7)))
+        .unwrap();
+    host.stop();
+    assert!(host.submit(Some("rejected"), || Ok(Value::Nil)).is_err());
+    host.drain();
+    assert_eq!(
+        draining.work_result().state(),
+        PromiseState::Fulfilled(Value::Number(7))
+    );
+
+    host.start();
+    let cancelled = host
+        .submit(Some("kill-cancel"), || Ok(Value::Number(9)))
+        .unwrap();
+    host.kill();
+    assert_eq!(cancelled.work_status().state, WorkRunState::Cancelled);
+}
 use std::cell::Cell;
 
 #[test]

@@ -49,10 +49,17 @@ impl Runtime {
                 );
             }
         }
+        let work_native = namespace_registry.find_or_create("work.native");
+        work_native.intern("default-host", crate::work::guest::default_host_value());
+        for (name, value) in crate::work::guest::values() {
+            work_native.intern(name, value);
+        }
+        let mut protocols = core::ProtocolRegistry::core();
+        crate::work::guest::install(&mut protocols);
         Runtime {
             evaluator: Evaluator::new(),
             test_runner: "code.test".into(),
-            protocols: core::ProtocolRegistry::core(),
+            protocols,
             extensions: core::ExtensionRegistry::new(),
             wasm_extensions: HashMap::new(),
             providers: core::ProviderRegistry::new(),
@@ -201,7 +208,8 @@ impl Runtime {
         #[cfg(feature = "bytecode-vm")]
         {
             let mut source_fallback = false;
-            match vm::eval_bytecode_bundle(self, include_bytes!("../../assets/std.foundation.hbx")) {
+            match vm::eval_bytecode_bundle(self, include_bytes!("../../assets/std.foundation.hbx"))
+            {
                 Ok(()) => {
                     self.loaded_resources.insert("std.foundation".into());
                     for &name in EAGER_HAL_RESOURCES {
@@ -520,53 +528,58 @@ impl Runtime {
     fn eval_form(&mut self, form: Form, traced: bool) -> Result<core::Value, String> {
         let namespace_source = self.namespace_source();
         if traced {
-            return core::with_test_runner(&self.test_runner, || core::with_capability_providers(
+            return core::with_test_runner(&self.test_runner, || {
+                core::with_capability_providers(
+                    self.providers.file(),
+                    self.providers.socket(),
+                    self.providers.process(),
+                    self.providers.kernel(),
+                    || {
+                        core::with_package_catalog(&self.package_catalog, || {
+                            core::with_promise_provider(self.providers.promise(), || {
+                                core::with_macros(self.macros.clone(), || {
+                                    core::with_namespace_registry(&self.namespace_registry, || {
+                                        core::with_namespace_source(namespace_source, || {
+                                            core::with_protocols(&self.protocols, || {
+                                                #[cfg(target_arch = "wasm32")]
+                                                if let Some(handler) = &self.host_handler {
+                                                    let handler = handler.clone();
+                                                    return core::with_host_calls(
+                                                        host_call_bridge(handler),
+                                                        || self.evaluator.eval_tree(&form),
+                                                    );
+                                                }
+                                                #[cfg(not(target_arch = "wasm32"))]
+                                                if let Some(handler) = &self.native_host_handler {
+                                                    return core::with_host_calls(
+                                                        handler.clone(),
+                                                        || self.evaluator.eval_tree(&form),
+                                                    );
+                                                }
+                                                self.evaluator.eval_tree(&form)
+                                            })
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    },
+                )
+            });
+        }
+        let (result, fiber) = core::with_test_runner(&self.test_runner, || {
+            core::with_capability_providers(
                 self.providers.file(),
                 self.providers.socket(),
                 self.providers.process(),
                 self.providers.kernel(),
                 || {
                     core::with_package_catalog(&self.package_catalog, || {
-                    core::with_promise_provider(self.providers.promise(), || {
-                        core::with_macros(self.macros.clone(), || {
-                            core::with_namespace_registry(&self.namespace_registry, || {
-                                core::with_namespace_source(namespace_source, || {
-                                    core::with_protocols(&self.protocols, || {
-                                        #[cfg(target_arch = "wasm32")]
-                                        if let Some(handler) = &self.host_handler {
-                                            let handler = handler.clone();
-                                            return core::with_host_calls(
-                                                host_call_bridge(handler),
-                                                || self.evaluator.eval_tree(&form),
-                                            );
-                                        }
-                                        #[cfg(not(target_arch = "wasm32"))]
-                                        if let Some(handler) = &self.native_host_handler {
-                                            return core::with_host_calls(handler.clone(), || {
-                                                self.evaluator.eval_tree(&form)
-                                            });
-                                        }
-                                        self.evaluator.eval_tree(&form)
-                                    })
-                                })
-                            })
-                        })
-                    })})
-                },
-            ));
-        }
-        let (result, fiber) = core::with_test_runner(&self.test_runner, || core::with_capability_providers(
-            self.providers.file(),
-            self.providers.socket(),
-            self.providers.process(),
-            self.providers.kernel(),
-            || {
-                core::with_package_catalog(&self.package_catalog, || {
-                core::with_promise_provider(self.providers.promise(), || {
-                    core::with_macros(self.macros.clone(), || {
-                        core::with_namespace_registry(&self.namespace_registry, || {
-                            core::with_namespace_source(namespace_source, || {
-                                core::with_protocols(&self.protocols, || -> Result<(Result<core::Value, String>, core::EvalFiber), String> {
+                        core::with_promise_provider(self.providers.promise(), || {
+                            core::with_macros(self.macros.clone(), || {
+                                core::with_namespace_registry(&self.namespace_registry, || {
+                                    core::with_namespace_source(namespace_source, || {
+                                        core::with_protocols(&self.protocols, || -> Result<(Result<core::Value, String>, core::EvalFiber), String> {
                                     let mut fiber = self.evaluator.start_fiber(form)?;
                                     #[cfg(target_arch = "wasm32")]
                                     if let Some(handler) = &self.host_handler {
@@ -586,12 +599,14 @@ impl Runtime {
                                     }
                                     Ok((fiber.drive_sync(), fiber))
                                 })
+                                    })
+                                })
                             })
                         })
                     })
-                })})
-            },
-        ))?;
+                },
+            )
+        })?;
         self.evaluator.finish_fiber(&fiber);
         result
     }
@@ -971,19 +986,56 @@ impl Runtime {
         for package in packages {
             let namespaces = package.namespaces.clone();
             let descriptor = core::Value::OrderedMap(Box::new(POrderedMap::from_iter([
-                (core::Value::Keyword("package/coordinate".into()), core::Value::String(package.coordinate.clone())),
-                (core::Value::Keyword("package/version".into()), core::Value::String(package.version)),
-                (core::Value::Keyword("package/tap".into()), core::Value::String(package.tap)),
-                (core::Value::Keyword("package/registry-commit".into()), core::Value::String(package.registry_commit)),
-                (core::Value::Keyword("package/identity-revision".into()), core::Value::String(package.identity_revision)),
-                (core::Value::Keyword("package/archive-sha256".into()), core::Value::String(package.archive_sha256)),
-                (core::Value::Keyword("package/namespaces".into()), core::Value::Vector(PVector::from(namespaces.iter().map(|name| core::Value::Symbol(crate::lang::data::Symbol::parse(name))).collect::<Vec<_>>()))),
-                (core::Value::Keyword("package/dependencies".into()), core::Value::Vector(PVector::from(package.dependencies.iter().map(|coordinate| core::Value::String(coordinate.clone())).collect::<Vec<_>>()))),
+                (
+                    core::Value::Keyword("package/coordinate".into()),
+                    core::Value::String(package.coordinate.clone()),
+                ),
+                (
+                    core::Value::Keyword("package/version".into()),
+                    core::Value::String(package.version),
+                ),
+                (
+                    core::Value::Keyword("package/tap".into()),
+                    core::Value::String(package.tap),
+                ),
+                (
+                    core::Value::Keyword("package/registry-commit".into()),
+                    core::Value::String(package.registry_commit),
+                ),
+                (
+                    core::Value::Keyword("package/identity-revision".into()),
+                    core::Value::String(package.identity_revision),
+                ),
+                (
+                    core::Value::Keyword("package/archive-sha256".into()),
+                    core::Value::String(package.archive_sha256),
+                ),
+                (
+                    core::Value::Keyword("package/namespaces".into()),
+                    core::Value::Vector(PVector::from(
+                        namespaces
+                            .iter()
+                            .map(|name| core::Value::Symbol(crate::lang::data::Symbol::parse(name)))
+                            .collect::<Vec<_>>(),
+                    )),
+                ),
+                (
+                    core::Value::Keyword("package/dependencies".into()),
+                    core::Value::Vector(PVector::from(
+                        package
+                            .dependencies
+                            .iter()
+                            .map(|coordinate| core::Value::String(coordinate.clone()))
+                            .collect::<Vec<_>>(),
+                    )),
+                ),
             ])));
-            self.package_catalog.register(package.coordinate, descriptor, namespaces.clone());
+            self.package_catalog
+                .register(package.coordinate, descriptor, namespaces.clone());
             for namespace in namespaces {
                 if self.namespace_registry.load_state(&namespace).is_none() {
-                    self.namespace_registry.set_load_state(&namespace, kernel::NamespaceLoadState::Unloaded);
+                    self.namespace_registry
+                        .set_load_state(&namespace, kernel::NamespaceLoadState::Unloaded);
                 }
             }
         }

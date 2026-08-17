@@ -1,0 +1,268 @@
+(ns work.base.host)
+
+(def host-api :std.work.host/v1)
+(def terminal-statuses #{:completed :failed :cancelled})
+(def required-operations
+  [:start
+   :stop
+   :kill
+   :status
+   :submit
+   :resolve
+   :run-status
+   :run-result
+   :run-events
+   :run-cancel])
+
+(defstruct WorkHost [locator provider])
+(defstruct WorkRef [host id])
+(defstruct WorkRun [reference provider handle])
+
+(defn- promised
+  [value]
+  (if (promise? value)
+    value
+    (promise/from value)))
+
+(defn- contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= candidate value)))
+   false
+   (or values [])))
+
+(defn normalise-locator
+  [locator]
+  (if (not (map? locator))
+    (throw
+     (ex-info "Work host locator must be a map"
+              {:work/error :work/invalid-host-locator
+               :host/locator locator})))
+  (let [type (:host/type locator)
+        id (:host/id locator)]
+    (if (nil? type)
+      (throw
+       (ex-info "Work host locator requires :host/type"
+                {:work/error :work/invalid-host-locator})))
+    (if (nil? id)
+      (throw
+       (ex-info "Work host locator requires :host/id"
+                {:work/error :work/invalid-host-locator
+                 :host/type type})))
+    (reduce
+     (fn [portable key]
+       (if (has? locator key)
+         (assoc portable key (get locator key))
+         portable))
+     {:host/type type
+      :host/id id
+      :host/api (or (:host/api locator) host-api)}
+     [:host/endpoint])))
+
+(defn operations
+  [provider]
+  (or (:provider/operations provider) {}))
+
+(defn- missing-operations
+  [provider]
+  (let [installed (operations provider)]
+    (reduce
+     (fn [missing operation]
+       (if (nil? (get installed operation))
+         (conj missing operation)
+         missing))
+     []
+     required-operations)))
+
+(defn validate-provider
+  [provider locator]
+  (if (not (map? provider))
+    (throw
+     (ex-info "Work host provider must be a descriptor map"
+              {:work/error :work/invalid-host-provider})))
+  (if (not= :work/host (:provider/role provider))
+    (throw
+     (ex-info "Work provider does not have the host role"
+              {:work/error :work/invalid-host-provider
+               :provider/role (:provider/role provider)})))
+  (if (not= host-api (:provider/api provider))
+    (throw
+     (ex-info "Work host provider API is not supported"
+              {:work/error :work/unsupported-host-api
+               :provider/api (:provider/api provider)})))
+  (let [missing (missing-operations provider)]
+    (if (not (empty? missing))
+      (throw
+       (ex-info "Work host provider is missing required operations"
+                {:work/error :work/invalid-host-provider
+                 :provider/missing missing}))))
+  (let [provider-locator
+        (normalise-locator
+         (or (:provider/locator provider) locator))]
+    (if (not= locator provider-locator)
+      (throw
+       (ex-info "Work host provider locator does not match its host"
+                {:work/error :work/host-mismatch
+                 :host/locator locator
+                 :provider/locator provider-locator}))))
+  provider)
+
+(defn host
+  [locator provider]
+  (let [locator (normalise-locator locator)
+        provider (validate-provider provider locator)]
+    (work.base.host/WorkHost locator provider)))
+
+(defn locator
+  [host]
+  (:locator host))
+
+(defn capabilities
+  [host]
+  (or (:provider/capabilities (:provider host)) #{}))
+
+(defn capability?
+  [host capability]
+  (contains-value? (capabilities host) capability))
+
+(defn- call-provider
+  [provider operation & arguments]
+  (let [function (get (operations provider) operation)]
+    (apply function arguments)))
+
+(defn reference
+  [run-or-reference]
+  (if (instance? work.base.host/WorkRun run-or-reference)
+    (:reference run-or-reference)
+    run-or-reference))
+
+(defn reference-id
+  [run-or-reference]
+  (IWorkRef/work-id run-or-reference))
+
+(defn- assert-reference-host!
+  [host reference]
+  (let [expected (locator host)
+        actual (:host reference)]
+    (if (not= expected actual)
+      (throw
+       (ex-info "Work reference belongs to another host"
+                {:work/error :work/host-mismatch
+                 :host/expected expected
+                 :host/actual actual
+                 :run/id (:id reference)}))))
+  reference)
+
+(defn- admitted-run
+  [host admission]
+  (let [id (:run/id admission)]
+    (if (nil? id)
+      (throw
+       (ex-info "Work host admission did not return :run/id"
+                {:work/error :work/invalid-admission
+                 :host/locator (locator host)})))
+    (work.base.host/WorkRun
+     (work.base.host/WorkRef (locator host) id)
+     (:provider host)
+     (:run/handle admission))))
+
+(defn submit
+  ([host work input]
+   (submit host work input {}))
+  ([host work input options]
+   (promised
+    (promise/then
+     (promised
+      (call-provider (:provider host)
+                     :submit
+                     work
+                     input
+                     (or options {})))
+     (fn [admission]
+       (admitted-run host admission))))))
+
+(defn resolve
+  [host run-reference]
+  (let [run-reference (assert-reference-host! host (reference run-reference))]
+    (promised
+     (promise/then
+      (promised
+       (call-provider (:provider host) :resolve run-reference))
+      (fn [resolution]
+        (let [handle
+              (if (and (map? resolution)
+                       (has? resolution :run/handle))
+                (:run/handle resolution)
+                resolution)]
+          (work.base.host/WorkRun
+           run-reference
+           (:provider host)
+           handle)))))))
+
+(extend-type WorkHost IComponent
+  (props [host]
+    {:work/host (locator host)
+     :work/capabilities (capabilities host)})
+  (status [host]
+    (call-provider (:provider host) :status))
+  (started? [host]
+    (= :started (IComponent/status host)))
+  (stopped? [host]
+    (= :stopped (IComponent/status host)))
+  (start [host]
+    (call-provider (:provider host) :start)
+    host)
+  (stop [host]
+    (call-provider (:provider host) :stop)
+    host)
+  (kill [host]
+    (call-provider (:provider host) :kill)
+    host)
+  (remote? [host]
+    (not= :ephemeral (:host/type (locator host)))))
+
+(extend-type WorkHost IWorkHost
+  (work-submit [host work input options]
+    (submit host work input options))
+  (work-resolve [host run-reference]
+    (resolve host run-reference)))
+
+(extend-type WorkRef IWorkRef
+  (work-id [reference]
+    (:id reference)))
+
+(extend-type WorkRun IWorkRef
+  (work-id [run]
+    (:id (:reference run))))
+
+(extend-type WorkRun IClosed
+  (closed? [run]
+    (contains-value? terminal-statuses
+                     (IWorkRun/work-status run))))
+
+(extend-type WorkRun IWorkRun
+  (work-status [run]
+    (call-provider (:provider run)
+                   :run-status
+                   (:reference run)
+                   (:handle run)))
+  (work-result [run]
+    (promised
+     (call-provider (:provider run)
+                    :run-result
+                    (:reference run)
+                    (:handle run))))
+  (work-events [run options]
+    (call-provider (:provider run)
+                   :run-events
+                   (:reference run)
+                   (:handle run)
+                   (or options {})))
+  (work-cancel [run reason]
+    (promised
+     (call-provider (:provider run)
+                    :run-cancel
+                    (:reference run)
+                    (:handle run)
+                    reason))))
