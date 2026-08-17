@@ -39,6 +39,7 @@ pub struct SessionMountId(u64);
 
 impl SessionMountId {
     pub const fn new(value: u64) -> Self {
+        assert!(value > 0, "filesystem mount identifiers must be positive");
         Self(value)
     }
 
@@ -167,6 +168,12 @@ mod session_model_tests {
         assert_eq!(mount.get(), 7);
         assert_eq!(mount.to_string(), "7");
         assert!(SessionId::parse("bad/name").is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "filesystem mount identifiers must be positive")]
+    fn mount_identifiers_reject_zero() {
+        SessionMountId::new(0);
     }
 
     #[test]

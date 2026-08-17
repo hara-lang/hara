@@ -2,6 +2,7 @@ package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -87,8 +88,7 @@ public class SessionKernelTest {
       assertFalse(policy.reflection);
       assertFalse(policy.packages);
       assertFalse(policy.project);
-      assertEquals(
-          "zero", ((SessionModel.SessionStatus) child.getStatus()).authority().profile());
+      assertEquals("zero", ((SessionModel.SessionStatus) child.getStatus()).authority().profile());
     }
   }
 
@@ -104,8 +104,7 @@ public class SessionKernelTest {
       assertTrue(alpha instanceof IInvokeIn);
       assertTrue(alpha.isStarted());
       assertEquals("user", ((SessionModel.SessionStatus) alpha.getProps()).namespace());
-      assertEquals(
-          "zero", ((SessionModel.SessionStatus) alpha.getProps()).authority().profile());
+      assertEquals("zero", ((SessionModel.SessionStatus) alpha.getProps()).authority().profile());
 
       assertEquals(41L, alpha.call("(do (ns alpha.core) (def answer 41) answer)"));
       assertEquals("alpha.core", alpha.currentNamespace());
@@ -135,9 +134,10 @@ public class SessionKernelTest {
       assertEquals(null, session.filesystemMount());
       assertEquals(null, ((SessionModel.SessionStatus) session.getStatus()).filesystem());
       session.eval("(def stale-value 42)");
-      SessionModel.SessionMountId mount = SessionModel.SessionMountId.from(root);
+      SessionModel.SessionMountId mount = kernel.createFilesystem(root);
       kernel.attachFilesystem(session.id(), mount);
       assertEquals(mount, session.filesystemMount());
+      assertEquals(1, kernel.filesystemInfo(mount).attachments());
       assertTrue(session.eval("(deref (Host/capability? \"filesystem\"))").asBoolean());
       assertEquals("zero", session.authority().profile());
       session.eval("(deref (std.native.File/write \"/state.bin\" (bytes 1 2 3)))");
@@ -148,8 +148,66 @@ public class SessionKernelTest {
       } catch (IllegalArgumentException expected) {
         assertTrue(expected.getMessage().contains("Unbound"));
       }
+      kernel.detachFilesystem(session.id());
+      assertEquals(null, session.filesystemMount());
+      assertEquals(0, kernel.filesystemInfo(mount).attachments());
+      kernel.closeFilesystem(mount);
     } finally {
       Files.deleteIfExists(root.resolve("state.bin"));
+      Files.deleteIfExists(root);
+    }
+  }
+
+  @Test
+  public void kernelOwnsOpaqueFilesystemMountsAndAttachmentCounts() throws Exception {
+    Path firstRoot = Files.createTempDirectory("hara-session-first");
+    Path secondRoot = Files.createTempDirectory("hara-session-second");
+    try (SessionKernel kernel = new SessionKernel(true, false)) {
+      SessionKernel.Session session = kernel.create(sessionId("mounted"));
+      SessionModel.SessionMountId first = kernel.createFilesystem(firstRoot);
+      SessionModel.SessionMountId second = kernel.createFilesystem(secondRoot);
+
+      assertNotEquals(first, second);
+      assertThrows(IllegalArgumentException.class, () -> SessionModel.SessionMountId.of(0));
+      assertEquals(null, kernel.filesystem(session.id()));
+      assertEquals(0, kernel.filesystemInfo(first).attachments());
+
+      kernel.attachFilesystem(session.id(), first);
+      kernel.attachFilesystem(session.id(), first);
+      assertEquals(first, kernel.filesystem(session.id()));
+      assertEquals(1, kernel.filesystemInfo(first).attachments());
+      assertThrows(IllegalArgumentException.class, () -> kernel.closeFilesystem(first));
+
+      kernel.attachFilesystem(session.id(), second);
+      assertEquals(second, kernel.filesystem(session.id()));
+      assertEquals(0, kernel.filesystemInfo(first).attachments());
+      assertEquals(1, kernel.filesystemInfo(second).attachments());
+      kernel.closeFilesystem(first);
+
+      kernel.closeSession(session.id());
+      assertEquals(0, kernel.filesystemInfo(second).attachments());
+      kernel.closeFilesystem(second);
+    } finally {
+      Files.deleteIfExists(firstRoot);
+      Files.deleteIfExists(secondRoot);
+    }
+  }
+
+  @Test
+  public void sessionStopReleasesKernelOwnedFilesystemExactlyOnce() throws Exception {
+    Path root = Files.createTempDirectory("hara-session-stop");
+    try (SessionKernel kernel = new SessionKernel(true, false)) {
+      SessionKernel.Session session = kernel.create(sessionId("stopped"));
+      SessionModel.SessionMountId mount = kernel.createFilesystem(root);
+      kernel.attachFilesystem(session.id(), mount);
+
+      session.stop();
+      session.stop();
+
+      assertEquals(SessionModel.SessionState.CLOSED, session.state());
+      assertEquals(0, kernel.filesystemInfo(mount).attachments());
+      kernel.closeFilesystem(mount);
+    } finally {
       Files.deleteIfExists(root);
     }
   }
