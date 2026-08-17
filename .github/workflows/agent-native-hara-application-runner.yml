@@ -1,0 +1,56 @@
+name: Validate native Hara application runner
+
+on:
+  push:
+    branches:
+      - agent/native-hara-application-runner
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/native-hara-application-runner
+          fetch-depth: 0
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Verify formatting
+        run: cargo fmt --manifest-path core/rust/Cargo.toml --check
+
+      - name: Test the application runner binary
+        run: cargo test --manifest-path core/rust/Cargo.toml --bin hara-app
+
+      - name: Test application process behavior
+        run: cargo test --manifest-path core/rust/Cargo.toml --test hara_application_runner
+
+      - name: Check all targets
+        run: cargo check --manifest-path core/rust/Cargo.toml --all-targets
+
+      - name: Publish the validated clean branch
+        shell: bash
+        run: |
+          rm .github/workflows/agent-native-hara-application-runner.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/agent-native-hara-application-runner.yml
+          git commit -m "Record native Hara application runner validation (#700)"
+          git push origin HEAD:agent/native-hara-application-runner
