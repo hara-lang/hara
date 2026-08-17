@@ -1,0 +1,89 @@
+name: Bootstrap project-aware native REPL v2
+
+on:
+  push:
+    branches:
+      - agent/project-aware-native-repl-v2
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/project-aware-native-repl-v2
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply source changes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              text = path.read_text()
+              if text.count(old) != 1:
+                  raise SystemExit(f"{path}: expected exactly one match for {old[:60]!r}")
+              path.write_text(text.replace(old, new, 1))
+
+          project = Path("core/rust/src/project.rs")
+          replace_once(
+              project,
+              "/// Registers namespaces from the automatically selected native Rust profile.\npub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {",
+              "/// Returns namespace resources from the automatically selected native Rust profile.\npub fn source_resources(project: &Project) -> Result<Vec<(String, String)>, String> {",
+          )
+          replace_once(
+              project,
+              "        resources.push((namespace, source));\n    }\n    for (namespace, source) in resources {",
+              "        resources.push((namespace, source));\n    }\n    Ok(resources)\n}\n\n/// Registers namespaces from the automatically selected native Rust profile.\npub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), String> {\n    for (namespace, source) in source_resources(project)? {",
+          )
+
+          repl = Path("core/rust/src/bin/hara/repl.rs")
+          replace_once(
+              repl,
+              "use hara_wasm::native_cli::RuntimeBroker;\nuse hara_wasm::resp::{RespConnection, RespServer, RespValue};",
+              "use hara_wasm::native_cli::RuntimeBroker;\nuse hara_wasm::project;\nuse hara_wasm::resp::{RespConnection, RespServer, RespValue};",
+          )
+          replace_once(
+              repl,
+              "pub(crate) fn run_repl(options: &Options, offline: bool) -> Result<(), String> {",
+              "fn register_project_resources(options: &Options, broker: &RuntimeBroker) -> Result<(), String> {\n    let Some(path) = options.project.as_deref() else {\n        return Ok(());\n    };\n    let selected = project::discover(path)?;\n    for (namespace, source) in project::source_resources(&selected)? {\n        broker.register_resource(&namespace, &source)?;\n    }\n    Ok(())\n}\n\npub(crate) fn run_repl(options: &Options, offline: bool) -> Result<(), String> {",
+          )
+          replace_once(
+              repl,
+              "        options.allow_postgres,\n    )?;\n    let mut resp = RespController::new(options.host.clone(), options.port, broker.clone());",
+              "        options.allow_postgres,\n    )?;\n    register_project_resources(options, &broker)?;\n    let mut resp = RespController::new(options.host.clone(), options.port, broker.clone());",
+          )
+          replace_once(
+              repl,
+              "    use super::{command_hint, fuzzy_score, gradient, incomplete, rendered_splash, DEFAULT_SPLASH};",
+              "    use super::{\n        command_hint, fuzzy_score, gradient, incomplete, register_project_resources,\n        rendered_splash, DEFAULT_SPLASH,\n    };\n    use crate::cli::Options;\n    use hara_wasm::native_cli::RuntimeBroker;\n    use hara_wasm::project;\n    use std::fs;\n    use std::path::PathBuf;\n    use std::time::{SystemTime, UNIX_EPOCH};\n\n    fn temp(name: &str) -> PathBuf {\n        std::env::temp_dir().join(format!(\n            \"hara-repl-{name}-{}\",\n            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()\n        ))\n    }",
+          )
+          marker = "    #[test]\n    fn completion_scoring_and_hints_match_java_behavior() {\n        assert!(fuzzy_score(\"mp\", \"map\").is_some());\n        assert!(fuzzy_score(\"zzz\", \"map\").is_none());\n        assert_eq!(command_hint(\"/re\"), Some(\"sp\".into()));\n        assert!(command_hint(\"/docs\").unwrap().contains(\"language\"));\n    }\n"
+          test = marker + "\n    #[test]\n    fn project_resources_reach_root_and_future_sessions() {\n        let root = temp(\"project-resources\");\n        fs::create_dir_all(root.join(\"packages/core/src/demo\")).unwrap();\n        fs::create_dir_all(root.join(\"src/demo\")).unwrap();\n        fs::write(root.join(\"project.edn\"), concat!(\n            \"{:hara/type :project\\n\",\n            \" :hara/version \\\"1.0.0\\\"\\n\",\n            \" :project/id demo/repl\\n\",\n            \" :project/version \\\"1.0.0\\\"\\n\",\n            \" :project/source-paths [\\\"packages/core/src\\\" \\\"src\\\"]\\n\",\n            \" :project/test-paths []\\n\",\n            \" :project/extension-paths []\\n\",\n            \" :project/main demo.app\\n\",\n            \" :project/capabilities #{}}\\n\",\n        )).unwrap();\n        fs::write(root.join(\"packages/core/src/demo/core.hal\"), \"(ns demo.core) (defn answer [] 40)\").unwrap();\n        fs::write(root.join(\"src/demo/app.hal\"), \"(ns demo.app (:require [demo.core :as core])) (defn answer [] (+ 2 (core/answer)))\").unwrap();\n\n        let selected = project::discover(&root).unwrap();\n        let resources = project::source_resources(&selected).unwrap();\n        assert_eq!(resources.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>(), vec![\"demo.core\".to_owned(), \"demo.app\".to_owned()]);\n\n        let mut options = Options::default();\n        options.project = Some(root.clone());\n        options.root = Some(root.clone());\n        let broker = RuntimeBroker::start_with(Some(root.clone()), false, false, false).unwrap();\n        register_project_resources(&options, &broker).unwrap();\n        assert_eq!(broker.resources().unwrap(), vec![\"demo.app\", \"demo.core\"]);\n        assert_eq!(broker.eval(\"ROOT\", \"(ns repl.probe (:require [demo.app :as app])) (app/answer)\").unwrap(), \"42\");\n        broker.create(\"SECOND\").unwrap();\n        assert_eq!(broker.eval(\"SECOND\", \"(ns repl.second (:require [demo.app :as app])) (app/answer)\").unwrap(), \"42\");\n        fs::remove_dir_all(root).unwrap();\n    }\n"
+          replace_once(repl, marker, test)
+          PY
+          cargo fmt --manifest-path core/rust/Cargo.toml
+
+      - name: Validate
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml --bin hara repl::tests::project_resources_reach_root_and_future_sessions
+          cargo test --manifest-path core/rust/Cargo.toml project::tests::registers_project_sources_for_cross_file_requires
+
+      - name: Publish clean branch
+        run: |
+          rm .github/workflows/agent-project-aware-native-repl-v2.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add core/rust/src/project.rs core/rust/src/bin/hara/repl.rs .github/workflows/agent-project-aware-native-repl-v2.yml
+          git commit -m "Register project sources in the native REPL (#691)"
+          git push origin HEAD:agent/project-aware-native-repl-v2
