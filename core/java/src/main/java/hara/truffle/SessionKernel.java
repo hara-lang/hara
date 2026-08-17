@@ -6,13 +6,17 @@ import hara.lang.protocol.IContext;
 import hara.lang.protocol.IInvokeIn;
 import hara.lang.protocol.IMetadata;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
@@ -76,7 +80,23 @@ final class SessionKernel implements AutoCloseable {
 
   private final boolean allowFile;
   private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<Long, FilesystemMount> mounts = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, Long> sessionMounts = new ConcurrentHashMap<>();
+  private final AtomicLong nextMountId = new AtomicLong(1);
   private static final SessionModel.SessionId ROOT_ID = SessionModel.SessionId.parse("ROOT");
+
+  private static final class FilesystemMount {
+    final HaraMountedFileSystem provider;
+    final Path root;
+    int attachments;
+
+    FilesystemMount(HaraMountedFileSystem provider, Path root) {
+      this.provider = provider;
+      this.root = root;
+    }
+  }
+
+  record FilesystemInfo(String kind, Path root, int attachments) {}
 
   SessionKernel(boolean allowFile, boolean allowNetwork) {
     this(allowFile, allowNetwork, false);
@@ -93,7 +113,10 @@ final class SessionKernel implements AutoCloseable {
         SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
     sessions.put(
         ROOT_ID.value(),
-        new Session(new SessionModel.SessionSpec(ROOT_ID, rootAuthority), project));
+        new Session(
+            new SessionModel.SessionSpec(ROOT_ID, rootAuthority),
+            project,
+            mount -> releaseMount(ROOT_ID, mount)));
   }
 
   Session root() {
@@ -109,14 +132,89 @@ final class SessionKernel implements AutoCloseable {
   synchronized Session create(SessionModel.SessionId id) {
     if (sessions.containsKey(id.value()))
       throw new IllegalArgumentException("SESSION_EXISTS " + id);
-    Session session = new Session(SessionModel.SessionSpec.zeroAuthority(id), null);
+    Session session =
+        new Session(
+            SessionModel.SessionSpec.zeroAuthority(id), null, mount -> releaseMount(id, mount));
     sessions.put(id.value(), session);
     return session;
   }
 
-  void attachFilesystem(SessionModel.SessionId session, SessionModel.SessionMountId filesystem) {
+  synchronized SessionModel.SessionMountId createFilesystem(Path root) {
     if (!allowFile) throw new IllegalArgumentException("FILE_ACCESS_DENIED");
-    require(session).attachFilesystem(filesystem);
+    Path normalized = root.toAbsolutePath().normalize();
+    if (!Files.isDirectory(normalized)) {
+      throw new IllegalArgumentException("FILESYSTEM_NOT_FOUND " + normalized);
+    }
+    long value = nextMountId.getAndIncrement();
+    if (value <= 0) throw new IllegalStateException("FILESYSTEM_IDS_EXHAUSTED");
+    SessionModel.SessionMountId id = SessionModel.SessionMountId.of(value);
+    mounts.put(value, new FilesystemMount(new HaraMountedFileSystem(normalized), normalized));
+    return id;
+  }
+
+  synchronized void attachFilesystem(
+      SessionModel.SessionId sessionId, SessionModel.SessionMountId mountId) {
+    if (!allowFile) throw new IllegalArgumentException("FILE_ACCESS_DENIED");
+    Session session = require(sessionId);
+    FilesystemMount mount = mounts.get(mountId.value());
+    if (mount == null) throw new IllegalArgumentException("NO_FILESYSTEM " + mountId);
+    Long current = sessionMounts.get(sessionId.value());
+    if (current != null && current == mountId.value()) return;
+
+    session.attachFilesystem(new Session.AttachedFilesystem(mountId, mount.provider));
+    if (current != null) decrementMount(current);
+    mount.attachments++;
+    sessionMounts.put(sessionId.value(), mountId.value());
+  }
+
+  synchronized void detachFilesystem(SessionModel.SessionId sessionId) {
+    Session session = require(sessionId);
+    SessionModel.SessionMountId released = session.detachFilesystem();
+    if (released != null) releaseMount(sessionId, released);
+  }
+
+  SessionModel.SessionMountId filesystem(SessionModel.SessionId sessionId) {
+    return require(sessionId).filesystemMount();
+  }
+
+  synchronized FilesystemInfo filesystemInfo(SessionModel.SessionMountId mountId) {
+    FilesystemMount mount = mounts.get(mountId.value());
+    if (mount == null) throw new IllegalArgumentException("NO_FILESYSTEM " + mountId);
+    return new FilesystemInfo("native", mount.root, mount.attachments);
+  }
+
+  synchronized void closeFilesystem(SessionModel.SessionMountId mountId) {
+    FilesystemMount mount = mounts.get(mountId.value());
+    if (mount == null) throw new IllegalArgumentException("NO_FILESYSTEM " + mountId);
+    if (mount.attachments != 0) {
+      throw new IllegalArgumentException("FILESYSTEM_ATTACHED " + mountId);
+    }
+    mounts.remove(mountId.value());
+  }
+
+  synchronized void mountFilesystem(SessionModel.SessionId sessionId, Path root) {
+    SessionModel.SessionMountId previous = filesystem(sessionId);
+    SessionModel.SessionMountId created = createFilesystem(root);
+    try {
+      attachFilesystem(sessionId, created);
+    } catch (RuntimeException error) {
+      closeFilesystem(created);
+      throw error;
+    }
+    if (previous != null) closeFilesystem(previous);
+  }
+
+  private synchronized void releaseMount(
+      SessionModel.SessionId sessionId, SessionModel.SessionMountId mountId) {
+    Long registered = sessionMounts.get(sessionId.value());
+    if (registered == null || registered != mountId.value()) return;
+    sessionMounts.remove(sessionId.value());
+    decrementMount(mountId.value());
+  }
+
+  private void decrementMount(long mountId) {
+    FilesystemMount mount = mounts.get(mountId);
+    if (mount != null && mount.attachments > 0) mount.attachments--;
   }
 
   synchronized void closeSession(SessionModel.SessionId id) {
@@ -140,6 +238,8 @@ final class SessionKernel implements AutoCloseable {
   public synchronized void close() {
     for (Session session : sessions.values()) session.close();
     sessions.clear();
+    sessionMounts.clear();
+    mounts.clear();
   }
 
   static final class Session
@@ -147,6 +247,7 @@ final class SessionKernel implements AutoCloseable {
     private final SessionModel.SessionSpec spec;
     private final SessionAuthorityPolicy authority;
     private final HaraProject project;
+    private final Consumer<SessionModel.SessionMountId> mountRelease;
     private Context context;
     private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
@@ -156,10 +257,14 @@ final class SessionKernel implements AutoCloseable {
     private record AttachedFilesystem(
         SessionModel.SessionMountId id, HaraMountedFileSystem provider) {}
 
-    private Session(SessionModel.SessionSpec spec, HaraProject project) {
+    private Session(
+        SessionModel.SessionSpec spec,
+        HaraProject project,
+        Consumer<SessionModel.SessionMountId> mountRelease) {
       this.spec = spec;
       this.authority = spec.authority();
       this.project = project;
+      this.mountRelease = mountRelease;
       context = createContext(null);
       activate();
     }
@@ -192,14 +297,9 @@ final class SessionKernel implements AutoCloseable {
         throw new IllegalStateException("SESSION_NOT_ACTIVE " + id() + " " + current);
     }
 
-    void attachFilesystem(SessionModel.SessionMountId mountId) {
+    void attachFilesystem(AttachedFilesystem attached) {
       requireActive();
       if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + id());
-      if (!java.nio.file.Files.isDirectory(mountId.root())) {
-        throw new IllegalArgumentException("FILESYSTEM_NOT_FOUND " + mountId);
-      }
-      AttachedFilesystem attached =
-          new AttachedFilesystem(mountId, new HaraMountedFileSystem(mountId.root()));
       Context replacement = createContext(attached);
       synchronized (this) {
         if (state.get() != SessionModel.SessionState.ACTIVE) {
@@ -214,6 +314,28 @@ final class SessionKernel implements AutoCloseable {
         context = replacement;
         filesystem = attached;
         previous.close(true);
+      }
+    }
+
+    SessionModel.SessionMountId detachFilesystem() {
+      requireActive();
+      if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + id());
+      Context replacement = createContext(null);
+      synchronized (this) {
+        if (state.get() != SessionModel.SessionState.ACTIVE) {
+          replacement.close(true);
+          requireActive();
+        }
+        if (activeEvaluations.get() != 0) {
+          replacement.close(true);
+          throw new IllegalArgumentException("SESSION_BUSY " + id());
+        }
+        Context previous = context;
+        SessionModel.SessionMountId released = filesystemMount();
+        context = replacement;
+        filesystem = null;
+        previous.close(true);
+        return released;
       }
     }
 
@@ -388,11 +510,7 @@ final class SessionKernel implements AutoCloseable {
     private SessionModel.SessionStatus metadata() {
       boolean running = state.get() == SessionModel.SessionState.ACTIVE;
       return new SessionModel.SessionStatus(
-          id(),
-          running ? currentNamespace() : null,
-          state(),
-          filesystemMount(),
-          authority);
+          id(), running ? currentNamespace() : null, state(), filesystemMount(), authority);
     }
 
     @Override
@@ -447,13 +565,22 @@ final class SessionKernel implements AutoCloseable {
     }
 
     @Override
-    public synchronized void close() {
+    public void close() {
       if (!state.compareAndSet(SessionModel.SessionState.ACTIVE, SessionModel.SessionState.CLOSED))
         return;
-      Context ownedContext = context;
-      context = null;
-      filesystem = null;
-      if (ownedContext != null) ownedContext.close(true);
+      Context ownedContext;
+      AttachedFilesystem ownedFilesystem;
+      synchronized (this) {
+        ownedContext = context;
+        ownedFilesystem = filesystem;
+        context = null;
+        filesystem = null;
+      }
+      try {
+        if (ownedContext != null) ownedContext.close(true);
+      } finally {
+        if (ownedFilesystem != null) mountRelease.accept(ownedFilesystem.id());
+      }
     }
 
     private void activate() {

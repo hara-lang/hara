@@ -337,8 +337,7 @@ public final class HaraServer implements AutoCloseable {
       case "FILESYSTEM":
         SessionModel.SessionId filesystemSession =
             SessionModel.SessionId.parse(request.argument(1));
-        kernel.attachFilesystem(
-            filesystemSession, SessionModel.SessionMountId.from(Path.of(request.argument(2))));
+        kernel.mountFilesystem(filesystemSession, Path.of(request.argument(2)));
         responder.result(requireSession(filesystemSession).info());
         break;
       case "CLOSE":
@@ -564,8 +563,7 @@ public final class HaraServer implements AutoCloseable {
       case "FILESYSTEM":
         require(request, 4);
         SessionModel.SessionId filesystemSession = SessionModel.SessionId.parse(request.get(2));
-        kernel.attachFilesystem(
-            filesystemSession, SessionModel.SessionMountId.from(Path.of(request.get(3))));
+        kernel.mountFilesystem(filesystemSession, Path.of(request.get(3)));
         respond(conn, negotiated, request, requireSession(filesystemSession).info());
         return attached;
       case "CLOSE":

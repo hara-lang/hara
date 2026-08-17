@@ -2,7 +2,6 @@ package hara.truffle;
 
 import hara.lang.protocol.Constant;
 import hara.lang.protocol.IMetadata;
-import java.nio.file.Path;
 import java.util.Objects;
 
 /** Typed construction and status boundaries shared by Java runtime sessions. */
@@ -33,18 +32,23 @@ final class SessionModel {
   }
 
   /** Identity of one filesystem delegation attached to a session. */
-  record SessionMountId(Path root) {
+  record SessionMountId(long value) implements Comparable<SessionMountId> {
     SessionMountId {
-      root = Objects.requireNonNull(root, "root").toAbsolutePath().normalize();
+      if (value <= 0) throw new IllegalArgumentException("INVALID_FILESYSTEM_ID");
     }
 
-    static SessionMountId from(Path root) {
-      return new SessionMountId(root);
+    static SessionMountId of(long value) {
+      return new SessionMountId(value);
+    }
+
+    @Override
+    public int compareTo(SessionMountId other) {
+      return Long.compare(value, other.value);
     }
 
     @Override
     public String toString() {
-      return root.toString();
+      return Long.toString(value);
     }
   }
 
