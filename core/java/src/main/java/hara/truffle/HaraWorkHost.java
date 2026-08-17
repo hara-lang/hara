@@ -62,6 +62,17 @@ public final class HaraWorkHost implements IWorkHost {
   private static final Keyword CHILD_COUNT = Keyword.create("child-count");
   private static final Keyword DEADLINE_EXCEEDED = Keyword.create("deadline-exceeded");
   private static final Keyword HOST_STOPPED = Keyword.create("host-stopped");
+  private static final Keyword EVENT_TYPE = Keyword.create("event", "type");
+  private static final Keyword EVENT_RUN = Keyword.create("event", "run");
+  private static final Keyword EVENT_SEQUENCE = Keyword.create("event", "sequence");
+  private static final Keyword EVENT_DATA = Keyword.create("event", "data");
+  private static final Keyword RUN_QUEUED = Keyword.create("work", "run-queued");
+  private static final Keyword RUN_RUNNING = Keyword.create("work", "run-running");
+  private static final Keyword RUN_WAITING = Keyword.create("work", "run-waiting");
+  private static final Keyword RUN_CANCELLING = Keyword.create("work", "run-cancelling");
+  private static final Keyword RUN_COMPLETED = Keyword.create("work", "run-completed");
+  private static final Keyword RUN_FAILED = Keyword.create("work", "run-failed");
+  private static final Keyword RUN_CANCELLED = Keyword.create("work", "run-cancelled");
 
   private static final ThreadLocal<WorkContext> CURRENT_CONTEXT = new ThreadLocal<>();
   private static final ScheduledThreadPoolExecutor DEADLINES = deadlineScheduler();
@@ -181,11 +192,14 @@ public final class HaraWorkHost implements IWorkHost {
 
   @Override
   public IWorkHost stop() {
-    if (started.compareAndSet(true, false)) {
-      for (HaraWorkRun run : runs.values()) {
-        run.requestCancellation(HOST_STOPPED);
-      }
-    }
+    started.set(false);
+    return this;
+  }
+
+  @Override
+  public IWorkHost kill() {
+    started.set(false);
+    for (HaraWorkRun run : runs.values()) run.requestCancellation(HOST_STOPPED);
     return this;
   }
 
@@ -385,6 +399,11 @@ public final class HaraWorkHost implements IWorkHost {
     private final AtomicBoolean parentNotified = new AtomicBoolean(false);
     private final ConcurrentMap<Object, HaraWorkRun> children = new ConcurrentHashMap<>();
     private final ConcurrentLinkedDeque<Object> finalizers = new ConcurrentLinkedDeque<>();
+    private final Object eventLock = new Object();
+    private final List<Object> events = new ArrayList<>();
+    private final List<WorkEventStream> eventStreams = new ArrayList<>();
+    private long eventSequence;
+    private boolean eventsClosed;
     private final WorkContext workContext;
     private volatile ScheduledFuture<?> deadlineTask;
 
@@ -410,6 +429,7 @@ public final class HaraWorkHost implements IWorkHost {
       this.result = (IPromise) context.promiseValue(resultFuture);
       this.snapshot = new AtomicReference<>(new RunSnapshot(CREATED, 0L, 0L, null, null));
       this.workContext = new WorkContext(HaraWorkHost.this, this);
+      publishEvent(RUN_QUEUED, Map.Standard.from(null, STATE, QUEUED), false);
     }
 
     void start() {
@@ -445,6 +465,7 @@ public final class HaraWorkHost implements IWorkHost {
         finishIfReady();
         return;
       }
+      publishEvent(RUN_RUNNING, Map.Standard.from(null, STATE, RUNNING), false);
       CURRENT_CONTEXT.set(workContext);
       try {
         workContext.checkCancelled();
@@ -503,6 +524,10 @@ public final class HaraWorkHost implements IWorkHost {
       CancellationRequest request = new CancellationRequest(reason, failure);
       Keyword previousState = transitionToCancelling(request);
       if (previousState == null) return false;
+      publishEvent(
+          RUN_CANCELLING,
+          Map.Standard.from(null, STATE, CANCELLING, CANCEL_REASON, reason),
+          false);
 
       cancelDeadlineTask();
       IPromise promise = activePromise.get();
@@ -593,6 +618,17 @@ public final class HaraWorkHost implements IWorkHost {
                 error,
                 current.cancellation);
         if (!snapshot.compareAndSet(current, update)) continue;
+        publishEvent(
+            eventType(state),
+            Map.Standard.from(
+                null,
+                STATE,
+                state,
+                ERROR,
+                error,
+                CANCEL_REASON,
+                current.cancellation == null ? null : current.cancellation.reason),
+            true);
         cancelDeadlineTask();
         if (COMPLETED.equals(state)) {
           resultFuture.complete(value);
@@ -637,7 +673,12 @@ public final class HaraWorkHost implements IWorkHost {
                 current.finishedAt,
                 current.error,
                 request == null ? current.cancellation : request);
-        if (snapshot.compareAndSet(current, update)) return;
+        if (snapshot.compareAndSet(current, update)) {
+          if (WAITING.equals(state)) {
+            publishEvent(RUN_WAITING, Map.Standard.from(null, STATE, WAITING), false);
+          }
+          return;
+        }
       }
     }
 
@@ -704,7 +745,19 @@ public final class HaraWorkHost implements IWorkHost {
 
     @Override
     public IStream workEvents(Object options) {
-      return new EmptyWorkStream(context);
+      long after = 0L;
+      Object value = option(options, Keyword.create("after"));
+      if (value != null) {
+        if (!(value instanceof Number number) || number.longValue() < 0L) {
+          throw new HaraException(":after must be a non-negative integer");
+        }
+        after = number.longValue();
+      }
+      WorkEventStream stream = new WorkEventStream(after);
+      synchronized (eventLock) {
+        eventStreams.add(stream);
+      }
+      return stream;
     }
 
     @Override
@@ -718,22 +771,95 @@ public final class HaraWorkHost implements IWorkHost {
     public boolean closed() {
       return snapshot.get().terminal();
     }
-  }
 
-  private static final class EmptyWorkStream implements IStream {
-    private final IPromise end;
-
-    EmptyWorkStream(HaraContext context) {
-      this.end = (IPromise) context.promiseValue(CompletableFuture.completedFuture(null));
+    private Keyword eventType(Keyword state) {
+      if (COMPLETED.equals(state)) return RUN_COMPLETED;
+      if (FAILED.equals(state)) return RUN_FAILED;
+      if (CANCELLED.equals(state)) return RUN_CANCELLED;
+      throw new HaraException("No terminal work event for state: " + state);
     }
 
-    @Override
-    public Object next() {
-      return end;
+    private void publishEvent(Keyword type, Object data, boolean terminal) {
+      List<Runnable> completions = new ArrayList<>();
+      synchronized (eventLock) {
+        long sequence = ++eventSequence;
+        events.add(
+            Map.Standard.from(
+                null,
+                EVENT_TYPE,
+                type,
+                EVENT_RUN,
+                runId,
+                EVENT_SEQUENCE,
+                sequence,
+                EVENT_DATA,
+                data));
+        if (terminal) eventsClosed = true;
+        for (WorkEventStream stream : eventStreams) {
+          Runnable completion = stream.takeCompletion();
+          if (completion != null) completions.add(completion);
+        }
+      }
+      for (Runnable completion : completions) completion.run();
     }
 
-    @Override
-    public void close() {}
+    private final class WorkEventStream implements IStream {
+      private long after;
+      private boolean closed;
+      private CompletableFuture<Object> pending;
+
+      WorkEventStream(long after) {
+        this.after = after;
+      }
+
+      @Override
+      public Object next() {
+        CompletableFuture<Object> future;
+        Runnable completion;
+        synchronized (eventLock) {
+          if (closed) return context.completedPromise(null);
+          if (pending != null) {
+            return context.rejectedPromise(
+                "stream/pending-pull: only one Stream/next may be pending");
+          }
+          future = new CompletableFuture<>();
+          pending = future;
+          completion = takeCompletion();
+        }
+        if (completion != null) completion.run();
+        return context.promiseValue(future);
+      }
+
+      Runnable takeCompletion() {
+        if (pending == null) return null;
+        if (after < events.size()) {
+          Object event = events.get((int) after);
+          after += 1L;
+          CompletableFuture<Object> future = pending;
+          pending = null;
+          return () -> future.complete(event);
+        }
+        if (eventsClosed || closed) {
+          closed = true;
+          CompletableFuture<Object> future = pending;
+          pending = null;
+          return () -> future.complete(null);
+        }
+        return null;
+      }
+
+      @Override
+      public void close() {
+        Runnable completion;
+        synchronized (eventLock) {
+          if (closed) return;
+          closed = true;
+          completion = takeCompletion();
+          eventStreams.remove(this);
+        }
+        if (completion != null) completion.run();
+      }
+    }
   }
 
   private record CancellationRequest(Object reason, HaraException failure) {}

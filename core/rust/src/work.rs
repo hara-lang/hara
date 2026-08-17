@@ -6,10 +6,13 @@ use std::fmt;
 use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub(crate) mod guest;
 mod scope;
 mod types;
 
-pub use scope::{current_work_context, process_work_host, WorkCancellationToken, WorkContext};
+pub use scope::{
+    current_work_context, monotonic_nanos, process_work_host, WorkCancellationToken, WorkContext,
+};
 pub use types::{WorkHostStatus, WorkId, WorkOptions, WorkRunState, WorkRunStatus};
 
 use scope::{
@@ -172,6 +175,16 @@ impl WorkHost {
                 finalizers_started: Cell::new(false),
                 active_promise: RefCell::new(None),
                 parent_notified: Cell::new(false),
+                events: Rc::new(RefCell::new(WorkEventLog {
+                    values: vec![work_event(
+                        &id,
+                        1,
+                        "work/run-queued",
+                        WorkRunState::Queued,
+                        None,
+                    )],
+                    ..WorkEventLog::default()
+                })),
             }),
         };
         if let Some(parent) = &parent {
@@ -292,6 +305,10 @@ impl WorkHost {
     }
 
     pub fn stop(&self) {
+        self.inner.borrow_mut().started = false;
+    }
+
+    pub fn kill(&self) {
         let runs = {
             let mut host = self.inner.borrow_mut();
             host.started = false;
@@ -333,6 +350,10 @@ impl IComponent for WorkHost {
     fn stop(&mut self) {
         WorkHost::stop(self);
     }
+
+    fn kill(&mut self) {
+        WorkHost::kill(self);
+    }
 }
 
 #[derive(Clone)]
@@ -356,6 +377,20 @@ struct WorkRunInner {
     finalizers_started: Cell<bool>,
     active_promise: RefCell<Option<Promise>>,
     parent_notified: Cell<bool>,
+    events: Rc<RefCell<WorkEventLog>>,
+}
+
+#[derive(Default)]
+struct WorkEventLog {
+    values: Vec<Value>,
+    closed: bool,
+    cursors: Vec<Weak<RefCell<WorkEventCursor>>>,
+}
+
+struct WorkEventCursor {
+    next: usize,
+    pending: Option<Promise>,
+    closed: bool,
 }
 
 /// Live process-owned handle returned immediately from submission.
@@ -407,6 +442,41 @@ impl WorkRun {
         result
     }
 
+    pub fn work_events(&self, after: usize) -> Value {
+        let cursor = Rc::new(RefCell::new(WorkEventCursor {
+            next: after,
+            pending: None,
+            closed: false,
+        }));
+        self.inner
+            .events
+            .borrow_mut()
+            .cursors
+            .push(Rc::downgrade(&cursor));
+        let events = self.inner.events.clone();
+        let next_cursor = cursor.clone();
+        let next = Rc::new(move || event_next(&events, &next_cursor));
+        let events = self.inner.events.clone();
+        let close_cursor = cursor;
+        let close = Rc::new(move || {
+            let pending = {
+                let mut cursor = close_cursor.borrow_mut();
+                cursor.closed = true;
+                cursor.pending.take()
+            };
+            if let Some(pending) = pending {
+                pending.resolve(Value::Nil);
+            }
+            events.borrow_mut().cursors.retain(|candidate| {
+                candidate
+                    .upgrade()
+                    .is_some_and(|candidate| !Rc::ptr_eq(&candidate, &close_cursor))
+            });
+            Ok(())
+        });
+        crate::core::host_stream(next, close)
+    }
+
     pub fn cancel(&self, reason: Value) -> bool {
         let rejection = cancellation_rejection(reason.clone());
         {
@@ -429,6 +499,12 @@ impl WorkRun {
             }
             previous
         };
+        self.publish_event(
+            "work/run-cancelling",
+            WorkRunState::Cancelling,
+            Some(reason.clone()),
+            false,
+        );
         if previous == WorkRunState::Queued {
             if let Some(host) = self.inner.host.upgrade() {
                 host.borrow_mut()
@@ -493,6 +569,8 @@ impl WorkRun {
             return false;
         }
         status.state = WorkRunState::Running;
+        drop(status);
+        self.publish_event("work/run-running", WorkRunState::Running, None, false);
         true
     }
 
@@ -643,8 +721,13 @@ impl WorkRun {
             status.state = state;
             status.finished_at_millis = Some(now_millis());
             status.error = error.clone();
-            status.cancel_reason = cancel_reason;
+            status.cancel_reason = cancel_reason.clone();
         }
+        let event_detail = if state == WorkRunState::Failed {
+            error.as_ref().map(PromiseRejection::value)
+        } else {
+            cancel_reason
+        };
         match state {
             WorkRunState::Completed => {
                 self.inner.result.resolve(value.unwrap_or(Value::Nil));
@@ -656,14 +739,20 @@ impl WorkRun {
             }
             _ => unreachable!("non-terminal state passed to settle_terminal"),
         }
+        self.publish_event(work_event_type(state), state, event_detail, true);
         self.notify_parent();
         true
     }
 
     fn set_nonterminal_state(&self, state: WorkRunState) {
         let mut status = self.inner.status.borrow_mut();
-        if !status.state.terminal() {
+        let changed = !status.state.terminal() && status.state != state;
+        if changed {
             status.state = state;
+        }
+        drop(status);
+        if changed && state == WorkRunState::Waiting {
+            self.publish_event("work/run-waiting", state, None, false);
         }
     }
 
@@ -689,6 +778,142 @@ impl WorkRun {
             run: self.clone(),
         }
     }
+
+    fn publish_event(
+        &self,
+        kind: &str,
+        state: WorkRunState,
+        detail: Option<Value>,
+        terminal: bool,
+    ) {
+        let pending = {
+            let mut events = self.inner.events.borrow_mut();
+            let sequence = events.values.len() + 1;
+            events
+                .values
+                .push(work_event(&self.inner.id, sequence, kind, state, detail));
+            if terminal {
+                events.closed = true;
+            }
+            let mut pending = Vec::new();
+            let mut retained = Vec::new();
+            for weak in std::mem::take(&mut events.cursors) {
+                let Some(cursor) = weak.upgrade() else {
+                    continue;
+                };
+                if let Some(settlement) = event_take(&events, &mut cursor.borrow_mut()) {
+                    pending.push(settlement);
+                }
+                retained.push(Rc::downgrade(&cursor));
+            }
+            events.cursors = retained;
+            pending
+        };
+        for (promise, value) in pending {
+            promise.resolve(value);
+        }
+    }
+}
+
+fn work_event(
+    id: &WorkId,
+    sequence: usize,
+    kind: &str,
+    state: WorkRunState,
+    detail: Option<Value>,
+) -> Value {
+    let data = Value::Map(
+        [
+            (
+                Value::Keyword("state".into()),
+                Value::Keyword(work_state_name(state).into()),
+            ),
+            (
+                Value::Keyword("detail".into()),
+                detail.unwrap_or(Value::Nil),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    Value::Map(
+        [
+            (
+                Value::Keyword("event/type".into()),
+                Value::Keyword(kind.into()),
+            ),
+            (
+                Value::Keyword("event/run".into()),
+                Value::String(id.to_string()),
+            ),
+            (
+                Value::Keyword("event/sequence".into()),
+                Value::Number(sequence as i64),
+            ),
+            (Value::Keyword("event/data".into()), data),
+        ]
+        .into_iter()
+        .collect(),
+    )
+}
+
+fn work_state_name(state: WorkRunState) -> &'static str {
+    match state {
+        WorkRunState::Queued => "queued",
+        WorkRunState::Running => "running",
+        WorkRunState::Waiting => "waiting",
+        WorkRunState::Cancelling => "cancelling",
+        WorkRunState::Completed => "completed",
+        WorkRunState::Failed => "failed",
+        WorkRunState::Cancelled => "cancelled",
+    }
+}
+
+fn work_event_type(state: WorkRunState) -> &'static str {
+    match state {
+        WorkRunState::Completed => "work/run-completed",
+        WorkRunState::Failed => "work/run-failed",
+        WorkRunState::Cancelled => "work/run-cancelled",
+        _ => unreachable!("terminal work event requires a terminal state"),
+    }
+}
+
+fn event_take(events: &WorkEventLog, cursor: &mut WorkEventCursor) -> Option<(Promise, Value)> {
+    let promise = cursor.pending.take()?;
+    if cursor.next < events.values.len() {
+        let value = events.values[cursor.next].clone();
+        cursor.next += 1;
+        return Some((promise, value));
+    }
+    if events.closed || cursor.closed {
+        cursor.closed = true;
+        return Some((promise, Value::Nil));
+    }
+    cursor.pending = Some(promise);
+    None
+}
+
+fn event_next(
+    events: &Rc<RefCell<WorkEventLog>>,
+    cursor: &Rc<RefCell<WorkEventCursor>>,
+) -> Result<Promise, String> {
+    let promise = Promise::new();
+    let settlement = {
+        let events = events.borrow();
+        let mut cursor = cursor.borrow_mut();
+        if cursor.closed {
+            Some((promise.clone(), Value::Nil))
+        } else if cursor.pending.is_some() {
+            return Err("stream/pending-pull: only one Stream/next may be pending".into());
+        } else {
+            cursor.pending = Some(promise.clone());
+            event_take(&events, &mut cursor)
+        }
+    };
+    if let Some((target, value)) = settlement {
+        target.resolve(value);
+    }
+    Ok(promise)
 }
 
 #[cfg(test)]

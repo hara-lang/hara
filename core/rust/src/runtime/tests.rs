@@ -6259,10 +6259,10 @@ mod tests {
                        (defstruct TestWorkHost [value])
                        (defstruct TestWorkRun [id])
 
-                       (extend-type TestWork std.protocol.iwork/IWork
+                       (extend-type TestWork IWork
                          (work-spec [work] (:spec work)))
 
-                       (extend-type TestWorkRef std.protocol.iworkref/IWorkRef
+                       (extend-type TestWorkRef IWorkRef
                          (work-id [reference] (:id reference)))
 
                        (extend-type TestWorkHost IComponent
@@ -6274,16 +6274,16 @@ mod tests {
                          (stop [host] host)
                          (kill [host] host)
                          (remote? [host] false))
-                       (extend-type TestWorkHost std.protocol.iworkhost/IWorkHost
+                       (extend-type TestWorkHost IWorkHost
                          (work-submit [host work input options]
                            [work input options])
                          (work-resolve [host reference] reference))
 
-                       (extend-type TestWorkRun std.protocol.iworkref/IWorkRef
+                       (extend-type TestWorkRun IWorkRef
                          (work-id [run] (:id run)))
                        (extend-type TestWorkRun IClosed
                          (closed? [run] true))
-                       (extend-type TestWorkRun std.protocol.iworkrun/IWorkRun
+                       (extend-type TestWorkRun IWorkRun
                          (work-status [run] :completed)
                          (work-result [run] nil)
                          (work-events [run options] nil)
@@ -6293,20 +6293,69 @@ mod tests {
                              reference (TestWorkRef \"run-ref\")
                              host (TestWorkHost nil)
                              run (TestWorkRun \"run-live\")]
-                         [(satisfies? std.protocol.iwork/IWork work)
-                          (std.protocol.iwork/work-spec work)
-                          (satisfies? std.protocol.iworkref/IWorkRef reference)
-                          (std.protocol.iworkref/work-id reference)
-                          (satisfies? std.protocol.iworkhost/IWorkHost host)
-                          (std.protocol.iworkhost/work-submit host :work :input {:priority :high})
-                          (std.protocol.iworkhost/work-resolve host \"run-live\")
-                          (satisfies? std.protocol.iworkrun/IWorkRun run)
-                          (std.protocol.iworkrun/work-status run)
-                          (std.protocol.iworkref/work-id run)
-                          (std.protocol.iclosed/closed? run)]))",
+                         [(satisfies? IWork work)
+                          (IWork/work-spec work)
+                          (satisfies? IWorkRef reference)
+                          (IWorkRef/work-id reference)
+                          (satisfies? IWorkHost host)
+                          (IWorkHost/work-submit host :work :input {:priority :high})
+                          (IWorkHost/work-resolve host \"run-live\")
+                          (satisfies? IWorkRun run)
+                          (IWorkRun/work-status run)
+                          (IWorkRef/work-id run)
+                          (IClosed/closed? run)]))",
                 )
                 .unwrap(),
             "[true {:op :pure} true \"run-ref\" true [:work :input {:priority :high}] \"run-live\" true :completed \"run-live\" true]"
+        );
+    }
+
+    #[test]
+    fn rust_native_work_handles_are_available_to_guest_hara() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [host work.native/default-host
+                           run (IWorkHost/work-submit
+                                host
+                                (fn [work input options id] input)
+                                42
+                                {:id \"guest-native-run\"})]
+                       [(satisfies? IWorkHost host)
+                        (satisfies? IWorkRun run)
+                        (IWorkRef/work-id run)
+                        (IWorkRun/work-status run)
+                        (deref (IWorkRun/work-result run))
+                        (IWorkRun/work-status run)
+                        (IClosed/closed? run)])",
+                )
+                .unwrap(),
+            "[true true \"guest-native-run\" :queued 42 :completed true]"
+        );
+    }
+
+    #[test]
+    fn rust_native_scope_helpers_are_ordinary_work_native_functions() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [run (IWorkHost/work-submit
+                                 work.native/default-host
+                                 :payload
+                                 42
+                                 {:id \"guest-scope-functions\"
+                                  :work/execute
+                                  (fn [work input options id]
+                                    [(IWorkRef/work-id (work.native/current-run))
+                                     (work.native/cancelled?)
+                                     (work.native/on-close (fn [run] nil))
+                                     input])})]
+                       (deref (IWorkRun/work-result run)))",
+                )
+                .unwrap(),
+            "[\"guest-scope-functions\" false true 42]"
         );
     }
 
