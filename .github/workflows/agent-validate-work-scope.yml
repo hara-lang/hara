@@ -1,0 +1,68 @@
+name: Validate cooperative work scope sources
+
+on:
+  push:
+    branches:
+      - work/cooperative-cancellation-scopes
+    paths:
+      - '.github/workflows/agent-validate-work-scope.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  java-work-scopes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Run focused JVM work lifecycle tests
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle -DfailIfNoTests=true
+          -Dtest="hara.truffle.HaraWorkProtocolTest,hara.truffle.HaraWorkHostTest,hara.truffle.HaraWorkScopeTest"
+          test
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-work-scope-reports
+          path: core/java/target/surefire-reports/
+          if-no-files-found: ignore
+
+  rust-work-scopes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Bridge legacy VM fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check focused formatting
+        run: rustfmt --edition 2021 --check core/rust/src/work.rs core/rust/src/work/session.rs
+      - name: Run focused Rust work lifecycle tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path core/rust/Cargo.toml --lib 'work::' -- --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/rust-work-scope.log"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-work-scope-log
+          path: ${{ runner.temp }}/rust-work-scope.log
+          if-no-files-found: ignore
