@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
@@ -30,19 +31,20 @@ public class StdFsTest {
   }
 
   @Test
-  public void portableFsSupportsMetadataRecursiveCopyAndPostOrderDelete() throws Exception {
+  public void portableFsIsDirectStyleAndSupportsRecursiveOperations() throws Exception {
     Path root = Files.createTempDirectory("hara-std-fs-");
     try (Context context = newContext(root)) {
       assertEquals(
-          "[\"/alpha.bin\" \"/alpha.bin\" \"alpha.bin\" :file 2 true]",
+          "[\"/alpha.bin\" \"/alpha.bin\" \"alpha.bin\" :file 2 true false]",
           context
               .eval(
                   HaraLanguage.ID,
                   "(do (require 'std.fs)"
-                      + "    (let [written (deref (std.fs/write-bytes \"/alpha.bin\" (bytes 1 2)))"
-                      + "          entry (deref (std.fs/stat \"/alpha.bin\"))]"
+                      + "    (let [written (std.fs/write-bytes \"/alpha.bin\" (bytes 1 2))"
+                      + "          entry (std.fs/stat \"/alpha.bin\")]"
                       + "      [written (:path entry) (:name entry) (:type entry)"
-                      + "       (:size entry) (map? (:extensions entry))]))")
+                      + "       (:size entry) (map? (:extensions entry))"
+                      + "       (promise? written)]))")
               .toString());
 
       assertEquals(
@@ -50,7 +52,7 @@ public class StdFsTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(try (deref (std.fs/write-bytes \"/alpha.bin\" (bytes 9)))"
+                  "(try (std.fs/write-bytes \"/alpha.bin\" (bytes 9))"
                       + "     :unexpected"
                       + "     (catch Throwable error"
                       + "       (get (ex-data error) :error/code)))")
@@ -61,9 +63,10 @@ public class StdFsTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (deref (std.fs/write-bytes \"/simple-delete\" (bytes 1)))"
-                      + "    (deref (std.fs/delete \"/simple-delete\")))")
+                  "(do (std.fs/write-bytes \"/simple-delete\" (bytes 1))"
+                      + "    (std.fs/delete \"/simple-delete\"))")
               .toString());
+
       assertEquals(
           "[\"/native-missing-ok\" true true]",
           context
@@ -83,24 +86,26 @@ public class StdFsTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(deref (std.fs/delete \"/missing-ok\" {:missing-ok? true}))")
+                  "(std.fs/delete \"/missing-ok\" {:missing-ok? true})")
               .toString());
 
       assertEquals(
-          "[\"one\" \"two\"]",
+          "[\"one\" \"two\" false false]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (deref (std.fs/create-directory \"/src/sub\" {:parents? true}))"
-                      + "    (deref (std.fs/write-bytes \"/src/one\""
-                      + "                               (std.foundation.string/encode-utf8 \"one\")))"
-                      + "    (deref (std.fs/write-bytes \"/src/sub/two\""
-                      + "                               (std.foundation.string/encode-utf8 \"two\")))"
-                      + "    (deref (std.fs/copy \"/src\" \"/dst\"))"
-                      + "    [(std.foundation.string/decode-utf8"
-                      + "       (deref (std.fs/read-bytes \"/dst/one\")))"
-                      + "     (std.foundation.string/decode-utf8"
-                      + "       (deref (std.fs/read-bytes \"/dst/sub/two\")))])")
+                  "(do (std.fs/create-directory \"/src/sub\" {:parents? true})"
+                      + "    (std.fs/write-bytes \"/src/one\""
+                      + "                        (std.foundation.string/encode-utf8 \"one\"))"
+                      + "    (std.fs/write-bytes \"/src/sub/two\""
+                      + "                        (std.foundation.string/encode-utf8 \"two\"))"
+                      + "    (let [mapping (std.fs/copy \"/src\" \"/dst\")"
+                      + "          bytes (std.fs/read-bytes \"/dst/one\")]"
+                      + "      [(std.foundation.string/decode-utf8 bytes)"
+                      + "       (std.foundation.string/decode-utf8"
+                      + "        (std.fs/read-bytes \"/dst/sub/two\"))"
+                      + "       (promise? mapping)"
+                      + "       (promise? bytes)]))")
               .toString());
 
       assertEquals(
@@ -108,11 +113,11 @@ public class StdFsTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(deref (std.fs/delete \"/src\" {:recursive? true}))")
+                  "(std.fs/delete \"/src\" {:recursive? true})")
               .toString());
-      assertTrue(
+      assertFalse(
           context
-              .eval(HaraLanguage.ID, "(not (deref (std.fs/exists? \"/src\")))")
+              .eval(HaraLanguage.ID, "(std.fs/exists? \"/src\")")
               .asBoolean());
     } finally {
       deleteTree(root);
@@ -137,11 +142,11 @@ public class StdFsTest {
                 .eval(
                     HaraLanguage.ID,
                     "(do (require 'std.fs)"
-                        + "    (deref (std.fs/write-bytes \"/b\" (bytes 2)))"
-                        + "    (deref (std.fs/write-bytes \"/a\" (bytes 1)))"
+                        + "    (std.fs/write-bytes \"/b\" (bytes 2))"
+                        + "    (std.fs/write-bytes \"/a\" (bytes 1))"
                         + "    (vec (filter (fn [path]"
                         + "                   (or (= path \"/a\") (= path \"/b\")))"
-                        + "                 (deref (std.fs/list \"/\")))))")
+                        + "                 (std.fs/list \"/\"))))")
                 .toString());
         assertEquals(
             "[\"/a\" \"/b\"]",
@@ -152,7 +157,7 @@ public class StdFsTest {
                         + "          (filter (fn [entry]"
                         + "                    (or (= (:path entry) \"/a\")"
                         + "                        (= (:path entry) \"/b\")))"
-                        + "                  (deref (std.fs.walk/walk \"/\")))))")
+                        + "                  (std.fs.walk/walk \"/\"))))")
                 .toString());
         if (Files.isSymbolicLink(root.resolve("link"))) {
           assertEquals(
@@ -162,7 +167,7 @@ public class StdFsTest {
                       HaraLanguage.ID,
                       "(vec (map (fn [entry] [(:type entry) (:path entry)])"
                           + "          (filter (fn [entry] (= (:path entry) \"/link\"))"
-                          + "                  (deref (std.fs.walk/walk \"/\")))))")
+                          + "                  (std.fs.walk/walk \"/\"))))")
                   .toString());
         }
       }

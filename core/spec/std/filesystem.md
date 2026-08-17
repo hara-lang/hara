@@ -6,9 +6,9 @@ The filesystem surface has three layers:
 
 | Layer | Role |
 | --- | --- |
-| `std.native.File` / `File` | asynchronous provider boundary and compatibility operations |
+| `std.native.File` / `File` | asynchronous promise-based provider boundary and compatibility operations |
 | `std.fs.path` | synchronous, deterministic logical-path algebra |
-| `std.fs` and `std.fs.walk` | portable promise-based filesystem operations and traversal |
+| `std.fs` and `std.fs.walk` | synchronous direct-style filesystem operations and traversal over the provider boundary |
 
 ## Logical paths
 
@@ -31,11 +31,25 @@ The common path contract is:
 
 `std.fs.path` provides the pure operations `normalise`, `join`, `resolve`, `parent`, `root`, `file-name`, `segments`, `relativize`, `subpath`, `suffix`, `add-suffix`, `remove-suffix`, and `replace-suffix`.
 
-## Promise and error contract
+## Effect and error contract
 
-A valid filesystem effect call immediately returns a promise. Capability failures, missing entries, permission failures, and provider I/O failures reject that promise. Arity and argument-type errors remain synchronous.
+The low-level `File` object is promise-based. A valid `File` effect call immediately returns a promise. Capability failures, missing entries, permission failures, and provider I/O failures reject that promise. Arity and argument-type errors remain synchronous.
 
-Provider rejections are `ExceptionInfo` values with stable data:
+The portable `std.fs` and `std.fs.walk` facades are direct-style. They dereference each `File` effect internally and return the final Hara value. A rejected provider promise is therefore rethrown synchronously at the facade boundary as the same structured `ExceptionInfo`.
+
+Both levels remain available:
+
+```clojure
+(fs/read-bytes "/data.bin")
+;; => bytes
+
+(deref (File/read "/data.bin"))
+;; => bytes
+```
+
+The result of `fs/read-bytes` is already a byte value, so `(deref (fs/read-bytes path))` is intentionally invalid.
+
+Provider failures contain stable data:
 
 ```clojure
 {:error/code     :file/not-found
@@ -57,7 +71,7 @@ Portable code should branch on `:error/code`, not host error text. Stable codes 
 - `:file/unsupported`
 - `:file/io`
 
-`exists?` resolves `false` only for not-found. Other failures reject.
+`File/exists?` fulfills with `false` only for not-found. `std.fs/exists?` returns that boolean directly. Other failures reject at `File` and are thrown by `std.fs`.
 
 ## Native provider boundary
 
@@ -67,6 +81,8 @@ The native static object is available as `File` and has the runtime identity `st
 read write exists? stat entries list walk mkdir delete
 copy move temp-file temp-directory
 ```
+
+Every valid effectful call at this layer returns a promise.
 
 The native options are:
 
@@ -80,7 +96,7 @@ temp-file      {:prefix "tmp", :suffix ""}
 temp-directory {:prefix "tmp"}
 ```
 
-`stat` and `entries` return no-follow metadata maps:
+`stat` and `entries` fulfill with no-follow metadata maps:
 
 ```clojure
 {:path        "/dir/item"
@@ -91,7 +107,7 @@ temp-directory {:prefix "tmp"}
  :extensions  {}}
 ```
 
-`:size` is present only for a regular file. `entries` returns immediate entries sorted by canonical path. `list` remains a sorted path-string projection of `entries`.
+`:size` is present only for a regular file. `entries` fulfills with immediate entries sorted by canonical path. `list` remains a sorted path-string projection of `entries`.
 
 `parent`, `join`, `resolve`, `list`, and `walk` remain callable as compatibility operations. New portable code should use `std.fs.path`, `std.fs/entries`, and `std.fs.walk/walk` instead.
 
@@ -117,22 +133,32 @@ temp-file temp-directory
 copy-single copy copy-into move delete
 ```
 
-Examples:
+These functions return direct values:
 
 ```clojure
-(deref (fs/create-directory "/build" {:parents? true}))
+(fs/create-directory "/build" {:parents? true})
 ;; => "/build"
 
-(deref (fs/write-bytes "/build/output.bin" bytes
-                       {:mode :create :parents? true}))
+(fs/write-bytes "/build/output.bin" bytes
+                {:mode :create :parents? true})
 ;; => "/build/output.bin"
 
-(deref (fs/copy "/src" "/backup/src" {:parents? true}))
+(fs/copy "/src" "/backup/src" {:parents? true})
 ;; => {"/src" "/backup/src", ...}
 
-(deref (fs/delete "/backup" {:recursive? true}))
+(fs/delete "/backup" {:recursive? true})
 ;; => ["/backup/src/..." ... "/backup"]
 ```
+
+Result shapes are:
+
+- `stat` returns a metadata map.
+- `exists?`, `file?`, `directory?`, and `symlink?` return booleans.
+- `entries`, `list`, `walk`, and `select` return vectors.
+- `read-bytes` returns bytes.
+- `write-bytes`, directory creation, temporary creation, `copy-single`, and `move` return canonical paths.
+- `copy` and `copy-into` return source-to-target maps.
+- Simple `delete` returns a canonical path; recursive `delete` returns post-order paths.
 
 Copy defaults are non-destructive:
 
@@ -149,21 +175,22 @@ Delete defaults are also non-destructive:
  :missing-ok? false}
 ```
 
-A simple mutation resolves to its canonical logical path. Recursive copy resolves to a source-to-target map. Recursive delete resolves to deleted paths in post-order. Recursive operations reject on the first failure; completed provider mutations are not rolled back or returned as partial success.
+Recursive operations throw on the first failure. Completed provider mutations are not rolled back, preserving the existing partial-mutation behavior.
 
-`copy-into` copies the source beneath a destination directory using the source filename. The mounted root has no filename, so `(fs/copy-into "/" target)` rejects with `:file/invalid-path`.
+`copy-into` copies the source beneath a destination directory using the source filename. The mounted root has no filename, so `(fs/copy-into "/" target)` throws with `:file/invalid-path`.
+
+No parallel asynchronous `std.fs` compatibility namespace exists. Applications that need promise composition should use `File/*` directly.
 
 ## Deterministic traversal
 
-`std.fs.walk/walk` traverses `File/entries` in canonical lexical order. It never follows symbolic links.
+`std.fs.walk/walk` traverses `File/entries` in canonical lexical order and returns a vector. It never follows symbolic links.
 
 ```clojure
-(deref
- (walk/walk "/src"
-            {:include-root? false
-             :max-depth 3
-             :include (fn [entry] (= (:type entry) :file))
-             :exclude (fn [entry] (= (:name entry) ".cache"))}))
+(walk/walk "/src"
+           {:include-root? false
+            :max-depth 3
+            :include (fn [entry] (= (:type entry) :file))
+            :exclude (fn [entry] (= (:name entry) ".cache"))})
 ```
 
 Options are:
@@ -179,7 +206,7 @@ An excluded directory is pruned, not merely omitted from the result. `max-depth`
 
 ## Security and portability invariants
 
-Providers must preserve these invariants:
+Providers and the synchronous facade preserve these invariants:
 
 - Logical `..` cannot escape the mounted root.
 - Host absolute paths and drive syntax cannot select ambient host files.
@@ -190,4 +217,4 @@ Providers must preserve these invariants:
 - The mounted root cannot be deleted.
 - Temporary entries are created atomically beneath the explicit logical parent.
 
-The JVM, Rust-native/WASI, memory, and unsupported providers are expected to expose the same logical results and stable error data even though their host implementations differ.
+The JVM, Rust-native/WASI, memory, and unsupported providers expose the same logical results and stable error data even though their host implementations differ.

@@ -1,8 +1,7 @@
-;; Promise-based deterministic traversal over std.native.File/entries.
+;; Direct-style deterministic traversal over promise-based std.native.File/entries.
 (ns std.fs.walk
   (:config {:override [walk]})
-  (:require [std.foundation.promise :as promise]
-            [std.fs.path :as path]))
+  (:require [std.fs.path :as path]))
 
 (def default-options
   {:include-root? false
@@ -27,7 +26,7 @@
     (and (not (nil? exclude)) (exclude entry))))
 
 (defn walk
-  "Returns a promise of entry maps in canonical lexical path order.
+  "Returns entry maps in canonical lexical path order.
 
    Options are :include-root?, :max-depth, :include, and :exclude. Excluded
    directories are pruned and symbolic links are never followed."
@@ -38,19 +37,13 @@
          options (merge default-options options)]
      (letfn [(visit-many [entries depth]
                (loop [index 0
-                      result (promise/from [])]
+                      output []]
                  (if (= index (count entries))
-                   result
-                   (let [entry (nth entries index)]
-                     (recur
-                      (inc index)
-                      (promise/then
-                       result
-                       (fn [output]
-                         (promise/then
-                          (visit-entry entry depth)
-                          (fn [values]
-                            (append-values output values))))))))))
+                   output
+                   (let [entry (nth entries index)
+                         values (visit-entry entry depth)]
+                     (recur (inc index)
+                            (append-values output values))))))
              (visit-entry [entry depth]
                (let [include-entry (accepted? entry options)
                      max-depth (:max-depth options)
@@ -58,25 +51,17 @@
                                   (not (excluded? entry options))
                                   (or (nil? max-depth) (< depth max-depth)))]
                  (if descend
-                   (promise/then
-                    (File/entries (:path entry))
-                    (fn [children]
-                      (promise/then
-                       (visit-many children (inc depth))
-                       (fn [descendants]
-                         (if include-entry
-                           (conj descendants entry)
-                           descendants)))))
-                   (promise/from (if include-entry [entry] [])))))]
-       (promise/then
-        (File/stat root)
-        (fn [entry]
-          (promise/then
-           (visit-entry entry 0)
-           (fn [values]
-             (let [ordered (vec (sort-by :path values))]
-               (if (:include-root? options)
-                 ordered
-                 (vec (filter (fn [value]
-                                (not (= (:path value) root)))
-                              ordered))))))))))))
+                   (let [children (deref (File/entries (:path entry)))
+                         descendants (visit-many children (inc depth))]
+                     (if include-entry
+                       (conj descendants entry)
+                       descendants))
+                   (if include-entry [entry] []))))]
+       (let [entry (deref (File/stat root))
+             values (visit-entry entry 0)
+             ordered (vec (sort-by :path values))]
+         (if (:include-root? options)
+           ordered
+           (vec (filter (fn [value]
+                          (not (= (:path value) root)))
+                        ordered))))))))
