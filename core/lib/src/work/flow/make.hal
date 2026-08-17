@@ -42,18 +42,34 @@
   ([profile definition]
    (compiler/compile-plan definition)))
 
+(defn reconcile-existing
+  [make-host candidate]
+  (let [previous-plan (host/plan make-host)
+        was-running? (host/running? make-host)
+        starts-on-define?
+        (= :on-define (:make/trigger-policy candidate))
+        will-run? (or was-running? starts-on-define?)
+        receipts
+        (cond
+          was-running?
+          (trigger/transition-running make-host
+                                      previous-plan
+                                      candidate)
+
+          starts-on-define?
+          (trigger/install-all make-host candidate)
+
+          :else
+          [])
+        status (if will-run? :running :stopped)]
+    (host/install-plan! make-host candidate status receipts)
+    make-host))
+
 (defn reconcile
   "Installs a candidate plan while preserving an existing host identity."
   [profile previous candidate definition]
   (if (host/host? previous)
-    (let [previous-plan (host/plan previous)
-          running? (host/running? previous)]
-      (host/replace-plan! previous candidate)
-      (if running?
-        (trigger/reconcile-running! previous previous-plan candidate)
-        (if (= :on-define (:make/trigger-policy candidate))
-          (trigger/start! previous)))
-      previous)
+    (reconcile-existing previous candidate)
     (let [make-host (host/create candidate)]
       (if (= :on-define (:make/trigger-policy candidate))
         (trigger/start! make-host))
