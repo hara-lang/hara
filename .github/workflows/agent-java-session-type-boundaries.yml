@@ -1,0 +1,43 @@
+name: Validate Java Session type boundaries
+
+on:
+  push:
+    branches:
+      - agent/java-session-type-boundaries
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: agent/java-session-type-boundaries
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Apply the typed Session model
+        run: python scripts/runtime/apply-java-session-type-boundaries.py
+      - name: Compile and test the Java Session boundary
+        run: mvn -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.SessionKernelTest test
+      - name: Commit the validated Java slice
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            core/java/src/main/java/hara/truffle/SessionAuthorityPolicy.java \
+            core/java/src/main/java/hara/truffle/SessionId.java \
+            core/java/src/main/java/hara/truffle/SessionKernel.java \
+            core/java/src/main/java/hara/truffle/SessionSpec.java \
+            core/java/src/main/java/hara/truffle/SessionState.java \
+            core/java/src/main/java/hara/truffle/SessionStatus.java \
+            core/java/src/test/java/hara/truffle/SessionKernelTest.java
+          git diff --cached --check
+          git commit -m "Tighten Java Session type boundaries"
+          git push origin HEAD:agent/java-session-type-boundaries
