@@ -655,3 +655,68 @@
        (runtime-provider/disassemble (:artifact/bytes artifact))
        (catch Throwable error
          (artifact-invalid :disassemble artifact provider error))))))
+
+(defn- transform-input
+  [value]
+  (if (string? value)
+    {:from :hal
+     :payload value
+     :provenance nil}
+    (let [artifact (artifact value)]
+      {:from (:artifact/format artifact)
+       :payload (:artifact/bytes artifact)
+       :provenance (:artifact/provenance artifact)})))
+
+(defn- transform-options
+  [value]
+  (let [value (or value {})]
+    (if (map? value)
+      value
+      (fail "tool.vm transform options must be a map"
+            {:type :tool.vm/invalid-request
+             :field :options
+             :value value}))))
+
+(defn transform
+  "Transforms HAL source or a HALC artifact through the selected current-runtime provider."
+  ([input to]
+   (transform input to {}))
+  ([input to options]
+   (let [input (transform-input input)
+         from (:from input)
+         to (format-id to)
+         options (transform-options options)
+         provider-options (if (has? options :provider)
+                            {:provider (:provider options)}
+                            {})
+         compile-options (dissoc options :provider)
+         provider
+         (resolve-provider
+          {:operation :transform
+           :from from
+           :to to
+           :options provider-options})]
+     (try
+       (let [bytes
+             (runtime-provider/transform
+              from to (:payload input) compile-options)
+             version (:format/version (format-descriptor to))
+             provenance
+             {:transform/provider (:provider/id provider)
+              :transform/from from
+              :transform/to to
+              :transform/options compile-options
+              :transform/source-provenance (:provenance input)}]
+         (artifact
+          {:artifact/format to
+           :artifact/version version
+           :artifact/bytes bytes
+           :artifact/provenance provenance}))
+       (catch Throwable error
+         (fail (str "tool.vm transformation failed: " (ex-message error))
+               {:type :tool.vm/transformation-failed
+                :operation :transform
+                :from from
+                :to to
+                :provider (:provider/id provider)
+                :message (ex-message error)}))))))

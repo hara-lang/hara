@@ -1,17 +1,21 @@
 package hara.truffle;
 
 import hara.lang.data.Keyword;
+import hara.lang.data.types.IMapType;
 import hara.truffle.bytecode.HbcCodec;
 import hara.truffle.bytecode.HbcDisassembler;
 import hara.truffle.bytecode.HbcProgram;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Map;
 
 /** Read-only HALC/HBC provider implementation for the Truffle runtime. */
 public final class ToolVmLibrary {
+  private static final Keyword HAL = Keyword.create("hal");
   private static final Keyword HALC = Keyword.create("halc");
   private static final Keyword HBC = Keyword.create("hbc");
 
@@ -25,11 +29,12 @@ public final class ToolVmLibrary {
     expectArity("provider", arguments, 0);
     return orderedMap(
         "provider/id", keyword("truffle"),
-        "provider/operations", keywords("validate", "inspect", "disassemble"),
+        "provider/operations", keywords("validate", "inspect", "transform", "disassemble"),
         "provider/formats", orderedMap(
+            "hal", vector(),
             "halc", keywords("validate", "inspect"),
             "hbc", keywords("validate", "inspect", "disassemble")),
-        "provider/transforms", vector(),
+        "provider/transforms", vector(vector(HAL, HALC)),
         "provider/engines", orderedMap());
   }
 
@@ -72,6 +77,50 @@ public final class ToolVmLibrary {
     expectArity("disassemble", arguments, 1);
     byte[] bytes = bytes(arguments[0], "disassemble");
     return HbcDisassembler.disassemble(HbcCodec.decode(bytes));
+  }
+
+  @HaraExport(
+      name = "transform",
+      doc = "Transforms HAL source to canonical HALC bytes when that exact edge is supported.",
+      arglists = {"[from to input options]"})
+  public static Object transform(HaraContext context, Object[] arguments) {
+    expectArity("transform", arguments, 4);
+    String from = transformFormat(arguments[0], "source format");
+    String to = transformFormat(arguments[1], "target format");
+    if (!"hal".equals(from) || !"halc".equals(to)) {
+      throw new HaraException(
+          "tool.vm.provider does not support :" + from + " -> :" + to + " in this runtime profile");
+    }
+    Object input = HaraBox.unwrap(arguments[2]);
+    if (!(input instanceof String source)) {
+      throw new HaraException("tool.vm.provider/transform expects HAL source as a String");
+    }
+    Object[] forms = HaraLanguage.readAll(source, "tool.vm/transform");
+    String namespace = HalcArtifact.declaredNamespace(forms);
+    Object rawOptions = HaraBox.unwrap(arguments[3]);
+    if (!(rawOptions instanceof IMapType<?, ?>)) {
+      throw new HaraException("tool.vm.provider/transform expects options as a map");
+    }
+    @SuppressWarnings("unchecked")
+    IMapType<Object, Object> options = (IMapType<Object, Object>) rawOptions;
+    for (Map.Entry<Object, Object> entry : options) {
+      if (!Keyword.create("resource").equals(HaraBox.unwrap(entry.getKey()))) {
+        throw new HaraException(
+            "tool.vm.provider/transform does not support option " + entry.getKey());
+      }
+    }
+    Object resourceOption = HaraBox.unwrap(options.lookup(Keyword.create("resource")));
+    String resource =
+        resourceOption == null || resourceOption == HaraNull.SINGLETON
+            ? namespace.replace('.', '/') + ".hal"
+            : resourceOption instanceof String value
+                ? value
+                : null;
+    if (resource == null) {
+      throw new HaraException("tool.vm.provider/transform expects :resource as a String");
+    }
+    return HalcArtifact.encode(
+        namespace, resource, source.getBytes(StandardCharsets.UTF_8), forms);
   }
 
   private static Object inspectHalc(byte[] bytes) {
@@ -129,6 +178,16 @@ public final class ToolVmLibrary {
     }
     throw new HaraException(
         "tool.vm.provider/" + operation + " expects :halc or :hbc as its format");
+  }
+
+  private static String transformFormat(Object value, String field) {
+    Object unwrapped = HaraBox.unwrap(value);
+    if (unwrapped instanceof Keyword keyword && keyword.getNamespace() == null) {
+      String name = keyword.getName();
+      if ("hal".equals(name) || "halc".equals(name) || "hbc".equals(name)) return name;
+    }
+    throw new HaraException(
+        "tool.vm.provider/transform expects :hal, :halc, or :hbc as " + field);
   }
 
   private static byte[] bytes(Object value, String operation) {
