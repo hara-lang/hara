@@ -19,21 +19,26 @@
   (require-node))
 
 (defn start [f]
-  (let [id (str "task-" (swap! *next-task* inc))]
+  (let [id (str "task-" (swap! *next-task* inc))
+        node-id (require-node)]
     (do
-      ;; The broker launches this callback as an independent HTA task after
-      ;; the document generation activates. Keeping the function in its
-      ;; private ns+ kernel lets closing/reloading that kernel cancel it.
-      (reset! *active-task* [id f])
+      ;; The callback starts in a later HTA evaluation. Capture its document
+      ;; node now instead of relying on the dynamic root surviving that task
+      ;; boundary.
+      (reset! *active-task* [id node-id f])
       id)))
 
 (defn run-task [id]
   ;; Referring to *active-task* yields the atom itself. Dereference it once to
-  ;; obtain [task-id callback]; a second deref incorrectly treats that vector
-  ;; as a reference and prevents every canvas generation from starting.
+  ;; obtain [task-id node-id callback]; a second deref incorrectly treats that
+  ;; vector as a reference and prevents every canvas generation from starting.
   (let [entry (deref *active-task*)]
     (if (= id (nth entry 0))
-      ((nth entry 1))
+      (do
+        ;; A task is launched by a separate session evaluation. Restore the
+        ;; node captured by start before any draw/node host call is attempted.
+        (set! *node-id* (nth entry 1))
+        ((nth entry 2)))
       (throw (str "unknown node task " id)))))
 
 (defn in [signal]

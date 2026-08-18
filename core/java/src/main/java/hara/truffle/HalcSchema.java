@@ -4,6 +4,7 @@ import hara.lang.base.G;
 import hara.lang.data.Keyword;
 import hara.lang.data.Symbol;
 import hara.lang.data.types.ILinearType;
+import hara.lang.data.types.IMapType;
 import hara.kernel.builtin.BuiltinStruct;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -150,35 +151,16 @@ public final class HalcSchema {
   }
 
   public static Type normalize(Object schema) {
-    if (schema instanceof Keyword keyword) return new Primitive(keyword.getName());
+    if (schema instanceof Keyword keyword) return new Primitive(keywordName(keyword));
     if (schema instanceof hara.lang.data.types.IMapType<?, ?> map) {
       @SuppressWarnings("unchecked")
       hara.lang.data.types.IMapType<Object, Object> valuesMap =
           (hara.lang.data.types.IMapType<Object, Object>) map;
       Object kindValue = valuesMap.lookup(Keyword.create("kind"));
       if (kindValue instanceof Keyword kind) {
-        ILinearType<?> children = vector(valuesMap.lookup(Keyword.create("children")));
-        if (children == null) throw invalid("schema :children must be a vector");
-        List<Object> values = values(children, 0);
-        return switch (kind.getName()) {
-          case "primitive" -> {
-            if (values.size() != 1 || !(values.get(0) instanceof Keyword name))
-              throw invalid("primitive schema requires one keyword child");
-            yield new Primitive(name.getName());
-          }
-          case "map" -> normalizeMap(values);
-          case "or" -> normalizeUnion(values);
-          case "vector" -> {
-            requireCount("vector", values, 1);
-            yield new VectorType(normalize(values.get(0)));
-          }
-          case "tuple" -> new Tuple(normalizeAll(values));
-          case "enum" -> new EnumType(values);
-          default -> throw invalid("unsupported longhand schema kind: " + kind.getName());
-        };
+        return normalizeLonghand(valuesMap, kind.getName());
       }
-    }
-    if (schema instanceof hara.lang.data.List<?> reference
+    }    if (schema instanceof hara.lang.data.List<?> reference
         && reference.count() == 2
         && reference.nth(0) instanceof Symbol operator
         && operator.getNamespace() == null
@@ -197,14 +179,15 @@ public final class HalcSchema {
     }
     if (!(vector.nth(0) instanceof Keyword head)) return new Unknown(schema);
     List<Object> arguments = values(vector, 1);
-    return switch (head.getName()) {
+    String headName = keywordName(head);
+    return switch (headName) {
       case "or" -> normalizeUnion(arguments);
       case "maybe" -> {
-        requireCount(head.getName(), arguments, 1);
+        requireCount(headName, arguments, 1);
         yield normalizeUnion(List.of(arguments.get(0), Keyword.create("nil")));
       }
       case "vector" -> {
-        requireCount(head.getName(), arguments, 1);
+        requireCount(headName, arguments, 1);
         yield new VectorType(normalize(arguments.get(0)));
       }
       case "tuple" -> new Tuple(normalizeAll(arguments));
@@ -226,8 +209,177 @@ public final class HalcSchema {
       }
       case "enum" -> new EnumType(arguments);
       default -> arguments.isEmpty()
-          ? new Primitive(head.getName())
-          : new Extension(head.getName(), arguments);
+          ? new Primitive(headName)
+          : new Extension(headName, arguments);
+    };
+  }
+
+  private static Entry<Object, Object> longhandEntry(
+      IMapType<Object, Object> schema, String name) {
+    return schema.find(Keyword.create(name));
+  }
+
+  private static Object longhandValue(IMapType<Object, Object> schema, String name) {
+    Entry<Object, Object> entry = longhandEntry(schema, name);
+    return entry == null ? null : entry.getValue();
+  }
+
+  private static List<Object> longhandValues(
+      IMapType<Object, Object> schema, String name, List<Object> fallback) {
+    Entry<Object, Object> entry = longhandEntry(schema, name);
+    if (entry == null) return fallback;
+    ILinearType<?> values = vector(entry.getValue());
+    if (values == null) throw invalid("schema :" + name + " must be a vector");
+    return values(values, 0);
+  }
+
+  @SuppressWarnings("unchecked")
+  private static IMapType<Object, Object> schemaMap(Object value) {
+    return value instanceof IMapType<?, ?> map
+        ? (IMapType<Object, Object>) map
+        : null;
+  }
+
+  private static String keywordName(Keyword keyword) {
+    return keyword.getNamespace() == null
+        ? keyword.getName()
+        : keyword.getNamespace() + "/" + keyword.getName();
+  }
+
+  private static Reference normalizeReference(Object value) {
+    if (!(value instanceof Symbol name)) {
+      throw invalid("named schema reference must target a symbol");
+    }
+    if (name.getNamespace() == null) {
+      throw invalid("named schema reference is not fully qualified: " + name.display());
+    }
+    return new Reference(name.display());
+  }
+
+  private static Type normalizeLonghandMap(
+      IMapType<Object, Object> schema, List<Object> children) {
+    if (longhandEntry(schema, "fields") == null) return normalizeMap(children);
+    List<Field> fields = new ArrayList<>();
+    for (Object rawField : longhandValues(schema, "fields", List.of())) {
+      IMapType<Object, Object> field = schemaMap(rawField);
+      if (field == null) {
+        throw invalid("map schema fields must be {:name name :type schema} maps");
+      }
+      Entry<Object, Object> name = longhandEntry(field, "name");
+      Entry<Object, Object> type = longhandEntry(field, "type");
+      if (name == null) throw invalid("map schema field requires :name");
+      if (type == null) throw invalid("map schema field requires :type");
+      fields.add(new Field(name.getValue(), normalize(type.getValue())));
+    }
+    return new MapType(fields);
+  }
+
+  private static Function normalizeLonghandFunction(IMapType<Object, Object> schema) {
+    Entry<Object, Object> inputsEntry = longhandEntry(schema, "inputs");
+    Entry<Object, Object> outputEntry = longhandEntry(schema, "output");
+    if (inputsEntry == null) throw invalid("function schema requires :inputs");
+    if (outputEntry == null) throw invalid("function schema requires :output");
+
+    Object inputsValue = inputsEntry.getValue();
+    IMapType<Object, Object> inputsMap = schemaMap(inputsValue);
+    List<Type> fixed = new ArrayList<>();
+    Type rest = null;
+    if (inputsMap != null) {
+      for (Object value : longhandValues(inputsMap, "fixed", List.of())) {
+        fixed.add(normalize(value));
+      }
+      Entry<Object, Object> restEntry = longhandEntry(inputsMap, "rest");
+      if (restEntry != null && HaraBox.unwrap(restEntry.getValue()) != null) {
+        rest = normalize(HaraBox.unwrap(restEntry.getValue()));
+      }
+    } else {
+      ILinearType<?> inputs = vector(inputsValue);
+      if (inputs == null) {
+        throw invalid("function schema :inputs must be a vector or map");
+      }
+      int index = 0;
+      while (index < inputs.count()) {
+        if (inputs.nth(index) instanceof Symbol marker
+            && marker.getNamespace() == null
+            && "&".equals(marker.getName())) {
+          if (rest != null || index + 2 != inputs.count()) {
+            throw invalid(":fn schema & must precede exactly one rest type");
+          }
+          rest = normalize(inputs.nth(index + 1));
+          index += 2;
+        } else {
+          fixed.add(normalize(inputs.nth(index++)));
+        }
+      }
+    }
+    return new Function(fixed, rest, normalize(outputEntry.getValue()));
+  }
+
+  private static FunctionType normalizeLonghandFunctions(List<Object> values) {
+    if (values.isEmpty()) {
+      throw invalid(":function schema requires at least one :fn schema");
+    }
+    List<Function> arities = new ArrayList<>();
+    for (Object value : values) {
+      IMapType<Object, Object> schema = schemaMap(value);
+      if (schema != null && longhandEntry(schema, "kind") == null) {
+        arities.add(normalizeLonghandFunction(schema));
+        continue;
+      }
+      Type normalized = normalize(value);
+      if (!(normalized instanceof FunctionType functions)) {
+        throw invalid(":function members must be :fn schemas");
+      }
+      arities.addAll(functions.arities());
+    }
+    return new FunctionType(arities);
+  }
+
+  private static Type normalizeLonghand(IMapType<Object, Object> schema, String kind) {
+    List<Object> children = longhandValues(schema, "children", List.of());
+    return switch (kind) {
+      case "primitive" -> {
+        Object name = longhandValue(schema, "name");
+        if (name == null && !children.isEmpty()) name = children.get(0);
+        if (!(name instanceof Keyword keyword)) {
+          throw invalid("primitive schema requires one keyword name");
+        }
+        yield new Primitive(keywordName(keyword));
+      }
+      case "reference" -> {
+        Object name = longhandValue(schema, "name");
+        if (name == null && !children.isEmpty()) name = children.get(0);
+        yield normalizeReference(name);
+      }
+      case "union", "or" ->
+          normalizeUnion(longhandValues(schema, "types", children));
+      case "vector" -> {
+        Object item = longhandValue(schema, "item");
+        if (item == null && !children.isEmpty()) item = children.get(0);
+        if (item == null) throw invalid("vector schema requires :item");
+        yield new VectorType(normalize(item));
+      }
+      case "tuple" -> new Tuple(normalizeAll(longhandValues(schema, "items", children)));
+      case "map" -> normalizeLonghandMap(schema, children);
+      case "fn" -> new FunctionType(List.of(normalizeLonghandFunction(schema)));
+      case "function" ->
+          normalizeLonghandFunctions(longhandValues(schema, "arities", children));
+      case "enum" -> new EnumType(longhandValues(schema, "values", children));
+      case "extension" -> {
+        Object headValue = longhandValue(schema, "head");
+        if (headValue == null) headValue = longhandValue(schema, "name");
+        if (!(headValue instanceof Keyword head)) {
+          throw invalid("extension schema :head must be a keyword");
+        }
+        yield new Extension(
+            keywordName(head), longhandValues(schema, "arguments", children));
+      }
+      case "unknown" -> {
+        Object surface = longhandValue(schema, "surface");
+        if (surface == null && !children.isEmpty()) surface = children.get(0);
+        yield new Unknown(surface == null ? schema : surface);
+      }
+      default -> throw invalid("unsupported longhand schema kind: " + kind);
     };
   }
 

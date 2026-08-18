@@ -4,35 +4,281 @@
 (defn- normalize-dispatch
   [schema]
   (cond
+    (Schema/instance? schema)
+    :schema-value
+
     (and (map? schema) (has? schema :kind))
     :normalized
 
     (keyword? schema)
     :primitive
 
+    (and (list? schema)
+         (= 2 (count schema))
+         (= 'var (first schema))
+         (symbol? (second schema)))
+    :reference
+
     (not (vector? schema))
     :unknown
+
+    (and (= 1 (count schema))
+         (keyword? (first schema)))
+    :primitive-vector
 
     :else (first schema)))
 
 (defmulti normalize normalize-dispatch)
 
+(defn- append-unique [values value]
+  (if (any? (fn [candidate] (= candidate value)) values)
+    values
+    (conj values value)))
+
+(defn- append-union-type [values value]
+  (if (= :union (:kind value))
+    (loop [remaining (:types value)
+           output values]
+      (if (empty? remaining)
+        output
+        (recur (rest remaining)
+               (append-unique output (first remaining)))))
+    (append-unique values value)))
+
+(defn- normalize-union [types]
+  (let [members
+        (loop [remaining types
+               output []]
+          (if (empty? remaining)
+            output
+            (recur (rest remaining)
+                   (append-union-type output
+                                      (normalize (first remaining))))))]
+    (if (= 1 (count members))
+      (first members)
+      {:kind :union :types members})))
+
+(defn- normalize-input-vector [inputs]
+  (loop [index 0
+         fixed []]
+    (if (= index (count inputs))
+      {:fixed fixed :rest nil}
+      (if (= '& (nth inputs index))
+        {:fixed fixed
+         :rest (normalize (nth inputs (inc index)))}
+        (recur (inc index)
+               (conj fixed (normalize (nth inputs index))))))))
+
+(defn- normalize-inputs [inputs]
+  (if (map? inputs)
+    (let [rest-schema (get inputs :rest nil)]
+      {:fixed (vec (map normalize (get inputs :fixed [])))
+       :rest (if (nil? rest-schema)
+               nil
+               (normalize rest-schema))})
+    (normalize-input-vector inputs)))
+
+(defn- normalize-fn-map [schema]
+  {:kind :fn
+   :inputs (normalize-inputs (:inputs schema))
+   :output (normalize (:output schema))})
+
+(defn- normalize-function-arities [arities]
+  (let [normalized
+        (vec
+         (map (fn [arity]
+                (normalize
+                 (if (and (map? arity)
+                          (not (has? arity :kind)))
+                   (assoc arity :kind :fn)
+                   arity)))
+              arities))]
+    (if (= 1 (count normalized))
+      (first normalized)
+      {:kind :function :arities normalized})))
+
+(defn- normalize-field [field]
+  (if (map? field)
+    {:name (:name field)
+     :type (normalize (:type field))}
+    {:name (first field)
+     :type (normalize (second field))}))
+
+(defn- canonical-normal?
+  [schema]
+  (and
+   (map? schema)
+   (let [kind (:kind schema)]
+     (cond
+       (= kind :primitive)
+       (and (has? schema :name)
+            (keyword? (:name schema)))
+
+       (= kind :reference)
+       (and (has? schema :name)
+            (symbol? (:name schema)))
+
+       (= kind :union)
+       (and (vector? (:types schema))
+            (every? canonical-normal? (:types schema)))
+
+       (= kind :vector)
+       (canonical-normal? (:item schema))
+
+       (= kind :tuple)
+       (and (vector? (:items schema))
+            (every? canonical-normal? (:items schema)))
+
+       (= kind :map)
+       (and
+        (vector? (:fields schema))
+        (every?
+         (fn [field]
+           (and (map? field)
+                (has? field :name)
+                (canonical-normal? (:type field))))
+         (:fields schema)))
+
+       (= kind :fn)
+       (let [inputs (:inputs schema)]
+         (and
+          (map? inputs)
+          (vector? (:fixed inputs))
+          (every? canonical-normal? (:fixed inputs))
+          (or (nil? (:rest inputs))
+              (canonical-normal? (:rest inputs)))
+          (canonical-normal? (:output schema))))
+
+       (= kind :function)
+       (and (vector? (:arities schema))
+            (every?
+             (fn [arity]
+               (and (= :fn (:kind arity))
+                    (canonical-normal? arity)))
+             (:arities schema)))
+
+       (= kind :enum)
+       (vector? (:values schema))
+
+       (= kind :extension)
+       (and (keyword? (:head schema))
+            (vector? (:arguments schema))
+            (has? schema :surface))
+
+       (= kind :unknown)
+       (has? schema :surface)
+
+       :else false))))
+
+(defn- normalize-normalized [schema]
+  (if (canonical-normal? schema)
+    schema
+    (let [kind (:kind schema)
+          children (get schema :children [])]
+      (cond
+        (= kind :primitive)
+        (normalize
+         (if (has? schema :name)
+           (:name schema)
+           (first children)))
+
+        (= kind :reference)
+        {:kind :reference
+         :name (if (has? schema :name)
+                 (:name schema)
+                 (first children))}
+
+        (or (= kind :union) (= kind :or))
+        (normalize-union
+         (if (has? schema :types)
+           (:types schema)
+           children))
+
+        (= kind :vector)
+        {:kind :vector
+         :item (normalize
+                (if (has? schema :item)
+                  (:item schema)
+                  (first children)))}
+
+        (= kind :tuple)
+        {:kind :tuple
+         :items (vec
+                 (map normalize
+                      (if (has? schema :items)
+                        (:items schema)
+                        children)))}
+
+        (= kind :map)
+        {:kind :map
+         :fields
+         (vec
+          (map normalize-field
+               (if (has? schema :fields)
+                 (:fields schema)
+                 children)))}
+
+        (= kind :fn)
+        (normalize-fn-map schema)
+
+        (= kind :function)
+        (normalize-function-arities
+         (if (has? schema :arities)
+           (:arities schema)
+           children))
+
+        (= kind :enum)
+        {:kind :enum
+         :values (vec
+                  (if (has? schema :values)
+                    (:values schema)
+                    children))}
+
+        (= kind :extension)
+        (let [head (if (has? schema :head)
+                     (:head schema)
+                     (:name schema))
+              arguments (if (has? schema :arguments)
+                          (:arguments schema)
+                          children)]
+          {:kind :extension
+           :head head
+           :arguments (vec arguments)
+           :surface (if (has? schema :surface)
+                      (:surface schema)
+                      (vec (concat [head] arguments)))})
+
+        (= kind :unknown)
+        {:kind :unknown
+         :surface (if (has? schema :surface)
+                    (:surface schema)
+                    (first children))}
+
+        :else schema))))
+
+(defmethod normalize :schema-value [schema]
+  (normalize (Schema/ast schema)))
+
 (defmethod normalize :normalized [schema]
-  schema)
+  (normalize-normalized schema))
 
 (defmethod normalize :primitive [schema]
   {:kind :primitive :name schema})
+
+(defmethod normalize :reference [schema]
+  {:kind :reference :name (second schema)})
+
+(defmethod normalize :primitive-vector [schema]
+  (normalize (first schema)))
 
 (defmethod normalize :unknown [schema]
   {:kind :unknown :surface schema})
 
 (defmethod normalize :or [schema]
-  {:kind :union
-   :types (vec (map normalize (rest schema)))})
+  (normalize-union (rest schema)))
 
 (defmethod normalize :maybe [schema]
-  {:kind :union
-   :types [(normalize (second schema)) (normalize :nil)]})
+  (normalize-union [(second schema) :nil]))
 
 (defmethod normalize :vector [schema]
   {:kind :vector
@@ -44,31 +290,15 @@
 
 (defmethod normalize :map [schema]
   {:kind :map
-   :fields
-   (vec
-    (map (fn [pair]
-           {:name (first pair)
-            :type (normalize (second pair))})
-         (rest schema)))})
+   :fields (vec (map normalize-field (rest schema)))})
 
 (defmethod normalize :fn [schema]
-  (let [inputs (second schema)]
-    {:kind :fn
-     :inputs
-     (loop [index 0
-            fixed []]
-       (if (= index (count inputs))
-         {:fixed fixed :rest nil}
-         (if (= '& (nth inputs index))
-           {:fixed fixed
-            :rest (normalize (nth inputs (inc index)))}
-           (recur (inc index)
-                  (conj fixed (normalize (nth inputs index)))))))
-     :output (normalize (nth schema 2))}))
+  (normalize-fn-map
+   {:inputs (second schema)
+    :output (nth schema 2)}))
 
 (defmethod normalize :function [schema]
-  {:kind :function
-   :arities (vec (map normalize (rest schema)))})
+  (normalize-function-arities (rest schema)))
 
 (defmethod normalize :enum [schema]
   {:kind :enum :values (vec (rest schema))})
