@@ -1,0 +1,111 @@
+(ns std.typed.registry-test
+  (:use code.test)
+  (:require [std.typed.registry :as registry]
+            [std.typed.schema :as schema]))
+
+(def +base+
+  (registry/local
+   'model
+   {'Id :int
+    'Status '[:enum :active :disabled]}))
+
+(def +application+
+  (registry/registry
+   {'User '[:map
+             [:id (var Id)]
+             [:status (var m/Status)]]}
+   {:namespace 'app
+    :aliases {'m 'model}
+    :refers {'Id 'model/Id}
+    :parents [+base+]}))
+
+(def +nodes+
+  (registry/local
+   'demo
+   {'Node '[:map
+             [:value :int]
+             [:next [:maybe Node]]]}))
+
+(def +cycle+
+  (registry/local
+   'cycle
+   {'A 'B
+    'B 'A}))
+
+^{:refer 'std.typed.registry/registry
+  :id 'immutable-qualified-composite-registry}
+(fact "qualifies local entries and resolves ordered parent registries"
+  (let [override (registry/local 'model {'Id :str})
+        composite (registry/composite [override +base+])
+        extended (registry/assoc-schema +application+ 'Token :str)]
+    [(registry/qualify +application+ 'User)
+     (registry/qualify +application+ 'Id)
+     (registry/qualify +application+ 'm/Status)
+     (registry/lookup +application+ 'Id)
+     (registry/lookup composite 'Id)
+     (registry/has-schema? +application+ 'User)
+     (registry/has-schema? +application+ 'Missing)
+     (registry/names +application+)
+     (count (registry/definitions +application+))
+     (registry/lookup extended 'Token)
+     (registry/lookup +application+ 'Token)
+     (registry/has-schema? (registry/dissoc-schema extended 'Token) 'Token)])
+  => [app/User
+      model/Id
+      model/Status
+      :int
+      :str
+      true
+      false
+      (vec '[app/User model/Id model/Status])
+      3
+      :str
+      nil
+      false])
+
+^{:refer 'std.typed.schema/resolve-recursive
+  :id 'recursive-registry-resolution}
+(fact "resolves recursive schemas without infinitely expanding their cycle"
+  (let [resolved (schema/resolve-recursive 'Node +nodes+)]
+    [(schema/normalize-with 'Node +nodes+)
+     (:kind (schema/resolve-reference 'Node +nodes+))
+     (:kind resolved)
+     (schema/reference-names resolved)
+     (schema/unresolved-references 'Node +nodes+)])
+  => [{:kind :reference :name demo/Node}
+      :map
+      :map
+      (vec '[demo/Node])
+      (vec [])])
+
+^{:refer 'std.typed.schema/valid?
+  :id 'recursive-registry-validation}
+(fact "validates finite recursive values through named schema references"
+  [(schema/valid? 'Node
+                  {:value 1
+                   :next {:value 2
+                          :next nil}}
+                  +nodes+)
+   (schema/valid? 'Node
+                  {:value 1
+                   :next {:value "two"
+                          :next nil}}
+                  +nodes+)
+   (:finding/type
+    (first (schema/validate 'Missing 1 +nodes+)))
+   (:finding/reference
+    (first (schema/validate 'Missing 1 +nodes+)))
+   (:finding/type
+    (first (schema/validate 'A 1 +cycle+)))]
+  => [true
+      false
+      :std.typed.schema/unresolved-reference
+      demo/Missing
+      :std.typed.schema/cyclic-reference])
+
+(let [result (run '[std.typed.registry-test])]
+  (if (= :passed (:status result))
+    (pr-str result)
+    (throw
+     (ex-info "std.typed registry facts failed"
+              {:result result}))))

@@ -1,0 +1,33 @@
+(defn- reference-finding
+  [finding-type path schema value]
+  {:finding/type finding-type
+   :finding/path (vec path)
+   :finding/expected schema
+   :finding/value value
+   :finding/reference (:name schema)})
+
+(defmethod validate-normal :reference [schema value path]
+  (let [schema-name (:name schema)]
+    (if (nil? *registry*)
+      [(reference-finding
+        :std.typed.schema/unresolved-reference
+        path schema value)]
+      (let [found (registry/find-schema *registry* schema-name)]
+        (if (nil? found)
+          [(reference-finding
+            :std.typed.schema/unresolved-reference
+            path schema value)]
+          (let [source-registry (:registry found)
+                qualified-name (:name found)
+                visit-key [qualified-name (vec path)]]
+            (if (has? *reference-trail* visit-key)
+              [(reference-finding
+                :std.typed.schema/cyclic-reference
+                path schema value)]
+              (binding [*registry* source-registry
+                        *reference-trail*
+                        (conj *reference-trail* visit-key)]
+                (validate-normal
+                 (normalize (:schema found))
+                 value
+                 path)))))))))
