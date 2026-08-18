@@ -56,6 +56,8 @@ jobs:
         run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema
 
       - name: Run focused Truffle schema parity
+        id: truffle
+        continue-on-error: true
         run: |
           set +e
           mvn -q -Ptruffle \
@@ -63,12 +65,32 @@ jobs:
             test --file core/java/pom.xml \
             > /tmp/std-typed-schema-maven.log 2>&1
           status=$?
+          mkdir -p target/std-typed-schema-diagnostic
           if [[ -f core/java/target/surefire-reports/hara.truffle.StdTypedSchemaTest.txt ]]; then
-            cat core/java/target/surefire-reports/hara.truffle.StdTypedSchemaTest.txt
+            cp core/java/target/surefire-reports/hara.truffle.StdTypedSchemaTest.txt \
+              target/std-typed-schema-diagnostic/report.txt
           else
-            tail -n 40 /tmp/std-typed-schema-maven.log
+            tail -n 80 /tmp/std-typed-schema-maven.log \
+              > target/std-typed-schema-diagnostic/report.txt
           fi
+          if [[ -f core/java/target/surefire-reports/TEST-hara.truffle.StdTypedSchemaTest.xml ]]; then
+            cp core/java/target/surefire-reports/TEST-hara.truffle.StdTypedSchemaTest.xml \
+              target/std-typed-schema-diagnostic/report.xml
+          fi
+          printf '%s\n' "$status" > target/std-typed-schema-diagnostic/status
           exit "$status"
+
+      - name: Upload Truffle schema parity diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: std-typed-schema-truffle-diagnostic
+          path: target/std-typed-schema-diagnostic
+          if-no-files-found: error
+
+      - name: Stop after a Truffle parity failure
+        if: steps.truffle.outcome == 'failure'
+        run: exit 1
 
       - name: Validate the resulting patch
         run: git diff --check
