@@ -1,0 +1,88 @@
+package hara.truffle;
+
+import static org.junit.Assert.assertEquals;
+
+import org.graalvm.polyglot.Context;
+import org.junit.Test;
+
+public class StdTypedSchemaTest {
+  @Test
+  public void portableSchemaAcceptsCanonicalAndNativeForms() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[true true true false true false true]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns typed-schema-truffle-probe) "
+                      + "(require 'std.typed.schema {:reload true}) "
+                      + "(let [primitive (std.foundation/schema :int) "
+                      + "      user (std.foundation/schema [:map [:name :str]])] "
+                      + "  (pr-str "
+                      + "    [(= (std.typed.schema/normalize :int) "
+                      + "        (std.typed.schema/normalize [:int])) "
+                      + "     (= (std.typed.schema/normalize :int) "
+                      + "        (std.typed.schema/normalize primitive)) "
+                      + "     (std.typed.schema/valid? [:int] 42) "
+                      + "     (std.typed.schema/valid? [:int] \"42\") "
+                      + "     (std.typed.schema/valid? user {:name \"Ada\"}) "
+                      + "     (std.typed.schema/valid? user {:name 42}) "
+                      + "     (std.typed.schema/compatible? primitive :int)]))")
+              .asString());
+    }
+  }
+
+  @Test
+  public void nativeSchemaAstIsThePortableNormalForm() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[true true [:union :fn :function]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns typed-schema-ast-truffle-probe) "
+                      + "(require 'std.typed.schema {:reload true}) "
+                      + "(defn canonical-ast? [surface] "
+                      + "  (let [compiled (std.foundation/schema surface) "
+                      + "        normalized (std.typed.schema/normalize surface) "
+                      + "        ast (Schema/ast compiled)] "
+                      + "    (and (= normalized ast) "
+                      + "         (= ast (std.typed.schema/normalize ast)) "
+                      + "         (= compiled (std.foundation/schema ast))))) "
+                      + "(let [surfaces "
+                      + "      [:int "
+                      + "       (quote [:or :int :str :int]) "
+                      + "       (quote [:vector [:maybe :int]]) "
+                      + "       (quote [:tuple :keyword :int :str]) "
+                      + "       (quote [:map [:name :str] [:tags [:vector :keyword]]]) "
+                      + "       (quote [:fn [:str & :any] :str]) "
+                      + "       (quote [:function [:fn [:int] :int] "
+                      + "                         [:fn [:str & :any] :str]]) "
+                      + "       (quote [:enum :must :may]) "
+                      + "       (quote [:test/tagged 42]) "
+                      + "       (quote (var demo/Customer))]] "
+                      + "  (pr-str "
+                      + "   [(every? canonical-ast? surfaces) "
+                      + "    (= (std.typed.schema/normalize "
+                      + "        (quote [:map [:name :str] "
+                      + "                     [:tags [:vector :keyword]]])) "
+                      + "       {:kind :map "
+                      + "        :fields "
+                      + "        [{:name :name "
+                      + "          :type {:kind :primitive :name :str}} "
+                      + "         {:name :tags "
+                      + "          :type {:kind :vector "
+                      + "                 :item {:kind :primitive "
+                      + "                        :name :keyword}}}]}) "
+                      + "    [(Schema/kind "
+                      + "      (std.foundation/schema (quote [:or :int :str]))) "
+                      + "     (Schema/kind "
+                      + "      (std.foundation/schema (quote [:fn [:int] :int]))) "
+                      + "     (Schema/kind "
+                      + "      (std.foundation/schema "
+                      + "       (quote [:function [:fn [:int] :int] "
+                      + "                         [:fn [:str] :str]])))]]))")
+              .asString());
+    }
+  }
+}
