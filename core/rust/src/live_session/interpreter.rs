@@ -109,7 +109,13 @@ impl InterpreterLiveSession {
 
     fn reset(&mut self) -> Result<JsonValue, LiveSessionError> {
         if let Some(source) = self.pending_source.take() {
-            return self.restart(source);
+            return match self.restart(source.clone()) {
+                Ok(payload) => Ok(payload),
+                Err(error) => {
+                    self.pending_source = Some(source);
+                    Err(error)
+                }
+            };
         }
         self.invoke_and_refresh(json!({"op": "reset"}))
     }
@@ -121,7 +127,6 @@ impl InterpreterLiveSession {
         };
         let payload = invoke_legacy(json!({"op": "dispose", "handle": handle}))?;
         self.status = LiveSessionStatus::Disposed;
-        self.sequence = 0;
         self.pending_source = None;
         Ok(payload)
     }
