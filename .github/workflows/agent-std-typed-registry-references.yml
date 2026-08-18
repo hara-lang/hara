@@ -41,6 +41,19 @@ jobs:
           path: hara-specs-registry
           fetch-depth: 1
 
+      - name: Render the complete candidate with stable line numbers
+        run: |
+          rm -rf target/std-typed-registry-candidate
+          python3 .github/agent-patches/std-typed-registry-references/apply.py \
+            --candidate-dir target/std-typed-registry-candidate
+          cat \
+            target/std-typed-registry-candidate/registry.hal \
+            target/std-typed-registry-candidate/schema.hal \
+            target/std-typed-registry-candidate/probe.hal \
+            > target/std-typed-registry-candidate/combined.hal
+          nl -ba target/std-typed-registry-candidate/combined.hal \
+            | sed -n '650,670p'
+
       - uses: actions/setup-java@v5
         with:
           java-version: '21'
@@ -55,14 +68,8 @@ jobs:
 
       - name: Evaluate complete candidate sources before writing
         run: |
-          rm -rf target/std-typed-registry-candidate
-          python3 .github/agent-patches/std-typed-registry-references/apply.py \
-            --candidate-dir target/std-typed-registry-candidate
-          cat \
-            target/std-typed-registry-candidate/registry.hal \
-            target/std-typed-registry-candidate/schema.hal \
-            target/std-typed-registry-candidate/probe.hal \
-            | core/hara --offline stdin \
+          core/hara --offline stdin \
+            < target/std-typed-registry-candidate/combined.hal \
             | tee target/std-typed-registry-candidate/output.txt
           grep -F '[demo/Node true false [] :std.typed.schema/cyclic-reference]' \
             target/std-typed-registry-candidate/output.txt
