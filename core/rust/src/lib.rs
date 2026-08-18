@@ -23,6 +23,7 @@ pub mod interpreter_observation;
 mod json;
 pub mod kernel;
 pub mod lang;
+pub mod live_session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_cli;
 #[cfg(not(target_arch = "wasm32"))]
