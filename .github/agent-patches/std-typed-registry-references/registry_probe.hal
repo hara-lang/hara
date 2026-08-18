@@ -35,67 +35,94 @@
       composite (registry/composite [override +base+])
       extended (registry/assoc-schema +application+ 'Token :str)
       resolved (schema/resolve-recursive 'Node +nodes+)
+      names (registry/names +application+)
+      references (schema/reference-names resolved)
+      missing (schema/unresolved-references 'Node +nodes+)
       unresolved (first (schema/validate 'Missing 1 +nodes+))
       cyclic (first (schema/validate 'A 1 +cycle+))
-      actual
-      [(registry/qualify +application+ 'User)
-       (registry/qualify +application+ 'Id)
-       (registry/qualify +application+ 'm/Status)
-       (registry/lookup +application+ 'Id)
-       (registry/lookup composite 'Id)
-       (registry/has-schema? +application+ 'User)
-       (registry/has-schema? +application+ 'Missing)
-       (registry/names +application+)
-       (count (registry/definitions +application+))
-       (registry/lookup extended 'Token)
-       (registry/lookup +application+ 'Token)
-       (registry/has-schema?
-        (registry/dissoc-schema extended 'Token)
-        'Token)
-       (schema/normalize-with 'Node +nodes+)
-       (:kind (schema/resolve-reference 'Node +nodes+))
-       (:kind resolved)
-       (schema/reference-names resolved)
-       (schema/unresolved-references 'Node +nodes+)
-       (schema/valid? 'Node
-                      {:value 1
-                       :next {:value 2
-                              :next nil}}
-                      +nodes+)
-       (schema/valid? 'Node
-                      {:value 1
-                       :next {:value "two"
-                              :next nil}}
-                      +nodes+)
-       (:finding/type unresolved)
-       (:finding/reference unresolved)
-       (:finding/type cyclic)]
-      expected
-      ['app/User
-       'model/Id
-       'model/Status
-       :int
-       :str
-       true
-       false
-       (vec '[app/User model/Id model/Status])
-       3
-       :str
-       nil
-       false
-       {:kind :reference :name 'demo/Node}
-       :map
-       :map
-       (vec '[demo/Node])
-       (vec [])
-       true
-       false
-       :std.typed.schema/unresolved-reference
-       'demo/Missing
-       :std.typed.schema/cyclic-reference]]
-  (if (= expected actual)
+      checks
+      [[:qualify-local
+        (= 'app/User
+           (registry/qualify +application+ 'User))]
+       [:qualify-refer
+        (= 'model/Id
+           (registry/qualify +application+ 'Id))]
+       [:qualify-alias
+        (= 'model/Status
+           (registry/qualify +application+ 'm/Status))]
+       [:lookup-parent
+        (= :int (registry/lookup +application+ 'Id))]
+       [:parent-precedence
+        (= :str (registry/lookup composite 'Id))]
+       [:has-local
+        (registry/has-schema? +application+ 'User)]
+       [:missing-local
+        (not (registry/has-schema? +application+ 'Missing))]
+       [:names-family
+        (vector? names)]
+       [:names-order
+        (= names (vec '[app/User model/Id model/Status]))]
+       [:definition-count
+        (= 3 (count (registry/definitions +application+)))]
+       [:immutable-assoc
+        (= :str (registry/lookup extended 'Token))]
+       [:original-unchanged
+        (nil? (registry/lookup +application+ 'Token))]
+       [:immutable-dissoc
+        (not
+         (registry/has-schema?
+          (registry/dissoc-schema extended 'Token)
+          'Token))]
+       [:normalized-reference
+        (= {:kind :reference :name 'demo/Node}
+           (schema/normalize-with 'Node +nodes+))]
+       [:one-step-resolution
+        (= :map (:kind (schema/resolve-reference 'Node +nodes+)))]
+       [:recursive-resolution
+        (= :map (:kind resolved))]
+       [:reference-family
+        (vector? references)]
+       [:reference-values
+        (= references (vec '[demo/Node]))]
+       [:unresolved-family
+        (vector? missing)]
+       [:unresolved-empty
+        (empty? missing)]
+       [:valid-recursive-value
+        (schema/valid? 'Node
+                       {:value 1
+                        :next {:value 2
+                               :next nil}}
+                       +nodes+)]
+       [:invalid-recursive-value
+        (not
+         (schema/valid? 'Node
+                        {:value 1
+                         :next {:value "two"
+                                :next nil}}
+                        +nodes+))]
+       [:unresolved-finding
+        (= :std.typed.schema/unresolved-reference
+           (:finding/type unresolved))]
+       [:unresolved-name
+        (= 'demo/Missing (:finding/reference unresolved))]
+       [:cyclic-finding
+        (= :std.typed.schema/cyclic-reference
+           (:finding/type cyclic))]]
+      failures
+      (vec
+       (keep (fn [check]
+               (if (second check)
+                 nil
+                 (first check)))
+             checks))]
+  (if (empty? failures)
     :ok
     (throw
      (ex-info "std.typed registry probe failed"
-              {:expected expected
-               :actual actual}))))
+              {:failures failures
+               :names names
+               :references references
+               :unresolved missing
+               :unresolved-finding unresolved
+               :cyclic-finding cyclic}))))
