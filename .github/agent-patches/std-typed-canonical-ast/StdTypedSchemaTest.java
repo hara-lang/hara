@@ -36,19 +36,21 @@ public class StdTypedSchemaTest {
   public void nativeSchemaAstIsThePortableNormalForm() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[[true true true true true true true true true true] true [:union :fn :function]]",
+          "[[[true true true] [true true true] [true true true] [true true true] "
+              + "[true true true] [true true true] [true true true] [true true true] "
+              + "[true true true] [true true true]] true [:union :fn :function]]",
           context
               .eval(
                   HaraLanguage.ID,
                   "(ns typed-schema-ast-truffle-probe) "
                       + "(require 'std.typed.schema {:reload true}) "
-                      + "(defn canonical-ast? [surface] "
+                      + "(defn canonical-ast-status [surface] "
                       + "  (let [compiled (std.foundation/schema surface) "
                       + "        normalized (std.typed.schema/normalize surface) "
                       + "        ast (Schema/ast compiled)] "
-                      + "    (and (= normalized ast) "
-                      + "         (= ast (std.typed.schema/normalize ast)) "
-                      + "         (= compiled (std.foundation/schema ast))))) "
+                      + "    [(= normalized ast) "
+                      + "     (= ast (std.typed.schema/normalize ast)) "
+                      + "     (= compiled (std.foundation/schema ast))])) "
                       + "(let [surfaces "
                       + "      [:int "
                       + "       (quote [:or :int :str :int]) "
@@ -62,7 +64,7 @@ public class StdTypedSchemaTest {
                       + "       (quote [:test/tagged 42]) "
                       + "       (quote (var demo/Customer))]] "
                       + "  (pr-str "
-                      + "   [(vec (map canonical-ast? surfaces)) "
+                      + "   [(vec (map canonical-ast-status surfaces)) "
                       + "    (= (std.typed.schema/normalize "
                       + "        (quote [:map [:name :str] "
                       + "                     [:tags [:vector :keyword]]])) "
