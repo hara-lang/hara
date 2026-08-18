@@ -67,7 +67,7 @@ fn native_schema_ast_is_the_portable_normal_form() {
                      (Schema/kind \
                       (schema \
                        (quote [:function [:fn [:int] :int] \
-                                         [:fn [:str] :str]])))]]))"
+                                         [:fn [:str] :str]])))]])"
             )
             .unwrap(),
         "[true true [:union :fn :function]]"
