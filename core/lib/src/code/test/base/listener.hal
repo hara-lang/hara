@@ -1,8 +1,10 @@
 (ns code.test.base.listener
-  (:require [code.test.base.print :as print]))
+  (:require [code.test.base.print :as print]
+            [code.test.result :as comparison]))
 
 (defn result-function [result]
-  (or (get-in result [:meta :refer])
+  (or (get-in (Result/context result) [:test :name])
+      (get-in result [:meta :refer])
       (get-in result [:meta :function])
       (:function result)))
 
@@ -13,13 +15,17 @@
       (:name result)))
 
 (defn summarise-verify [result]
-  {:status (if (:pass result) :success (or (:status result) :failed))
+  {:status (if (comparison/passed? result)
+             :success
+             (if (Result/error? result) :error :failed))
    :name (result-name result)
-   :path (get-in result [:meta :path])
-   :line (get-in result [:meta :line])
-   :expected (:expected result)
-   :actual (:actual result)
-   :error (:error result)})
+   :path (get-in (Result/context result) [:test :meta :path])
+   :line (get-in (Result/context result) [:test :meta :line])
+   :expected (comparison/expected result)
+   :actual (comparison/actual result)
+   :error (if (Result/error? result)
+            (ex-message (Result/error-value result))
+            nil)})
 
 (defn summarise-evaluate [result]
   {:status (:status result)
@@ -45,7 +51,7 @@
   (if (or (= :exception (:status result)) (= :timeout (:status result))) result nil))
 
 (defn check-error-accumulator [result]
-  (if (:pass result) nil (summarise-verify result)))
+  (if (comparison/passed? result) nil (summarise-verify result)))
 
 (defn fact-printer [result]
   (print/print-fact result))

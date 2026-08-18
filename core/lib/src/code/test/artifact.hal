@@ -6,6 +6,22 @@
 (def +latest+ (atom {}))
 (def +artifact-sequence+ (atom 0))
 
+(declare report-edn)
+
+(defn result-record
+  "Projects a native Result into stable EDN report data."
+  [result]
+  (let [context (report-edn (Result/context result))]
+    (if (Result/success? result)
+      {:status :success
+       :data (report-edn (Result/data result))
+       :context context}
+      (let [error (Result/error-value result)]
+        {:status :error
+         :error (ex-message error)
+         :error-data (report-edn (ex-data error))
+         :context context}))))
+
 (defn report-edn-safe?
   [value]
   (or (nil? value)
@@ -20,6 +36,7 @@
   [value]
   (cond
     (report-edn-safe? value) value
+    (Result/instance? value) (result-record value)
     (map? value)
     (reduce (fn [output entry]
               (assoc output
