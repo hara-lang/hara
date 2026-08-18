@@ -56,6 +56,7 @@ pub struct Session {
     filesystem: Option<AttachedFilesystem>,
     authority: SessionAuthorityPolicy,
     last_namespace: String,
+    live_sessions: SessionLiveRegistry,
 }
 
 struct AttachedFilesystem {
@@ -79,6 +80,7 @@ impl Session {
             filesystem: None,
             authority,
             last_namespace: "user".into(),
+            live_sessions: SessionLiveRegistry::default(),
         };
         session.activate();
         session
@@ -139,6 +141,7 @@ impl Session {
         if self.state == SessionState::Closed {
             return None;
         }
+        self.live_sessions.dispose_all();
         self.last_namespace = self
             .runtime
             .as_ref()
