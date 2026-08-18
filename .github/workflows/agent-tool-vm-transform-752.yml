@@ -38,51 +38,79 @@ jobs:
           components: rustfmt
 
       - name: Materialize bounded product branch
+        id: materialize
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          cp scripts/runtime/apply-tool-vm-transform-752.py /tmp/apply-tool-vm-transform-752.py
-          git fetch origin main
-          git checkout -B agent/tool-vm-transform-752 origin/main
-          python3 /tmp/apply-tool-vm-transform-752.py
-          cargo fmt --manifest-path core/rust/Cargo.toml --all
-          git diff --check
+          set -o pipefail
+          {
+            set -euo pipefail
+            cp scripts/runtime/apply-tool-vm-transform-752.py /tmp/apply-tool-vm-transform-752.py
+            git fetch origin main
+            git checkout -B agent/tool-vm-transform-752 origin/main
+            python3 /tmp/apply-tool-vm-transform-752.py
+            cargo fmt --manifest-path core/rust/Cargo.toml --all
+            git diff --check
+          } 2>&1 | tee /tmp/materialize.log
 
       - name: Verify Rust transformation provider
+        id: rust
+        if: steps.materialize.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          cargo test --manifest-path core/rust/Cargo.toml vm_tool_tests -- --nocapture
-          cargo test --manifest-path core/rust/Cargo.toml \
-            --no-default-features --features bytecode-vm \
-            vm_tool_tests::provider_reports_exact_profile_capabilities -- --nocapture
-          cargo check --manifest-path core/rust/Cargo.toml \
-            --no-default-features --features bytecode-vm
-          cargo test --manifest-path core/rust/vm-runtime/Cargo.toml
+          set -o pipefail
+          {
+            set -euo pipefail
+            cargo test --manifest-path core/rust/Cargo.toml vm_tool_tests -- --nocapture
+            cargo test --manifest-path core/rust/Cargo.toml \
+              --no-default-features --features bytecode-vm \
+              vm_tool_tests::provider_reports_exact_profile_capabilities -- --nocapture
+            cargo check --manifest-path core/rust/Cargo.toml \
+              --no-default-features --features bytecode-vm
+            cargo test --manifest-path core/rust/vm-runtime/Cargo.toml
+          } 2>&1 | tee /tmp/rust.log
 
       - name: Verify Truffle transformation provider
+        id: truffle
+        if: steps.materialize.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          mvn -f core/java/pom.xml -Ptruffle \
-            -Dtest=hara.truffle.ToolVmLibraryTest test
+          set -o pipefail
+          {
+            set -euo pipefail
+            mvn -f core/java/pom.xml -Ptruffle \
+              -Dtest=hara.truffle.ToolVmLibraryTest test
+          } 2>&1 | tee /tmp/truffle.log
 
       - name: Verify public Hara facade
+        id: hara
+        if: steps.materialize.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          cargo run --manifest-path core/rust/Cargo.toml --bin hara-test -- \
-            --root . \
-            core/lib/test/tool/vm_test.hal \
-            core/lib/test/tool/vm_provider_test.hal
+          set -o pipefail
+          {
+            set -euo pipefail
+            cargo run --manifest-path core/rust/Cargo.toml --bin hara-test -- \
+              --root . \
+              core/lib/test/tool/vm_test.hal \
+              core/lib/test/tool/vm_provider_test.hal
+          } 2>&1 | tee /tmp/hara.log
 
       - name: Verify layout and bounded diff
+        id: bounds
+        if: steps.materialize.outcome == 'success'
+        continue-on-error: true
         shell: bash
         run: |
-          set -euo pipefail
-          bash core/rust/scripts/check-layout.sh
-          git diff --name-only origin/main...HEAD | sort
-          python3 - <<'PY'
+          set -o pipefail
+          {
+            set -euo pipefail
+            bash core/rust/scripts/check-layout.sh
+            git diff --name-only origin/main...HEAD | sort
+            python3 - <<'PY'
           import subprocess
           allowed = {
               'core/rust/Cargo.toml',
@@ -104,8 +132,16 @@ jobs:
           if missing:
               raise SystemExit(f'missing product paths: {sorted(missing)}')
           PY
+          } 2>&1 | tee /tmp/bounds.log
 
       - name: Publish verified product branch
+        id: publish
+        if: >-
+          steps.materialize.outcome == 'success' &&
+          steps.rust.outcome == 'success' &&
+          steps.truffle.outcome == 'success' &&
+          steps.hara.outcome == 'success' &&
+          steps.bounds.outcome == 'success'
         shell: bash
         env:
           PRODUCT_BRANCH: agent/tool-vm-transform-752
@@ -126,6 +162,66 @@ jobs:
           git push --force origin HEAD:refs/heads/${PRODUCT_BRANCH}
           echo "PRODUCT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
-      - name: Report product commit
+      - name: Publish diagnostic report to staging branch
+        if: always()
+        shell: bash
+        env:
+          MATERIALIZE: ${{ steps.materialize.outcome }}
+          RUST: ${{ steps.rust.outcome }}
+          TRUFFLE: ${{ steps.truffle.outcome }}
+          HARA: ${{ steps.hara.outcome }}
+          BOUNDS: ${{ steps.bounds.outcome }}
+          PUBLISH: ${{ steps.publish.outcome }}
         run: |
-          echo "Published ${PRODUCT_SHA} to agent/tool-vm-transform-752"
+          set -euo pipefail
+          report=/tmp/tool-vm-transform-752-report.md
+          {
+            echo '# tool.vm transformation staging report'
+            echo
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Staging SHA: \`${GITHUB_SHA}\`"
+            echo "- Materialize: \`${MATERIALIZE}\`"
+            echo "- Rust: \`${RUST}\`"
+            echo "- Truffle: \`${TRUFFLE}\`"
+            echo "- Hara: \`${HARA}\`"
+            echo "- Bounds: \`${BOUNDS}\`"
+            echo "- Publish: \`${PUBLISH}\`"
+            if [[ -n "${PRODUCT_SHA:-}" ]]; then
+              echo "- Product SHA: \`${PRODUCT_SHA}\`"
+            fi
+            for name in materialize rust truffle hara bounds; do
+              echo
+              echo "## ${name}"
+              echo
+              echo '```text'
+              if [[ -f "/tmp/${name}.log" ]]; then
+                tail -n 240 "/tmp/${name}.log"
+              else
+                echo 'step did not run or produced no log'
+              fi
+              echo '```'
+            done
+          } > "${report}"
+          git fetch origin agent/tool-vm-transform-staging-752
+          git checkout -B agent/tool-vm-transform-staging-752 \
+            origin/agent/tool-vm-transform-staging-752
+          mkdir -p .github/agent-reports
+          cp "${report}" .github/agent-reports/tool-vm-transform-752.md
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/agent-reports/tool-vm-transform-752.md
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record tool.vm transformation staging result'
+            git push origin HEAD:refs/heads/agent/tool-vm-transform-staging-752
+          fi
+
+      - name: Fail unsuccessful staging run
+        if: >-
+          always() &&
+          (steps.materialize.outcome != 'success' ||
+           steps.rust.outcome != 'success' ||
+           steps.truffle.outcome != 'success' ||
+           steps.hara.outcome != 'success' ||
+           steps.bounds.outcome != 'success' ||
+           steps.publish.outcome != 'success')
+        run: exit 1
