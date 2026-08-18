@@ -127,7 +127,8 @@ fn option_value<'a>(argument: &'a str, option: &str) -> Result<&'a str, String> 
     }
 }
 
-pub(crate) fn run(options: Options) -> Result<(), String> {
+pub(crate) fn run(mut options: Options) -> Result<(), String> {
+    options.lite_project = bundled_lite_project();
     if options.allow_postgres {
         if let Some(path) = options.project.as_deref() {
             let project = project_model::discover(path)?;
@@ -204,7 +205,14 @@ fn bundled_lite_project() -> Option<PathBuf> {
     let executable = env::current_exe().ok()?;
     let prefix = executable.parent()?.parent()?;
     let project = prefix.join("share/hara-lite");
-    project.join("project.edn").is_file().then_some(project)
+    if project.join("project.edn").is_file() {
+        return Some(project);
+    }
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../");
+    repository
+        .join("project.edn")
+        .is_file()
+        .then_some(repository)
 }
 
 pub(crate) fn usage_lite() {

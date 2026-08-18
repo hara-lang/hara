@@ -1,0 +1,299 @@
+(ns std.block.heal.parse
+  (:require [std.foundation.string]))
+
+(def lu-close
+  {"(" ")"
+   "[" "]"
+   "{" "}"})
+
+(def lu-open
+  {")" "(" 
+   "]" "[" 
+   "}" "{"})
+
+(defn- delimiter-info [char]
+  (case char
+    \( {:type :open, :style :paren}
+    \) {:type :close, :style :paren}
+    \[ {:type :open, :style :square}
+    \] {:type :close, :style :square}
+    \{ {:type :open, :style :curly}
+    \} {:type :close, :style :curly}
+    nil))
+
+;; PARSE
+
+(defn parse-delimiters
+  "gets all the delimiters in the file"
+  {:added "4.0"}
+  [content]
+  (let [state (reduce
+               (fn
+                [state char]
+                (let
+                 [line-num    (get state :line-num)
+                  col-num     (get state :col-num)
+                  in-comment? (get state :in-comment?)
+                  in-string?  (get state :in-string?)
+                  escaped?    (get state :escaped?)]
+                 (cond
+                  (= char \newline)
+                  (assoc
+                   state
+                   :line-num
+                   (inc line-num)
+                   :col-num
+                   1
+                   :in-comment?
+                   false
+                   :escaped?
+                   false)
+                  escaped?
+                  (assoc state :col-num (inc col-num) :escaped? false)
+                  (= char \\)
+                  (assoc state :col-num (inc col-num) :escaped? true)
+                  in-comment?
+                  (assoc state :col-num (inc col-num))
+                  in-string?
+                  (if
+                   (= char \")
+                   (assoc state :col-num (inc col-num) :in-comment? false :in-string? false)
+                   (assoc state :col-num (inc col-num) :in-comment? false :in-string? true))
+                  :else
+                  (let
+                   [info (delimiter-info char)]
+                   (cond
+                    (= char \;)
+                    (assoc state :col-num (inc col-num) :in-comment? true :in-string? false)
+                    (= char \")
+                    (assoc state :col-num (inc col-num) :in-comment? false :in-string? true)
+                    info
+                    (assoc
+                     state
+                     :col-num
+                     (inc col-num)
+                     :delimiters
+                     (conj
+                      (get state :delimiters)
+                      (merge {:char (str char) :col col-num :line line-num} info)))
+                    :else
+                    (assoc state :col-num (inc col-num)))))))
+               {:delimiters  []
+                :in-comment? false
+                :line-num    1
+                :col-num     1
+                :escaped?    false
+                :in-string?  false}
+               (seq content))]
+    (get state :delimiters)))
+
+(defn pair-delimiters
+  "pairs the delimiters and annotates whether it's erroring"
+  {:added "4.0"}
+  [delimiters]
+  (let [{:keys [stack output depth]} (reduce
+                                      (fn
+                                       [migration-map-param-1 migration-map-param-2]
+                                       (let
+                                        [acc     migration-map-param-1
+                                         stack   (get migration-map-param-1 :stack)
+                                         output  (get migration-map-param-1 :output)
+                                         depth   (get migration-map-param-1 :depth)
+                                         pair-id (get migration-map-param-1 :pair-id)
+                                         index   (get migration-map-param-1 :index)
+                                         entry   (into {} migration-map-param-2)
+                                         type    (get migration-map-param-2 :type)
+                                         style   (get migration-map-param-2 :style)]
+                                        (case
+                                         type
+                                         :open
+                                         (assoc
+                                          acc
+                                          :index
+                                          (inc index)
+                                          :stack
+                                          (conj stack (assoc entry :depth depth :index index))
+                                          :depth
+                                          (inc depth))
+                                         (cond
+                                          (empty? stack)
+                                          (assoc
+                                           acc
+                                           :output
+                                           (conj output (assoc entry :index index :depth (dec depth) :correct? false))
+                                           :depth
+                                           (dec depth))
+                                          :else
+                                          (let
+                                           [open  (into {} (last stack))
+                                            pairs [:pair-id pair-id :correct? (= (:style open) style)]]
+                                           {:index   (inc index)
+                                            :pair-id (inc pair-id)
+                                            :output  (conj output
+                                                           (apply assoc open pairs) (apply assoc entry :depth (dec depth) :index index pairs))
+                                            :stack   (vec (butlast stack))
+                                            :depth   (dec depth)})))))
+                                      {:depth 0 :index 0 :pair-id 0 :processed [] :stack []}
+                                      delimiters)]
+    (vec (sort-by (juxt :line :col)
+           (concat output
+             (map (fn [migration-argument-0]
+                    (assoc migration-argument-0 (keyword "correct?") false))
+               stack))))))
+
+(defn parse
+  "creates a parse function"
+  {:added "4.0"}
+  [content]
+  (pair-delimiters
+   (parse-delimiters content)))
+
+(defn print-delimiters
+  "prints all the parsed carets"
+  {:added "4.0"}
+  [content
+   delimiters
+   &
+   [{:or {print-blank-carets true
+          pad-width 4}
+     :keys [line-numbers
+            print-blank-carets]}]]
+  (let [lines              (std.foundation.string/split-lines content)
+        delimiters-by-line (group-by :line delimiters)]
+    (doseq [[line-idx line-content] (map-indexed vector lines)]
+      (let [line-num    (inc line-idx)
+            line-prefix (if line-numbers (std.foundation.string/pad-left (str line-num) 4 " ") "")]
+        (println (str line-prefix line-content))
+        (let [line-delimiters (get delimiters-by-line line-num)]
+          (when (or line-delimiters print-blank-carets)
+            (let [caret-chars (apply Arr/new (repeat (count line-content) \space))]
+              (when line-delimiters
+                (doseq [delim line-delimiters]
+                  (when (>= (dec (:col delim)) 0) (Arr/set caret-chars (dec (:col delim)) \^))))
+              (println (str (apply str (repeat (count line-prefix) " ")) (apply str caret-chars))))))))))
+
+;;
+;; Lines
+;;
+
+(defn count-unescaped-quotes
+  "counting unescaped quotes in a line"
+  {:added "4.0"}
+  [s]
+  (letfn [(count-unescaped-quotes--loop-1
+           [chars count escaped?]
+           (if-not
+            (seq chars)
+            count
+            (let
+             [char (first chars) rest-chars (rest chars)]
+             (cond
+              escaped?
+              (count-unescaped-quotes--loop-1 rest-chars count false)
+              (= char \\)
+              (count-unescaped-quotes--loop-1 rest-chars count true)
+              (= char \")
+              (count-unescaped-quotes--loop-1 rest-chars (inc count) false)
+              :else
+              (count-unescaped-quotes--loop-1 rest-chars count false)))))]
+    (count-unescaped-quotes--loop-1 (seq s) 0 false)))
+
+(defn parse-lines-raw
+  [lines]
+  (letfn [(parse-lines-raw--loop-1
+           [lines line-num in-multiline? output]
+           (if
+            (empty? lines)
+            output
+            (let
+             [current-line    (first lines)
+              trimmed-line    (std.foundation.string/trim-left current-line)
+              indent          (- (count current-line) (count trimmed-line))
+              char            (str (first trimmed-line))
+              dinfo           (if (#{"(" "{" "["} char)
+                                (reduce-kv (fn [output from to]
+                                             (if (has? output from) (assoc (dissoc output from) to (get output from)) output))
+                                  (delimiter-info (first char))
+                                  {:type :action}))
+              quote-count     (count-unescaped-quotes current-line)
+              next-multiline? (cond (and (zero? quote-count) in-multiline?) true
+                                    (and (odd? quote-count) in-multiline?)  false
+                                    (odd? quote-count)                      true
+                                    :else                                   false)
+              line-type       (cond next-multiline?                                    :string
+                                    (std.foundation.string/blank? current-line)        :blank
+                                    (std.foundation.string/includes? current-line ";") :commented
+                                    :else                                              :code)
+              has-code        (and (not= char ";") (or (= line-type :code) (= line-type :commented)))
+              last-idx        (let [r-trimmed (std.foundation.string/trim-right current-line)]
+                                (if (not-empty r-trimmed) (dec (count r-trimmed))))]
+             (parse-lines-raw--loop-1
+              (rest lines)
+              (inc line-num)
+              next-multiline?
+              (conj
+               output
+               (cond->
+                {:line line-num :type line-type}
+                last-idx
+                (assoc :last-idx last-idx)
+                has-code
+                (assoc :col (inc indent) :char char)
+                :then
+                (merge dinfo)))))))]
+    (parse-lines-raw--loop-1 lines 1 false [])))
+
+(defn parse-lines
+  "parse lines"
+  {:added "4.0"}
+  [content]
+  (parse-lines-raw (std.foundation.string/split-lines content)))
+
+;; Predicates
+
+(defn is-open-heavy
+  "checks if open delimiters dominate"
+  {:added "4.0"}
+  [delimiters]
+  (boolean (first (filter (fn [{:keys [type pair-id]}] (and (= type :open) (nil? pair-id)))
+                    delimiters))))
+
+(defn is-balanced
+  "checks if parens are balanced"
+  {:added "4.0"}
+  [delimiters]
+  (every? :pair-id delimiters))
+
+(defn is-readable
+  "checks if parens are readable"
+  {:added "4.0"}
+  [delimiters]
+  (every? :correct? delimiters))
+
+(defn is-close-heavy
+  "checks if parens are close heavy"
+  {:added "4.0"}
+  [delimiters]
+  (boolean (first (filter (fn [{:keys [type pair-id]}] (and (= type :close) (nil? pair-id)))
+                    (std.foundation/reverse delimiters)))))
+
+
+;;
+;; indentation
+;;
+
+(defn make-delimiter-line-lu
+  "creates a line lu"
+  {:added "4.0"}
+  [delimiters]
+  (group-by :line delimiters))
+
+(defn make-delimiter-index-lu
+  "creates the index lookup"
+  {:added "4.0"}
+  [delimiters]
+  (into {}
+    (map (fn [migration-map-juxt-value]
+           [(get migration-map-juxt-value :index) (identity migration-map-juxt-value)])
+      delimiters)))
+

@@ -49,7 +49,11 @@ fi
 # --- fake release fixture ---------------------------------------------------
 rm -rf "$WORK"
 mkdir -p "$WORK/release"
-tar -czf "$WORK/release/$TARBALL" -C "$(dirname "$BINARY")" hara
+mkdir -p "$WORK/full/share/hara-lite"
+cp "$BINARY" "$WORK/full/hara"
+cp "$HARA_ROOT/core/project.edn" "$WORK/full/share/hara-lite/project.edn"
+cp -R "$HARA_ROOT/core/lib" "$WORK/full/share/hara-lite/lib"
+tar -czf "$WORK/release/$TARBALL" -C "$WORK/full" hara share
 mkdir -p "$WORK/lite/share/hara-lite"
 cp "$LITE_BINARY" "$WORK/lite/hara-lite"
 cp "$HARA_ROOT/core/project.edn" "$WORK/lite/share/hara-lite/project.edn"
@@ -94,6 +98,8 @@ OUT=$({ run_installer HARA_INSTALL_DIR="$WORK/bin"; } || echo "EXIT:$?")
 check "installer exits 0 on happy path" test -x "$WORK/bin/hara"
 RESULT=$("$WORK/bin/hara" eval '(+ 19 23)' 2>/dev/null || true)
 check "installed binary evaluates (+ 19 23) => 42" test "$RESULT" = "42"
+RESULT=$("$WORK/bin/hara" eval '(do (require [work.base :as work]) (:op (work/work-spec (work/pure :identity identity))))' 2>/dev/null || true)
+check "installed binary resolves the Hara library project" test "$RESULT" = ":pure"
 case "$OUT" in
   *"export PATH="*) ok "prints PATH hint when install dir not on PATH" ;;
   *) not_ok "prints PATH hint when install dir not on PATH" ;;

@@ -2407,6 +2407,29 @@
   [namespace & forms]
   `(eval-in-ns ~namespace '~(vec forms)))
 
+(defmacro with:out-string
+  "Captures text written by p and println while evaluating body."
+  [& body]
+  (list 'Printer/capture
+        (apply list 'fn [] body)))
+
+(defmacro with:close
+  "Binds closeable resources and closes them in reverse order after body."
+  [bindings & body]
+  (if (empty? bindings)
+    (apply list 'do body)
+    (let [resource (first bindings)
+          initializer (second bindings)]
+      (list 'let
+            [resource initializer]
+            (list 'try
+                  (apply list 'with:close (vec (drop 2 bindings)) body)
+                  (list 'finally
+                        (list 'if
+                              resource
+                              (list 'IClose/close resource)
+                              nil)))))))
+
 ;; ---------------------------------------------------------------------------
 ;; intern
 ;; ---------------------------------------------------------------------------

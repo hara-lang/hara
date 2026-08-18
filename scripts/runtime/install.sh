@@ -143,10 +143,15 @@ install_rust() {
   verify "$TARBALL" || die "checksum mismatch for $TARBALL; aborting (file not installed)"
   tar -xzf "$TMP/$TARBALL" -C "$TMP" || die "failed to extract $TARBALL"
   [ -f "$TMP/hara" ] || die "archive did not contain a hara binary"
+  [ -f "$TMP/share/hara-lite/project.edn" ] \
+    || die "archive did not contain the Hara library project"
   DEST="$INSTALL_DIR/hara"
+  SHARE_DIR=$(CDPATH='' cd -- "$INSTALL_DIR/.." && pwd)/share/hara-lite
   [ ! -e "$DEST" ] || info "Existing installation found at $DEST, overwriting"
   cp "$TMP/hara" "$DEST"
   chmod 755 "$DEST"
+  mkdir -p "$SHARE_DIR"
+  cp -R "$TMP/share/hara-lite/." "$SHARE_DIR/"
   info "installed Rust runtime: $("$DEST" --version 2>/dev/null || echo "hara $VERSION")"
   info "location:  $DEST"
 }

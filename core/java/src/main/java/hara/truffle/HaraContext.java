@@ -181,7 +181,7 @@ public final class HaraContext {
                   "load-string", "macroexpand-1", "gensym", "var-sym", "current", "snapshot",
                   "vars", "namespaces", "namespace", "module", "resolve", "alias-state",
                   "intern-var", "eval-in", "eval")),
-          Map.entry("Printer", java.util.List.of("p", "println")),
+          Map.entry("Printer", java.util.List.of("p", "println", "capture")),
           Map.entry("Document", java.util.List.of("element", "text", "fragment", "annotate", "pass", "escaped", "group", "line", "break", "nest", "align", "normalize", "valid?", "render")),
           Map.entry("Edn", java.util.List.of("read", "read-forms", "write", "pretty")),
           Map.entry("Json", java.util.List.of("read", "write", "pretty")),
@@ -237,6 +237,8 @@ public final class HaraContext {
           Map.entry("std.native.Promise", "std.foundation.promise"),
           Map.entry("std.native.Coroutine", "std.foundation.coroutine"));
   private final TruffleLanguage.Env environment;
+  private final ThreadLocal<Deque<OutputStream>> printerOutputs =
+      ThreadLocal.withInitial(ArrayDeque::new);
   private final Evaluator evaluator;
   private final Keyword testRunner;
   private final boolean sandboxRestricted;
@@ -2898,8 +2900,10 @@ public final class HaraContext {
       text = concatenateStrings(values);
     }
     try {
-      environment.out().write(text.getBytes(StandardCharsets.UTF_8));
-      environment.out().flush();
+      Deque<OutputStream> outputs = printerOutputs.get();
+      OutputStream output = outputs.isEmpty() ? environment.out() : outputs.peekLast();
+      output.write(text.getBytes(StandardCharsets.UTF_8));
+      output.flush();
       return null;
     } catch (IOException error) {
       throw new HaraException("Printer output failed: " + error.getMessage());
@@ -2926,6 +2930,22 @@ public final class HaraContext {
     target.define("p", new VariadicBuiltin("p", values -> printValues(values, false)));
     target.define(
         "println", new VariadicBuiltin("println", values -> printValues(values, true)));
+    target.define(
+        "capture",
+        new UnaryBuiltin(
+            "Printer/capture",
+            callable -> {
+              ByteArrayOutputStream output = new ByteArrayOutputStream();
+              Deque<OutputStream> outputs = printerOutputs.get();
+              outputs.addLast(output);
+              try {
+                invokeCallable(callable, new Object[0]);
+                return output.toString(StandardCharsets.UTF_8);
+              } finally {
+                outputs.removeLast();
+                if (outputs.isEmpty()) printerOutputs.remove();
+              }
+            }));
     target.define(
         "list",
         new VariadicBuiltin(

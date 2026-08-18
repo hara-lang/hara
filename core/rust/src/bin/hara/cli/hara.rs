@@ -18,7 +18,10 @@ fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
     let root = capability_root(options, &cwd);
     let mut runtime = Runtime::new();
     runtime.install_native_file_provider(root.to_string_lossy().as_ref());
-    if let Some(path) = options.project.as_deref() {
+    for path in [options.lite_project.as_deref(), options.project.as_deref()]
+        .into_iter()
+        .flatten()
+    {
         let current_project = project::discover(path)?;
         project::register_sources(&current_project, &mut runtime)?;
     }
@@ -38,6 +41,15 @@ fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
         process_allowed,
         options.allow_postgres,
     )?;
+    for path in [options.lite_project.as_deref(), options.project.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let current_project = project::discover(path)?;
+        for (namespace, source) in project::source_resources(&current_project)? {
+            broker.register_resource(&namespace, &source)?;
+        }
+    }
     install_native_kernel(&mut runtime, broker);
     let full_argv = launcher_argv(options, argv);
     let capabilities = capability_edn(options, process_allowed);
