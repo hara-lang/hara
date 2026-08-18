@@ -39,6 +39,38 @@ public class ToolVmLibraryTest {
   }
 
   @Test
+  public void publicFacadeExecutesCanonicalHalcThroughAstLowering() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          42L,
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns tool.vm.execute-probe (:require [tool.vm :as vm])) "
+                      + "(vm/execute "
+                      + " (vm/transform \"(ns sample.execute) (+ 19 23)\" :halc)"
+                      + " {:provider :truffle})")
+              .asLong());
+    }
+  }
+
+  @Test
+  public void failedHalcExecutionRollsBackNamespaceMutation() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertTrue(
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns tool.vm.rollback-probe (:require [tool.vm :as vm])) "
+                      + "(let [artifact (vm/transform "
+                      + "\"(ns sample.rollback) (def leaked 1) (/ 1 0)\" :halc)] "
+                      + " (try (vm/execute artifact) (catch Throwable error nil)) "
+                      + " (= nil (resolve 'sample.rollback/leaked)))")
+              .asBoolean());
+    }
+  }
+
+  @Test
   public void halcValidationAndInspectionUseCanonicalCodec() {
     String source = "(ns sample.vm) (def value 42)";
     Object[] forms = HaraLanguage.readAll(source, "sample/vm.hal");

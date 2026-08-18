@@ -1,0 +1,43 @@
+
+  @Test
+  public void portableSchemaRegistryResolvesRecursiveReferences() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[demo/Node true false [] :std.typed.schema/cyclic-reference]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns typed-registry-truffle-probe) "
+                      + "(require 'std.typed.registry {:reload true}) "
+                      + "(require 'std.typed.schema {:reload true}) "
+                      + "(def nodes "
+                      + "  (std.typed.registry/local "
+                      + "   (quote demo) "
+                      + "   {(quote Node) "
+                      + "    (quote [:map "
+                      + "            [:value :int] "
+                      + "            [:next [:maybe Node]]])})) "
+                      + "(def cycle "
+                      + "  (std.typed.registry/local "
+                      + "   (quote cycle) "
+                      + "   {(quote A) (quote B) "
+                      + "    (quote B) (quote A)})) "
+                      + "(pr-str "
+                      + " [(std.typed.registry/qualify nodes (quote Node)) "
+                      + "  (std.typed.schema/valid? "
+                      + "   (quote Node) "
+                      + "   {:value 1 :next {:value 2 :next nil}} "
+                      + "   nodes) "
+                      + "  (std.typed.schema/valid? "
+                      + "   (quote Node) "
+                      + "   {:value 1 :next {:value \"two\" :next nil}} "
+                      + "   nodes) "
+                      + "  (std.typed.schema/unresolved-references "
+                      + "   (quote Node) nodes) "
+                      + "  (:finding/type "
+                      + "   (first "
+                      + "    (std.typed.schema/validate "
+                      + "     (quote A) 1 cycle)))])")
+              .asString());
+    }
+  }

@@ -6226,6 +6226,26 @@ public final class HaraContext {
     return evaluator.evalForm(value, "<eval>");
   }
 
+  Object executeToolVmHalc(HalcArtifact.Module module) {
+    ContextSnapshot snapshot = snapshot();
+    try {
+      return HaraLanguage.compileHalc(module, "tool.vm/execute").call();
+    } catch (RuntimeException error) {
+      restore(snapshot);
+      throw error;
+    }
+  }
+
+  Object executeToolVmHbc(hara.truffle.bytecode.HbcProgram program) {
+    ContextSnapshot snapshot = snapshot();
+    try {
+      return HbcMachine.execute(program, this);
+    } catch (RuntimeException error) {
+      restore(snapshot);
+      throw error;
+    }
+  }
+
   private Object loadFile(Object value) {
     if (!(value instanceof String)) {
       throw new HaraException("load-file expects a path string");

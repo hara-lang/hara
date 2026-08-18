@@ -1,0 +1,131 @@
+name: Apply std.typed registry and reference slice
+
+on:
+  push:
+    branches: [agent/std-typed-registry-references]
+    paths:
+      - '.github/agent-patches/std-typed-registry-references/**'
+      - '.github/workflows/agent-std-typed-registry-references.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/agent-patches/std-typed-registry-references/**'
+      - '.github/workflows/agent-std-typed-registry-references.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-std-typed-registry-references-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  candidate-test-write-test-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/std-typed-registry-references
+          fetch-depth: 0
+
+      - name: Rebase staging material onto the current main head
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rebase origin/main
+
+      - name: Check out the CLI specification registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Render the complete candidate with stable line numbers
+        run: |
+          rm -rf target/std-typed-registry-candidate
+          python3 .github/agent-patches/std-typed-registry-references/apply.py \
+            --candidate-dir target/std-typed-registry-candidate
+          python3 .github/agent-patches/std-typed-registry-references/canonicalize_registry_names.py \
+            target/std-typed-registry-candidate/registry.hal
+          cat \
+            target/std-typed-registry-candidate/registry.hal \
+            target/std-typed-registry-candidate/schema.hal \
+            target/std-typed-registry-candidate/probe.hal \
+            > target/std-typed-registry-candidate/combined.hal
+          nl -ba target/std-typed-registry-candidate/combined.hal \
+            | sed -n '650,670p'
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the baseline native Hara runtime
+        run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
+
+      - name: Evaluate complete candidate sources before writing
+        run: |
+          core/hara --offline stdin \
+            < target/std-typed-registry-candidate/combined.hal \
+            | tee target/std-typed-registry-candidate/output.txt
+          grep -F '[demo/Node true false [] :std.typed.schema/cyclic-reference]' \
+            target/std-typed-registry-candidate/output.txt
+
+      - name: Write the bounded product slice
+        run: |
+          python3 .github/agent-patches/std-typed-registry-references/apply.py
+          python3 .github/agent-patches/std-typed-registry-references/canonicalize_registry_names.py \
+            core/lib/src/std/typed/registry.hal
+          python3 .github/agent-patches/std-typed-registry-references/post_apply.py
+
+      - name: Check whitespace and dependency boundaries
+        run: |
+          git diff --check
+          bash scripts/audit-std-typed-boundary.sh
+
+      - name: Rebuild with written canonical sources
+        run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
+
+      - name: Evaluate each written source in a fresh native process
+        run: |
+          core/hara --offline run core/lib/src/std/typed/registry.hal
+          cat \
+            core/lib/src/std/typed/registry.hal \
+            core/lib/src/std/typed/schema.hal \
+            | core/hara --offline stdin
+
+      - name: Run the focused portable registry probe in a fresh native process
+        run: |
+          cat \
+            core/lib/src/std/typed/registry.hal \
+            core/lib/src/std/typed/schema.hal \
+            core/lib/test/std/typed/registry_probe.hal \
+            | core/hara --offline stdin
+
+      - name: Run focused Truffle registry parity
+        run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedSchemaTest test --file core/java/pom.xml
+
+      - name: Run focused Rust registry parity
+        run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema
+
+      - name: Publish one clean product commit
+        if: github.event_name == 'push'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          BASE_SHA="$(git rev-parse origin/main)"
+          rm -rf hara-specs-registry
+          git rm -r \
+            .github/agent-patches/std-typed-registry-references \
+            .github/workflows/agent-std-typed-registry-references.yml
+          git reset --soft "$BASE_SHA"
+          git add -A
+          git diff --cached --check
+          git commit -m 'Add portable schema registries and recursive references'
+          git push --force-with-lease \
+            origin HEAD:refs/heads/agent/std-typed-registry-references
