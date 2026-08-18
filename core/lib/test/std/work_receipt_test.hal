@@ -84,6 +84,19 @@
 (def disabled-receipts
   (work/receipts disabled-runtime disabled-reference))
 
+(def failed-runtime (work/durable-runtime))
+(def failed-reference
+  (work/start
+   failed-runtime
+   (work/step
+    :receipt-failure
+    (fn [input context]
+      (throw (ex-info "receipt test failure" {:input input}))))
+   3
+   {:id "failed-receipts"}))
+(def failed-receipts
+  (work/receipts failed-runtime failed-reference))
+
 (def retry-state (atom {:attempts {} :payloads {} :published []}))
 (def retry-runtime
   (work/durable-runtime
@@ -192,6 +205,15 @@
       :work/checkpoint
       :work/run-completed]
      :pending])
+
+   (test-check
+    "failed durable execution commits a terminal failed receipt intent"
+    [(work/status failed-runtime failed-reference)
+     (vec (map (fn [entry] (:outbox/kind entry)) failed-receipts))]
+    [:failed
+     [:work/run-created
+      :work/run-started
+      :work/run-failed]])
 
    (test-check
     "the fake publisher retries once, publishes idempotently, and does not redeliver acknowledgements"

@@ -1,0 +1,45 @@
+(ns lang.common.book-module-test
+  (:use code.test)
+  (:require [lang.common.book-module :as module]))
+
+^{:refer lang.common.book-module/polyfill-default-alias :added "4.1"}
+(fact "returns the default alias for a derived polyfill module"
+  (module/polyfill-default-alias 'common-net) => 'polyfill-net
+  (module/polyfill-default-alias 'polyfill-net) => 'polyfill-net
+  (module/polyfill-default-alias 'net) => 'polyfill-net)
+
+^{:refer lang.common.book-module/module-derived-view :added "4.1"}
+(fact "returns an immutable compilation view with derived polyfill links"
+  (let [book {:modules {'demo.poly
+                        (module/book-module {:lang :js :id 'demo.poly})}}
+        view
+        (module/module-derived-view
+         book
+         (module/book-module
+          {:lang :js :id 'demo.core
+           :code {'identity {:polyfill-modules #{'demo.poly}}}}))]
+    [(:link view) (:internal view) (:alias view)])
+  => [{'polyfill-demo.poly 'demo.poly}
+      {'demo.poly 'polyfill-demo.poly}
+      {'polyfill-demo.poly 'demo.poly}])
+
+^{:refer lang.common.book-module/module-deps-all :added "4.1"}
+(fact "derives portable module dependency views"
+  (let [value
+        (module/book-module
+         {:lang :js :id 'demo.core
+          :link {'util 'demo.util}
+          :code {'one {:id 'one :op-key :defn
+                       :deps #{'demo.data/value}
+                       :deps-native {"react" #{'React}}
+                       :deps-fragment #{'demo.frag/value}}}})]
+    [(module/module-deps-all value)
+     (module/module-deps-native value)
+     (module/module-deps-fragment value)
+     (module/module-entries value #{:defn})])
+  => [#{'demo.data 'demo.util}
+      {"react" #{'React}}
+      #{'demo.frag/value}
+      [[(list :% " " 'one " ") 'demo.core/one]]])
+
+(pr-str (run {:namespace "lang.common.book-module-test"}))

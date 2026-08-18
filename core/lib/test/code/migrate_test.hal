@@ -74,4 +74,36 @@
     result)
   => [true false "(ns lang.model.v1.spec-lua.sample)"])
 
+(fact "Foundation common tests route into canonical Hara test namespaces"
+  [(migrate/route-foundation-common-test-path
+    "test/tahto/base/emit_data_test.clj")
+   (migrate/route-foundation-common-test-path
+    "test/tahto/common/book_module_test.clj")]
+  => ["core/lib/test-lang/lang/common/emit_data_test.hal"
+      "core/lib/test-lang/lang/common/book_module_test.hal"])
+
+(fact "Foundation common test migration preserves facts and installs code.test"
+  (let [source
+        "(ns tahto.base.emit-data-test (:use code.test))\n^{:refer tahto.base.emit-data/emit-data :added \"4.0\"}\n(fact \"emits data\" 1 => 1)"
+        result
+        (migrate/migrate-foundation-common-test-source
+         source "lang.common.emit-data-test")]
+    [(:facts result)
+     (:diagnostics result)
+     (str/includes? (:after result) "lang.common.emit-data-test")
+     (str/includes? (:after result) "lang.common.emit-data/emit-data")
+     (str/includes? (:after result)
+                    "(pr-str (run {:namespace \"lang.common.emit-data-test\"}))")])
+  => [{:source 1 :direct 1 :adapted 0 :covered-current 0 :unmapped 0}
+      [] true true true])
+
+(fact "legacy mutable Foundation fixtures remain blocking until adapted"
+  (let [result
+        (migrate/migrate-foundation-common-test-source
+         "(ns tahto.base.emit-assign-test (:require [tahto.core.library]))\n(fact \"legacy\" 1 => 1)"
+         "lang.common.emit-assign-test")]
+    [(:unmapped (:facts result))
+     (:migration/error (first (:diagnostics result)))])
+  => [1 :foundation/unmapped-reference])
+
 (pr-str (run {:namespace "code.migrate-test"}))

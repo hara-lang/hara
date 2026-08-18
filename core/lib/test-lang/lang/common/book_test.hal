@@ -48,4 +48,42 @@
       [:grammar :js 1]
       {:grammar {:token {}}}])
 
-(run {:namespace "lang.common.book-test"})
+^{:refer lang.common.book/delete-modules :added "4.0"}
+(fact "persistent books delete modules as a new revision"
+  (let [base (book/book {:lang :js :grammar {:tag :js}})
+        populated (-> base
+                      (book/put-module (module/book-module {:lang :js :id 'one}))
+                      (book/put-module (module/book-module {:lang :js :id 'two})))
+        deleted (book/delete-modules populated ['one 'two])]
+    [(book/has-module? populated 'one)
+     (book/has-module? deleted 'one)
+     (:revision deleted)])
+  => [true false 4])
+
+^{:refer lang.common.book/has-entry? :added "4.0"}
+(fact "persistent books check and delete entries"
+  (let [base (book/book {:lang :js :grammar {:tag :js}})
+        populated
+        (book/put-entry
+         (book/put-module base (module/book-module {:lang :js :id 'demo}))
+         (entry/book-entry {:lang :js :module 'demo :id 'value
+                            :section :code :deps #{'other/value}}))
+        deleted (book/delete-entry populated 'demo :code 'value)]
+    [(book/has-entry? populated 'demo :code 'value)
+     (book/has-entry? deleted 'demo :code 'value)
+     (book/get-code-deps populated 'demo/value)])
+  => [true false #{'other/value}])
+
+^{:refer lang.common.book/module-create-filename :added "4.0"}
+(fact "module creation helpers are deterministic and portable"
+  (let [value (book/book {:lang :js :grammar {:tag :js}
+                          :modules {'known {}}})]
+    [(book/module-create-filename value 'demo.core)
+     (book/module-create-check value 'demo.core {'known 'known})
+     (book/module-create-requires [['demo.data :as 'data :include true]])
+     (book/module-normalize-implements #{'demo/B 'demo/A})])
+  => ["core.js" true
+      {'demo.data {:id 'demo.data :as 'data :include true}}
+      ['demo/A 'demo/B]])
+
+(pr-str (run {:namespace "lang.common.book-test"}))

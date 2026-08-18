@@ -76,6 +76,26 @@
    (task-template/template template-definition)
    [1]))
 
+(def template-work-spec (work/work-spec (task-template/template template-definition)))
+(def template-batch-spec
+  (work/work-spec (nth (:children template-work-spec) 2)))
+
+(def failing-template
+  (task-template/template
+   {:id :example/failing-template
+    :execution {:on-error :fail}
+    :item
+    {:list (fn [values context] values)
+     :run
+     (fn [value context]
+       (throw (ex-info "template infrastructure failure" {:value value})))}}))
+
+(def failing-template-status
+  (let [runtime (work/durable-runtime)
+        reference (work/start runtime failing-template [1]
+                              {:id "failing-task-template"})]
+    (work/status runtime reference)))
+
 (def subject-work
   (task/unit
    {:id :example/prepared-subject
@@ -155,7 +175,17 @@
     [(task/task-work? template-unit-work)
      (:command/schema (work/work-spec template-unit-work))
      (first template-bulk-result)]
-    [true "work.flow.task.command-task/0-alpha" [1 7]])
+   [true "work.flow.task.command-task/0-alpha" [1 7]])
+
+   (test-check
+    "task templates checkpoint the enumerated manifest before processing"
+    (:op (work/work-spec (:list template-batch-spec)))
+    :step)
+
+   (test-check
+    "task execution policy can leave infrastructure failure ownership with std.work"
+    failing-template-status
+    :failed)
 
    (test-check
     "prepared subjects can project input and metadata while remaining available to the run function"

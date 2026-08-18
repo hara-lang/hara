@@ -5,7 +5,8 @@
             [code.test.manage :as manage]
             [work.flow.task.selector :as selector]
             [work.base :as work]
-            [work.flow.task :as task]))
+            [work.base.result :as work-result]
+            [work.flow.task.report :as task-report]))
 
 ;; This namespace is the sole owner of test selection and the durable fact/suite
 ;; graph. The public code.test namespace only forwards intentional entrypoints.
@@ -322,17 +323,7 @@
   [subject context]
   (work-execution-options (:test/options subject) context))
 
-(defn fact-mode
-  [subject context]
-  (let [fact (resolve-subject-fact subject)
-        options (fact-options subject context)]
-    (if (:skip (:meta fact))
-      :terminal
-      (if (process/fact-cancelled? fact options)
-        :terminal
-        :run))))
-
-(defn terminal-fact-result
+(defn process-prepared-fact
   [subject context]
   (let [fact (resolve-subject-fact subject)
         options (fact-options subject context)]
@@ -343,113 +334,12 @@
       (work/emit! context :test/fact-completed result)
       result)))
 
-(defn before-fact
-  [subject context]
-  (let [fact (resolve-subject-fact subject)
-        options (fact-options subject context)
-        identity (process/fact-result-identity fact)
-        start (process/clock-now options)]
-    (work/emit! context :test/fact-started identity)
-    (try
-      (do
-        (process/run-hooks [(:before-each options)
-                            (:before (:meta fact))]
-                           options)
-        {:subject subject
-         :test/start start
-         :test/before-error nil})
-      (catch Throwable error
-        {:subject subject
-         :test/start start
-         :test/before-error (str error)}))))
-
-(defn run-fact-body
-  [state context]
-  (let [subject (:subject state)
-        fact (resolve-subject-fact subject)
-        options (fact-options subject context)
-        result
-        (if (:test/before-error state)
-          (process/error-result fact (:test/before-error state))
-          (process/execute-fact-body fact options))]
-    (assoc state :test/result result)))
-
-(defn after-fact
-  [outcome context]
-  (let [state (:work/body-result outcome)
-        subject (or (:subject state)
-                    (:work/input outcome))
-        fact (resolve-subject-fact subject)
-        options (fact-options subject context)]
-    (try
-      (do
-        (process/run-hooks [(:after (:meta fact))
-                            (:after-each options)]
-                           options)
-        {:status :completed})
-      (catch Throwable error
-        {:status :error
-         :error (str error)}))))
-
-(defn finalize-fact
-  [outcome context]
-  (let [state (get-in outcome [:work/body :result])
-        subject (:subject state)
-        fact (resolve-subject-fact subject)
-        options (fact-options subject context)
-        cleanup (get-in outcome [:work/cleanup :result])
-        result (if (= :error (:status cleanup))
-                 (process/error-result fact (:error cleanup))
-                 (:test/result state))
-        result (process/timed-result result (:test/start state) options)]
-    (work/emit! context :test/fact-completed result)
-    result))
-
-(defn running-fact-work
-  [batch-revision]
-  (work/chain
-   {:id 'code.test/fact-scope-chain
-    :version batch-revision}
-   [(work/ensure
-     {:id 'code.test/fact-scope
-      :version batch-revision
-      :return :outcome}
-     (work/chain
-      {:id 'code.test/fact-body-chain
-       :version batch-revision}
-      [(work/step
-        {:id 'code.test/fact-before
-         :version batch-revision}
-        before-fact)
-       (work/step
-        {:id 'code.test/fact-body
-         :version batch-revision}
-        run-fact-body)])
-     (work/step
-      {:id 'code.test/fact-after
-       :version batch-revision}
-      after-fact))
-    (work/step
-     {:id 'code.test/fact-finalize
-      :version batch-revision}
-     finalize-fact)]))
-
 (defn fact-process-work
   [batch-revision]
-  (work/choose
-   {:id 'code.test/fact-dispatch
+  (work/step
+   {:id 'code.test/fact-process
     :version batch-revision}
-   (work/step
-    {:id 'code.test/fact-mode
-     :version batch-revision}
-    fact-mode)
-   {:terminal
-    (work/step
-     {:id 'code.test/fact-terminal
-      :version batch-revision}
-     terminal-fact-result)
-    :run
-    (running-fact-work batch-revision)}))
+   process-prepared-fact))
 
 (defn stop-after-fact?
   [batch context]
@@ -586,40 +476,53 @@
     (:summary result)
     result))
 
+(def +test-report-summary-fields+
+  [:files :facts :checks :passed :failed :throw :timeout :skipped])
+
+(def +test-report-profile+
+  {:title "TEST RESULTS"
+   :sections [:results :summary]
+   :labels {:results "FACTS" :summary "SUMMARY"}})
+
 (defn test-report-status
-  [summary bundle]
+  [summary]
   (if (= :passed (:status summary)) :completed :failed))
 
-(defn test-report-summary
-  [summary records results]
-  (get-in (first results) [:data :summary]))
+(defn test-report
+  "Projects an aggregated test summary into portable report data without
+   treating the suite as another task item."
+  [summary]
+  (let [status (test-report-status summary)
+        labels (:labels +test-report-profile+)
+        document
+        (task-report/document
+         'code.test/report
+         {:profile +test-report-profile+
+          :title (:title +test-report-profile+)
+          :status status})
+        results
+        (vec (map artifact/report-entry (or (:results summary) [])))
+        summary-row (select-keys summary +test-report-summary-fields+)]
+    (task-report/complete
+     (task-report/add-section
+      (task-report/add-section
+       document
+       (task-report/section
+        :results
+        :table
+        results
+        {:section/title (:results labels)}))
+      (task-report/section
+       :summary
+       :summary
+       [summary-row]
+       {:section/title (:summary labels)
+        :section/fields +test-report-summary-fields+}))
+     status)))
 
-(def +report-task+
-  (task/compile
-   {:id 'code.test/report
-    :type :test
-    :version 1
-    :item
-    {:run
-     (fn [summary context]
-       {:status :return
-        :data {:summary summary
-               :options (:test/options context)}})}
-    :summary
-    {:finalise test-report-summary
-     :fields [:files :facts :checks :passed :failed :throw :timeout :skipped]}
-    :report
-    {:title "TEST RESULTS"
-     :status test-report-status
-     :sections [:results :summary]
-     :labels {:results "FACTS" :summary "SUMMARY"}}
-    :return {:select :all :package :map}}))
-
-(defn persist-test-run
-  [bundle context]
-  (let [summary (:summary bundle)
-        report (:report bundle)
-        options (get-in (first (:records bundle)) [:data :options])
+(defn complete-test-run
+  [summary options]
+  (let [report (test-report summary)
         latest (artifact/record-run! summary options report)]
     (assoc summary
            :report report
@@ -627,15 +530,12 @@
 
 (defn runner-work
   [batch-revision]
-  (work/chain
-   {:id 'code.test/run
-    :version batch-revision}
-   [(fact-batch-work batch-revision)
-    +report-task+
-    (work/step
-     {:id 'code.test/persist
+  (let [batch (fact-batch-work batch-revision)
+        stages (vec (:children (work/work-spec batch)))]
+    (work/chain
+     {:id 'code.test/run
       :version batch-revision}
-     persist-test-run)]))
+     stages)))
 
 (def +runner-work+ (runner-work +default-revision+))
 
@@ -709,11 +609,22 @@
   ([runtime selector-or-options]
    (run runtime selector-or-options {}))
   ([runtime selector-or-options work-options]
-   (let [options (normalize-run-options selector-or-options)]
-     (work/run runtime
-               (runner-work (work-revision options))
-               options
-               (runner-work-options options work-options)))))
+   (let [options (normalize-run-options selector-or-options)
+         run-id (:id work-options)
+         artifact-options
+         (if (and run-id
+                  (nil? (get-in options [:test/config :started-at])))
+           (assoc-in options [:test/config :started-at] run-id)
+           options)
+         summary
+         (work/run runtime
+                   (runner-work (work-revision options))
+                   options
+                   (runner-work-options options work-options))]
+     (work-result/then
+      summary
+      (fn [resolved]
+        (complete-test-run resolved artifact-options))))))
 
 (defn start
   "Starts the canonical fact-batch graph and returns a live IWorkRun."

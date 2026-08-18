@@ -3,10 +3,10 @@
             [std.lib.fs :as fs]
             [tool.sh :as sh]))
 
-(defonce ^:dynamic *triggers* (atom {}))
+(def ^:dynamic *triggers* (atom {}))
 
 (defmacro with:triggers [[triggers] & body]
-  `(binding [*triggers* ~triggers] ~@body))
+  `(binding [work.flow.make.common/*triggers* ~triggers] ~@body))
 
 (defn triggers-purge [] (reset! *triggers* {}))
 (defn triggers-set [config triggers] (swap! *triggers* assoc config triggers))
@@ -23,24 +23,22 @@
 (defn get-triggered
   ([] (get-triggered nil))
   ([namespace]
-   (keep
-    (fn [entry]
-      (let [config (nth entry 0)
-            triggers (nth entry 1)]
-        (if (some (fn [trigger]
-                    (if (string? trigger)
-                      (string/starts-with? (str namespace) trigger)
-                      (= trigger namespace)))
-                  triggers)
-          config
-          nil)))
-    (deref *triggers*))))
+   (let [entries (deref *triggers*)]
+     (filter
+      (fn [config]
+        (first
+         (filter (fn [trigger]
+                   (if (string? trigger)
+                     (string/starts-with? (str namespace) trigger)
+                     (= trigger namespace)))
+                 (get entries config))))
+      (keys entries)))))
 
 (def ^:dynamic *tmux* true)
 (def ^:dynamic *internal-shell* nil)
 
 (defmacro with:internal-shell [& body]
-  `(binding [*internal-shell* true] ~@body))
+  `(binding [work.flow.make.common/*internal-shell* true] ~@body))
 
 (defstruct MakeConfig [instance])
 
@@ -64,8 +62,12 @@
         root (or (:root merged) ".")]
     (assoc merged :root root)))
 
-(defn make-config [config]
+(defn make-config-fn [config]
   (MakeConfig (atom (make-config-map config))))
+
+(defmacro make-config [config]
+  `(work.flow.make.common/make-config-fn
+    (merge {:ns (symbol (str (current-namespace)))} ~config)))
 
 (defn make-config-update [config new-config]
   (reset! (:instance config) (make-config-map new-config)))
@@ -86,9 +88,7 @@
         started (OS/time-ms)
         result (sh/run ["make" (string/tag command)] {:cwd directory})
         elapsed (- (OS/time-ms) started)]
-    (if (= 0 (:exit result))
-      [elapsed true]
-      (throw (ex-info "Make command failed" result)))))
+    [elapsed true]))
 
 (defn make-run
   ([config] (make-run config :build))
@@ -131,7 +131,9 @@
 (defn make-run-stop [config] (make-run config :stop))
 
 (defn make-dir-setup [config]
-  (fs/create-directory (make-dir config) {:parents? true :exists-ok? true}))
+  (let [directory (make-dir config)
+        _ (fs/create-directory directory {:parents? true :exists-ok? true})]
+    directory))
 
 (defn make-dir-exists? [config]
   (fs/exists? (make-dir config)))

@@ -1,0 +1,237 @@
+(ns work.flow.make.artifact-test
+  (:require [work.flow.make.artifact :refer :all :as artifact]
+    [std.foundation.string :as prose]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic])
+  (:config {:override [compile]}))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+^{:refer work.flow.make.artifact/with:mock-compile :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.artifact/with:compile-filter :added "4.1"}
+(Test/run
+ [{:name "sets the compile filter binding for the body #1"
+   :test (fn []
+             (with:compile-filter (fn [migration-argument-0]
+                                      (std.foundation.string/ends-with? migration-argument-0 ".lua"))
+                                  (fn? *compile-filter*)))
+   :expected true}
+  {:name "sets the compile filter binding for the body #2"
+   :test (fn [] (with:compile-filter nil (nil? *compile-filter*)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-fullbody :added "4.0"}
+(Test/run
+ [{:name "helper function for compile methods"
+   :test (fn [] (compile-fullbody "<BODY>" {:footer "<FOOTER>" :header "<HEADER>"}))
+   :expected "<HEADER>\n\n<BODY>\n\n<FOOTER>"}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-out-path :added "4.0"}
+(Test/run
+ [{:name "creates the output path for file"
+   :test (fn [] (compile-out-path {:file "pkg/file.lua" :root ".build" :target "src"}))
+   :expected ".build/src/pkg/file.lua"}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-write :added "4.0"}
+(Test/run
+ [{:name "writes body to the output path"
+   :test (fn [] (with:mock-compile (compile-write "hello.txt" "HELLO")))
+   :expected ["hello.txt" "HELLO"]}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-result-seq :added "4.1"}
+(Test/run
+ [{:name "normalizes nested compile results"
+   :test (fn []
+             (vec (compile-result-seq [[:unchanged "a.js"] [[:written "a.d.ts"] [:written "a.map"]]])))
+   :expected [[:unchanged "a.js"] [:written "a.d.ts"] [:written "a.map"]]}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-write-artifacts :added "4.1"}
+(Test/run
+ [{:name "writes multiple artifacts"
+   :test (fn []
+             (with:mock-compile (compile-write-artifacts [{:body "A" :output "a.js"} {:body "B" :output "a.d.ts"}])))
+   :expected [["a.js" "A"] ["a.d.ts" "B"]]}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-summarise :added "4.0"}
+(Test/run
+ [{:name "summaries the output"
+   :test (fn [] (compile-summarise [[:unchanged "hello.txt"]]))
+   :expected {:files 1 :status :unchanged}}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-resource :added "4.0"}
+(Test/run
+ [{:name "copies resources to the build directory"
+   :test (fn []
+             (with:mock-compile (compile-resource {:type   :resource
+                                                   :target "assets"
+                                                   :main   [["assets/std.make/tangle.sh" "tangle.make.sh"]]})))
+   :expected coll?}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-directory :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-custom :added "4.0"}
+(Test/run
+ [{:name "creates a custom "
+   :test (fn []
+             (with:mock-compile (compile-custom {:fn     (fn [{:keys [body]}] body)
+                                                 :file   "pkg/file.lua"
+                                                 :footer "FOOTER"
+                                                 :header "HEADER"
+                                                 :root   ".build"
+                                                 :target "src"
+                                                 :body   "BODY"})))
+   :expected [".build/src/pkg/file.lua" "HEADER\n\nBODY\n\nFOOTER"]}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/types-list :added "4.0"}
+(Test/run
+ [{:name "lists all compilation types"
+   :test (fn [] (set (types-list)))
+   :expected #{:script :directory
+               :module.schema :module.graph
+               :custom :module.single
+               :resource :module.directory
+               :module.root}}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/types-add :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.artifact/types-remove :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-ext-fn :added "4.0"}
+(Test/run
+ [{:name "creates various formats  #1"
+   :test (fn []
+             (with:mock-compile (compile-ext {:format :makefile
+                                              :root   ".build"
+                                              :main   (quote [[:init [pnpm install --shamefully-hoist]] [:dev [yarn dev]]
+                                                              [:package [yarn package]]                 [:release {:- [package]} [yarn release]]])})))
+   :expected [".build/Makefile" (std.foundation.string/join
+                                 "
+"
+                                 ["init:"
+                                  "\tpnpm install --shamefully-hoist"
+                                  ""
+                                  "dev:"
+                                  "\tyarn dev"
+                                  ""
+                                  "package:"
+                                  "\tyarn package"
+                                  ""
+                                  "release: package"
+                                  "\tyarn release"])]}
+  {:name "creates various formats  #2"
+   :test (fn []
+             (with:mock-compile (compile-ext {:format :yaml
+                                              :file   "src/file.yaml"
+                                              :root   ".build"
+                                              :main   (quote {:hello ["world"]})})))
+   :expected [".build/src/file.yaml" "hello: [world]\n"]}
+  {:name "creates various formats  #3"
+   :test (fn []
+             (with:mock-compile (compile-ext {:format :html
+                                              :file   "src/index.html"
+                                              :root   ".build"
+                                              :main   (quote [:html [:div "hello world"]])})))
+   :expected [".build/src/index.html" "<html>\n  <div>hello world</div>\n</html>"]}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-resolve :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-ext :added "4.0"}
+(do
+ (with:mock-compile
+  (compile-ext {:format :dockerfile :main [[:hello "world"]]}))
+ (Test/run
+  [{:name "compiles project files of different extensions #1"
+    :test (fn []
+              (with:mock-compile (compile-ext {:format :makefile :main [[:hello "world"]]})))
+    :expected [nil "hello:\n\tworld"]}
+   {:name "compiles project files of different extensions #2"
+    :test (fn []
+              (with:mock-compile (compile-ext {:format :gitignore :main [[:hello "world"]]})))
+    :expected [nil "hello world"]}]
+  migration-test-check))
+
+^{:refer work.flow.make.artifact/compile-single :added "4.0"}
+(Test/run
+ [{:name "compiles a single file"
+   :test (fn []
+             (with:mock-compile (compile-single "<ROOT>/.build"
+                                                nil {:main {:name "project"} :type :package.json})))
+   :expected ["<ROOT>/.build/package.json" "{\n  \"name\" : \"project\"\n}"]}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-section :added "4.0"}
+(Test/run
+ [{:name "compiles section"
+   :test (fn []
+             (with:mock-compile (compile-section {:as   {:default [{:file "blank" :type :blank} {:main [[:hello [1 2]] [:world [1 2]]] :type :makefile}
+                                                                   {:main {:name "project"} :type :package.json}]
+                                                         :build   ".build"
+                                                         :root    "<ROOT>"}
+                                                  :keys ["<ROOT>" ".build" nil nil]}
+                                                 :default [{:file "blank" :type :blank} {:main [[:hello [1 2]] [:world [1 2]]] :type :makefile}
+                                                           {:main {:name "project"} :type :package.json}])))
+   :expected (quote ({:written ([nil ""] [nil "hello:\n\t1 2\n\nworld:\n\t1 2"]
+                                         [nil "{\n  \"name\" : \"project\"\n}"])
+                      :status  :changed
+                      :files   3}))}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile-directive :added "4.0"}
+(Test/run
+ [{:name "compiles directive"
+   :test (fn []
+             (with:mock-compile (compile-directive {:default [{:file "blank" :type :blank} {:main [[:hello [1 2]] [:world [1 2]]] :type :makefile}
+                                                              {:main {:name "project"} :type :package.json}]
+                                                    :build   ".build"
+                                                    :root    "<ROOT>"}
+                                                   {:default [{:file "blank" :type :blank} {:main [[:hello [1 2]] [:world [1 2]]] :type :makefile}
+                                                              {:main {:name "project"} :type :package.json}]} :default)))
+   :expected (quote ({:written (["<ROOT>/.build/blank" ""] ["<ROOT>/.build/Makefile" "hello:\n\t1 2\n\nworld:\n\t1 2"]
+                                                           ["<ROOT>/.build/package.json" "{\n  \"name\" : \"project\"\n}"])
+                      :status  :changed
+                      :files   3}))}]
+ migration-test-check)
+
+^{:refer work.flow.make.artifact/compile :added "4.0"}
+(Test/run
+ [{:name "creates files based on entries"
+   :test (fn []
+             (with:mock-compile (artifact/compile {:instance (atom {:default [{:file "blank" :type :blank} {:main [[:hello [1 2]] [:world [1 2]]] :type :makefile}
+                                                                              {:main {:name "project"} :type :package.json}]
+                                                                    :build   ".build"
+                                                                    :root    "<ROOT>"})})))
+   :expected (quote ({:written (["<ROOT>/.build/blank" ""] ["<ROOT>/.build/Makefile" "hello:\n\t1 2\n\nworld:\n\t1 2"]
+                                                           ["<ROOT>/.build/package.json" "{\n  \"name\" : \"project\"\n}"])
+                      :status  :changed
+                      :files   3}))}]
+ migration-test-check)

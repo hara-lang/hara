@@ -12,6 +12,92 @@
 (def +lang-model-v1-path-prefix+ "lang/model/spec_")
 (def +lang-model-v1-target-path-prefix+ "lang/model/v1/spec_")
 
+(def +foundation-common-test-rewrites+
+  [["tahto.base.emit" "lang.common.emit"]
+   ["tahto.base.grammar" "lang.common.grammar"]
+   ["tahto.base.preprocess-base" "lang.common.emit-preprocess"]
+   ["tahto.base.util" "lang.common.util"]
+   ["tahto.common.book" "lang.common.book"]
+   ["tahto.model.spec-js" "lang.model.v1.spec-js"]
+   ["tahto.model.spec-lua" "lang.model.v1.spec-lua"]
+   ["tahto.model.annex.spec-rust" "lang.model.v1.spec-rust"]])
+
+(def +foundation-common-blocked-prefixes+ ["tahto.core"])
+
+(defn replace-routes
+  [source routes]
+  (reduce (fn [output route]
+            (str/replace output (first route) (second route)))
+          source
+          routes))
+
+(defn route-foundation-common-test-path
+  [path]
+  (-> path
+      (str/replace "test/tahto/base/" "core/lib/test-lang/lang/common/")
+      (str/replace "test/tahto/common/" "core/lib/test-lang/lang/common/")
+      (str/replace ".clj" ".hal")))
+
+(defn foundation-common-fact-count
+  [source]
+  (- (count (str/split source "(fact")) 1))
+
+(defn foundation-common-diagnostics
+  [source]
+  (vec
+   (keep (fn [prefix]
+           (if (str/includes? source prefix)
+             {:level :error
+              :migration/error :foundation/unmapped-reference
+              :reference prefix
+              :message "Foundation test requires an explicit persistent adaptation"}
+             nil))
+         +foundation-common-blocked-prefixes+)))
+
+(defn canonical-test-runner
+  [namespace]
+  (str "(pr-str (run {:namespace \"" namespace "\"}))"))
+
+(defn migrate-foundation-common-test-source
+  [source namespace]
+  (let [rewritten (replace-routes source +foundation-common-test-rewrites+)
+        runner (canonical-test-runner namespace)
+        output (if (str/includes? rewritten runner)
+                 rewritten
+                 (str (if (str/ends-with? rewritten "\n")
+                        rewritten
+                        (str rewritten "\n"))
+                      "\n" runner "\n"))
+        fact-count (foundation-common-fact-count source)
+        diagnostics (foundation-common-diagnostics output)]
+    {:before source
+     :after output
+     :changed (not= source output)
+     :rules [:foundation/lang-common-tests]
+     :facts {:source fact-count
+             :direct (if (empty? diagnostics) fact-count 0)
+             :adapted 0
+             :covered-current 0
+             :unmapped (if (empty? diagnostics) 0 fact-count)}
+     :diagnostics diagnostics}))
+
+(defn migrate-foundation-common-test-unit
+  [unit]
+  (let [source-path (:path unit)
+        target-path (or (:target/path unit)
+                        (route-foundation-common-test-path source-path))
+        namespace (or (:target/namespace unit) (:namespace unit))
+        result (migrate-foundation-common-test-source (:source unit) namespace)]
+    (merge {:path target-path
+            :source/path source-path
+            :target/path target-path
+            :language :hara
+            :copy true
+            :move false
+            :create true
+            :write false}
+           result)))
+
 (defn route-lang-model-v1-namespace
   [namespace]
   (let [name (str namespace)]
@@ -218,9 +304,11 @@
 
 (defn migrate-selected-unit
   [unit]
-  (if (= :lang.model/v1 (:migration unit))
-    (migrate-lang-model-v1-unit unit)
-    (migrate-unit unit)))
+  (cond (= :lang.model/v1 (:migration unit))
+        (migrate-lang-model-v1-unit unit)
+        (= :foundation/lang-common-tests (:migration unit))
+        (migrate-foundation-common-test-unit unit)
+        :else (migrate-unit unit)))
 
 (def.work migration
   [:task]

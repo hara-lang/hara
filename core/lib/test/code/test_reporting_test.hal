@@ -1,7 +1,9 @@
 (ns code.test.reporting-test
   (:use code.test)
   (:require [code.test.base.listener :as listener]
-            [code.test.base.print :as print]))
+            [code.test.base.print :as print]
+            [code.test.work :as test-work]
+            [work.flow.task.report :as report]))
 
 (def summary
   {:files 2 :facts 3 :checks 4 :passed 3 :failed 1 :throw 0 :timeout 0})
@@ -23,5 +25,47 @@
       :expected 42
       :actual 41
       :error nil})
+
+(fact "test reports project facts directly without nested task records"
+  (let [summary
+        {:status :failed
+         :files 1
+         :facts 1
+         :checks 1
+         :passed 0
+         :failed 1
+         :throw 0
+         :timeout 0
+         :skipped 0
+         :results
+         [{:namespace "sample.test"
+           :name "predicate"
+           :status :failed
+           :meta {:test/namespace "sample.test"
+                  :before (fn [] true)}
+           :checks [{:pass false
+                     :actual 41
+                     :expected 42}]}]}
+        document (test-work/test-report summary)
+        results (report/section-by-id document :results)
+        summary-section (report/section-by-id document :summary)
+        fact-row (first (:section/entries results))]
+    [(:report/status document)
+     (:name fact-row)
+     (:checks fact-row)
+     (fn? (get-in fact-row [:meta :before]))
+     (:section/entries summary-section)])
+  => [:failed
+      "predicate"
+      [{:pass false :actual 41 :expected 42}]
+      false
+      [{:files 1
+        :facts 1
+        :checks 1
+        :passed 0
+        :failed 1
+        :throw 0
+        :timeout 0
+        :skipped 0}]])
 
 (pr-str (run {:namespace "code.test.reporting-test"}))
