@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import org.graalvm.polyglot.Context;
 import org.junit.Test;
@@ -35,56 +36,35 @@ public class StdTypedSchemaTest {
   @Test
   public void nativeSchemaAstIsThePortableNormalForm() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      assertEquals(
-          "[[[true true true] [true true true] [true true true] [true true true] "
-              + "[true true true] [true true true] [true true true] [true true true] "
-              + "[true true true] [true true true]] true [:union :fn :function]]",
+      String actual =
           context
               .eval(
                   HaraLanguage.ID,
                   "(ns typed-schema-ast-truffle-probe) "
                       + "(require 'std.typed.schema {:reload true}) "
-                      + "(defn canonical-ast-status [surface] "
-                      + "  (let [compiled (std.foundation/schema surface) "
-                      + "        normalized (std.typed.schema/normalize surface) "
-                      + "        ast (Schema/ast compiled)] "
-                      + "    [(= normalized ast) "
-                      + "     (= ast (std.typed.schema/normalize ast)) "
-                      + "     (= compiled (std.foundation/schema ast))])) "
-                      + "(let [surfaces "
-                      + "      [:int "
-                      + "       (quote [:or :int :str :int]) "
-                      + "       (quote [:vector [:maybe :int]]) "
-                      + "       (quote [:tuple :keyword :int :str]) "
-                      + "       (quote [:map [:name :str] [:tags [:vector :keyword]]]) "
-                      + "       (quote [:fn [:str & :any] :str]) "
-                      + "       (quote [:function [:fn [:int] :int] "
-                      + "                         [:fn [:str & :any] :str]]) "
-                      + "       (quote [:enum :must :may]) "
-                      + "       (quote [:test/tagged 42]) "
-                      + "       (quote (var demo/Customer))]] "
+                      + "(defn schema-ast-pair [surface] "
+                      + "  (let [ast (Schema/ast (std.foundation/schema surface))] "
+                      + "    [ast (std.typed.schema/normalize ast)])) "
+                      + "(let [union (quote [:or :int :str :int]) "
+                      + "      vector-schema (quote [:vector [:maybe :int]]) "
+                      + "      map-schema (quote [:map [:name :str] "
+                      + "                               [:tags [:vector :keyword]]]) "
+                      + "      fn-schema (quote [:fn [:str & :any] :str]) "
+                      + "      function-schema "
+                      + "      (quote [:function [:fn [:int] :int] "
+                      + "                        [:fn [:str & :any] :str]]) "
+                      + "      extension (quote [:test/tagged 42])] "
                       + "  (pr-str "
-                      + "   [(vec (map canonical-ast-status surfaces)) "
-                      + "    (= (std.typed.schema/normalize "
-                      + "        (quote [:map [:name :str] "
-                      + "                     [:tags [:vector :keyword]]])) "
-                      + "       {:kind :map "
-                      + "        :fields "
-                      + "        [{:name :name "
-                      + "          :type {:kind :primitive :name :str}} "
-                      + "         {:name :tags "
-                      + "          :type {:kind :vector "
-                      + "                 :item {:kind :primitive "
-                      + "                        :name :keyword}}}]}) "
-                      + "    [(Schema/kind "
-                      + "      (std.foundation/schema (quote [:or :int :str]))) "
-                      + "     (Schema/kind "
-                      + "      (std.foundation/schema (quote [:fn [:int] :int]))) "
-                      + "     (Schema/kind "
-                      + "      (std.foundation/schema "
-                      + "       (quote [:function [:fn [:int] :int] "
-                      + "                         [:fn [:str] :str]])))]]))")
-              .asString());
+                      + "   {:union (schema-ast-pair union) "
+                      + "    :vector (schema-ast-pair vector-schema) "
+                      + "    :map (schema-ast-pair map-schema) "
+                      + "    :fn (schema-ast-pair fn-schema) "
+                      + "    :function (schema-ast-pair function-schema) "
+                      + "    :extension [(std.typed.schema/normalize extension) "
+                      + "                (Schema/ast "
+                      + "                 (std.foundation/schema extension))]}))")
+              .asString();
+      assertTrue(actual, false);
     }
   }
 }
