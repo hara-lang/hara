@@ -7,21 +7,55 @@
 (defstruct Runtime
   [mode store executor receipt observer definitions runtime-version schema-version])
 
+(def runtime-keys
+  #{:work/executor
+    :work/store
+    :work/registry
+    :work/policy
+    :work/hooks})
+
+(defn runtime-map
+  [executor store registry policy hooks]
+  {:work/executor executor
+   :work/store store
+   :work/registry registry
+   :work/policy (or policy {})
+   :work/hooks (or hooks {})})
+
+(defn canonical-runtime?
+  [runtime]
+  (and (map? runtime)
+       (= runtime-keys (set (keys runtime)))))
+
+(defn normalise-runtime
+  [runtime]
+  (if (canonical-runtime? runtime)
+    runtime
+    (runtime-map
+     (:executor runtime)
+     (:store runtime)
+     (:definitions runtime)
+     {:work/mode (:mode runtime)
+      :work/runtime-version (:runtime-version runtime)
+      :work/schema-version (:schema-version runtime)}
+     {:work/receipt (:receipt runtime)
+      :work/observer (:observer runtime)})))
+
 (defn runtime-mode
   [runtime]
-  (:mode runtime))
+  (:work/mode (:work/policy (normalise-runtime runtime))))
 
 (defn runtime-store
   [runtime]
-  (:store runtime))
+  (:work/store (normalise-runtime runtime)))
 
 (defn runtime-executor
   [runtime]
-  (:executor runtime))
+  (:work/executor (normalise-runtime runtime)))
 
 (defn runtime-receipt
   [runtime]
-  (:receipt runtime))
+  (:work/receipt (:work/hooks (normalise-runtime runtime))))
 
 ;; Compatibility accessors for the pre-provider runtime layout. New runtime
 ;; code should use runtime-store and runtime-executor directly.
@@ -38,19 +72,19 @@
 
 (defn runtime-observer
   [runtime]
-  (:observer runtime))
+  (:work/observer (:work/hooks (normalise-runtime runtime))))
 
 (defn runtime-definitions
   [runtime]
-  (:definitions runtime))
+  (:work/registry (normalise-runtime runtime)))
 
 (defn runtime-code-version
   [runtime]
-  (:runtime-version runtime))
+  (:work/runtime-version (:work/policy (normalise-runtime runtime))))
 
 (defn runtime-schema-version
   [runtime]
-  (:schema-version runtime))
+  (:work/schema-version (:work/policy (normalise-runtime runtime))))
 
 (extend-type Work IWork
   (work-spec [work]
