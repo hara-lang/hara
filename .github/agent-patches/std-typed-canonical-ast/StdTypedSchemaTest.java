@@ -36,7 +36,7 @@ public class StdTypedSchemaTest {
   public void nativeSchemaAstIsThePortableNormalForm() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[true true [:union :fn :function]]",
+          "[[true true true true true true true true true true] true [:union :fn :function]]",
           context
               .eval(
                   HaraLanguage.ID,
@@ -62,7 +62,7 @@ public class StdTypedSchemaTest {
                       + "       (quote [:test/tagged 42]) "
                       + "       (quote (var demo/Customer))]] "
                       + "  (pr-str "
-                      + "   [(every? canonical-ast? surfaces) "
+                      + "   [(vec (map canonical-ast? surfaces)) "
                       + "    (= (std.typed.schema/normalize "
                       + "        (quote [:map [:name :str] "
                       + "                     [:tags [:vector :keyword]]])) "
