@@ -1,0 +1,49 @@
+name: std.typed schema parity
+
+on:
+  pull_request:
+    branches: [main, testing, agent/std-typed-dependency-boundary]
+    paths:
+      - 'core/lib/src/std/typed/**'
+      - 'core/lib/test/std/typed/**'
+      - 'core/rust/tests/std_typed_schema.rs'
+      - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
+      - '.github/workflows/std-typed-schema.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/lib/src/std/typed/**'
+      - 'core/lib/test/std/typed/**'
+      - 'core/rust/tests/std_typed_schema.rs'
+      - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
+      - '.github/workflows/std-typed-schema.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: std-typed-schema-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run focused Rust schema bridge test
+        run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema
+
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Run focused Truffle schema bridge test
+        run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedSchemaTest test --file core/java/pom.xml
