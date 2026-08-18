@@ -29,12 +29,18 @@ def replace_between(path: str, start: str, end: str, replacement: str) -> None:
     write(path, text[:start_at] + replacement.rstrip() + text[end_at:])
 
 
-def replace_once(path: str, old: str, new: str) -> None:
+def replace_exact(path: str, old: str, new: str, expected: int) -> None:
     text = read(path)
     count = text.count(old)
-    if count != 1:
-        raise RuntimeError(f"{path}: expected one occurrence, found {count}: {old!r}")
-    write(path, text.replace(old, new, 1))
+    if count != expected:
+        raise RuntimeError(
+            f"{path}: expected {expected} occurrences, found {count}: {old!r}"
+        )
+    write(path, text.replace(old, new))
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    replace_exact(path, old, new, 1)
 
 
 write("core/lib/src/std/typed/schema.hal", payload("schema.hal"))
@@ -86,6 +92,34 @@ replace_once(
     "  /** Conservative body-derived function facts used by lowering tiers. */",
     payload("java-longhand-helpers.txt").rstrip()
     + "\n\n  /** Conservative body-derived function facts used by lowering tiers. */",
+)
+replace_once(
+    "core/java/src/main/java/hara/truffle/HalcSchema.java",
+    "if (schema instanceof Keyword keyword) return new Primitive(keyword.getName());",
+    "if (schema instanceof Keyword keyword) return new Primitive(keywordName(keyword));",
+)
+replace_once(
+    "core/java/src/main/java/hara/truffle/HalcSchema.java",
+    "    List<Object> arguments = values(vector, 1);\n"
+    "    return switch (head.getName()) {",
+    "    List<Object> arguments = values(vector, 1);\n"
+    "    String headName = keywordName(head);\n"
+    "    return switch (headName) {",
+)
+replace_exact(
+    "core/java/src/main/java/hara/truffle/HalcSchema.java",
+    "requireCount(head.getName(), arguments, 1);",
+    "requireCount(headName, arguments, 1);",
+    2,
+)
+replace_once(
+    "core/java/src/main/java/hara/truffle/HalcSchema.java",
+    "      default -> arguments.isEmpty()\n"
+    "          ? new Primitive(head.getName())\n"
+    "          : new Extension(head.getName(), arguments);",
+    "      default -> arguments.isEmpty()\n"
+    "          ? new Primitive(headName)\n"
+    "          : new Extension(headName, arguments);",
 )
 
 replace_once(
