@@ -1,0 +1,302 @@
+;; Immutable portable registries for named std.typed schemas.
+(ns std.typed.registry)
+
+(def +registry-type+ :std.typed.registry/registry)
+
+(def +option-keys+
+  #{:namespace :aliases :refers :parents})
+
+(defn- registry-error
+  [message data]
+  (throw
+   (ex-info message
+            (assoc data :type :std.typed.registry/invalid-registry))))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  registry?
+  "Returns true when value is a canonical portable schema registry."
+  [value]
+  (and (map? value)
+       (= +registry-type+ (:registry/type value))
+       (map? (:registry/entries value))
+       (vector? (:registry/parents value))))
+
+(defn- require-map
+  [value label]
+  (if (map? value)
+    value
+    (registry-error (str label " must be a map")
+                    {:label label :value value})))
+
+(defn- require-symbol-map
+  [value label]
+  (let [value (require-map value label)]
+    (reduce
+     (fn [output entry]
+       (let [entry-key (key entry)
+             entry-value (val entry)]
+         (if (and (symbol? entry-key)
+                  (symbol? entry-value))
+           output
+           (registry-error
+            (str label " must map symbols to symbols")
+            {:label label
+             :key entry-key
+             :value entry-value}))))
+     value
+     value)))
+
+(defn- require-parents
+  [parents]
+  (let [parents (vec parents)]
+    (if (every? registry? parents)
+      parents
+      (registry-error "registry parents must be registries"
+                      {:parents parents}))))
+
+(defn- qualify-in
+  [current aliases refers target]
+  (if (not (symbol? target))
+    (registry-error "schema registry names must be symbols"
+                    {:name target})
+    (let [prefix (namespace target)]
+      (if prefix
+        (let [prefix-symbol (symbol prefix)
+              resolved-prefix (get aliases prefix-symbol)]
+          (if resolved-prefix
+            (symbol (str resolved-prefix) (name target))
+            target))
+        (or (get refers target)
+            (if current
+              (symbol (str current) (name target))
+              target))))))
+
+(defn ^{:schema [:fn [:any :symbol] :symbol]}
+  qualify
+  "Qualifies a schema name through registry aliases, refers, and namespace."
+  [registry-value target]
+  (let [registry-value
+        (if (registry? registry-value)
+          registry-value
+          (registry-error "qualify expects a schema registry"
+                          {:registry registry-value}))]
+    (qualify-in (:registry/namespace registry-value)
+                (:registry/aliases registry-value)
+                (:registry/refers registry-value)
+                target)))
+
+(defn- canonical-entries
+  [entries current aliases refers]
+  (reduce
+   (fn [output entry]
+     (let [raw-name (key entry)
+           qualified (qualify-in current aliases refers raw-name)]
+       (if (has? output qualified)
+         (registry-error "duplicate qualified schema registry name"
+                         {:name qualified :raw-name raw-name})
+         (assoc output qualified (val entry)))))
+   {}
+   entries))
+
+(defn ^{:schema [:function
+                 [:fn [:map] :map]
+                 [:fn [:map :map] :map]]}
+  registry
+  "Creates an immutable portable schema registry.
+
+   Options are :namespace, :aliases, :refers, and ordered :parents. Local
+   entries take precedence over parents; earlier parents take precedence over
+   later parents."
+  ([entries]
+   (registry entries {}))
+  ([entries options]
+   (let [entries (require-map entries "registry entries")
+         options (require-map options "registry options")
+         unknown-options
+         (vec
+          (filter (fn [option]
+                    (not (has? +option-keys+ option)))
+                  (keys options)))
+         current (get options :namespace nil)
+         aliases (require-symbol-map (get options :aliases {})
+                                     "registry aliases")
+         refers (require-symbol-map (get options :refers {})
+                                    "registry refers")
+         parents (require-parents (get options :parents []))]
+     (if (not (empty? unknown-options))
+       (registry-error "unsupported schema registry options"
+                       {:options unknown-options}))
+     (if (and current (not (symbol? current)))
+       (registry-error "registry namespace must be a symbol"
+                       {:namespace current}))
+     {:registry/type +registry-type+
+      :registry/namespace current
+      :registry/aliases aliases
+      :registry/refers refers
+      :registry/entries
+      (canonical-entries entries current aliases refers)
+      :registry/parents parents})))
+
+(def +empty+ (registry {}))
+
+(defn ^{:schema [:fn [:any] :map]}
+  ensure
+  "Returns a canonical registry, treating an ordinary map as registry entries."
+  [value]
+  (cond
+    (registry? value) value
+    (map? value) (registry value)
+    :else
+    (registry-error "expected a schema registry or entries map"
+                    {:registry value})))
+
+(defn ^{:schema [:function
+                 [:fn [:symbol :map] :map]
+                 [:fn [:symbol :map :map] :map]]}
+  local
+  "Creates a registry whose unqualified names belong to namespace."
+  ([current entries]
+   (registry entries {:namespace current}))
+  ([current entries options]
+   (registry entries (assoc options :namespace current))))
+
+(defn ^{:schema [:function
+                 [:fn [:vector] :map]
+                 [:fn [:map :vector] :map]]}
+  composite
+  "Creates an ordered composite registry."
+  ([registries]
+   (registry {} {:parents registries}))
+  ([entries registries]
+   (registry entries {:parents registries})))
+
+(defn ^{:schema [:fn [:map] :map]}
+  local-entries
+  "Returns only the entries owned by this registry."
+  [registry-value]
+  (:registry/entries (ensure registry-value)))
+
+(defn ^{:schema [:fn [:map] :vector]}
+  parents
+  "Returns the ordered parent registries."
+  [registry-value]
+  (:registry/parents (ensure registry-value)))
+
+(declare find-schema)
+
+(defn- find-in-parent
+  [parent targets]
+  (loop [remaining targets]
+    (if (empty? remaining)
+      nil
+      (let [found (find-schema parent (first remaining))]
+        (if found
+          found
+          (recur (rest remaining)))))))
+
+(defn ^{:schema [:fn [:any :symbol] :any]}
+  find-schema
+  "Returns {:registry r :name qualified :schema surface}, or nil."
+  [registry-value target]
+  (let [registry-value (ensure registry-value)
+        qualified (qualify registry-value target)
+        entries (:registry/entries registry-value)]
+    (if (has? entries qualified)
+      {:registry registry-value
+       :name qualified
+       :schema (get entries qualified)}
+      (let [targets (if (= target qualified)
+                      [target]
+                      [qualified target])]
+        (loop [remaining (:registry/parents registry-value)]
+          (if (empty? remaining)
+            nil
+            (let [found (find-in-parent (first remaining) targets)]
+              (if found
+                found
+                (recur (rest remaining))))))))))
+
+(defn ^{:schema [:fn [:any :symbol] :any]}
+  lookup
+  "Returns a registered schema surface, or nil when absent."
+  [registry-value target]
+  (let [found (find-schema registry-value target)]
+    (if found (:schema found) nil)))
+
+(defn ^{:schema [:fn [:any :symbol] :bool]}
+  has-schema?
+  "Returns true when target resolves in registry."
+  [registry-value target]
+  (boolean (find-schema registry-value target)))
+
+(defn ^{:schema [:fn [:any :symbol] :any]}
+  require-schema
+  "Returns a registered schema surface or throws structured ExceptionInfo."
+  [registry-value target]
+  (let [found (find-schema registry-value target)]
+    (if found
+      (:schema found)
+      (registry-error "schema registry reference is unresolved"
+                      {:name target
+                       :options (names registry-value)}))))
+
+(defn- append-unique
+  [values value]
+  (if (any? (fn [candidate] (= candidate value)) values)
+    values
+    (conj values value)))
+
+(defn- append-names
+  [output values]
+  (loop [remaining values
+         output output]
+    (if (empty? remaining)
+      output
+      (recur (rest remaining)
+             (append-unique output (first remaining))))))
+
+(defn ^{:schema [:fn [:any] :vector]}
+  names
+  "Returns visible qualified schema names in deterministic precedence order."
+  [registry-value]
+  (let [registry-value (ensure registry-value)]
+    (loop [remaining (:registry/parents registry-value)
+           output (vec (keys (:registry/entries registry-value)))]
+      (if (empty? remaining)
+        output
+        (recur (rest remaining)
+               (append-names output (names (first remaining))))))))
+
+(defn ^{:schema [:fn [:any] :map]}
+  definitions
+  "Flattens visible definitions using registry lookup precedence."
+  [registry-value]
+  (let [registry-value (ensure registry-value)]
+    (reduce
+     (fn [output schema-name]
+       (assoc output schema-name
+              (:schema (find-schema registry-value schema-name))))
+     {}
+     (names registry-value))))
+
+(defn ^{:schema [:fn [:any :symbol :any] :map]}
+  assoc-schema
+  "Returns registry with a local schema entry associated immutably."
+  [registry-value target schema]
+  (let [registry-value (ensure registry-value)
+        qualified (qualify registry-value target)]
+    (assoc registry-value
+           :registry/entries
+           (assoc (:registry/entries registry-value)
+                  qualified
+                  schema))))
+
+(defn ^{:schema [:fn [:any :symbol] :map]}
+  dissoc-schema
+  "Returns registry without the qualified local schema entry."
+  [registry-value target]
+  (let [registry-value (ensure registry-value)
+        qualified (qualify registry-value target)]
+    (assoc registry-value
+           :registry/entries
+           (dissoc (:registry/entries registry-value) qualified))))
