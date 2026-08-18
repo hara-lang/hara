@@ -1,0 +1,42 @@
+(ns work.flow.task.cli)
+
+(defn read-arg
+  [value]
+  (try (edn/read value) (catch Throwable error value)))
+
+(defn tail
+  [values start]
+  (loop [index start output []]
+    (if (= index (count values))
+      output
+      (recur (inc index) (conj output (nth values index))))))
+
+(defn selector-values
+  [values]
+  (loop [remaining (vec values) output []]
+    (if (or (empty? remaining) (keyword? (read-arg (first remaining))))
+      output
+      (recur (tail remaining 1) (conj output (read-arg (first remaining)))))))
+
+(defn parse
+  "Parses EDN-valued keyword options. :only and :with collect consecutive
+   values into the work-native :selector key."
+  [arguments]
+  (loop [remaining (vec arguments) output {}]
+    (if (empty? remaining)
+      output
+      (let [key (read-arg (first remaining))
+            rest-values (tail remaining 1)]
+        (if (not (keyword? key))
+          (recur rest-values output)
+          (if (or (= key :only) (= key :with))
+            (let [values (selector-values rest-values)]
+              (recur (tail rest-values (count values))
+                     (assoc output :selector values)))
+            (if (or (empty? rest-values)
+                    (keyword? (read-arg (first rest-values))))
+              (recur rest-values (assoc output key true))
+              (recur (tail rest-values 1)
+                     (assoc output key (read-arg (first rest-values)))))))))))
+
+

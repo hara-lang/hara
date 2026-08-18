@@ -1,0 +1,230 @@
+(ns code.migrate
+  (:require [code.framework :as framework]
+            [code.manage.unit.structure :as structure]
+            [work.base :as work :refer [def.work]]
+            [work.flow.task :as task]
+            [work.flow.task.selector :as selector]))
+
+(def rule-id :std.task/def-work)
+
+(def task-heads
+  #{"deftask" "def.task" "task/deftask" "task/def.task"})
+
+(defn task-vector?
+  [value]
+  (and (vector? value)
+       (= :task (first value))
+       (map? (second value))))
+
+(defn child-values
+  [source form]
+  (vec
+   (map :value
+        (framework/semantic-children source form))))
+
+(defn first-task-vector
+  [values]
+  (first (filter task-vector? values)))
+
+(defn first-docstring
+  [values]
+  (first (filter string? values)))
+
+(defn definition-with-doc
+  [definition docstring]
+  (if docstring
+    (assoc definition
+           :metadata
+           (assoc (or (:metadata definition) {}) :doc docstring))
+    definition))
+
+(defn task-replacement
+  [source form]
+  (let [values (child-values source form)
+        head (str (first values))
+        name (second values)]
+    (cond
+      (or (= head "invoke/definvoke")
+          (= head "definvoke"))
+      (let [task-vector (first-task-vector values)]
+        (if task-vector
+          {:replacement
+           (pr-str
+            (list 'def.work
+                  name
+                  [:task]
+                  (definition-with-doc (second task-vector)
+                                       (first-docstring values))))
+           :rules [rule-id]
+           :diagnostics []}
+          nil))
+
+      (has? task-heads head)
+      (let [definition (if (< 2 (count values)) (nth values 2) nil)
+            body (vec (drop 3 values))]
+        (if (and (map? definition) (empty? body))
+          {:replacement
+           (pr-str (list 'def.work name [:task] definition))
+           :rules [rule-id]
+           :diagnostics []}
+          {:replacement nil
+           :rules []
+           :diagnostics
+           [{:level :error
+             :migration/error :std.task/ambiguous-deftask
+             :message "deftask body requires manual conversion"
+             :name name}]}))
+
+      :else nil)))
+
+(defn nested-map
+  [value]
+  (cond
+    (map? value) value
+    (or (sequential? value) (seq? value))
+    (loop [remaining (reverse (vec value))]
+      (if (empty? remaining)
+        nil
+        (let [found (nested-map (first remaining))]
+          (if found found (recur (rest remaining))))))
+    :else nil))
+
+(defn profile-replacement
+  [source form]
+  (let [values (child-values source form)]
+    (if (and (= "defmethod" (str (first values)))
+             (= "task/task-defaults" (str (second values))))
+      (let [type (if (< 2 (count values)) (nth values 2) nil)
+            options (nested-map
+                     (if (< 3 (count values)) (nth values 3) nil))]
+        (if (and type options)
+          {:replacement
+           (pr-str (list 'task/register-profile! type options))
+           :rules [:std.task/profile]
+           :diagnostics []}
+          {:replacement nil
+           :rules []
+           :diagnostics
+           [{:level :error
+             :migration/error :std.task/invalid-profile
+             :message "task-defaults method could not be converted"}]}))
+      nil)))
+
+(defn form-migration
+  [source form]
+  (or (task-replacement source form)
+      (profile-replacement source form)))
+
+(defn source-plan
+  [source]
+  (let [analysis (framework/analyse-structure source)]
+    (reduce
+     (fn [plan form]
+       (let [migration (form-migration source form)]
+         (if migration
+           (let [replacement (:replacement migration)]
+             {:edits
+              (if replacement
+                (conj (:edits plan)
+                      (structure/edit (:start form)
+                                      (:end form)
+                                      replacement))
+                (:edits plan))
+              :rules (into (:rules plan) (:rules migration))
+              :diagnostics
+              (into (:diagnostics plan) (:diagnostics migration))})
+           plan)))
+     {:edits [] :rules [] :diagnostics []}
+     (:form-records analysis))))
+
+(defn rewrite-requires
+  [source]
+  (-> source
+      (str/replace "[std.task :as task]"
+                   "[work.base :as work :refer [def.work]]\n            [work.flow.task :as task]")
+      (str/replace "[std.work :as work]"
+                   "[work.base :as work :refer [def.work]]")
+      (str/replace "[std.work.template.task :as task]"
+                   "[work.flow.task :as task]")))
+
+(defn migrate-source
+  [source]
+  (let [plan (source-plan source)
+        rewritten (structure/apply-edits source (:edits plan))
+        output (rewrite-requires rewritten)]
+    (assoc plan
+           :before source
+           :after output
+           :changed (not= source output))))
+
+(defn migrate-unit
+  [unit]
+  (let [result (migrate-source (:source unit))]
+    (merge {:path (:path unit)
+            :language (or (:language unit) :hara)
+            :create false
+            :write false}
+           result)))
+
+(def.work migration
+  [:task]
+  {:task/type :code.migrate
+   :item
+   {:list
+    (fn [input context]
+      (vec
+       (map
+        (fn [unit]
+          {:item/id (:path unit)
+           :item/value unit})
+        (sort-by :path (:units input)))))
+    :run
+    (fn [unit context]
+      (let [result (migrate-unit unit)]
+        {:status
+         (if (empty? (:diagnostics result)) :return :error)
+         :data result}))}
+   :return {:select :all :package :map}})
+
+(defn plan
+  [input]
+  (work/run migration input))
+
+(defn planned-edits
+  [plan]
+  (vec
+   (keep
+    (fn [record]
+      (let [value (:data record)]
+        (if (:changed value) value nil)))
+    (:records plan))))
+
+(defn path-under-root?
+  [root path]
+  (let [root (str/replace (File/resolve root "") "\\" "/")
+        path (str/replace (File/resolve root path) "\\" "/")]
+    (or (= root path)
+        (str/starts-with? path (str root "/")))))
+
+(defn apply-unit!
+  [root unit]
+  (if (not (path-under-root? root (:path unit)))
+    (throw (ex-info "Migration path escapes project root"
+                    {:root root :path (:path unit)})))
+  (let [path (File/resolve root (:path unit))
+        current (str/decode-utf8 (deref (File/read path)))]
+    (if (not= current (:before unit))
+      (throw (ex-info "Migration source changed after planning"
+                      {:path path})))
+    (deref (File/write path (str/encode-utf8 (:after unit))))
+    (assoc unit :write true)))
+
+(defn apply!
+  [root plan]
+  (let [edits (planned-edits plan)
+        diagnostics
+        (vec (mapcat :diagnostics edits))]
+    (if (not (empty? diagnostics))
+      (throw (ex-info "Migration contains blocking diagnostics"
+                      {:diagnostics diagnostics})))
+    (vec (map (fn [unit] (apply-unit! root unit)) edits))))

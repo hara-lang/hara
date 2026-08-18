@@ -78,6 +78,10 @@ impl WorkContext {
         self.token().check()
     }
 
+    pub fn emit(&self, kind: Value, data: Value) -> bool {
+        self.run.emit(kind, data)
+    }
+
     pub fn submit_child<F>(&self, options: WorkOptions, task: F) -> Result<WorkRun, String>
     where
         F: FnOnce(WorkContext) -> Result<Value, String> + 'static,

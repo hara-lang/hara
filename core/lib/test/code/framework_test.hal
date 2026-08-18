@@ -20,4 +20,35 @@
       ["Returns the answer."
        "Returns the schema answer."]])
 
+(fact "native definition families and defimpl constructors are indexed"
+  (map (fn [entry] [(:kind entry) (:name entry)])
+       (:definitions
+        (framework/analyse-source
+         "(ns demo.core)\n(defn.pg fetch [] nil)\n(impl/defimpl Task [value])\n")))
+  => [[:function "fetch"]
+      [:implementation "Task"]
+      [:constructor "map->Task"]
+      [:constructor "->Task"]])
+
+(fact "literal grep reports every exact match column"
+  (framework/grep-source "alpha alpha\nbeta" "alpha")
+  => [{:line 1 :column 1 :text "alpha alpha"}
+      {:line 1 :column 7 :text "alpha alpha"}])
+
+(fact "metadata-wrapped forms retain their metadata and body"
+  (let [source
+        "(ns demo.core-test)\n^{:refer demo.core/value :added \"1.0\"}\n(fact \"Value\")\n"
+        analysis (framework/analyse-structure source)
+        form (second (:form-records analysis))]
+    [(framework/form-head source form)
+     (framework/merged-metadata (framework/form-metadata source form))
+     (:full-text form)
+     (:line form)
+     (:column form)])
+  => ["fact"
+      {:refer 'demo.core/value :added "1.0"}
+      "^{:refer demo.core/value :added \"1.0\"}\n(fact \"Value\")"
+      3
+      1])
+
 (pr-str (run {:namespace "code.framework-test"}))

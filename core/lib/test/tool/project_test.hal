@@ -150,4 +150,46 @@
     (catch Throwable error
       (:coordinate (ex-data error))))
   "hara:hara/crypto")
+
+ (test-check "project roots map source files to corresponding test roots"
+  (let [descriptor {:project/root "/project"
+                    :project/source-paths ["src" "src-lang"]
+                    :project/test-paths ["test" "test-lang"]}]
+    [(project/test-root descriptor "/project/src-lang/demo/core.hal")
+     (project/paired-test-path descriptor "/project/src-lang/demo/core.hal")
+     (project/paired-test-path descriptor "/project/test/demo/core_test.hal")])
+  ["test-lang"
+   "/project/test-lang/demo/core_test.hal"
+   "/project/test/demo/core_test.hal"])
+
+ (test-check "project paths classify and relativize native HAL files"
+  (let [descriptor {:project/root "/project"
+                    :project/source-paths ["src"]
+                    :project/test-paths ["test"]}]
+    [(project/file-type descriptor "/project/src/demo/core.hal")
+     (project/file-type descriptor "/project/test/demo/core_test.hal")
+     (project/project-relative-path descriptor "/project/src/demo/core.hal")])
+  [:source :test "src/demo/core.hal"])
+
+ (test-check "namespace parsing falls back to the project-relative path"
+  [(project/namespace-from-source "(ns demo.core)" "fallback/core.hal")
+   (project/namespace-from-source "(ns broken.core}" "fallback/core.hal")]
+  ['demo.core 'fallback.core])
+
+ (test-check "project code paths exclude editor lock symlinks"
+  [(project/project-code-path? "/project/src/demo/core.hal")
+   (project/project-code-path? "/project/src/demo/.#core.hal")]
+  [true false])
+
+ (test-check "file record indexes reject duplicate declared namespaces"
+  (try
+    (do
+      (project/file-record-index
+       {}
+       [{:path "src/demo.hal" :namespace 'demo}
+        {:path "test/demo_test.hal" :namespace 'demo}])
+      nil)
+    (catch Throwable error
+      [(:type (ex-data error)) (:namespace (ex-data error))]))
+  [:duplicate-namespace 'demo])
 ]

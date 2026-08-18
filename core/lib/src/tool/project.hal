@@ -417,3 +417,148 @@
                   (str "cannot find :project/main " main
                        " in :project/source-paths")
                   {:project/main main})))))))
+
+(defn strip-trailing-separator [path]
+  (if (and (> (str/length path) 1) (str/ends-with? path "/"))
+    (strip-trailing-separator (str/slice path 0 (dec (str/length path))))
+    path))
+
+(defn normalized-path [path]
+  (strip-trailing-separator (str/replace (str path) "\\" "/")))
+
+(defn path-under-root? [root path]
+  (let [root (normalized-path root) path (normalized-path path)]
+    (or (= root path) (str/starts-with? path (str root "/")))))
+
+(defn project-absolute-path [project path]
+  (let [path (normalized-path path)]
+    (if (str/starts-with? path "/") path
+      (normalized-path (File/resolve (:project/root project) path)))))
+
+(defn project-root-path [project root]
+  (project-absolute-path project root))
+
+(defn matching-root [project path roots]
+  (let [path (project-absolute-path project path)]
+    (loop [remaining roots selected nil]
+      (if (empty? remaining) selected
+        (let [root (first remaining)
+              absolute (project-root-path project root)
+              better (and (path-under-root? absolute path)
+                          (or (nil? selected)
+                              (> (str/length absolute)
+                                 (str/length
+                                  (project-root-path project selected)))))]
+          (recur (rest remaining) (if better root selected)))))))
+
+(defn root-index [roots root]
+  (loop [index 0]
+    (if (= index (count roots)) nil
+      (if (= root (nth roots index)) index (recur (inc index))))))
+
+(defn path-relative-to-root [project path root]
+  (let [path (project-absolute-path project path)
+        root-path (project-root-path project root)]
+    (if (not (path-under-root? root-path path)) nil
+      (if (= path root-path) ""
+        (str/slice path (inc (str/length root-path)) (str/length path))))))
+
+(defn project-relative-path [project path]
+  (path-relative-to-root project path ""))
+
+(defn test-root [project path]
+  (let [test-roots (:project/test-paths project)
+        source-roots (:project/source-paths project)
+        current-test (matching-root project path test-roots)
+        source-root (matching-root project path source-roots)]
+    (if current-test current-test
+      (if source-root
+        (let [index (root-index source-roots source-root)]
+          (or (if (< index (count test-roots)) (nth test-roots index) nil)
+              (first test-roots)))
+        (first test-roots)))))
+
+(defn test-file-name [path]
+  (if (str/ends-with? path "_test.hal") path
+    (if (str/ends-with? path ".hal")
+      (str (str/slice path 0 (- (str/length path) 4)) "_test.hal")
+      (str path "_test.hal"))))
+
+(defn paired-test-path [project path]
+  (let [test-roots (:project/test-paths project)
+        source-roots (:project/source-paths project)
+        current-test (matching-root project path test-roots)
+        source-root (matching-root project path source-roots)]
+    (if current-test (project-absolute-path project path)
+      (if source-root
+        (let [relative (path-relative-to-root project path source-root)
+              root (test-root project path)]
+          (if root
+            (File/join (project-root-path project root) (test-file-name relative))
+            (test-file-name (project-absolute-path project path))))
+        (test-file-name (project-absolute-path project path))))))
+
+(defn file-type [project path]
+  (if (or (matching-root project path (:project/test-paths project))
+          (str/ends-with? (normalized-path path) "_test.hal"))
+    :test :source))
+
+(defn project-code-path?
+  [path]
+  (and (str/ends-with? path ".hal")
+       (not (str/includes? (normalized-path path) "/.#"))))
+
+(defn project-code-paths [project]
+  (vec
+   (filter project-code-path?
+           (files-in project
+                     (vec (concat (:project/source-paths project)
+                                  (:project/test-paths project)))))))
+
+(defn namespace-from-source
+  [source relative]
+  (try
+    (symbol (str (or (block/namespace-name source)
+                     (path-namespace relative))))
+    (catch Throwable error
+      (path-namespace relative))))
+
+(defn project-file-record [project path]
+  (let [source (read-text path)
+        roots (if (= :test (file-type project path))
+                (:project/test-paths project) (:project/source-paths project))
+        root (matching-root project path roots)
+        relative (path-relative-to-root project path root)
+        namespace (namespace-from-source source relative)]
+    {:path path :relative-path (project-relative-path project path)
+     :namespace namespace :type (file-type project path) :source source}))
+
+(defn project-file-records [project]
+  (vec (map (fn [path] (project-file-record project path))
+            (project-code-paths project))))
+
+(defn file-record-index [project records]
+  (reduce
+   (fn [index entry]
+     (let [namespace (:namespace entry)]
+       (if (has? (:namespaces index) namespace)
+         (throw (ex-info "duplicate namespace in project source and test roots"
+                         {:type :duplicate-namespace :namespace namespace
+                          :paths [(:path (get (:namespaces index) namespace))
+                                  (:path entry)]}))
+         {:project project :paths (assoc (:paths index) (:path entry) entry)
+          :namespaces (assoc (:namespaces index) namespace entry)})))
+   {:project project :paths {} :namespaces {}}
+   records))
+
+(defn project-file-index [project]
+  (file-record-index project (project-file-records project)))
+
+(defn project-code-files [project]
+  (reduce (fn [output entry]
+            (assoc output (:namespace entry) (:relative-path entry)))
+          {} (project-file-records project)))
+
+(defn namespace-file [project namespace]
+  (let [entry (lookup-namespace (project-file-index project) namespace)]
+    (if entry (:path entry) nil)))

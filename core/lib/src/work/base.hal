@@ -1,9 +1,11 @@
 (ns work.base
   (:config {:override [filter]})
   (:require [work.flow :as flow]
-            [std.work.protocol :as protocol]
+            [work.base.coordinator :as coordinator]
+            [work.base.host :as host]
             [work.base.runtime :as runtime]
-            [work.base.result :as async-result]))
+            [work.base.result :as async-result]
+            [work.provider.ephemeral :as ephemeral]))
 
 (declare &env)
 
@@ -346,6 +348,27 @@
 (def receipt-status runtime/receipt-status)
 (def publish-receipts! runtime/publish-receipts!)
 
+(def default-host
+  (ephemeral/ephemeral-host))
+
+(defn submit
+  ([work input]
+   (submit default-host work input {}))
+  ([scheduler work input]
+   (submit scheduler work input {}))
+  ([scheduler work input options]
+   (IWorkHost/work-submit scheduler work input (or options {}))))
+
+(defn resolve
+  ([reference]
+   (resolve default-host reference))
+  ([scheduler reference]
+   (IWorkHost/work-resolve scheduler reference)))
+
+(defn work-id
+  [run-or-reference]
+  (IWorkRef/work-id run-or-reference))
+
 (defn emit!
   "Appends one structured domain event through the active work runtime."
   ([context event]
@@ -368,38 +391,54 @@
   ([runtime work input]
    (start runtime work input {}))
   ([runtime work input options]
-   (protocol/-start runtime work input options)))
+   (if (satisfies? IWorkHost runtime)
+     (submit runtime work input options)
+     (coordinator/start-run runtime work input options))))
 
 (defn status
-  [runtime reference]
-  (protocol/-query runtime reference {:query :status}))
+  ([run]
+   (IWorkRun/work-status run))
+  ([runtime reference]
+   (coordinator/query-run runtime reference {:query :status})))
 
 (defn result
-  [runtime reference]
-  (protocol/-query runtime reference {:query :result}))
+  ([run]
+   (IWorkRun/work-result run))
+  ([runtime reference]
+   (coordinator/query-run runtime reference {:query :result})))
+
+(defn events
+  ([run]
+   (events run {}))
+  ([run options]
+   (IWorkRun/work-events run (or options {}))))
+
+(defn await
+  [run]
+  (deref (result run)))
 
 (defn error
   [runtime reference]
-  (protocol/-query runtime reference {:query :error}))
+  (coordinator/query-run runtime reference {:query :error}))
 
 (defn run-record
   [runtime reference]
-  (protocol/-query runtime reference {:query :run}))
+  (coordinator/query-run runtime reference {:query :run}))
 
 (defn history
   [runtime reference]
-  (protocol/-query runtime reference {:query :history}))
+  (coordinator/query-run runtime reference {:query :history}))
 
 (defn checkpoints
   [runtime reference]
-  (protocol/-query runtime reference {:query :checkpoints}))
+  (coordinator/query-run runtime reference {:query :checkpoints}))
 
 (defn list-runs
   ([runtime]
    (list-runs runtime {}))
   ([runtime query]
-   (protocol/-query runtime nil {:query :runs
-                                 :where query})))
+   (coordinator/query-run runtime nil {:query :runs
+                                       :where query})))
 
 (defn- run-reference
   [runtime reference]
@@ -418,31 +457,39 @@
                      :error run-error}))))))))
 
 (defn run
+  ([work input]
+   (run default-host work input {}))
   ([runtime work input]
    (run runtime work input {}))
   ([runtime work input options]
-   (async-result/then
-    (start runtime work input options)
-    (fn [reference]
-      (run-reference runtime reference)))))
+   (if (satisfies? IWorkHost runtime)
+     (await (submit runtime work input options))
+     (async-result/then
+      (start runtime work input options)
+      (fn [reference]
+        (run-reference runtime reference))))))
 
 (defn cancel
+  ([run]
+   (IWorkRun/work-cancel run {}))
   ([runtime reference]
-   (cancel runtime reference {}))
+   (if (satisfies? IWorkRun runtime)
+     (IWorkRun/work-cancel runtime reference)
+     (cancel runtime reference {})))
   ([runtime reference options]
-   (protocol/-command runtime reference :cancel options)))
+   (coordinator/command-run runtime reference :cancel options)))
 
 (defn resume
   ([runtime reference]
    (resume runtime reference {}))
   ([runtime reference options]
-   (protocol/-command runtime reference :resume options)))
+   (coordinator/command-run runtime reference :resume options)))
 
 (defn fork
   ([runtime reference checkpoint]
    (fork runtime reference checkpoint {}))
   ([runtime reference checkpoint options]
-   (protocol/-command runtime
-                      reference
-                      :fork
-                      (assoc options :checkpoint checkpoint))))
+   (coordinator/command-run runtime
+                            reference
+                            :fork
+                            (assoc options :checkpoint checkpoint))))

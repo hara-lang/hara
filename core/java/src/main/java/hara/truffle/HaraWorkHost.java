@@ -364,6 +364,16 @@ public final class HaraWorkHost implements IWorkHost {
       }
     }
 
+    public boolean emit(Object type, Object data) {
+      if (run.closed()) return false;
+      Keyword eventType =
+          type instanceof Keyword keyword
+              ? keyword
+              : Keyword.create(String.valueOf(type).replaceFirst("^:", ""));
+      run.publishEvent(eventType, data, false);
+      return true;
+    }
+
     public IWorkRun submitChild(Object work, Object input, Object options) {
       checkCancelled();
       boolean detached = truthy(option(options, DETACHED));

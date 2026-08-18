@@ -4,8 +4,8 @@
             [code.test.base.runtime :as runtime]
             [code.test.manage :as manage]
             [code.test.selector :as selector]
-            [std.work :as work]
-            [std.work.template.task :as task]))
+            [work.base :as work]
+            [work.flow.task :as task]))
 
 ;; This namespace is the sole owner of test selection and the durable fact/suite
 ;; graph. The public code.test namespace only forwards intentional entrypoints.
@@ -595,7 +595,7 @@
   (get-in (first results) [:data :summary]))
 
 (def +report-task+
-  (task/template
+  (task/compile
    {:id 'code.test/report
     :type :test
     :version 1
@@ -705,7 +705,7 @@
    (let [config (Test/config {})]
      (if (= :native (:runner config))
        (native-run selector-or-options)
-       (run (work/local-runtime) selector-or-options {}))))
+       (run work/default-host selector-or-options {}))))
   ([runtime selector-or-options]
    (run runtime selector-or-options {}))
   ([runtime selector-or-options work-options]
@@ -716,7 +716,9 @@
                (runner-work-options options work-options)))))
 
 (defn start
-  "Starts the canonical fact-batch graph and returns a work reference."
+  "Starts the canonical fact-batch graph and returns a live IWorkRun."
+  ([selector-or-options]
+   (start work/default-host selector-or-options {}))
   ([runtime selector-or-options]
    (start runtime selector-or-options {}))
   ([runtime selector-or-options work-options]
@@ -727,8 +729,10 @@
                  (runner-work-options options work-options)))))
 
 (defn batch-result
-  [runtime reference]
-  (batch-summary (work/result runtime reference)))
+  ([run]
+   (batch-summary (work/await run)))
+  ([runtime reference]
+   (batch-summary (work/result runtime reference))))
 
 (def run-batch run)
 (def start-batch start)

@@ -477,6 +477,21 @@ impl WorkRun {
         crate::core::host_stream(next, close)
     }
 
+    /// Append one ordered domain event to this live run.
+    pub fn emit(&self, kind: Value, data: Value) -> bool {
+        if self.closed() {
+            return false;
+        }
+        let kind = match kind {
+            Value::Keyword(value) => value.to_string(),
+            Value::Symbol(value) => value.to_string(),
+            Value::String(value) => value,
+            _ => return false,
+        };
+        self.publish_domain_event(&kind, data);
+        true
+    }
+
     pub fn cancel(&self, reason: Value) -> bool {
         let rejection = cancellation_rejection(reason.clone());
         {
@@ -795,6 +810,48 @@ impl WorkRun {
             if terminal {
                 events.closed = true;
             }
+            let mut pending = Vec::new();
+            let mut retained = Vec::new();
+            for weak in std::mem::take(&mut events.cursors) {
+                let Some(cursor) = weak.upgrade() else {
+                    continue;
+                };
+                if let Some(settlement) = event_take(&events, &mut cursor.borrow_mut()) {
+                    pending.push(settlement);
+                }
+                retained.push(Rc::downgrade(&cursor));
+            }
+            events.cursors = retained;
+            pending
+        };
+        for (promise, value) in pending {
+            promise.resolve(value);
+        }
+    }
+
+    fn publish_domain_event(&self, kind: &str, data: Value) {
+        let pending = {
+            let mut events = self.inner.events.borrow_mut();
+            let sequence = events.values.len() + 1;
+            events.values.push(Value::Map(
+                [
+                    (
+                        Value::Keyword("event/type".into()),
+                        Value::Keyword(kind.into()),
+                    ),
+                    (
+                        Value::Keyword("event/run".into()),
+                        Value::String(self.inner.id.to_string()),
+                    ),
+                    (
+                        Value::Keyword("event/sequence".into()),
+                        Value::Number(sequence as i64),
+                    ),
+                    (Value::Keyword("event/data".into()), data),
+                ]
+                .into_iter()
+                .collect(),
+            ));
             let mut pending = Vec::new();
             let mut retained = Vec::new();
             for weak in std::mem::take(&mut events.cursors) {

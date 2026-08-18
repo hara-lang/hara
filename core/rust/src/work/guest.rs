@@ -77,6 +77,16 @@ pub(crate) fn values() -> Vec<(&'static str, Value)> {
             }),
         ),
         (
+            "emit!",
+            crate::core::native_function("work.native/emit!", 2, |arguments| {
+                let context = current_work_context()
+                    .ok_or_else(|| "emit! requires an active native work context".to_string())?;
+                Ok(Value::Bool(
+                    context.emit(arguments[0].clone(), arguments[1].clone()),
+                ))
+            }),
+        ),
+        (
             "submit-child",
             crate::core::native_fixed_variadic_function(
                 "work.native/submit-child",

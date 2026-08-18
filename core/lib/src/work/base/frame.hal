@@ -1,9 +1,13 @@
 (ns work.base.frame
-  (:require [std.work.protocol :as protocol]
-            [work.base.model :as base]
+  (:require [work.base.model :as base]
             [work.base.receipt :as receipt]
             [work.base.result :as result]
-            [work.base.store :as store]))
+            [work.base.store :as store]
+            [work.native :as native]))
+
+(defn native-runtime?
+  [runtime]
+  (= :native (base/runtime-mode runtime)))
 
 (defn node-id
   ([spec]
@@ -60,7 +64,7 @@
   (let [observer (base/runtime-observer runtime)]
     (if observer
       (try
-        (protocol/work-event observer event)
+        (base/observer-emit observer event)
         (catch Throwable error nil))))
   event)
 
@@ -104,13 +108,17 @@
 
 (defn emit!
   [runtime frame event data]
-  (result/then
-   (transact! runtime
-              frame
-              {:transition/events
-               [(event-record frame event data)]})
-   (fn [committed]
-     (first (:transition/events committed)))))
+  (let [record (event-record frame event data)]
+    (if (native-runtime? runtime)
+      (do
+        (native/emit! event record)
+        record)
+      (result/then
+       (transact! runtime
+                  frame
+                  {:transition/events [record]})
+       (fn [committed]
+         (first (:transition/events committed)))))))
 
 (defn leaf-context
   ([frame]
@@ -132,22 +140,27 @@
 
 (defn cancelled?
   [runtime frame]
-  (result/then
-   (store/call (base/runtime-store runtime)
-               :load-run
-               (:run/id frame))
-   (fn [run]
-     (= :cancelled (:run/status run)))))
+  (if (native-runtime? runtime)
+    (native/cancelled?)
+    (result/then
+     (store/call (base/runtime-store runtime)
+                 :load-run
+                 (:run/id frame))
+     (fn [run]
+       (= :cancelled (:run/status run))))))
 
 (defn assert-running!
   [runtime frame]
-  (result/then
-   (cancelled? runtime frame)
-   (fn [cancelled]
-     (if (and (not (:work/cleanup? frame)) cancelled)
-       (throw
-        (ex-info "Work run has been cancelled" {:run/id (:run/id frame)})))
-     nil)))
+  (if (and (native-runtime? runtime)
+           (not (:work/cleanup? frame)))
+    (native/check-cancelled)
+    (result/then
+     (cancelled? runtime frame)
+     (fn [cancelled]
+       (if (and (not (:work/cleanup? frame)) cancelled)
+         (throw
+          (ex-info "Work run has been cancelled" {:run/id (:run/id frame)})))
+       nil))))
 
 (defn explicit-item?
   [item]

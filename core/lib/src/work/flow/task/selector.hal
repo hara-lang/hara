@@ -1,0 +1,28 @@
+(ns work.flow.task.selector)
+
+(defn matches?
+  "Matches portable command selectors. Scalars use prefix matching, sets use
+   exact membership, lists are conjunctions, and vectors are disjunctions."
+  [selector identifier]
+  (cond (or (nil? selector) (= :all selector)) true
+        (fn? selector) (if (selector identifier) true false)
+        (or (string? selector) (symbol? selector) (keyword? selector))
+        (str/starts-with? (str identifier) (str selector))
+        (set? selector)
+        (reduce (fn [matched value] (or matched (= value identifier)))
+                false selector)
+        (list? selector)
+        (reduce (fn [matched part] (and matched (matches? part identifier)))
+                true selector)
+        (vector? selector)
+        (reduce (fn [matched part] (or matched (matches? part identifier)))
+                false selector)
+        :else
+        (throw (ex-info "Command selector is not valid"
+                        {:selector selector :identifier identifier}))))
+
+(defn select
+  [selector values]
+  (vec (filter (fn [value] (matches? selector value)) values)))
+
+
