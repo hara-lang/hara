@@ -1,31 +1,33 @@
-name: Verify and publish read-only tool.vm providers
+name: Materialize and publish read-only tool.vm providers
 
 on:
-  pull_request:
+  push:
     branches:
-      - main
+      - agent/tool-vm-readonly-product-751
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: agent-tool-vm-runner-751
+  group: agent-tool-vm-readonly-product-751
   cancel-in-progress: true
 
 jobs:
   verify:
-    if: github.event.pull_request.head.ref == 'agent/tool-vm-readonly-751'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
-      - name: Check out provider branch
+      - name: Check out product branch
         uses: actions/checkout@v4
         with:
-          ref: agent/tool-vm-readonly-751
+          ref: agent/tool-vm-readonly-product-751
           fetch-depth: 0
 
       - name: Rebase onto current main
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name "OpenAI Agent"
           git config user.email "openai-agent@users.noreply.github.com"
           git fetch origin main
@@ -53,6 +55,7 @@ jobs:
       - name: Expose benchmark corpus at the differential fixture path
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/../../website"
           ln -sfn \
             "$GITHUB_WORKSPACE/hara-benchmarks" \
@@ -87,9 +90,27 @@ jobs:
             '/tmp/tool-vm-impl.tar.gz' | sha256sum --check -
           tar --extract --gzip --file /tmp/tool-vm-impl.tar.gz --directory .
 
+      - name: Fix focused Truffle test map typing
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("core/java/src/test/java/hara/truffle/ToolVmLibraryTest.java")
+          source = path.read_text()
+          source, count = re.subn(r"Map<\?,\s*\?>", "Map<Object, Object>", source)
+          if count == 0:
+              raise SystemExit("ToolVmLibraryTest wildcard-map seam changed")
+          path.write_text(source)
+          print(f"Updated {count} wildcard map declaration(s).")
+          PY
+
       - name: Install the Rust provider namespace
         shell: bash
         run: |
+          set -euo pipefail
           python3 - <<'PY'
           from pathlib import Path
 
@@ -111,13 +132,17 @@ jobs:
           runtime.write_text(source.replace(needle, provider + needle, 1))
           PY
 
-      - name: Remove branch-scoped workflows
+      - name: Remove temporary publication workflows
+        shell: bash
         run: |
+          set -euo pipefail
           rm .github/workflows/agent-tool-vm-readonly-751.yml
           rm .github/workflows/agent-tool-vm-runner-751.yml
 
       - name: Format and validate Rust
+        shell: bash
         run: |
+          set -euo pipefail
           rustfmt --edition 2021 core/rust/src/core/vm_tool.rs
           cargo test --manifest-path core/rust/Cargo.toml vm_tool_tests --lib
           cargo test --manifest-path core/rust/vm-runtime/Cargo.toml
@@ -132,20 +157,31 @@ jobs:
 
       - name: Validate the Truffle provider
         working-directory: core
+        shell: bash
         run: mvn -B -Ptruffle -Dtest=ToolVmLibraryTest test --file java/pom.xml
 
       - name: Validate the public Hara facade
+        shell: bash
         run: |
+          set -euo pipefail
           ./scripts/runtime/run-lib-tests \
             core/lib/test/tool/vm_test.hal \
             core/lib/test/tool/vm_provider_test.hal
 
-      - name: Verify bounded diff
+      - name: Remove external fixture checkouts
         shell: bash
         run: |
           set -euo pipefail
-          git diff --check
-          allowed='^(core/lib/src/tool/vm\.hal|core/lib/src/tool/vm/(halc|hbc)\.hal|core/lib/test/tool/vm_provider_test\.hal|core/rust/src/core\.rs|core/rust/src/core/vm_tool\.rs|core/rust/src/runtime/runtime\.rs|core/java/src/main/java/hara/truffle/ToolVmLibrary\.java|core/java/src/main/java/hara/truffle/ToolVmLibraryProvider\.java|core/java/src/main/resources/META-INF/services/hara\.truffle\.HaraLibraryProvider|core/java/src/main/resources/META-INF/native-image/org\.hara/hara\.lang/(reflect-config|resource-config)\.json|core/java/src/test/java/hara/truffle/ToolVmLibraryTest\.java)$'
+          rm -rf hara-specs-registry hara-benchmarks
+          rm -f "$GITHUB_WORKSPACE/../hara-specs-registry"
+          rm -f "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
+      - name: Verify bounded product diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check "$BASE_SHA"
+          allowed='^(.github/workflows/agent-tool-vm-(readonly|runner)-751\.yml|core/lib/src/tool/vm\.hal|core/lib/src/tool/vm/(halc|hbc)\.hal|core/lib/test/tool/vm_provider_test\.hal|core/rust/src/core\.rs|core/rust/src/core/vm_tool\.rs|core/rust/src/runtime/runtime\.rs|core/java/src/main/java/hara/truffle/ToolVmLibrary\.java|core/java/src/main/java/hara/truffle/ToolVmLibraryProvider\.java|core/java/src/main/resources/META-INF/services/hara\.truffle\.HaraLibraryProvider|core/java/src/main/resources/META-INF/native-image/org\.hara/hara\.lang/(reflect-config|resource-config)\.json|core/java/src/test/java/hara/truffle/ToolVmLibraryTest\.java)$'
           unexpected=0
           while IFS= read -r path; do
             if [[ ! "$path" =~ $allowed ]]; then
@@ -163,6 +199,9 @@ jobs:
             exit 1
           fi
           test ! -e core/lib/src/tool/vm/provider.hal
+          test ! -e .github/workflows/agent-tool-vm-readonly-751.yml
+          test ! -e .github/workflows/agent-tool-vm-runner-751.yml
+          git status --short
 
       - name: Publish the verified implementation commit
         shell: bash
@@ -170,5 +209,5 @@ jobs:
           set -euo pipefail
           git reset --soft "$BASE_SHA"
           git add -A
-          git commit -m "Expose read-only tool.vm providers (#751)"
-          git push --force-with-lease origin HEAD:agent/tool-vm-readonly-751
+          git commit -m "Materialize read-only tool.vm providers (#751)"
+          git push --force-with-lease origin HEAD:agent/tool-vm-readonly-product-751
