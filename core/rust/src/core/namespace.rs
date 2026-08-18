@@ -60,7 +60,28 @@ fn ensure_namespace(
             .ok_or_else(|| format!("Cannot require missing namespace: {name}"))?;
         match resource {
             NamespaceResource::Source(source) => {
-                for (index, form) in crate::kernel::parse_forms(&source)?.into_iter().enumerate() {
+                let forms = crate::kernel::parse_forms(&source)?;
+                let mut start = 0;
+                if forms.first().is_some_and(top_level_namespace_form) {
+                    eval(&forms[0], env)
+                        .map_err(|error| format!("{name}: top-level form 1: {error}"))?;
+                    start = 1;
+                }
+                let declarations = forms[start..]
+                    .iter()
+                    .filter_map(top_level_definition_name)
+                    .map(|name| Form::Symbol(name.to_owned()))
+                    .collect::<Vec<_>>();
+                if !declarations.is_empty() {
+                    let declaration = Form::List(
+                        std::iter::once(Form::Symbol("declare".into()))
+                            .chain(declarations)
+                            .collect(),
+                    );
+                    eval(&declaration, env)
+                        .map_err(|error| format!("{name}: top-level predeclaration: {error}"))?;
+                }
+                for (index, form) in forms.into_iter().enumerate().skip(start) {
                     eval(&form, env).map_err(|error| {
                         format!("{name}: top-level form {}: {error}", index + 1)
                     })?;
@@ -116,6 +137,36 @@ fn ensure_namespace(
     registry.clear_load_failure(name);
     registry.commit_module_revision(name);
     Ok(())
+}
+
+fn top_level_namespace_form(form: &Form) -> bool {
+    matches!(form, Form::List(values)
+        if matches!(values.first(), Some(Form::Symbol(head)) if head == "ns" || head == "ns+"))
+}
+
+fn top_level_definition_name(form: &Form) -> Option<&str> {
+    let form = match form {
+        Form::Metadata(_, value) => value.as_ref(),
+        value => value,
+    };
+    let Form::List(values) = form else {
+        return None;
+    };
+    let head = match values.first()? {
+        Form::Symbol(head) => head.as_str(),
+        _ => return None,
+    };
+    if !matches!(head, "def" | "defonce" | "defn" | "defn-" | "defmacro") {
+        return None;
+    }
+    match values.get(1)? {
+        Form::Symbol(name) => Some(name),
+        Form::Metadata(_, value) => match value.as_ref() {
+            Form::Symbol(name) => Some(name),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 pub(crate) fn require_namespace(

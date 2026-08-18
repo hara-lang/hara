@@ -616,30 +616,53 @@
 (defn python-x-iter-native [form]
   (list (quote hasattr) (nth form 1) "__next__"))
 
-(def +operators+
-  {:override {
-    :with-global {:value true :raw "globals()"}
-    :pow {:raw "**"}
-    :and {:raw "and"}
-    :or {:raw "or"}
-    :not {:raw "not" :emit :prefix}
-    :throw {:raw "raise" :emit :prefix}
-    :index {:macro python-dot :emit :macro}
-    :var {:macro python-var :emit :macro}
-    :fn {:macro python-fn :emit :macro}
-    :for-object {:macro python-for-object :emit :macro}
-    :for-array {:macro python-for-array :emit :macro}
-    :for-iter {:macro python-for-iter :emit :macro}
-    :for-index {:macro python-for-index :emit :macro}
-    :prototype-get {:macro python-prototype-get :emit :macro}
-    :prototype-set {:macro python-prototype-set :emit :macro}
-    :prototype-create {:macro python-prototype-create :emit :macro}
-    :prototype-method {:macro python-prototype-method :emit :macro}
-    :prototype-tostring {:default "__str__" :emit :unit}}
-   :define {
-    :delete {:op :delete :symbol #{'del} :raw "del" :emit :prefix}
-    :native-type {:op :native-type :symbol #{'type} :raw "type" :emit :invoke}
-    :index-native {:op :index-native :symbol #{'index*} :raw "." :emit :index}}})
+(def +python-native-core+
+  {:with-global {:value true :raw "globals()"}
+   :pow {:raw "**"}
+   :and {:raw "and"}
+   :or {:raw "or"}
+   :not {:raw "not" :emit :prefix}
+   :throw {:raw "raise" :emit :prefix}
+   :index {:macro python-dot :emit :macro}})
+
+(def +python-native-vars+ {:var {:macro python-var :emit :macro}})
+(def +python-native-fn+ {:fn {:macro python-fn :emit :macro}})
+
+(def +python-native-for+
+  {:for-object {:macro python-for-object :emit :macro}
+   :for-array {:macro python-for-array :emit :macro}
+   :for-iter {:macro python-for-iter :emit :macro}
+   :for-index {:macro python-for-index :emit :macro}})
+
+(def +python-native-prototype+
+  {:prototype-get {:macro python-prototype-get :emit :macro}
+   :prototype-set {:macro python-prototype-set :emit :macro}
+   :prototype-create {:macro python-prototype-create :emit :macro}
+   :prototype-method {:macro python-prototype-method :emit :macro}
+   :prototype-tostring {:default "__str__" :emit :unit}})
+
+(def +python-native-definitions+
+  {:delete {:op :delete :symbol #{'del} :raw "del" :emit :prefix}
+   :native-type {:op :native-type :symbol #{'type} :raw "type" :emit :invoke}
+   :index-native {:op :index-native :symbol #{'index*} :raw "." :emit :index}})
+
+(def +python-native+
+  (merge +python-native-core+ +python-native-vars+ +python-native-fn+
+         +python-native-for+ +python-native-prototype+))
+
+(def +operator-group-names+ [:core :vars :fn :for :prototype :definitions])
+(def +operator-groups+
+  [{:name :core :override +python-native-core+ :define {}}
+   {:name :vars :override +python-native-vars+ :define {}}
+   {:name :fn :override +python-native-fn+ :define {}}
+   {:name :for :override +python-native-for+ :define {}}
+   {:name :prototype :override +python-native-prototype+ :define {}}
+   {:name :definitions :override {} :define +python-native-definitions+}])
+
+(def +operator-source+
+  {:override +python-native+ :define +python-native-definitions+})
+
+(def +operators+ +operator-source+)
 
 (def +emit+
   {:defaults
@@ -687,5 +710,3 @@
       {:try {:control {:catch {:raw "except"
                                :args {:start "" :end ":" :space ""}}}}
       :branch {:control {:elseif {:raw "elif"}}}}}})
-
-

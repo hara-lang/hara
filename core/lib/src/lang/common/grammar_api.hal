@@ -411,10 +411,48 @@
   [value]
   (if (< value 0) (+ value 256) value))
 
+(defn canonical-fingerprint-value
+  "Normalizes unordered values and executable references before hashing."
+  [value]
+  (cond (map? value)
+        [:map
+         (vec
+          (sort-by
+           (fn [pair] (pr-str (first pair)))
+           (vec
+            (map (fn [pair]
+                   [(canonical-fingerprint-value (first pair))
+                    (canonical-fingerprint-value (second pair))])
+                 value))))]
+
+        (set? value)
+        [:set
+         (vec
+          (sort-by pr-str
+                   (vec (map canonical-fingerprint-value value))))]
+
+        (vector? value)
+        [:vector (vec (map canonical-fingerprint-value value))]
+
+        (sequential? value)
+        [:sequence (vec (map canonical-fingerprint-value value))]
+
+        (or (nil? value)
+            (boolean? value)
+            (number? value)
+            (string? value)
+            (keyword? value)
+            (symbol? value))
+        value
+
+        :else
+        [:reference (pr-str value)]))
+
 (defn fingerprint
   "Returns a deterministic fingerprint for normalized grammar source data."
   [value]
-  (let [bytes (vec (str/encode-utf8 (pr-str value)))]
+  (let [canonical (canonical-fingerprint-value value)
+        bytes (vec (str/encode-utf8 (pr-str canonical)))]
     (loop [index 0
            hash 5381]
       (if (= index (count bytes))

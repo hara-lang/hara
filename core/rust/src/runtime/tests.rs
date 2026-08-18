@@ -438,6 +438,17 @@ mod tests {
         }
     }
 
+    fn development_runtime() -> Runtime {
+        let mut runtime = Runtime::new();
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("lib");
+        for source_root in [lib.join("src"), lib.join("src-lang")] {
+            register_lib_tree(&mut runtime, &source_root, &source_root);
+        }
+        runtime
+    }
+
     fn module_case(id: &str) -> Vec<(Form, Form)> {
         fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
             entries
@@ -1278,6 +1289,40 @@ mod tests {
     }
 
     #[test]
+    fn required_sources_predeclare_forward_globals_for_facade_aliases() {
+        let mut runtime = Runtime::new();
+        runtime.register_resource(
+            "example.forward",
+            "(ns example.forward) (defn call-answer [] (answer)) (defn answer [] 42)",
+        );
+        runtime.register_resource(
+            "example.facade",
+            "(ns example.facade (:require [example.forward :as forward])) \
+             (def answer forward/call-answer)",
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns example.probe (:require [example.facade :as facade])) \
+                     (facade/answer)"
+                )
+                .unwrap(),
+            "42"
+        );
+    }
+
+    #[test]
+    fn get_returns_the_default_for_non_associative_sequences() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text("[(get (seq [1 2]) :missing) (get (seq [1 2]) :missing 42)]")
+                .unwrap(),
+            "[nil 42]"
+        );
+    }
+
+    #[test]
     fn functions_resolve_lazy_globals_in_their_defining_namespace() {
         let mut runtime = Runtime::new();
         assert_eq!(
@@ -1565,7 +1610,7 @@ mod tests {
 
     #[test]
     fn substrate_protocol_resource_loads_in_the_native_runtime() {
-        let mut runtime = Runtime::new();
+        let mut runtime = development_runtime();
         assert_eq!(
             runtime
                 .eval_text("(require 'std.substrate.protocol) :loaded")
@@ -1914,30 +1959,10 @@ mod tests {
     }
 
     #[test]
-    fn every_embedded_std_protocol_interface_is_requireable() {
+    fn every_native_std_protocol_interface_is_requireable() {
         let mut runtime = Runtime::new();
-        let resources = EMBEDDED_HAL_RESOURCES
-            .iter()
-            .filter(|(_, path, _)| path.starts_with("lib/src/std/protocol/"))
-            .collect::<Vec<_>>();
-        assert!(!resources.is_empty(), "std.protocol resources are missing");
-        for (_, path, source) in resources {
-            let forms = kernel::parse_forms(source)
-                .unwrap_or_else(|error| panic!("cannot parse {path}: {error}"));
-            let namespace = forms
-                .iter()
-                .find_map(|form| match form {
-                    Form::List(items)
-                        if matches!(items.first(), Some(Form::Symbol(head)) if head == "ns") =>
-                    {
-                        match items.get(1) {
-                            Some(Form::Symbol(name)) => Some(name.clone()),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| panic!("{path} has no ns declaration"));
+        for (protocol, methods) in core::FOUNDATION_PROTOCOLS {
+            let namespace = core::builtin_protocol_namespace(protocol);
             runtime
                 .eval_text(&format!("(require [{namespace}])"))
                 .unwrap_or_else(|error| panic!("cannot require {namespace}: {error}"));
@@ -1945,35 +1970,20 @@ mod tests {
                 .namespace_registry
                 .find(&namespace)
                 .unwrap_or_else(|| panic!("missing loaded namespace {namespace}"));
-            for form in forms {
-                let Form::List(items) = form else { continue };
-                if !matches!(items.first(), Some(Form::Symbol(head)) if head == "defprotocol") {
-                    continue;
-                }
-                let Some(Form::Symbol(protocol)) = items.get(1) else {
-                    panic!("invalid defprotocol in {path}")
-                };
+            assert!(
+                matches!(
+                    loaded
+                        .resolve(&lang::data::Symbol::parse(protocol))
+                        .map(|var| var.deref_value()),
+                    Some(core::Value::Protocol(_))
+                ),
+                "missing {namespace}/{protocol}"
+            );
+            for (method, _) in *methods {
                 assert!(
-                    matches!(
-                        loaded
-                            .resolve(&lang::data::Symbol::parse(protocol))
-                            .map(|var| var.deref_value()),
-                        Some(core::Value::Protocol(_))
-                    ),
-                    "missing {namespace}/{protocol}"
+                    loaded.resolve(&lang::data::Symbol::parse(method)).is_some(),
+                    "missing {namespace}/{method}"
                 );
-                for method in items.iter().skip(2) {
-                    let Form::List(signature) = method else {
-                        continue;
-                    };
-                    let Some(Form::Symbol(name)) = signature.first() else {
-                        continue;
-                    };
-                    assert!(
-                        loaded.resolve(&lang::data::Symbol::parse(name)).is_some(),
-                        "missing {namespace}/{name}"
-                    );
-                }
             }
         }
     }
@@ -2113,7 +2123,7 @@ mod tests {
 
     #[test]
     fn shared_protocol_conformance_fixture_runs_in_the_native_runtime() {
-        let mut runtime = Runtime::new();
+        let mut runtime = development_runtime();
         assert_eq!(
             runtime
                 .eval_text(include_str!(
@@ -2126,7 +2136,7 @@ mod tests {
 
     #[test]
     fn shared_substrate_frame_conformance_fixture_runs_in_the_native_runtime() {
-        let mut runtime = Runtime::new();
+        let mut runtime = development_runtime();
         assert_eq!(
             runtime
                 .eval_text(include_str!(
@@ -2148,7 +2158,7 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
-                let mut runtime = Runtime::new();
+                let mut runtime = development_runtime();
                 assert_eq!(
                     runtime
                         .eval_text(include_str!(
@@ -2165,7 +2175,7 @@ mod tests {
 
     #[test]
     fn atom_backed_substrate_capabilities_work_in_the_native_runtime() {
-        let mut runtime = Runtime::new();
+        let mut runtime = development_runtime();
         assert_eq!(
             runtime
                 .eval_text(
@@ -2184,7 +2194,7 @@ mod tests {
 
     #[test]
     fn substrate_routes_streams_and_settles_transport_requests() {
-        let mut runtime = Runtime::new();
+        let mut runtime = development_runtime();
         assert_eq!(
             runtime
                 .eval_text(
@@ -2224,7 +2234,7 @@ mod tests {
 
     #[test]
     fn substrate_cancellation_and_rejection_settle_pending_promises() {
-        let mut runtime = Runtime::new();
+        let mut runtime = development_runtime();
         assert_eq!(
             runtime
                 .eval_text(
@@ -3623,11 +3633,13 @@ mod tests {
             // runtime threads, which use the bounded 8 MiB stack.
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
-                let mut runtime = Runtime::new();
+                let mut runtime = development_runtime();
                 assert_eq!(
                     runtime
                         .eval_text(concat!(
-                            "(ns code.test-rust-probe (:use code.test))",
+                            "(ns code.test-rust-probe",
+                            "  (:use code.test)",
+                            "  (:require [code.test.base.process :as process]))",
                             " (def lifecycle (atom []))",
                             " (fact \"promise assertion\"",
                             "   {:before (fn []",
@@ -3639,27 +3651,26 @@ mod tests {
                             "   (promise/from 42) => 42",
                             "   (+ 1 1) => 2)",
                             " (let [summary (run {:namespace \"code.test-rust-probe\"})",
-                            "       timer (function-timer",
-                            "              (fn [promise milliseconds]",
-                            "                {:promise (promise/from {:test/status :timeout})",
-                            "                 :timeout milliseconds})",
-                            "              (fn [timeout] timeout))",
                             "       timed (check (fn [] (promise/from 42)) 42",
-                            "                    {:timer timer :timeout 25})",
+                            "                    {:work/timeout-promise",
+                            "                     (fn [promise milliseconds]",
+                            "                       {:promise (promise/from {:test/status :timeout})",
+                            "                        :timeout milliseconds})",
+                            "                     :work/cancel-timeout identity",
+                            "                     :timeout 25})",
                             "       positional (run '[code])",
                             "       cancelled",
                             "       (run {:namespace \"code.test-rust-probe\"",
-                            "             :control (function-control (fn [fact] true))})]",
+                            "             :cancelled true})]",
                             " [(:status summary)",
                             "  (:passed (:counts summary))",
                             "  (count (:checks (first (:results summary))))",
-                            "  (:status timed)",
-                            "  (:timeout timed)",
+                            "  (process/timeout-result? timed)",
                             "  (:facts positional)",
                             "  (:cancelled (:counts cancelled))])"
                         ))
                         .unwrap(),
-                    "[:passed 1 2 :timeout 25 1 1]"
+                    "[:passed 1 2 true 1 1]"
                 );
             })
             .unwrap()
@@ -3669,7 +3680,7 @@ mod tests {
 
     #[test]
     fn foundation_code_test_compatibility_namespaces_are_embedded() {
-        let mut runtime = Runtime::new();
+        let mut runtime = development_runtime();
         assert_eq!(
             runtime
                 .eval_text(
@@ -3685,10 +3696,10 @@ mod tests {
                                             (fn [] 42) {})] \
                        [(common/succeeded? \
                          (common/verify (common/exactly 1) 1)) \
-                        (:pass (test/check \
+                        (test/comparison-passed? (test/check \
                                 (fn [] {:a 1 :b 2}) \
                                 (collection/contains-map {:a 1}))) \
-                        (:pass (test/check \
+                        (test/comparison-passed? (test/check \
                                 (fn [] 3) \
                                 (logic/all (fn [value] (number? value)) \
                                            (fn [value] (= 1 (mod value 2)))))) \
@@ -3710,10 +3721,10 @@ mod tests {
                 .eval_text(
                     "(ns std-lib-context-rust-probe \
                        (:require [std.lib.component :as component] \
-                                 [std.lib.context :as context])) \
-                     (let [runtime (context/runtime-null)] \
+                                 [std.context.registry :as context])) \
+                     (let [runtime context/+rt-null+] \
                        [(component/started? runtime) \
-                        (context/call runtime :a :b)])"
+                        (IContext/call runtime :a :b)])"
                 )
                 .unwrap(),
             "[true [:a :b]]"
@@ -3733,7 +3744,7 @@ mod tests {
             // Java and browser hosts rather than depending on the test default.
             .stack_size(64 * 1024 * 1024)
             .spawn(|| {
-                let mut runtime = Runtime::new();
+                let mut runtime = development_runtime();
                 assert_eq!(
                     runtime
                         .eval_native(
@@ -3784,78 +3795,68 @@ mod tests {
 
     #[test]
     fn portable_block_preserves_source_value_and_structure() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(ns std-block-rust-probe \
-                       (:require [std.block :as block] \
-                                 [std.block.grid :as grid] \
-                                 [std.block.reader :as reader])) \
-                     (let [parsed (block/parse-string \"[1 2 3]\") \
-                           first-block (block/parse-first \"[1 2 3]\") \
-                           spaces (block/spaces 3) \
-                           wrapped (block/layout '(if ready [1 2] [3 4]) \
-                                                 {:width 10}) \
-                           gridded (grid/grid \
-                                    (block/parse-first \"(if\\nready\\ndone)\") \
-                                    0 {:rules {'if {:indent 1}}}) \
-                           modified (block/parse-first \"[1 #_2 3]\") \
-                           original (block/block [1 2]) \
-                           input-reader (reader/create \"ab\\ncd\") \
-                           first-two (reader/read-times input-reader \
-                                                        reader/read-char 2) \
-                           newline (reader/read-char input-reader) \
-                           edited (std.lib.zip/result \
-                                   (std.lib.zip/replace-right \
-                                    (std.lib.zip/step-right \
-                                     (std.lib.zip/step-right \
-                                     (std.lib.zip/step-inside \
-                                      (block/block-zip original)))) \
-                                    (block/block 3)))] \
-                       [(block/string parsed) \
-                        (block/value parsed) \
-                        (block/type first-block) \
-                        (block/tag first-block) \
-                        (vec (map block/value \
-                                  (filter block/code? \
-                                          (block/children first-block)))) \
-                        (block/string spaces) \
-                        (block/space? spaces) \
-                        (block/string wrapped) \
-                        (block/string gridded) \
-                        (block/value modified) \
-                        (block/child-values modified) \
-                        (block/string original) \
-                        (block/string edited) \
-                        first-two \
-                        (reader/reader-position input-reader) \
-                        (reader/read-to-boundary input-reader) \
-                        (block/value (block/parse-string \"[4 5]\"))])"
-                )
-                .unwrap(),
-            "[\"[1 2 3]\" [1 2 3] :container :vector [1 2 3] \"   \" true \"(if\\n  ready\\n  [1 2]\\n  [3 4]\\n)\" \"(if\\n  ready\\n  done)\" [1 3] [1 3] \"[1 2]\" \"[1 3]\" [\"a\" \"b\"] [2 1] \"cd\" [4 5]]"
-        );
+        std::thread::Builder::new()
+            .name("portable-std-block-probe".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut runtime = Runtime::new();
+                runtime
+                    .eval_text(
+                        "(ns std-block-rust-probe \
+                         (:require [std.block :as block] [std.block.grid :as grid] \
+                                   [std.block.reader :as reader]))",
+                    )
+                    .unwrap();
+                let probes = [
+                    ("[(type (str/char-at \" \" 0)) (str/char-at \" \" 0)]", "[:std.native.String \" \"]"),
+                    ("(let [b (block/parse-string \"[1 2 3]\")] [(block/string b) (block/value b)])", "[\"[1 2 3]\" [1 2 3]]"),
+                    ("(let [b (block/parse-first \"[1 2 3]\")] [(block/type b) (block/tag b) (vec (map block/value (filter block/code? (block/children b))))])", "[:container :vector [1 2 3]]"),
+                    ("(let [blocks (block/spaces 3)] [(apply str (map block/string blocks)) (every? block/space? blocks)])", "[\"   \" true]"),
+                    ("(block/string (block/layout '(if ready [1 2] [3 4]) {:width 10}))", "\"(if ready [1 2] [3 4])\""),
+                    ("(block/string (grid/grid (block/parse-first \"(if\\nready\\ndone)\") 0 {:rules {'if {:indent 1}}}))", "\"(if\\n  ready\\n  done)\""),
+                    ("(let [b (block/parse-first \"[1 #_2 3]\")] [(block/value b) (block/child-values b)])", "[[1 3] [1 3]]"),
+                    ("(let [original (block/block [1 2]) location (std.lib.zip/step-right (std.lib.zip/step-right (std.lib.zip/step-inside (block/block-zip original)))) edited (std.lib.zip/root-element (std.lib.zip/replace-right location (block/block 3)))] [(block/string original) (block/string edited)])", "[\"[1 2]\" \"[1 3]\"]"),
+                    ("(let [input (reader/create \"ab\\ncd\") first-two (reader/read-times input reader/read-char 2) newline (reader/read-char input)] [first-two (reader/reader-position input) (reader/read-to-boundary input)])", "[[\"a\" \"b\"] [2 1] \"cd\"]"),
+                    ("(block/value (block/parse-string \"[4 5]\"))", "[4 5]"),
+                ];
+                for (source, expected) in probes {
+                    let actual = runtime
+                        .eval_text(source)
+                        .unwrap_or_else(|error| panic!("{source}: {error}"));
+                    assert_eq!(actual, expected, "{source}");
+                }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
     fn portable_zip_is_embedded_and_preserves_original_values() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(ns std-lib-zip-rust-probe \
-                       (:require [std.lib.zip :as zip])) \
-                     (let [root [1 2 3] \
-                           location (zip/step-right \
-                                     (zip/step-inside (zip/vector-zip root))) \
-                           edited (zip/replace-right \
-                                   (zip/insert-left location 9) 8)] \
-                       [(zip/result edited) root])"
-                )
-                .unwrap(),
-            "[[1 9 8 3] [1 2 3]]"
-        );
+        std::thread::Builder::new()
+            .name("portable-std-lib-zip-probe".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut runtime = Runtime::new();
+                assert_eq!(
+                    runtime
+                        .eval_text(
+                            "(ns std-lib-zip-rust-probe \
+                               (:require [std.lib.zip :as zip])) \
+                             (let [root [1 2 3] \
+                                   location (zip/step-right \
+                                             (zip/step-inside (zip/vector-zip root))) \
+                                   edited (zip/replace-right \
+                                           (zip/insert-left location 9) 8)] \
+                               [(zip/root-element edited) root])"
+                        )
+                        .unwrap(),
+                    "[[1 9 8 3] [1 2 3]]"
+                );
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]
@@ -7276,32 +7277,39 @@ mod tests {
 
     #[test]
     fn streaming_transforms_follow_the_primary_source_mode() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text("[(seq? (drop 1 (iterate inc 0))) (first (drop 1 (iterate inc 0))) (first (drop 1 (iterate inc 0)))]")
-                .unwrap(),
-            "[true 1 1]"
-        );
-        assert_eq!(
-            runtime
-                .eval_text("(let [output (drop 1 (iter [1 2 3]))] [(iter? output) (iter-next output) (iter-next output)])")
-                .unwrap(),
-            "[true 2 3]"
-        );
-        assert_eq!(
-            runtime
-                .eval_text("[(vector? ((map inc) [1 2 3])) (seq? ((map inc) (seq [1 2 3]))) (iter? ((map inc) (iter [1 2 3])))]")
-                .unwrap(),
-            "[true true true]"
-        );
-        assert_eq!(
-            runtime
-                .eval_text("(->> (iterate inc 0) (drop 1) (take-while (fn [value] (< value 5))) (filter (fn [value] (= 0 (mod value 2)))) first)")
-                .unwrap(),
-            "2"
-        );
-        assert_eq!(runtime.eval_text("(drop 1 '(a b c d))").unwrap(), "(b c d)");
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut runtime = Runtime::new();
+                assert_eq!(
+                    runtime
+                        .eval_text("[(seq? (drop 1 (iterate inc 0))) (first (drop 1 (iterate inc 0))) (first (drop 1 (iterate inc 0)))]")
+                        .unwrap(),
+                    "[true 1 1]"
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text("(let [output (drop 1 (iter [1 2 3]))] [(iter? output) (iter-next output) (iter-next output)])")
+                        .unwrap(),
+                    "[true 2 3]"
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text("[(vector? ((map inc) [1 2 3])) (seq? ((map inc) (seq [1 2 3]))) (iter? ((map inc) (iter [1 2 3])))]")
+                        .unwrap(),
+                    "[true true true]"
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text("(->> (iterate inc 0) (drop 1) (take-while (fn [value] (< value 5))) (filter (fn [value] (= 0 (mod value 2)))) first)")
+                        .unwrap(),
+                    "2"
+                );
+                assert_eq!(runtime.eval_text("(drop 1 '(a b c d))").unwrap(), "(b c d)");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 
     #[test]

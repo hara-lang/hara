@@ -1,6 +1,11 @@
 (ns code.migrate
   (:require [code.framework :as framework]
             [code.manage.unit.structure :as structure]
+            [lang.common.grammar :as common-grammar]
+            [lang.common.grammar-api :as grammar-api]
+            [lang.common.grammar-macro :as grammar-macro]
+            [lang.common.grammar-spec :as grammar-spec]
+            [lang.common.grammar-xtalk-system :as grammar-xtalk-system]
             [work.base :as work :refer [def.work]]
             [work.flow.task :as task]
             [work.flow.task.selector :as selector]))
@@ -19,6 +24,372 @@
    :test-vector :validate
    :obsolete :retire
    :new-only :implement})
+
+(def +v1-grammar-snapshot-target+
+  "lib/src/lang/base/v1/grammar_spec.hal")
+
+(def +v1-grammar-reference-fields+
+  [:macro :lower :value/template :format :value])
+
+(def +v1-grammar-spec-categories+
+  [grammar-spec/+op-builtin+ grammar-spec/+op-builtin-global+
+   grammar-spec/+op-builtin-module+ grammar-spec/+op-builtin-helper+
+   grammar-spec/+op-free-control+ grammar-spec/+op-free-literal+
+   grammar-spec/+op-math+ grammar-spec/+op-compare+ grammar-spec/+op-logic+
+   grammar-spec/+op-counter+ grammar-spec/+op-return+ grammar-spec/+op-throw+
+   grammar-spec/+op-await+ grammar-spec/+op-async+ grammar-spec/+op-data-table+
+   grammar-spec/+op-data-shortcuts+ grammar-spec/+op-data-range+
+   grammar-spec/+op-vars+ grammar-spec/+op-bit+ grammar-spec/+op-pointer+
+   grammar-spec/+op-fn+ grammar-spec/+op-block+
+   grammar-spec/+op-control-base+ grammar-spec/+op-control-general+
+   grammar-spec/+op-control-try-catch+ grammar-spec/+op-top-base+
+   grammar-spec/+op-top-global+ grammar-spec/+op-class+ grammar-spec/+op-for+
+   grammar-spec/+op-coroutine+ grammar-spec/+op-prototype+
+   grammar-spec/+op-functional-core+])
+
+(def +v1-grammar-macro-categories+
+  [grammar-macro/+op-macro+ grammar-macro/+op-macro-arrow+
+   grammar-macro/+op-macro-let+ grammar-macro/+op-macro-xor+
+   grammar-macro/+op-macro-case+ grammar-macro/+op-macro-forange+])
+
+(def +v1-grammar-spec-group-names+
+  '[+op-builtin+ +op-builtin-global+ +op-builtin-module+
+    +op-builtin-helper+ +op-free-control+ +op-free-literal+ +op-math+
+    +op-compare+ +op-logic+ +op-counter+ +op-return+ +op-throw+ +op-await+
+    +op-async+ +op-data-table+ +op-data-shortcuts+ +op-data-range+ +op-vars+
+    +op-bit+ +op-pointer+ +op-fn+ +op-block+ +op-control-base+
+    +op-control-general+ +op-control-try-catch+ +op-top-base+ +op-top-global+
+    +op-class+ +op-for+ +op-coroutine+ +op-prototype+ +op-functional-core+])
+
+(def +v1-grammar-macro-group-names+
+  '[+op-macro+ +op-macro-arrow+ +op-macro-let+ +op-macro-xor+
+    +op-macro-case+ +op-macro-forange+])
+
+(defn v1-grammar-groups
+  [names categories]
+  (mapv (fn [name entries] {:name name :entries (vec entries)})
+        names categories))
+
+(defn v1-grammar-xtalk-groups
+  []
+  (mapv (fn [pair]
+          {:name (symbol (str "+" (name (first pair)) "+"))
+           :entries (vec (second pair))})
+        grammar-xtalk-system/+xtalk-profiles+))
+
+(defn v1-grammar-categories->features
+  [categories]
+  (reduce
+   (fn [out entries]
+     (reduce (fn [features entry]
+               (assoc features (:op entry) entry))
+             out
+             entries))
+   {}
+   categories))
+
+(defn v1-grammar-reference-symbol
+  [value]
+  (if (or (nil? value) (symbol? value))
+    value
+    (let [text (pr-str value)]
+      (if (str/starts-with? text "#'")
+        (symbol (subs text 2))
+        value))))
+
+(defn v1-grammar-snapshot-data
+  "Converts executable Vars to stable qualified symbols in snapshot data."
+  [features]
+  (reduce-kv
+   (fn [out op entry]
+     (assoc out op
+            (reduce (fn [record field]
+                      (if (get record field)
+                        (assoc record field
+                               (v1-grammar-reference-symbol
+                                (get record field)))
+                        record))
+                    entry
+                    +v1-grammar-reference-fields+)))
+   {}
+   features))
+
+(defn v1-grammar-entry-snapshot-data
+  [entry]
+  (reduce (fn [record field]
+            (if (get record field)
+              (assoc record field
+                     (v1-grammar-reference-symbol (get record field)))
+              record))
+          entry
+          +v1-grammar-reference-fields+))
+
+(defn v1-grammar-group-snapshot-data
+  [groups]
+  (mapv (fn [group]
+          {:name (:name group)
+           :entries (mapv v1-grammar-entry-snapshot-data (:entries group))})
+        groups))
+
+(declare render-v1-edn)
+
+(defn render-v1-grammar-features
+  "Renders one deterministic, reviewable operator record per line."
+  [features]
+  (str "{\n"
+       (str/join
+        "\n"
+        (map (fn [op]
+               (str "   " (render-v1-edn op) " "
+                    (render-v1-edn (get features op))))
+             (sort-by str (keys features))))
+       "\n  }"))
+
+(defn render-v1-map-entry
+  [entry]
+  (str (render-v1-edn (first entry))
+       " "
+       (render-v1-edn (second entry))))
+
+(defn render-v1-edn
+  "Renders deterministic source EDN without relying on collection iteration."
+  [value]
+  (cond (map? value)
+        (let [entries
+              (sort-by (fn [entry]
+                         (render-v1-edn (first entry)))
+                       (vec value))]
+          (str "{" (str/join " " (map render-v1-map-entry entries)) "}"))
+
+        (set? value)
+        (let [values (sort-by render-v1-edn (vec value))]
+          (str "#{" (str/join " " (map render-v1-edn values)) "}"))
+
+        (vector? value)
+        (str "[" (str/join " " (map render-v1-edn value)) "]")
+
+        (sequential? value)
+        (str "(" (str/join " " (map render-v1-edn value)) ")")
+
+        :else (pr-str value)))
+
+(defn materialize-v1-grammar-snapshot-source
+  "Renders the deterministic source-owned V1 operator snapshot."
+  [features inputs fingerprint]
+  (str
+   "(ns lang.base.v1.grammar-spec\n"
+   "  (:require [lang.common.grammar :as grammar]\n"
+   "            [lang.common.grammar-api :as grammar-api]))\n\n"
+   "(def +version+ 1)\n\n"
+   ";; Generated by code.migrate from the declared, fingerprinted inputs.\n"
+   "(def +migration-inputs+\n  '" (render-v1-edn inputs) ")\n\n"
+   "(def +feature-data+\n  '"
+   (render-v1-grammar-features (v1-grammar-snapshot-data features))
+   ")\n\n"
+   "(def +reference-fields+ [:macro :lower :value/template :format :value])\n\n"
+   "(defn hydrate-entry\n"
+   "  [entry]\n"
+   "  (reduce (fn [record field]\n"
+   "            (let [reference (get record field)]\n"
+   "              (if (and (symbol? reference) (namespace reference))\n"
+   "                (let [resolved (resolve reference)]\n"
+   "                  (if resolved\n"
+   "                    (assoc record field resolved)\n"
+   "                    (throw (ex-info \"Unable to hydrate V1 grammar reference\"\n"
+   "                                    {:field field :reference reference}))))\n"
+   "                record)))\n"
+   "          entry\n"
+   "          +reference-fields+))\n\n"
+   "(def +features+\n"
+   "  (reduce-kv (fn [out op entry]\n"
+   "               (assoc out op (hydrate-entry entry)))\n"
+   "             {}\n"
+   "             +feature-data+))\n\n"
+   "(def +fingerprint+ \"" fingerprint "\")\n\n"
+   "(def +operators+\n"
+   "  {:define +features+\n"
+   "   :override {}})\n\n"
+   "(defn extend\n"
+   "  \"Extends the V1 snapshot with operators that do not already exist.\"\n"
+   "  [entries]\n"
+   "  (grammar/build:extend +features+ entries))\n\n"
+   "(defn overwrite\n"
+   "  \"Overwrites existing V1 operators with target-specific entries.\"\n"
+   "  [entries]\n"
+   "  (grammar/build:override +features+ entries))\n\n"
+   "(defn snapshot-valid?\n"
+   "  \"Detects a stale or manually altered materialized snapshot.\"\n"
+   "  []\n"
+   "  (= +fingerprint+ (grammar-api/fingerprint +feature-data+)))\n"))
+
+(defn materialize-v1-grammar-snapshot
+  "Returns a reproducible V1 snapshot artifact and its migration facts."
+  [features inputs]
+  (let [snapshot-data (v1-grammar-snapshot-data features)
+        fingerprint
+        (grammar-api/fingerprint snapshot-data)
+        source
+        (materialize-v1-grammar-snapshot-source
+         features inputs fingerprint)]
+    {:path +v1-grammar-snapshot-target+
+     :after source
+     :fingerprint fingerprint
+     :inputs inputs
+     :changed true
+     :rules [:lang.base/v1-grammar-snapshot]
+     :facts {:source (count inputs)
+             :direct 0
+             :adapted (count inputs)
+             :unmapped 0}
+     :diagnostics []}))
+
+(defn render-v1-grammar-group-source
+  [group]
+  (let [name (str (:name group))
+        data-name (str (subs name 0 (- (count name) 1)) "-data+")]
+    (str "(def " data-name "\n  '"
+         (render-v1-edn (:entries group)) ")\n\n"
+         "(def " name "\n  (mapv hydrate-entry " data-name "))")))
+
+(defn materialize-v1-grouped-grammar-snapshot-source
+  [groups inputs fingerprint]
+  (let [data-groups (v1-grammar-group-snapshot-data groups)
+        names (mapv :name data-groups)
+        data-names
+        (mapv (fn [name]
+                (let [text (str name)]
+                  (symbol (str (subs text 0 (- (count text) 1)) "-data+"))))
+              names)]
+    (str
+     "(ns lang.base.v1.grammar-spec\n"
+     "  (:require [lang.common.grammar :as grammar]\n"
+     "            [lang.common.grammar-api :as grammar-api]))\n\n"
+     "(def +version+ 1)\n\n"
+     ";; Generated by code.migrate as named, source-owned feature groups.\n"
+     "(def +migration-inputs+\n  '" (render-v1-edn inputs) ")\n\n"
+     "(def +reference-fields+ [:macro :lower :value/template :format :value])\n\n"
+     "(defn hydrate-entry\n"
+     "  [entry]\n"
+     "  (reduce (fn [record field]\n"
+     "            (let [reference (get record field)]\n"
+     "              (if (and (symbol? reference) (namespace reference))\n"
+     "                (let [resolved (resolve reference)]\n"
+     "                  (if resolved\n"
+     "                    (assoc record field resolved)\n"
+     "                    (throw (ex-info \"Unable to hydrate V1 grammar reference\"\n"
+     "                                    {:field field :reference reference}))))\n"
+     "                record)))\n"
+     "          entry\n"
+     "          +reference-fields+))\n\n"
+     (str/join "\n\n" (map render-v1-grammar-group-source data-groups))
+     "\n\n(def +feature-group-names+\n  '" (render-v1-edn names) ")\n\n"
+     "(def +feature-group-data+\n  ["
+     (str/join " " (map str data-names)) "])\n\n"
+     "(def +feature-groups+\n  ["
+     (str/join " " (map str names)) "])\n\n"
+     "(def +snapshot-data+\n"
+     "  {:names +feature-group-names+ :groups +feature-group-data+})\n\n"
+     "(def +features+\n"
+     "  (reduce (fn [out entries]\n"
+     "            (reduce (fn [features entry]\n"
+     "                      (assoc features (:op entry) entry))\n"
+     "                    out entries))\n"
+     "          {} +feature-groups+))\n\n"
+     "(def +fingerprint+ \"" fingerprint "\")\n\n"
+     "(def +operators+ {:define +features+ :override {}})\n\n"
+     "(defn extend [entries] (grammar/build:extend +features+ entries))\n\n"
+     "(defn overwrite [entries] (grammar/build:override +features+ entries))\n\n"
+     "(defn snapshot-valid?\n  []\n"
+     "  (= +fingerprint+ (grammar-api/fingerprint +snapshot-data+)))\n")))
+
+(defn materialize-v1-grouped-grammar-snapshot
+  [groups inputs]
+  (let [data-groups (v1-grammar-group-snapshot-data groups)
+        snapshot-data {:names (mapv :name data-groups)
+                       :groups (mapv :entries data-groups)}
+        fingerprint (grammar-api/fingerprint snapshot-data)]
+    {:path +v1-grammar-snapshot-target+
+     :after
+     (materialize-v1-grouped-grammar-snapshot-source
+      groups inputs fingerprint)
+     :fingerprint fingerprint
+     :inputs inputs
+     :groups (mapv :name groups)
+     :changed true
+     :rules [:lang.base/v1-grouped-grammar-snapshot]
+     :facts {:source (count inputs) :direct 0
+             :adapted (count inputs) :unmapped 0}
+     :diagnostics []}))
+
+(defn current-v1-grammar-snapshot-input
+  "Builds the declared V1 migration input from common source authorities."
+  []
+  (let [spec-groups
+        (v1-grammar-groups +v1-grammar-spec-group-names+
+                           +v1-grammar-spec-categories+)
+        macro-groups
+        (v1-grammar-groups +v1-grammar-macro-group-names+
+                           +v1-grammar-macro-categories+)
+        xtalk-groups (v1-grammar-xtalk-groups)
+        groups (vec (concat spec-groups macro-groups xtalk-groups))
+        spec-features
+        (v1-grammar-categories->features +v1-grammar-spec-categories+)
+        macro-features
+        (v1-grammar-categories->features +v1-grammar-macro-categories+)
+        xtalk-features (common-grammar/build-xtalk)]
+    {:groups groups
+     :features (merge spec-features macro-features xtalk-features)
+     :inputs
+     [{:source 'lang.common.grammar-spec
+       :fingerprint
+       (grammar-api/fingerprint (v1-grammar-snapshot-data spec-features))}
+      {:source 'lang.common.grammar-macro
+       :fingerprint
+       (grammar-api/fingerprint (v1-grammar-snapshot-data macro-features))}
+      {:source 'lang.common.grammar-xtalk
+       :fingerprint
+       (grammar-api/fingerprint (v1-grammar-snapshot-data xtalk-features))}]}))
+
+(defn materialize-current-v1-grammar-snapshot
+  []
+  (let [input (current-v1-grammar-snapshot-input)]
+    (materialize-v1-grouped-grammar-snapshot
+     (:groups input) (:inputs input))))
+
+(declare migration-diagnostic)
+
+(defn validate-v1-grammar-snapshot
+  "Compares checked-in source with deterministic rematerialization."
+  [current-source features inputs]
+  (let [materialized (materialize-v1-grammar-snapshot features inputs)
+        stale (not= current-source (:after materialized))]
+    (assoc materialized
+           :stale stale
+           :valid (not stale)
+           :changed stale
+           :diagnostics
+           (if stale
+             [(migration-diagnostic
+               :migration/stale-snapshot
+               "Checked-in V1 grammar snapshot differs from materialization"
+               {:path +v1-grammar-snapshot-target+})]
+             []))))
+
+(defn validate-current-v1-grammar-snapshot
+  [current-source]
+  (let [materialized (materialize-current-v1-grammar-snapshot)
+        stale (not= current-source (:after materialized))]
+    (assoc materialized
+           :stale stale
+           :valid (not stale)
+           :changed stale
+           :diagnostics
+           (if stale
+             [(migration-diagnostic
+               :migration/stale-snapshot
+               "Checked-in grouped V1 grammar differs from materialization"
+               {:path +v1-grammar-snapshot-target+})]
+             []))))
 
 (def +foundation-language-ledger+
   [{:source/refer 'tahto.base.emit-data/emit-data
@@ -634,7 +1005,17 @@
 (defn foundation-grammar-policy
   [reference]
   (let [value (str reference)]
-    (cond (str/starts-with? value "tahto.base.grammar-macro/")
+    (cond (= reference 'tahto.base.preprocess-input/to-input-form)
+          {:disposition :adapted :stage/from :preprocess-input
+           :stage/to :input
+           :reason :reader-normalization-remains-at-input-while-symbol-resolution-moved-to-resolve}
+
+          (= reference 'tahto.base.grammar-xtalk/tf-global-has?)
+          {:disposition :adapted :stage/from :grammar-expand
+           :stage/to :grammar-expand
+           :reason :global-membership-uses-canonical-nil-comparison}
+
+          (str/starts-with? value "tahto.base.grammar-macro/")
           {:disposition :direct :stage/from :grammar-expand
            :stage/to :grammar-expand}
 
@@ -794,6 +1175,48 @@
              :covered-current 0
              :unmapped (if (empty? diagnostics) 0 fact-count)}
      :diagnostics diagnostics}))
+
+(defn migrate-foundation-grammar-xtalk-test-source
+  "Migrates the pure XTalk grammar vectors and applies the declared canonical
+   adaptation for global membership."
+  [source]
+  (let [base
+        (migrate-foundation-common-test-source
+         source "lang.common.grammar-xtalk-test")
+        output
+        (-> (:after base)
+            (str/replace "  (:require [clojure.string :as str]\n            [lang.common.grammar-xtalk :as xtalk :refer :all])"
+                         "  (:require [lang.common.grammar-xtalk :as xtalk :refer :all])")
+            (str/replace "entry @v" "entry (deref v)")
+            (str/replace "'(not (x:nil? (x:get-key !:G \"SYM\")))"
+                         "'(not= nil (x:get-key !:G \"SYM\"))"))
+        changed (not= source output)]
+    (assoc base
+           :after output
+           :changed changed
+           :rules (conj (:rules base) :foundation/grammar-xtalk-canonical)
+           :facts (assoc (:facts base) :direct 51 :adapted 1))))
+
+(defn migrate-foundation-grammar-xtalk-system-test-source
+  "Migrates XTalk profile analysis tests to the source-owned Hara profile
+   vocabulary and native collection membership operation."
+  [source]
+  (let [base
+        (migrate-foundation-common-test-source
+         source "lang.common.grammar-xtalk-system-test")
+        output
+        (-> (:after base)
+            (str/replace "tahto.core-link-specific"
+                         "hara.lang-link-specific")
+            (str/replace "(contains? ops " "(member? ops "))]
+    (assoc base
+           :after output
+           :changed (not= source output)
+           :rules
+           (conj (:rules base) :foundation/grammar-xtalk-profile-canonical)
+           :facts (assoc (:facts base)
+                         :direct 21 :adapted 3 :unmapped 0)
+           :diagnostics [])))
 
 (defn migrate-foundation-common-test-unit
   [unit]

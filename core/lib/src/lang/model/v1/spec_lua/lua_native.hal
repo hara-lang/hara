@@ -613,36 +613,65 @@
   (list (quote ==) "function"
         (list (quote type) (nth form 1))))
 
-(def +operators+
-  {:override {
-    :with-global {:value true :raw "_G"}
-    :pow {:raw "^"}
-    :not {:raw "not " :emit :prefix}
-    :and {:raw "and"}
-    :or {:raw "or"}
-    :neq {:raw "~="}
-    :incby {:macro (fn [form] (lua-assign-by (quote +) form)) :emit :macro}
-    :decby {:macro (fn [form] (lua-assign-by (quote -) form)) :emit :macro}
-    :mulby {:macro (fn [form] (lua-assign-by (quote *) form)) :emit :macro}
-    :throw {:macro lua-throw :emit :macro}
-    :index {:emit :index :wrap-object true}
-    :var {:symbol #{'var*} :raw ""}
-    :for-object {:macro lua-for-object :emit :macro}
-    :for-array {:macro lua-for-array :emit :macro}
-    :for-iter {:macro lua-for-iter :emit :macro}
-    :for-index {:macro lua-for-index :emit :macro}
-    :prototype-get {:raw "getmetatable" :emit :invoke}
-    :prototype-set {:raw "setmetatable" :emit :invoke}
-    :prototype-create {:macro lua-prototype-create :emit :macro}
-    :prototype-method {:macro lua-prototype-method :emit :macro}
-    :prototype-tostring {:default "__tostring" :emit :unit}
-    :defgen {:macro lua-defgen :emit :macro}
-    :yield {:macro lua-yield :emit :macro}}
-   :define {
-    :local {:op :local :symbol #{'local 'var} :macro lua-var :emit :macro}
-    :native-type {:op :native-type :symbol #{'type} :raw "type" :emit :invoke}
-    :cat {:op :cat :symbol #{'cat} :raw ".." :emit :infix}
-    :len {:op :len :symbol #{'len} :raw "#" :emit :prefix}}})
+(def +lua-native-core+
+  {:with-global {:value true :raw "_G"}
+   :pow {:raw "^"}
+   :not {:raw "not " :emit :prefix}
+   :and {:raw "and"}
+   :or {:raw "or"}
+   :neq {:raw "~="}
+   :throw {:macro lua-throw :emit :macro}
+   :index {:emit :index :wrap-object true}})
+
+(def +lua-native-counter+
+  {:incby {:macro (fn [form] (lua-assign-by (quote +) form)) :emit :macro}
+   :decby {:macro (fn [form] (lua-assign-by (quote -) form)) :emit :macro}
+   :mulby {:macro (fn [form] (lua-assign-by (quote *) form)) :emit :macro}})
+
+(def +lua-native-vars+ {:var {:symbol #{'var*} :raw ""}})
+
+(def +lua-native-for+
+  {:for-object {:macro lua-for-object :emit :macro}
+   :for-array {:macro lua-for-array :emit :macro}
+   :for-iter {:macro lua-for-iter :emit :macro}
+   :for-index {:macro lua-for-index :emit :macro}})
+
+(def +lua-native-prototype+
+  {:prototype-get {:raw "getmetatable" :emit :invoke}
+   :prototype-set {:raw "setmetatable" :emit :invoke}
+   :prototype-create {:macro lua-prototype-create :emit :macro}
+   :prototype-method {:macro lua-prototype-method :emit :macro}
+   :prototype-tostring {:default "__tostring" :emit :unit}})
+
+(def +lua-native-coroutine+
+  {:defgen {:macro lua-defgen :emit :macro}
+   :yield {:macro lua-yield :emit :macro}})
+
+(def +lua-native-definitions+
+  {:local {:op :local :symbol #{'local 'var} :macro lua-var :emit :macro}
+   :native-type {:op :native-type :symbol #{'type} :raw "type" :emit :invoke}
+   :cat {:op :cat :symbol #{'cat} :raw ".." :emit :infix}
+   :len {:op :len :symbol #{'len} :raw "#" :emit :prefix}})
+
+(def +lua-native+
+  (merge +lua-native-core+ +lua-native-counter+ +lua-native-vars+
+         +lua-native-for+ +lua-native-prototype+ +lua-native-coroutine+))
+
+(def +operator-group-names+
+  [:core :counter :vars :for :prototype :coroutine :definitions])
+(def +operator-groups+
+  [{:name :core :override +lua-native-core+ :define {}}
+   {:name :counter :override +lua-native-counter+ :define {}}
+   {:name :vars :override +lua-native-vars+ :define {}}
+   {:name :for :override +lua-native-for+ :define {}}
+   {:name :prototype :override +lua-native-prototype+ :define {}}
+   {:name :coroutine :override +lua-native-coroutine+ :define {}}
+   {:name :definitions :override {} :define +lua-native-definitions+}])
+
+(def +operator-source+
+  {:override +lua-native+ :define +lua-native-definitions+})
+
+(def +operators+ +operator-source+)
 
 (def +emit+
   {:defaults
@@ -699,5 +728,3 @@
                           :if {:raw "if"}
                           :elseif {:raw "elseif"}
                           :else {:raw "else"}}}}}})
-
-

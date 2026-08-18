@@ -1509,7 +1509,7 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
             "lookup",
             &[value.clone(), key.clone(), default],
         ),
-        Value::Nil => Ok(default),
+        Value::Nil | Value::Seq(_) => Ok(default),
         Value::Tuple(values) => {
             let index = value_index(key)?;
             Ok(values.get(index).cloned().unwrap_or(default))
@@ -1613,7 +1613,10 @@ fn collection_get(value: &Value, key: &Value, default: Value) -> Result<Value, S
                 _ => default,
             })
         }
-        _ => Err("get expects a collection".into()),
+        value => Err(format!(
+            "get expects a collection, received {}",
+            portable_type_name(value)
+        )),
     }
 }
 

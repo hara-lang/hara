@@ -2001,6 +2001,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             .iter()
                             .map(|value| match value {
                                 Value::String(text) => text.clone(),
+                                Value::Character(character) => character.to_string(),
                                 _ => value.display(),
                             })
                             .collect::<Vec<_>>()
