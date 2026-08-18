@@ -31,4 +31,71 @@ public class StdTypedSchemaTest {
               .asString());
     }
   }
+
+  @Test
+  public void nativeSchemaAstIsThePortableNormalForm() {
+    try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertEquals(
+          "[[] true [:union :fn :function]]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns typed-schema-ast-truffle-probe) "
+                      + "(require 'std.typed.schema {:reload true}) "
+                      + "(defn canonical-ast-failure [surface] "
+                      + "  (let [compiled (std.foundation/schema surface) "
+                      + "        normalized (std.typed.schema/normalize surface) "
+                      + "        ast (Schema/ast compiled) "
+                      + "        renormalized (std.typed.schema/normalize ast) "
+                      + "        recompiled (std.foundation/schema ast) "
+                      + "        recompiled-ast (Schema/ast recompiled) "
+                      + "        checks [(= normalized ast) "
+                      + "                (= ast renormalized) "
+                      + "                (= ast recompiled-ast)]] "
+                      + "    (if (every? true? checks) "
+                      + "      nil "
+                      + "      {:surface surface "
+                      + "       :checks checks "
+                      + "       :normalized normalized "
+                      + "       :ast ast "
+                      + "       :renormalized renormalized "
+                      + "       :recompiled recompiled-ast}))) "
+                      + "(let [surfaces "
+                      + "      [:int "
+                      + "       :vendor/type "
+                      + "       (quote [:or :int :str :int]) "
+                      + "       (quote [:vector [:maybe :int]]) "
+                      + "       (quote [:tuple :keyword :int :str]) "
+                      + "       (quote [:map [:name :str] [:tags [:vector :keyword]]]) "
+                      + "       (quote [:fn [:str & :any] :str]) "
+                      + "       (quote [:function [:fn [:int] :int] "
+                      + "                         [:fn [:str & :any] :str]]) "
+                      + "       (quote [:enum :must :may]) "
+                      + "       (quote [:test/tagged 42]) "
+                      + "       (quote [:vendor/vector :int]) "
+                      + "       (quote (var demo/Customer))]] "
+                      + "  (pr-str "
+                      + "   [(vec (keep canonical-ast-failure surfaces)) "
+                      + "    (= (std.typed.schema/normalize "
+                      + "        (quote [:map [:name :str] "
+                      + "                     [:tags [:vector :keyword]]])) "
+                      + "       {:kind :map "
+                      + "        :fields "
+                      + "        [{:name :name "
+                      + "          :type {:kind :primitive :name :str}} "
+                      + "         {:name :tags "
+                      + "          :type {:kind :vector "
+                      + "                 :item {:kind :primitive "
+                      + "                        :name :keyword}}}]}) "
+                      + "    [(Schema/kind "
+                      + "      (std.foundation/schema (quote [:or :int :str]))) "
+                      + "     (Schema/kind "
+                      + "      (std.foundation/schema (quote [:fn [:int] :int]))) "
+                      + "     (Schema/kind "
+                      + "      (std.foundation/schema "
+                      + "       (quote [:function [:fn [:int] :int] "
+                      + "                         [:fn [:str] :str]])))]]))")
+              .asString());
+    }
+  }
 }

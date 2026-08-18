@@ -3238,40 +3238,108 @@ public final class HaraContext {
   private static String schemaKind(HalcSchema.Type ast) {
     if (ast instanceof HalcSchema.Primitive) return "primitive";
     if (ast instanceof HalcSchema.Reference) return "reference";
-    if (ast instanceof HalcSchema.Union) return "or";
+    if (ast instanceof HalcSchema.Union) return "union";
     if (ast instanceof HalcSchema.VectorType) return "vector";
     if (ast instanceof HalcSchema.Tuple) return "tuple";
     if (ast instanceof HalcSchema.MapType) return "map";
+    if (ast instanceof HalcSchema.FunctionType function && function.arities().size() == 1)
+      return "fn";
     if (ast instanceof HalcSchema.FunctionType) return "function";
     if (ast instanceof HalcSchema.EnumType) return "enum";
     if (ast instanceof HalcSchema.Extension) return "extension";
     return "unknown";
   }
 
+  private static Object schemaAstMap(Object... entries) {
+    return hara.lang.data.Map.Standard.from(null, entries);
+  }
+
+  private static Object schemaAstVector(java.util.Collection<?> values) {
+    return BuiltinStruct.vector(values.toArray());
+  }
+
+  private static Object schemaFunctionAst(HalcSchema.Function function) {
+    ArrayList<Object> fixed = new ArrayList<>();
+    function.fixed().forEach(value -> fixed.add(schemaAst(value)));
+    return schemaAstMap(
+        Keyword.create("kind"), Keyword.create("fn"),
+        Keyword.create("inputs"),
+            schemaAstMap(
+                Keyword.create("fixed"), schemaAstVector(fixed),
+                Keyword.create("rest"),
+                    function.rest() == null ? null : schemaAst(function.rest())),
+        Keyword.create("output"), schemaAst(function.output()));
+  }
+
   private static Object schemaAst(HalcSchema.Type ast) {
-    java.util.List<Object> children = new ArrayList<>();
     if (ast instanceof HalcSchema.Primitive primitive) {
-      children.add(Keyword.create(primitive.name()));
-    } else if (ast instanceof HalcSchema.Reference reference) {
-      children.add(Symbol.create(reference.name()));
-    } else if (ast instanceof HalcSchema.Union union) {
-      union.types().forEach(value -> children.add(schemaAst(value)));
-    } else if (ast instanceof HalcSchema.VectorType vector) {
-      children.add(schemaAst(vector.item()));
-    } else if (ast instanceof HalcSchema.Tuple tuple) {
-      tuple.items().forEach(value -> children.add(schemaAst(value)));
-    } else if (ast instanceof HalcSchema.MapType map) {
-      map.fields().forEach(field -> children.add(
-          BuiltinStruct.vector(new Object[] {field.name(), schemaAst(field.type())})));
-    } else if (ast instanceof HalcSchema.EnumType values) {
-      children.addAll(values.values());
-    } else if (ast instanceof HalcSchema.Extension extension) {
-      children.addAll(extension.arguments());
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("primitive"),
+          Keyword.create("name"), Keyword.create(primitive.name()));
     }
-    return hara.lang.data.Map.Standard.from(
-        null,
-        Keyword.create("kind"), Keyword.create(schemaKind(ast)),
-        Keyword.create("children"), BuiltinStruct.vector(children.toArray()));
+    if (ast instanceof HalcSchema.Reference reference) {
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("reference"),
+          Keyword.create("name"), Symbol.create(reference.name()));
+    }
+    if (ast instanceof HalcSchema.Union union) {
+      ArrayList<Object> types = new ArrayList<>();
+      union.types().forEach(value -> types.add(schemaAst(value)));
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("union"),
+          Keyword.create("types"), schemaAstVector(types));
+    }
+    if (ast instanceof HalcSchema.VectorType vector) {
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("vector"),
+          Keyword.create("item"), schemaAst(vector.item()));
+    }
+    if (ast instanceof HalcSchema.Tuple tuple) {
+      ArrayList<Object> items = new ArrayList<>();
+      tuple.items().forEach(value -> items.add(schemaAst(value)));
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("tuple"),
+          Keyword.create("items"), schemaAstVector(items));
+    }
+    if (ast instanceof HalcSchema.MapType map) {
+      ArrayList<Object> fields = new ArrayList<>();
+      map.fields().forEach(
+          field ->
+              fields.add(
+                  schemaAstMap(
+                      Keyword.create("name"), field.name(),
+                      Keyword.create("type"), schemaAst(field.type()))));
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("map"),
+          Keyword.create("fields"), schemaAstVector(fields));
+    }
+    if (ast instanceof HalcSchema.FunctionType function) {
+      if (function.arities().size() == 1) return schemaFunctionAst(function.arities().get(0));
+      ArrayList<Object> arities = new ArrayList<>();
+      function.arities().forEach(value -> arities.add(schemaFunctionAst(value)));
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("function"),
+          Keyword.create("arities"), schemaAstVector(arities));
+    }
+    if (ast instanceof HalcSchema.EnumType values) {
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("enum"),
+          Keyword.create("values"), schemaAstVector(values.values()));
+    }
+    if (ast instanceof HalcSchema.Extension extension) {
+      ArrayList<Object> surface = new ArrayList<>();
+      surface.add(Keyword.create(extension.head()));
+      surface.addAll(extension.arguments());
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("extension"),
+          Keyword.create("head"), Keyword.create(extension.head()),
+          Keyword.create("arguments"), schemaAstVector(extension.arguments()),
+          Keyword.create("surface"), schemaAstVector(surface));
+    }
+    Object surface = ((HalcSchema.Unknown) ast).surface();
+    return schemaAstMap(
+        Keyword.create("kind"), Keyword.create("unknown"),
+        Keyword.create("surface"), surface);
   }
 
   private Object hostCall(Object[] values) {
