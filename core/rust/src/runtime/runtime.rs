@@ -57,6 +57,14 @@ impl Runtime {
                 kernel::VarOrigin::RuntimePrimitive,
             );
         }
+        let package_provider = namespace_registry.find_or_create("tool.package.provider");
+        for (name, value) in core::package_tool_provider_values() {
+            package_provider.intern_with_origin(
+                name,
+                value,
+                kernel::VarOrigin::RuntimePrimitive,
+            );
+        }
         let work_native = namespace_registry.find_or_create("work.native");
         work_native.intern("default-host", crate::work::guest::default_host_value());
         for (name, value) in crate::work::guest::values() {

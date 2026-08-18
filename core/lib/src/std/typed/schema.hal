@@ -1,5 +1,8 @@
 ;; Experimental portable schema core for HAL metadata and relation contracts.
-(ns std.typed.schema)
+(ns std.typed.schema
+  (:require [std.typed.registry :as registry]))
+
+(def ^{:dynamic true} *registry* nil)
 
 (defn- normalize-dispatch
   [schema]
@@ -18,6 +21,9 @@
          (= 'var (first schema))
          (symbol? (second schema)))
     :reference
+
+    (and *registry* (symbol? schema))
+    :registry-reference
 
     (not (vector? schema))
     :unknown
@@ -265,8 +271,26 @@
 (defmethod normalize :primitive [schema]
   {:kind :primitive :name schema})
 
+(defn- registry-reference-name
+  [target]
+  (if *registry*
+    (registry/qualify *registry* target)
+    target))
+
 (defmethod normalize :reference [schema]
-  {:kind :reference :name (second schema)})
+  {:kind :reference
+   :name (registry-reference-name (second schema))})
+
+(defmethod normalize :registry-reference [schema]
+  {:kind :reference
+   :name (registry-reference-name schema)})
+
+(defn ^{:schema [:fn [:any :any] :map]}
+  normalize-with
+  "Normalizes schema using an explicit portable schema registry."
+  [schema registry-value]
+  (binding [*registry* (registry/ensure registry-value)]
+    (normalize schema)))
 
 (defmethod normalize :primitive-vector [schema]
   (normalize (first schema)))
@@ -308,6 +332,180 @@
    :head (first schema)
    :arguments (vec (rest schema))
    :surface schema})
+
+(defn- append-reference-name
+  [names schema-name]
+  (if (any? (fn [candidate] (= candidate schema-name)) names)
+    names
+    (conj names schema-name)))
+
+(declare reference-names-normal)
+
+(defn- collect-reference-names
+  [schemas]
+  (loop [remaining schemas
+         output []]
+    (if (empty? remaining)
+      output
+      (let [nested (reference-names-normal (first remaining))]
+        (recur
+         (rest remaining)
+         (loop [nested nested
+                output output]
+           (if (empty? nested)
+             output
+             (recur (rest nested)
+                    (append-reference-name output (first nested))))))))))
+
+(defn- reference-names-normal
+  [schema]
+  (let [kind (:kind schema)]
+    (cond
+      (= kind :reference)
+      [(:name schema)]
+
+      (= kind :union)
+      (collect-reference-names (:types schema))
+
+      (= kind :vector)
+      (reference-names-normal (:item schema))
+
+      (= kind :tuple)
+      (collect-reference-names (:items schema))
+
+      (= kind :map)
+      (collect-reference-names
+       (map (fn [field] (:type field)) (:fields schema)))
+
+      (= kind :fn)
+      (let [inputs (:inputs schema)
+            rest-schema (:rest inputs)
+            members
+            (vec
+             (concat (:fixed inputs)
+                     (if rest-schema [rest-schema] [])
+                     [(:output schema)]))]
+        (collect-reference-names members))
+
+      (= kind :function)
+      (collect-reference-names (:arities schema))
+
+      :else [])))
+
+(defn ^{:schema [:function
+                 [:fn [:any] :vector]
+                 [:fn [:any :any] :vector]]}
+  reference-names
+  "Returns named schema references in deterministic declaration order."
+  ([schema]
+   (reference-names-normal (normalize schema)))
+  ([schema registry-value]
+   (reference-names-normal
+    (normalize-with schema registry-value))))
+
+(defn ^{:schema [:fn [:any :any] :map]}
+  resolve-reference
+  "Resolves one named reference, leaving unresolved references unchanged."
+  [schema registry-value]
+  (let [registry-value (registry/ensure registry-value)
+        normalized (normalize-with schema registry-value)]
+    (if (= :reference (:kind normalized))
+      (let [found (registry/find-schema registry-value (:name normalized))]
+        (if found
+          (normalize-with (:schema found) (:registry found))
+          normalized))
+      normalized)))
+
+(declare resolve-normal)
+
+(defn- resolve-many
+  [schemas registry-value visited]
+  (vec
+   (map (fn [schema]
+          (resolve-normal schema registry-value visited))
+        schemas)))
+
+(defn- resolve-normal
+  [schema registry-value visited]
+  (let [kind (:kind schema)]
+    (cond
+      (= kind :reference)
+      (let [schema-name (:name schema)]
+        (if (has? visited schema-name)
+          schema
+          (let [found (registry/find-schema registry-value schema-name)]
+            (if found
+              (let [source-registry (:registry found)
+                    target (normalize-with (:schema found) source-registry)]
+                (resolve-normal target
+                                source-registry
+                                (conj visited schema-name)))
+              schema))))
+
+      (= kind :union)
+      (normalize-union
+       (resolve-many (:types schema) registry-value visited))
+
+      (= kind :vector)
+      (assoc schema :item
+             (resolve-normal (:item schema) registry-value visited))
+
+      (= kind :tuple)
+      (assoc schema :items
+             (resolve-many (:items schema) registry-value visited))
+
+      (= kind :map)
+      (assoc schema :fields
+             (vec
+              (map (fn [field]
+                     (assoc field :type
+                            (resolve-normal (:type field)
+                                            registry-value
+                                            visited)))
+                   (:fields schema))))
+
+      (= kind :fn)
+      (let [inputs (:inputs schema)
+            rest-schema (:rest inputs)]
+        (assoc schema
+               :inputs
+               {:fixed (resolve-many (:fixed inputs)
+                                     registry-value
+                                     visited)
+                :rest (if rest-schema
+                        (resolve-normal rest-schema
+                                        registry-value
+                                        visited)
+                        nil)}
+               :output (resolve-normal (:output schema)
+                                       registry-value
+                                       visited)))
+
+      (= kind :function)
+      (assoc schema :arities
+             (resolve-many (:arities schema) registry-value visited))
+
+      :else schema)))
+
+(defn ^{:schema [:fn [:any :any] :map]}
+  resolve-recursive
+  "Resolves all reachable references; recursive edges remain references."
+  [schema registry-value]
+  (let [registry-value (registry/ensure registry-value)]
+    (resolve-normal (normalize-with schema registry-value)
+                    registry-value
+                    #{})))
+
+(defn ^{:schema [:fn [:any :any] :vector]}
+  unresolved-references
+  "Returns reachable references that are absent from registry."
+  [schema registry-value]
+  (let [registry-value (registry/ensure registry-value)
+        resolved (resolve-recursive schema registry-value)]
+    (vec
+     (filter (fn [schema-name]
+               (not (registry/has-schema? registry-value schema-name)))
+             (reference-names-normal resolved)))))
 
 (defn- primitive-valid? [name value]
   (cond
@@ -407,25 +605,176 @@
                                        (get value key)
                                        (conj path key))))
              (conj output
-                   (finding (conj path key)
-                            (:type field)
-                            nil)))))))
+                   (assoc (finding (conj path key)
+                                   (:type field)
+                                   nil)
+                          :finding/context {:present? false})))))))
     [(finding path schema value)]))
+
+(defn- reference-finding
+  [finding-type path schema value]
+  {:finding/type finding-type
+   :finding/path (vec path)
+   :finding/expected schema
+   :finding/value value
+   :finding/reference (:name schema)})
+
+(defmethod validate-normal :reference [schema value path]
+  [(reference-finding
+    :std.typed.schema/unresolved-reference
+    path schema value)])
+
+(declare validate-normal-with)
+
+(defn- validate-union-with
+  [schema value path registry-value trail]
+  (loop [remaining (:types schema)]
+    (if (empty? remaining)
+      [(finding path schema value)]
+      (if (empty?
+           (validate-normal-with (first remaining)
+                                 value
+                                 path
+                                 registry-value
+                                 trail))
+        []
+        (recur (rest remaining))))))
+
+(defn- validate-vector-with
+  [schema value path registry-value trail]
+  (if (vector? value)
+    (loop [index 0
+           output []]
+      (if (= index (count value))
+        output
+        (recur
+         (inc index)
+         (vec
+          (concat output
+                  (validate-normal-with (:item schema)
+                                        (nth value index)
+                                        (conj path index)
+                                        registry-value
+                                        trail))))))
+    [(finding path schema value)]))
+
+(defn- validate-tuple-with
+  [schema value path registry-value trail]
+  (if (and (vector? value)
+           (= (count value) (count (:items schema))))
+    (loop [index 0
+           output []]
+      (if (= index (count value))
+        output
+        (recur
+         (inc index)
+         (vec
+          (concat output
+                  (validate-normal-with (nth (:items schema) index)
+                                        (nth value index)
+                                        (conj path index)
+                                        registry-value
+                                        trail))))))
+    [(finding path schema value)]))
+
+(defn- validate-map-with
+  [schema value path registry-value trail]
+  (if (map? value)
+    (loop [remaining (:fields schema)
+           output []]
+      (if (empty? remaining)
+        output
+        (let [field (first remaining)
+              key (:name field)]
+          (recur
+           (rest remaining)
+           (if (has? value key)
+             (vec
+              (concat output
+                      (validate-normal-with (:type field)
+                                            (get value key)
+                                            (conj path key)
+                                            registry-value
+                                            trail)))
+             (conj output
+                   (assoc (finding (conj path key)
+                                   (:type field)
+                                   nil)
+                          :finding/context {:present? false})))))))
+    [(finding path schema value)]))
+
+(defn- validate-reference-with
+  [schema value path registry-value trail]
+  (let [schema-name (:name schema)
+        found (registry/find-schema registry-value schema-name)]
+    (if (nil? found)
+      [(reference-finding
+        :std.typed.schema/unresolved-reference
+        path schema value)]
+      (let [source-registry (:registry found)
+            qualified-name (:name found)
+            visit-key [qualified-name (vec path)]]
+        (if (has? trail visit-key)
+          [(reference-finding
+            :std.typed.schema/cyclic-reference
+            path schema value)]
+          (validate-normal-with
+           (normalize-with (:schema found) source-registry)
+           value
+           path
+           source-registry
+           (conj trail visit-key)))))))
+
+(defn- validate-normal-with
+  [schema value path registry-value trail]
+  (let [kind (:kind schema)]
+    (cond
+      (= kind :reference)
+      (validate-reference-with schema value path registry-value trail)
+
+      (= kind :union)
+      (validate-union-with schema value path registry-value trail)
+
+      (= kind :vector)
+      (validate-vector-with schema value path registry-value trail)
+
+      (= kind :tuple)
+      (validate-tuple-with schema value path registry-value trail)
+
+      (= kind :map)
+      (validate-map-with schema value path registry-value trail)
+
+      :else
+      (validate-normal schema value path))))
 
 (defmethod validate-normal :default [schema value path]
   [])
 
-(defn ^{:schema [:fn [:any :any] :vector]}
+(defn ^{:schema [:function
+                 [:fn [:any :any] :vector]
+                 [:fn [:any :any :any] :vector]]}
   validate
   "Returns deterministic, path-aware findings for value against schema."
-  [schema value]
-  (validate-normal (normalize schema) value []))
+  ([schema value]
+   (validate-normal (normalize schema) value []))
+  ([schema value registry-value]
+   (let [registry-value (registry/ensure registry-value)]
+     (validate-normal-with
+      (normalize-with schema registry-value)
+      value
+      []
+      registry-value
+      #{}))))
 
-(defn ^{:schema [:fn [:any :any] :bool]}
+(defn ^{:schema [:function
+                 [:fn [:any :any] :bool]
+                 [:fn [:any :any :any] :bool]]}
   valid?
   "Returns true when value conforms to schema."
-  [schema value]
-  (empty? (validate schema value)))
+  ([schema value]
+   (empty? (validate schema value)))
+  ([schema value registry-value]
+   (empty? (validate schema value registry-value))))
 
 (defn- compatible-normal? [expected actual]
   (cond
@@ -444,18 +793,32 @@
           (:types actual))
     :else false))
 
-(defn ^{:schema [:fn [:any :any] :bool]}
+(defn ^{:schema [:function
+                 [:fn [:any :any] :bool]
+                 [:fn [:any :any :any] :bool]]}
   compatible?
-  "Returns true when two surface schemas have an overlapping value domain."
-  [expected actual]
-  (compatible-normal? (normalize expected) (normalize actual)))
+  "Returns true when two schemas have an overlapping value domain."
+  ([expected actual]
+   (compatible-normal? (normalize expected) (normalize actual)))
+  ([expected actual registry-value]
+   (compatible-normal?
+    (resolve-recursive expected registry-value)
+    (resolve-recursive actual registry-value))))
 
-(defn ^{:schema [:fn [:any] :vector]}
+(defn ^{:schema [:function
+                 [:fn [:any] :vector]
+                 [:fn [:any :any] :vector]]}
   project-arities
   "Returns normalized function arities from :fn or :function schema."
-  [schema]
-  (let [normalized (normalize schema)]
-    (cond
-      (= :fn (:kind normalized)) [normalized]
-      (= :function (:kind normalized)) (:arities normalized)
-      :else [])))
+  ([schema]
+   (let [normalized (normalize schema)]
+     (cond
+       (= :fn (:kind normalized)) [normalized]
+       (= :function (:kind normalized)) (:arities normalized)
+       :else [])))
+  ([schema registry-value]
+   (let [normalized (resolve-recursive schema registry-value)]
+     (cond
+       (= :fn (:kind normalized)) [normalized]
+       (= :function (:kind normalized)) (:arities normalized)
+       :else []))))
