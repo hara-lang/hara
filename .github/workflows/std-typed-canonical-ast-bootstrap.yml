@@ -1,0 +1,68 @@
+name: Apply std.typed canonical AST slice
+
+on:
+  push:
+    branches: [agent/std-typed-canonical-ast]
+    paths:
+      - '.github/workflows/std-typed-canonical-ast-bootstrap.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: std-typed-canonical-ast-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/std-typed-canonical-ast
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Apply the bounded product-code patch
+        run: python3 .github/agent-patches/std-typed-canonical-ast/apply.py
+
+      - name: Format changed Rust sources
+        run: cargo fmt --manifest-path core/rust/Cargo.toml --all
+
+      - name: Check the std.typed dependency boundary
+        run: bash scripts/audit-std-typed-boundary.sh
+
+      - name: Run focused Rust schema parity
+        run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema
+
+      - name: Run focused Truffle schema parity
+        run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedSchemaTest test --file core/java/pom.xml
+
+      - name: Validate the resulting patch
+        run: git diff --check
+
+      - name: Publish one product-code commit
+        env:
+          BASE_SHA: 3c63f91d825fd3c6cd9d5e2fc37c49da12366ffc
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r \
+            .github/agent-patches/std-typed-canonical-ast \
+            .github/workflows/std-typed-canonical-ast-bootstrap.yml
+          git reset --soft "$BASE_SHA"
+          git add -A
+          git diff --cached --check
+          git commit -m "Canonicalize std.typed schema AST"
+          git push --force-with-lease \
+            origin HEAD:refs/heads/agent/std-typed-canonical-ast
