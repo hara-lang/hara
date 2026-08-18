@@ -1,0 +1,140 @@
+(ns work.eval-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.eval :as eval]
+            [work.provider.inline :as inline]))
+
+(defstruct RecordingExecutor [requests])
+
+(defn event-count
+  [events event]
+  (count (filter (fn [record] (= event (:event record))) events)))
+
+(extend-type RecordingExecutor IWorkExecutor
+  (work-execute [executor request]
+    (swap! (:requests executor) conj request)
+    ((:target/fn (:work/target request))
+     (:work/input request)
+     (:work/context request))))
+
+(fact "bare evaluation owns structure and sends only step leaves to executors"
+  (let [requests (atom [])
+        executor (work.eval-test/RecordingExecutor requests)
+        computation
+        (work/chain
+         [(work/pure :increment (fn [input context] (+ input 1)))
+          (work/step :double (fn [input context] (* input 2)))])
+        output (eval/run executor computation 4)
+        request (first (deref requests))]
+    [output
+     (count (deref requests))
+     (:work/request request)
+     (:work/boundary request)
+     (:node/id request)
+     (:node/path request)
+     (:work/input request)
+     (:work/attempt request)
+     (has? request :work/context)
+     (has? request :work/deadline)])
+  => [10 1 :execute-leaf :step :double [:chain 1 :double] 5 1 true true])
+
+(fact "the inline executor supports local closures and registered targets"
+  [(eval/run (work/step :local (fn [input context] (+ input 2))) 3)
+   (eval/run
+    (inline/inline-executor {:math/double (fn [input context] (* input 2))})
+    (work/definition {:op :step :id :named :target :math/double})
+    6)]
+  => [5 12])
+
+(fact "bare evaluation traverses collection structure without a store"
+  (eval/run
+   (work/each (work/pure :increment (fn [input context] (+ input 1))))
+   [1 2 3])
+  => [{:item/id 0 :item/value 2}
+      {:item/id 1 :item/value 3}
+      {:item/id 2 :item/value 4}])
+
+(fact "bare evaluation gives every kernel operation the same reference meaning"
+  (let [cleanup-count (atom 0)
+        graph
+        (work/graph
+         {:left (work/input :left)
+          :right (work/input :right)
+          :sum (work/node [:left :right] +)})]
+    [(eval/run
+      (work/all [(work/pure :increment (fn [input context] (+ input 1)))
+                 (work/pure :double (fn [input context] (* input 2)))])
+      3)
+     (eval/run
+      (work/choose
+       (work/pure :select (fn [input context] :double))
+       {:double (work/pure :double (fn [input context] (* input 2)))})
+      4)
+     (eval/run
+      (work/ensure
+       (work/pure :body (fn [input context] (+ input 1)))
+       (work/pure :cleanup
+         (fn [outcome context]
+           (swap! cleanup-count inc))))
+      4)
+     (deref cleanup-count)
+     (eval/run graph {:left 2 :right 5})])
+  => [[4 6] 8 5 1 {:left 2 :right 5 :sum 7}])
+
+(def retry-count (atom 0))
+
+(fact "bare steps preserve Promise normalization, retries, and target profiles"
+  (let [qualified
+        (work/definition
+         {:op :step
+          :id :qualified
+          :target (inline/qualified-target :math/double)})
+        pinned
+        (work/definition
+         {:op :step
+          :id :pinned
+          :target (inline/pinned-target :math/add 2 "sha256:abc")})
+        retry
+        (work/step
+         {:id :retry :retry {:maximum 2}}
+         (fn [input context]
+           (if (= 1 (swap! retry-count inc))
+             (throw (ex-info "retry" {:work/error :temporary}))
+             input)))]
+    [(eval/run nil qualified 6
+               {:work/registry
+                {:math/double (fn [input context] (* input 2))}})
+     (eval/run
+      (inline/inline-executor
+       {[:math/add 2 "sha256:abc"]
+        (fn [input context] (+ input 3))})
+      pinned
+      4)
+     (deref
+      (eval/run
+       (work/step :promise
+         (fn [input context]
+           (promise (fn [] (+ input 1)))))
+       8))
+     (eval/run retry 9)
+     (deref retry-count)])
+  => [12 7 9 9 2])
+
+(fact "bare evaluation emits semantic events through hooks without a store"
+  (let [observer (work/recording-observer)
+        computation
+        (work/ensure
+         (work/pure :body (fn [input context] input))
+         (work/pure :cleanup (fn [outcome context] :clean)))
+        output
+        (eval/run nil computation 3
+                  {:work/hooks {:work/observer observer}})
+        events (work/observer-events observer)]
+    [output
+     (event-count events :work/node-started)
+     (event-count events :work/node-completed)
+     (event-count events :work/cleanup-started)
+     (event-count events :work/cleanup-completed)])
+  => [3 3 3 1 1])
+
+(pr-str (run '[work.eval-test]))

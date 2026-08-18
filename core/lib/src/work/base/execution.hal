@@ -12,6 +12,22 @@
   [provider]
   (or (:provider/operations provider) provider))
 
+(defstruct LegacyExecutor [provider legacy])
+
+(extend-type LegacyExecutor IWorkExecutor
+  (work-execute [executor request]
+    (let [provider (:provider executor)
+          execute (get (provider-operations provider) :execute)
+          compatibility (:work/compatibility request)]
+      (if execute
+        (execute (:runtime compatibility)
+                 (:frame compatibility)
+                 (:work compatibility)
+                 (:work/input request))
+        (throw
+         (ex-info "Legacy Work executor is missing :execute"
+                  {:provider/id (:provider/id provider)}))))))
+
 (defn assert-role!
   [provider]
   (if (not= :work/executor (:provider/role provider))
@@ -48,21 +64,38 @@
     (nil? provider)
     (throw (ex-info "Work runtime requires an executor provider" {}))
 
+    (satisfies? IWorkExecutor provider)
+    provider
+
     (and (map? provider)
          (= :work/executor (:provider/role provider)))
-    (validate-provider provider)
+    (work.base.execution/LegacyExecutor (validate-provider provider) true)
 
     (and (map? provider)
          (:provider/role provider))
     (assert-role! provider)
 
     (map? provider)
-    (validate-provider (legacy-provider provider))
+    (work.base.execution/LegacyExecutor
+     (validate-provider (legacy-provider provider))
+     true)
 
     :else
     (throw
-     (ex-info "Work executor provider must be a descriptor or operation map"
+     (ex-info "Work executor must implement IWorkExecutor or be a legacy provider"
               {:provider provider}))))
+
+(defn executor-descriptor
+  [executor]
+  (if (instance? work.base.execution/LegacyExecutor executor)
+    (:provider executor)
+    (or (:descriptor executor) executor)))
+
+(defn executor-id
+  [executor]
+  (or (:provider/id (executor-descriptor executor))
+      (:id executor)
+      :executor))
 
 (defn call
   [provider operation & arguments]
@@ -74,29 +107,11 @@
                 {:provider/id (:provider/id provider)
                  :operation operation})))))
 
+(declare execute-node)
+
 (defn execute-work
   [runtime frame work input]
-  (call (base/runtime-executor runtime)
-        :execute
-        runtime
-        frame
-        work
-        input))
-
-(defn with-handler
-  [provider operation handler]
-  (assoc provider
-         :provider/handlers
-         (assoc (or (:provider/handlers provider) {})
-                operation
-                handler)))
-
-(defn with-handlers
-  [provider handlers]
-  (assoc provider
-         :provider/handlers
-         (merge (or (:provider/handlers provider) {})
-                (or handlers {}))))
+  (execute-node runtime frame work input))
 
 (def default-handlers
   {:pure step/run-pure
@@ -111,7 +126,10 @@
    :batch batch/run-batch
    :graph graph/run-graph})
 
-(declare execute-node)
+(defn evaluator-handlers
+  [runtime]
+  (merge default-handlers
+         (or (:work/handlers (base/runtime-hooks runtime)) {})))
 
 (defn execute-node-handler
   [runtime frame spec operation handler input]
@@ -142,7 +160,7 @@
    (fn [_]
      (let [spec (base/work-spec-map work)
            operation (:op spec)
-           handler (get (base/runtime-handlers runtime) operation)]
+           handler (get (evaluator-handlers runtime) operation)]
        (if (nil? handler)
          (throw
           (ex-info "Work operation is not installed"
