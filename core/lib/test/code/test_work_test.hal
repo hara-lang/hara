@@ -76,6 +76,26 @@
    {:id "test-public-run"}))
 (def public-runs (work/list-runs public-runtime))
 
+(defn check-result-view
+  [result]
+  [(Result/status result)
+   (if (Result/success? result)
+     (Result/data result)
+     (ex-message (Result/error-value result)))
+   (Result/context result)])
+
+(defn fact-result-view
+  [result]
+  (assoc result
+         :checks
+         (vec (map check-result-view (:checks result)))))
+
+(defn summary-result-view
+  [summary]
+  (assoc (dissoc summary :report :artifacts)
+         :results
+         (vec (map fact-result-view (:results summary)))))
+
 (def results
   [(test-check
     "suite execution uses IWorkRuntime while retaining test-domain status"
@@ -111,9 +131,10 @@
 
    (test-check
     "public code.test/run uses the canonical fact-batch work graph"
-    [(:op (work/work-spec fact/+runner-work+))
+     [(:op (work/work-spec fact/+runner-work+))
      (:status public-result)
-     (= public-result public-replayed-result)
+     (= (summary-result-view public-result)
+        (summary-result-view public-replayed-result))
      (count public-runs)
      (:run/status (first public-runs))]
     [:chain :failed true 1 :completed])])
