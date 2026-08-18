@@ -15,6 +15,9 @@
 (def observer base/observer)
 (def recording-observer base/recording-observer)
 (def observer-events base/observer-events)
+(def runtime-map base/runtime-map)
+(def canonical-runtime? base/canonical-runtime?)
+(def normalise-runtime base/normalise-runtime)
 
 ;; Retained public compatibility constructor. Runtime construction normalises
 ;; this legacy operation map into a role-specific store provider.
@@ -26,35 +29,68 @@
 (def register-work coordinator/register-work)
 (defn configured-store
   [options]
-  (store/normalise-provider
-   (or (:store options)
-       (:backend options)
-       (memory/memory-store))))
+  (let [configured
+        (if (has? options :work/store)
+          (:work/store options)
+          (or (:store options)
+              (:backend options)
+              (memory/memory-store)))]
+    (if (nil? configured)
+      nil
+      (store/normalise-provider configured))))
 
 (defn configured-executor
   [options]
   (let [provider
         (execution/normalise-provider
-         (or (:executor options)
+         (or (:work/executor options)
+             (:executor options)
              (inline/inline-executor)))]
-    (execution/with-handlers provider (:handlers options))))
+    (execution/with-handlers
+     provider
+     (or (:handlers options)
+         (:work/handlers (:work/hooks options))))))
+
+(defn configured-registry
+  [options]
+  (if (has? options :work/registry)
+    (:work/registry options)
+    (or (:registry options) (atom {}))))
+
+(defn configured-policy
+  [mode options]
+  (merge
+   {:work/mode mode
+    :work/runtime-version (or (:runtime-version options) 1)
+    :work/schema-version (or (:schema-version options) 1)}
+   (or (:work/policy options) {})))
+
+(defn configured-hooks
+  [options]
+  (let [hooks (or (:work/hooks options) {})]
+    (merge
+     {:work/receipt
+      (receipt/normalise-provider
+       (or (:work/receipt hooks) (:receipt options)))
+      :work/observer
+      (or (:work/observer hooks) (:observer options))}
+     hooks)))
 
 (defn runtime
   [mode options]
   (let [options (or options {})
         store-provider (configured-store options)
-        _ (store/assert-profile! store-provider mode)
+        _ (if store-provider
+            (store/assert-profile! store-provider mode))
         executor-provider (configured-executor options)
-        receipt-provider (receipt/normalise-provider (:receipt options))]
-    (work.base.model/Runtime
-     mode
-     store-provider
-     executor-provider
-     receipt-provider
-     (:observer options)
-     (atom {})
-     (or (:runtime-version options) 1)
-     (or (:schema-version options) 1))))
+        registry (configured-registry options)
+        policy (configured-policy mode options)
+        hooks (configured-hooks options)]
+    (base/runtime-map executor-provider
+                      store-provider
+                      registry
+                      policy
+                      hooks)))
 
 (defn local-runtime
   ([]
@@ -70,18 +106,13 @@
 
 (defn with-handler
   [runtime operation handler]
-  (work.base.model/Runtime
-   (base/runtime-mode runtime)
-   (base/runtime-store runtime)
-   (execution/with-handler
-    (base/runtime-executor runtime)
-    operation
-    handler)
-   (base/runtime-receipt runtime)
-   (base/runtime-observer runtime)
-   (base/runtime-definitions runtime)
-   (base/runtime-code-version runtime)
-   (base/runtime-schema-version runtime)))
+  (let [runtime (base/normalise-runtime runtime)]
+    (assoc runtime
+           :work/executor
+           (execution/with-handler
+            (base/runtime-executor runtime)
+            operation
+            handler))))
 
 (defn handler-operations
   [runtime]
