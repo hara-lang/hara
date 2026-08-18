@@ -142,5 +142,7 @@ replace_once(
     "normalized map rather than a host compiler-node shape. For every valid\n"
     "surface schema, portable normalization, native AST inspection, and\n"
     "re-normalization are structurally equal, and `(schema (Schema/ast value))`\n"
-    "reconstructs an equal `SchemaType`.",
+    "reconstructs a `SchemaType` with the same canonical AST. `Schema/form` and\n"
+    "`Schema/origin` continue to preserve the inspected value's source form and\n"
+    "origin.",
 )
