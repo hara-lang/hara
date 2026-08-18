@@ -1,0 +1,151 @@
+(defn- canonical-normal?
+  [schema]
+  (and
+   (map? schema)
+   (let [kind (:kind schema)]
+     (cond
+       (= kind :primitive)
+       (and (has? schema :name)
+            (keyword? (:name schema)))
+
+       (= kind :reference)
+       (and (has? schema :name)
+            (symbol? (:name schema)))
+
+       (= kind :union)
+       (and (vector? (:types schema))
+            (every? canonical-normal? (:types schema)))
+
+       (= kind :vector)
+       (canonical-normal? (:item schema))
+
+       (= kind :tuple)
+       (and (vector? (:items schema))
+            (every? canonical-normal? (:items schema)))
+
+       (= kind :map)
+       (and
+        (vector? (:fields schema))
+        (every?
+         (fn [field]
+           (and (map? field)
+                (has? field :name)
+                (canonical-normal? (:type field))))
+         (:fields schema)))
+
+       (= kind :fn)
+       (let [inputs (:inputs schema)]
+         (and
+          (map? inputs)
+          (vector? (:fixed inputs))
+          (every? canonical-normal? (:fixed inputs))
+          (or (nil? (:rest inputs))
+              (canonical-normal? (:rest inputs)))
+          (canonical-normal? (:output schema))))
+
+       (= kind :function)
+       (and (vector? (:arities schema))
+            (every?
+             (fn [arity]
+               (and (= :fn (:kind arity))
+                    (canonical-normal? arity)))
+             (:arities schema)))
+
+       (= kind :enum)
+       (vector? (:values schema))
+
+       (= kind :extension)
+       (and (keyword? (:head schema))
+            (vector? (:arguments schema))
+            (has? schema :surface))
+
+       (= kind :unknown)
+       (has? schema :surface)
+
+       :else false))))
+
+(defn- normalize-normalized [schema]
+  (if (canonical-normal? schema)
+    schema
+    (let [kind (:kind schema)
+          children (get schema :children [])]
+      (cond
+        (= kind :primitive)
+        (normalize
+         (if (has? schema :name)
+           (:name schema)
+           (first children)))
+
+        (= kind :reference)
+        {:kind :reference
+         :name (if (has? schema :name)
+                 (:name schema)
+                 (first children))}
+
+        (or (= kind :union) (= kind :or))
+        (normalize-union
+         (if (has? schema :types)
+           (:types schema)
+           children))
+
+        (= kind :vector)
+        {:kind :vector
+         :item (normalize
+                (if (has? schema :item)
+                  (:item schema)
+                  (first children)))}
+
+        (= kind :tuple)
+        {:kind :tuple
+         :items (vec
+                 (map normalize
+                      (if (has? schema :items)
+                        (:items schema)
+                        children)))}
+
+        (= kind :map)
+        {:kind :map
+         :fields
+         (vec
+          (map normalize-field
+               (if (has? schema :fields)
+                 (:fields schema)
+                 children)))}
+
+        (= kind :fn)
+        (normalize-fn-map schema)
+
+        (= kind :function)
+        (normalize-function-arities
+         (if (has? schema :arities)
+           (:arities schema)
+           children))
+
+        (= kind :enum)
+        {:kind :enum
+         :values (vec
+                  (if (has? schema :values)
+                    (:values schema)
+                    children))}
+
+        (= kind :extension)
+        (let [head (if (has? schema :head)
+                     (:head schema)
+                     (:name schema))
+              arguments (if (has? schema :arguments)
+                          (:arguments schema)
+                          children)]
+          {:kind :extension
+           :head head
+           :arguments (vec arguments)
+           :surface (if (has? schema :surface)
+                      (:surface schema)
+                      (vec (concat [head] arguments)))})
+
+        (= kind :unknown)
+        {:kind :unknown
+         :surface (if (has? schema :surface)
+                    (:surface schema)
+                    (first children))}
+
+        :else schema))))
