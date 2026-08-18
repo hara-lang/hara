@@ -21,6 +21,10 @@ assets. The pages deploy copies the runtime-facing pieces under
 - `studio/` — the shared studio environment:
   - `broker.js` — kernel broker; one kernel = one Web Worker running one raw
     HTA wasm instance (mirrors the JVM `SessionKernel`).
+  - `live-session-controller.js` — the Studio-side request boundary for the
+    backend-neutral live-session protocol. It computes source revisions,
+    applies generation/revision fences, gates controls by capabilities, and
+    validates monotonic replies without exposing evaluator sessions.
   - `host-services.js` — generic host services for kernels (`store/*` over
     IndexedDB, `http/get`).
   - `boot.js` + `hal/` — the bootstrap model: kernels boot from hara
