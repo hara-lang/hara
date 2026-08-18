@@ -1,0 +1,167 @@
+name: Verify and publish read-only tool.vm providers
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-tool-vm-runner-751
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    if: github.event.pull_request.head.ref == 'agent/tool-vm-readonly-751'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Check out provider branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/tool-vm-readonly-751
+          fetch-depth: 0
+
+      - name: Rebase onto current main
+        run: |
+          git config user.name "OpenAI Agent"
+          git config user.email "openai-agent@users.noreply.github.com"
+          git fetch origin main
+          git rebase origin/main
+          echo "BASE_SHA=$(git rev-parse origin/main)" >> "$GITHUB_ENV"
+
+      - name: Materialize exact implementation files
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          from pathlib import Path
+
+          workflow = Path(".github/workflows/agent-tool-vm-readonly-751.yml").read_text()
+          marker = "<<'PAYLOAD'\n"
+          payload = workflow.split(marker, 1)[1].split("\n          PAYLOAD", 1)[0].strip()
+          archive = base64.b64decode(payload, validate=True)
+          target = Path("/tmp/tool-vm-impl.tar.gz")
+          target.write_bytes(archive)
+          PY
+          printf '%s  %s\n' \
+            'ebbb167c190de205394ace26755f5f78e21673da0659bd49a9a2735521c902ee' \
+            '/tmp/tool-vm-impl.tar.gz' | sha256sum --check -
+          tar --extract --gzip --file /tmp/tool-vm-impl.tar.gz --directory .
+
+      - name: Install the Rust provider namespaces
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          runtime = Path("core/rust/src/runtime/runtime.rs")
+          source = runtime.read_text()
+          needle = '''        let work_native = namespace_registry.find_or_create("work.native");
+          work_native.intern("default-host", crate::work::guest::default_host_value());
+          for (name, value) in crate::work::guest::values() {
+              work_native.intern(name, value);
+          }
+          let mut protocols = core::ProtocolRegistry::core();
+          '''
+          replacement = '''        let vm_provider = namespace_registry.find_or_create("tool.vm.provider");
+          for (name, value) in core::vm_tool_provider_values() {
+              vm_provider.intern_with_origin(
+                  name,
+                  value,
+                  kernel::VarOrigin::RuntimePrimitive,
+              );
+          }
+          let work_native = namespace_registry.find_or_create("work.native");
+          work_native.intern("default-host", crate::work::guest::default_host_value());
+          for (name, value) in crate::work::guest::values() {
+              work_native.intern(name, value);
+          }
+          let mut protocols = core::ProtocolRegistry::core();
+          '''
+          if source.count(needle) != 1:
+              raise SystemExit("runtime provider installation seam changed")
+          runtime.write_text(source.replace(needle, replacement, 1))
+
+          raw = Path("core/rust/raw/src/lib.rs")
+          source = raw.read_text()
+          needle = '''        let native_string = namespaces.find_or_create("std.native.String");
+          '''
+          replacement = '''        let vm_provider = namespaces.find_or_create("tool.vm.provider");
+          for (name, value) in core::vm_tool_provider_values() {
+              vm_provider.intern(name, value);
+          }
+          let native_string = namespaces.find_or_create("std.native.String");
+          '''
+          if source.count(needle) != 1:
+              raise SystemExit("raw runtime provider installation seam changed")
+          raw.write_text(source.replace(needle, replacement, 1))
+          PY
+
+      - name: Remove branch-scoped workflows
+        run: |
+          rm .github/workflows/agent-tool-vm-readonly-751.yml
+          rm .github/workflows/agent-tool-vm-runner-751.yml
+
+      - name: Format and validate Rust
+        run: |
+          cargo fmt --manifest-path core/rust/Cargo.toml --all
+          cargo test --manifest-path core/rust/Cargo.toml vm_tool_tests --lib
+          cargo test --manifest-path core/rust/Cargo.toml --no-default-features vm_tool_tests --lib
+          cargo test --manifest-path core/rust/raw/Cargo.toml vm_tool_tests --lib
+          cargo test --manifest-path core/rust/raw/Cargo.toml --features bytecode-vm vm_tool_tests --lib
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Validate the Truffle provider
+        working-directory: core
+        run: mvn -B -Ptruffle -Dtest=ToolVmLibraryTest test --file java/pom.xml
+
+      - name: Validate the public Hara facade
+        run: |
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/tool/vm_test.hal \
+            core/lib/test/tool/vm_provider_test.hal
+
+      - name: Verify bounded diff
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          allowed='^(core/lib/src/tool/vm\.hal|core/lib/src/tool/vm/(halc|hbc)\.hal|core/lib/test/tool/vm_provider_test\.hal|core/rust/src/core\.rs|core/rust/src/core/vm_tool\.rs|core/rust/src/runtime/runtime\.rs|core/rust/raw/src/lib\.rs|core/java/src/main/java/hara/truffle/ToolVmLibrary\.java|core/java/src/main/java/hara/truffle/ToolVmLibraryProvider\.java|core/java/src/main/resources/META-INF/services/hara\.truffle\.HaraLibraryProvider|core/java/src/main/resources/META-INF/native-image/org\.hara/hara\.lang/(reflect-config|resource-config)\.json|core/java/src/test/java/hara/truffle/ToolVmLibraryTest\.java)$'
+          unexpected=0
+          while IFS= read -r path; do
+            if [[ ! "$path" =~ $allowed ]]; then
+              echo "Unexpected changed path: $path" >&2
+              unexpected=1
+            fi
+          done < <(git diff --name-only "$BASE_SHA")
+          test "$unexpected" -eq 0
+          test "$(grep -c 'vm_tool_provider_values' core/rust/src/runtime/runtime.rs)" -eq 1
+          test "$(grep -c 'vm_tool_provider_values' core/rust/raw/src/lib.rs)" -eq 1
+          grep -Fqx 'hara.truffle.ToolVmLibraryProvider' \
+            core/java/src/main/resources/META-INF/services/hara.truffle.HaraLibraryProvider
+          if grep -R --exclude-dir=.git -n 'std.native.Vm' \
+            core/lib core/rust/src core/java/src/main; then
+            echo 'Unexpected std.native.Vm surface' >&2
+            exit 1
+          fi
+          test ! -e core/lib/src/tool/vm/provider.hal
+
+      - name: Publish the verified implementation commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git reset --soft "$BASE_SHA"
+          git add -A
+          git commit -m "Expose read-only tool.vm providers (#751)"
+          git push --force-with-lease origin HEAD:agent/tool-vm-readonly-751
