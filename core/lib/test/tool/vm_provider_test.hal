@@ -27,11 +27,53 @@
                 (get (:provider/formats provider) :halc)
                 (get (:provider/formats provider) :hbc)]
                [true
-                [:validate :inspect :disassemble]
-                []
+                (if (= provider-id :rust)
+                  [:validate :inspect :disassemble]
+                  [:validate :inspect :transform :disassemble])
+                (if (= provider-id :rust) [] [[:hal :halc]])
                 {}
                 [:validate :inspect]
                 [:validate :inspect :disassemble]])
+
+   (test-check "advertised transformation preserves exact provenance"
+               (if (= provider-id :rust)
+                 :compiler-free
+                 (let [artifact
+                       (vm/transform
+                        "(ns tool.vm.sample) (def value 42)"
+                        :halc
+                        {:provider provider-id
+                         :resource "tool/vm/sample.hal"})]
+                   [(select-keys artifact
+                                 [:artifact/format :artifact/version])
+                    (:artifact/provenance artifact)
+                    (vm/validate artifact)]))
+               (if (= provider-id :rust)
+                 :compiler-free
+                 [{:artifact/format :halc
+                   :artifact/version 1}
+                  {:transform/provider provider-id
+                   :transform/from :hal
+                   :transform/to :halc
+                   :transform/options {:resource "tool/vm/sample.hal"}
+                   :transform/source-provenance nil}
+                  true]))
+
+   (test-check "current provider rejects unadvertised transforms without fallback"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/transform
+                    "(+ 19 23)"
+                    (if (= provider-id :rust) :halc :hbc)
+                    {:provider provider-id})))
+                [:type :operation :from :to :provider :available])
+               {:type :tool.vm/capability-unavailable
+                :operation :transform
+                :from :hal
+                :to (if (= provider-id :rust) :halc :hbc)
+                :provider provider-id
+                :available []})
 
    (test-check "convenience namespaces construct exact portable artifacts"
                [(select-keys
