@@ -1,14 +1,12 @@
-const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
+import {
+  JsonWasmTransport,
+  byteArray,
+  instantiateJsonWasm,
+  objectValue,
+} from "./json-wasm-transport.js";
+
 const MAX_SAFE_INTEGER = 9_007_199_254_740_991;
 const DEFAULT_WASM_PATH = "../bytecode-observation.wasm";
-
-const objectValue = (value, label) => {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError(`${label} must be an object`);
-  }
-  return value;
-};
 
 const stringValue = (value, label) => {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -22,15 +20,6 @@ const integerValue = (value, label, maximum = MAX_SAFE_INTEGER) => {
     throw new RangeError(`${label} must be an integer between 0 and ${maximum}`);
   }
   return value;
-};
-
-const byteArray = (value, label = "artifact") => {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value)) {
-    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
-  }
-  throw new TypeError(`${label} must be bytes`);
 };
 
 const settlementValue = (value) => {
@@ -63,72 +52,19 @@ const sessionInfo = (value) => {
  * machine pointer, guest value, promise or runtime allocation to application
  * state.
  */
-export class BytecodeObservationWasmTransport {
+export class BytecodeObservationWasmTransport extends JsonWasmTransport {
   constructor(exports) {
-    if (!exports || typeof exports !== "object") {
-      throw new TypeError("bytecode observation Wasm exports are required");
-    }
-    for (const name of [
-      "observation_abi_version",
-      "observation_alloc",
-      "observation_dealloc",
-      "observation_invoke",
-    ]) {
-      if (typeof exports[name] !== "function") {
-        throw new Error(`bytecode observation Wasm is missing ${name}`);
-      }
-    }
-    if (!(exports.memory instanceof WebAssembly.Memory)) {
-      throw new Error("bytecode observation Wasm is missing exported memory");
-    }
-    if (exports.observation_abi_version() !== 1) {
-      throw new Error("unsupported bytecode observation ABI");
-    }
-    this.exports = exports;
-  }
-
-  invoke(request) {
-    const source = JSON.stringify(objectValue(request, "bytecode observation request"));
-    const input = encoder.encode(source);
-    const pointer = this.exports.observation_alloc(input.byteLength);
-    if (!Number.isInteger(pointer) || pointer <= 0) {
-      throw new Error("bytecode observation Wasm failed to allocate request memory");
-    }
-
-    let packed;
-    try {
-      new Uint8Array(this.exports.memory.buffer, pointer, input.byteLength).set(input);
-      packed = this.exports.observation_invoke(pointer, input.byteLength);
-    } finally {
-      this.exports.observation_dealloc(pointer, input.byteLength);
-    }
-
-    if (typeof packed !== "bigint") {
-      throw new Error("bytecode observation Wasm returned an invalid response pointer");
-    }
-    const responsePointer = Number(packed >> 32n);
-    const responseLength = Number(packed & 0xffff_ffffn);
-    if (!Number.isSafeInteger(responsePointer) || responsePointer <= 0 || responseLength <= 0) {
-      throw new Error("bytecode observation Wasm returned an empty response");
-    }
-
-    let responseBytes;
-    try {
-      responseBytes = new Uint8Array(
-        new Uint8Array(this.exports.memory.buffer, responsePointer, responseLength),
-      );
-    } finally {
-      this.exports.observation_dealloc(responsePointer, responseLength);
-    }
-
-    const response = JSON.parse(decoder.decode(responseBytes));
-    if (!response || response.ok !== true) {
-      const message = response?.error?.message ?? "bytecode observation request failed";
-      const error = new Error(String(message));
-      error.code = response?.error?.code ?? "bytecode-observation/error";
-      throw error;
-    }
-    return response.value;
+    super(exports, {
+      label: "bytecode observation Wasm",
+      requestLabel: "bytecode observation request",
+      errorCode: "bytecode-observation/error",
+      names: {
+        abiVersion: "observation_abi_version",
+        alloc: "observation_alloc",
+        dealloc: "observation_dealloc",
+        invoke: "observation_invoke",
+      },
+    });
   }
 }
 
@@ -138,19 +74,15 @@ export async function loadBytecodeObservationRuntime({
   fetchImpl = globalThis.fetch,
   imports = {},
 } = {}) {
-  let bytes = wasmBytes;
-  if (bytes == null) {
-    if (typeof fetchImpl !== "function") {
-      throw new Error("fetch is required to load the bytecode observation Wasm module");
-    }
-    const response = await fetchImpl(wasmUrl);
-    if (!response?.ok) {
-      throw new Error(`unable to load bytecode observation Wasm: ${response?.status ?? "network"}`);
-    }
-    bytes = await response.arrayBuffer();
-  }
-  const result = await WebAssembly.instantiate(byteArray(bytes, "bytecode observation Wasm"), imports);
-  const instance = result instanceof WebAssembly.Instance ? result : result.instance;
+  const instance = await instantiateJsonWasm({
+    wasmUrl,
+    wasmBytes,
+    fetchImpl,
+    imports,
+    label: "bytecode observation Wasm",
+    fetchDescription: "the bytecode observation Wasm module",
+    loadDescription: "bytecode observation Wasm",
+  });
   const transport = new BytecodeObservationWasmTransport(instance.exports);
   return new BytecodeObservationRuntime({ invoke: transport.invoke.bind(transport) });
 }
@@ -205,7 +137,7 @@ export class BytecodeObservationRuntime {
       op: "from-artifact",
       sessionId: stringValue(sessionId, "bytecode session id"),
       sourceId: stringValue(sourceId, "bytecode source id"),
-      artifact: [...byteArray(artifact)],
+      artifact: [...byteArray(artifact, "artifact")],
     });
     return this.track(info);
   }
