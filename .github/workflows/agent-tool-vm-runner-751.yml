@@ -1,20 +1,20 @@
-name: Materialize and publish read-only tool.vm providers
+name: Verify and publish read-only tool.vm providers
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/tool-vm-readonly-product-751
-  workflow_dispatch:
+      - agent/tool-vm-materialization-base-751
 
 permissions:
   contents: write
 
 concurrency:
-  group: agent-tool-vm-readonly-product-751
+  group: agent-tool-vm-materialization-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   verify:
+    if: github.event.pull_request.head.ref == 'agent/tool-vm-readonly-product-751'
     runs-on: ubuntu-latest
     timeout-minutes: 55
     steps:
@@ -132,12 +132,13 @@ jobs:
           runtime.write_text(source.replace(needle, provider + needle, 1))
           PY
 
-      - name: Remove temporary publication workflows
+      - name: Remove temporary materialization files
         shell: bash
         run: |
           set -euo pipefail
           rm .github/workflows/agent-tool-vm-readonly-751.yml
           rm .github/workflows/agent-tool-vm-runner-751.yml
+          rm -f .github/tool-vm-materialize-trigger
 
       - name: Format and validate Rust
         shell: bash
@@ -201,6 +202,7 @@ jobs:
           test ! -e core/lib/src/tool/vm/provider.hal
           test ! -e .github/workflows/agent-tool-vm-readonly-751.yml
           test ! -e .github/workflows/agent-tool-vm-runner-751.yml
+          test ! -e .github/tool-vm-materialize-trigger
           git status --short
 
       - name: Publish the verified implementation commit
