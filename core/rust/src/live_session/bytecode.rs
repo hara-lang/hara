@@ -90,7 +90,13 @@ impl BytecodeLiveSession {
 
     fn reset(&mut self) -> Result<JsonValue, LiveSessionError> {
         if let Some(source) = self.pending_source.take() {
-            return self.restart(source);
+            return match self.restart(source.clone()) {
+                Ok(payload) => Ok(payload),
+                Err(error) => {
+                    self.pending_source = Some(source);
+                    Err(error)
+                }
+            };
         }
         let payload = self.session.reset().map_err(backend_error)?;
         self.generation = self.generation.saturating_add(1);
