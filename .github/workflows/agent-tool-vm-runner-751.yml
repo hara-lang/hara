@@ -34,18 +34,27 @@ jobs:
 
       - name: Materialize exact implementation files
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --header "Authorization: Bearer $GITHUB_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/blobs/f6129a91d056703bb09a0b28b7bae8f76ca99706" \
+            > /tmp/tool-vm-blob.json
           python3 - <<'PY'
           import base64
+          import json
           from pathlib import Path
 
-          workflow = Path(".github/workflows/agent-tool-vm-readonly-751.yml").read_text()
-          marker = "<<'PAYLOAD'\n"
-          payload = workflow.split(marker, 1)[1].split("\n          PAYLOAD", 1)[0].strip()
-          archive = base64.b64decode(payload, validate=True)
-          target = Path("/tmp/tool-vm-impl.tar.gz")
-          target.write_bytes(archive)
+          value = json.loads(Path("/tmp/tool-vm-blob.json").read_text())
+          if value.get("encoding") != "base64":
+              raise SystemExit("tool.vm implementation blob is not base64")
+          Path("/tmp/tool-vm-impl.tar.gz").write_bytes(
+              base64.b64decode(value["content"], validate=False)
+          )
           PY
           printf '%s  %s\n' \
             'ebbb167c190de205394ace26755f5f78e21673da0659bd49a9a2735521c902ee' \
