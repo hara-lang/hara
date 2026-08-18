@@ -28,6 +28,14 @@ Dependencies point inward: embedding and runtime code may use core facilities;
 core facilities do not depend on the embedding facade. Experimental bytecode
 and WebAssembly adapters stay at the runtime boundary.
 
+## Live execution and compiler products
+
+`LIVE_SESSION.md` defines the backend-neutral live-session contract, its
+ownership beneath Sandbox-private Sessions, source replacement semantics, and
+the distinction between HBC, whole-Wasm, runtime-host Wasm, and extension Wasm
+products. New interactive execution and compiler-target work must preserve
+those boundaries rather than adding evaluator behaviour to `Sandbox`.
+
 ## Layout policy
 
 Most Rust files remain subject to the repository's line-count gate. The
