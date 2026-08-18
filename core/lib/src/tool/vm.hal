@@ -42,7 +42,45 @@
     :format/version 0
     :format/portable true
     :format/execution :virtual-machine
-    :format/spec-path "01-lang/010-bytecode/draft/hal-bytecode-vm.edn"}})
+    :format/spec-id :hal/hbc0-wire
+    :format/spec-path "01-lang/010-bytecode/draft/hbc0-wire.edn"}})
+
+(def +specifications+
+  {:hal/hbc0-wire
+   {:spec/id :hal/hbc0-wire
+    :spec/format :hbc
+    :spec/kind :wire
+    :spec/path "01-lang/010-bytecode/draft/hbc0-wire.edn"
+    :spec/corpora [:hal/hbc0-golden :hal/hbc0-malformed]}
+   :hal/hbc-machine
+   {:spec/id :hal/hbc-machine
+    :spec/format :hbc
+    :spec/kind :machine
+    :spec/path "01-lang/010-bytecode/draft/hbc-machine.edn"
+    :spec/corpora [:hal/hbc-machine-conformance]}
+   :hal/hbc-suspension
+   {:spec/id :hal/hbc-suspension
+    :spec/format :hbc
+    :spec/kind :extension
+    :spec/path "01-lang/010-bytecode/draft/hbc-suspension.edn"
+    :spec/corpora [:hal/hbc-suspension-conformance]}
+   :hal/hbc-backend-profiles
+   {:spec/id :hal/hbc-backend-profiles
+    :spec/format :hbc
+    :spec/kind :profiles
+    :spec/path "01-lang/010-bytecode/draft/hbc-backend-profiles.edn"
+    :spec/corpora []}})
+
+(def +backend-profile-order+
+  [:rust-stack-vm
+   :rust-tracing
+   :rust-whole-wasm
+   :java-reference-vm
+   :truffle-bytecode-dsl])
+
+(def +implemented-backend-profiles+
+  {[:rust :stack-vm] :rust-stack-vm
+   [:truffle :reference-vm] :java-reference-vm})
 
 (def +binary-formats+ #{:halc :hbc})
 
@@ -122,9 +160,28 @@
   (get +formats+ (format-id format)))
 
 (defn spec
-  "Returns the current specification coordinate for format."
-  [format]
-  (:format/spec-path (format-descriptor format)))
+  "Returns the primary format specification path or one exact specification descriptor."
+  ([format]
+   (:format/spec-path (format-descriptor format)))
+  ([format identity]
+   (let [format (format-id format)
+         identity (keyword-value
+                   "specification identity"
+                   :tool.vm/unknown-specification
+                   identity)
+         descriptor (get +specifications+ identity)]
+     (if (and descriptor (= format (:spec/format descriptor)))
+       descriptor
+       (fail (str "Unknown tool.vm specification: " identity)
+             {:type :tool.vm/unknown-specification
+              :format format
+              :spec identity
+              :available
+              (vec
+               (filter
+                (fn [value]
+                  (= format (:spec/format (get +specifications+ value))))
+                (keys +specifications+)))})))))
 
 (defn binary-format?
   "Returns true only for serialized HALC and HBC module formats."
@@ -332,6 +389,21 @@
     (vec (filter (fn [operation] (has? members operation))
                  +operation-order+))))
 
+(defn- derived-backend-profiles [id engines]
+  (vec
+   (filter
+    (fn [profile]
+      (not
+       (nil?
+        (first
+         (filter
+          (fn [pair]
+            (= profile
+               (get +implemented-backend-profiles+
+                    [id (nth pair 1)])))
+          engines)))))
+    +backend-profile-order+)))
+
 (defn provider
   "Validates and canonicalizes one exact host-provider descriptor."
   [value]
@@ -342,7 +414,8 @@
                  :provider/operations
                  :provider/formats
                  :provider/transforms
-                 :provider/engines}
+                 :provider/engines
+                 :provider/profiles}
                value)
         id (keyword-value
             ":provider/id"
@@ -352,7 +425,9 @@
         transforms (normalize-transforms (or (:provider/transforms value) []))
         engines (normalize-engines (or (:provider/engines value) {}) formats)
         operations (derived-operations formats transforms)
-        declared (:provider/operations value)]
+        profiles (derived-backend-profiles id engines)
+        declared (:provider/operations value)
+        declared-profiles (:provider/profiles value)]
     (if (not (nil? declared))
       (let [declared (canonical-members
                       ":provider/operations"
@@ -365,6 +440,21 @@
                  :field :provider/operations
                  :declared declared
                  :derived operations})
+          nil))
+      nil)
+    (if (not (nil? declared-profiles))
+      (let [declared-profiles
+            (canonical-members
+             ":provider/profiles"
+             +backend-profile-order+
+             declared-profiles)]
+        (if (not= declared-profiles profiles)
+          (fail ":provider/profiles does not match implemented backend profiles"
+                {:type :tool.vm/invalid-provider
+                 :provider id
+                 :field :provider/profiles
+                 :declared declared-profiles
+                 :derived profiles})
           nil))
       nil)
     (reduce
@@ -406,7 +496,8 @@
      :provider/operations operations
      :provider/formats formats
      :provider/transforms transforms
-     :provider/engines engines}))
+     :provider/engines engines
+     :provider/profiles profiles}))
 
 (defn provider?
   "Returns true when value is a valid exact provider descriptor."
