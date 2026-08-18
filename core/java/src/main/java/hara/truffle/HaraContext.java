@@ -188,7 +188,10 @@ public final class HaraContext {
           Map.entry("Host", java.util.List.of("call", "describe", "capabilities", "capability?")),
           Map.entry(
               "Test",
-              java.util.List.of("catalog", "config", "context", "events", "run", "result", "passed?")),
+              java.util.List.of(
+                  "catalog", "config", "context", "events", "compare", "run", "result",
+                  "passed?", "actual", "expected", "failures", "failure-seq", "failure-count",
+                  "failure", "failure?")),
           Map.entry(
               "RegExp",
               java.util.List.of(
@@ -3509,52 +3512,82 @@ public final class HaraContext {
     return new hara.lang.data.Pointer(Keyword.create("test"), fields);
   }
 
+  private Object nativeTestContext(Object name, Object actual, Object expected, Object failures) {
+    return hara.lang.data.Map.Standard.from(
+        null,
+        Keyword.create("test"),
+        hara.lang.data.Map.Standard.from(
+            null,
+            Keyword.create("name"), name,
+            Keyword.create("actual"), actual,
+            Keyword.create("expected"), expected),
+        Keyword.create("failures"), failures);
+  }
+
+  private Object nativeTestFailure(Object actual, Object expected) {
+    return hara.lang.data.Map.Standard.from(
+        null,
+        keyword("failure/code"), keyword("test/not-equal"),
+        keyword("failure/path"), BuiltinStruct.vector(new Object[0]),
+        keyword("failure/in"), BuiltinStruct.vector(new Object[0]),
+        keyword("failure/actual"), actual,
+        keyword("failure/expected"), expected,
+        keyword("failure/message"), "values are not equal",
+        keyword("failure/context"), hara.lang.data.Map.Standard.EMPTY,
+        keyword("failure/children"), BuiltinStruct.vector(new Object[0]));
+  }
+
+  private Object nativeTestCompare(Object[] values) {
+    if (values.length != 2) {
+      throw new HaraException("std.native.Test/compare expects actual and expected");
+    }
+    Object actual = HaraBox.unwrap(values[0]);
+    Object expected = HaraBox.unwrap(values[1]);
+    boolean pass = Eq.eq(actual, expected);
+    Object failures = pass
+        ? BuiltinStruct.vector(new Object[0])
+        : BuiltinStruct.vector(new Object[] {nativeTestFailure(actual, expected)});
+    return HaraResult.success(pass, nativeTestContext(null, actual, expected, failures));
+  }
+
   private Object nativeTestResult(Object[] values) {
-    if (values.length != 3) {
+    if (values.length != 4) {
       throw new HaraException(
-          "std.native.Test/result expects name, actual, and expected");
+          "std.native.Test/result expects name, actual, expected, and comparison Result");
     }
     Object name = HaraBox.unwrap(values[0]);
     Object actual = HaraBox.unwrap(values[1]);
     Object expected = HaraBox.unwrap(values[2]);
-    return hara.lang.data.Map.Standard.from(
-        null,
-        Keyword.create("name"),
-        name,
-        Keyword.create("pass"),
-        Eq.eq(actual, expected),
-        Keyword.create("actual"),
-        actual,
-        Keyword.create("expected"),
-        expected);
+    if (!(HaraBox.unwrap(values[3]) instanceof HaraResult comparison)) {
+      throw new HaraException("std.native.Test/result expects a comparison Result");
+    }
+    Object failures = comparison.context().lookup(Keyword.create("failures"), BuiltinStruct.vector(new Object[0]));
+    return comparison.withContext(nativeTestContext(name, actual, expected, failures));
   }
 
-  private Object nativeTestError(Object name, Object expected, String error) {
-    return hara.lang.data.Map.Standard.from(
-        null,
-        Keyword.create("name"), name,
-        Keyword.create("pass"), false,
-        Keyword.create("status"), Keyword.create("error"),
-        Keyword.create("expected"), expected,
-        Keyword.create("error"), error);
+  private Object nativeTestError(Object name, Object actual, Object expected, String error) {
+    return HaraResult.error(
+        new HaraException(error),
+        nativeTestContext(name, actual, expected, BuiltinStruct.vector(new Object[0])));
   }
 
   @SuppressWarnings("unchecked")
   private Object nativeTestCheckedResult(Object name, Object metadata, Object rawResult) {
     Object resultValue = HaraBox.unwrap(rawResult);
-    if (!(resultValue instanceof IMapType<?, ?> rawMap)) {
-      return nativeTestError(name, null, "Test/run check function must return a result map");
+    if (!(resultValue instanceof HaraResult result)) {
+      return nativeTestError(name, null, null, "Test/run check function must return a Result");
     }
-    IMapType<Object, Object> result = (IMapType<Object, Object>) rawMap;
-    Object pass = lookupValue(result, Keyword.create("pass"));
-    if (!(pass instanceof Boolean)) {
-      return nativeTestError(name, null, "Test/run check result requires boolean :pass");
-    }
-    result = (IMapType<Object, Object>) result.assoc(Keyword.create("name"), name);
+    Object rawTest = result.context().lookup(Keyword.create("test"), hara.lang.data.Map.Standard.EMPTY);
+    IMapType<Object, Object> test = rawTest instanceof IMapType<?, ?>
+        ? (IMapType<Object, Object>) rawTest
+        : hara.lang.data.Map.Standard.EMPTY;
+    test = (IMapType<Object, Object>) test.assoc(Keyword.create("name"), name);
+    IMapType<Object, Object> context = result.context();
+    context = (IMapType<Object, Object>) context.assoc(Keyword.create("test"), test);
     if (metadata != null) {
-      result = (IMapType<Object, Object>) result.assoc(Keyword.create("meta"), metadata);
+      context = (IMapType<Object, Object>) context.assoc(Keyword.create("meta"), metadata);
     }
-    return result;
+    return result.withContext(context);
   }
 
   private Object nativeTestRun(Object[] values) {
@@ -3582,7 +3615,7 @@ public final class HaraContext {
       index += 1;
       Object fallbackName = "invalid case " + index;
       if (!(HaraBox.unwrap(rawCase) instanceof IMapType<?, ?> testCase)) {
-        nativeTestResults.add(nativeTestError(fallbackName, null, "Test/run case must be a map"));
+        nativeTestResults.add(nativeTestError(fallbackName, null, null, "Test/run case must be a map"));
         continue;
       }
       Object name = hasMapKey(testCase, Keyword.create("name"))
@@ -3593,22 +3626,23 @@ public final class HaraContext {
           ? lookupValue(testCase, Keyword.create("meta")) : null;
       boolean hasTest = hasMapKey(testCase, Keyword.create("test"));
       if (!hasTest) {
-        nativeTestResults.add(nativeTestError(name, expected, "Test/run case requires :test"));
+        nativeTestResults.add(nativeTestError(name, null, expected, "Test/run case requires :test"));
       } else if (!hasExpected) {
-        nativeTestResults.add(nativeTestError(name, null, "Test/run case requires :expected"));
+        nativeTestResults.add(nativeTestError(name, null, null, "Test/run case requires :expected"));
       } else {
         try {
           Object testFunction = lookupValue(testCase, Keyword.create("test"));
           if (checkFunction == null) {
             Object actual = nativeTestAwait(invokeCallable(testFunction, new Object[0]));
-            nativeTestResults.add(nativeTestResult(new Object[] {name, actual, expected}));
+            Object comparison = nativeTestCompare(new Object[] {actual, expected});
+            nativeTestResults.add(nativeTestResult(new Object[] {name, actual, expected, comparison}));
           } else {
             Object checked = invokeCallable(checkFunction, new Object[] {testFunction, expected});
             nativeTestResults.add(nativeTestCheckedResult(name, metadata, checked));
           }
         } catch (RuntimeException error) {
           String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-          nativeTestResults.add(nativeTestError(name, expected, message));
+          nativeTestResults.add(nativeTestError(name, null, expected, message));
         }
       }
     }
@@ -3628,10 +3662,9 @@ public final class HaraContext {
       return true;
     } catch (RuntimeException error) {
       String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
-      IMapType<Object, Object> result = (IMapType<Object, Object>) nativeTestError(
-          "test " + phase, null, message);
-      result = (IMapType<Object, Object>) result.assoc(Keyword.create("phase"), Keyword.create(phase));
-      nativeTestResults.add(result);
+      HaraResult result = (HaraResult) nativeTestError("test " + phase, null, null, message);
+      nativeTestResults.add(result.withContext(
+          hara.lang.data.Map.Standard.from(null, Keyword.create("phase"), Keyword.create(phase))));
       return false;
     }
   }
@@ -3642,14 +3675,95 @@ public final class HaraContext {
   }
 
   private Object nativeTestPassed(Object[] values) {
-    if (values.length != 1 || !(HaraBox.unwrap(values[0]) instanceof IMapType<?, ?> result)) {
-      throw new HaraException("std.native.Test/passed? expects a test result map");
+    if (values.length != 1 || !(HaraBox.unwrap(values[0]) instanceof HaraResult result)) {
+      throw new HaraException("std.native.Test/passed? expects a Result");
     }
-    Object pass = lookupValue(result, Keyword.create("pass"));
-    if (!(pass instanceof Boolean)) {
-      throw new HaraException("std.native.Test/passed? expects a test result map");
+    return result.isSuccess() && Boolean.TRUE.equals(result.data());
+  }
+
+  private HaraResult nativeTestRequireResult(Object value, String operation) {
+    if (HaraBox.unwrap(value) instanceof HaraResult result) return result;
+    throw new HaraException("std.native.Test/" + operation + " expects a Result");
+  }
+
+  private Object nativeTestDetail(HaraResult result, String key) {
+    Object test = result.context().lookup(Keyword.create("test"), null);
+    return test instanceof IMapType<?, ?> map ? lookupValue(map, Keyword.create(key)) : null;
+  }
+
+  private Object nativeTestFailures(HaraResult result) {
+    Object failures = result.context().lookup(Keyword.create("failures"), null);
+    return failures instanceof ILinearType<?> linear
+        ? BuiltinStruct.vector(java.util.stream.StreamSupport.stream(linear.spliterator(), false).toArray())
+        : BuiltinStruct.vector(new Object[0]);
+  }
+
+  private boolean nativeTestFailureShape(Object rawValue) {
+    Object value = HaraBox.unwrap(rawValue);
+    if (!(value instanceof IMapType<?, ?> map)) return false;
+    Object rawChildren = lookupValue(map, keyword("failure/children"));
+    if (!(rawChildren instanceof ILinearType<?> children)) return false;
+    for (Object child : children) if (!nativeTestFailureShape(child)) return false;
+    return lookupValue(map, keyword("failure/code")) instanceof Keyword
+        && lookupValue(map, keyword("failure/path")) instanceof ILinearType<?>
+        && lookupValue(map, keyword("failure/in")) instanceof ILinearType<?>
+        && hasMapKey(map, keyword("failure/actual"))
+        && hasMapKey(map, keyword("failure/expected"))
+        && lookupValue(map, keyword("failure/message")) instanceof String
+        && lookupValue(map, keyword("failure/context")) instanceof IMapType<?, ?>;
+  }
+
+  private void nativeTestFailureLeaves(Object rawFailure, java.util.List<Object> leaves) {
+    Object failure = HaraBox.unwrap(rawFailure);
+    if (!nativeTestFailureShape(failure)) return;
+    IMapType<?, ?> map = (IMapType<?, ?>) failure;
+    ILinearType<?> children =
+        (ILinearType<?>) lookupValue(map, keyword("failure/children"));
+    if (children.count() == 0) {
+      leaves.add(failure);
+    } else {
+      for (Object child : children) nativeTestFailureLeaves(child, leaves);
     }
-    return pass;
+  }
+
+  private Object nativeTestInspect(Object[] values, String operation) {
+    if (values.length != 1) {
+      throw new HaraException("std.native.Test/" + operation + " expects one Result");
+    }
+    HaraResult result = nativeTestRequireResult(values[0], operation);
+    if ("actual".equals(operation)) return nativeTestDetail(result, "actual");
+    if ("expected".equals(operation)) return nativeTestDetail(result, "expected");
+    if ("failures".equals(operation)) return nativeTestFailures(result);
+    java.util.List<Object> leaves = new ArrayList<>();
+    for (Object failure : (hara.lang.data.Vector<?>) nativeTestFailures(result)) {
+      nativeTestFailureLeaves(failure, leaves);
+    }
+    if ("failure-count".equals(operation)) return (long) leaves.size();
+    return BuiltinStruct.vector(leaves.toArray());
+  }
+
+  private Object nativeTestFailureAt(Object[] values) {
+    if (values.length != 2) {
+      throw new HaraException("std.native.Test/failure expects a Result and index");
+    }
+    HaraResult result = nativeTestRequireResult(values[0], "failure");
+    Object rawIndex = HaraBox.unwrap(values[1]);
+    if (!(rawIndex instanceof Number number)
+        || number.longValue() < 0
+        || number.doubleValue() != (double) number.longValue()) {
+      throw new HaraException("std.native.Test/failure index must be a non-negative integer");
+    }
+    Object sequence = nativeTestInspect(new Object[] {result}, "failure-seq");
+    hara.lang.data.Vector<?> leaves = (hara.lang.data.Vector<?>) sequence;
+    long index = number.longValue();
+    return index < leaves.count() ? leaves.nth((int) index) : null;
+  }
+
+  private Object nativeTestFailurePredicate(Object[] values) {
+    if (values.length != 1) {
+      throw new HaraException("std.native.Test/failure? expects one value");
+    }
+    return nativeTestFailureShape(values[0]);
   }
 
   private static Keyword keyword(String value) {
@@ -3688,9 +3802,17 @@ public final class HaraContext {
     test.define("config", new VariadicBuiltin("std.native.Test/config", this::nativeTestConfig));
     test.define("context", new VariadicBuiltin("std.native.Test/context", this::nativeTestContext));
     test.define("events", new VariadicBuiltin("std.native.Test/events", this::nativeTestEvents));
+    test.define("compare", new VariadicBuiltin("std.native.Test/compare", this::nativeTestCompare));
     test.define("run", new VariadicBuiltin("std.native.Test/run", this::nativeTestRun));
     test.define("result", new VariadicBuiltin("std.native.Test/result", this::nativeTestResult));
     test.define("passed?", new VariadicBuiltin("std.native.Test/passed?", this::nativeTestPassed));
+    test.define("actual", new VariadicBuiltin("std.native.Test/actual", values -> nativeTestInspect(values, "actual")));
+    test.define("expected", new VariadicBuiltin("std.native.Test/expected", values -> nativeTestInspect(values, "expected")));
+    test.define("failures", new VariadicBuiltin("std.native.Test/failures", values -> nativeTestInspect(values, "failures")));
+    test.define("failure-seq", new VariadicBuiltin("std.native.Test/failure-seq", values -> nativeTestInspect(values, "failure-seq")));
+    test.define("failure-count", new VariadicBuiltin("std.native.Test/failure-count", values -> nativeTestInspect(values, "failure-count")));
+    test.define("failure", new VariadicBuiltin("std.native.Test/failure", this::nativeTestFailureAt));
+    test.define("failure?", new VariadicBuiltin("std.native.Test/failure?", this::nativeTestFailurePredicate));
     HaraNamespace algo = namespace("std.native.Algo");
     HaraStaticLibrary.install(this, "std.native.Algo", StdNativeAlgo.class);
     algo.define("deque?", typePredicate("std.native.Algo/deque?", hara.lang.data.Deque.class));

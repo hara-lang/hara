@@ -2,6 +2,7 @@ package hara.truffle;
 
 import hara.kernel.base.Parser;
 import hara.lang.data.Keyword;
+import hara.lang.data.TaggedLiteral;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
 import java.io.IOException;
@@ -21,7 +22,7 @@ import org.graalvm.polyglot.io.IOAccess;
 public final class HaraNativeTestRunner {
   private HaraNativeTestRunner() {}
 
-  /** Host-neutral result extracted from a code.test summary or legacy result vector. */
+  /** Host-neutral result extracted from a code.test summary or native Result vector. */
   public record Result(
       Path path,
       boolean passed,
@@ -188,12 +189,18 @@ public final class HaraNativeTestRunner {
       int passed = 0;
       int failed = 0;
       for (Object item : items) {
-        if (!(item instanceof IMapType map)
-            || !(lookup(map, "pass") instanceof Boolean result)) {
-          throw new HaraException("test result is missing boolean :pass");
+        if (!(item instanceof TaggedLiteral tagged)
+            || !"hara/Result".equals(tagged.tag().display())
+            || !(tagged.form() instanceof ILinearType<?> fields)
+            || fields.count() != 4
+            || !(fields.nth(0) instanceof Keyword status)) {
+          throw new HaraException("direct test result must be a native Result");
         }
-        if (result) passed++;
-        else failed++;
+        Object data = fields.nth(1);
+        if (Keyword.create("success").equals(status) && Boolean.TRUE.equals(data)) passed++;
+        else if ((Keyword.create("success").equals(status) && Boolean.FALSE.equals(data))
+            || Keyword.create("error").equals(status)) failed++;
+        else throw new HaraException("test Result must contain a boolean success value or error");
       }
       return new Result(
           path,

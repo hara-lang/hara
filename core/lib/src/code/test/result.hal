@@ -19,12 +19,14 @@
         (Result/with-context
          outcome
          {:test {:actual actual :expected (descriptor expected)}}))
-      (let [checker (common/->checker expected)
-            passing (boolean (checker actual))]
-        (Result/create
-         :success passing
-         {:test {:actual actual :expected (descriptor expected)}
-          :failures []})))
+      (if (common/checker? expected)
+        (let [checker (common/->checker expected)
+              passing (boolean (checker actual))]
+          (Result/create
+           :success passing
+           {:test {:actual actual :expected (descriptor expected)}
+            :failures []}))
+        (Test/compare actual expected)))
     (catch Throwable error
       (Result/create
        :error error
@@ -33,39 +35,13 @@
 (defn result
   "Adds test identity and display data to an existing comparison Result."
   [name actual expected comparison]
-  (Result/with-context
-   comparison
-   {:test {:name name
-           :actual actual
-           :expected (descriptor expected)}}))
+  (Test/result name actual (descriptor expected) comparison))
 
-(defn passed?
-  "Returns true only for a successful true comparison Result."
-  [value]
-  (and (Result/success? value)
-       (= true (Result/data value))))
-
-(defn actual [value]
-  (get-in (Result/context value) [:test :actual]))
-
-(defn expected [value]
-  (get-in (Result/context value) [:test :expected]))
-
-(defn failures [value]
-  (vec (or (:failures (Result/context value)) [])))
-
-(defn failure-seq
-  "Returns deterministic depth-first Failure leaves for a comparison."
-  [value]
-  (vec (mapcat typed/failure-seq (failures value))))
-
-(defn failure-count [value]
-  (count (failure-seq value)))
-
-(defn failure [value index]
-  (let [values (failure-seq value)]
-    (if (< index (count values))
-      (nth values index)
-      nil)))
-
-(def failure? typed/failure?)
+(defn passed? [value] (Test/passed? value))
+(defn actual [value] (Test/actual value))
+(defn expected [value] (Test/expected value))
+(defn failures [value] (Test/failures value))
+(defn failure-seq [value] (Test/failure-seq value))
+(defn failure-count [value] (Test/failure-count value))
+(defn failure [value index] (Test/failure value index))
+(defn failure? [value] (Test/failure? value))

@@ -48,6 +48,23 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
     }
     let source = fs::read_to_string(&file)
         .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    let mut forms = parse_forms(&source)
+        .map_err(|error| format!("cannot parse {}: {error}", file.display()))?;
+    let namespace = forms
+        .first()
+        .filter(|form| {
+            matches!(form, Form::List(items) if matches!(items.first(), Some(Form::Symbol(head)) if head == "ns" || head == "ns+"))
+        })
+        .map(ToString::to_string);
+    if namespace.is_some() {
+        forms.remove(0);
+    }
+    let body = forms
+        .into_iter()
+        .map(|form| form.to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let source = format!("(pr-str (do {body}))");
     let root_text = root
         .to_str()
         .ok_or_else(|| format!("project root is not UTF-8: {}", root.display()))?
@@ -66,11 +83,14 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
             let session = kernel.session_mut(&root_session)?;
             session.install_native_socket_provider();
             session.install_native_process_provider();
-            let output = match kernel.eval(&root_session, &source) {
-                Ok(output) => output,
-                Err(error) if error.starts_with("SESSION_TRANSFER_REJECTED ") => String::new(),
-                Err(error) => return Err(format!("{}: {error}", file.display())),
-            };
+            if let Some(namespace) = namespace {
+                kernel
+                    .eval(&root_session, &namespace)
+                    .map_err(|error| format!("{}: {error}", file.display()))?;
+            }
+            let output = kernel
+                .eval(&root_session, &source)
+                .map_err(|error| format!("{}: {error}", file.display()))?;
             parse_summary(file.clone(), &output)
                 .map_err(|error| format!("{}: {error}", file.display()))
         })
@@ -152,17 +172,17 @@ fn collect(path: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
 }
 
 fn parse_summary(path: PathBuf, output: &str) -> Result<TestSummary, String> {
-    let form = parse(output).map_err(|error| format!("invalid test result: {error}"))?;
-    let form = match form {
-        Form::String(encoded) => {
-            parse(&encoded).map_err(|error| format!("invalid encoded test result: {error}"))?
-        }
-        value => value,
-    };
+    let mut form = parse(output).map_err(|error| format!("invalid test result: {error}"))?;
+    for _ in 0..2 {
+        let Form::String(encoded) = form else {
+            break;
+        };
+        form = parse(&encoded).map_err(|error| format!("invalid encoded test result: {error}"))?;
+    }
 
     match form {
         Form::Map(entries) => parse_code_test_summary(path, entries, output),
-        Form::Vector(items) | Form::List(items) => parse_legacy_results(path, items, output),
+        Form::Vector(items) | Form::List(items) => parse_direct_results(path, items, output),
         _ => Err("test file must return a code.test/run summary or test result vector".into()),
     }
 }
@@ -207,17 +227,24 @@ fn parse_code_test_summary(
     })
 }
 
-fn parse_legacy_results(path: PathBuf, items: Vec<Form>, raw: &str) -> Result<TestSummary, String> {
+fn parse_direct_results(path: PathBuf, items: Vec<Form>, raw: &str) -> Result<TestSummary, String> {
     let mut passed = 0usize;
     let mut failed = 0usize;
     for item in items {
-        let Form::Map(entries) = item else {
-            return Err("legacy test result must be a map".into());
+        let Form::Tagged(tag, fields) = item else {
+            return Err("direct test result must be a native Result".into());
         };
-        match map_get(&entries, "pass") {
-            Some(Form::Bool(true)) => passed += 1,
-            Some(Form::Bool(false)) => failed += 1,
-            _ => return Err("legacy test result is missing boolean :pass".into()),
+        if tag != "hara/Result" {
+            return Err("direct test result must be a native Result".into());
+        }
+        let Form::Vector(fields) = fields.as_ref() else {
+            return Err("native Result must contain status, data, error, and context".into());
+        };
+        match fields.as_slice() {
+            [Form::Keyword(status), Form::Bool(true), _, _] if status == "success" => passed += 1,
+            [Form::Keyword(status), Form::Bool(false), _, _] if status == "success" => failed += 1,
+            [Form::Keyword(status), _, _, _] if status == "error" => failed += 1,
+            _ => return Err("test Result must contain a boolean success value or error".into()),
         }
     }
     Ok(TestSummary {
@@ -352,6 +379,21 @@ mod tests {
         assert_eq!(summary.facts, 1);
         assert_eq!(summary.checks, 1);
         assert_eq!(summary.passed_checks, 1);
+        assert_eq!(summary.failed_checks, 0);
+    }
+
+    #[test]
+    fn runs_shared_native_test_result_api_corpus() {
+        let root = repository_root();
+        let summary = run_file(
+            root,
+            &root.join("lib/test-fixtures/std/native/test_result_api.hal"),
+        )
+        .unwrap();
+        assert!(summary.passed, "{}", summary.failure_message());
+        assert_eq!(summary.facts, 3);
+        assert_eq!(summary.checks, 3);
+        assert_eq!(summary.passed_checks, 3);
         assert_eq!(summary.failed_checks, 0);
     }
 

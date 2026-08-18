@@ -57,8 +57,10 @@ fn project_eval_registers_sources_without_a_root_mount() {
 
 #[test]
 fn project_test_accepts_native_test_vectors() {
+    let passing = format!("#{}", "hara/Result[:success true nil {}]");
+    let failing = format!("#{}", "hara/Result[:success false nil {}]");
     assert_eq!(
-        test_results("[{:name \"yes\" :pass true} {:name \"no\" :pass false}]").unwrap(),
+        test_results(&format!("[{passing} {failing}]")).unwrap(),
         (1, 1)
     );
 }
@@ -73,11 +75,9 @@ fn project_test_accepts_code_test_summaries() {
 }
 
 #[test]
-fn project_test_keeps_printed_legacy_vectors_compatible() {
-    assert_eq!(
-        test_results("\"[{:name \\\"yes\\\" :pass true}]\"").unwrap(),
-        (1, 0)
-    );
+fn project_test_keeps_printed_result_vectors_compatible() {
+    let encoded = format!("[{}]", format!("#{}", "hara/Result[:success true nil {}]"));
+    assert_eq!(test_results(&format!("{:?}", encoded)).unwrap(), (1, 0));
 }
 
 #[test]

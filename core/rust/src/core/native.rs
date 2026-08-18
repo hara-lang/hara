@@ -236,68 +236,135 @@ fn native_test_config(runner: Value, options: Value) -> Result<Value, String> {
     ])))
 }
 
-fn native_test_result(name: Value, actual: Value, expected: Value) -> Value {
-    let pass = actual == expected;
+fn native_test_context(name: Value, actual: Value, expected: Value, failures: Value) -> Value {
     Value::Map(PMap::from_iter([
-        (Value::Keyword("name".into()), name),
-        (Value::Keyword("pass".into()), Value::Bool(pass)),
-        (Value::Keyword("actual".into()), actual),
-        (Value::Keyword("expected".into()), expected),
+        (
+            Value::Keyword("test".into()),
+            Value::Map(PMap::from_iter([
+                (Value::Keyword("name".into()), name),
+                (Value::Keyword("actual".into()), actual),
+                (Value::Keyword("expected".into()), expected),
+            ])),
+        ),
+        (Value::Keyword("failures".into()), failures),
     ]))
 }
 
-fn native_test_error(name: Value, expected: Value, error: String) -> Value {
+fn native_test_failure(actual: Value, expected: Value) -> Value {
     Value::Map(PMap::from_iter([
-        (Value::Keyword("name".into()), name),
-        (Value::Keyword("pass".into()), Value::Bool(false)),
         (
-            Value::Keyword("status".into()),
-            Value::Keyword("error".into()),
+            Value::Keyword("failure/code".into()),
+            Value::Keyword("test/not-equal".into()),
         ),
-        (Value::Keyword("expected".into()), expected),
-        (Value::Keyword("error".into()), Value::String(error)),
+        (
+            Value::Keyword("failure/path".into()),
+            Value::Vector(PVector::new()),
+        ),
+        (
+            Value::Keyword("failure/in".into()),
+            Value::Vector(PVector::new()),
+        ),
+        (Value::Keyword("failure/actual".into()), actual),
+        (Value::Keyword("failure/expected".into()), expected),
+        (
+            Value::Keyword("failure/message".into()),
+            Value::String("values are not equal".into()),
+        ),
+        (
+            Value::Keyword("failure/context".into()),
+            Value::Map(PMap::new()),
+        ),
+        (
+            Value::Keyword("failure/children".into()),
+            Value::Vector(PVector::new()),
+        ),
     ]))
+}
+
+fn native_test_compare(actual: Value, expected: Value) -> Result<Value, String> {
+    let pass = actual == expected;
+    let failures = if pass {
+        Value::Vector(PVector::new())
+    } else {
+        Value::Vector(PVector::from_iter([native_test_failure(
+            actual.clone(),
+            expected.clone(),
+        )]))
+    };
+    Ok(Value::Result(Rc::new(ResultValue::success(
+        Value::Bool(pass),
+        native_test_context(Value::Nil, actual, expected, failures),
+    )?)))
+}
+
+fn native_test_result(
+    name: Value,
+    actual: Value,
+    expected: Value,
+    comparison: Value,
+) -> Result<Value, String> {
+    let Value::Result(comparison) = comparison else {
+        return Err("std.native.Test/result expects a comparison Result".into());
+    };
+    let failures = map_value(&comparison.context, &Value::Keyword("failures".into()))
+        .cloned()
+        .unwrap_or_else(|| Value::Vector(PVector::new()));
+    Ok(Value::Result(Rc::new(comparison.with_context(
+        native_test_context(name, actual, expected, failures),
+    )?)))
+}
+
+fn native_test_error(name: Value, actual: Value, expected: Value, error: String) -> Value {
+    Value::Result(Rc::new(
+        ResultValue::error(
+            caught_error(&error),
+            native_test_context(name, actual, expected, Value::Vector(PVector::new())),
+        )
+        .expect("native Test error context is a map"),
+    ))
 }
 
 fn native_test_checked_result(name: Value, metadata: Option<Value>, checked: Value) -> Value {
-    let Some(entries) = map_entries(&checked) else {
+    let Value::Result(result) = checked else {
         return native_test_error(
             name,
             Value::Nil,
-            "Test/run check function must return a result map".into(),
+            Value::Nil,
+            "Test/run check function must return a Result".into(),
         );
     };
-    if !matches!(
-        map_value(&checked, &Value::Keyword("pass".into())),
-        Some(Value::Bool(_))
-    ) {
-        return native_test_error(
-            name,
-            Value::Nil,
-            "Test/run check result requires boolean :pass".into(),
-        );
-    }
-    let mut result = PMap::from_iter(entries);
-    result = result.assoc_value(Value::Keyword("name".into()), name);
+    let mut context =
+        PMap::from_iter(map_entries(&result.context).expect("Result context is a map"));
+    let test = map_value(&result.context, &Value::Keyword("test".into()))
+        .cloned()
+        .unwrap_or_else(|| Value::Map(PMap::new()));
+    let mut test = PMap::from_iter(map_entries(&test).unwrap_or_default());
+    test = test.assoc_value(Value::Keyword("name".into()), name);
+    context = context.assoc_value(Value::Keyword("test".into()), Value::Map(test));
     if let Some(metadata) = metadata {
-        result = result.assoc_value(Value::Keyword("meta".into()), metadata);
+        context = context.assoc_value(Value::Keyword("meta".into()), metadata);
     }
-    Value::Map(result)
+    Value::Result(Rc::new(
+        result
+            .with_context(Value::Map(context))
+            .expect("native Test checked context is a map"),
+    ))
 }
 
 fn native_test_lifecycle_error(phase: &str, error: String) -> Value {
     let name = Value::String(format!("test {phase}"));
     let phase = Value::Keyword(phase.into());
-    let mut result = match native_test_error(
-        name,
-        Value::Nil,
-        error,
-    ) {
-        Value::Map(result) => result,
-        _ => unreachable!(),
+    let Value::Result(result) = native_test_error(name, Value::Nil, Value::Nil, error) else {
+        unreachable!()
     };
-    result = result.assoc_value(Value::Keyword("phase".into()), phase);
-    Value::Map(result)
+    Value::Result(Rc::new(
+        result
+            .with_context(Value::Map(PMap::from_iter([(
+                Value::Keyword("phase".into()),
+                phase,
+            )])))
+            .expect("native Test lifecycle context is a map"),
+    ))
 }
 
 fn native_test_lifecycle(lifecycle: &Value, phase: &str) -> Result<(), String> {
@@ -336,48 +403,57 @@ fn native_test_run(
         None => true,
     };
     if setup_ok {
-      for (index, case) in cases.iter().enumerate() {
-        let fallback_name = Value::String(format!("invalid case {}", index + 1));
-        let Some(entries) = map_entries(case) else {
-            results.push(native_test_error(
-                fallback_name,
-                Value::Nil,
-                "Test/run case must be a map".into(),
-            ));
-            continue;
-        };
-        let _ = entries;
-        let name = map_value(case, &Value::Keyword("name".into()))
-            .cloned()
-            .unwrap_or(fallback_name);
-        let expected = map_value(case, &Value::Keyword("expected".into())).cloned();
-        let test = map_value(case, &Value::Keyword("test".into())).cloned();
-        let metadata = map_value(case, &Value::Keyword("meta".into())).cloned();
-        let result = match (test, expected) {
-            (Some(test), Some(expected)) => match &check_function {
-                Some(check) => match call_value(check.clone(), vec![test, expected]) {
-                    Ok(checked) => native_test_checked_result(name, metadata, checked),
-                    Err(error) => {
-                        let failed = native_test_error(name.clone(), Value::Nil, error);
-                        native_test_checked_result(name, metadata, failed)
-                    }
+        for (index, case) in cases.iter().enumerate() {
+            let fallback_name = Value::String(format!("invalid case {}", index + 1));
+            let Some(entries) = map_entries(case) else {
+                results.push(native_test_error(
+                    fallback_name,
+                    Value::Nil,
+                    Value::Nil,
+                    "Test/run case must be a map".into(),
+                ));
+                continue;
+            };
+            let _ = entries;
+            let name = map_value(case, &Value::Keyword("name".into()))
+                .cloned()
+                .unwrap_or(fallback_name);
+            let expected = map_value(case, &Value::Keyword("expected".into())).cloned();
+            let test = map_value(case, &Value::Keyword("test".into())).cloned();
+            let metadata = map_value(case, &Value::Keyword("meta".into())).cloned();
+            let result = match (test, expected) {
+                (Some(test), Some(expected)) => match &check_function {
+                    Some(check) => match call_value(check.clone(), vec![test, expected]) {
+                        Ok(checked) => native_test_checked_result(name, metadata, checked),
+                        Err(error) => {
+                            let failed =
+                                native_test_error(name.clone(), Value::Nil, Value::Nil, error);
+                            native_test_checked_result(name, metadata, failed)
+                        }
+                    },
+                    None => match call_value(test, Vec::new()).and_then(native_test_await) {
+                        Ok(actual) => {
+                            let comparison = native_test_compare(actual.clone(), expected.clone())?;
+                            native_test_result(name, actual, expected, comparison)?
+                        }
+                        Err(error) => native_test_error(name, Value::Nil, expected, error),
+                    },
                 },
-                None => match call_value(test, Vec::new()).and_then(native_test_await) {
-                    Ok(actual) => native_test_result(name, actual, expected),
-                    Err(error) => native_test_error(name, expected, error),
-                },
-            },
-            (None, expected) => native_test_error(
-                name,
-                expected.unwrap_or(Value::Nil),
-                "Test/run case requires :test".into(),
-            ),
-            (Some(_), None) => {
-                native_test_error(name, Value::Nil, "Test/run case requires :expected".into())
-            }
-        };
-          results.push(result);
-      }
+                (None, expected) => native_test_error(
+                    name,
+                    Value::Nil,
+                    expected.unwrap_or(Value::Nil),
+                    "Test/run case requires :test".into(),
+                ),
+                (Some(_), None) => native_test_error(
+                    name,
+                    Value::Nil,
+                    Value::Nil,
+                    "Test/run case requires :expected".into(),
+                ),
+            };
+            results.push(result);
+        }
     }
     if let Some(lifecycle) = &lifecycle {
         if let Err(error) = native_test_lifecycle(lifecycle, "teardown") {
@@ -398,6 +474,106 @@ fn native_test_await(value: Value) -> Result<Value, String> {
         },
         value => Ok(value),
     }
+}
+
+fn native_test_require_result(value: Value, operation: &str) -> Result<Rc<ResultValue>, String> {
+    match value {
+        Value::Result(result) => Ok(result),
+        _ => Err(format!("std.native.Test/{operation} expects a Result")),
+    }
+}
+
+fn native_test_context_value(result: &ResultValue, key: &str) -> Value {
+    native_test_map_value(&result.context, key).unwrap_or(Value::Nil)
+}
+
+fn native_test_map_value(value: &Value, key: &str) -> Option<Value> {
+    map_entries(value)?
+        .into_iter()
+        .find_map(|(candidate, value)| {
+            matches!(candidate, Value::Keyword(keyword) if keyword.as_str() == key).then_some(value)
+        })
+}
+
+fn native_test_detail(result: &ResultValue, key: &str) -> Value {
+    let test = native_test_context_value(result, "test");
+    native_test_map_value(&test, key).unwrap_or(Value::Nil)
+}
+
+fn native_test_failure_shape(value: &Value) -> bool {
+    let Some(_) = map_entries(value) else {
+        return false;
+    };
+    let keyword = |key: &str| matches!(native_test_map_value(value, key), Some(Value::Keyword(_)));
+    let vector = |key: &str| {
+        matches!(
+            native_test_map_value(value, key),
+            Some(Value::Vector(_) | Value::Tuple(_))
+        )
+    };
+    let string = |key: &str| matches!(native_test_map_value(value, key), Some(Value::String(_)));
+    let map = |key: &str| {
+        native_test_map_value(value, key).is_some_and(|value| map_entries(&value).is_some())
+    };
+    let children_valid = match native_test_map_value(value, "failure/children") {
+        Some(Value::Vector(children)) => children.iter().all(native_test_failure_shape),
+        Some(Value::Tuple(children)) => children.iter().all(native_test_failure_shape),
+        _ => false,
+    };
+    keyword("failure/code")
+        && vector("failure/path")
+        && vector("failure/in")
+        && native_test_map_value(value, "failure/actual").is_some()
+        && native_test_map_value(value, "failure/expected").is_some()
+        && string("failure/message")
+        && map("failure/context")
+        && vector("failure/children")
+        && children_valid
+}
+
+fn native_test_failure_leaves(value: &Value, leaves: &mut Vec<Value>) {
+    if !native_test_failure_shape(value) {
+        return;
+    }
+    match native_test_map_value(value, "failure/children") {
+        Some(Value::Vector(children)) => {
+            if children.is_empty() {
+                leaves.push(value.clone());
+            } else {
+                for child in children.iter() {
+                    native_test_failure_leaves(child, leaves);
+                }
+            }
+        }
+        Some(Value::Tuple(children)) => {
+            if children.is_empty() {
+                leaves.push(value.clone());
+            } else {
+                for child in children.iter() {
+                    native_test_failure_leaves(child, leaves);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn native_test_failures(result: &ResultValue) -> Value {
+    match native_test_context_value(result, "failures") {
+        Value::Vector(failures) => Value::Vector(failures),
+        Value::Tuple(failures) => Value::Vector(PVector::from_iter(failures.iter().cloned())),
+        _ => Value::Vector(PVector::new()),
+    }
+}
+
+fn native_test_failure_seq(result: &ResultValue) -> Value {
+    let mut leaves = Vec::new();
+    if let Value::Vector(failures) = native_test_failures(result) {
+        for failure in failures.iter() {
+            native_test_failure_leaves(failure, &mut leaves);
+        }
+    }
+    Value::Vector(PVector::from_iter(leaves))
 }
 
 fn native_test_operation(
@@ -481,14 +657,24 @@ fn native_test_operation(
                 ]),
             )))
         }
+        "compare" => {
+            if forms.len() != 2 {
+                return Err("std.native.Test/compare expects actual and expected".into());
+            }
+            native_test_compare(eval(&forms[0], env)?, eval(&forms[1], env)?)
+        }
         "result" => {
-            if forms.len() != 3 {
-                return Err("std.native.Test/result expects name, actual, and expected".into());
+            if forms.len() != 4 {
+                return Err(
+                    "std.native.Test/result expects name, actual, expected, and comparison Result"
+                        .into(),
+                );
             }
             let name = eval(&forms[0], env)?;
             let actual = eval(&forms[1], env)?;
             let expected = eval(&forms[2], env)?;
-            Ok(native_test_result(name, actual, expected))
+            let comparison = eval(&forms[3], env)?;
+            native_test_result(name, actual, expected, comparison)
         }
         "run" => {
             if forms.is_empty() || forms.len() > 3 {
@@ -497,15 +683,26 @@ fn native_test_operation(
                 );
             }
             let cases = eval(&forms[0], env)?;
-            let second = if forms.len() >= 2 { Some(eval(&forms[1], env)?) } else { None };
-            let third = if forms.len() == 3 { Some(eval(&forms[2], env)?) } else { None };
+            let second = if forms.len() >= 2 {
+                Some(eval(&forms[1], env)?)
+            } else {
+                None
+            };
+            let third = if forms.len() == 3 {
+                Some(eval(&forms[2], env)?)
+            } else {
+                None
+            };
             let (check_function, lifecycle) = match (second, third) {
                 (Some(check), Some(lifecycle)) => (Some(check), Some(lifecycle)),
                 (Some(value), None) if map_entries(&value).is_some() => (None, Some(value)),
                 (check, None) => (check, None),
                 (None, Some(_)) => unreachable!(),
             };
-            if lifecycle.as_ref().is_some_and(|value| map_entries(value).is_none()) {
+            if lifecycle
+                .as_ref()
+                .is_some_and(|value| map_entries(value).is_none())
+            {
                 return Err("std.native.Test/run lifecycle must be a map".into());
             }
             native_test_run(cases, check_function, lifecycle)
@@ -514,11 +711,53 @@ fn native_test_operation(
             if forms.len() != 1 {
                 return Err("std.native.Test/passed? expects one result".into());
             }
-            let result = eval(&forms[0], env)?;
-            match map_value(&result, &Value::Keyword("pass".into())) {
-                Some(Value::Bool(pass)) => Ok(Value::Bool(*pass)),
-                _ => Err("std.native.Test/passed? expects a test result map".into()),
+            let result = native_test_require_result(eval(&forms[0], env)?, "passed?")?;
+            Ok(Value::Bool(
+                result.is_success() && matches!(result.data, Value::Bool(true)),
+            ))
+        }
+        "actual" | "expected" | "failures" | "failure-seq" | "failure-count" => {
+            if forms.len() != 1 {
+                return Err(format!("std.native.Test/{operation} expects one Result"));
             }
+            let result = native_test_require_result(eval(&forms[0], env)?, operation)?;
+            Ok(match operation {
+                "actual" => native_test_detail(&result, "actual"),
+                "expected" => native_test_detail(&result, "expected"),
+                "failures" => native_test_failures(&result),
+                "failure-seq" => native_test_failure_seq(&result),
+                "failure-count" => match native_test_failure_seq(&result) {
+                    Value::Vector(values) => Value::Number(values.len() as i64),
+                    _ => unreachable!(),
+                },
+                _ => unreachable!(),
+            })
+        }
+        "failure" => {
+            if forms.len() != 2 {
+                return Err("std.native.Test/failure expects a Result and index".into());
+            }
+            let result = native_test_require_result(eval(&forms[0], env)?, "failure")?;
+            let index = match eval(&forms[1], env)? {
+                Value::Number(index) if index >= 0 => index as usize,
+                _ => {
+                    return Err(
+                        "std.native.Test/failure index must be a non-negative integer".into(),
+                    )
+                }
+            };
+            match native_test_failure_seq(&result) {
+                Value::Vector(values) => Ok(values.get(index).cloned().unwrap_or(Value::Nil)),
+                _ => unreachable!(),
+            }
+        }
+        "failure?" => {
+            if forms.len() != 1 {
+                return Err("std.native.Test/failure? expects one value".into());
+            }
+            Ok(Value::Bool(native_test_failure_shape(&eval(
+                &forms[0], env,
+            )?)))
         }
         _ => Err(format!("unknown std.native.Test operation: {operation}")),
     }
@@ -1515,20 +1754,21 @@ fn native_package_operation(
     if method == "catalog" {
         return Ok(catalog.catalog_value());
     }
-    let target =
-        match arguments.first() {
-            Some(Value::Symbol(value)) => value.as_str().to_owned(),
-            Some(Value::String(value)) => value.clone(),
-            Some(Value::Keyword(value)) => value.as_str().to_owned(),
-            Some(value @ Value::OrderedMap(_)) if method == "ensure" || method == "unload" => {
-                package_descriptor_coordinate(value).ok_or_else(|| {
-                    format!("std.native.Package/{method} descriptor requires :package/coordinate")
-                })?
-            }
-            _ => return Err(format!(
+    let target = match arguments.first() {
+        Some(Value::Symbol(value)) => value.as_str().to_owned(),
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Keyword(value)) => value.as_str().to_owned(),
+        Some(value @ Value::OrderedMap(_)) if method == "ensure" || method == "unload" => {
+            package_descriptor_coordinate(value).ok_or_else(|| {
+                format!("std.native.Package/{method} descriptor requires :package/coordinate")
+            })?
+        }
+        _ => {
+            return Err(format!(
                 "std.native.Package/{method} expects a namespace, coordinate, or exact descriptor"
-            )),
-        };
+            ))
+        }
+    };
     let found = catalog.find(&target);
     if method == "find" {
         return Ok(found.map(|(_, value)| value).unwrap_or(Value::Nil));
