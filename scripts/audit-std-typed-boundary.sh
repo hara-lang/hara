@@ -6,6 +6,7 @@ lint_adapter='core/lib/src/tool/lint/schema.hal'
 lint_analyzer='core/lib/src/tool/lint/analyze.hal'
 
 required_paths=(
+  'core/lib/src/std/typed/registry.hal'
   'core/lib/src/std/typed/schema.hal'
   'core/lib/src/std/typed/infer.hal'
   "$lint_adapter"
@@ -86,14 +87,22 @@ if [[ "${#typed_contract_files[@]}" -gt 0 ]] && \
   failed=1
 fi
 
-for namespace in std.typed.schema std.typed.infer; do
+for namespace in std.typed.registry std.typed.schema std.typed.infer; do
   if ! grep -Fxq "$namespace" core/rust/standard-library.namespaces; then
     echo "std.typed namespace is missing from the standard-library inventory: $namespace" >&2
     failed=1
   fi
 done
-if ! grep -Fxq 'std.typed.schema' core/rust/bootstrap.namespaces; then
-  echo 'The portable schema core is missing from the embedded runtime catalog.' >&2
+for namespace in std.typed.registry std.typed.schema; do
+  if ! grep -Fxq "$namespace" core/rust/bootstrap.namespaces; then
+    echo "Portable schema bootstrap namespace is missing: $namespace" >&2
+    failed=1
+  fi
+done
+registry_line=$(grep -n -F 'std.typed.registry' core/rust/bootstrap.namespaces | cut -d: -f1)
+schema_line=$(grep -n -F 'std.typed.schema' core/rust/bootstrap.namespaces | cut -d: -f1)
+if [[ -n "$registry_line" && -n "$schema_line" && "$registry_line" -ge "$schema_line" ]]; then
+  echo 'std.typed.registry must bootstrap before std.typed.schema.' >&2
   failed=1
 fi
 if grep -Fxq 'tool.lint.schema' core/rust/bootstrap.namespaces; then
