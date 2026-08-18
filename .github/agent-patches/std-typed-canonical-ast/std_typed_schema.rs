@@ -37,7 +37,7 @@ fn native_schema_ast_is_the_portable_normal_form() {
                          ast (Schema/ast compiled)] \
                      (and (= normalized ast) \
                           (= ast (typed/normalize ast)) \
-                          (= compiled (schema ast))))) \
+                          (= ast (Schema/ast (schema ast)))))) \
                  (let [surfaces \
                        [:int \
                         :vendor/type \
