@@ -29,13 +29,15 @@ public final class ToolVmLibrary {
     expectArity("provider", arguments, 0);
     return orderedMap(
         "provider/id", keyword("truffle"),
-        "provider/operations", keywords("validate", "inspect", "transform", "disassemble"),
+        "provider/operations",
+            keywords("validate", "inspect", "transform", "execute", "disassemble", "conform"),
         "provider/formats", orderedMap(
             "hal", vector(),
-            "halc", keywords("validate", "inspect"),
-            "hbc", keywords("validate", "inspect", "disassemble")),
+            "halc", keywords("validate", "inspect", "execute", "conform"),
+            "hbc", keywords("validate", "inspect", "execute", "disassemble", "conform")),
         "provider/transforms", vector(vector(HAL, HALC)),
-        "provider/engines", orderedMap());
+        "provider/engines",
+            orderedMap("halc", keyword("ast-lowering"), "hbc", keyword("reference-vm")));
   }
 
   @HaraExport(
@@ -123,6 +125,22 @@ public final class ToolVmLibrary {
         namespace, resource, source.getBytes(StandardCharsets.UTF_8), forms);
   }
 
+  @HaraExport(
+      name = "execute",
+      doc = "Authenticates, validates, and transactionally executes HALC or HBC bytes.",
+      arglists = {"[format bytes options]"})
+  public static Object execute(HaraContext context, Object[] arguments) {
+    expectArity("execute", arguments, 3);
+    String format = format(arguments[0], "execute");
+    byte[] bytes = bytes(arguments[1], "execute");
+    requireEmptyOptions(arguments[2], "execute");
+    return switch (format) {
+      case "halc" -> context.executeToolVmHalc(HalcArtifact.decode(bytes));
+      case "hbc" -> context.executeToolVmHbc(HbcCodec.decode(bytes));
+      default -> throw unsupported(format, "execute");
+    };
+  }
+
   private static Object inspectHalc(byte[] bytes) {
     HalcArtifact.Module module = HalcArtifact.decode(bytes);
     int payloadBytes = unsignedInt(bytes, 8, "HALC payload length");
@@ -194,6 +212,18 @@ public final class ToolVmLibrary {
     Object unwrapped = HaraBox.unwrap(value);
     if (unwrapped instanceof byte[] bytes) return bytes.clone();
     throw new HaraException("tool.vm.provider/" + operation + " expects Bytes");
+  }
+
+  private static void requireEmptyOptions(Object value, String operation) {
+    Object raw = HaraBox.unwrap(value);
+    if (!(raw instanceof IMapType<?, ?> options)) {
+      throw new HaraException("tool.vm.provider/" + operation + " expects options as a map");
+    }
+    if (options.count() != 0) {
+      Map.Entry<?, ?> first = options.iterator().next();
+      throw new HaraException(
+          "tool.vm.provider/" + operation + " does not support option " + first.getKey());
+    }
   }
 
   private static HaraException unsupported(String format, String operation) {
