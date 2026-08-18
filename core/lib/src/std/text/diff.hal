@@ -141,16 +141,28 @@
 (defn ->string
   "Returns a readable line-oriented representation of deltas."
   [deltas]
-  (str/join
-   "\n"
-   (map (fn [delta]
-          (let [original (:original delta)
-                revised (:revised delta)]
-            (str "@@ -" (:position original) "," (:count original)
-                 " +" (:position revised) "," (:count revised) " @@\n"
-                 (str/join "\n" (concat (map #(str "-" %) (:lines original))
-                                           (map #(str "+" %) (:lines revised)))))))
-        (create-patch deltas))))
+  (let [escape "\u001B["
+        reset (str escape "0m")
+        bold (fn [value] (str escape "1m" value reset))
+        deleted (fn [value]
+                  (str escape "31m-"
+                       escape "31m" escape "40m" value reset reset))
+        inserted (fn [value]
+                   (str escape "32m+"
+                        escape "32m" escape "40m" value reset reset))]
+    (str/join
+     "\n"
+     (mapcat
+      (fn [delta]
+        (let [original (:original delta)
+              revised (:revised delta)]
+          (concat
+           [(bold (str "@@ -" (:position original) "," (:count original)
+                       " +" (:position revised) "," (:count revised) " "))]
+           (map deleted (:lines original))
+           (map inserted (:lines revised))
+           [""])))
+      (create-patch deltas)))))
 
 (defn summary
   "Counts inserted and deleted lines in deltas."

@@ -136,4 +136,199 @@
      (= (:after first-pass) (:after second-pass))])
   => [true false true])
 
+(def +semantic-ledger+
+  [{:source/refer 'tahto.base.emit-data/emit-data
+    :target/refer 'lang.common.emit-data/emit-data
+    :disposition :direct
+    :stage/from :emit
+    :stage/to :emit
+    :provenance {:repository :foundation-base :path "src/tahto/base/emit_data.clj"}
+    :validation 'lang.common.emit-data-test/emits-data}
+   {:source/refer 'tahto.typed.xtalk-infer/infer-type
+    :target/refer 'lang.common.emit-rewrite/canonical-stage
+    :disposition :test-vector
+    :stage/from :analysis
+    :stage/to :canonical
+    :reason :portable-access-lowering-moved
+    :provenance {:repository :foundation-base :path "test/tahto/typed/xtalk_infer_test.clj"}
+    :validation 'lang.common.emit-rewrite-test/lowers-portable-access}
+   {:source/refer 'tahto.core.library/snapshot
+    :disposition :obsolete
+    :stage/from :runtime
+    :reason :replaced-by-source-owned-books
+    :provenance {:repository :foundation-base :path "src/tahto/core/library.clj"}}
+   {:target/refer 'lang.base.v1.grammar-spec/fingerprint
+    :disposition :new-only
+    :stage/to :materialize
+    :reason :versioned-grammar-requires-reproducibility
+    :validation 'lang.base.v1.grammar-spec-test/stable-fingerprint}])
+
+(fact "semantic migration records cover all five architectural dispositions"
+  (let [records
+        (conj +semantic-ledger+
+              {:source/refer 'tahto.base.emit-special/deref-form
+               :target/refer 'lang.common.emit-special/deref-form
+               :disposition :adapted
+               :reason :host-capability-is-explicit
+               :provenance {:repository :foundation-base}
+               :validation 'lang.common.emit-special-test/explicit-host-capability})]
+    [(migrate/migration-ledger-valid? records)
+     (:dispositions (migrate/migration-ledger-plan records))])
+  => [true {:direct 1 :test-vector 1 :obsolete 1 :new-only 1 :adapted 1}])
+
+(fact "semantic ledger validation reports missing contracts without writing"
+  (let [plan
+        (migrate/migration-ledger-plan
+         [{:source/refer 'tahto.base.emit/emit
+           :disposition :adapted}])]
+    [(:write plan)
+     (:valid plan)
+     (set (map :migration/error (:diagnostics plan)))])
+  => [false false
+      #{:migration/missing-target
+        :migration/missing-provenance
+        :migration/missing-validation
+        :migration/missing-reason}])
+
+(fact "semantic ledger rejects duplicate ownership for one source reference"
+  (let [record (first +semantic-ledger+)
+        duplicate (assoc record :target/refer 'lang.common.emit/emit-data)
+        diagnostics (migrate/migration-ledger-diagnostics [record duplicate])]
+    [(count diagnostics)
+     (:migration/error (first diagnostics))
+     (:owners (first diagnostics))])
+  => [1 :migration/duplicate-source
+      ['lang.common.emit-data/emit-data 'lang.common.emit/emit-data]])
+
+(fact "semantic ledger queries fields and qualified reference namespaces"
+  [(mapv :source/refer
+         (migrate/migration-ledger-query
+          +semantic-ledger+
+          {:source/namespace 'tahto.typed.xtalk-infer
+           :stage/to :canonical}))
+   (mapv :target/refer
+         (migrate/migration-ledger-query
+          +semantic-ledger+
+          {:disposition :new-only}))]
+  => [['tahto.typed.xtalk-infer/infer-type]
+      ['lang.base.v1.grammar-spec/fingerprint]])
+
+(fact "Foundation language authority starts as a valid concrete ledger"
+  [(migrate/migration-ledger-valid? migrate/+foundation-language-ledger+)
+   (mapv :source/refer migrate/+foundation-language-ledger+)
+   (mapv :validation migrate/+foundation-language-ledger+)]
+  => [true
+      ['tahto.base.emit-data/emit-data
+       'tahto.base.emit-template/emit-template
+       'tahto.base.grammar/build
+       'tahto.base.preprocess-base/to-input
+       'tahto.common.book/book]
+      ['lang.common.emit-data-test/run
+       'lang.common.emit-template-test/run
+       'lang.common.grammar-api-test/run
+       'lang.common.emit-preprocess-test/run
+       'lang.common.book-test/run]])
+
+(fact "dry plans explain materialize and adapt actions without writing"
+  (let [plan
+        (migrate/migration-ledger-plan migrate/+foundation-language-ledger+)]
+    [(:write plan)
+     (:valid plan)
+     (:actions plan)
+     (mapv (fn [item]
+             [(:action item) (:status item) (:write item)])
+           (:queue plan))])
+  => [false true {:materialize 2 :adapt 3}
+      [[:materialize :ready false]
+       [:materialize :ready false]
+       [:adapt :ready false]
+       [:adapt :ready false]
+       [:adapt :ready false]]])
+
+(fact "invalid records become blocked queue entries"
+  (select-keys
+   (migrate/migration-record-plan
+    {:source/refer 'tahto.base.emit/emit
+     :disposition :adapted})
+   [:action :status :write])
+  => {:action :adapt :status :blocked :write false})
+
+(fact "inventory audits accept fully accounted source target and validation sets"
+  (let [records migrate/+foundation-language-ledger+
+        inventory
+        {:source/references (mapv :source/refer records)
+         :target/references (mapv :target/refer records)
+         :validation/references (mapv :validation records)}
+        audit (migrate/migration-ledger-audit records inventory)
+        plan (migrate/migration-ledger-plan records inventory)]
+    [(:valid audit)
+     (:source/references audit)
+     (:diagnostics audit)
+     (:valid plan)
+     (set (map :status (:queue plan)))])
+  => [true 5 [] true #{:ready}])
+
+(fact "inventory audits block stale references and unaccounted source authority"
+  (let [record (first migrate/+foundation-language-ledger+)
+        inventory
+        {:source/references ['tahto.base.emit-common/emit-common]
+         :target/references []
+         :validation/references []}
+        audit (migrate/migration-ledger-audit [record] inventory)
+        plan (migrate/migration-ledger-plan [record] inventory)]
+    [(set (map :migration/error (:diagnostics audit)))
+     (:valid plan)
+     (:status (first (:queue plan)))])
+  => [#{:migration/stale-source
+        :migration/stale-target
+        :migration/stale-validation
+        :migration/unaccounted-source}
+      false
+      :blocked])
+
+(fact "Foundation emitter references are extracted from fact metadata"
+  (migrate/source-references
+   "^{:refer tahto.base.emit-common/emit-free :added \"4.0\"}\n(fact \"one\" 1 => 1)\n^{:refer lang.common.emit/emit}\n"
+   "tahto.base.emit")
+  => ['tahto.base.emit-common/emit-free])
+
+(fact "Foundation emitter records classify direct and stage-adapted authority"
+  (let [records
+        (migrate/foundation-emitter-ledger-records
+         {:path "test/tahto/base/emit_common_test.clj"
+          :target/namespace "lang.common.emit-common-test"
+          :source
+          "^{:refer tahto.base.emit-common/emit-free}\n(fact \"direct\" 1 => 1)\n^{:refer tahto.base.emit-block/emit-block}\n(fact \"adapted\" 1 => 1)"})]
+    (mapv (fn [record]
+            [(:source/refer record)
+             (:target/refer record)
+             (:disposition record)
+             (:stage/to record)
+             (boolean (:reason record))])
+          records))
+  => [['tahto.base.emit-common/emit-free
+       'lang.common.emit-common/emit-free
+       :direct :emit false]
+      ['tahto.base.emit-block/emit-block
+       'lang.common.emit-block/emit-block
+       :adapted :emit-adapter true]])
+
+(fact "emitter inventories leave absent target facts explicitly blocked"
+  (let [source-unit
+        {:path "test/tahto/base/emit_common_test.clj"
+         :target/namespace "lang.common.emit-common-test"
+         :source
+         "^{:refer tahto.base.emit-common/emit-free}\n^{:refer tahto.base.emit-block/emit-block}"}
+        target-unit
+        {:namespace "lang.common.emit-common-test"
+         :source "^{:refer lang.common.emit-common/emit-free}"}
+        generated (migrate/foundation-emitter-inventory
+                   [source-unit] [target-unit])
+        plan (migrate/migration-ledger-plan
+              (:records generated) (:inventory generated))]
+    [(:valid plan)
+     (mapv :status (:queue plan))
+     (set (map :migration/error (:diagnostics plan)))])
+  => [false [:ready :blocked] #{:migration/stale-target}])
+
 (pr-str (run {:namespace "code.migrate-test"}))

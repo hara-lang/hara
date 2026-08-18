@@ -1,6 +1,5 @@
 (ns lang.common.emit-common
   (:require
-            [lang.common.emit :as emit]
             [lang.common.emit-helper :as helper]
             [lang.common.util :as util]))
 
@@ -38,47 +37,71 @@
   `(binding [*indent* (+ *indent* (or (first ~increments) 2))]
      ~@body))
 
-(defn- with-emitter
-  [f]
-  (binding [emit/*indent* *indent*
-            emit/*compressed* *compressed*
-            emit/*emit-fn* *emit-fn*]
-    (f)))
-
 (defn newline-indent
   "returns a newline with indent"
   {:added "3.0"}
   []
-  (with-emitter (fn [] (emit/newline-indent))))
+  (if *compressed* " " (str "\n" (str/repeat " " *indent*))))
 
 (defn emit-reserved-value
   "emits a reserved value"
   {:added "4.0"}
   [form grammar mopts]
-  (with-emitter
-   (fn [] (emit/emit-reserved-value form grammar mopts))))
+  (let [entry (get-in grammar [:reserved form])]
+    (if entry
+      (if (:value entry)
+        (or (:free entry) (:raw entry)
+            (throw (ex-info "Reserved value has no emitted representation"
+                            {:form form :entry entry})))
+        (throw (ex-info "Reserved operation cannot be used as a value"
+                        {:form form :entry entry})))
+      nil)))
 
 (defn emit-free-raw
   "emits free values"
   {:added "4.0"}
   [sep args grammar mopts]
-  (with-emitter
-   (fn [] (emit/emit-free-raw sep args grammar mopts))))
+  (let [values
+        (binding [*indent* 0]
+          (vec (map (fn [value]
+                      [value (cond (string? value) value
+                                   (keyword? value)
+                                   (or (emit-reserved-value value grammar mopts)
+                                       (name value))
+                                   :else (*emit-fn* value grammar mopts))])
+                    args)))]
+    (if (empty? values)
+      ""
+      (loop [previous (first (first values))
+             output (second (first values))
+             remaining (rest values)]
+        (if (empty? remaining)
+          output
+          (let [current (first remaining)
+                value (first current)
+                emitted (second current)]
+            (recur value
+                   (str output
+                        (if (or (char? previous) (char? value))
+                          ""
+                          (or sep " "))
+                        emitted)
+                   (rest remaining))))))))
 
 (defn emit-free
   "emits a free form"
   {:added "4.0"}
   [sep form grammar mopts]
-  (with-emitter
-   (fn [] (emit/emit-free-raw sep (rest form) grammar mopts))))
+  (emit-free-raw sep (rest form) grammar mopts))
 
 (defn emit-comment
   "emits a comment"
   {:added "4.0"}
   [raw form grammar mopts]
-  (with-emitter
-   (fn []
-     (emit/emit-comment form {:raw raw} grammar mopts))))
+  (let [prefix (or raw (get-in grammar [:default :comment :prefix]) "//")
+        lines (str/split-lines (emit-free-raw " " (rest form) grammar mopts))]
+    (str/join (newline-indent)
+              (map (fn [line] (str prefix " " line)) lines))))
 
 (defn emit-indent
   "emits an indented form"
@@ -103,13 +126,21 @@
   ([array grammar mopts]
    (emit-array array grammar mopts *emit-fn*))
   ([array grammar mopts emit-fn]
-   (emit/emit-array array grammar mopts emit-fn)))
+   (map (fn [value] (emit-fn value grammar mopts)) array)))
 
 (defn emit-wrappable?
   "checks whether a form must be wrapped when nested"
   {:added "4.0"}
   [form grammar]
-  (emit/emit-wrappable? form grammar))
+  (if (list? form)
+    (let [entry (get-in grammar [:reserved (first form)])
+          mode (:emit entry)]
+      (or (:wrappable entry)
+          (reduce (fn [found candidate] (or found (= candidate mode)))
+                  false
+                  [:infix :infix* :infix- :infix-if :assign
+                   :bi :prefix :postfix :fn])))
+    false))
 
 (defn emit-squash
   "emits a squashed representation"
@@ -223,8 +254,16 @@
   "emits one ternary expression"
   {:added "4.0"}
   [form grammar mopts]
-  (with-emitter
-   (fn [] (emit/emit-infix-if form nil grammar mopts))))
+  (let [arguments (vec (rest form))]
+    (if (not (= 3 (count arguments)))
+      (throw (ex-info "Ternary operation expects three arguments" {:form form}))
+      (let [space (get-in grammar [:default :common :space])
+            infix (get-in grammar [:default :infix :if])]
+        (str (emit-wrapping (nth arguments 0) grammar mopts)
+             space (or (:check infix) "?") space
+             (emit-wrapping (nth arguments 1) grammar mopts)
+             space (or (:then infix) ":") space
+             (emit-wrapping (nth arguments 2) grammar mopts))))))
 
 (defn- drop-last-value [values]
   (vec (take (- (count values) 1) values)))
@@ -292,13 +331,16 @@
   {:added "4.0"}
   [raw args grammar mopts]
   (let [multi (get-in grammar [:default :return :multi])
-        values (vec args)]
+        values (vec args)
+        space (get-in grammar [:default :common :space])
+        separator (get-in grammar [:default :common :sep])]
     (if (and (not multi) (> (count values) 1))
       (throw (ex-info "One or zero arguments for return"
                       {:raw raw :arguments values}))
-      (with-emitter
-       (fn [] (emit/emit-return (apply list (concat ['return] values))
-                                {:raw raw} grammar mopts))))))
+      (str raw
+           (if (empty? values) "" space)
+           (str/join (str separator space)
+                     (emit-array values grammar mopts))))))
 
 (defn emit-return
   "emits a return operation"
@@ -428,7 +470,7 @@
           (helper/pr-single form)
           (= token-key :symbol) (emit-symbol form grammar mopts)
           custom (custom form)
-          as (if (fn? as) (as form) as)
+          as (if (and (fn? as) (not (keyword? as))) (as form) as)
           emit-fn (emit-fn form grammar mopts)
           :else (pr-str form))))
 
@@ -586,15 +628,46 @@
   "emits one index or member-access entry"
   {:added "3.0"}
   [entry grammar mopts]
-  (with-emitter
-   (fn [] (emit/emit-index-entry entry grammar mopts))))
+  (cond (symbol? entry)
+        (if (namespace entry)
+          (throw (ex-info "Index symbol cannot be namespaced" {:entry entry}))
+          (str "." (emit-symbol entry grammar mopts)))
+
+        (list? entry)
+        (let [operation (first entry)
+              operation (if (string? operation) (symbol operation) operation)
+              apply-token (get-in grammar [:default :invoke :apply])
+              braces (meta operation)]
+          (if (not (symbol? operation))
+            (throw (ex-info "Index invocation requires a symbol" {:entry entry}))
+            (emit-invoke-raw
+             (str apply-token
+                  (emit-symbol operation grammar mopts)
+                  (if (empty? braces) "" (*emit-fn* braces grammar mopts)))
+             (rest entry) grammar mopts)))
+
+        (vector? entry)
+        (if (not (= 1 (count entry)))
+          (throw (ex-info "Index vector requires one value" {:entry entry}))
+          (let [options (helper/get-options grammar [:default :index])]
+            (str (:start options)
+                 (*emit-fn* (first entry) grammar mopts)
+                 (:end options))))
+
+        (set? entry) (str "." (*emit-fn* entry grammar mopts))
+        :else (throw (ex-info "Invalid index entry" {:entry entry}))))
 
 (defn emit-index
   "emits an indexed expression"
   {:added "3.0"}
   [_ args grammar mopts]
-  (with-emitter
-   (fn [] (emit/emit-index (apply list (concat ['.] args)) nil grammar mopts))))
+  (if (< (count args) 2)
+    (throw (ex-info "Indexed expression requires two or more arguments"
+                    {:arguments args}))
+    (let [target (emit-wrapping (first args) grammar mopts)
+          entries (map (fn [entry] (emit-index-entry entry grammar mopts))
+                       (rest args))]
+      (apply str target entries))))
 
 (defn emit-op
   "dispatches a reserved common operation"

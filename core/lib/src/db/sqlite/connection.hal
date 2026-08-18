@@ -1,0 +1,78 @@
+;; ============================================================================
+;; db.sqlite.connection — shared SQLite connection dispatch.
+;;
+;; Concrete providers own connection handles and return promises. This record
+;; carries only a provider-owned identifier plus portable metadata.
+;; ============================================================================
+(ns db.sqlite.connection
+  (:require [db.protocol :as protocol]))
+
+(defstruct SQLiteConnection
+  [id engine provider storage filename operations])
+
+(defn descriptor-field
+  [descriptor keyword-key string-key]
+  (if (has? descriptor keyword-key)
+    (get descriptor keyword-key)
+    (get descriptor string-key)))
+
+(defn create
+  "Wraps a provider descriptor and its operation adapter."
+  [descriptor provider operations]
+  (db.sqlite.connection/SQLiteConnection
+   (descriptor-field descriptor :id "id")
+   :sqlite
+   provider
+   (keyword (descriptor-field descriptor :storage "storage"))
+   (descriptor-field descriptor :filename "filename")
+   operations))
+
+(defn invoke
+  [value operation arguments]
+  (let [function (get (:operations value) operation)]
+    (if function
+      (apply function (cons (:id value) arguments))
+      (throw
+       (ex-info
+        "SQLite backend operation is unavailable"
+        {:type :db/sqlite-operation-unavailable
+         :provider (:provider value)
+         :operation operation})))))
+
+(extend-type SQLiteConnection protocol/IDatabase
+  (db-engine [_] :sqlite)
+  (db-provider [value] (:provider value))
+  (db-info [value]
+    {:id (:id value)
+     :engine :sqlite
+     :provider (:provider value)
+     :storage (:storage value)
+     :filename (:filename value)})
+  (db-exec [value sql parameters]
+    (invoke value :exec [sql parameters]))
+  (db-query [value sql parameters]
+    (invoke value :query [sql parameters]))
+  (db-close [value]
+    (invoke value :close [])))
+
+(defn exec
+  ([value sql]
+   (exec value sql []))
+  ([value sql parameters]
+   (protocol/db-exec value sql parameters)))
+
+(defn query
+  ([value sql]
+   (query value sql []))
+  ([value sql parameters]
+   (protocol/db-query value sql parameters)))
+
+(defn close [value]
+  (protocol/db-close value))
+
+(defn work-call [value operation arguments]
+  (invoke value :work-call [operation arguments]))
+
+(defn begin [value] (exec value "begin"))
+(defn commit [value] (exec value "commit"))
+(defn rollback [value] (exec value "rollback"))

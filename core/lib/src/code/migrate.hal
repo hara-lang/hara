@@ -7,6 +7,313 @@
 
 (def rule-id :std.task/def-work)
 
+(def migration-dispositions
+  #{:direct :adapted :test-vector :obsolete :new-only})
+
+(def reasoned-dispositions
+  #{:adapted :test-vector :obsolete :new-only})
+
+(def migration-actions
+  {:direct :materialize
+   :adapted :adapt
+   :test-vector :validate
+   :obsolete :retire
+   :new-only :implement})
+
+(def +foundation-language-ledger+
+  [{:source/refer 'tahto.base.emit-data/emit-data
+    :target/refer 'lang.common.emit-data/emit-data
+    :disposition :direct
+    :stage/from :emit
+    :stage/to :emit
+    :provenance
+    {:repository :foundation-base
+     :path "src/tahto/base/emit_data.clj"}
+    :validation 'lang.common.emit-data-test/run}
+   {:source/refer 'tahto.base.emit-template/emit-template
+    :target/refer 'lang.common.emit-template/emit-template
+    :disposition :direct
+    :stage/from :emit
+    :stage/to :emit
+    :provenance
+    {:repository :foundation-base
+     :path "src/tahto/base/emit_template.clj"}
+    :validation 'lang.common.emit-template-test/run}
+   {:source/refer 'tahto.base.grammar/build
+    :target/refer 'lang.common.grammar-api/materialize
+    :disposition :adapted
+    :stage/from :grammar-build
+    :stage/to :grammar-materialize
+    :reason :grammar-now-owns-profiles-facets-and-fingerprints
+    :provenance
+    {:repository :foundation-base
+     :path "src/tahto/base/grammar.clj"}
+    :validation 'lang.common.grammar-api-test/run}
+   {:source/refer 'tahto.base.preprocess-base/to-input
+    :target/refer 'lang.common.emit-preprocess/to-input
+    :disposition :adapted
+    :stage/from :preprocess
+    :stage/to :emit-preprocess
+    :reason :preprocessing-is-split-by-pipeline-stage
+    :provenance
+    {:repository :foundation-base
+     :path "src/tahto/base/preprocess_base.clj"}
+    :validation 'lang.common.emit-preprocess-test/run}
+   {:source/refer 'tahto.common.book/book
+    :target/refer 'lang.common.book/book
+    :disposition :adapted
+    :stage/from :mutable-library
+    :stage/to :source-owned-book
+    :reason :books-replace-global-library-snapshots
+    :provenance
+    {:repository :foundation-base
+     :path "src/tahto/common/book.clj"}
+    :validation 'lang.common.book-test/run}])
+
+(defn migration-diagnostic
+  [error message data]
+  (merge {:level :error
+          :migration/error error
+          :message message}
+         data))
+
+(defn qualified-reference?
+  [value]
+  (and (symbol? value) (boolean (namespace value))))
+
+(defn migration-record-diagnostics
+  "Validates one semantic migration record without throwing. Records describe
+   ownership and intent; they do not contain generated target source."
+  [record]
+  (let [disposition (:disposition record)
+        source (:source/refer record)
+        target (:target/refer record)
+        provenance (:provenance record)
+        validation (:validation record)
+        reason (:reason record)]
+    (vec
+     (concat
+      (if (map? record)
+        []
+        [(migration-diagnostic
+          :migration/invalid-record
+          "Migration record must be a map"
+          {:record record})])
+      (if (has? migration-dispositions disposition)
+        []
+        [(migration-diagnostic
+          :migration/invalid-disposition
+          "Migration disposition is not supported"
+          {:disposition disposition})])
+      (if (or (= :new-only disposition)
+              (qualified-reference? source))
+        []
+        [(migration-diagnostic
+          :migration/missing-source
+          "Source-owned migration requires a qualified source reference"
+          {:source/refer source})])
+      (if (or (= :obsolete disposition)
+              (qualified-reference? target))
+        []
+        [(migration-diagnostic
+          :migration/missing-target
+          "Non-obsolete migration requires a qualified target reference"
+          {:target/refer target})])
+      (if (or (= :new-only disposition) provenance)
+        []
+        [(migration-diagnostic
+          :migration/missing-provenance
+          "Source-owned migration requires provenance"
+          {:source/refer source})])
+      (if (or (= :obsolete disposition) validation)
+        []
+        [(migration-diagnostic
+          :migration/missing-validation
+          "Active migration requires a validation reference"
+          {:target/refer target})])
+      (if (or (not (has? reasoned-dispositions disposition)) reason)
+        []
+        [(migration-diagnostic
+          :migration/missing-reason
+          "Architectural migration disposition requires a reason"
+          {:disposition disposition})])))))
+
+(defn duplicate-source-diagnostics
+  [records]
+  (reduce-kv
+   (fn [diagnostics source owners]
+     (if (and source (< 1 (count owners)))
+       (conj diagnostics
+             (migration-diagnostic
+              :migration/duplicate-source
+              "Migration source has multiple semantic owners"
+              {:source/refer source
+               :owners (vec (map :target/refer owners))}))
+       diagnostics))
+   []
+   (group-by :source/refer records)))
+
+(defn migration-ledger-diagnostics
+  [records]
+  (vec
+   (concat
+    (mapcat
+     (fn [indexed]
+       (let [index (first indexed)
+             record (second indexed)]
+         (map (fn [diagnostic]
+                (assoc diagnostic :record/index index))
+              (migration-record-diagnostics record))))
+     (map-indexed vector records))
+    (duplicate-source-diagnostics records))))
+
+(defn migration-ledger-valid?
+  [records]
+  (empty? (migration-ledger-diagnostics records)))
+
+(defn reference-namespace
+  [reference]
+  (if (qualified-reference? reference)
+    (namespace reference)
+    nil))
+
+(defn migration-record-matches?
+  [record query]
+  (reduce-kv
+   (fn [matches key expected]
+     (if (not matches)
+       false
+       (let [actual
+             (cond (= key :source/namespace)
+                   (reference-namespace (:source/refer record))
+
+                   (= key :target/namespace)
+                   (reference-namespace (:target/refer record))
+
+                   :else (get record key))]
+         (= (str expected) (str actual)))))
+   true
+   query))
+
+(defn migration-ledger-query
+  "Queries semantic records by field, source/namespace, or target/namespace."
+  [records query]
+  (vec (filter (fn [record]
+                 (migration-record-matches? record query))
+               records)))
+
+(defn inventory-record-diagnostics
+  [record inventory]
+  (let [disposition (:disposition record)
+        source (:source/refer record)
+        target (:target/refer record)
+        validation (:validation record)
+        sources (set (:source/references inventory))
+        targets (set (:target/references inventory))
+        validations (set (:validation/references inventory))]
+    (vec
+     (concat
+      (if (or (= :new-only disposition) (has? sources source))
+        []
+        [(migration-diagnostic
+          :migration/stale-source
+          "Ledger source is absent from the source inventory"
+          {:source/refer source})])
+      (if (or (= :obsolete disposition) (has? targets target))
+        []
+        [(migration-diagnostic
+          :migration/stale-target
+          "Ledger target is absent from the target inventory"
+          {:target/refer target})])
+      (if (or (= :obsolete disposition) (has? validations validation))
+        []
+        [(migration-diagnostic
+          :migration/stale-validation
+          "Ledger validation is absent from the validation inventory"
+          {:validation validation})])))))
+
+(defn unaccounted-source-diagnostics
+  [records inventory]
+  (let [accounted (set (keep :source/refer records))]
+    (vec
+     (keep
+      (fn [source]
+        (if (has? accounted source)
+          nil
+          (migration-diagnostic
+           :migration/unaccounted-source
+           "Source inventory entry has no semantic migration record"
+           {:source/refer source})))
+      (:source/references inventory)))))
+
+(defn migration-ledger-audit
+  [records inventory]
+  (let [structural (migration-ledger-diagnostics records)
+        inventory-diagnostics
+        (vec
+         (concat
+          (mapcat (fn [record]
+                    (inventory-record-diagnostics record inventory))
+                  records)
+          (unaccounted-source-diagnostics records inventory)))
+        diagnostics (vec (concat structural inventory-diagnostics))]
+    {:valid (empty? diagnostics)
+     :records (count records)
+     :source/references (count (:source/references inventory))
+     :diagnostics diagnostics}))
+
+(defn migration-record-plan
+  ([record]
+   (migration-record-plan record nil))
+  ([record inventory]
+   (let [diagnostics
+         (vec
+          (concat
+           (migration-record-diagnostics record)
+           (if inventory
+             (inventory-record-diagnostics record inventory)
+             [])))]
+     {:action (get migration-actions (:disposition record))
+      :status (if (empty? diagnostics) :ready :blocked)
+      :write false
+      :source/refer (:source/refer record)
+      :target/refer (:target/refer record)
+      :validation (:validation record)
+      :diagnostics diagnostics})))
+
+(defn migration-ledger-plan
+  "Returns a dry, non-writing explanation of ledger coverage and diagnostics."
+  ([records]
+   (migration-ledger-plan records nil))
+  ([records inventory]
+  (let [audit (if inventory
+                (migration-ledger-audit records inventory)
+                {:valid (migration-ledger-valid? records)
+                 :diagnostics (migration-ledger-diagnostics records)})
+        diagnostics (:diagnostics audit)
+        queue (vec (map (fn [record]
+                          (migration-record-plan record inventory))
+                        records))]
+    {:write false
+     :valid (empty? diagnostics)
+     :records (count records)
+     :queue queue
+     :actions
+     (reduce (fn [counts item]
+               (update counts
+                       (:action item)
+                       (fn [current] (inc (or current 0)))))
+             {}
+             queue)
+     :dispositions
+     (reduce (fn [counts record]
+               (update counts
+                       (:disposition record)
+                       (fn [current] (inc (or current 0)))))
+             {}
+             records)
+     :diagnostics diagnostics})))
+
 (def +lang-model-v1-prefix+ "lang.model.spec-")
 (def +lang-model-v1-target-prefix+ "lang.model.v1.spec-")
 (def +lang-model-v1-path-prefix+ "lang/model/spec_")
@@ -23,6 +330,87 @@
    ["tahto.model.annex.spec-rust" "lang.model.v1.spec-rust"]])
 
 (def +foundation-common-blocked-prefixes+ ["tahto.core"])
+
+(def +foundation-emitter-direct-prefixes+
+  ["tahto.base.emit-common/"
+   "tahto.base.emit-data/"
+   "tahto.base.emit-helper/"
+   "tahto.base.emit-template/"])
+
+(defn source-references
+  "Extracts qualified metadata references with the supplied namespace prefix."
+  [source prefix]
+  (vec
+   (keep
+    (fn [line]
+      (let [match (re-find #":refer\s+[^\s\}\]]+" line)
+            reference (if match (subs match 7) nil)]
+        (if (and reference (str/starts-with? (str reference) prefix))
+          (symbol (str reference))
+          nil)))
+    (str/split-lines source))))
+
+(defn foundation-emitter-reference?
+  [reference]
+  (str/starts-with? (str reference) "tahto.base.emit"))
+
+(defn foundation-emitter-disposition
+  [reference]
+  (let [reference (str reference)]
+    (if (reduce (fn [found prefix]
+                  (or found (str/starts-with? reference prefix)))
+                false
+                +foundation-emitter-direct-prefixes+)
+      :direct
+      :adapted)))
+
+(defn route-foundation-emitter-reference
+  [reference]
+  (symbol
+   (replace-routes (str reference) +foundation-common-test-rewrites+)))
+
+(defn foundation-emitter-ledger-record
+  [reference source-path validation]
+  (let [disposition (foundation-emitter-disposition reference)]
+    (cond->
+     {:source/refer reference
+      :target/refer (route-foundation-emitter-reference reference)
+      :disposition disposition
+      :stage/from :emit
+      :stage/to (if (= disposition :direct) :emit :emit-adapter)
+      :provenance {:repository :foundation-base :path source-path}
+      :validation validation}
+      (= disposition :adapted)
+      (assoc :reason :emitter-behavior-moved-to-redesigned-stage))))
+
+(defn foundation-emitter-ledger-records
+  "Builds semantic records from the Foundation fact metadata in one source unit."
+  [unit]
+  (let [validation (or (:target/validation unit)
+                       (symbol (str (:target/namespace unit) "/run")))]
+    (vec
+     (map (fn [reference]
+            (foundation-emitter-ledger-record
+             reference (:path unit) validation))
+          (source-references (:source unit) "tahto.base.emit")))))
+
+(defn foundation-emitter-inventory
+  "Creates the audit inventory from Foundation units and current target tests."
+  [source-units target-units]
+  (let [records (vec (mapcat foundation-emitter-ledger-records source-units))]
+    {:records records
+     :inventory
+     {:source/references (vec (map :source/refer records))
+      :target/references
+      (vec
+       (mapcat (fn [unit]
+                 (source-references (:source unit) "lang.common.emit"))
+               target-units))
+      :validation/references
+      (vec (map (fn [unit]
+                  (or (:validation unit)
+                      (symbol (str (:namespace unit) "/run"))))
+                target-units))}}))
 
 (defn replace-routes
   [source routes]
