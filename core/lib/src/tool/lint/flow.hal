@@ -1,0 +1,122 @@
+(ns tool.lint.flow
+  (:require [tool.lint.analyze :as analyze]
+            [tool.lint.model :as model]
+            [tool.lint.profile :as profile]
+            [tool.lint.report :as report]
+            [tool.project :as project]
+            [work.base :as work :refer [def.work]]
+            [work.flow.task :as task]))
+
+(defn scan-namespaces
+  "Returns the project namespace set discovered before document analysis."
+  [scans]
+  (into #{}
+        (filter identity
+                (map (fn [scan]
+                       (get-in scan [:namespace :name]))
+                     scans))))
+
+(defn prepare-scans
+  "Prepares immutable shared lint context for a task invocation."
+  [scans options]
+  (let [scans (vec scans)]
+    {:scans scans
+     :options (or options {})
+     :known-namespaces (scan-namespaces scans)}))
+
+(defn lint-items
+  [input context]
+  (:scans input))
+
+(defn lint-item
+  [subject context]
+  (let [input (:task/input subject)
+        scan (:task/value subject)
+        options (:options input)]
+    (analyze/analyze-scan
+     scan
+     (assoc options
+            :known-namespaces
+            (:known-namespaces input)))))
+
+(def.work lint-scans-work
+  [:task]
+  {:item {:list lint-items
+          :list-mode :input-context
+          :run lint-item}
+   :execution {:order :input
+               :parallel false
+               :fail-fast false}
+   :return {:select [:results :errors]
+            :package :records}})
+
+(defn flow-documents
+  [output]
+  (let [errors (:errors output)]
+    (if (empty? errors)
+      (vec (map :data (:results output)))
+      (throw
+       (ex-info "Project lint flow failed"
+                {:tool.lint/error :tool.lint/work-flow-failed
+                 :errors errors})))))
+
+(defn run-scans
+  "Runs prepared scans through the canonical work.flow.task definition."
+  [prepared]
+  (flow-documents
+   (work/run
+    (work/local-runtime)
+    lint-scans-work
+    (task/invocation prepared))))
+
+(defn finish
+  "Builds the stable public lint result from ordered document analyses."
+  [documents options]
+  (let [documents (vec documents)
+        findings
+        (report/sort-findings
+         (reduce (fn [output document]
+                   (into output (:findings document)))
+                 []
+                 documents))]
+    {:profile (or (:profile options) profile/+profile+)
+     :documents documents
+     :findings findings
+     :summary (model/summarize findings)}))
+
+(defn lint-scans
+  "Lints already scanned documents through work.flow.task.
+
+   The complete scan set is inspected before any item runs, preserving
+   project-wide qualified namespace resolution while keeping each document
+   analysis independently schedulable."
+  ([scans]
+   (lint-scans scans {}))
+  ([scans options]
+   (let [prepared (prepare-scans scans options)]
+     (finish (run-scans prepared) options))))
+
+(defn project-paths
+  [current-project]
+  (project/files-in
+   current-project
+   (vec (concat (:project/source-paths current-project)
+                (:project/test-paths current-project)))
+   ".hal"))
+
+(defn project-scans
+  "Reads and scans every project HAL source before task execution."
+  [current-project]
+  (vec
+   (map (fn [path]
+          (analyze/scan-source
+           (project/read-text path)
+           {:file path}))
+        (project-paths current-project))))
+
+(defn lint-project
+  "Lints one project through the canonical task workflow."
+  ([current-project]
+   (lint-project current-project {}))
+  ([current-project options]
+   (lint-scans (project-scans current-project) options)))

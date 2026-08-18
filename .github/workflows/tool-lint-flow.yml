@@ -1,0 +1,55 @@
+name: tool.lint work flow parity
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - 'core/lib/src/tool/lint.hal'
+      - 'core/lib/src/tool/lint/**'
+      - 'core/lib/src/work/flow.hal'
+      - 'core/lib/src/work/flow/**'
+      - 'core/lib/test/tool/lint*_test.hal'
+      - 'core/lib/test/tool/lint*_probe.hal'
+      - '.github/workflows/tool-lint-flow.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/lib/src/tool/lint.hal'
+      - 'core/lib/src/tool/lint/**'
+      - 'core/lib/src/work/flow.hal'
+      - 'core/lib/src/work/flow/**'
+      - 'core/lib/test/tool/lint*_test.hal'
+      - 'core/lib/test/tool/lint*_probe.hal'
+      - '.github/workflows/tool-lint-flow.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tool-lint-flow-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the CLI specification registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Build the native Hara runtime
+        run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
+      - name: Run the lint work flow probe
+        run: core/hara --offline run core/lib/test/tool/lint_flow_probe.hal
+      - name: Keep the std.typed dependency boundary closed
+        run: bash scripts/audit-std-typed-boundary.sh

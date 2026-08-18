@@ -33,6 +33,28 @@ The backend continues to own frames, continuations, runtime values, promises,
 compiled programs, and evidence documents. The common layer never serializes a
 live runtime object merely to make two engines look identical.
 
+### Sandbox-private Session hosting
+
+A native sandbox provider may construct a zero-authority private `Session`
+through `restricted_sandbox_session` or
+`restricted_sandbox_session_with_host`. That Session, not the public Sandbox
+facade, owns its live-session registry. It may:
+
+- start authoritative interpreter or feature-gated HBC live sessions;
+- retain backend objects privately while publishing only state and capabilities;
+- dispatch the existing generation- and revision-fenced request envelope;
+- dispose every nested live session before releasing its Runtime and mounts.
+
+Live-session identities remain reserved for the lifetime of the owning Session,
+even after cancellation or disposal. Closing the owner disposes and forgets all
+nested live sessions exactly once.
+
+This is a Rust provider embedding seam. It does not add live-session methods to
+`SandboxInstance`, `SessionKernel::sandbox_*`, or the Hara Sandbox surface.
+Sandbox therefore retains its coarse `eval`, `call`, `cancel`, `status`, and
+`close` contract and never exposes evaluator frames, continuations, handles, or
+backend-specific observations.
+
 ## Protocol
 
 The initial protocol identifier is `hara.live-session/0-alpha`. State documents
@@ -142,7 +164,9 @@ reviewable changes.
 2. Add browser serialization for the same request, state, capability, and reply
    schemas; keep the legacy browser wrappers as compatibility facades.
 3. Move Studio controls to capability-driven commands and revision guards.
-4. Extract the target-neutral retained-module seam from project compilation.
-5. Add HBX packaging and whole-Wasm lowering as consumers of retained HBC.
-6. Emit one versioned build-product manifest for browser and deployment
+4. Host live sessions beneath Sandbox-provider private Sessions without
+   expanding the public Sandbox protocol.
+5. Extract the target-neutral retained-module seam from project compilation.
+6. Add HBX packaging and whole-Wasm lowering as consumers of retained HBC.
+7. Emit one versioned build-product manifest for browser and deployment
    loaders, then remove hard-coded product guesses.
