@@ -647,6 +647,8 @@ pub(crate) const FOUNDATION_PROTOCOLS: &[(&str, &[(&str, usize)])] = &[
         ],
     ),
     ("IWork", &[("work-spec", 1)]),
+    ("IWorkExecutor", &[("work-execute", 2)]),
+    ("IWorkStore", &[("work-query", 2), ("work-transact", 2)]),
     ("IWorkRef", &[("work-id", 1)]),
     ("IWorkHost", &[("work-submit", 4), ("work-resolve", 2)]),
     (
@@ -904,6 +906,11 @@ mod native_work_protocol_tests {
     #[test]
     fn native_work_protocol_methods_are_stable() {
         assert_eq!(methods("IWork"), vec![("work-spec", 1)]);
+        assert_eq!(methods("IWorkExecutor"), vec![("work-execute", 2)]);
+        assert_eq!(
+            methods("IWorkStore"),
+            vec![("work-query", 2), ("work-transact", 2)]
+        );
         assert_eq!(methods("IWorkRef"), vec![("work-id", 1)]);
         assert_eq!(
             methods("IWorkHost"),
@@ -922,6 +929,8 @@ mod native_work_protocol_tests {
 
     #[test]
     fn native_work_protocol_parents_match_the_lifecycle_contract() {
+        assert!(protocol("IWorkExecutor").parents.is_empty());
+        assert!(protocol("IWorkStore").parents.is_empty());
         assert_eq!(
             protocol("IWorkHost").parents,
             vec![builtin_protocol_name("IComponent")]

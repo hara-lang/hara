@@ -2,13 +2,15 @@ package hara.truffle;
 
 import hara.lang.data.Symbol;
 import hara.lang.protocol.IWork;
+import hara.lang.protocol.IWorkExecutor;
 import hara.lang.protocol.IWorkHost;
 import hara.lang.protocol.IWorkRef;
 import hara.lang.protocol.IWorkRun;
+import hara.lang.protocol.IWorkStore;
 import java.util.List;
 import java.util.Map;
 
-/** Installs the native work lifecycle protocol identities and current-run helpers. */
+/** Installs the native work protocol identities and current-run helpers. */
 public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
@@ -31,6 +33,11 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
     HaraProtocol closed = requireProtocol(context, "IClosed");
 
     installWork(context.defineProtocol("IWork", Map.of("work-spec", 1)));
+    installWorkExecutor(
+        context.defineProtocol("IWorkExecutor", Map.of("work-execute", 2)));
+    installWorkStore(
+        context.defineProtocol(
+            "IWorkStore", Map.of("work-query", 2, "work-transact", 2)));
     HaraProtocol workRef = context.defineProtocol("IWorkRef", Map.of("work-id", 1));
     installWorkRef(workRef);
     installWorkHost(
@@ -122,6 +129,24 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
         IWork.class,
         "work-spec",
         (receiver, arguments) -> ((IWork) receiver).workSpec());
+  }
+
+  static void installWorkExecutor(HaraProtocol protocol) {
+    protocol.extend(
+        IWorkExecutor.class,
+        "work-execute",
+        (receiver, arguments) -> ((IWorkExecutor) receiver).workExecute(arguments[0]));
+  }
+
+  static void installWorkStore(HaraProtocol protocol) {
+    protocol.extend(
+        IWorkStore.class,
+        "work-query",
+        (receiver, arguments) -> ((IWorkStore) receiver).workQuery(arguments[0]));
+    protocol.extend(
+        IWorkStore.class,
+        "work-transact",
+        (receiver, arguments) -> ((IWorkStore) receiver).workTransact(arguments[0]));
   }
 
   static void installWorkRef(HaraProtocol protocol) {

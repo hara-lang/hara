@@ -1,0 +1,88 @@
+# Focused cross-runtime validation for the Work capability ABI introduced by #804.
+name: Work capability ABI
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - '.github/workflows/work-capability-abi.yml'
+      - 'core/java/src/main/java/hara/lang/protocol/IWork*.java'
+      - 'core/java/src/main/java/hara/truffle/WorkProtocolLibraryProvider.java'
+      - 'core/java/src/test/java/hara/truffle/HaraWorkProtocolTest.java'
+      - 'core/lib/src/work/native.hal'
+      - 'core/lib/test/work/native_protocol_test.hal'
+      - 'core/rust/src/core/inventory.rs'
+      - 'core/spec/work-capability-abi.md'
+  push:
+    branches: [main, testing]
+    paths:
+      - '.github/workflows/work-capability-abi.yml'
+      - 'core/java/src/main/java/hara/lang/protocol/IWork*.java'
+      - 'core/java/src/main/java/hara/truffle/WorkProtocolLibraryProvider.java'
+      - 'core/java/src/test/java/hara/truffle/HaraWorkProtocolTest.java'
+      - 'core/lib/src/work/native.hal'
+      - 'core/lib/test/work/native_protocol_test.hal'
+      - 'core/rust/src/core/inventory.rs'
+      - 'core/spec/work-capability-abi.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: work-capability-abi-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-and-hara:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust formatting
+        run: rustfmt --edition 2021 --check core/rust/src/core/inventory.rs
+
+      - name: Check Rust protocol inventory
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            native_work_protocol --lib
+
+      - name: Run portable Work protocol facts on Rust
+        run: |
+          scripts/runtime/run-lib-tests \
+            core/lib/test/work/native_protocol_test.hal
+
+  java:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Run JVM Work protocol tests
+        working-directory: core
+        run: |
+          mvn -B -Ptruffle \
+            -Dtest=HaraWorkProtocolTest \
+            test --file java/pom.xml
