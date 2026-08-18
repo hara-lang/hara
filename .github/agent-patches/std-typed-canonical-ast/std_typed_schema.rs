@@ -40,6 +40,7 @@ fn native_schema_ast_is_the_portable_normal_form() {
                           (= compiled (schema ast))))) \
                  (let [surfaces \
                        [:int \
+                        :vendor/type \
                         (quote [:or :int :str :int]) \
                         (quote [:vector [:maybe :int]]) \
                         (quote [:tuple :keyword :int :str]) \
@@ -49,6 +50,7 @@ fn native_schema_ast_is_the_portable_normal_form() {
                                           [:fn [:str & :any] :str]]) \
                         (quote [:enum :must :may]) \
                         (quote [:test/tagged 42]) \
+                        (quote [:vendor/vector :int]) \
                         (quote (var demo/Customer))]] \
                    [(every? canonical-ast? surfaces) \
                     (= (typed/normalize \
