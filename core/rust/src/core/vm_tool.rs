@@ -16,9 +16,16 @@ fn vm_tool_keywords(values: &[&str]) -> Value {
 
 fn vm_tool_provider_descriptor() -> Value {
     #[cfg(all(feature = "bytecode-vm", feature = "halc-encoder"))]
-    let operations = &["validate", "inspect", "transform", "disassemble"][..];
+    let operations = &[
+        "validate",
+        "inspect",
+        "transform",
+        "execute",
+        "disassemble",
+        "conform",
+    ][..];
     #[cfg(all(feature = "bytecode-vm", not(feature = "halc-encoder")))]
-    let operations = &["validate", "inspect", "disassemble"][..];
+    let operations = &["validate", "inspect", "execute", "disassemble", "conform"][..];
     #[cfg(all(not(feature = "bytecode-vm"), feature = "halc-encoder"))]
     let operations = &["validate", "inspect", "transform"][..];
     #[cfg(all(not(feature = "bytecode-vm"), not(feature = "halc-encoder")))]
@@ -29,11 +36,11 @@ fn vm_tool_provider_descriptor() -> Value {
         (vm_tool_keyword("hal"), vm_tool_vector(std::iter::empty())),
         (
             vm_tool_keyword("halc"),
-            vm_tool_keywords(&["validate", "inspect"]),
+            vm_tool_keywords(&["validate", "inspect", "execute", "conform"]),
         ),
         (
             vm_tool_keyword("hbc"),
-            vm_tool_keywords(&["validate", "inspect", "disassemble"]),
+            vm_tool_keywords(&["validate", "inspect", "execute", "disassemble", "conform"]),
         ),
     ];
     #[cfg(all(feature = "bytecode-vm", not(feature = "halc-encoder")))]
@@ -44,7 +51,7 @@ fn vm_tool_provider_descriptor() -> Value {
         ),
         (
             vm_tool_keyword("hbc"),
-            vm_tool_keywords(&["validate", "inspect", "disassemble"]),
+            vm_tool_keywords(&["validate", "inspect", "execute", "disassemble", "conform"]),
         ),
     ];
     #[cfg(all(not(feature = "bytecode-vm"), feature = "halc-encoder"))]
@@ -90,10 +97,14 @@ fn vm_tool_provider_descriptor() -> Value {
             vm_tool_keyword("provider/transforms"),
             vm_tool_vector(transforms),
         ),
-        (
-            vm_tool_keyword("provider/engines"),
-            vm_tool_map(std::iter::empty()),
-        ),
+        (vm_tool_keyword("provider/engines"), {
+            let mut engines = Vec::new();
+            #[cfg(all(feature = "bytecode-vm", feature = "halc-encoder"))]
+            engines.push((vm_tool_keyword("halc"), vm_tool_keyword("lower-and-run")));
+            #[cfg(feature = "bytecode-vm")]
+            engines.push((vm_tool_keyword("hbc"), vm_tool_keyword("stack-vm")));
+            vm_tool_map(engines)
+        }),
     ])
 }
 
@@ -219,6 +230,86 @@ fn vm_tool_transform(
         _ => Err(format!(
             "tool.vm.provider does not support :{from} -> :{to} in this runtime profile"
         )),
+    }
+}
+
+fn vm_tool_empty_options(options: &Value, operation: &str) -> Result<(), String> {
+    let entries = map_entries(options)
+        .ok_or_else(|| format!("tool.vm.provider/{operation} expects options as a map"))?;
+    if let Some((key, _)) = entries.first() {
+        return Err(format!(
+            "tool.vm.provider/{operation} does not support option {}",
+            key.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "bytecode-vm")]
+fn vm_tool_execute_program(program: crate::vm::Program) -> Result<Value, String> {
+    use std::rc::Rc;
+
+    let registry = crate::core::namespace_registry()?;
+    let snapshot = registry.snapshot();
+    match crate::vm::execute_program_with_globals(Rc::new(program), &registry) {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            registry.restore(snapshot);
+            Err(error.to_string())
+        }
+    }
+}
+
+fn vm_tool_execute(format: &str, bytes: &[u8], options: &Value) -> Result<Value, String> {
+    vm_tool_empty_options(options, "execute")?;
+    match format {
+        "halc" => {
+            #[cfg(all(feature = "bytecode-vm", feature = "halc-encoder"))]
+            {
+                let module = crate::kernel::halc::decode_halc(bytes)?;
+                let registry = crate::core::namespace_registry()?;
+                let snapshot = registry.snapshot();
+                let program = match crate::vm::compile_halc_module(&module, &registry) {
+                    Ok(program) => program,
+                    Err(error) => {
+                        registry.restore(snapshot);
+                        return Err(error.to_string());
+                    }
+                };
+                match crate::vm::execute_program_with_globals(std::rc::Rc::new(program), &registry)
+                {
+                    Ok(value) => Ok(value),
+                    Err(error) => {
+                        registry.restore(snapshot);
+                        Err(error.to_string())
+                    }
+                }
+            }
+            #[cfg(not(all(feature = "bytecode-vm", feature = "halc-encoder")))]
+            {
+                let _ = bytes;
+                Err(
+                    "tool.vm.provider does not support HALC execution in this runtime profile"
+                        .into(),
+                )
+            }
+        }
+        "hbc" => {
+            #[cfg(feature = "bytecode-vm")]
+            {
+                let program = crate::vm::decode_program(bytes)?;
+                vm_tool_execute_program(program)
+            }
+            #[cfg(not(feature = "bytecode-vm"))]
+            {
+                let _ = bytes;
+                Err(
+                    "tool.vm.provider does not support HBC execution in this runtime profile"
+                        .into(),
+                )
+            }
+        }
+        _ => Err(format!("unknown tool.vm format: :{format}")),
     }
 }
 
@@ -449,6 +540,14 @@ pub(crate) fn vm_tool_provider_values() -> Vec<(&'static str, Value)> {
                 vm_tool_transform(from, to, &arguments[2], &arguments[3]).map(Value::Bytes)
             }),
         ),
+        (
+            "execute",
+            native_function("tool.vm.provider/execute", 3, |arguments| {
+                let format = vm_tool_format(&arguments[0], "execute")?;
+                let bytes = vm_tool_bytes(&arguments[1], "execute")?;
+                vm_tool_execute(format, &bytes, &arguments[2])
+            }),
+        ),
     ]
 }
 
@@ -462,7 +561,7 @@ mod vm_tool_tests {
             .unwrap_or(Value::Nil)
     }
 
-    #[cfg(feature = "halc-encoder")]
+    #[cfg(any(feature = "halc-encoder", feature = "bytecode-vm"))]
     fn hex_bytes(hex: &str) -> Vec<u8> {
         (0..hex.len())
             .step_by(2)
@@ -477,12 +576,12 @@ mod vm_tool_tests {
         #[cfg(all(feature = "bytecode-vm", feature = "halc-encoder"))]
         assert_eq!(
             field(&provider, "provider/operations").display(),
-            "[:validate :inspect :transform :disassemble]"
+            "[:validate :inspect :transform :execute :disassemble :conform]"
         );
         #[cfg(all(feature = "bytecode-vm", not(feature = "halc-encoder")))]
         assert_eq!(
             field(&provider, "provider/operations").display(),
-            "[:validate :inspect :disassemble]"
+            "[:validate :inspect :execute :disassemble :conform]"
         );
         #[cfg(not(feature = "bytecode-vm"))]
         assert_eq!(
@@ -507,7 +606,78 @@ mod vm_tool_tests {
         );
         #[cfg(all(not(feature = "bytecode-vm"), not(feature = "halc-encoder")))]
         assert_eq!(field(&provider, "provider/transforms").display(), "[]");
+        #[cfg(all(feature = "bytecode-vm", feature = "halc-encoder"))]
+        assert_eq!(
+            field(&provider, "provider/engines").display(),
+            "{:halc :lower-and-run :hbc :stack-vm}"
+        );
+        #[cfg(all(feature = "bytecode-vm", not(feature = "halc-encoder")))]
+        assert_eq!(
+            field(&provider, "provider/engines").display(),
+            "{:hbc :stack-vm}"
+        );
+        #[cfg(not(feature = "bytecode-vm"))]
         assert_eq!(field(&provider, "provider/engines").display(), "{}");
+    }
+
+    #[cfg(feature = "bytecode-vm")]
+    #[test]
+    fn hbc_execution_authenticates_before_transactional_execution() {
+        let options = vm_tool_map(std::iter::empty());
+        let bytes = hex_bytes(concat!(
+            "484243300000005f0000010000000475736572000000010000000d4854413003",
+            "000000000000002a000000000000000000000000000000000000000100000000",
+            "0000000000000100000002000000000018000000020100000000000000010000",
+            "000100000000006073811fa3086d8edff969b6f31169f2d358937b295630863e",
+            "c63366450debec",
+        ));
+        let registry = crate::kernel::NamespaceRegistry::new("user");
+        let value = crate::core::with_namespace_registry(&registry, || {
+            vm_tool_execute("hbc", &bytes, &options)
+        })
+        .unwrap();
+        assert_eq!(value, Value::Number(42));
+
+        let mut corrupt = bytes;
+        corrupt[12] ^= 1;
+        let error = crate::core::with_namespace_registry(&registry, || {
+            vm_tool_execute("hbc", &corrupt, &options)
+        })
+        .unwrap_err();
+        assert!(error.contains("checksum"));
+
+        let failing = crate::vm::encode_program(
+            &crate::vm::compile_source("(do (def tool-vm-leaked 1) (/ 1 0))").unwrap(),
+        )
+        .unwrap();
+        let error = crate::core::with_namespace_registry(&registry, || {
+            vm_tool_execute("hbc", &failing, &options)
+        })
+        .unwrap_err();
+        assert!(error.contains("division by zero"));
+        assert!(registry
+            .current()
+            .resolve(&crate::lang::data::Symbol::parse("tool-vm-leaked"))
+            .is_none());
+    }
+
+    #[cfg(all(feature = "bytecode-vm", feature = "halc-encoder"))]
+    #[test]
+    fn halc_execution_lowers_and_matches_hbc_observable_value() {
+        let options = vm_tool_map(std::iter::empty());
+        let source = Value::String("(ns sample.execute) (+ 19 23)".into());
+        let halc = vm_tool_transform("hal", "halc", &source, &options).unwrap();
+        let registry = crate::kernel::NamespaceRegistry::new("user");
+        let (halc_value, hbc_value) = crate::core::with_namespace_registry(&registry, || {
+            let hbc =
+                vm_tool_transform("halc", "hbc", &Value::Bytes(halc.clone()), &options).unwrap();
+            (
+                vm_tool_execute("halc", &halc, &options).unwrap(),
+                vm_tool_execute("hbc", &hbc, &options).unwrap(),
+            )
+        });
+        assert_eq!(halc_value, Value::Number(42));
+        assert_eq!(hbc_value, Value::Number(42));
     }
 
     #[cfg(all(feature = "bytecode-vm", feature = "halc-encoder"))]

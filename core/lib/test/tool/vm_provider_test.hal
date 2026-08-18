@@ -1,7 +1,8 @@
 (ns tool.vm-provider-test
   (:require [tool.vm :as vm]
             [tool.vm.halc :as halc]
-            [tool.vm.hbc :as hbc]))
+            [tool.vm.hbc :as hbc]
+            [std.codec.hex :as hex]))
 
 (defn- failure-data
   [function]
@@ -18,6 +19,25 @@
 (def provider-id
   (:provider/id provider))
 
+(def golden-hbc
+  (hbc/artifact
+   (hex/decode
+    "484243300000005f0000010000000475736572000000010000000d4854413003000000000000002a0000000000000000000000000000000000000001000000000000000000000100000002000000000018000000020100000000000000010000000100000000006073811fa3086d8edff969b6f31169f2d358937b295630863ec63366450debec")))
+
+(def malformed-hbc
+  (hbc/artifact (str/encode-utf8 "HBC0")))
+
+(def hbc-corpus
+  {:corpus/id :tool.vm/hbc-cross-runtime
+   :corpus/format :hbc
+   :corpus/cases
+   [{:case/id :rust-golden/value-42
+     :case/artifact golden-hbc
+     :case/expect {:value 42}}
+    {:case/id :malformed/truncated-envelope
+     :case/artifact malformed-hbc
+     :case/expect {:error true}}]})
+
 (def results
   [(test-check "current provider is normalized ordinary Hara data"
                [(has? #{:rust :truffle} provider-id)
@@ -28,12 +48,16 @@
                 (get (:provider/formats provider) :hbc)]
                [true
                 (if (= provider-id :rust)
-                  [:validate :inspect :disassemble]
-                  [:validate :inspect :transform :disassemble])
+                  [:validate :inspect :execute :disassemble :conform]
+                  [:validate :inspect :transform :execute :disassemble :conform])
                 (if (= provider-id :rust) [] [[:hal :halc]])
-                {}
-                [:validate :inspect]
-                [:validate :inspect :disassemble]])
+                (if (= provider-id :rust)
+                  {:hbc :stack-vm}
+                  {:halc :ast-lowering :hbc :reference-vm})
+                (if (= provider-id :rust)
+                  [:validate :inspect]
+                  [:validate :inspect :execute :conform])
+                [:validate :inspect :execute :disassemble :conform]])
 
    (test-check "advertised transformation preserves exact provenance"
                (if (= provider-id :rust)
@@ -74,6 +98,41 @@
                 :to (if (= provider-id :rust) :halc :hbc)
                 :provider provider-id
                 :available []})
+
+   (test-check "authenticated HBC execution returns an ordinary Hara value"
+               (vm/execute golden-hbc {:provider provider-id})
+               42)
+
+   (test-check "malformed HBC fails with provider and engine data before execution"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/execute malformed-hbc {:provider provider-id})))
+                [:type :operation :format :provider :engine])
+               {:type :tool.vm/execution-failed
+                :operation :execute
+                :format :hbc
+                :provider provider-id
+                :engine (if (= provider-id :rust) :stack-vm :reference-vm)})
+
+   (test-check "portable conformance reports golden and malformed artifact cases"
+               (let [report
+                     (vm/conform hbc-corpus {:provider provider-id})]
+                 (select-keys
+                  report
+                  [:corpus/id
+                   :corpus/format
+                   :conformance/provider
+                   :conformance/engine
+                   :conformance/passed
+                   :conformance/failed]))
+               {:corpus/id :tool.vm/hbc-cross-runtime
+                :corpus/format :hbc
+                :conformance/provider provider-id
+                :conformance/engine
+                (if (= provider-id :rust) :stack-vm :reference-vm)
+                :conformance/passed 2
+                :conformance/failed 0})
 
    (test-check "convenience namespaces construct exact portable artifacts"
                [(select-keys

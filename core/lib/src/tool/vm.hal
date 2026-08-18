@@ -720,3 +720,119 @@
                 :to to
                 :provider (:provider/id provider)
                 :message (ex-message error)}))))))
+
+(defn- execution-options
+  [value]
+  (let [value (or value {})]
+    (if (map? value)
+      value
+      (fail "tool.vm execution options must be a map"
+            {:type :tool.vm/invalid-request
+             :field :options
+             :value value}))))
+
+(defn execute
+  "Authenticates, validates, and executes a HALC or HBC artifact through one provider."
+  ([value]
+   (execute value {}))
+  ([value options]
+   (let [artifact (artifact value)
+         format (:artifact/format artifact)
+         options (execution-options options)
+         provider-options (if (has? options :provider)
+                            {:provider (:provider options)}
+                            {})
+         runtime-options (dissoc options :provider)
+         provider
+         (resolve-provider
+          {:operation :execute
+           :format format
+           :options provider-options})
+         engine (get (:provider/engines provider) format)]
+     (try
+       (runtime-provider/execute
+        format (:artifact/bytes artifact) runtime-options)
+       (catch Throwable error
+         (fail (str "tool.vm execution failed: " (ex-message error))
+               {:type :tool.vm/execution-failed
+                :operation :execute
+                :format format
+                :provider (:provider/id provider)
+                :engine engine
+                :message (ex-message error)}))))))
+
+(defn- conformance-case
+  [format options value]
+  (let [value (exact-map
+               "tool.vm conformance case"
+               :tool.vm/invalid-conformance
+               #{:case/id :case/artifact :case/expect}
+               value)
+        id (:case/id value)
+        artifact (artifact (:case/artifact value))
+        expect (exact-map
+                "tool.vm conformance expectation"
+                :tool.vm/invalid-conformance
+                #{:value :error}
+                (:case/expect value))]
+    (if (not (= format (:artifact/format artifact)))
+      (fail "tool.vm conformance case format does not match its corpus"
+            {:type :tool.vm/invalid-conformance
+             :case id
+             :format (:artifact/format artifact)
+             :expected format})
+      nil)
+    (try
+      (let [actual (execute artifact options)
+            pass (and (has? expect :value)
+                      (= actual (:value expect)))]
+        {:case/id id
+         :case/pass pass
+         :case/expected expect
+         :case/actual actual})
+      (catch Throwable error
+        {:case/id id
+         :case/pass (= true (:error expect))
+         :case/expected expect
+         :case/error (ex-data error)}))))
+
+(defn conform
+  "Runs a portable artifact corpus and returns an ordinary Hara conformance report."
+  ([corpus]
+   (conform corpus {}))
+  ([corpus options]
+   (let [corpus (exact-map
+                 "tool.vm conformance corpus"
+                 :tool.vm/invalid-conformance
+                 #{:corpus/id :corpus/format :corpus/cases}
+                 corpus)
+         format (format-id (:corpus/format corpus))
+         cases (:corpus/cases corpus)
+         options (execution-options options)
+         provider-options (if (has? options :provider)
+                            {:provider (:provider options)}
+                            {})
+         provider
+         (resolve-provider
+          {:operation :conform
+           :format format
+           :options provider-options})]
+     (if (not (vector? cases))
+       (fail ":corpus/cases must be a vector"
+             {:type :tool.vm/invalid-conformance
+              :field :corpus/cases
+              :value cases})
+       nil)
+     (let [results
+           (vec
+            (map (fn [value]
+                   (conformance-case format options value))
+                 cases))
+           passed (count (filter :case/pass results))]
+       {:corpus/id (:corpus/id corpus)
+        :corpus/format format
+        :conformance/provider (:provider/id provider)
+        :conformance/engine (get (:provider/engines provider) format)
+        :conformance/passed passed
+        :conformance/failed (- (count results) passed)
+        :conformance/cases results}))))
