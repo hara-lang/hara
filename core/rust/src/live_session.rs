@@ -7,6 +7,7 @@
 
 #[path = "live_session/model.rs"]
 mod model;
+pub(crate) use model::required_text;
 pub use model::{
     LiveBackend, LiveReplacementPolicy, LiveSession, LiveSessionCapabilities,
     LiveSessionCommand, LiveSessionError, LiveSessionOperation, LiveSessionReply,
