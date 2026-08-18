@@ -284,9 +284,10 @@ pub fn eval_eager_bytecode_bundle_with_registries(
 /// Encode modules into the deterministic, checksummed HBX0 container shared by
 /// the Rust, Truffle/native-image, and embedding runtimes.
 pub fn encode_bytecode_bundle(modules: &[BytecodeBundleModule]) -> Result<Vec<u8>, String> {
+    let modules = canonical_modules(modules)?;
     let mut payload = Vec::new();
     put_u32(&mut payload, modules.len())?;
-    for module in modules {
+    for module in &modules {
         put_bytes(&mut payload, module.resource.as_bytes())?;
         put_bytes(&mut payload, module.namespace_form.as_bytes())?;
         payload.extend_from_slice(&module.source_digest);
@@ -305,7 +306,7 @@ pub fn encode_bytecode_bundle(modules: &[BytecodeBundleModule]) -> Result<Vec<u8
     Ok(output)
 }
 
-fn decode(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
+pub fn decode_bytecode_bundle(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
     if bytes.len() < 36 || &bytes[..4] != MAGIC {
         return Err("invalid HBX0 bytecode bundle header".into());
     }
@@ -342,7 +343,95 @@ fn decode(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
     if !input.is_empty() {
         return Err("trailing bytes in HBX0 bytecode bundle".into());
     }
+    validate_bundle_modules(&modules)?;
+    for module in &modules {
+        crate::vm::decode_program(&module.artifact)
+            .map_err(|error| format!("{}: invalid HBC0 artifact: {error}", module.resource))?;
+    }
     Ok(modules)
+}
+
+fn decode(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>, String> {
+    decode_bytecode_bundle(bytes)
+}
+
+fn canonical_modules(
+    modules: &[BytecodeBundleModule],
+) -> Result<Vec<BytecodeBundleModule>, String> {
+    let mut by_resource = std::collections::BTreeMap::new();
+    for module in modules {
+        if by_resource
+            .insert(module.resource.clone(), module.clone())
+            .is_some()
+        {
+            return Err(format!("duplicate HBX0 module: {}", module.resource));
+        }
+        let mut dependencies = module.dependencies.clone();
+        dependencies.sort();
+        if dependencies.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(format!("{}: duplicate HBX0 dependency", module.resource));
+        }
+    }
+    let mut ordered = Vec::with_capacity(modules.len());
+    while !by_resource.is_empty() {
+        let available = by_resource
+            .iter()
+            .find(|(_, module)| {
+                module
+                    .dependencies
+                    .iter()
+                    .all(|dependency| !by_resource.contains_key(dependency))
+            })
+            .map(|(resource, _)| resource.clone())
+            .ok_or("HBX0 module dependencies contain a cycle")?;
+        let mut module = by_resource.remove(&available).unwrap();
+        module.dependencies.sort();
+        ordered.push(module);
+    }
+    validate_bundle_modules(&ordered)?;
+    Ok(ordered)
+}
+
+fn validate_bundle_modules(modules: &[BytecodeBundleModule]) -> Result<(), String> {
+    let mut positions = std::collections::HashMap::with_capacity(modules.len());
+    for (index, module) in modules.iter().enumerate() {
+        if module.resource.is_empty() {
+            return Err("HBX0 module resource must not be empty".into());
+        }
+        if module.namespace_form.is_empty() {
+            return Err(format!(
+                "{}: HBX0 namespace form must not be empty",
+                module.resource
+            ));
+        }
+        if positions.insert(module.resource.as_str(), index).is_some() {
+            return Err(format!("duplicate HBX0 module: {}", module.resource));
+        }
+        if module
+            .dependencies
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1])
+        {
+            return Err(format!(
+                "{}: HBX0 dependencies must be unique and sorted",
+                module.resource
+            ));
+        }
+    }
+    for (index, module) in modules.iter().enumerate() {
+        for dependency in &module.dependencies {
+            if positions
+                .get(dependency.as_str())
+                .is_some_and(|position| *position >= index)
+            {
+                return Err(format!(
+                    "{}: HBX0 dependency must appear first: {dependency}",
+                    module.resource
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn standard_library_namespace(namespace: &str) -> bool {

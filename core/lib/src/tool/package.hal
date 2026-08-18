@@ -1,0 +1,125 @@
+;; Portable executable-package tooling. Distinct from std.lib.package.
+(ns tool.package
+  (:require [tool.package.provider :as runtime-provider]))
+
+(def +format-order+ [:hbx])
+(def +operation-order+ [:validate :inspect :pack :unpack :conform])
+(def +operations+ #{:validate :inspect :pack :unpack :conform})
+(def +specifications+
+  {:hal/hbx0-wire
+   {:spec/id :hal/hbx0-wire
+    :spec/format :hbx
+    :spec/kind :wire
+    :spec/path "01-lang/010-bytecode/draft/hbx0-wire.edn"
+    :spec/corpora [:hal/hbx0-golden :hal/hbx0-malformed]}})
+(def +formats+
+  {:hbx {:format/id :hbx
+         :format/name "HBX0"
+         :format/kind :executable-package
+         :format/status :draft
+         :format/extension ".hbx"
+         :format/magic "HBX0"
+         :format/version 0
+         :format/spec-id :hal/hbx0-wire
+         :format/spec-path "01-lang/010-bytecode/draft/hbx0-wire.edn"}})
+
+(defn- fail [message data] (throw (ex-info message data)))
+(defn- includes? [values target]
+  (not (nil? (first (filter (fn [value] (= value target)) values)))))
+(defn- unknown-keys [value allowed]
+  (vec (sort-by str (filter (fn [key] (not (has? allowed key))) (keys value)))))
+(defn- bytes [value operation]
+  (if (Bytes/instance? value)
+    (Bytes/copy value)
+    (fail (str "tool.package/" (name operation) " expects Bytes")
+          {:type :tool.package/invalid-package :operation operation :value value})))
+
+(defn formats [] (vec (map (fn [id] (get +formats+ id)) +format-order+)))
+(defn spec
+  ([] (get +specifications+ :hal/hbx0-wire))
+  ([identity]
+   (let [value (get +specifications+ identity)]
+     (if value value
+       (fail (str "Unknown tool.package specification: " identity)
+             {:type :tool.package/unknown-specification :spec identity
+              :available [:hal/hbx0-wire]})))))
+
+(defn provider [value]
+  (if (not (map? value))
+    (fail "tool.package provider must be a map"
+          {:type :tool.package/invalid-provider :value value})
+    nil)
+  (let [unknown (unknown-keys value #{:provider/id :provider/operations :provider/formats})
+        id (:provider/id value)
+        formats (:provider/formats value)
+        operations (:provider/operations value)
+        hbx (get formats :hbx)]
+    (if (not (empty? unknown))
+      (fail (str "tool.package provider contains unsupported keys: " unknown)
+            {:type :tool.package/invalid-provider :unknown unknown}) nil)
+    (if (not (keyword? id))
+      (fail ":provider/id must be a keyword"
+            {:type :tool.package/invalid-provider :field :provider/id}) nil)
+    (if (not (and (map? formats) (= [:hbx] (vec (keys formats)))))
+      (fail ":provider/formats must declare exactly :hbx"
+            {:type :tool.package/invalid-provider :field :provider/formats}) nil)
+    (if (not (vector? hbx))
+      (fail "HBX provider operations must be a vector"
+            {:type :tool.package/invalid-provider :field :provider/formats}) nil)
+    (if (not (every? (fn [operation] (has? +operations+ operation)) hbx))
+      (fail "HBX provider declares an unknown operation"
+            {:type :tool.package/invalid-provider :operations hbx}) nil)
+    (let [derived (vec (filter (fn [operation] (includes? hbx operation)) +operation-order+))]
+      (if (not= operations derived)
+        (fail ":provider/operations does not match exact HBX capabilities"
+              {:type :tool.package/invalid-provider :declared operations :derived derived}) nil)
+      {:provider/id id :provider/operations derived :provider/formats {:hbx derived}})))
+
+(defn current-provider [] (provider (runtime-provider/provider)))
+(defn capabilities [] [(current-provider)])
+(defn- supports! [operation]
+  (let [provider (current-provider)]
+    (if (includes? (get (:provider/formats provider) :hbx) operation)
+      provider
+      (fail (str "tool.package provider cannot satisfy :" (name operation))
+            {:type :tool.package/capability-unavailable
+             :operation operation :format :hbx
+             :provider (:provider/id provider)}))))
+
+(defn detect [value]
+  (let [value (bytes value :detect)]
+    (if (and (<= 4 (Bytes/count value))
+             (= 72 (Bytes/get value 0))
+             (= 66 (Bytes/get value 1))
+             (= 88 (Bytes/get value 2))
+             (= 48 (Bytes/get value 3)))
+      :hbx nil)))
+
+(defn- invalid [operation provider error]
+  (fail (str "Invalid hbx package: " (ex-message error))
+        {:type :tool.package/package-invalid :operation operation
+         :format :hbx :provider (:provider/id provider)
+         :message (ex-message error)}))
+
+(defn validate [value]
+  (let [provider (supports! :validate) value (bytes value :validate)]
+    (try (runtime-provider/validate value)
+         (catch Throwable error (invalid :validate provider error)))))
+(defn inspect [value]
+  (let [provider (supports! :inspect) value (bytes value :inspect)]
+    (try (runtime-provider/inspect value)
+         (catch Throwable error (invalid :inspect provider error)))))
+(defn pack [modules]
+  (let [provider (supports! :pack)]
+    (try (runtime-provider/pack modules)
+         (catch Throwable error (invalid :pack provider error)))))
+(defn unpack [value]
+  (let [provider (supports! :unpack) value (bytes value :unpack)]
+    (try (runtime-provider/unpack value)
+         (catch Throwable error (invalid :unpack provider error)))))
+(defn conform [value]
+  (supports! :conform)
+  (validate value)
+  {:conformance/spec :hal/hbx0-wire
+   :conformance/provider (:provider/id (current-provider))
+   :conformance/valid true})
