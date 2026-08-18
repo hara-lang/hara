@@ -82,18 +82,21 @@ fn project_test_keeps_printed_legacy_vectors_compatible() {
 
 #[test]
 fn manage_arguments_keep_writes_explicit_and_values_in_data() {
-    let parsed = manage_arguments("grep", &[
-        "demo.core".into(),
-        "--from".into(),
-        "demo.core".into(),
-        "--to".into(),
-        "demo.next".into(),
-        "--pattern".into(),
-        "TODO".into(),
-        "--pattern".into(),
-        "FIXME".into(),
-        "--write".into(),
-    ])
+    let parsed = manage_arguments(
+        "grep",
+        &[
+            "demo.core".into(),
+            "--from".into(),
+            "demo.core".into(),
+            "--to".into(),
+            "demo.next".into(),
+            "--pattern".into(),
+            "TODO".into(),
+            "--pattern".into(),
+            "FIXME".into(),
+            "--write".into(),
+        ],
+    )
     .unwrap();
     assert!(parsed.write);
     assert_eq!(parsed.namespaces, ["demo.core"]);

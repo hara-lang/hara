@@ -63,13 +63,15 @@ pub fn schema_shorthand(schema: &SchemaType) -> Form {
                 .chain(items.iter().map(nested))
                 .collect(),
         ),
-        SchemaType::Map(fields) => Form::Vector(
-            std::iter::once(Form::Keyword("map".into()))
-                .chain(fields.iter().map(|field| {
-                    Form::Vector(vec![field.name.clone(), nested(&field.value_type)])
-                }))
-                .collect(),
-        ),
+        SchemaType::Map(fields) => {
+            Form::Vector(
+                std::iter::once(Form::Keyword("map".into()))
+                    .chain(fields.iter().map(|field| {
+                        Form::Vector(vec![field.name.clone(), nested(&field.value_type)])
+                    }))
+                    .collect(),
+            )
+        }
         SchemaType::Function(arities) => {
             let function = |arity: &FunctionSchema| {
                 let mut inputs = arity.fixed.iter().map(nested).collect::<Vec<_>>();
@@ -130,9 +132,9 @@ pub fn normalize_schema(schema: &Form) -> Result<SchemaType, String> {
 }
 
 fn longhand_value<'a>(entries: &'a [(Form, Form)], name: &str) -> Option<&'a Form> {
-    entries.iter().find_map(|(key, value)| {
-        matches!(key, Form::Keyword(key) if key == name).then_some(value)
-    })
+    entries
+        .iter()
+        .find_map(|(key, value)| matches!(key, Form::Keyword(key) if key == name).then_some(value))
 }
 
 fn longhand_children(entries: &[(Form, Form)]) -> Result<&[Form], String> {
@@ -294,9 +296,7 @@ fn normalize_longhand(entries: &[(Form, Form)]) -> Result<SchemaType, String> {
                 .ok_or_else(|| "reference schema requires :name".to_string())
                 .and_then(normalize_reference_name)
         }
-        "union" | "or" => {
-            normalize_union_forms(longhand_sequence(entries, "types", children)?)
-        }
+        "union" | "or" => normalize_union_forms(longhand_sequence(entries, "types", children)?),
         "vector" => {
             let value = longhand_value(entries, "item").or_else(|| children.first());
             value
@@ -331,11 +331,9 @@ fn normalize_longhand(entries: &[(Form, Form)]) -> Result<SchemaType, String> {
             }
         }
         "fn" => normalize_longhand_function(entries).map(|arity| SchemaType::Function(vec![arity])),
-        "function" => normalize_longhand_functions(longhand_sequence(
-            entries,
-            "arities",
-            children,
-        )?),
+        "function" => {
+            normalize_longhand_functions(longhand_sequence(entries, "arities", children)?)
+        }
         "enum" => Ok(SchemaType::Enum(
             longhand_sequence(entries, "values", children)?.to_vec(),
         )),

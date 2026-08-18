@@ -1,7 +1,7 @@
 use super::{
-    InterpreterLiveSession, LiveBackend, LiveReplacementPolicy, LiveSession,
-    LiveSessionCommand, LiveSessionOperation, LiveSessionRequest, LiveSessionState,
-    LiveSessionStatus, LiveSource, LIVE_SESSION_PROTOCOL, LIVE_SESSION_STATE_SCHEMA,
+    InterpreterLiveSession, LiveBackend, LiveReplacementPolicy, LiveSession, LiveSessionCommand,
+    LiveSessionOperation, LiveSessionRequest, LiveSessionState, LiveSessionStatus, LiveSource,
+    LIVE_SESSION_PROTOCOL, LIVE_SESSION_STATE_SCHEMA,
 };
 
 fn source(id: &str, revision: &str, text: &str) -> LiveSource {
@@ -93,11 +93,7 @@ fn interpreter_adapter_normalizes_lifecycle_and_source_replacement() {
     assert_eq!(queued.state.revision, "sha256:first");
     assert_eq!(session.pending_revision(), Some("sha256:second"));
 
-    let activated = dispatch_ok(
-        &mut session,
-        "activate-second",
-        LiveSessionCommand::Reset,
-    );
+    let activated = dispatch_ok(&mut session, "activate-second", LiveSessionCommand::Reset);
     assert_eq!(activated.state.generation, 2);
     assert_eq!(activated.state.revision, "sha256:second");
     assert_eq!(activated.state.source_id, "second.hal");
@@ -181,11 +177,7 @@ fn hbc_adapter_uses_the_same_identity_and_lifecycle_contract() {
 
     let cancelled = dispatch_ok(&mut session, "cancel-hbc", LiveSessionCommand::Cancel);
     assert_eq!(cancelled.state.status, LiveSessionStatus::Cancelled);
-    let blocked_request = request(
-        "step-cancelled-hbc",
-        &session,
-        LiveSessionCommand::Step,
-    );
+    let blocked_request = request("step-cancelled-hbc", &session, LiveSessionCommand::Step);
     let blocked = session.dispatch(blocked_request).unwrap_err();
     assert_eq!(blocked.code(), "live-session/cancelled");
 

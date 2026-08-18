@@ -41,7 +41,9 @@ pub(super) fn scan_program(program: &Program, analysis: &mut UnitAnalysis) {
                     } else {
                         noncanonical_root(
                             analysis,
-                            format!("builtin instruction has no string identity at constant {index}"),
+                            format!(
+                                "builtin instruction has no string identity at constant {index}"
+                            ),
                         );
                     }
                 }
@@ -201,7 +203,9 @@ fn scan_declaration_roots(analysis: &mut UnitAnalysis) {
         }
         ("defmulti" | "defmethod", Some(name)) => {
             analysis.native_roots.multimethods.insert(name.clone());
-            analysis.native_protocols.insert(format!("multimethod:{name}"));
+            analysis
+                .native_protocols
+                .insert(format!("multimethod:{name}"));
         }
         _ => {}
     }
@@ -246,9 +250,9 @@ fn noncanonical_root(analysis: &mut UnitAnalysis, message: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::super::source::SourceLocation;
     use super::super::NativeRootInventory;
+    use super::*;
     use std::collections::BTreeSet;
 
     fn analysis(source: &str) -> UnitAnalysis {
@@ -313,10 +317,7 @@ mod tests {
             .native_roots
             .methods
             .contains("std.native.String/slice"));
-        assert!(unit
-            .native_roots
-            .protocols
-            .contains("std.protocol.icount"));
+        assert!(unit.native_roots.protocols.contains("std.protocol.icount"));
         assert!(unit
             .native_roots
             .protocol_methods

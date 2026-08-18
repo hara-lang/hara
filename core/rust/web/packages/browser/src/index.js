@@ -26,6 +26,9 @@ function createApi(runtime) {
     registerResource(namespace, source) {
       runtime.register_resource(String(namespace), String(source));
     },
+    installDirectWasmImport(logical, bytes) {
+      runtime.installDirectWasmImport(String(logical), bytes);
+    },
     unregisterResource(namespace) {
       runtime.unregister_resource(String(namespace));
     },

@@ -34,12 +34,20 @@ pub(crate) fn time_ns() -> i64 {
     unsafe { hara_time_ns() }
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown", not(feature = "raw-wasm")))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "raw-wasm")
+))]
 pub(crate) fn time_ms() -> i64 {
     js_sys::Date::now() as i64
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown", not(feature = "raw-wasm")))]
+#[cfg(all(
+    target_arch = "wasm32",
+    target_os = "unknown",
+    not(feature = "raw-wasm")
+))]
 pub(crate) fn time_ns() -> i64 {
     use wasm_bindgen::{JsCast, JsValue};
 

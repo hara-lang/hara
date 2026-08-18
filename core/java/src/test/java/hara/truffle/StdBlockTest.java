@@ -10,7 +10,7 @@ public class StdBlockTest {
   public void providerPreservesSourceValuesAndPersistentEdits() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[\"[1 #_2 3]\" [1 3] \"[1 #_3 3]\" \"(if\\n  ready\\n  [1 2]\\n  [3 4]\\n)\"]",
+          "[\"[1 #_2 3]\" [1 3] \"[1 #_3 3]\" \"(if ready [1 2] [3 4])\"]",
           context
               .eval(
                   HaraLanguage.ID,
@@ -23,7 +23,7 @@ public class StdBlockTest {
                       + "                  (zip/step-right "
                       + "                    (zip/step-inside "
                       + "                      (block/block-zip original))))) "
-                      + "      edited (zip/result "
+                      + "      edited (zip/root-element "
                       + "               (zip/replace-right location (block/block 3)))] "
                       + "  (pr-str [(block/string original) "
                       + "           (block/value original) "

@@ -51,19 +51,11 @@ impl Runtime {
         }
         let vm_provider = namespace_registry.find_or_create("tool.vm.provider");
         for (name, value) in core::vm_tool_provider_values() {
-            vm_provider.intern_with_origin(
-                name,
-                value,
-                kernel::VarOrigin::RuntimePrimitive,
-            );
+            vm_provider.intern_with_origin(name, value, kernel::VarOrigin::RuntimePrimitive);
         }
         let package_provider = namespace_registry.find_or_create("tool.package.provider");
         for (name, value) in core::package_tool_provider_values() {
-            package_provider.intern_with_origin(
-                name,
-                value,
-                kernel::VarOrigin::RuntimePrimitive,
-            );
+            package_provider.intern_with_origin(name, value, kernel::VarOrigin::RuntimePrimitive);
         }
         let work_native = namespace_registry.find_or_create("work.native");
         work_native.intern("default-host", crate::work::guest::default_host_value());
@@ -78,6 +70,7 @@ impl Runtime {
             protocols,
             extensions: core::ExtensionRegistry::new(),
             wasm_extensions: HashMap::new(),
+            native_wasm_imports: HashMap::new(),
             providers: core::ProviderRegistry::new(),
             package_catalog: core::PackageCatalog::default(),
             resources: HashMap::new(),
@@ -439,6 +432,17 @@ impl Runtime {
                     let loaded_before = self.loaded_resources.clone();
                     self.generated_configs.insert(name.clone(), config);
                     self.use_namespace(&name);
+                    let config = self
+                        .generated_configs
+                        .get(&name)
+                        .expect("ns config was installed")
+                        .clone();
+                    let namespace = self.namespace_registry.current();
+                    namespace.set_native_flavor(Some(config.native_flavor().into()));
+                    for (local, module) in config.native_imports() {
+                        namespace.import(local, module.clone());
+                    }
+                    self.bind_direct_wasm_imports(&config)?;
                     let foundation_bootstrap_child = name.starts_with("std.foundation.");
                     let require_specs = values[2..]
                         .iter()
@@ -1226,6 +1230,17 @@ impl Runtime {
 
     pub fn eval_traced(&mut self, source: &str) -> Result<String, JsValue> {
         self.eval_text_mode(source, true)
+            .map_err(|error| JsValue::from_str(&error))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = installDirectWasmImport)]
+    pub fn install_direct_wasm_import_js(
+        &mut self,
+        logical: &str,
+        bytes: &[u8],
+    ) -> Result<(), JsValue> {
+        self.install_direct_wasm_import_browser(logical, bytes)
             .map_err(|error| JsValue::from_str(&error))
     }
 

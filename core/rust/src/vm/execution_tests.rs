@@ -192,15 +192,11 @@ fn bytecode_variadic_macro_forwards_rest_to_helper_in_order() {
     let mut runtime = Runtime::core();
     runtime.prepare_foundation_bytecode();
     assert_eq!(
-        runtime.eval_bytecode_native(
-            "(defn third-form [forms] (first (rest (rest forms))))"
-        ),
+        runtime.eval_bytecode_native("(defn third-form [forms] (first (rest (rest forms))))"),
         Ok("#'user/third-form".into())
     );
     assert_eq!(
-        runtime.eval_bytecode_native(
-            "(defmacro choose-third [& forms] (third-form forms))"
-        ),
+        runtime.eval_bytecode_native("(defmacro choose-third [& forms] (third-form forms))"),
         Ok("<fn>".into())
     );
     assert_eq!(
@@ -629,7 +625,10 @@ fn inline_metadata_lowers_forwarding_calls_to_the_declared_target() {
     let listing = disassemble(&program);
     assert_eq!(listing.matches("GetGlobal 1").count(), 2, "{listing}");
     assert!(!listing.contains("GetGlobal 2"), "{listing}");
-    assert_eq!(eval("(do (defn target [x] (+ x 1)) (defn ^{:inline true} shim [x] (target x)) (shim 41))"), "42");
+    assert_eq!(
+        eval("(do (defn target [x] (+ x 1)) (defn ^{:inline true} shim [x] (target x)) (shim 41))"),
+        "42"
+    );
 }
 
 #[test]
@@ -650,7 +649,9 @@ fn native_result_calls_execute_in_bytecode() {
     )
     .expect("Result native methods compile against the embedded registry");
     assert_eq!(
-        execute_program_with_globals(Rc::new(program), &registry).unwrap().display(),
+        execute_program_with_globals(Rc::new(program), &registry)
+            .unwrap()
+            .display(),
         "[true :success 42]",
     );
 }

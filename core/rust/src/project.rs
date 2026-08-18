@@ -10,6 +10,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+#[path = "project/npm.rs"]
+mod npm;
+
 const REQUIRED: &[&str] = &[
     "hara/type",
     "hara/version",
@@ -39,6 +42,8 @@ pub struct Project {
     pub native_source_paths: Vec<PathBuf>,
     pub runtime_target_path: Option<PathBuf>,
     pub maven_dependencies: BTreeMap<String, String>,
+    pub npm_dependencies: BTreeMap<String, NpmWasmDependency>,
+    pub native_imports: BTreeMap<String, WasmNativeImport>,
     pub capabilities: Vec<String>,
     pub artifact_paths: Vec<PathBuf>,
     pub archive_root: Option<PathBuf>,
@@ -74,6 +79,21 @@ pub struct RuntimeProfile {
     pub target_path: Option<PathBuf>,
     pub hara_dependencies: BTreeMap<String, String>,
     pub maven_dependencies: BTreeMap<String, String>,
+    pub npm_dependencies: BTreeMap<String, NpmWasmDependency>,
+    pub native_imports: BTreeMap<String, WasmNativeImport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NpmWasmDependency {
+    pub version: Version,
+    pub integrity: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WasmNativeImport {
+    pub package: String,
+    pub module: PathBuf,
+    pub abi: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,6 +106,8 @@ pub struct ResolvedRuntimeProfile {
     pub target_path: Option<PathBuf>,
     pub hara_dependencies: BTreeMap<String, String>,
     pub maven_dependencies: BTreeMap<String, String>,
+    pub npm_dependencies: BTreeMap<String, NpmWasmDependency>,
+    pub native_imports: BTreeMap<String, WasmNativeImport>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +298,8 @@ pub fn read(input: &Path) -> Result<Project, String> {
     let native_source_paths = active.native_source_paths.clone();
     let runtime_target_path = active.target_path.clone();
     let maven_dependencies = active.maven_dependencies.clone();
+    let npm_dependencies = active.npm_dependencies.clone();
+    let native_imports = active.native_imports.clone();
     let extensions = lookup(entries, "project/extensions")
         .map(extension_declarations)
         .transpose()?
@@ -311,6 +335,8 @@ pub fn read(input: &Path) -> Result<Project, String> {
         native_source_paths,
         runtime_target_path,
         maven_dependencies,
+        npm_dependencies,
+        native_imports,
         capabilities,
         artifact_paths,
         archive_root,
@@ -463,6 +489,25 @@ pub fn register_sources(project: &Project, runtime: &mut Runtime) -> Result<(), 
     Ok(())
 }
 
+/// Installs direct WASM imports exclusively from the verified project lock and
+/// content-addressed cache. Runtime evaluation never invokes npm or the network.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn register_native_imports(project: &Project, runtime: &mut Runtime) -> Result<(), String> {
+    if project.native_imports.is_empty() {
+        Ok(())
+    } else {
+        npm::install(project, runtime)
+    }
+}
+
+pub(crate) fn native_archive_entries(project: &Project) -> Result<Vec<PathBuf>, String> {
+    if project.native_imports.is_empty() {
+        Ok(Vec::new())
+    } else {
+        npm::archive_entries(project)
+    }
+}
+
 pub fn main_file(project: &Project) -> Result<PathBuf, String> {
     let namespace = project
         .main
@@ -499,6 +544,9 @@ pub fn sync_lock(project: &Project, mode: LockMode) -> Result<PathBuf, String> {
             "project sync requires the reviewed registry client to resolve {} declared dependencies",
             project.dependencies.len()
         ));
+    }
+    if !project.npm_dependencies.is_empty() || !project.native_imports.is_empty() {
+        return npm::sync(project, mode, &lock);
     }
     match mode {
         LockMode::Locked | LockMode::Frozen if !lock.is_file() => {
@@ -689,22 +737,36 @@ fn runtime_profiles(form: &Form) -> Result<BTreeMap<String, RuntimeProfile>, Str
                 )
             })
             .transpose()?;
-        let (hara_dependencies, maven_dependencies) = match lookup(entries, "runtime/dependencies")
-        {
-            None => (BTreeMap::new(), BTreeMap::new()),
-            Some(value) => {
-                let groups = map(value, "runtime :runtime/dependencies must be an EDN map")?;
-                let hara = lookup(groups, "hara")
-                    .map(dependencies)
-                    .transpose()?
-                    .unwrap_or_default();
-                let maven = lookup(groups, "maven")
-                    .map(maven_dependencies)
-                    .transpose()?
-                    .unwrap_or_default();
-                (hara, maven)
-            }
-        };
+        let (hara_dependencies, maven_dependencies, npm_dependencies) =
+            match lookup(entries, "runtime/dependencies") {
+                None => (BTreeMap::new(), BTreeMap::new(), BTreeMap::new()),
+                Some(value) => {
+                    let groups = map(value, "runtime :runtime/dependencies must be an EDN map")?;
+                    let hara = lookup(groups, "hara")
+                        .map(dependencies)
+                        .transpose()?
+                        .unwrap_or_default();
+                    let maven = lookup(groups, "maven")
+                        .map(maven_dependencies)
+                        .transpose()?
+                        .unwrap_or_default();
+                    let npm = lookup(groups, "npm")
+                        .map(npm_wasm_dependencies)
+                        .transpose()?
+                        .unwrap_or_default();
+                    (hara, maven, npm)
+                }
+            };
+        let native_imports = lookup(entries, "runtime/imports")
+            .map(|value| wasm_native_imports(value, &npm_dependencies))
+            .transpose()?
+            .unwrap_or_default();
+        if runtime == "jvm" && (!npm_dependencies.is_empty() || !native_imports.is_empty()) {
+            return Err(
+                "runtime/incompatible: npm WASM dependencies and imports are unavailable on :jvm"
+                    .into(),
+            );
+        }
         let profile = RuntimeProfile {
             source_paths,
             test_paths,
@@ -713,6 +775,8 @@ fn runtime_profiles(form: &Form) -> Result<BTreeMap<String, RuntimeProfile>, Str
             target_path,
             hara_dependencies,
             maven_dependencies,
+            npm_dependencies,
+            native_imports,
         };
         if output.insert(runtime.clone(), profile).is_some() {
             return Err(format!("duplicate project runtime profile {runtime:?}"));
@@ -759,7 +823,99 @@ fn resolve_runtime_profile_values(
         target_path: profile.target_path,
         hara_dependencies,
         maven_dependencies: profile.maven_dependencies,
+        npm_dependencies: profile.npm_dependencies,
+        native_imports: profile.native_imports,
     })
+}
+
+fn npm_wasm_dependencies(form: &Form) -> Result<BTreeMap<String, NpmWasmDependency>, String> {
+    map(form, "runtime npm dependencies must be an EDN map")?
+        .iter()
+        .map(|(coordinate, declaration)| {
+            let coordinate = string(coordinate, "npm package name")?;
+            let entries = map(declaration, "npm dependency declaration must be an EDN map")?;
+            for (key, _) in entries {
+                let key = identifier(key, "npm dependency field")?;
+                if key != "version" && key != "integrity" {
+                    return Err(format!("unsupported npm dependency field :{key}"));
+                }
+            }
+            let version = string(
+                lookup(entries, "version").ok_or("npm dependency requires :version")?,
+                "npm dependency :version",
+            )?;
+            let version = Version::parse(&version)
+                .map_err(|_| "npm dependency :version must be an exact SemVer")?;
+            let integrity = string(
+                lookup(entries, "integrity").ok_or("npm dependency requires :integrity")?,
+                "npm dependency :integrity",
+            )?;
+            let payload = integrity
+                .strip_prefix("sha512-")
+                .ok_or("npm dependency :integrity must use sha512 SRI")?;
+            if payload.len() < 16
+                || !payload
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+            {
+                return Err("npm dependency :integrity contains invalid sha512 SRI data".into());
+            }
+            Ok((coordinate, NpmWasmDependency { version, integrity }))
+        })
+        .collect()
+}
+
+fn wasm_native_imports(
+    form: &Form,
+    dependencies: &BTreeMap<String, NpmWasmDependency>,
+) -> Result<BTreeMap<String, WasmNativeImport>, String> {
+    map(form, "runtime imports must be an EDN map")?
+        .iter()
+        .map(|(logical, declaration)| {
+            let logical = identifier(logical, "runtime import name")?;
+            let entries = map(declaration, "runtime import declaration must be an EDN map")?;
+            for (key, _) in entries {
+                let key = identifier(key, "runtime import field")?;
+                if !matches!(key.as_str(), "package" | "module" | "abi") {
+                    return Err(format!("unsupported runtime import field :{key}"));
+                }
+            }
+            let package = string(
+                lookup(entries, "package").ok_or("runtime import requires :package")?,
+                "runtime import :package",
+            )?;
+            if !dependencies.contains_key(&package) {
+                return Err(format!(
+                    "runtime import {logical:?} uses undeclared npm package {package:?}"
+                ));
+            }
+            let module = relative_path(
+                &string(
+                    lookup(entries, "module").ok_or("runtime import requires :module")?,
+                    "runtime import :module",
+                )?,
+                "runtime import :module",
+            )?;
+            if module.extension().and_then(|value| value.to_str()) != Some("wasm") {
+                return Err("runtime import :module must select a .wasm file".into());
+            }
+            let abi = identifier(
+                lookup(entries, "abi").ok_or("runtime import requires :abi")?,
+                "runtime import :abi",
+            )?;
+            if abi != "core.v1" {
+                return Err(format!("runtime import uses unsupported ABI :{abi}"));
+            }
+            Ok((
+                logical,
+                WasmNativeImport {
+                    package,
+                    module,
+                    abi,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn maven_dependencies(form: &Form) -> Result<BTreeMap<String, String>, String> {

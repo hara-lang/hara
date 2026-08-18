@@ -9,11 +9,10 @@
 mod model;
 pub(crate) use model::required_text;
 pub use model::{
-    LiveBackend, LiveReplacementPolicy, LiveSession, LiveSessionCapabilities,
-    LiveSessionCommand, LiveSessionError, LiveSessionOperation, LiveSessionReply,
-    LiveSessionRequest, LiveSessionState, LiveSessionStatus, LiveSettlement, LiveSource,
-    LIVE_SESSION_CAPABILITIES_SCHEMA, LIVE_SESSION_PROTOCOL, LIVE_SESSION_REPLY_SCHEMA,
-    LIVE_SESSION_STATE_SCHEMA,
+    LiveBackend, LiveReplacementPolicy, LiveSession, LiveSessionCapabilities, LiveSessionCommand,
+    LiveSessionError, LiveSessionOperation, LiveSessionReply, LiveSessionRequest, LiveSessionState,
+    LiveSessionStatus, LiveSettlement, LiveSource, LIVE_SESSION_CAPABILITIES_SCHEMA,
+    LIVE_SESSION_PROTOCOL, LIVE_SESSION_REPLY_SCHEMA, LIVE_SESSION_STATE_SCHEMA,
 };
 
 #[path = "live_session/interpreter.rs"]

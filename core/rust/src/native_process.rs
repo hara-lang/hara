@@ -89,7 +89,9 @@ pub(crate) fn spawn(
         let mut bytes = Vec::new();
         let mut buffer = [0u8; 8192];
         while let Ok(count) = stdout.read(&mut buffer) {
-            if count == 0 { break; }
+            if count == 0 {
+                break;
+            }
             let chunk = buffer[..count].to_vec();
             bytes.extend_from_slice(&chunk);
             let _ = stdout_tx.send(chunk);
@@ -100,7 +102,9 @@ pub(crate) fn spawn(
         let mut bytes = Vec::new();
         let mut buffer = [0u8; 8192];
         while let Ok(count) = stderr.read(&mut buffer) {
-            if count == 0 { break; }
+            if count == 0 {
+                break;
+            }
             let chunk = buffer[..count].to_vec();
             bytes.extend_from_slice(&chunk);
             let _ = stderr_tx.send(chunk);
@@ -269,9 +273,18 @@ pub(crate) fn take_stream(value: &Value, kind: &'static str) -> Result<u64, Stri
     let handle = handle(value, &format!("os/process-{kind}-stream"))?;
     PROCESSES.with(|state| {
         let mut state = state.borrow_mut();
-        let process = state.records.get_mut(&handle).ok_or_else(|| "os/process-stream: unknown process".to_owned())?;
-        let taken = if kind == "stdout" { &mut process.stdout_stream_taken } else { &mut process.stderr_stream_taken };
-        if *taken { return Err(format!("os/process-{kind}-stream already taken")); }
+        let process = state
+            .records
+            .get_mut(&handle)
+            .ok_or_else(|| "os/process-stream: unknown process".to_owned())?;
+        let taken = if kind == "stdout" {
+            &mut process.stdout_stream_taken
+        } else {
+            &mut process.stderr_stream_taken
+        };
+        if *taken {
+            return Err(format!("os/process-{kind}-stream already taken"));
+        }
         *taken = true;
         Ok(handle)
     })
@@ -280,9 +293,18 @@ pub(crate) fn take_stream(value: &Value, kind: &'static str) -> Result<u64, Stri
 fn stream_result(handle: u64, kind: &'static str, wait: bool) -> Result<Option<Value>, String> {
     PROCESSES.with(|state| {
         let state = state.borrow();
-        let process = state.records.get(&handle).ok_or_else(|| "os/process-stream: unknown process".to_owned())?;
-        let receiver = if kind == "stdout" { &process.stdout_chunks } else { &process.stderr_chunks };
-        if wait { return Ok(receiver.recv().ok().map(Value::Bytes)); }
+        let process = state
+            .records
+            .get(&handle)
+            .ok_or_else(|| "os/process-stream: unknown process".to_owned())?;
+        let receiver = if kind == "stdout" {
+            &process.stdout_chunks
+        } else {
+            &process.stderr_chunks
+        };
+        if wait {
+            return Ok(receiver.recv().ok().map(Value::Bytes));
+        }
         match receiver.try_recv() {
             Ok(bytes) => Ok(Some(Value::Bytes(bytes))),
             Err(TryRecvError::Empty) => Ok(None),
@@ -294,20 +316,34 @@ fn stream_result(handle: u64, kind: &'static str, wait: bool) -> Result<Option<V
 pub(crate) fn stream_promise(handle: u64, kind: &'static str) -> Promise {
     let promise = Promise::new();
     let weak = promise.downgrade();
-    promise.set_poller(Rc::new(move || if let Some(promise) = weak.upgrade() {
-        match stream_result(handle, kind, false) {
-            Ok(Some(value)) => { promise.resolve(value); }
-            Ok(None) => {}
-            Err(error) => { promise.reject(error); }
-        };
+    promise.set_poller(Rc::new(move || {
+        if let Some(promise) = weak.upgrade() {
+            match stream_result(handle, kind, false) {
+                Ok(Some(value)) => {
+                    promise.resolve(value);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    promise.reject(error);
+                }
+            };
+        }
     }));
     let weak = promise.downgrade();
-    promise.set_waiter(Rc::new(move || if let Some(promise) = weak.upgrade() {
-        match stream_result(handle, kind, true) {
-            Ok(Some(value)) => { promise.resolve(value); }
-            Ok(None) => { promise.resolve(Value::Nil); }
-            Err(error) => { promise.reject(error); }
-        };
+    promise.set_waiter(Rc::new(move || {
+        if let Some(promise) = weak.upgrade() {
+            match stream_result(handle, kind, true) {
+                Ok(Some(value)) => {
+                    promise.resolve(value);
+                }
+                Ok(None) => {
+                    promise.resolve(Value::Nil);
+                }
+                Err(error) => {
+                    promise.reject(error);
+                }
+            };
+        }
     }));
     promise
 }

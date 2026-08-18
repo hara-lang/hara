@@ -64,9 +64,7 @@ fn parsed_test_results(form: &Form) -> Result<(usize, usize), String> {
     match form {
         Form::Vector(results) | Form::List(results) => direct_test_results(results),
         Form::Map(_) => structured_test_results(form),
-        _ => Err(
-            "test file must return a direct result vector/list or a code.test summary".into(),
-        ),
+        _ => Err("test file must return a direct result vector/list or a code.test summary".into()),
     }
 }
 
@@ -87,8 +85,7 @@ mod tests {
     #[test]
     fn accepts_direct_vectors_and_lists() {
         assert_eq!(
-            test_results("[{:name \"pass\" :pass true} {:name \"fail\" :pass false}]")
-                .unwrap(),
+            test_results("[{:name \"pass\" :pass true} {:name \"fail\" :pass false}]").unwrap(),
             (1, 1)
         );
         assert_eq!(
@@ -115,10 +112,8 @@ mod tests {
             (3, 0)
         );
         assert_eq!(
-            test_results(
-                "{:status :failed :counts {:passed 1 :failed 0 :error 1 :timeout 0}}"
-            )
-            .unwrap(),
+            test_results("{:status :failed :counts {:passed 1 :failed 0 :error 1 :timeout 0}}")
+                .unwrap(),
             (1, 1)
         );
     }

@@ -26,12 +26,16 @@ pub(super) fn build_archive(project: &Project, output: &Path) -> Result<(), Stri
     let lock = project.root.join("project.lock.edn");
     if lock.is_file() {
         entries.push(PathBuf::from("project.lock.edn"));
-    } else if !project.dependencies.is_empty() {
+    } else if !project.dependencies.is_empty()
+        || !project.npm_dependencies.is_empty()
+        || !project.native_imports.is_empty()
+    {
         return Err(
-            "package build requires project.lock.edn when :project/dependencies is non-empty"
+            "package build requires project.lock.edn when package dependencies or native imports are non-empty"
                 .into(),
         );
     }
+    entries.extend(crate::project::native_archive_entries(project)?);
     if project.package_workspace {
         let workspace = project.root.join("workspace.edn");
         if !workspace.is_file() {

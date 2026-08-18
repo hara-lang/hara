@@ -208,8 +208,7 @@ public interface RT {
     @Override
     public Entry<Symbol, Object> find(Symbol sym) {
       if (!(_rt instanceof Instance)
-          || ((Instance) _rt).getCurrentNs() == null
-          || ((Instance) _rt).getCurrentNs().nativeFlavor == null) {
+          || ((Instance) _rt).getCurrentNs() == null) {
         return null;
       }
       if (sym.getNamespace() == null) {
@@ -518,9 +517,8 @@ public interface RT {
 
     public NativeFlavorProvider nativeProvider() {
       Namespace namespace = getCurrentNs();
-      return namespace == null || namespace.nativeFlavor == null
-          ? null
-          : _nativeFlavors.require(namespace.nativeFlavor);
+      String flavor = namespace == null ? null : namespace.nativeFlavor;
+      return _nativeFlavors.require(flavor == null ? "jvm" : flavor);
     }
 
     public NativeFlavorAccess nativeAccess() {

@@ -249,10 +249,20 @@ fn sandbox_worker(
                 reply,
             } => {
                 let result = run_controlled(evaluation, &spec.limits, &cancelled, || {
-                    session
-                        .runtime_mut()?
-                        .invoke_hta(&callable, &arguments_hta)
-                        .map_err(|error| error.to_string())
+                    #[cfg(not(target_arch = "wasm32"))]
+                    {
+                        session
+                            .runtime_mut()?
+                            .invoke_hta(&callable, &arguments_hta)
+                            .map_err(|error| error.to_string())
+                    }
+                    #[cfg(target_arch = "wasm32")]
+                    {
+                        let _ = (&callable, &arguments_hta);
+                        Err::<Vec<u8>, String>(
+                            "sandbox HTA calls are unavailable in browser WASM".into(),
+                        )
+                    }
                 })
                 .and_then(|result| {
                     if result.len() > spec.limits.result_bytes {

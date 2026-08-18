@@ -13,15 +13,13 @@ pub use evidence::{
 };
 
 use self::evidence::{
-    boolean, diagnostic_evidence, encode_failure, envelope_evidence, event,
-    failed_trace, form_evidence, integer, module_identity_evidence,
-    module_projection_equal, next_event, normalize_id, payload_evidence,
-    schema_evidence, sha256, string, structural_forms,
+    boolean, diagnostic_evidence, encode_failure, envelope_evidence, event, failed_trace,
+    form_evidence, integer, module_identity_evidence, module_projection_equal, next_event,
+    normalize_id, payload_evidence, schema_evidence, sha256, string, structural_forms,
 };
 use super::halc::{decode_halc, encode_halc_module};
 use super::halc_trace::{
-    inspect_halc_artifact, HalcArtifactTrace, HalcTraceEvidence,
-    HalcTraceStatus, HALC_TRACE_SCHEMA,
+    inspect_halc_artifact, HalcArtifactTrace, HalcTraceEvidence, HalcTraceStatus, HALC_TRACE_SCHEMA,
 };
 use super::parse_forms;
 
@@ -53,11 +51,7 @@ pub fn trace_halc_source_with_limits(
         Ok(forms) => forms,
         Err(error) => {
             let message = error.to_string();
-            let evidence = diagnostic_evidence(
-                "source/read",
-                "source/parse",
-                &message,
-            );
+            let evidence = diagnostic_evidence("source/read", "source/parse", &message);
             let events = vec![event(
                 1,
                 "source/read",
@@ -88,12 +82,7 @@ pub fn trace_halc_source_with_limits(
         None,
     );
 
-    let artifact = match encode_halc_module(
-        namespace,
-        resource,
-        source,
-        parsed_forms.clone(),
-    ) {
+    let artifact = match encode_halc_module(namespace, resource, source, parsed_forms.clone()) {
         Ok(artifact) => artifact,
         Err(error) => {
             let (stage, category) = encode_failure(&error);
@@ -112,11 +101,8 @@ pub fn trace_halc_source_with_limits(
     let module = match decode_halc(&artifact) {
         Ok(module) => module,
         Err(error) => {
-            let evidence = diagnostic_evidence(
-                "artifact/validate",
-                "artifact/generated-invalid",
-                &error,
-            );
+            let evidence =
+                diagnostic_evidence("artifact/validate", "artifact/generated-invalid", &error);
             next_event(
                 &mut events,
                 "artifact/validate",
@@ -131,11 +117,7 @@ pub fn trace_halc_source_with_limits(
     let inspection = match inspect_halc_artifact(&artifact) {
         Ok(inspection) => inspection,
         Err(error) => {
-            let evidence = diagnostic_evidence(
-                "artifact/validate",
-                "artifact/inspection",
-                &error,
-            );
+            let evidence = diagnostic_evidence("artifact/validate", "artifact/inspection", &error);
             next_event(
                 &mut events,
                 "artifact/validate",
@@ -190,10 +172,7 @@ pub fn trace_halc_source_with_limits(
     let source_hash_matches = inspection.source_hash == source_hash;
     let mut validation = HalcTraceEvidence::new();
     validation.insert("artifact/valid".into(), boolean(true));
-    validation.insert(
-        "source/hash-matches".into(),
-        boolean(source_hash_matches),
-    );
+    validation.insert("source/hash-matches".into(), boolean(source_hash_matches));
     validation.insert(
         "payload/checksum".into(),
         string(&inspection.payload_checksum),
@@ -214,11 +193,7 @@ pub fn trace_halc_source_with_limits(
     ) {
         Ok(artifact) => artifact,
         Err(error) => {
-            let evidence = diagnostic_evidence(
-                "artifact/decode",
-                "decode/reencode",
-                &error,
-            );
+            let evidence = diagnostic_evidence("artifact/decode", "decode/reencode", &error);
             next_event(
                 &mut events,
                 "artifact/decode",
@@ -232,11 +207,7 @@ pub fn trace_halc_source_with_limits(
     let replay_module = match decode_halc(&replay_artifact) {
         Ok(module) => module,
         Err(error) => {
-            let evidence = diagnostic_evidence(
-                "artifact/decode",
-                "decode/replay-invalid",
-                &error,
-            );
+            let evidence = diagnostic_evidence("artifact/decode", "decode/replay-invalid", &error);
             next_event(
                 &mut events,
                 "artifact/decode",

@@ -28,6 +28,20 @@ test("VM package compiles and executes persistent bytecode", async () => {
   await assert.rejects(() => hara.compileWholeWasm("(+ 19 23)"), /browser\/full/);
 });
 
+test("browser runtime binds typed direct-WASM imports without HTA", async () => {
+  const hara = await startVm();
+  const add = Uint8Array.from([
+    0, 97, 115, 109, 1, 0, 0, 0, 1, 7, 1, 96, 2, 126, 126, 1, 126,
+    3, 2, 1, 0, 7, 7, 1, 3, 97, 100, 100, 0, 0, 10, 9, 1, 7, 0,
+    32, 0, 32, 1, 124, 11
+  ]);
+  hara.installDirectWasmImport("math", add);
+  assert.equal(
+    hara.eval("(ns browser.direct (:import math)) (math/add 20 22)"),
+    "42"
+  );
+});
+
 test("browser SDK compiles and executes whole-function WebAssembly", async () => {
   const hara = await startFull();
   const compiled = await hara.compileWholeWasm(

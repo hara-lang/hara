@@ -1,23 +1,104 @@
+;; db.postgres.wasm — embedded PostgreSQL through the PGlite HTA provider.
 (ns db.postgres.wasm
-  (:require [db.postgres.connection :as connection]))
+  (:require [db.protocol :as protocol]
+            [db.postgres.wasm.hta :as provider]
+            [std.foundation.promise :as promise]))
 
-(def provider :pglite)
-(defn provider-options [options] (assoc (or options {}) :provider provider))
-(defn open ([] (open {})) ([options] (connection/open (provider-options options))))
-(def close connection/close)
-(def exec connection/exec)
-(def execute connection/execute)
-(def query connection/query)
-(def batch-exec connection/batch-exec)
-(def describe connection/describe)
-(def capabilities connection/capabilities)
-(def version connection/version)
-(def begin connection/begin)
-(def commit connection/commit)
-(def rollback connection/rollback)
-(def listen connection/listen)
-(def next-notification connection/next-notification)
-(def unlisten connection/unlisten)
-(def notify connection/notify)
-(def numeric connection/numeric)
-(def sql-array connection/sql-array)
+(def provider-id :pglite)
+
+(defstruct PostgresWasmConnection
+  [id engine provider mode capabilities storage endpoint])
+
+(defstruct PostgresWasmSubscription [id connection channel])
+
+(defn descriptor-field [descriptor keyword-key string-key]
+  (if (has? descriptor keyword-key)
+    (get descriptor keyword-key)
+    (get descriptor string-key)))
+
+(defn create [descriptor]
+  (db.postgres.wasm/PostgresWasmConnection
+   (descriptor-field descriptor :id "id")
+   :postgresql
+   provider-id
+   (keyword (descriptor-field descriptor :mode "mode"))
+   (descriptor-field descriptor :capabilities "capabilities")
+   (descriptor-field descriptor :storage "storage")
+   (descriptor-field descriptor :endpoint "endpoint")))
+
+(extend-type PostgresWasmConnection protocol/IDatabase
+  (db-engine [_] :postgresql)
+  (db-provider [_] provider-id)
+  (db-info [value]
+    {:id (:id value)
+     :engine :postgresql
+     :provider provider-id
+     :mode (:mode value)
+     :capabilities (:capabilities value)
+     :storage (:storage value)
+     :endpoint (:endpoint value)})
+  (db-exec [value sql parameters]
+    (provider/exec (:id value) sql parameters))
+  (db-query [value sql parameters]
+    (provider/query (:id value) sql parameters))
+  (db-close [value]
+    (provider/close (:id value))))
+
+(defn describe [] (provider/describe))
+(defn open
+  ([] (open {}))
+  ([options]
+   (promise/then (provider/open options) create)))
+(defn close [value]
+  (if (nil? value) nil (protocol/db-close value)))
+(defn exec
+  ([value sql] (exec value sql []))
+  ([value sql parameters] (protocol/db-exec value sql parameters)))
+(def execute exec)
+(defn query
+  ([value sql] (query value sql []))
+  ([value sql parameters] (protocol/db-query value sql parameters))
+  ([value sql parameters options]
+   (provider/query-options (:id value) sql parameters options)))
+(defn batch-exec [value sql] (exec value sql []))
+(defn capabilities [value] (:capabilities value))
+(defn version
+  ([] (provider/version))
+  ([_] (provider/version)))
+(defn begin [value] (exec value "begin"))
+(defn commit [value] (exec value "commit"))
+(defn rollback [value] (exec value "rollback"))
+
+(defn listen [value channel]
+  (promise/then
+   (provider/listen (:id value) (if (keyword? channel) (name channel) channel))
+   (fn [descriptor]
+     (db.postgres.wasm/PostgresWasmSubscription
+      (descriptor-field descriptor :id "id") value
+      (descriptor-field descriptor :channel "channel")))))
+(defn next-notification [value] (provider/notification-next (:id value)))
+(defn unlisten [value] (provider/unlisten (:id value)))
+(defn notify
+  ([value channel] (notify value channel ""))
+  ([value channel payload]
+   (provider/notify (:id value)
+                    (if (keyword? channel) (name channel) channel)
+                    payload)))
+(defn wait-ready [options] (provider/wait-ready options))
+(defn database-create [options database]
+  (provider/database-create options database))
+(defn database-drop [options database]
+  (provider/database-drop options database))
+(defn server-start [options] (provider/server-start options))
+(defn server-stop [server] (provider/server-stop server))
+
+(defn numeric [value]
+  {"$postgres" "numeric" "value" value})
+(defn sql-array
+  ([element-type values]
+   (sql-array element-type values [[1 (count values)]]))
+  ([element-type values dimensions]
+   {"$postgres" "array"
+    "element" (if (keyword? element-type) (name element-type) element-type)
+    "dimensions" dimensions
+    "value" values}))

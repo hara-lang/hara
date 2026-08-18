@@ -29,8 +29,7 @@ impl NativeRootInventory {
         self.protocols.extend(other.protocols.iter().cloned());
         self.protocol_methods
             .extend(other.protocol_methods.iter().cloned());
-        self.multimethods
-            .extend(other.multimethods.iter().cloned());
+        self.multimethods.extend(other.multimethods.iter().cloned());
         self.host_calls.extend(other.host_calls.iter().cloned());
         self.callbacks.extend(other.callbacks.iter().cloned());
         self.runtime_shims

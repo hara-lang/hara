@@ -1,6 +1,7 @@
 (ns lang.common.emit-special-test
   (:use code.test)
-  (:require [lang.common.emit-helper :as helper]
+  (:require [lang.common.emit-common :as common]
+            [lang.common.emit-helper :as helper]
             [lang.common.emit-special :as special]))
 
 (def snapshot
@@ -8,6 +9,7 @@
                          {:code {'visible {:id 'visible :op :def}
                                  'hidden {:id 'hidden :op :test}}}}}}})
 
+^{:refer lang.common.emit-special/emit-with-module-all-ids :added "4.0"}
 (fact "selects allowed module ids"
   (special/emit-with-module-all-ids snapshot :js 'app.core #{:def})
   => ['visible])
@@ -24,13 +26,45 @@
    :js 'app.core #{:def})
   => ['first 'late 'last])
 
+^{:refer lang.common.emit-special/emit-with-module :added "4.0"}
+(fact "emits an allowed module as a table"
+  (binding [common/*emit-fn* special/test-special-loop]
+    (special/emit-with-module
+     nil nil '(module :js app.core)
+     (assoc-in helper/+default+ [:default :module :allow] #{:def})
+     {:snapshot snapshot}))
+  => "{\"visible\":app.core.visible}")
+
+^{:refer lang.common.emit-special/emit-with-preprocess :added "4.0"}
+(fact "preprocesses before recursively emitting"
+  (binding [common/*emit-fn* special/test-special-loop]
+    (special/emit-with-preprocess '(print 1) helper/+default+ {}))
+  => "print(1)")
+
+^{:refer lang.common.emit-special/emit-with-eval :added "4.0"}
 (fact "portable emission rejects implicit host evaluation"
   (special/emit-with-eval nil nil '(!:eval (+ 1 2)) {} {})
-  => (throws)
+  => (throws))
 
+^{:refer lang.common.emit-special/emit-with-deref :added "4.0"}
+(fact "portable emission rejects implicit host dereference"
   (special/emit-with-deref nil nil '(!:deref (var x)) {} {})
   => (throws))
 
+^{:refer lang.common.emit-special/emit-with-lang :added "4.0"}
+(fact "selects a snapshot language before emitting"
+  (binding [common/*emit-fn* special/test-special-loop]
+    (special/emit-with-lang
+     nil nil '(!:lang {:lang :js} (print 1)) helper/+default+
+     {:snapshot {:js {:book {:grammar helper/+default+ :modules {}}}}}))
+  => "print(1)")
+
+^{:refer lang.common.emit-special/test-special-loop :added "4.0"}
+(fact "the Foundation special loop retains direct dispatch"
+  (special/test-special-loop '(print 1) helper/+default+ {})
+  => "print(1)")
+
+^{:refer lang.common.emit-special/test-special-emit :added "4.0"}
 (fact "the Foundation special test emitter installs recursive dispatch"
   (special/test-special-emit
    ''(1 2 3)

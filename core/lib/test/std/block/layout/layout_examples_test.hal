@@ -1,0 +1,42 @@
+(ns std.block.layout.layout-examples-test
+  (:require [std.foundation.string]
+    [std.block.base :as base]
+    [std.block.layout :as layout]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+(defn migration-meta-tree
+  [value]
+  (let [metadata   (select-keys (or (meta value) {}) [:readable-len :tag :spec])
+        normalized (cond
+                    (vector? value) (mapv migration-meta-tree value)
+                    (map? value)    (reduce-kv
+                                     (fn
+                                      [output key item] (assoc output (migration-meta-tree key) (migration-meta-tree item))) {}
+                                     value)
+                    (set? value)    (set (map migration-meta-tree value))
+                    (seq? value)    (apply list (map migration-meta-tree value))
+                    :else           value)]
+    {:meta metadata :value normalized}))
+
+(defn split-block
+  [form]
+  (std.foundation.string/split-lines (base/block-string (layout/layout-main form))))
+
+^{:refer std.block.layout/layout-examples :added "4.0"}
+(Test/run [{:name "Default Formatting Examples #1", :test (fn [] (split-block (list (quote defn) (quote calculate-sum) "Calculates the sum of two numbers." (vector (quote a) (quote b)) (list (quote +) (quote a) (quote b))))), :expected ["(defn calculate-sum" "  \"Calculates the sum of two numbers.\"" "  [a b]" "  (+ a b))"]} {:name "Default Formatting Examples #2", :test (fn [] (split-block (list (quote defn.pg) (quote create-user) "Creates a user in Postgres." (vector (quote db) (quote user-data)) (list (quote pg/insert!) (quote db) :users (quote user-data))))), :expected ["(defn.pg create-user" "  \"Creates a user in Postgres.\"" "  [db user-data]" "  (pg/insert! db" "    :users" "    user-data))"]} {:name "Default Formatting Examples #3", :test (fn [] (split-block (list (quote let) (vector (quote a) 10 (quote b) 20) (list (quote println) (list (quote +) (quote a) (quote b)))))), :expected ["(let [a 10 b 20]" "  (println (+ a b)))"]} {:name "Default Formatting Examples #4", :test (fn [] (split-block (list (quote component/with) (vector (quote sys) (quote system)) (list (quote start) (quote sys)) (list (quote run) (quote sys))))), :expected ["(component/with [sys system]" "  (start sys)" "  (run sys))"]} {:name "Default Formatting Examples #5", :test (fn [] (split-block (list (quote defn) (quote configure) (vector (Algo/ordered-map :keys (vector (quote host) (quote port)) :as (quote opts))) (list (quote connect) (quote host) (quote port))))), :expected ["(defn configure" "  [{:as opts :keys [host port]}]" "  (connect host port))"]} {:name "Default Formatting Examples #6", :test (fn [] (split-block (list (quote def) (quote config) (Algo/ordered-map :server (Algo/ordered-map :host "localhost" :port 8080) :db (Algo/ordered-map :type "postgres" :url "jdbc:postgresql://..."))))), :expected ["(def config" "  {:server {:host \"localhost\"" "            :port 8080}" "   :db     {:type \"postgres\"" "            :url  \"jdbc:postgresql://...\"}})"]} {:name "Default Formatting Examples #7", :test (fn [] (split-block (list (quote do-things) (list (quote first-step) (quote a) (quote b) (quote c)) (list (quote second-step) (quote d) (quote e) (quote f))))), :expected ["(do-things (first-step a b c)" "           (second-step d e f))"]} {:name "Default Formatting Examples #8", :test (fn [] (split-block (list (quote do-things) (list (quote first-step-complex) (list (quote sub-step-1) (quote a)) (list (quote sub-step-2) (quote b)))))), :expected ["(do-things" " (first-step-complex" "  (sub-step-1 a)" "  (sub-step-2 b)))"]} {:name "Default Formatting Examples #9", :test (fn [] (split-block (list (quote defn) (quote foo) (vector (Algo/ordered-map :keys (vector (quote a) (quote b) (quote c) (quote d) (quote e) (quote f) (quote g) (quote h) (quote i) (quote j) (quote k) (quote l) (quote m) (quote n) (quote o) (quote p)) :as (quote opts))) (list (quote println) (quote a))))), :expected ["(defn foo" "  [{:keys [a" "           b" "           c" "           d" "           e" "           f" "           g" "           h" "           i" "           j" "           k" "           l" "           m" "           n" "           o" "           p]" "    :as opts}]" "  (println a))"]}] migration-test-check)

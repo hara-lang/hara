@@ -79,6 +79,7 @@ pub struct Runtime {
     protocols: core::ProtocolRegistry,
     extensions: core::ExtensionRegistry,
     wasm_extensions: HashMap<String, extension::WasmExtension>,
+    native_wasm_imports: HashMap<String, extension::WasmExtension>,
     providers: core::ProviderRegistry,
     package_catalog: core::PackageCatalog,
     resources: HashMap<String, String>,
@@ -126,7 +127,8 @@ impl Drop for Runtime {
             }
         }
         self.evaluator.clear();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.native_wasm_imports.clear();
         self.wasm_extensions.clear();
     }
 }
-

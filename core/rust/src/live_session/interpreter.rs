@@ -43,8 +43,7 @@ impl InterpreterLiveSession {
     }
 
     fn generation(&self) -> u64 {
-        self.generation_base
-            .saturating_add(self.backend_generation)
+        self.generation_base.saturating_add(self.backend_generation)
     }
 
     fn handle(&self) -> Result<u64, LiveSessionError> {
@@ -172,9 +171,7 @@ impl LiveSession for InterpreterLiveSession {
         command: LiveSessionCommand,
     ) -> Result<JsonValue, LiveSessionError> {
         match command {
-            LiveSessionCommand::Snapshot => {
-                self.invoke_and_refresh(json!({"op": "snapshot"}))
-            }
+            LiveSessionCommand::Snapshot => self.invoke_and_refresh(json!({"op": "snapshot"})),
             LiveSessionCommand::Step => self.invoke_and_refresh(json!({"op": "step"})),
             LiveSessionCommand::Run { boundary_limit } => self.invoke_and_refresh(json!({
                 "op": "run",
@@ -216,9 +213,7 @@ impl LiveSession for InterpreterLiveSession {
                 )),
             },
             LiveSessionCommand::Reset => self.reset(),
-            LiveSessionCommand::Cancel => {
-                self.invoke_and_refresh(json!({"op": "cancel"}))
-            }
+            LiveSessionCommand::Cancel => self.invoke_and_refresh(json!({"op": "cancel"})),
             LiveSessionCommand::Dispose => self.dispose(),
         }
     }
@@ -285,10 +280,7 @@ fn required_u64(value: &JsonValue, field: &str) -> Result<u64, LiveSessionError>
     })
 }
 
-fn required_string<'a>(
-    value: &'a JsonValue,
-    field: &str,
-) -> Result<&'a str, LiveSessionError> {
+fn required_string<'a>(value: &'a JsonValue, field: &str) -> Result<&'a str, LiveSessionError> {
     value.get(field).and_then(JsonValue::as_str).ok_or_else(|| {
         LiveSessionError::backend(format!(
             "interpreter observation response requires string {field}"

@@ -34,7 +34,7 @@ public class MacroTest {
     rt = new RT.Instance<>(null, "test");
     rt.eval(
         rt.readString(
-            "(ns test (:flavor :jvm) (:import hara.kernel.base.MacroTest$TestClass [java.lang Exception RuntimeException]))"));
+            "(ns test (:import hara.kernel.base.MacroTest$TestClass [java.lang Exception RuntimeException]))"));
     rt.setObj(Symbol.create("test-instance"), new Var("test-instance", new TestClass()));
   }
 
@@ -51,6 +51,11 @@ public class MacroTest {
   }
 
   // --- Java Interop ---
+
+  @Test
+  public void testJvmIsTheDefaultNativeFlavor() {
+    assertEquals("hello", ((TestClass) rt.eval(rt.readString("(new TestClass)"))).testField);
+  }
 
   @Test
   public void testNew() {

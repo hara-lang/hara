@@ -7,9 +7,9 @@ use crate::kernel::{NamespaceLoadState, NamespaceRegistry, Var as KernelVar, Var
 use crate::lang::data::List as PList;
 use crate::lang::data::{
     Atom as PAtom, Cons as PCons, Deque as PDeque, Keyword, Map as PMap, OrderedMap as POrderedMap,
-    OrderedSet as POrderedSet, Pointer as PPointer, Queue as PQueue, Set as PSet,
-    PriorityMap as PPriorityMap, SortedMap as PSortedMap, SortedSet as PSortedSet, Symbol, TaggedLiteral as PTaggedLiteral,
-    Trie as PTrie, Tuple as PTuple, Vector as PVector, Seq as PSeq,
+    OrderedSet as POrderedSet, Pointer as PPointer, PriorityMap as PPriorityMap, Queue as PQueue,
+    Seq as PSeq, Set as PSet, SortedMap as PSortedMap, SortedSet as PSortedSet, Symbol,
+    TaggedLiteral as PTaggedLiteral, Trie as PTrie, Tuple as PTuple, Vector as PVector,
 };
 use crate::lang::data::{Metadata, MetadataValue};
 use crate::lang::data::{
@@ -63,7 +63,6 @@ pub use native_result::{ResultStatus, ResultValue};
 mod native_crypto;
 pub(crate) use fiber::Cont;
 pub use fiber::{EvalFiber, EvalFiberState, Step};
-
 
 include!("core/inventory.rs");
 include!("core/value.rs");

@@ -1,0 +1,47 @@
+(ns std.block.heal-test
+  (:require [std.block.heal :refer :all]
+    [std.codec.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (select-keys (process/check test expected) [:pass :status :error])]
+    (if (not (:pass result))
+      (println :failure
+        (assoc result
+          :actual
+          (try (test) (catch Throwable error {:exception (str error)}))
+          :expected
+          expected)))
+    result))
+
+(defn migration-meta-tree
+  [value]
+  (let [metadata   (select-keys (or (meta value) {}) [:readable-len :tag :spec])
+        normalized (cond
+                    (vector? value) (mapv migration-meta-tree value)
+                    (map? value)    (reduce-kv
+                                     (fn
+                                      [output key item] (assoc output (migration-meta-tree key) (migration-meta-tree item))) {}
+                                     value)
+                    (set? value)    (set (map migration-meta-tree value))
+                    (seq? value)    (apply list (map migration-meta-tree value))
+                    :else           value)]
+    {:meta metadata :value normalized}))
+
+^{:refer std.block.heal/print-rainbow :added "4.1"}
+(Test/run
+ [{:name "prints the content with rainbow parens"
+   :test (fn [] (with:out-string (print-rainbow "(+ 12 3)")))
+   :expected "[34m([0m+ 12 3[34m)[0m"}]
+ migration-test-check)
+
+^{:refer std.block.heal/rainbow :added "4.1"}
+(Test/run
+ [{:name "formats the content with rainbow parens"
+   :test (fn [] (rainbow "(+ 12 3)"))
+   :expected "[34m([0m+ 12 3[34m)[0m"}]
+ migration-test-check)

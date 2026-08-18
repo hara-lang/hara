@@ -167,6 +167,7 @@ pub(crate) fn run_project(options: &Options) -> Result<(), String> {
     let mut runtime = Runtime::new();
     runtime.install_native_file_provider(project.root.to_string_lossy().as_ref());
     project::register_sources(&project, &mut runtime)?;
+    project::register_native_imports(&project, &mut runtime)?;
     if options.native_sockets {
         runtime.install_native_socket_provider();
     }
@@ -205,6 +206,7 @@ pub(crate) fn test_project(options: &Options, args: &[String]) -> Result<(), Str
         let mut runtime = Runtime::new();
         runtime.install_native_file_provider(project.root.to_string_lossy().as_ref());
         project::register_sources(&project, &mut runtime)?;
+        project::register_native_imports(&project, &mut runtime)?;
         if options.allow_process {
             runtime.install_native_process_provider();
         }
@@ -380,9 +382,7 @@ fn manage_arguments(operation: &str, args: &[String]) -> Result<ManageArguments,
             write = true;
             index += 1;
         } else if argument == "--format" {
-            let value = args
-                .get(index + 1)
-                .ok_or("--format requires a value")?;
+            let value = args.get(index + 1).ok_or("--format requires a value")?;
             format = match value.as_str() {
                 "edn" => ManageFormat::Edn,
                 "editor-json" => ManageFormat::EditorJson,
@@ -401,9 +401,7 @@ fn manage_arguments(operation: &str, args: &[String]) -> Result<ManageArguments,
                 | "--added"
         ) {
             if operation == "import" && argument == "--form" {
-                return Err(
-                    "import --form is obsolete; import reads matching fact titles".into(),
-                );
+                return Err("import --form is obsolete; import reads matching fact titles".into());
             }
             let value = args
                 .get(index + 1)
@@ -556,9 +554,7 @@ fn manage_json_value(value: &Form) -> JsonValue {
         Form::BigInteger(value) | Form::Decimal(value) => JsonValue::String(value.clone()),
         Form::Character(value) => JsonValue::String(value.to_string()),
         Form::Regex(value) => JsonValue::String(value.clone()),
-        Form::Tagged(tag, value) => {
-            JsonValue::String(format!("#{tag}{}", value))
-        }
+        Form::Tagged(tag, value) => JsonValue::String(format!("#{tag}{}", value)),
         Form::Metadata(_, value) => manage_json_value(value),
         Form::Symbol(value) | Form::Keyword(value) | Form::String(value) => {
             JsonValue::String(value.clone())

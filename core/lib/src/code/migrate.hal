@@ -337,8 +337,88 @@
    "tahto.base.emit-helper/"
    "tahto.base.emit-template/"])
 
-(defn source-references
-  "Extracts qualified metadata references with the supplied namespace prefix."
+(def +foundation-block-vector-references+
+  #{'tahto.base.emit-block/test-block-loop.do
+    'tahto.base.emit-block/test-block-loop.do*
+    'tahto.base.emit-block/test-block-loop.for
+    'tahto.base.emit-block/test-block-loop.forange
+    'tahto.base.emit-block/test-block-loop.if
+    'tahto.base.emit-block/test-block-loop.when
+    'tahto.base.emit-block/test-block-loop.switch
+    'tahto.base.emit-block/test-block-loop.block
+    'tahto.base.emit-block/test-block-loop.try})
+
+(def +foundation-function-vector-references+
+  #{'tahto.base.emit-block/test-fn-emit.fn
+    'tahto.base.emit-block/test-fn-emit.name})
+
+(def +foundation-emitter-policy-overrides+
+  {'tahto.base.emit/form-key
+   {:target/refer 'lang.common.emit-common/form-key
+    :disposition :adapted
+    :stage/to :emit-dispatch
+    :reason :form-classification-is-owned-by-common-emitter-dispatch}
+   'tahto.base.emit-common/emit-map-key
+   {:target/refer 'lang.common.emit-data/emit-map-key}
+   'tahto.base.emit-common/emit-map-entry
+   {:target/refer 'lang.common.emit-data/emit-map-entry}
+   'tahto.base.emit-common/emit-coll-layout
+   {:target/refer 'lang.common.emit-data/emit-coll-layout}
+   'tahto.base.emit-common/emit-coll
+   {:target/refer 'lang.common.emit-data/emit-coll}
+   'tahto.base.emit-common/emit-data-standard
+   {:target/refer 'lang.common.emit-data/emit-data-standard}
+   'tahto.base.emit-common/emit-data
+   {:target/refer 'lang.common.emit-data/emit-data}
+   'tahto.base.emit-common/emit-quote
+   {:target/refer 'lang.common.emit-data/emit-quote}
+   'tahto.base.emit-common/emit-table-group
+   {:target/refer 'lang.common.emit-data/emit-table-group}
+   'tahto.base.emit-common/emit-table
+   {:target/refer 'lang.common.emit-data/emit-table}
+   'tahto.base.emit-common/emit-raw
+   {:target/refer 'lang.common.emit-common/emit-free
+    :disposition :test-vector
+    :stage/to :emit
+    :reason :adopted-reference-is-an-emit-free-behavior-vector}
+   'tahto.base.emit-common/emit-macro.->
+   {:target/refer 'lang.common.grammar-macro/tf-macroexpand
+    :disposition :test-vector
+    :stage/to :grammar-expand
+    :reason :threading-is-owned-by-source-grammar-macro-expansion}
+   'tahto.base.emit-common/emit-macro.->>
+   {:target/refer 'lang.common.grammar-macro/tf-macroexpand
+    :disposition :test-vector
+    :stage/to :grammar-expand
+    :reason :threading-is-owned-by-source-grammar-macro-expansion}
+   'tahto.base.emit-common/emit-macro.xor
+   {:target/refer 'lang.common.grammar-macro/tf-xor
+    :disposition :test-vector
+    :stage/to :grammar-expand
+    :reason :xor-lowering-is-owned-by-source-grammar-macro-expansion}
+   'tahto.base.emit-common/emit-with-uuid
+   {:disposition :adapted
+    :stage/to :emit-capability
+    :reason :portable-uuid-generation-replaces-host-specific-generation}
+   'tahto.base.emit-common/emit-with-rand
+   {:disposition :adapted
+    :stage/to :emit-capability
+    :reason :portable-random-generation-replaces-host-specific-generation}
+   'tahto.base.emit-common/emit-op
+   {:disposition :adapted
+    :stage/to :emit-adapter
+    :reason :operation-dispatch-is-an-explicit-emitter-adapter}
+   'tahto.base.emit-common/emit-common-loop
+   {:disposition :adapted
+    :stage/to :emit-orchestration
+    :reason :recursive-emission-now-uses-a-cycle-free-explicit-boundary}
+   'tahto.base.emit-common/emit-common
+   {:disposition :adapted
+    :stage/to :emit-orchestration
+    :reason :public-emission-now-routes-through-the-redesigned-pipeline}})
+
+(defn source-reference-entries
+  "Extracts qualified metadata references and adoption provenance."
   [source prefix]
   (vec
    (keep
@@ -346,42 +426,85 @@
       (let [match (re-find #":refer\s+[^\s\}\]]+" line)
             reference (if match (subs match 7) nil)]
         (if (and reference (str/starts-with? (str reference) prefix))
-          (symbol (str reference))
+          {:reference (symbol (str reference))
+           :adopted? (str/includes? line ":adopt true")}
           nil)))
     (str/split-lines source))))
+
+(defn source-references
+  "Extracts qualified metadata references with the supplied namespace prefix."
+  [source prefix]
+  (vec (map :reference (source-reference-entries source prefix))))
 
 (defn foundation-emitter-reference?
   [reference]
   (str/starts-with? (str reference) "tahto.base.emit"))
 
-(defn foundation-emitter-disposition
+(defn foundation-emitter-policy
   [reference]
-  (let [reference (str reference)]
-    (if (reduce (fn [found prefix]
-                  (or found (str/starts-with? reference prefix)))
+  (let [reference (symbol (str reference))
+        direct
+        (reduce (fn [found prefix]
+                  (or found (str/starts-with? (str reference) prefix)))
                 false
                 +foundation-emitter-direct-prefixes+)
-      :direct
-      :adapted)))
+        base {:disposition (if direct :direct :adapted)
+              :stage/to (if direct :emit :emit-adapter)}
+        vector-policy
+        (cond (has? +foundation-block-vector-references+ reference)
+              {:target/refer 'lang.common.emit-block/test-block-emit
+               :disposition :test-vector
+               :stage/to :emit-block
+               :reason :operator-specific-fact-validates-recursive-block-emission}
+
+              (has? +foundation-function-vector-references+ reference)
+              {:target/refer 'lang.common.emit-fn/test-fn-emit
+               :disposition :test-vector
+               :stage/to :emit-function
+               :reason :function-shape-fact-validates-recursive-function-emission}
+
+              :else {})]
+    (merge base vector-policy
+           (get +foundation-emitter-policy-overrides+ reference))))
+
+(defn foundation-emitter-disposition
+  [reference]
+  (:disposition (foundation-emitter-policy reference)))
 
 (defn route-foundation-emitter-reference
   [reference]
   (symbol
    (replace-routes (str reference) +foundation-common-test-rewrites+)))
 
+(defn target-test-validation
+  [target-reference]
+  (symbol (str (namespace target-reference) "-test/run")))
+
 (defn foundation-emitter-ledger-record
-  [reference source-path validation]
-  (let [disposition (foundation-emitter-disposition reference)]
+  ([reference source-path validation]
+   (foundation-emitter-ledger-record reference source-path validation false))
+  ([reference source-path validation adopted?]
+  (let [policy (foundation-emitter-policy reference)
+        disposition (:disposition policy)
+        target (or (:target/refer policy)
+                   (route-foundation-emitter-reference reference))
+        validation (or (:validation policy)
+                       (if (:target/refer policy)
+                         (target-test-validation target)
+                         validation))]
     (cond->
      {:source/refer reference
-      :target/refer (route-foundation-emitter-reference reference)
+      :target/refer target
       :disposition disposition
       :stage/from :emit
-      :stage/to (if (= disposition :direct) :emit :emit-adapter)
-      :provenance {:repository :foundation-base :path source-path}
+      :stage/to (:stage/to policy)
+      :provenance {:repository :foundation-base
+                   :path source-path
+                   :adopted? adopted?}
       :validation validation}
-      (= disposition :adapted)
-      (assoc :reason :emitter-behavior-moved-to-redesigned-stage))))
+      (has? reasoned-dispositions disposition)
+      (assoc :reason (or (:reason policy)
+                         :emitter-behavior-moved-to-redesigned-stage))))))
 
 (defn foundation-emitter-ledger-records
   "Builds semantic records from the Foundation fact metadata in one source unit."
@@ -389,28 +512,231 @@
   (let [validation (or (:target/validation unit)
                        (symbol (str (:target/namespace unit) "/run")))]
     (vec
-     (map (fn [reference]
+     (map (fn [entry]
             (foundation-emitter-ledger-record
-             reference (:path unit) validation))
-          (source-references (:source unit) "tahto.base.emit")))))
+             (:reference entry) (:path unit) validation (:adopted? entry)))
+          (source-reference-entries (:source unit) "tahto.base.emit")))))
+
+(defn foundation-emitter-record-owners
+  "Selects canonical source owners while retaining genuine duplicate ownership
+   for blocking diagnostics. Adopted-only pseudo references retain one stable
+  representative as test-vector authority."
+  [records]
+  (let [selected-paths
+        (reduce-kv
+         (fn [result source owners]
+           (let [canonical
+                 (vec (filter (fn [record]
+                                (not (get-in record [:provenance :adopted?])))
+                              owners))
+                 selected (if (empty? canonical)
+                            [(first owners)]
+                            canonical)]
+             (assoc result source
+                    (set (map (fn [record]
+                                (get-in record [:provenance :path]))
+                              selected)))))
+         {}
+         (group-by :source/refer records))
+        result
+        (reduce
+         (fn [state record]
+           (let [source (:source/refer record)
+                 path (get-in record [:provenance :path])
+                 owner-key [source path]]
+             (if (and (has? (get selected-paths source) path)
+                      (not (has? (:seen state) owner-key)))
+               {:seen (conj (:seen state) owner-key)
+                :records (conj (:records state) record)}
+               state)))
+         {:seen #{} :records []}
+         records)]
+    (:records result)))
 
 (defn foundation-emitter-inventory
   "Creates the audit inventory from Foundation units and current target tests."
   [source-units target-units]
-  (let [records (vec (mapcat foundation-emitter-ledger-records source-units))]
+  (let [records
+        (foundation-emitter-record-owners
+         (vec (mapcat foundation-emitter-ledger-records source-units)))]
     {:records records
      :inventory
      {:source/references (vec (map :source/refer records))
       :target/references
       (vec
        (mapcat (fn [unit]
-                 (source-references (:source unit) "lang.common.emit"))
+                 (source-references (:source unit) "lang.common."))
                target-units))
       :validation/references
       (vec (map (fn [unit]
                   (or (:validation unit)
                       (symbol (str (:namespace unit) "/run"))))
                 target-units))}}))
+
+(defn read-migration-source
+  [root path]
+  (str/decode-utf8
+   (deref (File/read (if root (File/resolve root path) path)))))
+
+(defn load-migration-unit
+  [root unit]
+  (assoc unit :source (read-migration-source root (:path unit))))
+
+(defn foundation-emitter-path-audit
+  "Loads declared Foundation and target test units, then returns their semantic
+   ledger, inventory, and blocking audit in one reproducible result."
+  [root source-units target-units]
+  (let [loaded-sources
+        (vec (map (fn [unit] (load-migration-unit root unit)) source-units))
+        loaded-targets
+        (vec (map (fn [unit] (load-migration-unit root unit)) target-units))
+        generated (foundation-emitter-inventory loaded-sources loaded-targets)
+        audit (migration-ledger-audit (:records generated)
+                                      (:inventory generated))]
+    (assoc generated :audit audit)))
+
+(def +foundation-grammar-new-records+
+  [{:source/refer nil
+    :target/refer 'lang.common.grammar-api/profile
+    :disposition :new-only
+    :stage/from nil
+    :stage/to :grammar-declare
+    :reason :profiles-are-versioned-source-owned-grammar-inputs
+    :validation 'lang.common.grammar-api-test/run}
+   {:source/refer nil
+    :target/refer 'lang.common.grammar-api/definition
+    :disposition :new-only
+    :stage/from nil
+    :stage/to :grammar-declare
+    :reason :grammar-definitions-replace-global-mutable-builder-state
+    :validation 'lang.common.grammar-api-test/run}
+   {:source/refer nil
+    :target/refer 'lang.common.grammar-api/materialize
+    :disposition :new-only
+    :stage/from nil
+    :stage/to :grammar-materialize
+    :reason :materialization-records-coordinates-provenance-and-fingerprints
+    :validation 'lang.common.grammar-api-test/run}
+   {:source/refer nil
+    :target/refer 'lang.common.grammar-api/fingerprint
+    :disposition :new-only
+    :stage/from nil
+    :stage/to :grammar-materialize
+    :reason :source-owned-grammars-require-stable-content-identities
+    :validation 'lang.common.grammar-api-test/run}])
+
+(defn foundation-grammar-reference?
+  [reference]
+  (let [value (str reference)]
+    (or (str/starts-with? value "tahto.base.grammar")
+        (str/starts-with? value "tahto.base.preprocess"))))
+
+(defn foundation-grammar-policy
+  [reference]
+  (let [value (str reference)]
+    (cond (str/starts-with? value "tahto.base.grammar-macro/")
+          {:disposition :direct :stage/from :grammar-expand
+           :stage/to :grammar-expand}
+
+          (str/starts-with? value "tahto.base.grammar-spec/")
+          {:disposition :direct :stage/from :grammar-spec
+           :stage/to :grammar-spec}
+
+          (str/starts-with? value "tahto.base.grammar-xtalk/")
+          {:disposition :direct :stage/from :grammar-expand
+           :stage/to :grammar-expand}
+
+          (str/starts-with? value "tahto.base.grammar-xtalk-system/")
+          {:disposition :adapted :stage/from :grammar-analysis
+           :stage/to :grammar-profile
+           :reason :xtalk-analysis-now-feeds-explicit-source-owned-profiles}
+
+          (str/starts-with? value "tahto.base.grammar/")
+          {:disposition :adapted :stage/from :grammar-build
+           :stage/to :grammar-compatibility
+           :reason :builder-intent-is-preserved-behind-versioned-materialization}
+
+          (str/starts-with? value "tahto.base.preprocess-input/")
+          {:disposition :direct :stage/from :preprocess-input
+           :stage/to :input}
+
+          (str/starts-with? value "tahto.base.preprocess-value/")
+          {:disposition :adapted :stage/from :preprocess-value
+           :stage/to :staging
+           :reason :value-expansion-is-owned-by-the-staging-boundary}
+
+          :else
+          {:disposition :adapted :stage/from :preprocess
+           :stage/to :staging
+           :reason :preprocessing-is-split-into-explicit-input-resolve-and-staging-stages})))
+
+(defn route-foundation-grammar-reference
+  [reference]
+  (symbol
+   (str/replace (str reference) "tahto.base." "lang.common.")))
+
+(defn foundation-grammar-ledger-record
+  [reference source-path validation adopted?]
+  (let [policy (foundation-grammar-policy reference)
+        disposition (:disposition policy)
+        target (route-foundation-grammar-reference reference)]
+    (cond->
+     {:source/refer reference
+      :target/refer target
+      :disposition disposition
+      :stage/from (:stage/from policy)
+      :stage/to (:stage/to policy)
+      :provenance {:repository :foundation-base
+                   :path source-path
+                   :adopted? adopted?}
+      :validation validation}
+      (has? reasoned-dispositions disposition)
+      (assoc :reason (:reason policy)))))
+
+(defn foundation-grammar-ledger-records
+  [unit]
+  (let [validation (or (:target/validation unit)
+                       (symbol (str (:target/namespace unit) "/run")))]
+    (vec
+     (map (fn [entry]
+            (foundation-grammar-ledger-record
+             (:reference entry) (:path unit) validation (:adopted? entry)))
+          (filter (fn [entry]
+                    (foundation-grammar-reference? (:reference entry)))
+                  (source-reference-entries (:source unit) "tahto.base."))))))
+
+(defn foundation-grammar-inventory
+  [source-units target-units]
+  (let [source-records
+        (foundation-emitter-record-owners
+         (vec (mapcat foundation-grammar-ledger-records source-units)))
+        records (vec (concat source-records +foundation-grammar-new-records+))]
+    {:records records
+     :inventory
+     {:source/references (vec (map :source/refer source-records))
+      :target/references
+      (vec
+       (mapcat (fn [unit]
+                 (source-references (:source unit) "lang.common."))
+               target-units))
+      :validation/references
+      (vec (map (fn [unit]
+                  (or (:validation unit)
+                      (symbol (str (:namespace unit) "/run"))))
+                target-units))}}))
+
+(defn foundation-grammar-path-audit
+  "Loads declared Foundation grammar/preprocess authorities and target tests,
+   then audits their stage-aware semantic ledger."
+  [root source-units target-units]
+  (let [loaded-sources
+        (vec (map (fn [unit] (load-migration-unit root unit)) source-units))
+        loaded-targets
+        (vec (map (fn [unit] (load-migration-unit root unit)) target-units))
+        generated (foundation-grammar-inventory loaded-sources loaded-targets)
+        audit (migration-ledger-audit (:records generated)
+                                      (:inventory generated))]
+    (assoc generated :audit audit)))
 
 (defn replace-routes
   [source routes]

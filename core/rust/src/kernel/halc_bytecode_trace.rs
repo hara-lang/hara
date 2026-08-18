@@ -6,12 +6,9 @@
 //! artifact. When it is absent, the final stage is retained as an explicit
 //! `unsupported` observation. Neither path executes module code.
 
-use super::halc_source_trace::{
-    trace_halc_source_with_limits, HalcSourceTraceLimits,
-};
+use super::halc_source_trace::{trace_halc_source_with_limits, HalcSourceTraceLimits};
 use super::halc_trace::{
-    HalcArtifactTrace, HalcTraceEvent, HalcTraceEvidence, HalcTraceStatus,
-    HalcTraceValue,
+    HalcArtifactTrace, HalcTraceEvent, HalcTraceEvidence, HalcTraceStatus, HalcTraceValue,
 };
 
 pub const HALC_BYTECODE_HANDOFF_STAGE: &str = "handoff/bytecode";
@@ -38,8 +35,7 @@ pub fn trace_halc_source_to_bytecode_with_limits(
     source: &str,
     limits: HalcSourceTraceLimits,
 ) -> HalcArtifactTrace {
-    let mut trace =
-        trace_halc_source_with_limits(id, namespace, resource, source, limits);
+    let mut trace = trace_halc_source_with_limits(id, namespace, resource, source, limits);
     if trace.status == HalcTraceStatus::Error {
         return trace;
     }
@@ -76,28 +72,16 @@ fn boolean(value: bool) -> HalcTraceValue {
     HalcTraceValue::Boolean(value)
 }
 
-fn base_handoff_evidence(
-    namespace: &str,
-    resource: &str,
-) -> HalcTraceEvidence {
+fn base_handoff_evidence(namespace: &str, resource: &str) -> HalcTraceEvidence {
     let mut evidence = HalcTraceEvidence::new();
-    evidence.insert(
-        "handoff/module-namespace".into(),
-        string(namespace),
-    );
-    evidence.insert(
-        "handoff/module-resource".into(),
-        string(resource),
-    );
+    evidence.insert("handoff/module-namespace".into(), string(namespace));
+    evidence.insert("handoff/module-resource".into(), string(resource));
     evidence.insert("handoff/fallback".into(), boolean(false));
     evidence.insert("handoff/executed".into(), boolean(false));
     evidence
 }
 
-fn unsupported_handoff_evidence(
-    namespace: &str,
-    resource: &str,
-) -> HalcTraceEvidence {
+fn unsupported_handoff_evidence(namespace: &str, resource: &str) -> HalcTraceEvidence {
     let mut evidence = base_handoff_evidence(namespace, resource);
     evidence.insert("handoff/supported".into(), boolean(false));
     evidence.insert("handoff/status".into(), string("unsupported"));
@@ -109,12 +93,7 @@ fn unsupported_handoff_evidence(
 }
 
 #[cfg(not(feature = "bytecode-vm"))]
-fn append_handoff(
-    trace: &mut HalcArtifactTrace,
-    namespace: &str,
-    resource: &str,
-    _source: &str,
-) {
+fn append_handoff(trace: &mut HalcArtifactTrace, namespace: &str, resource: &str, _source: &str) {
     let evidence = unsupported_handoff_evidence(namespace, resource);
     append_event(trace, HalcTraceStatus::Ok, evidence.clone(), None);
     if let Some(result) = trace.result.as_mut() {
@@ -123,20 +102,10 @@ fn append_handoff(
 }
 
 #[cfg(feature = "bytecode-vm")]
-fn append_handoff(
-    trace: &mut HalcArtifactTrace,
-    namespace: &str,
-    resource: &str,
-    source: &str,
-) {
+fn append_handoff(trace: &mut HalcArtifactTrace, namespace: &str, resource: &str, source: &str) {
     match compile_handoff(namespace, resource, source) {
         Ok(evidence) => {
-            append_event(
-                trace,
-                HalcTraceStatus::Ok,
-                evidence.clone(),
-                None,
-            );
+            append_event(trace, HalcTraceStatus::Ok, evidence.clone(), None);
             if let Some(result) = trace.result.as_mut() {
                 result.extend(evidence);
             }
@@ -145,14 +114,8 @@ fn append_handoff(
             let mut evidence = base_handoff_evidence(namespace, resource);
             evidence.insert("handoff/supported".into(), boolean(true));
             evidence.insert("handoff/status".into(), string("failed"));
-            evidence.insert(
-                "diagnostic/category".into(),
-                string(failure.category),
-            );
-            evidence.insert(
-                "diagnostic/message".into(),
-                string(&failure.message),
-            );
+            evidence.insert("diagnostic/category".into(), string(failure.category));
+            evidence.insert("diagnostic/message".into(), string(&failure.message));
             append_event(
                 trace,
                 HalcTraceStatus::Error,
@@ -190,35 +153,19 @@ fn compile_handoff(
 ) -> Result<HalcTraceEvidence, HandoffFailure> {
     use sha2::{Digest, Sha256};
 
-    let forms = super::parse_forms(source).map_err(|error| {
-        HandoffFailure::new("bytecode/source-replay", error.to_string())
-    })?;
-    let halc_artifact = super::halc::encode_halc_module(
-        namespace,
-        resource,
-        source,
-        forms,
-    )
-    .map_err(|error| {
-        HandoffFailure::new("bytecode/halc-encode", error)
-    })?;
-    let module = super::halc::decode_halc(&halc_artifact).map_err(|error| {
-        HandoffFailure::new("bytecode/halc-decode", error)
-    })?;
+    let forms = super::parse_forms(source)
+        .map_err(|error| HandoffFailure::new("bytecode/source-replay", error.to_string()))?;
+    let halc_artifact = super::halc::encode_halc_module(namespace, resource, source, forms)
+        .map_err(|error| HandoffFailure::new("bytecode/halc-encode", error))?;
+    let module = super::halc::decode_halc(&halc_artifact)
+        .map_err(|error| HandoffFailure::new("bytecode/halc-decode", error))?;
     let registry = compiler_registry();
-    let program = crate::vm::compiler::compile_halc_module(
-        &module,
-        &registry,
-    )
-    .map_err(|error| {
-        HandoffFailure::new(
-            compile_failure_category(error.kind()),
-            error.to_string(),
-        )
-    })?;
-    crate::vm::validate::validate(&program).map_err(|error| {
-        HandoffFailure::new("bytecode/validation", error.to_string())
-    })?;
+    let program =
+        crate::vm::compiler::compile_halc_module(&module, &registry).map_err(|error| {
+            HandoffFailure::new(compile_failure_category(error.kind()), error.to_string())
+        })?;
+    crate::vm::validate::validate(&program)
+        .map_err(|error| HandoffFailure::new("bytecode/validation", error.to_string()))?;
 
     if program.namespace.as_deref() != Some(module.namespace.as_str()) {
         return Err(HandoffFailure::new(
@@ -228,13 +175,9 @@ fn compile_handoff(
     }
 
     let bytecode_artifact = crate::vm::artifact::encode_program(&program)
-        .map_err(|error| {
-            HandoffFailure::new("bytecode/artifact-encode", error)
-        })?;
+        .map_err(|error| HandoffFailure::new("bytecode/artifact-encode", error))?;
     let decoded = crate::vm::artifact::decode_program(&bytecode_artifact)
-        .map_err(|error| {
-            HandoffFailure::new("bytecode/artifact-decode", error)
-        })?;
+        .map_err(|error| HandoffFailure::new("bytecode/artifact-decode", error))?;
     if decoded.namespace.as_deref() != Some(module.namespace.as_str()) {
         return Err(HandoffFailure::new(
             "bytecode/provenance",
@@ -260,16 +203,10 @@ fn compile_handoff(
     let artifact_hash = Sha256::digest(&bytecode_artifact);
     let artifact_digest = hex(artifact_hash.as_ref());
 
-    let mut evidence = base_handoff_evidence(
-        &module.namespace,
-        &module.resource,
-    );
+    let mut evidence = base_handoff_evidence(&module.namespace, &module.resource);
     evidence.insert("handoff/supported".into(), boolean(true));
     evidence.insert("handoff/status".into(), string("ready"));
-    evidence.insert(
-        "handoff/compiler".into(),
-        string("vm/compile-halc-module"),
-    );
+    evidence.insert("handoff/compiler".into(), string("vm/compile-halc-module"));
     evidence.insert(
         "handoff/source-hash".into(),
         string(hex(&module.source_hash)),
@@ -294,14 +231,8 @@ fn compile_handoff(
         "handoff/program-instructions".into(),
         integer(instruction_count),
     );
-    evidence.insert(
-        "handoff/program-handlers".into(),
-        integer(handler_count),
-    );
-    evidence.insert(
-        "handoff/source-positions".into(),
-        integer(source_positions),
-    );
+    evidence.insert("handoff/program-handlers".into(), integer(handler_count));
+    evidence.insert("handoff/source-positions".into(), integer(source_positions));
     evidence.insert(
         "handoff/schema-definitions".into(),
         integer(program.schema_types.len()),
@@ -310,22 +241,13 @@ fn compile_handoff(
         "handoff/schema-functions".into(),
         integer(program.function_types.len()),
     );
-    evidence.insert(
-        "handoff/program-validated".into(),
-        boolean(true),
-    );
-    evidence.insert(
-        "handoff/artifact-decodable".into(),
-        boolean(true),
-    );
+    evidence.insert("handoff/program-validated".into(), boolean(true));
+    evidence.insert("handoff/artifact-decodable".into(), boolean(true));
     evidence.insert(
         "handoff/artifact-bytes".into(),
         integer(bytecode_artifact.len()),
     );
-    evidence.insert(
-        "handoff/artifact-digest".into(),
-        string(artifact_digest),
-    );
+    evidence.insert("handoff/artifact-digest".into(), string(artifact_digest));
     Ok(evidence)
 }
 
@@ -342,18 +264,13 @@ fn compiler_registry() -> super::namespace::NamespaceRegistry<crate::core::Value
             .find_or_create(crate::core::builtin_protocol_namespace(&name))
             .intern(name, protocol);
     }
-    for (namespace, name, method) in
-        crate::core::builtin_protocol_method_values()
-    {
+    for (namespace, name, method) in crate::core::builtin_protocol_method_values() {
         namespaces.find_or_create(namespace).intern(name, method);
     }
     for (name, descriptor) in crate::core::native_type_values() {
         let canonical_name = format!("std.native.{name}");
         let var = foundation.intern(&canonical_name, descriptor);
-        foundation.map_var(
-            crate::lang::data::Symbol::parse(&name),
-            var,
-        );
+        foundation.map_var(crate::lang::data::Symbol::parse(&name), var);
         namespaces.find_or_create(canonical_name);
     }
     crate::core::refer_startup_defaults(&namespaces, "user");
@@ -361,22 +278,14 @@ fn compiler_registry() -> super::namespace::NamespaceRegistry<crate::core::Value
 }
 
 #[cfg(feature = "bytecode-vm")]
-fn compile_failure_category(
-    kind: crate::vm::error::CompileErrorKind,
-) -> &'static str {
+fn compile_failure_category(kind: crate::vm::error::CompileErrorKind) -> &'static str {
     match kind {
         crate::vm::error::CompileErrorKind::Parse => "bytecode/parse",
-        crate::vm::error::CompileErrorKind::UnsupportedForm => {
-            "bytecode/unsupported-form"
-        }
-        crate::vm::error::CompileErrorKind::UnboundSymbol => {
-            "bytecode/unbound-symbol"
-        }
+        crate::vm::error::CompileErrorKind::UnsupportedForm => "bytecode/unsupported-form",
+        crate::vm::error::CompileErrorKind::UnboundSymbol => "bytecode/unbound-symbol",
         crate::vm::error::CompileErrorKind::Arity => "bytecode/arity",
         crate::vm::error::CompileErrorKind::Recur => "bytecode/recur",
-        crate::vm::error::CompileErrorKind::InvalidEffect => {
-            "bytecode/invalid-effect"
-        }
+        crate::vm::error::CompileErrorKind::InvalidEffect => "bytecode/invalid-effect",
         crate::vm::error::CompileErrorKind::Limit => "bytecode/limit",
         crate::vm::error::CompileErrorKind::Internal => "bytecode/internal",
     }

@@ -197,6 +197,52 @@ fn selects_rust_runtime_profile_and_can_resolve_jvm_overlay() {
 }
 
 #[test]
+fn validates_runtime_scoped_npm_wasm_imports() {
+    let root = temp("npm-wasm-imports");
+    fs::create_dir_all(&root).unwrap();
+    let prefix = "{:hara/type :project :hara/version \"1.0.0\" :project/id demo/app :project/version \"1.0.0\" :project/source-paths [] :project/test-paths [] :project/extension-paths [] :project/capabilities #{} ";
+    fs::write(
+        root.join("project.edn"),
+        format!(
+            "{prefix}:project/runtime-profiles {{:rust {{:runtime/dependencies {{:npm {{\"raw-math\" {{:version \"1.2.3\" :integrity \"sha512-AAAAAAAAAAAAAAAAAAAAAA==\"}}}}}} :runtime/imports {{Math {{:package \"raw-math\" :module \"dist/math.wasm\" :abi :core.v1}}}}}}}}}}"
+        ),
+    )
+    .unwrap();
+    let project = read(&root).unwrap();
+    let rust = project.resolve_runtime_profile("rust").unwrap();
+    assert_eq!(
+        rust.npm_dependencies["raw-math"].version.to_string(),
+        "1.2.3"
+    );
+    assert_eq!(
+        rust.native_imports["Math"].module,
+        PathBuf::from("dist/math.wasm")
+    );
+
+    for (declaration, message) in [
+        (
+            "{:version \"^1.2.3\" :integrity \"sha512-AAAAAAAAAAAAAAAAAAAAAA==\"}",
+            "exact SemVer",
+        ),
+        ("{:version \"1.2.3\"}", "requires :integrity"),
+        (
+            "{:version \"1.2.3\" :integrity \"sha512-AAAAAAAAAAAAAAAAAAAAAA==\" :scripts {}}",
+            "unsupported npm dependency field :scripts",
+        ),
+    ] {
+        let mut source = prefix.to_owned();
+        source.push_str(
+            ":project/runtime-profiles {:rust {:runtime/dependencies {:npm {\"raw-math\" ",
+        );
+        source.push_str(declaration);
+        source.push_str("}}}}}");
+        fs::write(root.join("project.edn"), source).unwrap();
+        assert!(read(&root).unwrap_err().contains(message));
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn rejects_legacy_jvm_project_keys_and_conflicting_runtime_dependencies() {
     let root = temp("runtime-invalid");
     fs::create_dir_all(&root).unwrap();

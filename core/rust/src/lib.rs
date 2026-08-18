@@ -5,8 +5,11 @@ pub mod asset;
 pub mod cli_app;
 // Public embedding surface used by native hosts such as Hoplite. The module's
 // value, protocol, promise, and host-call types form the runtime integration ABI.
-pub mod core;
+#[cfg(target_arch = "wasm32")]
+mod browser_wasm_provider;
 mod clock;
+pub mod core;
+mod direct_wasm;
 pub mod extension;
 pub mod file;
 #[cfg(not(target_arch = "wasm32"))]
@@ -17,9 +20,9 @@ pub mod invoke_hta;
 pub use invoke_hta::{InvokeHtaError, MAX_INVOKE_HTA_RESULT_BYTES};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod identity_tool;
+pub mod interpreter_observation;
 #[cfg(feature = "evaluation-journal")]
 pub mod journal;
-pub mod interpreter_observation;
 mod json;
 pub mod kernel;
 pub mod lang;
@@ -35,9 +38,9 @@ pub mod native_module;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_process;
 mod numeric;
-pub mod package_catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod package;
+pub mod package_catalog;
 #[cfg(not(target_arch = "wasm32"))]
 mod process_extension;
 #[cfg(not(target_arch = "wasm32"))]

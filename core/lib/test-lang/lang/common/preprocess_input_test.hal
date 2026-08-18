@@ -1,0 +1,48 @@
+(ns lang.common.preprocess-input-test
+  (:use code.test)
+  (:require [lang.common.preprocess-base :as base]
+            [lang.common.preprocess-input :as input]))
+
+(def hello 1)
+(def template-value {:a 1})
+(def persisted-value {:b 2})
+
+^{:refer lang.common.preprocess-input/to-input-form :added "4.1"}
+(fact "normalizes explicit input reader forms"
+  (input/to-input-form '((deref !) (+ 1 2 3)))
+  => '(!:template (+ 1 2 3))
+
+  (input/to-input-form '(deref (var hello)))
+  => '(!:deref (var lang.common.preprocess-input-test/hello))
+
+  (input/to-input-form '(deref (+ 1 2 3)))
+  => '(!:eval (+ 1 2 3))
+
+  (input/to-input-form '((deref .lua) (do 1 2 3)))
+  => '(!:lang {:lang :lua} (do 1 2 3)))
+
+^{:refer lang.common.preprocess-input/to-input :added "4.1"}
+(fact "extracts input forms and gates splicing"
+  (input/to-input '(do ((unquote !) [1 2 3 4]))) => (throws)
+
+  (binding [base/*macro-splice* true]
+    (input/to-input '(do ((unquote !) [1 2 3 4]))))
+  => '(do 1 2 3 4))
+
+^{:refer lang.common.preprocess-input/eval-template-forms :added "4.1"}
+(fact "resolves only persisted evaluable template forms"
+  (input/eval-template-forms
+   '(do (!:template template-value)
+        (!:template (+ 1 2 3))))
+  => '(do {:a 1} 6)
+
+  (input/eval-template-forms '(do (!:eval persisted-value)))
+  => '(do {:b 2})
+
+  (input/eval-template-forms '(do (!:template (+ a b))))
+  => '(do (!:template (+ a b)))
+
+  (input/eval-template-forms '(do (!:eval (+ 1 2 3))))
+  => '(do (!:eval (+ 1 2 3))))
+
+(run {:namespace "lang.common.preprocess-input-test"})

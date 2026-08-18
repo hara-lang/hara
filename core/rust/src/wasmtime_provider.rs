@@ -2,13 +2,13 @@
 
 use std::cell::RefCell;
 
-use wasmtime::{Engine, Instance, Module, Store, Val};
+use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
 use crate::core::Value;
-use crate::extension::{ExtensionManifest, WasmAbi, WasmExtensionProvider};
+use crate::extension::{ExtensionExport, ExtensionManifest, WasmAbi, WasmExtensionProvider};
 
 struct Session {
-    store: Store<()>,
+    store: Store<StoreLimits>,
     instance: Instance,
 }
 
@@ -18,17 +18,26 @@ struct Session {
 pub struct CompiledWasmModule {
     engine: Engine,
     module: Module,
+    exports: Vec<(String, ExtensionExport)>,
 }
 
 impl CompiledWasmModule {
     pub fn compile(bytes: &[u8]) -> Result<Self, String> {
-        let engine = Engine::default();
+        let exports = crate::direct_wasm::exports(bytes)?;
+        let mut config = Config::new();
+        config.consume_fuel(true);
+        let engine = Engine::new(&config)
+            .map_err(|error| format!("extension/engine-unavailable: {error}"))?;
         let module = Module::new(&engine, bytes)
             .map_err(|error| format!("extension/module-invalid: {error}"))?;
         if module.imports().next().is_some() {
             return Err("extension/module-invalid: extension modules must be import-free".into());
         }
-        Ok(Self { engine, module })
+        Ok(Self {
+            engine,
+            module,
+            exports,
+        })
     }
 
     pub fn provider(&self) -> WasmtimeExtensionProvider {
@@ -37,6 +46,10 @@ impl CompiledWasmModule {
             module: self.module.clone(),
             session: RefCell::new(None),
         }
+    }
+
+    pub fn direct_exports(&self) -> Result<Vec<(String, ExtensionExport)>, String> {
+        Ok(self.exports.clone())
     }
 }
 
@@ -65,7 +78,14 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
                 manifest.capabilities, manifest.namespace
             ));
         }
-        let mut store = Store::new(&self.engine, ());
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(64 * 1024 * 1024)
+            .instances(1)
+            .memories(1)
+            .tables(1)
+            .build();
+        let mut store = Store::new(&self.engine, limits);
+        store.limiter(|limits| limits);
         let instance = Instance::new(&mut store, &self.module, &[])
             .map_err(|error| format!("extension/module-invalid: {error}"))?;
         for (name, _) in &manifest.exports {
@@ -113,6 +133,10 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
         } else {
             vec![default_result(&specification.returns)?]
         };
+        session
+            .store
+            .set_fuel(10_000_000)
+            .map_err(|error| format!("extension/execution-limit: {error}"))?;
         function
             .call(&mut session.store, &values, &mut results)
             .map_err(|error| {

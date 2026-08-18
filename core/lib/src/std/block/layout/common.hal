@@ -39,304 +39,335 @@
 (defn layout-single-row
   "layouts a row"
   {:added "4.0"}
-  [row {:keys [spec
-               indents]
-        :or {indents 0}
-        :as opts}]
-  (if (empty? row)
-    []
-    (:interim
-     (reduce  (fn [{:keys [interim
-                           opts]} val]
-                (let [{:keys [col-compact]} spec
-                      {:keys [indents]} opts
-                      width-fn (if col-compact
-                                 construct/line-width
-                                 construct/max-width
-                                 )
-                      prev  (last interim)
-                      nindents   (+ indents (width-fn prev indents) 1)
-                      nopts      (assoc opts :indents nindents)
-                      curr       (*layout-fn* val nopts)]
-                  {:interim (conj interim (construct/space) curr)
-                   :opts    nopts}))
-              {:opts (assoc opts :indents indents)
-               :interim [(*layout-fn* (first row) opts)]}
-              (rest row)))))
+  [row migration-map-param-4]
+  (let [opts    migration-map-param-4
+        spec    (get migration-map-param-4 :spec)
+        indents (if (has? migration-map-param-4 :indents)
+                  (get migration-map-param-4 :indents)
+                  0)]
+    (if (empty? row)
+      []
+      (:interim (reduce (fn [migration-map-param-3 val]
+                          (let [interim (get migration-map-param-3 :interim)
+                                opts    (get migration-map-param-3 :opts)]
+                            (let [migration-map-value-1 spec
+                                  col-compact           (get migration-map-value-1 :col-compact)
+                                  migration-map-value-2 opts
+                                  indents               (get migration-map-value-2 :indents)
+                                  width-fn              (if col-compact construct/line-width construct/max-width)
+                                  prev                  (last interim)
+                                  nindents              (+ indents (width-fn prev indents) 1)
+                                  nopts                 (assoc opts :indents nindents)
+                                  curr                  (*layout-fn* val nopts)]
+                              {:interim (conj interim (construct/space) curr) :opts nopts})))
+                  {:interim [(*layout-fn* (first row) opts)] :opts (assoc opts :indents indents)}
+                  (rest row))))))
 
 (defn layout-one-column
   "layout for one column"
   {:added "4.0"}
-  [vals {:keys [indents]
-         :or {indents 0}
-         :as opts}]
-  (mapv (fn [arg]
-          (*layout-fn* arg opts))
-        vals))
+  [vals migration-map-param-1]
+  (let [opts    migration-map-param-1
+        indents (if (has? migration-map-param-1 :indents)
+                  (get migration-map-param-1 :indents)
+                  0)]
+    (mapv (fn [arg] (*layout-fn* arg opts)) vals)))
 
 (defn layout-two-column
   "layout for 2 column bindings and :key val combinations"
   {:added "4.0"}
-  [pairs
-   {:as spec
-    :or {col-align true}
-    :keys [col-align
-           col-compact
-           col-sort]}
-   {:as opts
-    :or {indents 0}
-    :keys [indents]}]
-  (let [pairs           (if col-sort (sort-by first pairs) pairs)
-        width-fn        (if col-compact
-                          base/block-width
-                          (fn [migration-argument-0] (construct/max-width migration-argument-0 indents)))
-        pair-keys       (->> (map first pairs) (mapv (fn [arg] (*layout-fn* arg opts))))
-        pair-max-offset (if col-align
-                          (->> pairs
-                            (filter (fn [migration-argument-0] (= 2 (count migration-argument-0))))
-                            (map-indexed (fn [i _] (width-fn (get pair-keys i))))
-                            (apply max 0)
-                            (inc)))
-        pair-fn         (cond
-                         col-align (fn
-                                    [i [_ val :as pair]] (cond
-                                                          (= 1 (count pair)) [(get pair-keys i)]
-                                                          :else              (let
-                                                                              [pair-key (get pair-keys i)
-                                                                               spaces   (repeat (- pair-max-offset (construct/line-width pair-key indents))
-                                                                                                (construct/space))
-                                                                               pair-val (*layout-fn* val (assoc opts :indents (+ pair-max-offset indents)))
-                                                                               row      (concat [pair-key] spaces [pair-val])]                              row)))
-                         :else     (fn
-                                    [i [_ val :as pair]] (cond
-                                                          (= 1 (count pair)) [(get pair-keys i)]
-                                                          :else              (let
-                                                                              [pair-key (get pair-keys i)
-                                                                               nopts    (assoc opts :indents (+ indents (construct/line-width pair-key indents) 1))
-                                                                               pair-val (*layout-fn* val nopts)]                                                    [pair-key (construct/space) pair-val]))))]
-    (vec (map-indexed pair-fn pairs))))
+  [pairs migration-map-param-1 migration-map-param-2]
+  (let [spec        migration-map-param-1
+        col-align   (if (has? migration-map-param-1 :col-align)
+                      (get migration-map-param-1 :col-align)
+                      true)
+        col-compact (get migration-map-param-1 :col-compact)
+        col-sort    (get migration-map-param-1 :col-sort)
+        opts        migration-map-param-2
+        indents     (if (has? migration-map-param-2 :indents)
+                      (get migration-map-param-2 :indents)
+                      0)]
+    (let [pairs           (if col-sort
+                            (sort-by first
+                              (if (map? pairs)
+                                (if (Algo/ordered-map? pairs) (seq pairs) (sort (seq pairs)))
+                                pairs))
+                            (if (map? pairs)
+                              (if (Algo/ordered-map? pairs) (seq pairs) (sort (seq pairs)))
+                              pairs))
+          width-fn        (if col-compact
+                            base/block-width
+                            (fn [migration-argument-0] (construct/max-width migration-argument-0 indents)))
+          pair-keys       (->> (map first pairs) (mapv (fn [arg] (*layout-fn* arg opts))))
+          pair-max-offset (if col-align
+                            (->> pairs
+                              (filter (fn [migration-argument-0] (= 2 (count migration-argument-0))))
+                              (map-indexed (fn [i _] (width-fn (get pair-keys i))))
+                              (apply max 0)
+                              (inc)))
+          pair-fn         (cond
+                           col-align (fn
+                                      [i [_ val :as pair]] (cond
+                                                            (= 1 (count pair)) [(get pair-keys i)]
+                                                            :else              (let
+                                                                                [pair-key (get pair-keys i)
+                                                                                 spaces   (repeat (- pair-max-offset (construct/line-width pair-key indents))
+                                                                                                  (construct/space))
+                                                                                 pair-val (*layout-fn* val (assoc opts :indents (+ pair-max-offset indents)))
+                                                                                 row      (concat [pair-key] spaces [pair-val])]                              row)))
+                           :else     (fn
+                                      [i [_ val :as pair]] (cond
+                                                            (= 1 (count pair)) [(get pair-keys i)]
+                                                            :else              (let
+                                                                                [pair-key (get pair-keys i)
+                                                                                 nopts    (assoc opts :indents (+ indents (construct/line-width pair-key indents) 1))
+                                                                                 pair-val (*layout-fn* val nopts)]                                                    [pair-key (construct/space) pair-val]))))]
+      (vec (map-indexed pair-fn pairs)))))
 
 (defn layout-n-column-space
   "layouts a set of columns with single space"
   {:added "4.0"}
-  [rows {:as opts :keys [indents] :or {indents 0}}]
-  (mapv (fn [migration-argument-0] (layout-single-row migration-argument-0 opts))
-    rows))
+  [rows migration-map-param-1]
+  (let [opts    migration-map-param-1
+        indents (if (has? migration-map-param-1 :indents)
+                  (get migration-map-param-1 :indents)
+                  0)]
+    (mapv (fn [migration-argument-0] (layout-single-row migration-argument-0 opts))
+      rows)))
 
 (defn layout-n-column-pad
   "layouts a set of columns with single space"
   {:added "4.0"}
-  [rows
-   {:keys [col-pad]}
-   {:keys [indents]
-    :or {indents 0}
-    :as opts}]
-  (mapv (fn [row]
-          (if (empty? row)
-            []
-            (:interim
-             (reduce  (fn [{:keys [interim
-                                   padding
-                                   opts]} val]
-                        (let [{:keys [indents]} opts
-                              prev       (last interim)
-                              pad        (if (integer? padding)
-                                           (+ 1 padding)
-                                           (+ 1 (first padding)))
-                              nindents   (+ indents pad)
-                              nopts      (assoc opts :indents nindents)
-                              curr       (*layout-fn* val nopts)]
-                          {:interim (vec (concat interim
-                                                 (repeat (- pad
-                                                            (construct/line-width prev nindents))
-                                                         (construct/space))
-                                                 [curr]))
-                           :padding (if (integer? padding)
-                                      padding
-                                      (rest padding))
-                           :opts    nopts}))
-                      {:opts (assoc opts :indents indents)
-                       :padding col-pad
-                       :interim [(*layout-fn* (first row) opts)]}
-                      (rest row)))))
-        rows))
+  [rows migration-map-param-3 migration-map-param-4]
+  (let [col-pad (get migration-map-param-3 :col-pad)
+        opts    migration-map-param-4
+        indents (if (has? migration-map-param-4 :indents)
+                  (get migration-map-param-4 :indents)
+                  0)]
+    (mapv (fn [row]
+            (if (empty? row)
+              []
+              (:interim (reduce (fn [migration-map-param-2 val]
+                                  (let [interim (get migration-map-param-2 :interim)
+                                        padding (get migration-map-param-2 :padding)
+                                        opts    (get migration-map-param-2 :opts)]
+                                    (let [migration-map-value-1 opts
+                                          indents               (get migration-map-value-1 :indents)
+                                          prev                  (last interim)
+                                          pad                   (if (integer? padding) (+ 1 padding) (+ 1 (first padding)))
+                                          nindents              (+ indents pad)
+                                          nopts                 (assoc opts :indents nindents)
+                                          curr                  (*layout-fn* val nopts)]
+                                      {:interim (vec (concat interim
+                                                             (repeat (- pad (construct/line-width prev nindents)) (construct/space)) [curr]))
+                                       :opts    nopts
+                                       :padding (if (integer? padding) padding (rest padding))})))
+                          {:interim [(*layout-fn* (first row) opts)]
+                           :opts    (assoc opts :indents indents)
+                           :padding col-pad}
+                          (rest row)))))
+      rows)))
 
 (defn layout-n-column-align
   "layout code based on n columns"
   {:added "4.0"}
-  [rows
-   {:or {col-align true}
-    :keys [col-compact
-           col-align
-           col-pad]}
-   {:as opts
-    :or {indents 0}
-    :keys [indents]}]
-  (let [rows       (mapv vec (filter not-empty rows))
-        row-counts (mapv count rows)
-        max-cols   (apply max row-counts)
-        opts       (assoc opts :indents indents)]
-    (:interim (reduce (fn [{:keys [interim is-valid opts]} i]
-                        (let [{:keys [indents]} opts
-                              width-fn          (if col-compact
-                                                  base/block-width
-                                                  (fn [migration-argument-0] (construct/max-width migration-argument-0 indents)))
-                              nis-valid         (map (fn [row] (< i (count row))) rows)
-                              max-padding       (->> (map (fn [arr is-valid] (if is-valid (last arr))) interim is-valid)
-                                                     (filter identity)
-                                                     (map width-fn)
-                                                     (apply max (if col-pad col-pad 0))
-                                                     (+ 1))
-                              max-offset        (+ max-padding indents)]
-                          {:interim  (mapv (fn [arr row is-valid]
-                                               (cond (not is-valid)
-                                                     arr :else
-                                                     (let [spaces (repeat (- max-padding (construct/line-width (last arr) indents))
-                                                                          (construct/space))
-                                                           elem   (*layout-fn* (get row i) (assoc opts :indents max-offset))
-                                                           narr   (conj (apply conj arr spaces) elem)]
-                                                          narr)))
-                                           interim rows
-                                           nis-valid)
-                           :opts     (assoc opts :indents (+ indents 1 max-offset))
-                           :is-valid nis-valid}))
-                {:interim  (mapv (fn [row] [(*layout-fn* (first row) opts)]) rows)
-                 :opts     opts
-                 :is-valid (repeat (count rows) true)}
-                (range 1 max-cols)))))
+  [rows migration-map-param-3 migration-map-param-4]
+  (let [col-compact (get migration-map-param-3 :col-compact)
+        col-align   (if (has? migration-map-param-3 :col-align)
+                      (get migration-map-param-3 :col-align)
+                      true)
+        col-pad     (get migration-map-param-3 :col-pad)
+        opts        migration-map-param-4
+        indents     (if (has? migration-map-param-4 :indents)
+                      (get migration-map-param-4 :indents)
+                      0)]
+    (let [rows       (mapv vec (filter not-empty rows))
+          row-counts (mapv count rows)
+          max-cols   (apply max row-counts)
+          opts       (assoc opts :indents indents)]
+      (:interim (reduce (fn [migration-map-param-2 i]
+                          (let [interim  (get migration-map-param-2 :interim)
+                                is-valid (get migration-map-param-2 :is-valid)
+                                opts     (get migration-map-param-2 :opts)]
+                            (let [migration-map-value-1 opts
+                                  indents               (get migration-map-value-1 :indents)
+                                  width-fn              (if col-compact
+                                                          base/block-width
+                                                          (fn [migration-argument-0] (construct/max-width migration-argument-0 indents)))
+                                  nis-valid             (map (fn [row] (< i (count row))) rows)
+                                  max-padding           (->> (map (fn [arr is-valid] (if is-valid (last arr))) interim is-valid)
+                                                             (filter identity)
+                                                             (map width-fn)
+                                                             (apply max (if col-pad col-pad 0))
+                                                             (+ 1))
+                                  max-offset            (+ max-padding indents)]
+                              {:interim  (mapv (fn [arr row is-valid]
+                                                   (cond (not is-valid)
+                                                         arr :else
+                                                         (let [spaces (repeat (- max-padding (construct/line-width (last arr) indents))
+                                                                              (construct/space))
+                                                               elem   (*layout-fn* (get row i) (assoc opts :indents max-offset))
+                                                               narr   (conj (apply conj (concat [arr] spaces)) elem)]
+                                                              narr)))
+                                               interim rows
+                                               nis-valid)
+                               :opts     (assoc opts :indents (+ indents 1 max-offset))
+                               :is-valid nis-valid})))
+                  {:interim  (mapv (fn [row] [(*layout-fn* (first row) opts)]) rows)
+                   :opts     opts
+                   :is-valid (repeat (count rows) true)}
+                  (range 1 max-cols))))))
 
 (defn layout-n-column
   "layout for arbitrary column formatting"
   {:added "4.0"}
   [rows spec opts]
-  (let [{:keys [col-pad col-align]}  spec]
+  (let [migration-map-value-1 spec
+        col-pad               (get migration-map-value-1 :col-pad)
+        col-align             (get migration-map-value-1 :col-align)]
     (cond col-align
-          (layout-n-column-align rows spec opts)
-
-          col-pad
-          (layout-n-column-pad rows spec opts)
-
-          :else
-          (layout-n-column-space rows opts))))
+      (layout-n-column-align rows spec opts)
+      col-pad
+      (layout-n-column-pad rows spec opts)
+      :else
+      (layout-n-column-space rows opts))))
 
 (defn layout-pair-blocks
   "layout-pair-blocks"
   {:added "4.0"}
-  [form {:keys [indents
-                spec]
-         :or {indents 0}
-         :as opts}]
-  (let [{:keys [col-align]
-         :or {col-align true}} spec
-        pair-spacing (concat  [(construct/newline)]
-                              (repeat indents (construct/space)))
-        pairs        (->> form
-                          (partition-all 2))
-        pair-blocks  (layout-two-column pairs spec opts)]
-    [pair-blocks pair-spacing]))
+  [form migration-map-param-2]
+  (let [opts    migration-map-param-2
+        indents (if (has? migration-map-param-2 :indents)
+                  (get migration-map-param-2 :indents)
+                  0)
+        spec    (get migration-map-param-2 :spec)]
+    (let [migration-map-value-1 spec
+          col-align             (if (has? migration-map-value-1 :col-align)
+                                  (get migration-map-value-1 :col-align)
+                                  true)
+          pair-spacing          (concat [(construct/newline)] (repeat indents (construct/space)))
+          pairs                 (->> form (partition-all 2))
+          pair-blocks           (layout-two-column pairs spec opts)]
+      [pair-blocks pair-spacing])))
 
 (defn layout-multiline-call-setup
   "helper function to prep multiline form"
   {:added "4.0"}
-  [form {:as opts :keys [indents spec] :or {indents 0}}]
-  (let [{:keys [col-compact]} spec
-        width-fn              (if col-compact construct/line-width construct/max-width)
-        start-sym             (*layout-fn* (first form) opts)
-        nindents              (+ indents 1 (width-fn start-sym indents))]
-    [start-sym nindents]))
+  [form migration-map-param-2]
+  (let [opts    migration-map-param-2
+        indents (if (has? migration-map-param-2 :indents)
+                  (get migration-map-param-2 :indents)
+                  0)
+        spec    (get migration-map-param-2 :spec)]
+    (let [migration-map-value-1 spec
+          col-compact           (get migration-map-value-1 :col-compact)
+          width-fn              (if col-compact construct/line-width construct/max-width)
+          start-sym             (*layout-fn* (first form) opts)
+          nindents              (+ indents 1 (width-fn start-sym indents))]
+      [start-sym nindents])))
 
 (defn layout-multiline-call
   "custom function for most list based functions"
   {:added "4.0"}
-  [type form {:as opts :keys [indents spec] :or {indents 0}}]
-  (let [{:as spec
-         :keys [col-from
-                col-compact
-                columns
-                col-align
-                col-start]} (merge {:col-align true :col-from 1 :columns 1} spec)
-        [start-sym
-         nindents]          (layout-multiline-call-setup form (assoc opts :indents (inc indents)))
-        initial-blocks      (layout-single-row (take col-from (rest form)) (assoc opts :indents nindents))
-        rindents            (if col-start (+ indents col-start) nindents)
-        rspacing            (concat [(construct/newline)] (repeat rindents (construct/space)))
-        ropts               (assoc opts :indents rindents :spec spec)
-        rarr                (drop (inc col-from) form)
-        row-blocks          (cond (== columns 1) (layout-one-column (seq rarr) ropts)
-                                  (== columns 2) (layout-two-column (partition-all 2 (seq rarr)) spec ropts)
-                                  :else          (layout-n-column (partition-all columns (seq rarr)) spec ropts))
-        join-fn             (if (= 1 columns) join-blocks join-block-arrays)]
-    (construct/container type
-      (vec (concat [start-sym]
-             (if (empty? initial-blocks)
-               []
-               (if col-compact
+  [type form migration-map-param-2]
+  (let [opts    migration-map-param-2
+        indents (if (has? migration-map-param-2 :indents)
+                  (get migration-map-param-2 :indents)
+                  0)
+        spec    (get migration-map-param-2 :spec)]
+    (let [migration-map-value-1 (merge {:col-align true :col-from 1 :columns 1} spec)
+          spec                  migration-map-value-1
+          col-from              (get migration-map-value-1 :col-from)
+          col-compact           (get migration-map-value-1 :col-compact)
+          columns               (get migration-map-value-1 :columns)
+          col-align             (get migration-map-value-1 :col-align)
+          col-start             (get migration-map-value-1 :col-start)
+          [start-sym
+           nindents]            (layout-multiline-call-setup form (assoc opts :indents (inc indents)))
+          initial-blocks        (layout-single-row (take col-from (rest form)) (assoc opts :indents nindents))
+          rindents              (if col-start (+ indents col-start) nindents)
+          rspacing              (concat [(construct/newline)] (repeat rindents (construct/space)))
+          ropts                 (assoc opts :indents rindents :spec spec)
+          rarr                  (drop (inc col-from) form)
+          row-blocks            (cond (= columns 1) (layout-one-column (seq rarr) ropts)
+                                      (= columns 2) (layout-two-column (partition-all 2 (seq rarr)) spec ropts)
+                                      :else         (layout-n-column (partition-all columns (seq rarr)) spec ropts))
+          join-fn               (if (= 1 columns) join-blocks join-block-arrays)]
+      (construct/container type
+        (vec (concat [start-sym]
+               (if (empty? initial-blocks)
+                 []
+                 (if col-compact
+                   [(construct/space)]
+                   (if (< 0 (base/block-height start-sym))
+                     (repeat (+ 2
+                               (- (construct/max-width start-sym indents)
+                                 (construct/line-width start-sym indents)))
+                       (construct/space))
+                     [(construct/space)])))
+               initial-blocks
+               (if (and (nil? col-start) (= col-from 0))
                  [(construct/space)]
-                 (if (< 0 (base/block-height start-sym))
-                   (repeat (+ 2
-                             (- (construct/max-width start-sym indents)
-                               (construct/line-width start-sym indents)))
-                     (construct/space))
-                   [(construct/space)])))
-             initial-blocks
-             (if (and (nil? col-start) (= col-from 0))
-               [(construct/space)]
-               (if (not-empty row-blocks) rspacing))
-             (join-fn rspacing row-blocks))))))
+                 (if (not-empty row-blocks) rspacing))
+               (join-fn rspacing row-blocks)))))))
 
 (defn layout-multiline-list
   "layout standard paired inputs"
   {:added "4.0"}
-  [form {:as opts :keys [spec]}]
-  (let [spec (if (and (:col-call spec)
-                   (first (filter (fn [migration-argument-0] (est/estimate-multiline migration-argument-0 opts))
-                            (rest form))))
-               (merge spec {:col-from 0 :col-start 1})
-               spec)
-        form (map (fn [x] (if (map? x) (with-meta x {:spec {:col-align true}}) x)) form)]
-    (layout-multiline-call :list form (assoc opts :spec spec))))
+  [form migration-map-param-1]
+  (let [opts migration-map-param-1 spec (get migration-map-param-1 :spec)]
+    (let [spec (if (and (:col-call spec)
+                     (first (filter (fn [migration-argument-0] (est/estimate-multiline migration-argument-0 opts))
+                              (rest form))))
+                 (merge spec {:col-from 0 :col-start 1})
+                 spec)
+          form (map (fn [x] (if (map? x) (with-meta x {:spec {:col-align true}}) x)) form)]
+      (layout-multiline-call :list form (assoc opts :spec spec)))))
 
 (defn layout-multiline-hiccup
   "generates hiccup code"
   {:added "4.0"}
-  [form {:keys [spec]
-         :as opts}]
-  (let [spec  (merge {:col-from (if (vector? (second form))
-                                  0
-                                  1)
-                      :col-start 1}
-                     spec)
-        form (map (fn [x]
-                    (if (map? x)
-                      (with-meta x {:spec {:col-align true}})
-                      x))
-                  form)]
-    (layout-multiline-call :vector form (assoc opts :spec spec))))
+  [form migration-map-param-1]
+  (let [opts migration-map-param-1 spec (get migration-map-param-1 :spec)]
+    (let [spec (merge {:col-from (if (vector? (second form)) 0 1) :col-start 1} spec)
+          form (map (fn [x] (if (map? x) (with-meta x {:spec {:col-align true}}) x)) form)]
+      (layout-multiline-call :vector form (assoc opts :spec spec)))))
 
 (defn layout-multiline-paired
   "layout standard paired inputs"
   {:added "4.0"}
-  [form {:as opts :keys [indents spec] :or {indents 0}}]
-  (layout-multiline-call :list form (assoc-in opts [:spec :columns] 2)))
+  [form migration-map-param-1]
+  (let [opts    migration-map-param-1
+        indents (if (has? migration-map-param-1 :indents)
+                  (get migration-map-param-1 :indents)
+                  0)
+        spec    (get migration-map-param-1 :spec)]
+    (layout-multiline-call :list form (assoc-in opts [:spec :columns] 2))))
 
 (defn layout-multiline-hashmap
   "layouts the hashmap"
   {:added "4.0"}
-  [m {:as opts :keys [indents spec] :or {indents 0}}]
-  (let [{:as spec
-         :keys [col-align
-                columns]} (merge {:col-align false :col-sort false :columns 2} spec)
-        nindents          (+ indents 1)
-        arg-spacing       (concat [(construct/newline)] (repeat nindents (construct/space)))
-        nopts             (-> opts (assoc :indents nindents :spec spec))
-        row-blocks        (cond
-                           (== columns 1) (layout-one-column (mapcat identity (seq m)) nopts)
-                           (== columns 2) (layout-two-column m spec nopts)
-                           :else          (layout-n-column
-                                           (->> (mapcat identity (seq m)) (partition-all columns)) spec
-                                           nopts))
-        join-fn           (if (= 1 columns) join-blocks join-block-arrays)]
-    (construct/container :map (vec (join-fn arg-spacing row-blocks)))))
+  [m migration-map-param-2]
+  (let [opts    migration-map-param-2
+        indents (if (has? migration-map-param-2 :indents)
+                  (get migration-map-param-2 :indents)
+                  0)
+        spec    (get migration-map-param-2 :spec)]
+    (let [migration-map-value-1 (merge {:col-align false :col-sort false :columns 2} spec)
+          spec                  migration-map-value-1
+          col-align             (get migration-map-value-1 :col-align)
+          columns               (get migration-map-value-1 :columns)
+          nindents              (+ indents 1)
+          arg-spacing           (concat [(construct/newline)] (repeat nindents (construct/space)))
+          nopts                 (-> opts (assoc :indents nindents :spec spec))
+          row-blocks            (cond
+                                 (= columns 1) (layout-one-column (mapcat identity (seq m)) nopts)
+                                 (= columns 2) (layout-two-column m spec nopts)
+                                 :else         (layout-n-column
+                                                (->> (mapcat identity (seq m)) (partition-all columns)) spec
+                                                nopts))
+          join-fn               (if (= 1 columns) join-blocks join-block-arrays)]
+      (construct/container :map (vec (join-fn arg-spacing row-blocks))))))
 
 ;;
 ;;
@@ -345,70 +376,97 @@
 (defn layout-by-columns
   "layout data using columns"
   {:added "4.0"}
-  [arr indents-start {:as opts :keys [indents spec] :or {indents 0}}]
-  (let [{:as spec
-         :keys [col-align
-                columns]} (merge {:col-align true :columns (if (< (count arr) 2) (count arr) 2)} spec)
-        nindents          (+ indents indents-start)
-        arg-spacing       (concat [(construct/newline)] (repeat nindents (construct/space)))
-        nopts             (-> opts (assoc :indents nindents) (dissoc :spec))
-        row-blocks        (cond (== columns 1) (layout-one-column (seq arr) nopts)
-                                (== columns 2) (layout-two-column (partition-all 2 (seq arr)) spec nopts)
-                                :else          (layout-n-column (partition-all columns (seq arr)) spec nopts))
-        join-fn           (if (= 1 columns) join-blocks join-block-arrays)]
-    (vec (join-fn arg-spacing row-blocks))))
+  [arr indents-start migration-map-param-2]
+  (let [opts    migration-map-param-2
+        indents (if (has? migration-map-param-2 :indents)
+                  (get migration-map-param-2 :indents)
+                  0)
+        spec    (get migration-map-param-2 :spec)]
+    (let [migration-map-value-1 (merge {:col-align true :columns (if (< (count arr) 2) (count arr) 2)} spec)
+          spec                  migration-map-value-1
+          col-align             (get migration-map-value-1 :col-align)
+          columns               (get migration-map-value-1 :columns)
+          nindents              (+ indents indents-start)
+          arg-spacing           (concat [(construct/newline)] (repeat nindents (construct/space)))
+          nopts                 (-> opts (assoc :indents nindents) (dissoc :spec))
+          row-blocks            (cond (= columns 1) (layout-one-column (seq arr) nopts)
+                                      (= columns 2) (layout-two-column (partition-all 2 (seq arr)) spec nopts)
+                                      :else         (layout-n-column (partition-all columns (seq arr)) spec nopts))
+          join-fn               (if (= 1 columns) join-blocks join-block-arrays)]
+      (vec (join-fn arg-spacing row-blocks)))))
 
 (defn layout-by-rows
   "layout data using rows"
   {:added "4.0"}
-  [arr indents-start {:as opts :keys [indents spec] :or {indents 0}}]
-  (let [{:keys [row-wrap row-len]} (merge {:row-len 50} spec)
-        iindents                   (+ indents indents-start)
-        row-spacing                (concat [(construct/newline)] (repeat iindents (construct/space)))
-        iopts                      (-> opts (assoc :indents iindents :spec spec))]
-    (if (empty? arr)
-      []
-      (let [init-elem (*layout-fn* (first arr) opts)]
-        (:interim (reduce (fn [{:keys [interim length opts]} val]
-                            (let [{:keys [indents]} opts
-                                  prev              (last interim)
-                                  nlength           (+ length (base/block-width prev) 1)
-                                  nindents          (+ indents nlength)
-                                  nopts             (assoc opts :indents nindents)
-                                  curr              (*layout-fn* val nopts)]
-                              (cond (> row-len nlength)
-                                {:interim (conj interim (construct/space) curr) :length nlength :opts nopts}
-                                :else
-                                {:interim (conj (apply conj interim row-spacing) curr) :length 0 :opts iopts})))
-                    {:interim [init-elem] :length 0 :opts iopts}
-                    (rest arr)))))))
+  [arr indents-start migration-map-param-4]
+  (let [opts    migration-map-param-4
+        indents (if (has? migration-map-param-4 :indents)
+                  (get migration-map-param-4 :indents)
+                  0)
+        spec    (get migration-map-param-4 :spec)]
+    (let [migration-map-value-3 (merge {:row-len 50} spec)
+          row-wrap              (get migration-map-value-3 :row-wrap)
+          row-len               (get migration-map-value-3 :row-len)
+          iindents              (+ indents indents-start)
+          row-spacing           (concat [(construct/newline)] (repeat iindents (construct/space)))
+          iopts                 (-> opts (assoc :indents iindents :spec spec))]
+      (if (empty? arr)
+        []
+        (let [init-elem (*layout-fn* (first arr) opts)]
+          (:interim (reduce (fn [migration-map-param-2 val]
+                              (let [interim (get migration-map-param-2 :interim)
+                                    length  (get migration-map-param-2 :length)
+                                    opts    (get migration-map-param-2 :opts)]
+                                (let [migration-map-value-1 opts
+                                      indents               (get migration-map-value-1 :indents)
+                                      prev                  (last interim)
+                                      nlength               (+ length (base/block-width prev) 1)
+                                      nindents              (+ indents nlength)
+                                      nopts                 (assoc opts :indents nindents)
+                                      curr                  (*layout-fn* val nopts)]
+                                  (cond (> row-len nlength)
+                                    {:interim (conj interim (construct/space) curr) :length nlength :opts nopts}
+                                    :else
+                                    {:interim (conj (apply conj (concat [interim] row-spacing)) curr)
+                                     :opts    iopts
+                                     :length  0}))))
+                      {:interim [init-elem] :length 0 :opts iopts}
+                      (rest arr))))))))
 
 
 (defn layout-by
   "general layout function"
   {:added "4.0"}
-  [arr indents-start {:keys [spec]
-                      :as opts}]
-  (let [{:keys [row-wrap]} spec]
-    (cond row-wrap
-          (layout-by-rows arr indents-start opts)
-
-          :else
-          (layout-by-columns arr indents-start opts))))
+  [arr indents-start migration-map-param-2]
+  (let [opts migration-map-param-2 spec (get migration-map-param-2 :spec)]
+    (let [migration-map-value-1 spec row-wrap (get migration-map-value-1 :row-wrap)]
+      (cond row-wrap
+        (layout-by-rows arr indents-start opts)
+        :else
+        (layout-by-columns arr indents-start opts)))))
 
 (defn layout-multiline-hashset
   "layouts the hashset"
   {:added "4.0"}
-  [arr {:as opts :keys [indents] :or {indents 0}}]
-  (let [children (layout-by-columns arr 2 opts)]
-    (construct/container :set children)))
+  [arr migration-map-param-1]
+  (let [opts    migration-map-param-1
+        indents (if (has? migration-map-param-1 :indents)
+                  (get migration-map-param-1 :indents)
+                  0)]
+    (let [children (layout-by-columns arr 2 opts)]
+      (construct/container :set children))))
 
 (defn layout-multiline-vector
   "layouts the vector"
   {:added "4.0"}
-  [arr {:as opts :keys [indents spec] :or {indents 0}}]
-  (let [children (layout-by-columns arr 1 (assoc opts :spec (merge {:columns 1} spec)))]
-    (construct/container :vector children)))
+  [arr migration-map-param-1]
+  (let [opts    migration-map-param-1
+        indents (if (has? migration-map-param-1 :indents)
+                  (get migration-map-param-1 :indents)
+                  0)
+        spec    (get migration-map-param-1 :spec)]
+    (let [children (layout-by-columns arr 1 (assoc opts :spec (merge {:columns 1} spec)))]
+      (construct/container :vector children))))
 
 ;;
 ;; maybe replacable
@@ -417,30 +475,38 @@
 (defn layout-with-bindings
   "layout with bindings"
   {:added "4.0"}
-  [form {:as opts :keys [indents] :or {indents 0}}]
-  (let [[start-sym
-         nindents]   (layout-multiline-call-setup form (assoc opts :indents (inc indents)))
-        start-blocks (list start-sym (construct/space))
-        bopts        (assoc opts :spec {:col-align true :columns 2} :indents nindents)
-        bindings     (*layout-fn* (second form) bopts)
-        aopts        (assoc opts :indents (+ 1 indents))
-        arg-spacing  (concat [(construct/newline)] (repeat (+ 1 indents) (construct/space)))
-        arg-blocks   (->> (drop 2 form)
-                          (map (fn [arg] (*layout-fn* arg aopts)))
-                          (join-blocks arg-spacing))]
-    (construct/container :list
-      (vec (concat start-blocks [bindings] arg-spacing arg-blocks)))))
+  [form migration-map-param-1]
+  (let [opts    migration-map-param-1
+        indents (if (has? migration-map-param-1 :indents)
+                  (get migration-map-param-1 :indents)
+                  0)]
+    (let [[start-sym
+           nindents]   (layout-multiline-call-setup form (assoc opts :indents (inc indents)))
+          start-blocks (list start-sym (construct/space))
+          bopts        (assoc opts :spec {:col-align true :columns 2} :indents nindents)
+          bindings     (*layout-fn* (second form) bopts)
+          aopts        (assoc opts :indents (+ 1 indents))
+          arg-spacing  (concat [(construct/newline)] (repeat (+ 1 indents) (construct/space)))
+          arg-blocks   (->> (drop 2 form)
+                            (map (fn [arg] (*layout-fn* arg aopts)))
+                            (join-blocks arg-spacing))]
+      (construct/container :list
+        (vec (concat start-blocks [bindings] arg-spacing arg-blocks))))))
 
 (defn layout-multiline-basic
   "layout standard multiline forms"
   {:added "4.0"}
-  [form {:as opts :keys [indents] :or {indents 0}}]
-  (let [[start-sym
-         nindents]   (layout-multiline-call-setup form (assoc opts :indents (inc indents)))
-        start-blocks (list start-sym (construct/space))
-        arg-spacing  (concat [(construct/newline)] (repeat nindents (construct/space)))
-        nopts        (assoc opts :indents nindents)
-        arg-blocks   (->> (rest form)
-                          (map (fn [arg] (*layout-fn* arg nopts)))
-                          (join-blocks arg-spacing))]
-    (construct/container :list (vec (concat start-blocks arg-blocks)))))
+  [form migration-map-param-1]
+  (let [opts    migration-map-param-1
+        indents (if (has? migration-map-param-1 :indents)
+                  (get migration-map-param-1 :indents)
+                  0)]
+    (let [[start-sym
+           nindents]   (layout-multiline-call-setup form (assoc opts :indents (inc indents)))
+          start-blocks (list start-sym (construct/space))
+          arg-spacing  (concat [(construct/newline)] (repeat nindents (construct/space)))
+          nopts        (assoc opts :indents nindents)
+          arg-blocks   (->> (rest form)
+                            (map (fn [arg] (*layout-fn* arg nopts)))
+                            (join-blocks arg-spacing))]
+      (construct/container :list (vec (concat start-blocks arg-blocks))))))

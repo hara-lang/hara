@@ -2151,6 +2151,18 @@ public class HaraLanguageTest {
   }
 
   @Test
+  public void defaultsNativeImportsToJvm() {
+    try (Context context =
+        Context.newBuilder(HaraLanguage.ID)
+            .allowHostAccess(HostAccess.ALL)
+            .allowHostClassLookup(name -> true)
+            .build()) {
+      context.eval(HaraLanguage.ID, "(ns jvm-default (:import [java.lang String]))");
+      assertEquals("42", context.eval(HaraLanguage.ID, "(String/valueOf 42)").asString());
+    }
+  }
+
+  @Test
   public void selectingJvmFlavorDoesNotGrantReflectionAuthority() {
     try (Context context = context()) {
       PolyglotException error =

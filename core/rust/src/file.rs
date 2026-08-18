@@ -1619,11 +1619,18 @@ mod tests {
         assert_eq!(files.stat_entry(&mounted).unwrap().path, mounted);
         assert_eq!(
             files
-                .write_bytes(&generated, b"(ns generated)\n".to_vec(), WriteOptions::default())
+                .write_bytes(
+                    &generated,
+                    b"(ns generated)\n".to_vec(),
+                    WriteOptions::default()
+                )
                 .unwrap(),
             generated
         );
-        assert_eq!(fs::read(root.join("generated.hal")).unwrap(), b"(ns generated)\n");
+        assert_eq!(
+            fs::read(root.join("generated.hal")).unwrap(),
+            b"(ns generated)\n"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }

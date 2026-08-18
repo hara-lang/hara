@@ -1,7 +1,7 @@
 use super::super::halc::{HalcModule, HalcOrigin};
 use super::super::halc_trace::{
-    HalcArtifactInspection, HalcArtifactTrace, HalcTraceEvent, HalcTraceEvidence,
-    HalcTraceStatus, HalcTraceValue, HALC_TRACE_SCHEMA,
+    HalcArtifactInspection, HalcArtifactTrace, HalcTraceEvent, HalcTraceEvidence, HalcTraceStatus,
+    HalcTraceValue, HALC_TRACE_SCHEMA,
 };
 use super::super::{Form, SchemaType};
 use sha2::{Digest, Sha256};
@@ -130,10 +130,7 @@ pub(super) fn structural_forms(forms: &[Form]) -> Vec<String> {
         .collect::<Vec<_>>()
 }
 
-pub(super) fn form_evidence(
-    forms: &[Form],
-    limits: HalcSourceTraceLimits,
-) -> HalcTraceEvidence {
+pub(super) fn form_evidence(forms: &[Form], limits: HalcSourceTraceLimits) -> HalcTraceEvidence {
     let readable = forms.iter().map(ToString::to_string).collect::<Vec<_>>();
     let structural = structural_forms(forms);
     let (readable, readable_truncated) =
@@ -190,11 +187,8 @@ pub(super) fn schema_evidence(
         limits.max_schema_entries,
         limits.max_text_bytes,
     );
-    let (functions, functions_truncated) = bounded_strings(
-        functions,
-        limits.max_schema_entries,
-        limits.max_text_bytes,
-    );
+    let (functions, functions_truncated) =
+        bounded_strings(functions, limits.max_schema_entries, limits.max_text_bytes);
     let (definition_types, definition_types_truncated) = bounded_strings(
         definition_types,
         limits.max_schema_entries,
@@ -214,10 +208,7 @@ pub(super) fn schema_evidence(
     let mut evidence = HalcTraceEvidence::new();
     evidence.insert("schema/definitions".into(), strings(definitions));
     evidence.insert("schema/functions".into(), strings(functions));
-    evidence.insert(
-        "schema/definition-types".into(),
-        strings(definition_types),
-    );
+    evidence.insert("schema/definition-types".into(), strings(definition_types));
     evidence.insert("schema/function-types".into(), strings(function_types));
     evidence.insert(
         "schema/resolved-functions".into(),

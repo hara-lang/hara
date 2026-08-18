@@ -28,14 +28,50 @@
 (def selected-v1 (registry/resolve catalog {:grammar/id :js :grammar/version 1}))
 (def selected-v2 (registry/resolve catalog {:grammar/id :js :grammar/version 2}))
 
+^{:refer lang.common.emit/default-grammar :added "4.0"}
+(fact "returns the default emitter grammar"
+  (map? (emit/default-grammar)) => true)
+
+^{:refer lang.common.emit/emit-main-loop :added "4.0"}
+(fact "emits one form through the common pipeline"
+  (emit/emit-main-loop '(+ 1 (+ 2 3))
+                       (emit/default-grammar (:grammar selected-v1)) {})
+  => "1 + (2 + 3)")
+
+^{:refer lang.common.emit/emit-main :added "4.0"}
+(fact "installs recursive top-level emission"
+  (emit/emit-main '(+ 1 (+ 2 3))
+                  (emit/default-grammar (:grammar selected-v1)) {})
+  => "1 + (2 + 3)")
+
 (fact "protocol emission recursively uses selected grammar"
   (compiler/emit-form (emit/emitter) '(+ 1 (+ 2 3)) selected-v1 {})
   => "1 + (2 + 3)")
 
+^{:refer lang.common.emit/emit :added "4.0"}
 (fact "grammar versions and templates select emitted behavior"
   [(emit/emit '(+ 1 2) selected-v1)
    (emit/emit '(+ 1 2) selected-v2)
    (emit/emit nil selected-v1)]
   => ["1 + 2" "1 plus 2" "null"])
+
+^{:refer lang.common.emit/prep-options :added "4.0"}
+(fact "prepares pipeline options"
+  (vector? (emit/prep-options {})) => true)
+
+^{:refer lang.common.emit/with:emit :added "4.0"}
+(fact "binds recursive common emission"
+  (emit/with:emit
+   (emit/*emit-fn* '(+ 1 (+ 2 3))
+                   (emit/default-grammar (:grammar selected-v1)) {}))
+  => "1 + (2 + 3)")
+
+^{:refer lang.common.emit/prep-form :added "4.0"}
+(fact "prepares raw and input pipeline forms"
+  (emit/prep-form :raw '(+ 1 2 3) nil nil {})
+  => '[(+ 1 2 3)]
+
+  (emit/prep-form :input '(+ (deref 1) 2 3) nil nil {})
+  => '[(+ (!:eval 1) 2 3)])
 
 (run {:namespace "lang.common.emit-test"})

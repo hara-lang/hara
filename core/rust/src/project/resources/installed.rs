@@ -58,7 +58,10 @@ fn solve(
     if requirement.chain.contains(&coordinate) {
         let mut cycle = requirement.chain.clone();
         cycle.push(coordinate);
-        return Err(format!("installed package dependency cycle: {}", cycle.join(" -> ")));
+        return Err(format!(
+            "installed package dependency cycle: {}",
+            cycle.join(" -> ")
+        ));
     }
     VersionReq::parse(&requirement.requirement).map_err(|error| {
         format!(
@@ -80,7 +83,11 @@ fn solve(
 
     let candidates = candidates(distribution_root, &coordinate, constraints)?;
     if candidates.is_empty() {
-        return Err(conflict(&coordinate, constraints, &installed_versions(distribution_root, &coordinate)?));
+        return Err(conflict(
+            &coordinate,
+            constraints,
+            &installed_versions(distribution_root, &coordinate)?,
+        ));
     }
     let mut failures = Vec::new();
     for candidate in candidates {
@@ -145,7 +152,10 @@ fn installed_versions(distribution_root: &Path, coordinate: &str) -> Result<Vec<
             .and_then(|value| value.to_str())
             .ok_or_else(|| format!("invalid installed package registration: {}", path.display()))?;
         versions.push(Version::parse(value).map_err(|error| {
-            format!("invalid installed package version in {}: {error}", path.display())
+            format!(
+                "invalid installed package version in {}: {error}",
+                path.display()
+            )
         })?);
     }
     versions.sort_by(|left, right| right.cmp(left));
@@ -157,8 +167,8 @@ fn read_registration(
     coordinate: &str,
     version: &Version,
 ) -> Result<InstalledProject, String> {
-    let path = registration_directory(distribution_root, coordinate)?
-        .join(format!("{version}.edn"));
+    let path =
+        registration_directory(distribution_root, coordinate)?.join(format!("{version}.edn"));
     let source = fs::read_to_string(&path)
         .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
     let Form::Map(entries) = parse(&source)? else {
@@ -188,11 +198,17 @@ fn read_registration(
     if !package_root.starts_with(&trusted_roots)
         || package_root.file_name().and_then(|value| value.to_str()) != Some(digest)
     {
-        return Err(format!("{} points outside the content-addressed package roots", path.display()));
+        return Err(format!(
+            "{} points outside the content-addressed package roots",
+            path.display()
+        ));
     }
     let project = read(&package_root)?;
     if normalize_coordinate(&project.id)? != coordinate || project.version != *version {
-        return Err(format!("{} disagrees with the installed project manifest", path.display()));
+        return Err(format!(
+            "{} disagrees with the installed project manifest",
+            path.display()
+        ));
     }
     Ok(InstalledProject {
         coordinate: coordinate.to_owned(),
@@ -227,7 +243,11 @@ fn conflict(coordinate: &str, constraints: &[String], versions: &[Version]) -> S
     format!(
         "no installed version of {coordinate} satisfies [{}]; installed: [{}]",
         constraints.join(", "),
-        versions.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
+        versions
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
     )
 }
 
@@ -246,7 +266,9 @@ fn ordered(
             return Ok(());
         }
         if !visiting.insert(coordinate.to_owned()) {
-            return Err(format!("installed package dependency cycle at {coordinate}"));
+            return Err(format!(
+                "installed package dependency cycle at {coordinate}"
+            ));
         }
         let package = selected
             .get(coordinate)
@@ -264,7 +286,13 @@ fn ordered(
     let mut visiting = BTreeSet::new();
     let mut visited = BTreeSet::new();
     for coordinate in project.dependencies.keys() {
-        visit(coordinate, selected, &mut visiting, &mut visited, &mut output)?;
+        visit(
+            coordinate,
+            selected,
+            &mut visiting,
+            &mut visited,
+            &mut output,
+        )?;
     }
     Ok(output)
 }

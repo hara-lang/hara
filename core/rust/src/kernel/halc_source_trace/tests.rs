@@ -7,10 +7,7 @@ const SOURCE: &str = "(ns demo.schema) \
                      (def Customer [:map [:id :int]]) \
                      (defn ^{:schema #'-/Customer} customer-id [customer] customer)";
 
-fn stage<'a>(
-    trace: &'a HalcArtifactTrace,
-    name: &str,
-) -> &'a HalcTraceEvent {
+fn stage<'a>(trace: &'a HalcArtifactTrace, name: &str) -> &'a HalcTraceEvent {
     trace
         .events
         .iter()
@@ -18,10 +15,7 @@ fn stage<'a>(
         .unwrap_or_else(|| panic!("missing stage {name}"))
 }
 
-fn evidence_strings<'a>(
-    event: &'a HalcTraceEvent,
-    key: &str,
-) -> &'a [String] {
+fn evidence_strings<'a>(event: &'a HalcTraceEvent, key: &str) -> &'a [String] {
     match event.evidence.get(key) {
         Some(HalcTraceValue::Strings(values)) => values,
         value => panic!("expected string vector at {key}, got {value:?}"),
@@ -30,12 +24,7 @@ fn evidence_strings<'a>(
 
 #[test]
 fn traces_source_through_the_production_encoder_and_decoder() {
-    let trace = trace_halc_source(
-        "source-trace-1",
-        "demo.schema",
-        "demo/schema.hal",
-        SOURCE,
-    );
+    let trace = trace_halc_source("source-trace-1", "demo.schema", "demo/schema.hal", SOURCE);
     assert_eq!(trace.schema, HALC_TRACE_SCHEMA);
     assert_eq!(trace.status, HalcTraceStatus::Ok);
     assert_eq!(
@@ -56,35 +45,19 @@ fn traces_source_through_the_production_encoder_and_decoder() {
         ]
     );
     assert_eq!(
-        trace
-            .result
-            .as_ref()
-            .unwrap()
-            .get("decode/parity"),
+        trace.result.as_ref().unwrap().get("decode/parity"),
         Some(&HalcTraceValue::Boolean(true))
     );
     assert_eq!(
-        trace
-            .result
-            .as_ref()
-            .unwrap()
-            .get("module/namespace"),
+        trace.result.as_ref().unwrap().get("module/namespace"),
         Some(&HalcTraceValue::String("demo.schema".to_owned()))
     );
 }
 
 #[test]
 fn exposes_canonical_forms_and_resolved_schema_types_as_bounded_data() {
-    let trace = trace_halc_source(
-        "schema-trace",
-        "demo.schema",
-        "demo/schema.hal",
-        SOURCE,
-    );
-    let forms = evidence_strings(
-        stage(&trace, "forms/canonicalize"),
-        "forms/structural",
-    );
+    let trace = trace_halc_source("schema-trace", "demo.schema", "demo/schema.hal", SOURCE);
+    let forms = evidence_strings(stage(&trace, "forms/canonicalize"), "forms/structural");
     assert!(forms
         .iter()
         .any(|form| form.contains("demo.schema/Customer")));
@@ -148,12 +121,7 @@ fn bounds_forms_schema_entries_and_artifact_previews() {
 
 #[test]
 fn source_parse_failures_stop_at_a_typed_source_stage() {
-    let trace = trace_halc_source(
-        "bad-source",
-        "demo.bad",
-        "demo/bad.hal",
-        "(",
-    );
+    let trace = trace_halc_source("bad-source", "demo.bad", "demo/bad.hal", "(");
     assert_eq!(trace.status, HalcTraceStatus::Error);
     assert_eq!(trace.events.len(), 1);
     assert_eq!(trace.events[0].stage, "source/read");
@@ -168,18 +136,8 @@ fn source_parse_failures_stop_at_a_typed_source_stage() {
 #[test]
 fn source_tracing_is_deterministic_and_never_evaluates_forms() {
     let source = "(ns demo.noeval) (throw \"must not execute\")";
-    let first = trace_halc_source(
-        "no-evaluation",
-        "demo.noeval",
-        "demo/noeval.hal",
-        source,
-    );
-    let second = trace_halc_source(
-        "no-evaluation",
-        "demo.noeval",
-        "demo/noeval.hal",
-        source,
-    );
+    let first = trace_halc_source("no-evaluation", "demo.noeval", "demo/noeval.hal", source);
+    let second = trace_halc_source("no-evaluation", "demo.noeval", "demo/noeval.hal", source);
     assert_eq!(first, second);
     assert_eq!(first.status, HalcTraceStatus::Ok);
     assert_eq!(

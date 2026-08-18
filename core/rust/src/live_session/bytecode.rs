@@ -48,12 +48,9 @@ impl BytecodeLiveSession {
         let session_id = required_text(session_id.into(), "session id")?;
         let source_id = required_text(source_id.into(), "source id")?;
         let revision = required_text(revision.into(), "revision")?;
-        let session = BytecodeObservationSession::from_artifact_named(
-            session_id,
-            source_id,
-            artifact,
-        )
-        .map_err(backend_error)?;
+        let session =
+            BytecodeObservationSession::from_artifact_named(session_id, source_id, artifact)
+                .map_err(backend_error)?;
         Ok(Self {
             session,
             revision,
@@ -217,12 +214,10 @@ impl LiveSession for BytecodeLiveSession {
 
 fn settlement_state(settlement: LiveSettlement) -> Result<PromiseState, LiveSessionError> {
     match settlement {
-        LiveSettlement::Fulfilled(value) => {
-            Ok(PromiseState::Fulfilled(json_to_value(value)?))
-        }
-        LiveSettlement::Rejected(error) => Ok(PromiseState::Rejected(
-            PromiseRejection::Value(json_to_value(error)?),
-        )),
+        LiveSettlement::Fulfilled(value) => Ok(PromiseState::Fulfilled(json_to_value(value)?)),
+        LiveSettlement::Rejected(error) => Ok(PromiseState::Rejected(PromiseRejection::Value(
+            json_to_value(error)?,
+        ))),
     }
 }
 
@@ -234,10 +229,14 @@ fn json_to_value(value: JsonValue) -> Result<Value, LiveSessionError> {
 
 fn value_to_json(value: &Value) -> Result<JsonValue, LiveSessionError> {
     let encoded = crate::json::write(value).map_err(|error| {
-        LiveSessionError::backend(format!("unable to encode HBC live-session payload: {error}"))
+        LiveSessionError::backend(format!(
+            "unable to encode HBC live-session payload: {error}"
+        ))
     })?;
     serde_json::from_str(&encoded).map_err(|error| {
-        LiveSessionError::backend(format!("HBC live-session payload is not valid JSON: {error}"))
+        LiveSessionError::backend(format!(
+            "HBC live-session payload is not valid JSON: {error}"
+        ))
     })
 }
 

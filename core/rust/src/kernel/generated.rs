@@ -65,6 +65,8 @@ pub struct GeneratedNamespaceConfig {
     used_exclusions: HashMap<String, HashSet<String>>,
     excluded_foundation: HashSet<String>,
     exposed_foundation: Option<HashSet<String>>,
+    native_flavor: String,
+    native_imports: Vec<(String, String)>,
     blank: bool,
 }
 
@@ -87,6 +89,8 @@ impl GeneratedNamespaceConfig {
             used_exclusions: HashMap::new(),
             excluded_foundation: HashSet::new(),
             exposed_foundation: None,
+            native_flavor: "wasm".into(),
+            native_imports: Vec::new(),
             blank: false,
         }
     }
@@ -109,6 +113,8 @@ impl GeneratedNamespaceConfig {
         let mut blank = false;
         let mut intrinsics_seen = false;
         let mut config_seen = false;
+        let mut native_flavor = None;
+        let mut native_imports = Vec::new();
 
         for clause in clauses {
             let values = list(clause, "ns clauses must be non-empty lists")?;
@@ -149,7 +155,13 @@ impl GeneratedNamespaceConfig {
                 }
                 "require" => requires.extend(values[1..].iter().cloned()),
                 "use" => uses.extend(values[1..].iter().cloned()),
-                "flavor" | "import" => {}
+                "flavor" => {
+                    if native_flavor.is_some() {
+                        return Err("ns accepts only one :flavor clause".into());
+                    }
+                    native_flavor = Some(parse_native_flavor(values)?);
+                }
+                "import" => parse_native_imports(&values[1..], &mut native_imports)?,
                 other => return Err(format!("Unsupported ns clause: :{other}")),
             }
         }
@@ -175,6 +187,8 @@ impl GeneratedNamespaceConfig {
         let mut config = Self::default();
         config.excluded_foundation = excluded_foundation;
         config.exposed_foundation = exposed_foundation;
+        config.native_flavor = native_flavor.unwrap_or_else(|| "wasm".into());
+        config.native_imports = native_imports;
         config.blank = blank;
         for native_type in NATIVE_TYPES {
             config.put_alias(native_type, &format!("std.native.{native_type}"))?;
@@ -225,6 +239,14 @@ impl GeneratedNamespaceConfig {
 
     pub fn blank(&self) -> bool {
         self.blank
+    }
+
+    pub fn native_flavor(&self) -> &str {
+        &self.native_flavor
+    }
+
+    pub fn native_imports(&self) -> &[(String, String)] {
+        &self.native_imports
     }
 
     pub fn aliases(&self) -> Vec<(String, String)> {
@@ -415,6 +437,54 @@ impl GeneratedNamespaceConfig {
         }
         Ok(())
     }
+}
+
+fn parse_native_flavor(values: &[Form]) -> Result<String, String> {
+    match values {
+        [_, Form::Keyword(flavor)] if !flavor.contains('/') && flavor == "wasm" => {
+            Ok(flavor.clone())
+        }
+        [_, Form::Keyword(flavor)] if !flavor.contains('/') => {
+            Err(format!("native/unsupported-flavor: :{flavor}"))
+        }
+        _ => Err(":flavor expects one unqualified keyword".into()),
+    }
+}
+
+fn parse_native_imports(
+    specifications: &[Form],
+    imports: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    for specification in specifications {
+        match specification {
+            Form::Symbol(module) if !module.contains('/') => {
+                imports.push((
+                    module.rsplit('.').next().unwrap_or(module).into(),
+                    module.clone(),
+                ));
+            }
+            Form::Vector(values) if !values.is_empty() => {
+                let package = match &values[0] {
+                    Form::Symbol(package) if !package.contains('/') => package,
+                    _ => return Err(":import package must be a symbol".into()),
+                };
+                if values.len() == 1 {
+                    return Err(":import package vector requires at least one module".into());
+                }
+                for module in &values[1..] {
+                    let module = match module {
+                        Form::Symbol(module) if !module.contains('/') && !module.contains('.') => {
+                            module
+                        }
+                        _ => return Err(":import module must be an unqualified symbol".into()),
+                    };
+                    imports.push((module.clone(), format!("{package}.{module}")));
+                }
+            }
+            _ => return Err(":import expects module symbols or package vectors".into()),
+        }
+    }
+    Ok(())
 }
 
 fn parse_config(

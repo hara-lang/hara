@@ -10,10 +10,7 @@ fn domain_events_accept_only_named_event_types() {
             WorkOptions::with_id("domain-events").unwrap(),
             move |context| {
                 task_accepted.borrow_mut().extend([
-                    context.emit(
-                        Value::Keyword("task/keyword".into()),
-                        Value::Number(1),
-                    ),
+                    context.emit(Value::Keyword("task/keyword".into()), Value::Number(1)),
                     context.emit(Value::Symbol("task/symbol".into()), Value::Number(2)),
                     context.emit(Value::String("task/string".into()), Value::Number(3)),
                     context.emit(Value::Number(42), Value::Number(4)),

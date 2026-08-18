@@ -1,96 +1,247 @@
 (ns std.block.layout
-  (:require [std.block.construct :as construct]))
+  (:require [std.foundation.string]
+    [std.block.construct :as construct]
+    [std.block.layout.common :as common]
+    [std.block.layout.estimate :as est]
+    [std.foundation :as walk]))
 
-(def bindings
-  '#{if let while ns if-let if-some if-not try when when-not
-     when-some when-first doto dotimes binding with-bindings
-     with-local-vars with-redefs for loop doseq with-open})
+(def +bindings+
+  '#{if let while ns 
+     if-let if-some if-not
+     try
+     when when-not when-some when-first
+     doto dotimes 
+     binding with-bindings with-bindings*
+     with-local-vars with-redefs for loop doseq
+     with-open with-in-str with-precision
+     extend extend-protocol extend-type})
 
-(def definitions
-  '#{fn defn defn- defmacro defrecord deftype})
+(def +defs+
+  '#{fn defn defmacro defrecord deftype
+     defn-
+      defmacro.js defn.js def.js def$.js def-.js
+      defmacro.py defn.py def.py def$.py def-.py
+      defmacro.lua defn.lua def.lua def$.lua def-.lua
+      defmacro.pg defn.pg deftype.pg defenum.pg defindex.pg
+      defn.sql deftype.sql defenum.sql
+      defn.oracle deftype.oracle defenum.oracle})
 
-(def pairing
-  '#{case cond-> cond->> some-> some->> as->})
+(def +pairing+
+  '#{case cond-> cond->> some-> some->>
+     as-> })
 
-(defn member?
-  [values value]
-  (reduce (fn [found candidate]
-            (or found (= candidate value)))
-          false
-          values))
+(defn- is-def?
+  [x]
+  (or (+defs+ x)
+    (and (symbol? x) (std.foundation.string/starts-with? (name x) "def"))))
 
-(defn layout-hiccup-like [value]
-  (and (vector? value) (keyword? (first value))))
+(defn- is-binding?
+  [x]
+  (or (+bindings+ x)
+    (and (symbol? x) (std.foundation.string/includes? (name x) "with"))))
+
+(defn layout-hiccup-like
+  "checks if form is hiccup structure"
+  {:added "4.0"}
+  [v]
+  (boolean (and (vector? v)
+             (or (and (= :% (first v)) (symbol? (second v)))
+               (and (= :<> (first v)) (first (filter vector? (rest v))))
+               (and (keyword? (first v))
+                 (or (map? (second v)) (vector? (second v)))
+                 (and (every? (comp not keyword?) (rest (rest v)))
+                   (every? (comp not map?) (rest (rest v)))))))))
 
 (defn layout-spec-fn
-  [form multiline]
-  (if (and multiline (list? form) (not (empty? form)))
-    (let [head (first form)]
-      (if (member? bindings head)
+  "gets the layout spec"
+  {:added "4.0"}
+  [form is-multiline]
+  (if is-multiline
+    (cond (or (list? form) (seq? form))
+      (cond (coll? (first form))
+        {:col-call true :col-from 0 :col-start 1}
+        (= (quote catch) (first form))
+        {:col-from 2 :col-start 2}
+        (= (quote cond) (first form))
+        {:col-align true :col-call true :col-from 0 :columns 2}
+        (= (quote assoc) (first form))
+        {:col-call true :col-from 1 :columns 2}
+        (= (quote hash-map) (first form))
+        {:col-from 0 :columns 2}
+        (is-binding? (first form))
         {:col-from 1 :col-start 2}
-        (if (member? definitions head)
-          {:col-from 1 :col-start 2}
-          (if (member? pairing head)
-            {:columns 2 :col-from 1 :col-start 2
-             :col-align true :col-call true}
-            {:col-from 1 :col-call true}))))
-    nil))
+        (is-def? (first form))
+        {:col-from 1 :col-start 2}
+        (+pairing+ (first form))
+        {:col-align true :col-call true :col-from 1 :col-start 2 :columns 2}
+        :else
+        {:col-call true :col-from 1}))))
 
-(defn layout-annotate-arglist [arguments] arguments)
-(defn layout-annotate-bindings [bindings] bindings)
-(defn layout-annotate-fn-named [form] form)
-(defn layout-annotate-fn-anon [form] form)
-(defn layout-annotate-svg-path [form] form)
-(defn layout-annotate [form] form)
+(defn layout-annotate-arglist
+  "adds layout metadat to arglists"
+  {:added "4.0"}
+  [args]
+  (mapv (fn [v]
+          (walk/postwalk (fn [x]
+                           (cond (vector? x)
+                             (with-meta x
+                               (merge-nested (meta x) {:readable-len 10 :spec {:columns 1} :tag :vector}))
+                             (map? x)
+                             (with-meta x (merge-nested (meta x) {:readable-len 30}))
+                             :else
+                             x))
+            v))
+    args))
 
-(defn collection-values
+(defn layout-annotate-bindings
+  "adds layout metadata to bindings"
+  {:added "4.0"}
+  [bindings]
+  (if (vector? bindings)
+    (with-meta (->> (partition 2 bindings)
+                 (mapcat (fn [migration-argument-0]
+                           (let [migration-argument-0-value migration-argument-0
+                                 k                          (first (drop 0 migration-argument-0-value))
+                                 v                          (first (drop 1 migration-argument-0-value))]
+                             [(walk/postwalk
+                               (fn
+                                [x]
+                                (cond
+                                 (vector? x)
+                                 (with-meta
+                                  x
+                                  (merge-nested (meta x) {:readable-len 10 :spec {:columns 1} :tag :vector}))
+                                 (map? x)
+                                 (with-meta x (merge-nested (meta x) {:readable-len 30}))
+                                 :else
+                                 x))
+                               k)
+                              v])))
+                 (vec))
+      {:spec {:col-align true :columns 2}})
+    bindings))
+
+(defn layout-annotate-fn-named
+  "adds layout metadata to named functions"
+  {:added "4.0"}
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        form                       migration-argument-0-value
+        _                          (first (drop 0 migration-argument-0-value))
+        sym                        (first (drop 1 migration-argument-0-value))
+        doc?                       (first (drop 2 migration-argument-0-value))
+        attr?                      (first (drop 3 migration-argument-0-value))
+        body                       (drop 4 migration-argument-0-value)]
+    (let [top-index  (or (if (vector? doc?) 2) (if (vector? attr?) 3) (if (vector? (first body)) 4))
+          list-index (or (if (or (list? doc?) (seq? doc?)) 2)
+                         (if (or (list? attr?) (seq? attr?)) 3)
+                         (if (or (list? (first body)) (seq? (first body))) 4))]
+      (if top-index
+        (apply list
+          (concat (take top-index form)
+            [(layout-annotate-arglist (nth form top-index))]
+            (drop (inc top-index) form)))
+        (if list-index
+          (apply list
+            (concat (take list-index form)
+              (->> (drop list-index form)
+                (map (fn [migration-argument-0]
+                       (let [migration-argument-0-value migration-argument-0
+                             args                       (first (drop 0 migration-argument-0-value))
+                             rest                       (drop 1 migration-argument-0-value)]
+                         (cons (layout-annotate-arglist args) rest)))))))
+          form)))))
+
+(defn layout-annotate-fn-anon
+  "adds layout metadata to `fn` calls"
+  {:added "4.0"}
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        form                       migration-argument-0-value
+        _                          (first (drop 0 migration-argument-0-value))
+        sym?                       (first (drop 1 migration-argument-0-value))
+        body                       (drop 2 migration-argument-0-value)]
+    (let [top-index  (or (if (vector? sym?) 1) (if (vector? (first body)) 2))
+          list-index (or (if (or (list? sym?) (seq? sym?)) 1)
+                         (if (or (list? (first body)) (seq? (first body))) 2))]
+      (if top-index
+        (apply list
+          (concat (take top-index form)
+            [(layout-annotate-arglist (nth form top-index))]
+            (drop (inc top-index) form)))
+        (apply list
+          (concat (take list-index form)
+            (->> (drop list-index form)
+              (map (fn [migration-argument-0]
+                     (let [migration-argument-0-value migration-argument-0
+                           args                       (first (drop 0 migration-argument-0-value))
+                           rest                       (drop 1 migration-argument-0-value)]
+                       (cons (layout-annotate-arglist args) rest)))))))))))
+
+(defn layout-annotate-svg-path
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        form                       migration-argument-0-value
+        tag                        (first (drop 0 migration-argument-0-value))
+        attrs                      (first (drop 1 migration-argument-0-value))
+        more                       (drop 2 migration-argument-0-value)]
+    (let [path (with-meta (std.foundation.string/split (:d attrs) #" ")
+                 {:spec {:columns 5} :tag :vector})]
+      (apply vector tag (assoc attrs :d path) more))))
+
+(defn layout-annotate
+  "adds metadata annotation to form"
+  {:added "4.0"}
   [form]
-  (if (map? form)
-    (reduce (fn [output entry]
-              (conj (conj output (nth entry 0)) (nth entry 1)))
-            []
-            form)
-    (vec form)))
-
-(defn layout-block
-  [form options depth]
-  (let [flat (construct/block form)
-        width (or (get options :width) 80)
-        indent (or (get options :indent) 2)
-        tag (construct/container-tag form)]
-    (if (or (nil? tag)
-            (= 0 (count (:children flat)))
-            (<= (+ (* depth indent) (construct/max-width flat)) width))
-      flat
-      (let [values (construct/expression-values (:children flat))
-            padding (construct/spaces (* (inc depth) indent))
-            closing (construct/spaces (* depth indent))
-            inline-head (and (= tag :list) (not (= 0 (count values))))
-            children
-            (loop [index (if inline-head 1 0)
-                   output (if inline-head
-                            [(layout-block (first values)
-                                           options
-                                           (inc depth))]
-                            [])]
-              (if (= index (count values))
-                (conj (conj output (construct/newline)) closing)
-                (recur
-                 (inc index)
-                 (conj
-                  (conj
-                   (conj output (construct/newline))
-                   padding)
-                  (layout-block
-                   (nth values index)
-                   options
-                   (inc depth))))))]
-        (construct/container tag children)))))
+  (cond (or (list? form) (seq? form))
+    (cond ((quote #{fn}) (first form))
+      (layout-annotate-fn-anon form)
+      (and (is-def? (first form))
+        (not ((quote #{declare defonce defprotocol def}) (first form))))
+      (layout-annotate-fn-named form)
+      (is-binding? (first form))
+      (let [[sym bindings & more] form]
+        (apply list sym (layout-annotate-bindings bindings) more))
+      :else
+      form)
+    (and (vector? form) (= :path (first form)))
+    (layout-annotate-svg-path form)
+    :else
+    form))
 
 (defn layout-default-fn
-  [form options]
-  (layout-block form (or options {}) 0))
+  "the default function for level 1 transformation"
+  {:added "4.0"}
+  [form opts]
+  (let [is-multiline          (est/estimate-multiline form {})
+        migration-map-value-1 (if (coll? form) (meta form))
+        metadata              (get migration-map-value-1 :metadata)
+        spec                  (get migration-map-value-1 :spec)
+        spec--1               (or spec (:spec opts) (layout-spec-fn form is-multiline))
+        annotated-form        (layout-annotate form)
+        nopts                 (assoc opts :spec spec--1)]
+    (cond (not is-multiline)
+      (construct/block annotated-form)
+      (map? annotated-form)
+      (common/layout-multiline-hashmap annotated-form nopts)
+      (set? annotated-form)
+      (common/layout-multiline-hashset annotated-form nopts)
+      (vector? annotated-form)
+      (if (layout-hiccup-like annotated-form)
+        (common/layout-multiline-hiccup annotated-form nopts)
+        (common/layout-multiline-vector annotated-form nopts))
+      (or (list? annotated-form) (seq? annotated-form))
+      (common/layout-multiline-list annotated-form nopts)
+      :else
+      (construct/block annotated-form))))
+
+;;
+;; layout loop
+;;
 
 (defn layout-main
-  ([form] (layout-main form {}))
-  ([form options] (layout-default-fn form options)))
+  "performs the main layout"
+  {:added "4.0"}
+  [form & migration-optional-arguments]
+  (let [opts (or (first (drop 0 migration-optional-arguments)) {})]
+    (binding [common/*layout-fn* layout-default-fn] (layout-default-fn form opts))))

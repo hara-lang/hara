@@ -3531,6 +3531,87 @@ mod tests {
     }
 
     #[test]
+    fn native_imports_default_to_wasm_and_are_recorded_in_namespace_state() {
+        let mut runtime = Runtime::new();
+        let add = b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b";
+        for logical in ["math", "vendor.numeric.Vector", "vendor.numeric.Matrix"] {
+            runtime.install_direct_wasm_import(logical, add).unwrap();
+        }
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns direct.imports (:import math [vendor.numeric Vector Matrix]))\
+                     (let [imports (ns:imports (ns:find 'direct.imports))]\
+                       [(count imports)\
+                        (get imports 'math)\
+                        (get imports 'Vector)\
+                        (get imports 'Matrix)\
+                        (math/add 19 23)])",
+                )
+                .unwrap(),
+            "[3 \"math\" \"vendor.numeric.Vector\" \"vendor.numeric.Matrix\" 42]"
+        );
+        assert_eq!(
+            runtime
+                .namespace_registry
+                .find("direct.imports")
+                .unwrap()
+                .native_flavor()
+                .as_deref(),
+            Some("wasm")
+        );
+    }
+
+    #[test]
+    fn native_import_flavor_validation_is_deterministic() {
+        let mut runtime = Runtime::new();
+        runtime
+            .install_direct_wasm_import(
+                "math",
+                b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b",
+            )
+            .unwrap();
+        runtime
+            .eval_text("(ns explicit.wasm (:flavor :wasm) (:import math))")
+            .unwrap();
+        assert_eq!(
+            runtime
+                .namespace_registry
+                .find("explicit.wasm")
+                .unwrap()
+                .native_flavor()
+                .as_deref(),
+            Some("wasm")
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(ns wrong.runtime (:flavor :jvm) (:import java.lang.String))")
+                .unwrap_err(),
+            "native/unsupported-flavor: :jvm"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(ns missing.import (:import absent))")
+                .unwrap_err(),
+            "native/import-missing: absent"
+        );
+    }
+
+    #[test]
+    fn native_import_traps_have_a_stable_diagnostic_boundary() {
+        let mut runtime = Runtime::new();
+        let trap = b"\0asm\x01\0\0\0\x01\x04\x01\x60\0\0\x03\x02\x01\0\x07\x08\x01\x04boom\0\0\x0a\x05\x01\x03\0\0\x0b";
+        runtime.install_direct_wasm_import("broken", trap).unwrap();
+        let error = runtime
+            .eval_text("(ns direct.trap (:import broken)) (broken/boom)")
+            .unwrap_err();
+        assert!(
+            error.contains("native/invoke-failed: broken/boom"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn namespace_use_refers_portable_test_vars_and_macros() {
         // The debug evaluator recursively loads the portable code.test graph.
         // Keep that implementation detail local to this test rather than

@@ -1863,13 +1863,13 @@ public final class HaraContext {
 
   private NativeFlavorProvider nativeProvider() {
     String flavor = nativeFlavors.get(currentNamespace.name());
-    return flavor == null ? null : nativeFlavorRegistry.require(flavor);
+    return nativeFlavorRegistry.require(flavor == null ? "jvm" : flavor);
   }
 
   private JvmFlavorProvider jvmProvider() {
     NativeFlavorProvider provider = nativeProvider();
     if (!(provider instanceof JvmFlavorProvider)) {
-      throw new HaraException("JVM native operation requires an ns :flavor :jvm declaration");
+      throw new HaraException("JVM native operation requires the JVM native flavor");
     }
     return (JvmFlavorProvider) provider;
   }
@@ -1912,23 +1912,18 @@ public final class HaraContext {
   @TruffleBoundary
   public Object constructNative(Object type, Object[] arguments) {
     NativeFlavorProvider provider = nativeProvider();
-    if (provider == null) throw new HaraException("new requires an ns :flavor declaration");
     return provider.construct(HaraBox.unwrap(type), arguments, nativeAccess());
   }
 
   @TruffleBoundary
   public Object readNativeMember(Object receiver, String member) {
     NativeFlavorProvider provider = nativeProvider();
-    if (provider == null)
-      throw new HaraException("Native member access requires an ns :flavor declaration");
     return provider.readMember(HaraBox.unwrap(receiver), member, nativeAccess());
   }
 
   @TruffleBoundary
   public Object indexNative(Object receiver, Object index) {
     NativeFlavorProvider provider = nativeProvider();
-    if (provider == null)
-      throw new HaraException("Native indexed access requires an ns :flavor declaration");
     return provider.index(HaraBox.unwrap(receiver), HaraBox.unwrap(index), nativeAccess());
   }
 

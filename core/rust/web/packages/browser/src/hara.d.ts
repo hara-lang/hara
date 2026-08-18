@@ -9,6 +9,7 @@ export interface HaraRuntime {
   eval(source: string): string;
   require(namespace: string): string;
   registerResource(namespace: string, source: string): void;
+  installDirectWasmImport(logical: string, bytes: Uint8Array): void;
   unregisterResource(namespace: string): void;
   evalInNamespace(namespace: string, source: string): string;
   currentNamespace(): string;

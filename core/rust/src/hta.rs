@@ -741,7 +741,10 @@ mod tests {
         ));
         let decoded = decode(&encode(&priority_map).unwrap()).unwrap();
         assert!(matches!(decoded, Value::PriorityMap(_)));
-        assert_eq!(crate::core::map_entries(&decoded).unwrap()[0].0, Value::Keyword("b".into()));
+        assert_eq!(
+            crate::core::map_entries(&decoded).unwrap()[0].0,
+            Value::Keyword("b".into())
+        );
         let tagged = Value::Tagged(Box::new(crate::lang::data::TaggedLiteral::new(
             crate::lang::data::Symbol::parse("demo/tag"),
             Value::Number(42),
@@ -777,12 +780,9 @@ mod tests {
     #[test]
     fn native_result_round_trips_through_the_canonical_struct_shape() {
         let context = Value::Map(
-            vec![(
-                Value::Keyword("source".into()),
-                Value::String("hta".into()),
-            )]
-            .into_iter()
-            .collect(),
+            vec![(Value::Keyword("source".into()), Value::String("hta".into()))]
+                .into_iter()
+                .collect(),
         );
         let value = Value::Result(std::rc::Rc::new(
             ResultValue::success(Value::Number(42), context).unwrap(),
@@ -793,7 +793,9 @@ mod tests {
 
         assert_eq!(decoded, value);
         assert!(matches!(decoded, Value::Result(_)));
-        assert!(encoded.windows(17).any(|bytes| bytes == b"std.native/Result"));
+        assert!(encoded
+            .windows(17)
+            .any(|bytes| bytes == b"std.native/Result"));
     }
 
     #[test]

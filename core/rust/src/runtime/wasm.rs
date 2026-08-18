@@ -116,21 +116,18 @@ fn js_to_value(value: &JsValue) -> Result<core::Value, String> {
         let pending = core::Promise::new();
         let fulfilled = pending.clone();
         let rejected = pending.clone();
-        let on_fulfilled = Closure::once_into_js(move |value: JsValue| {
+        let on_fulfilled = Closure::once(move |value: JsValue| {
             match js_to_value(&value) {
                 Ok(value) => fulfilled.resolve(value),
                 Err(error) => fulfilled.reject(format!("host/result-invalid: {error}")),
-            }
-            JsValue::UNDEFINED
+            };
         });
-        let on_rejected = Closure::once_into_js(move |error: JsValue| {
+        let on_rejected = Closure::once(move |error: JsValue| {
             rejected.reject(format!("host/rejected: {}", js_error_string(error)));
-            JsValue::UNDEFINED
         });
-        source.then2(
-            on_fulfilled.unchecked_ref::<js_sys::Function>(),
-            on_rejected.unchecked_ref::<js_sys::Function>(),
-        );
+        let _ = source.then2(&on_fulfilled, &on_rejected);
+        on_fulfilled.forget();
+        on_rejected.forget();
         return Ok(core::Value::Promise(pending));
     }
     if js_sys::Array::is_array(value) {
@@ -193,5 +190,3 @@ pub fn target_profile() -> String {
 pub fn version() -> String {
     "hara-wasm/0.1 L0 slice".to_string()
 }
-
-

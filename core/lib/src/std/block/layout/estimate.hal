@@ -6,7 +6,18 @@
   "gets the max width of whole form"
   {:added "4.0"}
   [form]
-  (count (pr-str form)))
+  (letfn [(separator-width
+           [value]
+           (cond
+            (map? value)
+            (+
+             (max 0 (dec (count value)))
+             (reduce + 0 (map separator-width (mapcat identity (seq value)))))
+            (or (vector? value) (set? value) (seq? value))
+            (reduce + 0 (map separator-width value))
+            :else
+            0))]
+    (+ (count (pr-str form)) (separator-width form))))
 
 (defn get-max-width-children
   "gets the max with of the children"
@@ -23,10 +34,11 @@
 (defn estimate-multiline-basic
   "does basic estimation"
   {:added "4.0"}
-  [form {:keys [readable-len]
-         :or {readable-len (or (:readable-len (meta form))
-                               *readable-len*)}}]
-  (> (get-max-width form) readable-len))
+  [form migration-map-param-1]
+  (let [readable-len (if (has? migration-map-param-1 :readable-len)
+                       (get migration-map-param-1 :readable-len)
+                       (or (:readable-len (meta form)) *readable-len*))]
+    (> (get-max-width form) readable-len)))
 
 (defn estimate-multiline-data
   "estimation for maps and sets"

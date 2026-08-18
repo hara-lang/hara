@@ -4,8 +4,7 @@ use std::fmt;
 pub const LIVE_SESSION_PROTOCOL: &str = "hara.live-session/0-alpha";
 pub const LIVE_SESSION_STATE_SCHEMA: &str = "hara.live-session.state/0-alpha";
 pub const LIVE_SESSION_REPLY_SCHEMA: &str = "hara.live-session.reply/0-alpha";
-pub const LIVE_SESSION_CAPABILITIES_SCHEMA: &str =
-    "hara.live-session.capabilities/0-alpha";
+pub const LIVE_SESSION_CAPABILITIES_SCHEMA: &str = "hara.live-session.capabilities/0-alpha";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveBackend {
@@ -205,11 +204,19 @@ pub enum LiveSettlement {
 pub enum LiveSessionCommand {
     Snapshot,
     Step,
-    Run { boundary_limit: usize },
+    Run {
+        boundary_limit: usize,
+    },
     Pause,
-    Resume { settlement: Option<LiveSettlement> },
-    Resolve { value: JsonValue },
-    Reject { error: JsonValue },
+    Resume {
+        settlement: Option<LiveSettlement>,
+    },
+    Resolve {
+        value: JsonValue,
+    },
+    Reject {
+        error: JsonValue,
+    },
     Update {
         source: LiveSource,
         policy: LiveReplacementPolicy,

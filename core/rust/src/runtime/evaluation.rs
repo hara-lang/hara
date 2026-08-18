@@ -145,6 +145,109 @@ impl Runtime {
         Ok(())
     }
 
+    /// Installs one package-verified raw WASM module behind a logical import
+    /// coordinate. `:import` binds its exports directly and never creates an
+    /// HTA or generated Hara namespace.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn install_direct_wasm_import(
+        &mut self,
+        logical: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let compiled = wasmtime_provider::CompiledWasmModule::compile(bytes)?;
+        let exports = compiled.direct_exports()?;
+        self.install_direct_wasm_provider(logical, exports, compiled.provider())
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn install_direct_wasm_import_browser(
+        &mut self,
+        logical: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let exports = crate::direct_wasm::exports(bytes)?;
+        let provider = crate::browser_wasm_provider::BrowserWasmProvider::compile(bytes)?;
+        self.install_direct_wasm_provider(logical, exports, provider)
+    }
+
+    fn install_direct_wasm_provider<P: extension::WasmExtensionProvider + 'static>(
+        &mut self,
+        logical: &str,
+        exports: Vec<(String, extension::ExtensionExport)>,
+        provider: P,
+    ) -> Result<(), String> {
+        if logical.is_empty() || logical.contains('/') {
+            return Err(
+                "native/import-invalid: logical import must be an unqualified symbol".into(),
+            );
+        }
+        if self.native_wasm_imports.contains_key(logical) {
+            return Err(format!("native/import-ambiguous: {logical}"));
+        }
+        if exports.is_empty() {
+            return Err(format!(
+                "native/export-missing: {logical} exports no functions"
+            ));
+        }
+        let manifest = extension::ExtensionManifest {
+            namespace: logical.into(),
+            root: None,
+            identity: None,
+            version: "0.0.0".into(),
+            provider: "wasm".into(),
+            module: None,
+            abi: extension::WasmAbi::CoreV1,
+            targets: HashMap::new(),
+            assets: Vec::new(),
+            exports,
+            capabilities: Vec::new(),
+            host_calls: HashMap::new(),
+            handle_tags: HashMap::new(),
+        };
+        let import = extension::WasmExtension::new(manifest, provider)?;
+        self.native_wasm_imports.insert(logical.into(), import);
+        Ok(())
+    }
+
+    fn bind_direct_wasm_imports(
+        &mut self,
+        config: &kernel::GeneratedNamespaceConfig,
+    ) -> Result<(), String> {
+        let namespace = self.namespace_registry.current();
+        for (local, logical) in config.native_imports() {
+            let bindings = self
+                .native_wasm_imports
+                .get_mut(logical)
+                .ok_or_else(|| format!("native/import-missing: {logical}"))?
+                .require()
+                .map_err(|error| format!("native/import-start: {logical} ({error})"))?;
+            for binding in bindings {
+                let path = format!("{local}/{}", binding.name);
+                if namespace
+                    .mappings()
+                    .iter()
+                    .any(|(_, var)| var.symbol().as_str() == path)
+                {
+                    return Err(format!("native/import-ambiguous: {path}"));
+                }
+                let arity = binding.specification.arguments.len();
+                let function_path = path.clone();
+                let diagnostic_path = function_path.clone();
+                let function = core::native_function(&function_path, arity, move |arguments| {
+                    binding.invoke(&arguments).map_err(|error| {
+                        format!("native/invoke-failed: {diagnostic_path} ({error})")
+                    })
+                });
+                namespace.map_var(
+                    crate::lang::data::Symbol::parse(&path),
+                    kernel::Var::new(path, function),
+                );
+            }
+        }
+        self.refresh_qualified_bindings();
+        Ok(())
+    }
+
     pub fn cancel_wasm_extension(&self, name: &str, request: u64) -> Result<(), String> {
         self.wasm_extensions
             .get(name)
@@ -213,5 +316,3 @@ impl Runtime {
         Ok(":loaded".into())
     }
 }
-
-

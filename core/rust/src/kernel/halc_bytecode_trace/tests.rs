@@ -7,10 +7,7 @@ const SOURCE: &str = "(ns demo.handoff) \
                      (def Customer [:map [:id :int]]) \
                      (defn customer-id [customer] customer)";
 
-fn stage<'a>(
-    trace: &'a HalcArtifactTrace,
-    name: &str,
-) -> &'a HalcTraceEvent {
+fn stage<'a>(trace: &'a HalcArtifactTrace, name: &str) -> &'a HalcTraceEvent {
     trace
         .events
         .iter()
@@ -26,12 +23,8 @@ fn handoff_stage_matches_the_portable_halc_contract() {
 #[cfg(feature = "bytecode-vm")]
 #[test]
 fn records_a_validated_non_executing_bytecode_handoff() {
-    let trace = trace_halc_source_to_bytecode(
-        "handoff-1",
-        "demo.handoff",
-        "demo/handoff.hal",
-        SOURCE,
-    );
+    let trace =
+        trace_halc_source_to_bytecode("handoff-1", "demo.handoff", "demo/handoff.hal", SOURCE);
     assert_eq!(trace.status, HalcTraceStatus::Ok);
     assert_eq!(
         trace.events.last().map(|event| event.stage),
@@ -62,15 +55,10 @@ fn records_a_validated_non_executing_bytecode_handoff() {
     );
     assert_eq!(
         handoff.evidence.get("handoff/module-resource"),
-        Some(&HalcTraceValue::String(
-            "demo/handoff.hal".to_owned()
-        ))
+        Some(&HalcTraceValue::String("demo/handoff.hal".to_owned()))
     );
     let result = trace.result.as_ref().expect("handoff result");
-    assert_eq!(
-        result.get("handoff/source-hash"),
-        result.get("source/hash")
-    );
+    assert_eq!(result.get("handoff/source-hash"), result.get("source/hash"));
     assert_eq!(
         handoff.evidence.get("handoff/program-namespace"),
         Some(&HalcTraceValue::String("demo.handoff".to_owned()))
@@ -151,10 +139,7 @@ fn bytecode_handoff_does_not_evaluate_top_level_forms() {
 
 #[test]
 fn encoder_only_handoff_is_explicitly_unsupported() {
-    let evidence = unsupported_handoff_evidence(
-        "demo.encoder-only",
-        "demo/encoder_only.hal",
-    );
+    let evidence = unsupported_handoff_evidence("demo.encoder-only", "demo/encoder_only.hal");
     assert_eq!(
         evidence.get("handoff/supported"),
         Some(&HalcTraceValue::Boolean(false))

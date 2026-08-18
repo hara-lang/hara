@@ -16,25 +16,27 @@
   "form to control `explode` option"
   {:added "4.0"}
   [& body]
-  `(binding [*explode* true] ~@body))
+  `(binding [lang.common.emit-common/*explode* true] ~@body))
 
 (defmacro with-trace
   "form to control `trace` option"
   {:added "4.0"}
   [& body]
-  `(binding [*trace* true] ~@body))
+  `(binding [lang.common.emit-common/*trace* true] ~@body))
 
 (defmacro with-compressed
   "formats without newlines and indents"
   {:added "3.0"}
   [& body]
-  `(binding [*compressed* true] ~@body))
+  `(binding [lang.common.emit-common/*compressed* true] ~@body))
 
 (defmacro with-indent
   "adds indentation levels"
   {:added "3.0"}
   [increments & body]
-  `(binding [*indent* (+ *indent* (or (first ~increments) 2))]
+  `(binding [lang.common.emit-common/*indent*
+             (+ lang.common.emit-common/*indent*
+                (or (first ~increments) 2))]
      ~@body))
 
 (defn newline-indent
@@ -146,7 +148,7 @@
   "emits a squashed representation"
   {:added "4.0"}
   [_ form grammar mopts]
-  (emit-free-raw "" (rest form) grammar mopts))
+  (str/join "" (emit-array (rest form) grammar mopts)))
 
 (defn emit-wrapping
   "emits a potentially wrapped form"
@@ -636,7 +638,7 @@
         (list? entry)
         (let [operation (first entry)
               operation (if (string? operation) (symbol operation) operation)
-              apply-token (get-in grammar [:default :invoke :apply])
+              apply-token (:apply (helper/get-options grammar [:default :invoke]))
               braces (meta operation)]
           (if (not (symbol? operation))
             (throw (ex-info "Index invocation requires a symbol" {:entry entry}))
@@ -725,12 +727,16 @@
   {:added "3.0"}
   [form grammar]
   (let [base (helper/form-key-base form)
-        classified (if (vector? base)
-                     base
-                     (let [entry (get-in grammar [:reserved (first form)])]
-                       (if entry
-                         [(:op entry) (or (:type entry) :statement)]
-                         [:invoke :invoke])))
+        classified-base
+        (if (vector? base)
+          base
+          (let [entry (get-in grammar [:reserved (first form)])]
+            (if entry
+              [(:op entry) (or (:type entry) :statement)]
+              [:invoke :invoke])))
+        classified (if (= 2 (count classified-base))
+                     (conj (vec classified-base) nil)
+                     classified-base)
         key (first classified)]
     (if (reduce (fn [found banned-key]
                   (or found (= banned-key key)))
