@@ -36,19 +36,27 @@ public class StdTypedSchemaTest {
   public void nativeSchemaAstIsThePortableNormalForm() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[true true [:union :fn :function]]",
+          "[[] true [:union :fn :function]]",
           context
               .eval(
                   HaraLanguage.ID,
                   "(ns typed-schema-ast-truffle-probe) "
                       + "(require 'std.typed.schema {:reload true}) "
-                      + "(defn canonical-ast? [surface] "
+                      + "(defn canonical-ast-failure [surface] "
                       + "  (let [compiled (std.foundation/schema surface) "
                       + "        normalized (std.typed.schema/normalize surface) "
-                      + "        ast (Schema/ast compiled)] "
-                      + "    (and (= normalized ast) "
-                      + "         (= ast (std.typed.schema/normalize ast)) "
-                      + "         (= compiled (std.foundation/schema ast))))) "
+                      + "        ast (Schema/ast compiled) "
+                      + "        renormalized (std.typed.schema/normalize ast) "
+                      + "        recompiled (std.foundation/schema ast)] "
+                      + "    (if (and (= normalized ast) "
+                      + "             (= ast renormalized) "
+                      + "             (= compiled recompiled)) "
+                      + "      nil "
+                      + "      {:surface surface "
+                      + "       :normalized normalized "
+                      + "       :ast ast "
+                      + "       :renormalized renormalized "
+                      + "       :recompiled (Schema/ast recompiled)}))) "
                       + "(let [surfaces "
                       + "      [:int "
                       + "       :vendor/type "
@@ -64,7 +72,7 @@ public class StdTypedSchemaTest {
                       + "       (quote [:vendor/vector :int]) "
                       + "       (quote (var demo/Customer))]] "
                       + "  (pr-str "
-                      + "   [(every? canonical-ast? surfaces) "
+                      + "   [(vec (keep canonical-ast-failure surfaces)) "
                       + "    (= (std.typed.schema/normalize "
                       + "        (quote [:map [:name :str] "
                       + "                     [:tags [:vector :keyword]]])) "
