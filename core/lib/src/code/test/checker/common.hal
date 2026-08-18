@@ -15,12 +15,9 @@
 (defn checker? [value]
   (instance? code.test.checker.common/Checker value))
 
-(defn result-data [result]
-  (if (and (map? result)
-           (= :code/test (:type result))
-           (has? result :data))
-    (:data result)
-    result))
+(defn result-data [result] result)
+
+(declare verify)
 
 (extend-type Checker std.protocol.ifn/IFn
   (invoke [checker & arguments]
@@ -32,23 +29,21 @@
 
 (extend-type Checker std.protocol.imatch/IMatch
   (match-value [checker actual]
-    {:pass (checker actual)
-     :actual actual
-     :expected (:expect checker)}))
+    (verify checker actual)))
 
-(defn verify [checker result]
-  (let [out (try
-              {:type :code/test :status :success :data (checker result)}
-              (catch Throwable error
-                {:type :code/test :status :exception :data error}))]
-    (assoc out
-           :pass (and (= :success (:status out)) (= true (:data out)))
-           :checker checker
-           :actual result
-           :from :verify)))
+(defn verify [checker actual]
+  (try
+    (Result/create
+     :success
+     (boolean (checker actual))
+     {:test {:actual actual :expected (:expect checker)}})
+    (catch Throwable error
+      (Result/create
+       :error error
+       {:test {:actual actual :expected (:expect checker)}}))))
 
 (defn succeeded? [result]
-  (and (= :success (:status result)) (= true (:data result))))
+  (and (Result/success? result) (= true (Result/data result))))
 
 (defn exactly
   ([expected] (exactly expected identity))
@@ -56,7 +51,7 @@
    (checker {:tag :exactly
              :doc "Checks exact equality."
              :fn (fn [result]
-                   (= (function (result-data result)) expected))
+                   (= (function result) expected))
              :expect expected})))
 
 (defn approx
@@ -65,7 +60,7 @@
    (checker {:tag :approx
              :doc "Checks numeric proximity."
              :fn (fn [result]
-                   (let [actual (result-data result)]
+                   (let [actual result]
                      (and (number? actual)
                           (< (- expected threshold) actual)
                           (< actual (+ expected threshold)))))
@@ -80,10 +75,13 @@
    (checker {:tag :satisfies
              :doc "Checks value, predicate, type, collection, or regexp satisfaction."
              :fn (fn [result]
-                   (let [actual (function (result-data result))]
+                   (let [actual (function result)]
                      (cond
                        (= actual expected) true
-                       (type-expectation? expected) (= expected (type actual))
+                       (type-expectation? expected)
+                       (or (= expected (type actual))
+                           (str/ends-with? (str (type actual))
+                                           (str "." (name expected))))
                        (set? expected) (has? expected actual)
                        (map? expected) (= expected (into {} actual))
                        (vector? expected) (= actual expected)
@@ -101,7 +99,7 @@
   (checker {:tag :stores
             :doc "Checks the value stored by a dereferenceable reference."
             :fn (fn [result]
-                  (let [actual (result-data result)]
+                  (let [actual result]
                     (if (derefable? actual)
                       ((satisfies expected) (deref actual))
                       false)))

@@ -2,8 +2,6 @@
   (:require [code.test.checker.common :as common]
             [code.test.result :as comparison]))
 
-(defstruct TimeoutValue [milliseconds])
-
 (defn evaluate
   [input]
   (try
@@ -29,7 +27,10 @@
                       (cancel-function timeout)
                       nil)))]
     (if (and (map? outcome) (= :timeout (:test/status outcome)))
-      (code.test.base.process/TimeoutValue milliseconds)
+      (throw
+       (ex-info "test comparison timed out"
+                {:code :result/timeout
+                 :milliseconds milliseconds}))
       (if (and (map? outcome) (= :value (:test/status outcome)))
         (:value outcome)
         outcome))))
@@ -56,17 +57,10 @@
               (has? #{:throws :raises} (:tag expected)))
          reported-expected (comparison/descriptor expected)]
      (try
-       (let [actual (settle (thunk) options)]
-         (if (instance? code.test.base.process/TimeoutValue actual)
-           (Result/create
-            :error
-            (ex-info "test comparison timed out"
-                     {:code :result/timeout
-                      :milliseconds (:milliseconds actual)})
-            {:test {:actual nil :expected reported-expected}})
-           (comparison/compare actual expected)))
+       (comparison/compare (settle (thunk) options) expected)
        (catch Throwable error
-         (if error-checker?
+         (if (and error-checker?
+                  (not= :result/timeout (:code (ex-data error))))
            (comparison/compare error expected)
            (Result/create
             :error error
