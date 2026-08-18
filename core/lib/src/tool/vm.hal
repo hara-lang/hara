@@ -4,7 +4,8 @@
 ;; This namespace describes formats and capabilities only. Binary codecs,
 ;; compilers, and executors remain host providers and are wired separately.
 ;; ============================================================================
-(ns tool.vm)
+(ns tool.vm
+  (:require [tool.vm.provider :as runtime-provider]))
 
 (def +format-order+ [:hal :halc :hbc])
 
@@ -539,3 +540,118 @@
              :format (:format request)
              :provider requested
              :available (available-providers providers request)}))))
+
+
+;; ---------------------------------------------------------------------------
+;; Current runtime provider
+;; ---------------------------------------------------------------------------
+
+(def +provider-option-keys+
+  #{:provider})
+
+(defn current-provider
+  "Returns the exact normalized descriptor for the current runtime provider."
+  []
+  (provider (runtime-provider/provider)))
+
+(defn current-provider-id
+  "Returns the stable identity of the current runtime provider."
+  []
+  (:provider/id (current-provider)))
+
+(defn current-capabilities
+  "Returns the current runtime provider as a one-element capability set."
+  []
+  [(current-provider)])
+
+(defn- provider-options
+  [value]
+  (let [value (or value {})]
+    (if (not (map? value))
+      (fail "tool.vm provider options must be a map"
+            {:type :tool.vm/invalid-request
+             :field :options
+             :value value})
+      (let [unknown (unknown-keys value +provider-option-keys+)]
+        (if (empty? unknown)
+          value
+          (fail (str "tool.vm provider options contain unsupported keys: " unknown)
+                {:type :tool.vm/invalid-request
+                 :field :options
+                 :unknown unknown}))))))
+
+(defn resolve-provider
+  "Resolves an operation against the current runtime only; it never falls back."
+  [request]
+  (let [options (provider-options (:options request))
+        current (current-provider)
+        requested (or (:provider options)
+                      (:provider/id current))]
+    (select-provider
+     [current]
+     (assoc request :provider requested))))
+
+(defn- artifact-request
+  [operation value options]
+  (let [artifact (artifact value)
+        options (provider-options options)]
+    {:artifact artifact
+     :provider
+     (resolve-provider
+      {:operation operation
+       :format (:artifact/format artifact)
+       :options options})}))
+
+(defn- artifact-invalid
+  [operation artifact provider error]
+  (let [message (ex-message error)]
+    (fail (str "Invalid " (name (:artifact/format artifact))
+               " artifact: " message)
+          {:type :tool.vm/artifact-invalid
+           :operation operation
+           :format (:artifact/format artifact)
+           :provider (:provider/id provider)
+           :message message})))
+
+(defn validate
+  "Authenticates and validates one HALC or HBC artifact through the current runtime."
+  ([artifact]
+   (validate artifact {}))
+  ([artifact options]
+   (let [request (artifact-request :validate artifact options)
+         artifact (:artifact request)
+         provider (:provider request)]
+     (try
+       (runtime-provider/validate
+        (:artifact/format artifact)
+        (:artifact/bytes artifact))
+       (catch Throwable error
+         (artifact-invalid :validate artifact provider error))))))
+
+(defn inspect
+  "Returns ordinary Hara data derived from a validated HALC or HBC artifact."
+  ([artifact]
+   (inspect artifact {}))
+  ([artifact options]
+   (let [request (artifact-request :inspect artifact options)
+         artifact (:artifact request)
+         provider (:provider request)]
+     (try
+       (runtime-provider/inspect
+        (:artifact/format artifact)
+        (:artifact/bytes artifact))
+       (catch Throwable error
+         (artifact-invalid :inspect artifact provider error))))))
+
+(defn disassemble
+  "Returns deterministic HBC diagnostics. This operation is not decompilation."
+  ([artifact]
+   (disassemble artifact {}))
+  ([artifact options]
+   (let [request (artifact-request :disassemble artifact options)
+         artifact (:artifact request)
+         provider (:provider request)]
+     (try
+       (runtime-provider/disassemble (:artifact/bytes artifact))
+       (catch Throwable error
+         (artifact-invalid :disassemble artifact provider error))))))
