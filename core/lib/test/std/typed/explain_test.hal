@@ -1,0 +1,58 @@
+(ns std.typed.explain-test
+  (:use code.test)
+  (:require [std.typed :as typed]
+            [std.typed.registry :as registry]))
+
+(def +nodes+
+  (registry/local
+   'demo
+   {'Node '[:map [:value :int] [:next [:maybe Node]]]}))
+
+^{:refer 'std.typed/explain
+  :id 'canonical-failure-data}
+(fact "returns strict portable Failure data with deterministic alternatives"
+  (let [explanation (typed/explain [:or :int :str] :wrong)
+        failure (first (:failures explanation))]
+    [(:failure/code failure)
+     (count (:failure/children failure))
+     (every? typed/failure? (:failure/children failure))
+     (typed/failure-count failure)])
+  => [:typed/no-alternative 2 true 2])
+
+^{:refer 'std.typed/explain
+  :id 'missing-and-recursive-context}
+(fact "preserves value paths, missing presence, and recursive registry context"
+  (let [missing (first (:failures (typed/explain [:map [:id :int]] {})))
+        recursive (first
+                   (:failures
+                    (typed/explain 'Node
+                                   {:value 1
+                                    :next {:value "two" :next nil}}
+                                   +nodes+)))]
+    [(:failure/path missing)
+     (:failure/context missing)
+     (:failure/path recursive)
+     (vec (map :failure/path (typed/failure-seq recursive)))])
+  => [[:id] {:present? false} [:next] [[:next :value] [:next]]])
+
+^{:refer 'std.typed/check
+  :id 'result-check-contract}
+(fact "returns Result success/boolean for matches and ordinary mismatches"
+  (let [matched (typed/check :int 42)
+        mismatched (typed/check :int "42")]
+    [(Result/success? matched)
+     (Result/data matched)
+     (Result/success? mismatched)
+     (Result/data mismatched)
+     (count (:failures (Result/context mismatched)))])
+  => [true true true false 1])
+
+^{:refer 'std.typed/check
+  :id 'result-check-error-contract}
+(fact "returns a Result error when schema checking crashes"
+  (let [failed (typed/check :int 42 42)]
+    [(Result/error? failed)
+     (type (Result/error-value failed))])
+  => [true :std.native.Error])
+
+(pr-str (run '[std.typed.explain-test]))

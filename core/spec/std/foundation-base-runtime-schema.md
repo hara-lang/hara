@@ -234,3 +234,32 @@ map or collection is valid, while an alias-only cycle at one value path reports
 `:std.typed.schema/cyclic-reference`. Missing definitions report
 `:std.typed.schema/unresolved-reference`. Both are ordinary deterministic
 findings, not runtime exceptions.
+
+## Canonical portable explanations
+
+`std.typed.explain` converts schema findings into strict portable Failure data.
+Every Failure contains all of these fields:
+
+```clojure
+{:failure/code keyword
+ :failure/path vector
+ :failure/in vector
+ :failure/actual any
+ :failure/expected any
+ :failure/message string
+ :failure/context map
+ :failure/children [Failure ...]}
+```
+
+Alternative mismatch uses a `:typed/no-alternative` parent with one child tree
+per declared branch. `failure-seq` walks leaves depth-first in declaration
+order and `failure-count` counts leaves only. A missing map input retains
+`nil` as its actual value and adds `{:present? false}` to Failure context.
+
+`validator` and `explainer` compile pure reusable closures. `check` returns one
+native `Result<boolean>`: a normal mismatch is success/false with portable
+Failure data in Result context, while a checker crash is a Result error.
+
+`std.typed` is the curated public facade over schema, registry, explanation,
+checking, and inference operations. Executable predicates remain local runtime
+values and are never stored in explanation or Result context.
