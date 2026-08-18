@@ -1,0 +1,72 @@
+(ns code.test.result
+  (:require [code.test.checker.common :as common]
+            [std.typed.explain :as typed]))
+
+(defn descriptor
+  "Returns portable expected data without retaining checker functions."
+  [expected]
+  (if (common/checker? expected)
+    (or (:form expected) (str expected))
+    expected))
+
+(defn compare
+  "Compares actual and expected, returning one native Result<boolean>."
+  [actual expected]
+  (try
+    (if (and (common/checker? expected)
+             (= :typed/schema (get-in expected [:form :checker/type])))
+      (let [outcome (typed/check (get-in expected [:form :checker/form]) actual)]
+        (Result/with-context
+         outcome
+         {:test {:actual actual :expected (descriptor expected)}}))
+      (let [passing (if (common/checker? expected)
+                      (boolean (expected actual))
+                      (= actual expected))]
+        (Result/create
+         :success passing
+         {:test {:actual actual :expected (descriptor expected)}
+          :failures []})))
+    (catch Throwable error
+      (Result/create
+       :error error
+       {:test {:actual actual :expected (descriptor expected)}}))))
+
+(defn result
+  "Adds test identity and display data to an existing comparison Result."
+  [name actual expected comparison]
+  (Result/with-context
+   comparison
+   {:test {:name name
+           :actual actual
+           :expected (descriptor expected)}}))
+
+(defn passed?
+  "Returns true only for a successful true comparison Result."
+  [value]
+  (and (Result/success? value)
+       (= true (Result/data value))))
+
+(defn actual [value]
+  (get-in (Result/context value) [:test :actual]))
+
+(defn expected [value]
+  (get-in (Result/context value) [:test :expected]))
+
+(defn failures [value]
+  (vec (or (:failures (Result/context value)) [])))
+
+(defn failure-seq
+  "Returns deterministic depth-first Failure leaves for a comparison."
+  [value]
+  (vec (mapcat typed/failure-seq (failures value))))
+
+(defn failure-count [value]
+  (count (failure-seq value)))
+
+(defn failure [value index]
+  (let [values (failure-seq value)]
+    (if (< index (count values))
+      (nth values index)
+      nil)))
+
+(def failure? typed/failure?)
