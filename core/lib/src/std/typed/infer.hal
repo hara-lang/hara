@@ -66,14 +66,89 @@
               :else source-schema))]
       (result inferred-schema (:refinements source)))))
 
+(defn result-schema
+  ([data] (result-schema data {}))
+  ([data properties]
+   (schema/normalize [:result properties data])))
+
+(defn result-schema? [value]
+  (= :result (:kind value)))
+
+(defn result-operation [head]
+  (let [operation (if (symbol? head) (name head) nil)
+        operation-ns (if (symbol? head) (namespace head) nil)
+        foundation? (or (nil? operation-ns)
+                        (= operation-ns "std.foundation"))
+        native? (= operation-ns "Result")]
+    (cond
+      (and foundation? (= operation "result")) :result/constructor
+      (and foundation? (= operation "result?")) :result/result?
+      (and foundation? (= operation "result-status")) :result/status
+      (and native? (= operation "success?")) :result/success?
+      (and native? (= operation "error?")) :result/error?
+      (and native? (= operation "data")) :result/data
+      (and native? (= operation "error-value")) :result/error-value
+      (and native? (= operation "context")) :result/context
+      (and native? (= operation "with-context")) :result/with-context
+      (and foundation? (= operation "deref")) :result/deref
+      :else nil)))
+
+(defn result-data-schema [value]
+  (if (result-schema? value)
+    (let [status (get-in value [:properties :status])]
+      (cond
+        (= status :success) (:data value)
+        (= status :error) (schema/normalize :nil)
+        :else (schema/normalize [:or (:data value) :nil])))
+    +unknown-schema+))
+
+(defn result-transfer [operation arguments forms]
+  (let [first-argument (if (empty? arguments) (unknown) (first arguments))
+        first-schema (:schema first-argument)
+        status (get-in first-schema [:properties :status])]
+    (cond
+      (= operation :result/constructor)
+      (if (and (<= 2 (count forms))
+               (keyword? (first forms))
+               (has? #{:success :error} (first forms)))
+        (if (= :success (first forms))
+          (result (result-schema (:schema (second arguments)) {:status :success}))
+          (result (result-schema :any {:status :error})))
+        (result (if (result-schema? first-schema)
+                  first-schema
+                  (result-schema first-schema))))
+
+      (has? #{:result/result? :result/success? :result/error?} operation)
+      (result :bool)
+
+      (= operation :result/status)
+      (result (if status
+                [:enum status]
+                [:enum :success :error]))
+
+      (= operation :result/data)
+      (result (result-data-schema first-schema))
+
+      (= operation :result/error-value)
+      (result (if (= status :success) :nil :any))
+
+      (= operation :result/context) (result :map)
+      (= operation :result/with-context) first-argument
+      (= operation :result/deref)
+      (result (if (result-schema? first-schema) (:data first-schema) +unknown-schema+))
+      :else (unknown))))
+
 (defn call-result
   "Infers a call result from analyzed arguments and a lint profile."
   [head arguments context]
   (let [profile (:profile context)
         local-result (get (:returns context) head)
         signature (get-in profile [:signatures head])
-        rule (collection-rule head (count arguments) profile)]
+        rule (collection-rule head (count arguments) profile)
+        result-op (result-operation head)]
     (cond
+      result-op (result-transfer result-op arguments (:argument-forms context))
+
       local-result local-result
 
       (and rule (< (:source-arg rule) (count arguments)))
@@ -99,6 +174,42 @@
                     known)]
         (result (if same-schema (:schema first-result) +unknown-schema+)
                 (if same-refinements (:refinements first-result) {}))))))
+
+(defn narrow-result [inferred operation]
+  (let [current (:schema inferred)]
+    (if (result-schema? current)
+      (cond
+        (= operation :result/success?)
+        (result (assoc current
+                       :properties
+                       (assoc (:properties current) :status :success))
+                (:refinements inferred))
+
+        (= operation :result/error?)
+        (result (assoc current
+                       :properties
+                       (assoc (:properties current) :status :error))
+                (:refinements inferred))
+
+        :else inferred)
+      inferred)))
+
+(defn condition-context [condition context]
+  (if (and (list? condition)
+           (= 2 (count condition))
+           (symbol? (second condition)))
+    (let [operation (result-operation (first condition))
+          target (second condition)
+          current (get (:locals context) target)]
+      (if (and current
+               (has? #{:result/success? :result/error?} operation))
+        (assoc context
+               :locals
+               (assoc (:locals context)
+                      target
+                      (narrow-result current operation)))
+        context))
+    context))
 
 (declare infer-result)
 
@@ -143,7 +254,8 @@
        (last (map (fn [item] (infer-result item context)) (rest form))))
      (= 'if (first form))
      (if (or (= 3 (count form)) (= 4 (count form)))
-       (join [(infer-result (nth form 2) context)
+       (join [(infer-result (nth form 2)
+                            (condition-context (second form) context))
               (if (= 4 (count form))
                 (infer-result (nth form 3) context)
                 (result :nil))])
@@ -152,7 +264,7 @@
      (call-result (first form)
                   (vec (map (fn [argument] (infer-result argument context))
                             (rest form)))
-                  context))))
+                  (assoc context :argument-forms (vec (rest form)))))))
 
 (defn infer
   "Returns the normalized inferred schema for form."

@@ -166,6 +166,10 @@
        (= kind :enum)
        (vector? (:values schema))
 
+       (= kind :result)
+       (and (map? (:properties schema))
+            (canonical-normal? (:data schema)))
+
        (= kind :extension)
        (and (keyword? (:head schema))
             (vector? (:arguments schema))
@@ -239,6 +243,11 @@
                   (if (has? schema :values)
                     (:values schema)
                     children))}
+
+        (= kind :result)
+        {:kind :result
+         :properties (or (:properties schema) {})
+         :data (normalize (:data schema))}
 
         (= kind :extension)
         (let [head (if (has? schema :head)
@@ -327,6 +336,54 @@
 (defmethod normalize :enum [schema]
   {:kind :enum :values (vec (rest schema))})
 
+(defn- normalize-result-properties [properties]
+  (let [status (:status properties)
+        error-code (:error-code properties)
+        unknown (vec (filter (fn [key]
+                               (not (has? #{:status :error-code} key)))
+                             (keys properties)))]
+    (cond
+      (not (empty? unknown))
+      (throw (ex-info "unsupported :result schema property"
+                      {:properties unknown}))
+
+      (and status (not (has? #{:success :error} status)))
+      (throw (ex-info ":result :status must be :success or :error"
+                      {:status status}))
+
+      (and error-code (not (keyword? error-code)))
+      (throw (ex-info ":result :error-code must be a keyword"
+                      {:error-code error-code}))
+
+      (and error-code (= :success status))
+      (throw (ex-info ":result :error-code conflicts with success status"
+                      properties))
+
+      error-code
+      (assoc (if status {:status status} {})
+             :status :error
+             :error-code error-code)
+
+      status {:status status}
+      :else {})))
+
+(defmethod normalize :result [schema]
+  (let [arguments (vec (rest schema))]
+    (cond
+      (= 1 (count arguments))
+      {:kind :result
+       :properties {}
+       :data (normalize (first arguments))}
+
+      (and (= 2 (count arguments)) (map? (first arguments)))
+      {:kind :result
+       :properties (normalize-result-properties (first arguments))
+       :data (normalize (second arguments))}
+
+      :else
+      (throw (ex-info ":result expects a data schema and optional properties"
+                      {:schema schema})))))
+
 (defmethod normalize :default [schema]
   {:kind :extension
    :head (first schema)
@@ -389,6 +446,9 @@
 
       (= kind :function)
       (collect-reference-names (:arities schema))
+
+      (= kind :result)
+      (reference-names-normal (:data schema))
 
       :else [])))
 
@@ -485,6 +545,10 @@
       (assoc schema :arities
              (resolve-many (:arities schema) registry-value visited))
 
+      (= kind :result)
+      (assoc schema :data
+             (resolve-normal (:data schema) registry-value visited))
+
       :else schema)))
 
 (defn ^{:schema [:fn [:any :any] :map]}
@@ -549,6 +613,33 @@
             (:values schema))
     []
     [(finding path schema value)]))
+
+(defn- result-error-code [value]
+  (if (Result/error? value)
+    (get (ex-data (Result/error-value value)) :code)
+    nil))
+
+(defmethod validate-normal :result [schema value path]
+  (if (not (Result/instance? value))
+    [(finding path schema value)]
+    (let [properties (:properties schema)
+          expected-status (:status properties)
+          expected-code (:error-code properties)
+          actual-status (:status value)
+          status-findings
+          (if (and expected-status (not= expected-status actual-status))
+            [(finding (conj path :status) expected-status actual-status)]
+            [])
+          actual-code (result-error-code value)
+          code-findings
+          (if (and expected-code (not= expected-code actual-code))
+            [(finding (conj path :error :code) expected-code actual-code)]
+            [])
+          data-findings
+          (if (Result/success? value)
+            (validate-normal (:data schema) (Result/data value) (conj path :data))
+            [])]
+      (vec (concat status-findings code-findings data-findings)))))
 
 (defmethod validate-normal :union [schema value path]
   (if (any? (fn [member]
@@ -744,6 +835,23 @@
       (= kind :map)
       (validate-map-with schema value path registry-value trail)
 
+      (= kind :result)
+      (if (not (Result/instance? value))
+        [(finding path schema value)]
+        (let [base-findings (validate-normal schema value path)]
+          (if (Result/success? value)
+            (vec
+             (concat
+              (filter (fn [item]
+                        (not= (conj path :data) (:finding/path item)))
+                      base-findings)
+              (validate-normal-with (:data schema)
+                                    (Result/data value)
+                                    (conj path :data)
+                                    registry-value
+                                    trail)))
+            base-findings)))
+
       :else
       (validate-normal schema value path))))
 
@@ -791,6 +899,19 @@
     (= :union (:kind actual))
     (any? (fn [member] (compatible-normal? expected member))
           (:types actual))
+    (and (= :result (:kind expected))
+         (= :result (:kind actual)))
+    (let [expected-status (get-in expected [:properties :status])
+          actual-status (get-in actual [:properties :status])
+          expected-code (get-in expected [:properties :error-code])
+          actual-code (get-in actual [:properties :error-code])]
+      (and (or (nil? expected-status)
+               (nil? actual-status)
+               (= expected-status actual-status))
+           (or (nil? expected-code)
+               (nil? actual-code)
+               (= expected-code actual-code))
+           (compatible-normal? (:data expected) (:data actual))))
     :else false))
 
 (defn ^{:schema [:function
