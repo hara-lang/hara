@@ -2787,7 +2787,7 @@ mod tests {
             )
             .unwrap();
         assert!(output.contains(":name \"async\""), "{output}");
-        assert!(output.contains(":pass true"), "{output}");
+        assert!(output.contains("#hara/Result[:success true"), "{output}");
         assert!(output.contains(":actual 42"), "{output}");
     }
 
@@ -2803,7 +2803,7 @@ mod tests {
                     @events])",
             )
             .unwrap();
-        assert!(output.contains(":pass true"), "{output}");
+        assert!(output.contains("#hara/Result[:success true"), "{output}");
         assert!(output.contains("[:setup :case :teardown]"), "{output}");
 
         let failure = runtime
@@ -4036,30 +4036,60 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "[(Test/result \"equal\" {:a [1 2]} {:a [1 2]}) \
-                      (Test/passed? (Test/result \"equal\" 7 7)) \
-                      (Test/passed? (Test/result \"different\" 7 8))]"
+                    "(let [equal (Test/result \"equal\" 7 7 (Test/compare 7 7)) \
+                           different (Test/result \"different\" 7 8 (Test/compare 7 8))] \
+                       [(Test/passed? equal) \
+                        (Test/passed? different) \
+                        (Test/actual different) \
+                        (Test/expected different) \
+                        (Test/failure-count different) \
+                        (Test/failure? (Test/failure different 0)) \
+                        (count (Test/failures different)) \
+                        (count (Test/failure-seq different))])"
                 )
                 .unwrap(),
-            "[{:name \"equal\" :pass true :actual {:a [1 2]} :expected {:a [1 2]}} true false]"
+            "[true false 7 8 1 true 1 1]"
         );
         assert!(runtime
             .eval_text("(Test/passed? {:status :error})")
             .unwrap_err()
-            .contains("test result map"));
+            .contains("expects a Result"));
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [leaf (fn [code] \
+                                  {:failure/code code :failure/path [] :failure/in [] \
+                                   :failure/actual nil :failure/expected nil \
+                                   :failure/message \"failure\" :failure/context {} \
+                                   :failure/children []}) \
+                           left (leaf :left) right (leaf :right) \
+                           parent {:failure/code :parent :failure/path [] :failure/in [] \
+                                   :failure/actual nil :failure/expected nil \
+                                   :failure/message \"parent\" :failure/context {} \
+                                   :failure/children [left right]} \
+                           result (Result/create :success false {:failures [parent]})] \
+                       [(vec (map :failure/code (Test/failure-seq result))) \
+                        (Test/failure-count result) \
+                        (:failure/code (Test/failure result 1)) \
+                        (Test/failure? parent) \
+                        (Test/failure? (assoc parent :failure/children [{}]))])"
+                )
+                .unwrap(),
+            "[[:left :right] 2 :right true false]"
+        );
 
         assert_eq!(
             runtime
                 .eval_text("(Test/run [{:name \"one\" :test (fn [] (+ 1 1)) :expected 2}])")
                 .unwrap(),
-            "[{:name \"one\" :pass true :actual 2 :expected 2}]"
+            "[#hara/Result[:success true nil {:failures [] :test {:name \"one\" :actual 2 :expected 2}}]]"
         );
         let cumulative = runtime
             .eval_text("(Test/run [{:name \"two\" :test (fn [] (throw \"boom\")) :expected 2}])")
             .unwrap();
         assert!(cumulative.contains(":name \"one\""), "{cumulative}");
         assert!(cumulative.contains(":name \"two\""), "{cumulative}");
-        assert!(cumulative.contains(":status :error"), "{cumulative}");
+        assert!(cumulative.contains("#hara/Result[:error"), "{cumulative}");
         assert_eq!(
             runtime
                 .eval_text("(Test/run [])")
@@ -4069,7 +4099,11 @@ mod tests {
             2
         );
         let malformed = runtime.eval_text("(Test/run [{} 1])").unwrap();
-        assert_eq!(malformed.matches(":pass false").count(), 3, "{malformed}");
+        assert_eq!(
+            malformed.matches("#hara/Result[:error").count(),
+            3,
+            "{malformed}"
+        );
 
         let mut checked_runtime = Runtime::new();
         let checked = checked_runtime
@@ -4078,11 +4112,12 @@ mod tests {
                               :test (fn [] 7) :expected odd?}] \
                    (fn [thunk expected] \
                      (let [actual (thunk)] \
-                       {:pass (expected actual) :actual actual :expected :predicate})))",
+                       (Test/result \"checker\" actual :predicate \
+                         (Test/compare (expected actual) true)))))",
             )
             .unwrap();
         assert!(checked.contains(":name \"checked\""), "{checked}");
-        assert!(checked.contains(":pass true"), "{checked}");
+        assert!(checked.contains("#hara/Result[:success true"), "{checked}");
         assert!(checked.contains(":meta {:refer demo/value}"), "{checked}");
         let local_failures = checked_runtime
             .eval_text(
@@ -4100,7 +4135,7 @@ mod tests {
             "{local_failures}"
         );
         assert_eq!(
-            local_failures.matches(":status :error").count(),
+            local_failures.matches("#hara/Result[:error").count(),
             2,
             "{local_failures}"
         );
@@ -4110,7 +4145,7 @@ mod tests {
                    (fn [thunk expected] true))",
             )
             .unwrap();
-        assert!(malformed_check.contains("check function must return a result map"));
+        assert!(malformed_check.contains("check function must return a Result"));
 
         runtime.set_test_runner("native").unwrap();
         assert_eq!(
@@ -4119,6 +4154,19 @@ mod tests {
                 .unwrap(),
             "[:native :native]"
         );
+    }
+
+    #[test]
+    fn native_test_result_api_shared_corpus_passes() {
+        let mut runtime = Runtime::new();
+        let output = runtime
+            .eval_text(include_str!(
+                "../../../lib/test-fixtures/std/native/test_result_api.hal"
+            ))
+            .unwrap();
+        assert_eq!(output.matches("#hara/Result[:success true").count(), 3);
+        assert!(!output.contains("#hara/Result[:success false"), "{output}");
+        assert!(!output.contains("#hara/Result[:error"), "{output}");
     }
 
     #[test]

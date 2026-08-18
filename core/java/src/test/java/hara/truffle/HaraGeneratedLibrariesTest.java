@@ -205,15 +205,39 @@ public class HaraGeneratedLibrariesTest {
       assertErrorContains(
           context, "(Test/config {:runner :native})", "runner is owned by the runtime");
       assertEquals(
-          "[{:pass true :actual {:a [1 2]} :expected {:a [1 2]} :name \"equal\"} true false]",
+          "[true false 7 8 1 true 1 1]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "[(Test/result \"equal\" {:a [1 2]} {:a [1 2]}) "
-                      + "(Test/passed? (Test/result \"equal\" 7 7)) "
-                      + "(Test/passed? (Test/result \"different\" 7 8))]")
+                  "(let [equal (Test/result \"equal\" 7 7 (Test/compare 7 7)) "
+                      + "different (Test/result \"different\" 7 8 (Test/compare 7 8))] "
+                      + "[(Test/passed? equal) (Test/passed? different) "
+                      + "(Test/actual different) (Test/expected different) "
+                      + "(Test/failure-count different) (Test/failure? (Test/failure different 0)) "
+                      + "(count (Test/failures different)) (count (Test/failure-seq different))])")
               .toString());
-      assertErrorContains(context, "(Test/passed? {:status :error})", "test result map");
+      assertErrorContains(context, "(Test/passed? {:status :error})", "expects a Result");
+      assertEquals(
+          "[[:left :right] 2 :right true false]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [leaf (fn [code] "
+                      + "{:failure/code code :failure/path [] :failure/in [] "
+                      + ":failure/actual nil :failure/expected nil "
+                      + ":failure/message \"failure\" :failure/context {} "
+                      + ":failure/children []}) "
+                      + "left (leaf :left) right (leaf :right) "
+                      + "parent {:failure/code :parent :failure/path [] :failure/in [] "
+                      + ":failure/actual nil :failure/expected nil "
+                      + ":failure/message \"parent\" :failure/context {} "
+                      + ":failure/children [left right]} "
+                      + "result (Result/create :success false {:failures [parent]})] "
+                      + "[(vec (map :failure/code (Test/failure-seq result))) "
+                      + "(Test/failure-count result) (:failure/code (Test/failure result 1)) "
+                      + "(Test/failure? parent) "
+                      + "(Test/failure? (assoc parent :failure/children [{}]))])")
+              .toString());
     }
     try (Context context =
         Context.newBuilder(HaraLanguage.ID).option("hara.TestRunner", "native").build()) {
@@ -233,13 +257,13 @@ public class HaraGeneratedLibrariesTest {
       String first = context.eval(HaraLanguage.ID,
           "(Test/run [{:name \"one\" :test (fn [] (+ 1 1)) :expected 2}])").toString();
       assertTrue(first, first.contains(":name \"one\""));
-      assertTrue(first, first.contains(":pass true"));
+      assertTrue(first, first.contains("#hara/Result[:success true"));
       String cumulative = context.eval(HaraLanguage.ID,
           "(Test/run [{:name \"two\" :test (fn [] (throw \"boom\")) :expected 2}])")
           .toString();
       assertTrue(cumulative, cumulative.contains(":name \"one\""));
       assertTrue(cumulative, cumulative.contains(":name \"two\""));
-      assertTrue(cumulative, cumulative.contains(":status :error"));
+      assertTrue(cumulative, cumulative.contains("#hara/Result[:error"));
       assertEquals(cumulative, context.eval(HaraLanguage.ID, "(Test/run [])").toString());
       String malformed = context.eval(HaraLanguage.ID, "(Test/run [{} 1])").toString();
       assertTrue(malformed, malformed.contains("case requires :test"));
@@ -255,7 +279,7 @@ public class HaraGeneratedLibrariesTest {
               + ":test (fn [] (promise/delay 1 (fn [] 42))) "
               + ":expected 42}])").toString();
       assertTrue(result, result.contains(":name \"async\""));
-      assertTrue(result, result.contains(":pass true"));
+      assertTrue(result, result.contains("#hara/Result[:success true"));
       assertTrue(result, result.contains(":actual 42"));
     }
   }
@@ -267,10 +291,10 @@ public class HaraGeneratedLibrariesTest {
           "(Test/run [{:name \"checked\" :meta {:refer (quote demo/value)} "
               + ":test (fn [] 7) :expected odd?}] "
               + "(fn [thunk expected] (let [actual (thunk)] "
-              + "{:pass (expected actual) :actual actual :expected :predicate})))")
+              + "(Test/result \"checker\" actual :predicate (Test/compare (expected actual) true)))))")
           .toString();
       assertTrue(checked, checked.contains(":name \"checked\""));
-      assertTrue(checked, checked.contains(":pass true"));
+      assertTrue(checked, checked.contains("#hara/Result[:success true"));
       assertTrue(checked, checked.contains(":meta {:refer demo/value}"));
 
       String failures = context.eval(HaraLanguage.ID,
@@ -280,13 +304,13 @@ public class HaraGeneratedLibrariesTest {
           .toString();
       assertTrue(failures, failures.contains(":name \"throws\""));
       assertTrue(failures, failures.contains(":name \"continues\""));
-      assertEquals(2, failures.split(":status :error", -1).length - 1);
+      assertEquals(2, failures.split("#hara/Result\\[:error", -1).length - 1);
 
       String malformed = context.eval(HaraLanguage.ID,
           "(Test/run [{:name \"malformed\" :test (fn [] 1) :expected 1}] "
               + "(fn [thunk expected] true))")
           .toString();
-      assertTrue(malformed, malformed.contains("check function must return a result map"));
+      assertTrue(malformed, malformed.contains("check function must return a Result"));
     }
   }
 
@@ -298,7 +322,7 @@ public class HaraGeneratedLibrariesTest {
               + "[(Test/run [{:name \"case\" :test (fn [] (swap! events conj :case) 1) :expected 1}] "
               + "{:setup (fn [] (swap! events conj :setup)) "
               + ":teardown (fn [] (swap! events conj :teardown))}) @events])").toString();
-      assertTrue(result, result.contains(":pass true"));
+      assertTrue(result, result.contains("#hara/Result[:success true"));
       assertTrue(result, result.contains("[:setup :case :teardown]"));
 
       String failure = context.eval(HaraLanguage.ID,

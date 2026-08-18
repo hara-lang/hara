@@ -12,6 +12,34 @@ public final class HaraNativeTestRunnerTest {
   private static final Path ROOT = Path.of(".").toAbsolutePath().normalize();
 
   @Test
+  public void runsSharedResultComparisonContract() throws Exception {
+    HaraNativeTestRunner.Result result =
+        HaraNativeTestRunner.runFile(
+            ROOT, ROOT.resolve("lib/test/code/test_result_contract_test.hal"));
+
+    assertTrue(result.failureMessage(), result.passed());
+    assertEquals(1, result.facts());
+    assertEquals(1, result.checks());
+    assertEquals(1, result.passedChecks());
+    assertEquals(0, result.failedChecks());
+    assertEquals(0, result.errors());
+    assertEquals(0, result.timeouts());
+  }
+
+  @Test
+  public void runsSharedNativeTestResultApiCorpus() throws Exception {
+    HaraNativeTestRunner.Result result =
+        HaraNativeTestRunner.runFile(
+            ROOT, ROOT.resolve("lib/test-fixtures/std/native/test_result_api.hal"));
+
+    assertTrue(result.failureMessage(), result.passed());
+    assertEquals(3, result.facts());
+    assertEquals(3, result.checks());
+    assertEquals(3, result.passedChecks());
+    assertEquals(0, result.failedChecks());
+  }
+
+  @Test
   public void classifiesPassingCodeTestSummary() throws Exception {
     HaraNativeTestRunner.Result result =
         HaraNativeTestRunner.runFile(
@@ -286,14 +314,6 @@ public final class HaraNativeTestRunnerTest {
       assertEquals(1, direct.passedChecks());
       assertEquals(0, direct.failedChecks());
 
-      HaraNativeTestRunner.Result encoded =
-          HaraNativeTestRunner.parseResult(
-              file,
-              "\"[{:name \\\"encoded\\\" :actual true :expected true :pass true}]\"");
-      assertTrue(encoded.passed());
-      assertEquals(1, encoded.facts());
-      assertEquals(1, encoded.passedChecks());
-      assertEquals(0, encoded.failedChecks());
     } finally {
       Files.deleteIfExists(file);
     }
