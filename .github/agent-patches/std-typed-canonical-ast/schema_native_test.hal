@@ -1,0 +1,63 @@
+(ns std.typed.schema-native-test
+  (:use code.test)
+  (:require [std.typed.schema :as schema]))
+
+(defn- canonical-ast?
+  [surface]
+  (let [compiled (std.foundation/schema surface)
+        normalized (schema/normalize surface)
+        ast (Schema/ast compiled)]
+    (and (= normalized ast)
+         (= ast (schema/normalize ast))
+         (= compiled (std.foundation/schema ast)))))
+
+^{:refer 'std.typed.schema/normalize
+  :id 'native-schema-and-canonical-primitive-forms}
+(fact "normalizes native SchemaType values and canonical one-item primitive forms"
+  (let [primitive (std.foundation/schema :int)
+        user (std.foundation/schema [:map [:name :str]])]
+    [(= (schema/normalize :int)
+        (schema/normalize [:int]))
+     (= (schema/normalize :int)
+        (schema/normalize primitive))
+     (schema/valid? [:int] 42)
+     (schema/valid? [:int] "42")
+     (schema/valid? user {:name "Ada"})
+     (schema/valid? user {:name 42})
+     (schema/compatible? primitive :int)])
+  => [true true true false true false true])
+
+^{:refer 'std.typed.schema/normalize
+  :id 'canonical-native-ast-roundtrip}
+(fact "shares one canonical AST across surface, native inspection, and recompilation"
+  (let [surfaces
+        [:int
+         '[:or :int :str :int]
+         '[:vector [:maybe :int]]
+         '[:tuple :keyword :int :str]
+         '[:map [:name :str] [:tags [:vector :keyword]]]
+         '[:fn [:str & :any] :str]
+         '[:function [:fn [:int] :int]
+                     [:fn [:str & :any] :str]]
+         '[:enum :must :may]
+         '[:test/tagged 42]
+         '(var demo/Customer)]]
+    [(every? canonical-ast? surfaces)
+     (= (schema/normalize
+         '[:map [:name :str] [:tags [:vector :keyword]]])
+        {:kind :map
+         :fields
+         [{:name :name
+           :type {:kind :primitive :name :str}}
+          {:name :tags
+           :type {:kind :vector
+                  :item {:kind :primitive :name :keyword}}}]})
+     [(Schema/kind (std.foundation/schema '[:or :int :str]))
+      (Schema/kind (std.foundation/schema '[:fn [:int] :int]))
+      (Schema/kind
+       (std.foundation/schema
+        '[:function [:fn [:int] :int]
+                    [:fn [:str] :str]]))]])
+  => [true true [:union :fn :function]])
+
+(pr-str (run '[std.typed.schema-native-test]))
