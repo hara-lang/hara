@@ -38,6 +38,11 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 
 write("core/lib/src/std/typed/schema.hal", payload("schema.hal"))
+replace_once(
+    "core/lib/src/std/typed/schema.hal",
+    "  (normalize (deref schema)))",
+    "  (normalize (Schema/ast schema)))",
+)
 write("core/lib/test/std/typed/schema_native_test.hal", payload("schema_native_test.hal"))
 write("core/rust/tests/std_typed_schema.rs", payload("std_typed_schema.rs"))
 write(
