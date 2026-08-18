@@ -16,6 +16,43 @@
       (if (predicate error) true false)
       true)))
 
+(defn leaf-target
+  [spec]
+  (if (has? spec :target)
+    (let [target (:target spec)]
+      (if (map? target)
+        target
+        {:target/type :qualified
+         :target/name target}))
+    {:target/type :local
+     :target/fn (:fn spec)}))
+
+(defn leaf-request
+  [runtime frame spec input attempt]
+  (let [executor (base/runtime-executor runtime)
+        context (assoc (frame/leaf-context runtime frame) :attempt attempt)
+        request
+        {:work/request :execute-leaf
+         :run/id (:run/id frame)
+         :work/root (:work/root frame)
+         :work/boundary :step
+         :node/id (frame/node-id spec)
+         :node/path (:node/path frame)
+         :item/id (:item/id frame)
+         :work/target (leaf-target spec)
+         :work/input input
+         :work/context context
+         :work/attempt attempt
+         :work/deadline
+         (or (:deadline spec) (:deadline (:options frame)))}]
+    (if (:legacy executor)
+      (assoc request
+             :work/compatibility
+             {:runtime runtime
+              :frame frame
+              :work (base/work-value spec)})
+      request)))
+
 (declare step-attempt)
 
 (defn step-attempt-failed
@@ -41,11 +78,12 @@
   [runtime frame spec input attempt maximum]
   (result/attempt
    (fn []
-     (let [context (assoc (frame/leaf-context runtime frame) :attempt attempt)]
-       (result/then
-        ((:fn spec) input context)
-        (fn [value]
-          [value attempt]))))
+     (result/then
+      (IWorkExecutor/work-execute
+       (base/runtime-executor runtime)
+       (leaf-request runtime frame spec input attempt))
+      (fn [value]
+        [value attempt])))
    (fn [error]
      (step-attempt-failed runtime
                           frame

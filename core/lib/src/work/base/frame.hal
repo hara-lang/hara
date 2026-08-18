@@ -109,10 +109,16 @@
 (defn emit!
   [runtime frame event data]
   (let [record (event-record frame event data)]
-    (if (native-runtime? runtime)
+    (cond
+      (native-runtime? runtime)
       (do
         (native/emit! event record)
         record)
+
+      (nil? (base/runtime-store runtime))
+      (notify-event! runtime record)
+
+      :else
       (result/then
        (transact! runtime
                   frame
@@ -140,8 +146,14 @@
 
 (defn cancelled?
   [runtime frame]
-  (if (native-runtime? runtime)
+  (cond
+    (native-runtime? runtime)
     (native/cancelled?)
+
+    (nil? (base/runtime-store runtime))
+    false
+
+    :else
     (result/then
      (store/call (base/runtime-store runtime)
                  :load-run

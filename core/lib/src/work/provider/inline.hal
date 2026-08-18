@@ -1,17 +1,81 @@
 (ns work.provider.inline
-  (:require [work.provider.profile :as profile]
-            [work.base.execution :as execution]))
+  (:require [work.provider.profile :as profile]))
+
+(defstruct InlineExecutor [descriptor targets legacy])
+
+(defn local-target
+  [function]
+  {:target/type :local
+   :target/fn function})
+
+(defn qualified-target
+  [name]
+  {:target/type :qualified
+   :target/name name})
+
+(defn pinned-target
+  [name version digest]
+  {:target/type :pinned
+   :target/name name
+   :target/version version
+   :target/digest digest})
+
+(defn target-key
+  [target]
+  (case (:target/type target)
+    :qualified
+    (:target/name target)
+
+    :pinned
+    [(:target/name target)
+     (:target/version target)
+     (:target/digest target)]
+
+    nil))
+
+(defn target-function
+  [executor target]
+  (cond
+    (fn? target)
+    target
+
+    (and (map? target) (= :local (:target/type target)))
+    (:target/fn target)
+
+    (and (map? target)
+         (or (= :qualified (:target/type target))
+             (= :pinned (:target/type target))))
+    (get (:targets executor) (target-key target))
+
+    :else
+    (get (:targets executor) target)))
+
+(extend-type InlineExecutor IWorkExecutor
+  (work-execute [executor request]
+    (if (not= :execute-leaf (:work/request request))
+      (throw
+       (ex-info "Inline Work executor requires an execute-leaf request"
+                {:work/request (:work/request request)})))
+    (if (not= :step (:work/boundary request))
+      (throw
+       (ex-info "Inline Work executor accepts step leaves only"
+                {:work/boundary (:work/boundary request)})))
+    (let [function (target-function executor (:work/target request))]
+      (if (nil? function)
+        (throw
+         (ex-info "Inline Work target is not available"
+                  {:work/target (:work/target request)
+                   :node/id (:node/id request)})))
+      (function (:work/input request) (:work/context request)))))
 
 (defn inline-executor
   ([]
    (inline-executor {}))
-  ([handlers]
-   (execution/normalise-provider
+  ([targets]
+   (work.provider.inline/InlineExecutor
     (profile/baseline
      {:provider/role :work/executor
       :provider/id :inline
-      :provider/capabilities #{:synchronous :sequential :cleanup}
-      :provider/operations {:execute execution/execute-node}
-      :provider/handlers
-      (merge execution/default-handlers
-             (or handlers {}))}))))
+      :provider/capabilities #{:synchronous :sequential :cleanup}})
+    (or targets {})
+    false)))
