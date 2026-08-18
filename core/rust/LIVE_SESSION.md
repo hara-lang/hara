@@ -1,0 +1,148 @@
+# Live execution and compiler targets
+
+This document defines the ownership boundary for interactive execution and the
+terminology for Hara compiler products. It complements `ARCHITECTURE.md`; it
+does not change the security guarantees of `Kernel`, `Sandbox`, `Session`, or
+`Runtime`.
+
+## Ownership
+
+```text
+Kernel
+  └── SandboxProvider / Sandbox
+        └── private Session
+              ├── Runtime
+              │     └── interpreter, HBC, or whole-Wasm backend
+              └── LiveSession lifecycle and serialization
+```
+
+A `Sandbox` is the supervised environment and authority envelope. It owns
+provider selection, mounts, immutable transfer, limits, cancellation, and
+closure. It is not an evaluator and does not own editor revisions.
+
+A `LiveSession` is the backend-neutral control boundary for one interactive
+execution. It owns:
+
+- stable session, source, revision, generation, request, and sequence identity;
+- stale-generation and stale-revision rejection;
+- normalized lifecycle state and explicit backend capabilities;
+- source replacement policy;
+- backend dispatch and response normalization.
+
+The backend continues to own frames, continuations, runtime values, promises,
+compiled programs, and evidence documents. The common layer never serializes a
+live runtime object merely to make two engines look identical.
+
+## Protocol
+
+The initial protocol identifier is `hara.live-session/0-alpha`. State documents
+use `hara.live-session.state/0-alpha` and include:
+
+```text
+session-id
+source-id
+generation
+revision
+sequence
+backend      interpreter | hbc | whole-wasm
+status       ready | running | paused | suspended | returned |
+             failed | cancelled | disposed
+```
+
+Commands are checked against the current session identity before reaching a
+backend. A supplied generation or revision must match the active state. This
+prevents delayed UI messages and resumed tool calls from mutating a newer
+source generation.
+
+The instance command vocabulary is:
+
+```text
+snapshot  step  run  pause  resume  resolve  reject
+update    reset cancel dispose
+```
+
+Support is capability-driven. The interpreter does not claim `pause`; a
+whole-Wasm backend must not claim stepping until it can expose a real bounded
+continuation. Hosts should render or route only the operations advertised by
+the selected backend.
+
+The Rust implementation lives in `src/live_session.rs` and
+`src/live_session/*.rs`. The existing interpreter observation ABI and HBC
+observation session remain intact and are adapted behind this boundary.
+
+## Source replacement
+
+Every update carries a new source identifier, revision, source text, and one of
+three policies:
+
+- `restart`: validate the replacement, terminate the current execution, and
+  activate a new generation immediately;
+- `replace-on-next-start`: retain the current execution and activate the queued
+  revision at the next reset/start boundary;
+- `preserve-runtime`: reload only when a backend can prove that active state is
+  safe to retain.
+
+The initial interpreter and HBC adapters implement `restart` and
+`replace-on-next-start`. They reject `preserve-runtime`. There is no closure
+migration, parked-promise migration, stack rewriting, or active-continuation
+patching.
+
+Replacement is transactional where possible: a replacement program/session is
+created before the current backend instance is released. A failed replacement
+therefore leaves the active generation unchanged.
+
+## Compiler product terminology
+
+“Wasm compilation” previously covered several unrelated products. The runtime
+now uses these names:
+
+| Product | Meaning |
+| --- | --- |
+| runtime-host-wasm | Rust runtime or transport adapter compiled for `wasm32` |
+| hbc-module | validated Hara bytecode module |
+| hbx-package | package/container operation over one or more modules |
+| whole-wasm | standalone Wasm lowered from validated HBC |
+| extension-wasm | extension module loaded through the runtime extension ABI |
+
+Only `hbc-module` and `whole-wasm` are source compiler targets today.
+`hara-compiler` exposes them through `CompileTarget` and a single
+`compile(source, target)` entry point. The compatibility functions
+`compile_bytecode` and `compile_wasm` delegate to that target API.
+
+HBX remains a packaging concern rather than a second source compiler. Runtime
+host Wasm and extension Wasm remain build-system products rather than Hara
+source targets.
+
+## Target tree
+
+```text
+project sources
+  → project analysis, dependency reachability, deterministic retention
+  → retained canonical module set
+  → HALC / HBC provider
+       ├── hbc-module
+       ├── hbx-package
+       └── whole-wasm
+             └── lower validated HBC to standalone Wasm
+```
+
+There must be one project-level source and dependency front end. Whole-Wasm
+must not recreate parsing, namespace reachability, tree shaking, or package
+selection. It consumes the validated HBC product produced by the shared front
+end.
+
+The explicit target API introduced here is the first seam. It does not rename
+the existing HBC or whole-Wasm file formats and does not claim an HNW format
+migration. Format versioning and build-product manifests remain separate,
+reviewable changes.
+
+## Migration order
+
+1. Route native hosts and tests through the common live-session contract.
+2. Add browser serialization for the same request, state, capability, and reply
+   schemas; keep the legacy browser wrappers as compatibility facades.
+3. Move Studio controls to capability-driven commands and revision guards.
+4. Extract the target-neutral retained-module seam from project compilation.
+5. Add HBX packaging and whole-Wasm lowering as consumers of retained HBC.
+6. Emit one versioned build-product manifest for browser and deployment
+   loaders, then remove hard-coded product guesses.
