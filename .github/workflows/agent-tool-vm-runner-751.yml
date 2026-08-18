@@ -87,7 +87,7 @@ jobs:
             '/tmp/tool-vm-impl.tar.gz' | sha256sum --check -
           tar --extract --gzip --file /tmp/tool-vm-impl.tar.gz --directory .
 
-      - name: Install the Rust provider namespaces
+      - name: Install the Rust provider namespace
         shell: bash
         run: |
           python3 - <<'PY'
@@ -109,19 +109,6 @@ jobs:
           if source.count(needle) != 1:
               raise SystemExit("runtime provider installation seam changed")
           runtime.write_text(source.replace(needle, provider + needle, 1))
-
-          raw = Path("core/rust/raw/src/lib.rs")
-          source = raw.read_text()
-          needle = '        let native_string = namespaces.find_or_create("std.native.String");\n'
-          provider = (
-              '        let vm_provider = namespaces.find_or_create("tool.vm.provider");\n'
-              '        for (name, value) in core::vm_tool_provider_values() {\n'
-              '            vm_provider.intern(name, value);\n'
-              '        }\n'
-          )
-          if source.count(needle) != 1:
-              raise SystemExit("raw runtime provider installation seam changed")
-          raw.write_text(source.replace(needle, provider + needle, 1))
           PY
 
       - name: Remove branch-scoped workflows
@@ -133,8 +120,7 @@ jobs:
         run: |
           rustfmt --edition 2021 core/rust/src/core/vm_tool.rs
           cargo test --manifest-path core/rust/Cargo.toml vm_tool_tests --lib
-          cargo test --manifest-path core/rust/raw/Cargo.toml vm_tool_tests --lib
-          cargo test --manifest-path core/rust/raw/Cargo.toml --features bytecode-vm vm_tool_tests --lib
+          cargo test --manifest-path core/rust/vm-runtime/Cargo.toml
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -159,7 +145,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
-          allowed='^(core/lib/src/tool/vm\.hal|core/lib/src/tool/vm/(halc|hbc)\.hal|core/lib/test/tool/vm_provider_test\.hal|core/rust/src/core\.rs|core/rust/src/core/vm_tool\.rs|core/rust/src/runtime/runtime\.rs|core/rust/raw/src/lib\.rs|core/java/src/main/java/hara/truffle/ToolVmLibrary\.java|core/java/src/main/java/hara/truffle/ToolVmLibraryProvider\.java|core/java/src/main/resources/META-INF/services/hara\.truffle\.HaraLibraryProvider|core/java/src/main/resources/META-INF/native-image/org\.hara/hara\.lang/(reflect-config|resource-config)\.json|core/java/src/test/java/hara/truffle/ToolVmLibraryTest\.java)$'
+          allowed='^(core/lib/src/tool/vm\.hal|core/lib/src/tool/vm/(halc|hbc)\.hal|core/lib/test/tool/vm_provider_test\.hal|core/rust/src/core\.rs|core/rust/src/core/vm_tool\.rs|core/rust/src/runtime/runtime\.rs|core/java/src/main/java/hara/truffle/ToolVmLibrary\.java|core/java/src/main/java/hara/truffle/ToolVmLibraryProvider\.java|core/java/src/main/resources/META-INF/services/hara\.truffle\.HaraLibraryProvider|core/java/src/main/resources/META-INF/native-image/org\.hara/hara\.lang/(reflect-config|resource-config)\.json|core/java/src/test/java/hara/truffle/ToolVmLibraryTest\.java)$'
           unexpected=0
           while IFS= read -r path; do
             if [[ ! "$path" =~ $allowed ]]; then
@@ -169,7 +155,6 @@ jobs:
           done < <(git diff --name-only "$BASE_SHA")
           test "$unexpected" -eq 0
           test "$(grep -c 'vm_tool_provider_values' core/rust/src/runtime/runtime.rs)" -eq 1
-          test "$(grep -c 'vm_tool_provider_values' core/rust/raw/src/lib.rs)" -eq 1
           grep -Fqx 'hara.truffle.ToolVmLibraryProvider' \
             core/java/src/main/resources/META-INF/services/hara.truffle.HaraLibraryProvider
           if grep -R --exclude-dir=.git -n 'std.native.Vm' \
