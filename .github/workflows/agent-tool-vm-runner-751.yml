@@ -90,7 +90,7 @@ jobs:
             '/tmp/tool-vm-impl.tar.gz' | sha256sum --check -
           tar --extract --gzip --file /tmp/tool-vm-impl.tar.gz --directory .
 
-      - name: Fix focused Truffle test map typing
+      - name: Fix focused Truffle test contracts
         shell: bash
         run: |
           set -euo pipefail
@@ -99,13 +99,28 @@ jobs:
 
           path = Path("core/java/src/test/java/hara/truffle/ToolVmLibraryTest.java")
           source = path.read_text()
-          old = "IMapType<?, ?>"
-          new = "IMapType<Keyword, Object>"
-          count = source.count(old)
-          if count != 4:
-              raise SystemExit(f"expected four wildcard IMapType uses, found {count}")
-          path.write_text(source.replace(old, new))
-          print("Typed both inspection maps as keyword-keyed result maps.")
+
+          old_map = "IMapType<?, ?>"
+          new_map = "IMapType<Keyword, Object>"
+          map_count = source.count(old_map)
+          if map_count != 4:
+              raise SystemExit(f"expected four wildcard IMapType uses, found {map_count}")
+          source = source.replace(old_map, new_map)
+
+          expected_disassembly = {
+              'assertTrue(first.contains("0000 nil"));':
+                  'assertTrue(first.contains("0000  NIL"));',
+              'assertTrue(first.contains("0001 return"));':
+                  'assertTrue(first.contains("0001  RETURN"));',
+          }
+          for old, new in expected_disassembly.items():
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one disassembly assertion {old!r}, found {count}")
+              source = source.replace(old, new)
+
+          path.write_text(source)
+          print("Typed keyword-keyed inspection maps and aligned assertions with canonical HBC disassembly.")
           PY
 
       - name: Install the Rust provider namespace
