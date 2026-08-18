@@ -135,7 +135,9 @@ events over a Duplex.
 `schema` compiles schema data into an immutable `SchemaType`. It accepts:
 
 - raw shorthand data such as `[:map [:name :str]]` or `[:int]`;
-- canonical longhand data such as `{:kind :map :children [...]}`;
+- canonical normalized data such as `{:kind :map :fields [...]}`;
+- retained longhand input such as `{:kind :map :children [...]}`, which is
+  immediately converted to the canonical normalized form;
 - an existing `SchemaType` (idempotently);
 - a Var whose contained value is raw schema data or a `SchemaType`.
 
@@ -165,7 +167,13 @@ the already compiled contract.
 `Schema/kind`, `Schema/form`, `Schema/ast`, and `Schema/origin` inspect schema
 values; `Schema/instance?` recognizes them. `(type (schema value))` is
 `:std.native.SchemaType`. Printing is round-trippable as
-`(schema <canonical-short-form>)`.
+`(schema <canonical-short-form>)`. `Schema/ast` returns the portable
+normalized map rather than a host compiler-node shape. For every valid
+surface schema, portable normalization, native AST inspection, and
+re-normalization are structurally equal, and `(schema (Schema/ast value))`
+reconstructs a `SchemaType` with the same canonical AST. `Schema/form` and
+`Schema/origin` continue to preserve the inspected value's source form and
+origin.
 
 `SchemaType` implements `IDeref`. Dereferencing returns the normalized vector
 shorthand, independent of the input spelling; for example, both `(schema :int)`
