@@ -1,0 +1,115 @@
+name: Diagnose tool.vm transformations 752
+
+on:
+  push:
+    branches:
+      - agent/tool-vm-transform-staging-752
+    paths:
+      - .github/workflows/agent-tool-vm-transform-diagnostics-752.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-tool-vm-transform-diagnostics-752
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply candidate to current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp scripts/runtime/apply-tool-vm-transform-752.py /tmp/apply.py
+          git fetch origin main
+          git checkout -B diagnose origin/main
+          cp /tmp/apply.py scripts/runtime/apply-tool-vm-transform-752.py
+          python3 scripts/runtime/apply-tool-vm-transform-752.py
+          rm scripts/runtime/apply-tool-vm-transform-752.py
+          rustfmt --edition 2021 core/rust/src/core/vm_tool.rs
+          git diff --check
+
+      - name: Run independent gates
+        id: gates
+        shell: bash
+        run: |
+          set +e
+          run_gate() {
+            name="$1"; shift
+            echo "running ${name}"
+            "$@" >"/tmp/${name}.log" 2>&1
+            status=$?
+            echo "${status}" >"/tmp/${name}.status"
+            echo "${name}: ${status}"
+          }
+          run_gate rust-default cargo test --manifest-path core/rust/Cargo.toml vm_tool_tests -- --nocapture
+          run_gate rust-vm-profile cargo test --manifest-path core/rust/Cargo.toml --no-default-features --features bytecode-vm vm_tool_tests::provider_reports_exact_profile_capabilities -- --nocapture
+          run_gate rust-vm-check cargo check --manifest-path core/rust/Cargo.toml --no-default-features --features bytecode-vm
+          run_gate hara-vm cargo test --manifest-path core/rust/vm-runtime/Cargo.toml
+          run_gate truffle mvn -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.ToolVmLibraryTest test
+          run_gate hara cargo run --manifest-path core/rust/Cargo.toml --bin hara-test -- --root . core/lib/test/tool/vm_test.hal core/lib/test/tool/vm_provider_test.hal
+          run_gate layout bash core/rust/scripts/check-layout.sh
+          exit 0
+
+      - name: Publish concise diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          report=/tmp/tool-vm-transform-752-errors.md
+          strip_ansi() {
+            sed -E $'s/\x1B\[[0-9;]*[mK]//g'
+          }
+          {
+            echo '# tool.vm transformation gate diagnostics'
+            echo
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Staging SHA: \`${GITHUB_SHA}\`"
+            for name in rust-default rust-vm-profile rust-vm-check hara-vm truffle hara layout; do
+              status=not-run
+              [[ -f "/tmp/${name}.status" ]] && status=$(cat "/tmp/${name}.status")
+              echo "- ${name}: \`${status}\`"
+            done
+            for name in rust-default rust-vm-profile rust-vm-check hara-vm truffle hara layout; do
+              echo
+              echo "## ${name}"
+              echo
+              echo '```text'
+              if [[ -f "/tmp/${name}.log" ]]; then
+                clean="/tmp/${name}.clean"
+                strip_ansi <"/tmp/${name}.log" >"${clean}"
+                grep -nE 'error(\[E[0-9]+\])?:|FAILED|FAILURES|Assertion|expected|actual|panicked|BUILD FAILURE|Tests run:|test result:|Error:|exceeds recorded maximum|Unsupported|unsupported' "${clean}" | tail -n 160 || true
+                echo '--- tail ---'
+                tail -n 100 "${clean}"
+              else
+                echo 'no log'
+              fi
+              echo '```'
+            done
+          } >"${report}"
+          git fetch origin agent/tool-vm-transform-staging-752
+          git checkout -B agent/tool-vm-transform-staging-752 origin/agent/tool-vm-transform-staging-752
+          mkdir -p .github/agent-reports
+          cp "${report}" .github/agent-reports/tool-vm-transform-752-errors.md
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/agent-reports/tool-vm-transform-752-errors.md
+          git commit -m 'Record focused tool.vm transformation diagnostics' || true
+          git push origin HEAD:refs/heads/agent/tool-vm-transform-staging-752
