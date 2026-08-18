@@ -61,7 +61,8 @@
 (defn complete-run!
   [runtime frame id value]
   (result/then
-   (store/call (base/runtime-store runtime) :load-run id)
+   (store/query (base/runtime-store runtime)
+                {:work/query :run/load :run/id id})
    (fn [current]
      (result/then
       (if (= :cancelled (:run/status current))
@@ -81,7 +82,8 @@
 (defn fail-run!
   [runtime frame id error]
   (result/then
-   (store/call (base/runtime-store runtime) :load-run id)
+   (store/query (base/runtime-store runtime)
+                {:work/query :run/load :run/id id})
    (fn [current]
      (result/then
       (if (= :cancelled (:run/status current))
@@ -123,13 +125,16 @@
      (fn [error]
        (fail-run! runtime frame id error)))))
 
+(def run-counter (atom 0))
+
 (defn requested-run-id
   [runtime options]
   (if (has? options :id)
-    (store/call (base/runtime-store runtime)
-                :validate-run-id
-                (:id options))
-    (store/call (base/runtime-store runtime) :next-run-id)))
+    (let [id (:id options)]
+      (if (nil? id)
+        (throw (ex-info "Work run identity cannot be nil" {})))
+      id)
+    (str "run-" (time-ms) "-" (swap! run-counter inc))))
 
 (defn initial-run-record
   [runtime id root version input options]
@@ -153,7 +158,8 @@
   [runtime work input options root version id]
   (let [proposed (initial-run-record runtime id root version input options)]
     (result/then
-     (store/call (base/runtime-store runtime) :load-run id)
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
      (fn [existing]
        (if existing
          (if (base/compatible-run? existing proposed)
@@ -162,11 +168,14 @@
             (ex-info "Work run identity conflicts with existing input"
                      {:run/id id})))
          (result/then
-          (store/call (base/runtime-store runtime)
-                      :create-run
-                      proposed)
-          (fn [run]
-            (execute-run! runtime run work options))))))))
+          (store/create-run! (base/runtime-store runtime) proposed)
+          (fn [committed]
+            (if (:transition/created? committed)
+              (execute-run! runtime
+                            (:transition/run committed)
+                            work
+                            options)
+              (base/work-reference id)))))))))
 
 (defn start-run
   [runtime work input options]
@@ -192,19 +201,22 @@
         id (base/reference-id reference)]
     (cond
       (= query :runs)
-      (store/call (base/runtime-store runtime)
-                  :list-runs
-                  (or (:where options) {}))
+      (store/query (base/runtime-store runtime)
+                   {:work/query :run/list
+                    :work/where (or (:where options) {})})
 
       (= query :history)
-      (store/call (base/runtime-store runtime) :list-events id)
+      (store/query (base/runtime-store runtime)
+                   {:work/query :event/list :run/id id})
 
       (= query :checkpoints)
-      (store/call (base/runtime-store runtime) :list-checkpoints id)
+      (store/query (base/runtime-store runtime)
+                   {:work/query :checkpoint/list :run/id id})
 
       :else
       (result/then
-       (store/call (base/runtime-store runtime) :load-run id)
+       (store/query (base/runtime-store runtime)
+                    {:work/query :run/load :run/id id})
        (fn [run]
          (cond
            (= query :status) (:run/status run)
@@ -220,7 +232,8 @@
   [runtime reference options]
   (let [id (base/reference-id reference)]
     (result/then
-     (store/call (base/runtime-store runtime) :load-run id)
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
      (fn [run]
        (if (nil? run)
          (throw (ex-info "Work run does not exist" {:run/id id}))
@@ -249,7 +262,8 @@
   [runtime reference options]
   (let [id (base/reference-id reference)]
     (result/then
-     (store/call (base/runtime-store runtime) :load-run id)
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
      (fn [current]
        (if (nil? current)
          (throw (ex-info "Work run does not exist" {:run/id id}))
@@ -317,9 +331,9 @@
 (defn copy-checkpoints-before!
   [runtime source-id target-id selected]
   (result/then
-   (store/call (base/runtime-store runtime)
-               :list-checkpoints
-               source-id)
+   (store/query (base/runtime-store runtime)
+                {:work/query :checkpoint/list
+                 :run/id source-id})
    (fn [checkpoints]
      (let [checkpoints (vec checkpoints)
            selected-record (selected-checkpoint checkpoints selected)
@@ -366,7 +380,8 @@
           (merge (:run/attributes source)
                  (or (:attributes options) {}))})]
     (result/then
-     (store/call (base/runtime-store runtime) :load-run id)
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
      (fn [existing]
        (if existing
          (if (and (base/compatible-run? existing proposed)
@@ -380,17 +395,17 @@
                       :source source-id
                       :checkpoint (:checkpoint options)})))
          (result/then
-          (store/call (base/runtime-store runtime)
-                      :create-run
-                      proposed)
-          (fn [run]
-            (fork-created-run runtime
-                              source-id
-                              id
-                              (:checkpoint options)
-                              run
-                              work
-                              fork-options))))))))
+          (store/create-run! (base/runtime-store runtime) proposed)
+          (fn [committed]
+            (if (:transition/created? committed)
+              (fork-created-run runtime
+                                source-id
+                                id
+                                (:checkpoint options)
+                                (:transition/run committed)
+                                work
+                                fork-options)
+              (base/work-reference id)))))))))
 
 (defn fork-source-run
   [runtime source source-id options]
@@ -424,7 +439,8 @@
   (let [options (or options {})
         source-id (base/reference-id reference)]
     (result/then
-     (store/call (base/runtime-store runtime) :load-run source-id)
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id source-id})
      (fn [source]
        (if (nil? source)
          (throw (ex-info "Work run does not exist" {:run/id source-id}))

@@ -8,7 +8,9 @@
 (def schema-version 1)
 
 (defn connection [value]
-  (or (:provider/connection value) value))
+  (or (get-in value [:optional :connection])
+      (:provider/connection value)
+      value))
 
 (defn provider-id [backend]
   (or (:provider backend)
@@ -31,11 +33,9 @@
 
 (def operational-store-operations
   (vec
-   (concat store/run-operations
-           store/transaction-operations
-           store/event-operations
-           store/checkpoint-operations
-           store/outbox-operations)))
+   (concat (store/baseline-operations)
+           (get store/optional-capabilities :outbox)
+           [:next-run-id :validate-run-id :create-run])))
 
 (defn operations [backend value]
   (reduce
@@ -62,8 +62,11 @@
       (result/then
        ((:work-call backend) value :migrate [])
        (fn [_]
-         (assoc (normalise-provider backend (operations backend value))
-                :provider/connection value)))))))
+         (let [provider
+               (normalise-provider backend (operations backend value))]
+           (assoc provider
+                  :optional
+                  (assoc (:optional provider) :connection value)))))))))
 
 (defn close [backend value]
   ((:close backend) (connection value)))
