@@ -1,4 +1,5 @@
 #![allow(clippy::too_many_lines)] // Temporary compatibility facade during Java-port split.
+// CI baseline probe for #751: comment-only change; no runtime semantics.
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 
