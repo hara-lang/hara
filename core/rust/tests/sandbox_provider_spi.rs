@@ -1,6 +1,8 @@
+use hara_wasm::core::Value;
 use hara_wasm::{
-    EvaluationId, ResolvedSandboxSpec, SandboxError, SandboxErrorCode, SandboxInstance,
-    SandboxPending, SandboxProvider, SandboxSpec, SandboxState, SessionKernel,
+    restricted_sandbox_runtime, EvaluationId, ResolvedSandboxSpec, SandboxError,
+    SandboxErrorCode, SandboxInstance, SandboxPending, SandboxProvider, SandboxSpec,
+    SandboxState, SessionKernel,
 };
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -114,4 +116,30 @@ fn external_crate_can_implement_the_complete_provider_contract() {
     let failure = kernel.sandbox_eval(sandbox, "fail").unwrap_err();
     assert_eq!(failure.code, SandboxErrorCode::EvaluationFailed);
     kernel.close_sandbox(sandbox).unwrap();
+}
+
+#[test]
+fn external_crate_can_construct_only_the_restricted_runtime_profile() {
+    let mut runtime = restricted_sandbox_runtime();
+    assert_eq!(
+        runtime.eval_native_value("(+ 1 2)").unwrap(),
+        Value::Number(3)
+    );
+
+    for forbidden in [
+        "Runtime/current",
+        "Kernel/current",
+        "Sandbox/open",
+        "Package/install",
+        "File/exists?",
+        "Socket/connect",
+        "Process/exec",
+        "Host/call",
+    ] {
+        let error = runtime.eval_native_value(forbidden).unwrap_err();
+        assert!(
+            error.contains("unbound symbol"),
+            "restricted Runtime unexpectedly resolved {forbidden}: {error}"
+        );
+    }
 }

@@ -79,4 +79,16 @@ include!("runtime/runtime.rs");
 include!("runtime/bytecode.rs");
 include!("runtime/evaluation.rs");
 include!("runtime/wasm.rs");
+
+/// Constructs the zero-authority Runtime profile used by an external secure
+/// [`SandboxProvider`] evaluator process.
+///
+/// This is a Rust embedding seam only. It does not add a native Hara Runtime,
+/// Evaluator, Kernel, or Sandbox operation and does not register the returned
+/// Runtime with a parent [`SessionKernel`].
+#[cfg(not(target_arch = "wasm32"))]
+pub fn restricted_sandbox_runtime() -> Runtime {
+    Runtime::sandbox()
+}
+
 include!("runtime/tests.rs");
