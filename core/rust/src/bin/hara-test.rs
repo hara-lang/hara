@@ -161,9 +161,50 @@ fn parse_summary(path: PathBuf, output: &str) -> Result<TestSummary, String> {
     };
 
     match form {
+        Form::Map(entries) => parse_code_test_summary(path, entries, output),
         Form::Vector(items) | Form::List(items) => parse_legacy_results(path, items, output),
-        _ => Err("test file must return a native Test/run result vector".into()),
+        _ => Err("test file must return a code.test/run summary or test result vector".into()),
     }
+}
+
+fn parse_code_test_summary(
+    path: PathBuf,
+    entries: Vec<(Form, Form)>,
+    raw: &str,
+) -> Result<TestSummary, String> {
+    let status = match map_get(&entries, "status") {
+        Some(Form::Keyword(status)) => status,
+        _ => return Err("code.test/run result is missing keyword :status".into()),
+    };
+    let counts = match map_get(&entries, "counts") {
+        Some(Form::Map(counts)) => counts,
+        _ => return Err("code.test/run result is missing map :counts".into()),
+    };
+    let passed_facts = map_number(counts, "passed", 0)?;
+    let failed_facts = map_number(counts, "failed", 0)?;
+    let errors = map_number(counts, "error", 0)?;
+    let timeouts = map_number(counts, "timeout", 0)?;
+    let skipped = map_number(counts, "skipped", 0)?;
+    let cancelled = map_number(counts, "cancelled", 0)?;
+    let facts = map_number(
+        &entries,
+        "facts",
+        passed_facts + failed_facts + errors + timeouts + skipped + cancelled,
+    )?;
+    let passed_checks = map_number(&entries, "passed", passed_facts)?;
+    let failed_checks = map_number(&entries, "failed", failed_facts)?;
+    let checks = map_number(&entries, "checks", passed_checks + failed_checks)?;
+    Ok(TestSummary {
+        path,
+        passed: status == "passed",
+        facts,
+        checks,
+        passed_checks,
+        failed_checks,
+        errors,
+        timeouts,
+        raw: raw.to_owned(),
+    })
 }
 
 fn parse_legacy_results(path: PathBuf, items: Vec<Form>, raw: &str) -> Result<TestSummary, String> {
@@ -199,6 +240,16 @@ fn map_get<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
             Form::Keyword(name) if name == key => Some(value),
             _ => None,
         })
+}
+
+fn map_number(entries: &[(Form, Form)], key: &str, fallback: usize) -> Result<usize, String> {
+    match map_get(entries, key) {
+        None => Ok(fallback),
+        Some(Form::Number(value)) if *value >= 0 => Ok(*value as usize),
+        Some(_) => Err(format!(
+            "code.test/run result :{key} must be a non-negative number"
+        )),
+    }
 }
 
 fn parse_arguments() -> Result<(PathBuf, Vec<PathBuf>), String> {
