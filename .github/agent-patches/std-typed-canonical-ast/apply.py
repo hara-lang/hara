@@ -49,6 +49,12 @@ replace_once(
     "  (normalize (deref schema)))",
     "  (normalize (Schema/ast schema)))",
 )
+replace_between(
+    "core/lib/src/std/typed/schema.hal",
+    "(defn- normalize-normalized [schema]",
+    "\n\n(defmethod normalize :schema-value",
+    payload("schema-normalized.txt"),
+)
 write("core/lib/test/std/typed/schema_native_test.hal", payload("schema_native_test.hal"))
 write("core/rust/tests/std_typed_schema.rs", payload("std_typed_schema.rs"))
 write(
