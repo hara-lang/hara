@@ -451,7 +451,21 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
     (
         "Test",
         &[
-            "catalog", "config", "context", "events", "run", "result", "passed?",
+            "catalog",
+            "config",
+            "context",
+            "events",
+            "compare",
+            "run",
+            "result",
+            "passed?",
+            "actual",
+            "expected",
+            "failures",
+            "failure-seq",
+            "failure-count",
+            "failure",
+            "failure?",
         ],
     ),
     (

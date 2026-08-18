@@ -26,10 +26,20 @@ fn direct_test_results(results: &[Form]) -> Result<(usize, usize), String> {
     let mut passed = 0;
     let mut failed = 0;
     for result in results {
-        match form_keyword(result, "pass") {
-            Some(Form::Bool(true)) => passed += 1,
-            Some(Form::Bool(false)) => failed += 1,
-            _ => return Err("test result is missing boolean :pass".into()),
+        let Form::Tagged(tag, fields) = result else {
+            return Err("direct test result must be a native Result".into());
+        };
+        if tag != "hara/Result" {
+            return Err("direct test result must be a native Result".into());
+        }
+        let Form::Vector(fields) = fields.as_ref() else {
+            return Err("native Result must contain status, data, error, and context".into());
+        };
+        match fields.as_slice() {
+            [Form::Keyword(status), Form::Bool(true), _, _] if status == "success" => passed += 1,
+            [Form::Keyword(status), Form::Bool(false), _, _] if status == "success" => failed += 1,
+            [Form::Keyword(status), _, _, _] if status == "error" => failed += 1,
+            _ => return Err("test Result must contain a boolean success value or error".into()),
         }
     }
     Ok((passed, failed))
@@ -84,22 +94,30 @@ mod tests {
 
     #[test]
     fn accepts_direct_vectors_and_lists() {
+        let result = |value: &str| format!("#{}", value);
         assert_eq!(
-            test_results("[{:name \"pass\" :pass true} {:name \"fail\" :pass false}]").unwrap(),
+            test_results(&format!(
+                "[{} {}]",
+                result("hara/Result[:success true nil {}]"),
+                result("hara/Result[:success false nil {}]")
+            ))
+            .unwrap(),
             (1, 1)
         );
         assert_eq!(
-            test_results("({:name \"pass\" :pass true})").unwrap(),
+            test_results(&format!(
+                "({})",
+                result("hara/Result[:success true nil {}]")
+            ))
+            .unwrap(),
             (1, 0)
         );
     }
 
     #[test]
     fn retains_encoded_vector_compatibility() {
-        assert_eq!(
-            test_results("\"[{:name \\\"pass\\\" :pass true}]\"").unwrap(),
-            (1, 0)
-        );
+        let encoded = format!("[{}]", format!("#{}", "hara/Result[:success true nil {}]"));
+        assert_eq!(test_results(&format!("{:?}", encoded)).unwrap(), (1, 0));
     }
 
     #[test]
