@@ -1,0 +1,97 @@
+(ns tool.vm-provider-test
+  (:require [tool.vm :as vm]
+            [tool.vm.halc :as halc]
+            [tool.vm.hbc :as hbc]))
+
+(defn- failure-data
+  [function]
+  (try
+    (do
+      (function)
+      nil)
+    (catch Throwable error
+      (ex-data error))))
+
+(def provider
+  (vm/current-provider))
+
+(def provider-id
+  (:provider/id provider))
+
+(def results
+  [(test-check "current provider is normalized ordinary Hara data"
+               [(has? #{:rust :truffle} provider-id)
+                (:provider/operations provider)
+                (:provider/transforms provider)
+                (:provider/engines provider)
+                (get (:provider/formats provider) :halc)
+                (get (:provider/formats provider) :hbc)]
+               [true
+                [:validate :inspect :disassemble]
+                []
+                {}
+                [:validate :inspect]
+                [:validate :inspect :disassemble]])
+
+   (test-check "convenience namespaces construct exact portable artifacts"
+               [(select-keys
+                 (halc/artifact (str/encode-utf8 "HALC"))
+                 [:artifact/format :artifact/version])
+                (select-keys
+                 (hbc/artifact (str/encode-utf8 "HBC0"))
+                 [:artifact/format :artifact/version])]
+               [{:artifact/format :halc :artifact/version 1}
+                {:artifact/format :hbc :artifact/version 0}])
+
+   (test-check "one-arity operations select the current provider explicitly"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (halc/validate (str/encode-utf8 "HALC"))))
+                [:type :operation :format :provider])
+               {:type :tool.vm/artifact-invalid
+                :operation :validate
+                :format :halc
+                :provider provider-id})
+
+   (test-check "requesting another provider never falls back to the current runtime"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (hbc/validate
+                    (str/encode-utf8 "HBC0")
+                    {:provider :not-current})))
+                [:type :operation :format :provider :available])
+               {:type :tool.vm/capability-unavailable
+                :operation :validate
+                :format :hbc
+                :provider :not-current
+                :available [provider-id]})
+
+   (test-check "HALC does not acquire HBC-only disassembly by provider-wide inference"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (vm/disassemble
+                    (halc/artifact (str/encode-utf8 "HALC")))))
+                [:type :operation :format :provider :available])
+               {:type :tool.vm/capability-unavailable
+                :operation :disassemble
+                :format :halc
+                :provider provider-id
+                :available []})
+
+   (test-check "provider options reject unknown routing keys"
+               (select-keys
+                (failure-data
+                 (fn []
+                   (hbc/inspect
+                    (str/encode-utf8 "HBC0")
+                    {:provider provider-id
+                     :fallback :rust})))
+                [:type :field :unknown])
+               {:type :tool.vm/invalid-request
+                :field :options
+                :unknown [:fallback]})])
+
+results
