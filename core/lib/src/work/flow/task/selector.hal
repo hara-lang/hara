@@ -1,8 +1,9 @@
 (ns work.flow.task.selector)
 
 (defn matches?
-  "Matches portable command selectors. Scalars use prefix matching, sets use
-   exact membership, lists are conjunctions, and vectors are disjunctions."
+  "Matches one task-flow selector against an item identifier. Scalars use
+   prefix matching, sets use exact membership, dotted lists form a qualified
+   prefix, and vectors are disjunctions."
   [selector identifier]
   (cond (or (nil? selector) (= :all selector)) true
         (fn? selector) (if (selector identifier) true false)
@@ -12,8 +13,14 @@
         (reduce (fn [matched value] (or matched (= value identifier)))
                 false selector)
         (list? selector)
-        (reduce (fn [matched part] (and matched (matches? part identifier)))
-                true selector)
+        (let [prefix
+              (reduce (fn [output part]
+                        (if (= output "")
+                          (str part)
+                          (str output "." part)))
+                      ""
+                      selector)]
+          (str/starts-with? (str identifier) prefix))
         (vector? selector)
         (reduce (fn [matched part] (or matched (matches? part identifier)))
                 false selector)
@@ -25,4 +32,62 @@
   [selector values]
   (vec (filter (fn [value] (matches? selector value)) values)))
 
+(defn collection-match?
+  [selector values]
+  (reduce (fn [matched value]
+            (or matched (matches? selector value)))
+          false
+          (or values [])))
+
+(defn filter-match?
+  "Matches generic include/exclude filter data against item metadata. :unit
+   accepts any intersecting unit or tag, :refers matches a referenced symbol,
+   and :namespaces matches the owning namespace."
+  [metadata filter default]
+  (let [units (or (:unit metadata) (:tags metadata) #{})
+        refer (:refer metadata)
+        namespace (:namespace metadata)
+        unit-filter (:unit filter)
+        refers-filter (:refers filter)
+        namespace-filter (:namespaces filter)]
+    [(if unit-filter
+       (collection-match? unit-filter units)
+       default)
+     (if refers-filter
+       (matches? refers-filter refer)
+       default)
+     (if namespace-filter
+       (matches? namespace-filter namespace)
+       default)]))
+
+(defn include-match?
+  [metadata filter]
+  (reduce (fn [matched value] (and matched value))
+          true
+          (filter-match? metadata filter true)))
+
+(defn exclude-match?
+  [metadata filter]
+  (reduce (fn [matched value] (or matched value))
+          false
+          (filter-match? metadata filter false)))
+
+(defn matches-options?
+  "Applies portable :include/:exclude filters to item metadata. Items carrying
+   :unit remain opt-in when no include filters are supplied."
+  [metadata options]
+  (let [include (or (:include options) [])
+        exclude (or (:exclude options) [])
+        tagged (:unit metadata)]
+    (and (not (and tagged (= 0 (count include))))
+         (if (= 0 (count include))
+           true
+           (reduce (fn [matched filter]
+                     (or matched (include-match? metadata filter)))
+                   false
+                   include))
+         (reduce (fn [matched filter]
+                   (and matched (not (exclude-match? metadata filter))))
+                 true
+                 exclude))))
 

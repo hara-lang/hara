@@ -27,6 +27,7 @@ final class HbxBundleLibrary {
       Set.of(
           "std.pretty",
           "std.foundation.pretty.engine",
+          "code.test.selector",
           "std.work",
           "std.work.command",
           "std.work.command.cli",

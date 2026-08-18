@@ -1,0 +1,77 @@
+(ns code.migrate-test
+  (:use code.test)
+  (:require [code.migrate :as migrate]
+            [std.lib.fs :as fs]))
+
+(fact "language model namespace routing is a hard V1 cut"
+  [(migrate/route-lang-model-v1-namespace 'lang.model.spec-lua)
+   (migrate/route-lang-model-v1-namespace 'lang.model.spec-lua.lua-native)
+   (migrate/route-lang-model-v1-namespace 'lang.common.book)]
+  => ["lang.model.v1.spec-lua"
+      "lang.model.v1.spec-lua.lua-native"
+      "lang.common.book"])
+
+(fact "language model source and test paths retain their relative suffix"
+  [(migrate/route-lang-model-v1-path "core/lib/src/lang/model/spec_lua.hal")
+   (migrate/route-lang-model-v1-path
+    "core/lib/test/lang/model/spec_lua/lua_native_test.hal")
+   (migrate/route-lang-model-v1-path "core/lib/src/lang/common/book.hal")]
+  => ["core/lib/src/lang/model/v1/spec_lua.hal"
+      "core/lib/test/lang/model/v1/spec_lua/lua_native_test.hal"
+      "core/lib/src/lang/common/book.hal"])
+
+(fact "language model references are rewritten throughout source"
+  (let [source
+        "(ns demo (:require [lang.model.spec-lua :as lua]))\n^{:refer lang.model.spec-lua/+book+}\n(def x 'lang.model.spec-lua.lua-native/value)"
+        result (migrate/migrate-lang-model-v1-source source)]
+    [(:rules result)
+     (str/includes? (:after result) "lang.model.v1.spec-lua :as lua")
+     (str/includes? (:after result) "lang.model.v1.spec-lua/+book+")
+     (str/includes? (:after result) "lang.model.v1.spec-lua.lua-native/value")])
+  => [[:lang.model/v1] true true true])
+
+(fact "language model units expose an explicit move intent"
+  (select-keys
+   (migrate/migrate-lang-model-v1-unit
+    {:path "core/lib/src/lang/model/spec_js/js_native.hal"
+     :source "(ns lang.model.spec-js.js-native)"})
+   [:source/path :target/path :move :changed :after])
+  => {:source/path "core/lib/src/lang/model/spec_js/js_native.hal"
+      :target/path "core/lib/src/lang/model/v1/spec_js/js_native.hal"
+      :move true
+      :changed true
+      :after "(ns lang.model.v1.spec-js.js-native)"})
+
+(fact "a moved implementation owns a destination occupied by an old facade"
+  (let [facade {:path "lang/model/v1/spec_lua.hal"
+                :source/path "lang/model/v1/spec_lua.hal"
+                :target/path "lang/model/v1/spec_lua.hal"
+                :move false}
+        implementation {:path "lang/model/v1/spec_lua.hal"
+                        :source/path "lang/model/spec_lua.hal"
+                        :target/path "lang/model/v1/spec_lua.hal"
+                        :move true}]
+    (map :source/path (migrate/owned-edits [facade implementation])))
+  => ["lang/model/spec_lua.hal"])
+
+(fact "applying a language model migration moves the source after preflight"
+  (let [root (deref (File/temp-directory "/private/tmp"))
+        source-path "lang/model/spec_lua/sample.hal"
+        target-path "lang/model/v1/spec_lua/sample.hal"
+        source "(ns lang.model.spec-lua.sample)"
+        absolute-source (File/resolve root source-path)
+        _ (deref (File/write absolute-source
+                             (str/encode-utf8 source)
+                             {:mode :create :parents? true}))
+        unit (migrate/migrate-lang-model-v1-unit
+              {:path source-path :source source})
+        applied (migrate/apply! root {:records [{:data unit}]})
+        absolute-target (File/resolve root target-path)
+        output (str/decode-utf8 (deref (File/read absolute-target)))
+        source-exists (deref (File/exists? absolute-source))
+        result [(:write (first applied)) source-exists output]
+        _ (fs/delete root {:recursive? true :missing-ok? false})]
+    result)
+  => [true false "(ns lang.model.v1.spec-lua.sample)"])
+
+(pr-str (run {:namespace "code.migrate-test"}))

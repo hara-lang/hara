@@ -155,11 +155,48 @@
    form
    (or (get-in selected [:rewrite phase]) [])))
 
+(defn lower-form
+  "Lowers canonical operations to target grammar forms before emission."
+  [form grammar context]
+  (cond
+    (list? form)
+    (let [entry (get-in grammar [:reserved (first form)])
+          lower (:lower entry)]
+      (if lower
+        (lower-form (lower form) grammar context)
+        (apply list
+               (map (fn [child]
+                      (lower-form child grammar context))
+                    form))))
+
+    (vector? form)
+    (vec (map (fn [child]
+                (lower-form child grammar context))
+              form))
+
+    (map? form)
+    (reduce-kv (fn [output key value]
+                 (assoc output
+                        (lower-form key grammar context)
+                        (lower-form value grammar context)))
+               {}
+               form)
+
+    (set? form)
+    (set (map (fn [child]
+                (lower-form child grammar context))
+              form))
+
+    :else form))
+
 (defstruct GrammarRewriter [])
 
 (extend-type GrammarRewriter protocol/IRewriter
   (rewrite-form [rewriter phase form selected context]
-    (apply-rewrite-phase phase form selected context)))
+    (let [rewritten (apply-rewrite-phase phase form selected context)]
+      (if (= phase :target)
+        (lower-form rewritten (:grammar selected) context)
+        rewritten))))
 
 (defn input-normalizer []
   (lang.common.compiler/InputNormalizer))

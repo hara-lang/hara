@@ -1,0 +1,100 @@
+(ns lang.common.book-module)
+
+(defstruct BookModule [lang
+                       id
+                       alias
+                       link
+                       native
+                       native-lu
+                       internal
+                       implements
+                       specialize
+                       fragment
+                       code
+                       includes
+                       static
+                       require
+                       application
+                       schema
+                       source
+                       display])
+
+(defn book-module?
+  "Returns true when value is a BookModule."
+  [value]
+  (instance? lang.common.book-module/BookModule value))
+
+(defn book-module
+  "Creates one immutable language module."
+  [value]
+  (if (nil? (:lang value))
+    (throw (ex-info "Book module requires :lang" {:module value})))
+  (if (nil? (:id value))
+    (throw (ex-info "Book module requires :id" {:module value})))
+  (map->BookModule
+   (merge {:alias {}
+           :link {}
+           :native {}
+           :native-lu {}
+           :internal {}
+           :implements []
+           :specialize {}
+           :fragment {}
+           :code {}
+           :includes #{}
+           :static {}
+           :require []
+           :display :default}
+          value)))
+
+(defn module-entry-dependencies
+  [entry]
+  (set (or (:deps entry)
+           (get-in entry [:dependencies :code])
+           #{})))
+
+(defn module-deps-code
+  "Returns referenced language modules derived from code entries."
+  [module]
+  (let [module-id (:id module)]
+    (reduce
+     (fn [output entry]
+       (reduce
+        (fn [result dependency]
+          (let [namespace-value (namespace dependency)
+                dependency-module (if namespace-value
+                                    (symbol namespace-value)
+                                    nil)]
+            (if (or (nil? dependency-module)
+                    (= dependency-module module-id))
+              result
+              (conj result dependency-module))))
+        output
+        (module-entry-dependencies entry)))
+     #{}
+     (vals (or (:code module) {})))))
+
+(defn module-deps-all
+  "Returns derived and explicitly linked module dependencies."
+  [module]
+  (reduce conj
+          (module-deps-code module)
+          (filter (fn [dependency]
+                    (not= dependency (:id module)))
+                  (vals (or (:link module) {})))))
+
+(defn module-deps-native
+  "Returns native dependencies contributed by code entries."
+  [module]
+  (reduce
+   (fn [output entry]
+     (merge output
+            (or (:deps-native entry)
+                (get-in entry [:dependencies :native])
+                {})))
+   {}
+   (vals (or (:code module) {}))))
+
+(defn module-entry-keys
+  [module section]
+  (keys (or (get module section) {})))

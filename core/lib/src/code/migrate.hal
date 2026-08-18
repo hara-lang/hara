@@ -7,6 +7,56 @@
 
 (def rule-id :std.task/def-work)
 
+(def +lang-model-v1-prefix+ "lang.model.spec-")
+(def +lang-model-v1-target-prefix+ "lang.model.v1.spec-")
+(def +lang-model-v1-path-prefix+ "lang/model/spec_")
+(def +lang-model-v1-target-path-prefix+ "lang/model/v1/spec_")
+
+(defn route-lang-model-v1-namespace
+  [namespace]
+  (let [name (str namespace)]
+    (if (str/starts-with? name +lang-model-v1-prefix+)
+      (str +lang-model-v1-target-prefix+
+           (subs name (count +lang-model-v1-prefix+)))
+      name)))
+
+(defn route-lang-model-v1-path
+  [path]
+  (str/replace path
+               +lang-model-v1-path-prefix+
+               +lang-model-v1-target-path-prefix+))
+
+(defn rewrite-lang-model-v1-source
+  [source]
+  (str/replace source
+               +lang-model-v1-prefix+
+               +lang-model-v1-target-prefix+))
+
+(defn migrate-lang-model-v1-source
+  [source]
+  (let [output (rewrite-lang-model-v1-source source)]
+    {:before source
+     :after output
+     :changed (not= source output)
+     :rules (if (= source output) [] [:lang.model/v1])
+     :diagnostics []}))
+
+(defn migrate-lang-model-v1-unit
+  [unit]
+  (let [source-path (:path unit)
+        target-path (route-lang-model-v1-path source-path)
+        result (migrate-lang-model-v1-source (:source unit))]
+    (merge {:path target-path
+            :source/path source-path
+            :target/path target-path
+            :language (or (:language unit) :hara)
+            :move (not= source-path target-path)
+            :create false
+            :write false}
+           result
+           {:changed (or (:changed result)
+                         (not= source-path target-path))})))
+
 (def task-heads
   #{"deftask" "def.task" "task/deftask" "task/def.task"})
 
@@ -166,6 +216,12 @@
             :write false}
            result)))
 
+(defn migrate-selected-unit
+  [unit]
+  (if (= :lang.model/v1 (:migration unit))
+    (migrate-lang-model-v1-unit unit)
+    (migrate-unit unit)))
+
 (def.work migration
   [:task]
   {:task/type :code.migrate
@@ -176,11 +232,11 @@
        (map
         (fn [unit]
           {:item/id (:path unit)
-           :item/value unit})
+           :item/value (assoc unit :migration (:migration input))})
         (sort-by :path (:units input)))))
     :run
     (fn [unit context]
-      (let [result (migrate-unit unit)]
+      (let [result (migrate-selected-unit unit)]
         {:status
          (if (empty? (:diagnostics result)) :return :error)
          :data result}))}
@@ -199,6 +255,31 @@
         (if (:changed value) value nil)))
     (:records plan))))
 
+(defn target-path-of
+  [unit]
+  (or (:target/path unit) (:path unit)))
+
+(defn owned-edits
+  "Chooses the moved implementation when a hard-cut target is also occupied by
+   a compatibility facade. Other duplicate target ownership is rejected."
+  [edits]
+  (vals
+   (reduce
+    (fn [owners unit]
+      (let [target (target-path-of unit)
+            current (get owners target)]
+        (cond
+          (nil? current) (assoc owners target unit)
+          (and (:move unit) (not (:move current))) (assoc owners target unit)
+          (and (:move current) (not (:move unit))) owners
+          :else
+          (throw (ex-info "Migration target has multiple owners"
+                          {:target/path target
+                           :owners [(:source/path current)
+                                    (:source/path unit)]})))))
+    {}
+    edits)))
+
 (defn path-under-root?
   [root path]
   (let [root (str/replace (File/resolve root "") "\\" "/")
@@ -206,25 +287,48 @@
     (or (= root path)
         (str/starts-with? path (str root "/")))))
 
-(defn apply-unit!
+(defn validate-unit!
   [root unit]
-  (if (not (path-under-root? root (:path unit)))
+  (let [source-path (or (:source/path unit) (:path unit))
+        target-path (or (:target/path unit) (:path unit))]
+    (if (or (not (path-under-root? root source-path))
+            (not (path-under-root? root target-path)))
     (throw (ex-info "Migration path escapes project root"
-                    {:root root :path (:path unit)})))
-  (let [path (File/resolve root (:path unit))
-        current (str/decode-utf8 (deref (File/read path)))]
+                    {:root root
+                     :source/path source-path
+                     :target/path target-path})))
+    (let [path (File/resolve root source-path)
+          current (str/decode-utf8 (deref (File/read path)))]
     (if (not= current (:before unit))
       (throw (ex-info "Migration source changed after planning"
                       {:path path})))
-    (deref (File/write path (str/encode-utf8 (:after unit))))
+      unit)))
+
+(defn apply-unit!
+  [root unit]
+  (let [source-relative (or (:source/path unit) (:path unit))
+        target-relative (or (:target/path unit) (:path unit))
+        source-path (File/resolve root source-relative)
+        target-path (File/resolve root target-relative)
+        target-parent (File/parent target-path)]
+    (if target-parent
+      (deref (File/mkdir target-parent {:parents? true :exists-ok? true}))
+      nil)
+    (deref (File/write target-path
+                       (str/encode-utf8 (:after unit))
+                       {:mode :replace :parents? true}))
+    (if (not= source-path target-path)
+      (deref (File/delete source-path {:missing-ok? false}))
+      nil)
     (assoc unit :write true)))
 
 (defn apply!
   [root plan]
-  (let [edits (planned-edits plan)
+  (let [edits (vec (owned-edits (planned-edits plan)))
         diagnostics
-        (vec (mapcat :diagnostics edits))]
+        (vec (mapcat (fn [unit] (:diagnostics unit)) edits))]
     (if (not (empty? diagnostics))
       (throw (ex-info "Migration contains blocking diagnostics"
                       {:diagnostics diagnostics})))
+    (vec (map (fn [unit] (validate-unit! root unit)) edits))
     (vec (map (fn [unit] (apply-unit! root unit)) edits))))

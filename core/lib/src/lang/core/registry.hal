@@ -1,46 +1,33 @@
 (ns lang.core.registry
-  (:require [lang.model.v1.spec-xtalk :as spec-xtalk]
+  (:require [lang.common.registry :as grammar-registry]
+            [lang.model.v1.spec-xtalk :as spec-xtalk]
             [lang.model.v1.spec-hara :as spec-hara]
             [lang.model.v1.spec-js :as spec-js]
             [lang.model.v1.spec-python :as spec-python]
             [lang.model.v1.spec-lua :as spec-lua]
-            [lang.model.v1.spec-postgres :as spec-postgres]
-            [lang.runtime.basic.impl.process-js :as process-js :lazy true]
-            [lang.runtime.basic.impl.process-python :as process-python :lazy true]
-            [lang.runtime.basic.impl.process-lua :as process-lua :lazy true]
-            [lang.runtime.basic.impl.process-xtalk :as process-xtalk :lazy true]
-            [lang.runtime.postgres.db-client :as postgres-client :lazy true]))
+            [lang.model.v1.spec-postgres :as spec-postgres]))
 
 ;; Foundation-compatible runtime registry. Runtime implementations are loaded
 ;; lazily from the exact [language runtime] coordinate.
 (def +registry+
   (atom {[:js :oneshot]
-         {:namespace 'lang.runtime.basic.impl.process-js
-          :load (fn [] process-js/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-js}
          [:js :basic]
-         {:namespace 'lang.runtime.basic.impl.process-js
-          :load (fn [] process-js/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-js}
          [:python :oneshot]
-         {:namespace 'lang.runtime.basic.impl.process-python
-          :load (fn [] process-python/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-python}
          [:python :basic]
-         {:namespace 'lang.runtime.basic.impl.process-python
-          :load (fn [] process-python/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-python}
          [:lua :oneshot]
-         {:namespace 'lang.runtime.basic.impl.process-lua
-          :load (fn [] process-lua/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-lua}
          [:lua :basic]
-         {:namespace 'lang.runtime.basic.impl.process-lua
-          :load (fn [] process-lua/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-lua}
          [:xtalk :basic]
-         {:namespace 'lang.runtime.basic.impl.process-xtalk
-          :load (fn [] process-xtalk/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-xtalk}
          [:hara :basic]
-         {:namespace 'lang.runtime.basic.impl.process-xtalk
-          :load (fn [] process-xtalk/+init+)}
+         {:namespace 'lang.runtime.basic.impl.process-xtalk}
          [:postgres :db.client]
-         {:namespace 'lang.runtime.postgres.db-client
-          :load (fn [] postgres-client/+init+)}}))
+         {:namespace 'lang.runtime.postgres.db-client}}))
 
 ;; Foundation keeps the public [:language :default] coordinate stable. Each
 ;; coordinate owns a configurable default and any number of immutable versions.
@@ -86,6 +73,19 @@
               :load (fn [] spec-postgres/+book+)
               :parent :xtalk}}}}))
 
+;; Grammars and books have distinct identities and registries. A Book pins one
+;; materialized grammar selection; this catalog owns the independently
+;; versioned grammar definitions from which selections are resolved.
+(def +grammar-registry+
+  (atom
+   (spec-postgres/install
+    (spec-lua/install
+     (spec-python/install
+      (spec-js/install
+       (spec-hara/install
+        (spec-xtalk/install
+         (grammar-registry/registry)))))))))
+
 (defn- atom-value [reference]
   (deref (identity reference)))
 
@@ -95,15 +95,11 @@
   (vec (keys (atom-value +registry+))))
 
 (defn registry-add!
-  "Registers one exact runtime coordinate and its loader."
-  [language runtime namespace-symbol loader]
-  (if (not (fn? loader))
-    (throw (ex-info "Runtime registry loader must be a function"
-                    {:lang language :runtime runtime :namespace namespace-symbol}))
-    (do
-      (swap! +registry+ assoc [language runtime]
-             {:namespace namespace-symbol :load loader})
-      namespace-symbol)))
+  "Registers one exact runtime coordinate by portable namespace identity."
+  [language runtime namespace-symbol]
+  (swap! +registry+ assoc [language runtime]
+         {:namespace namespace-symbol})
+  namespace-symbol)
 
 (defn registry-runtime-ns
   "Returns the implementation namespace for a runtime coordinate."
@@ -116,7 +112,7 @@
   (let [entry (get (atom-value +registry+) [language runtime])]
     (if entry
       (let [namespace-symbol (:namespace entry)
-            _ ((:load entry))
+            _ (eval (list 'require [namespace-symbol]))
             init-symbol (symbol (name namespace-symbol) "+init+")
             init-var (resolve init-symbol)]
         (if (and (ns-loaded? namespace-symbol) init-var)
@@ -133,6 +129,29 @@
   "Lists all registered Foundation book coordinates."
   []
   (vec (keys (atom-value +book-registry+))))
+
+(defn registry-grammar-list
+  "Lists installed grammar sources, optionally filtered by source fields."
+  ([]
+   (registry-grammar-list {}))
+  ([query]
+   (grammar-registry/list (atom-value +grammar-registry+) query)))
+
+(defn registry-grammar-versions
+  "Lists all installed versions of a grammar identity."
+  [grammar-id]
+  (grammar-registry/versions (atom-value +grammar-registry+) grammar-id))
+
+(defn registry-grammar
+  "Resolves an exact grammar id and version without consulting Book defaults."
+  ([grammar-id version]
+   (registry-grammar grammar-id version []))
+  ([grammar-id version facets]
+   (grammar-registry/resolve
+    (atom-value +grammar-registry+)
+    {:grammar/id grammar-id
+     :grammar/version version
+     :grammar/facets (vec facets)})))
 
 (defn- registry-book-entry
   [language key]

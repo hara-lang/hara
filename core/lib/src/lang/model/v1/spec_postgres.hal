@@ -1,15 +1,25 @@
 (ns lang.model.v1.spec-postgres
-  (:require [lang.model.spec-postgres :as impl]))
+  (:require [lang.common.book :as book]
+            [lang.common.grammar-api :as grammar]
+            [lang.common.registry :as registry]
+            [lang.model.v1.spec-xtalk :as xtalk]
+            [lang.model.v1.spec-postgres.postgres-grammar :as model]))
 
-;; Stable public V1 coordinate over the alpha PostgreSQL grammar implementation.
-(def +language+ impl/+language+)
-(def +tag+ impl/+tag+)
+(def +language+ :postgres)
+(def +tag+ :postgres)
 (def +version+ 1)
-(def +grammar-version+ impl/+grammar-version+)
-(def +grammar+ impl/+grammar+)
-(def install impl/install)
-(def catalog impl/catalog)
-(def select impl/select)
-(def +selection+ impl/+selection+)
-(def +book+ (assoc impl/+book+ :version +version+))
+(def +grammar-version+ model/+grammar-version+)
+(def +grammar+ model/+grammar+)
+(defn- install-source [catalog source]
+  (if (registry/find catalog (grammar/source-coordinate source)) catalog
+      (registry/install catalog source)))
+(defn install [catalog] (install-source (xtalk/install catalog) +grammar+))
+(defn catalog [] (install (registry/registry)))
+(defn select
+  ([] (select (catalog)))
+  ([catalog] (registry/resolve catalog {:grammar/id +tag+ :grammar/version +grammar-version+})))
+(def +selection+ (select))
+(def +book+ (book/book {:lang +language+ :parent :xtalk :version +version+
+                        :coordinate (:coordinate +selection+)
+                        :grammar (:grammar +selection+) :selection +selection+}))
 (def +init+ +book+)

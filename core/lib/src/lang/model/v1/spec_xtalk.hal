@@ -1,18 +1,32 @@
 (ns lang.model.v1.spec-xtalk
-  (:require [lang.model.spec-xtalk :as impl]))
+  (:require [lang.common.book :as book]
+            [lang.common.grammar-api :as grammar]
+            [lang.common.registry :as registry]
+            [lang.model.v1.spec-xtalk.xtalk-grammar :as model]))
 
-;; Stable public model namespace. The alpha implementation remains internal;
-;; callers and registry coordinates keep the Foundation V1 contract.
-(def +language+ impl/+language+)
-(def +tag+ impl/+tag+)
+(def +language+ :xtalk)
+(def +tag+ :xtalk)
 (def +version+ 1)
-(def +grammar-version+ impl/+grammar-version+)
-(def +template+ impl/+template+)
-(def +profile+ impl/+profile+)
-(def +grammar+ impl/+grammar+)
-(def install impl/install)
-(def catalog impl/catalog)
-(def select impl/select)
-(def +selection+ impl/+selection+)
-(def +book+ (assoc impl/+book+ :version +version+))
+(def +grammar-version+ model/+grammar-version+)
+(def +template+ model/+template+)
+(def +profile+ model/+profile+)
+(def +grammar+ model/+grammar+)
+
+(defn- install-source [catalog source]
+  (if (registry/find catalog (grammar/source-coordinate source)) catalog
+      (registry/install catalog source)))
+
+(defn install [catalog]
+  (let [catalog (install-source catalog +template+)
+        catalog (install-source catalog +profile+)]
+    (install-source catalog +grammar+)))
+(defn catalog [] (install (registry/registry)))
+(defn select
+  ([] (select (catalog)))
+  ([catalog]
+   (registry/resolve catalog {:grammar/id +tag+ :grammar/version +grammar-version+})))
+(def +selection+ (select))
+(def +book+ (book/book {:lang +language+ :parent nil :version +version+
+                        :coordinate (:coordinate +selection+)
+                        :grammar (:grammar +selection+) :selection +selection+}))
 (def +init+ +book+)

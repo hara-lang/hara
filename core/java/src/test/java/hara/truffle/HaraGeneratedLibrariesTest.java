@@ -23,6 +23,9 @@ public class HaraGeneratedLibrariesTest {
       assertThrows(
           PolyglotException.class,
           () -> context.eval(HaraLanguage.ID, "(require 'std.work.recipe)"));
+      assertThrows(
+          PolyglotException.class,
+          () -> context.eval(HaraLanguage.ID, "(require 'code.test.selector)"));
     }
   }
 

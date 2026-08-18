@@ -1,0 +1,222 @@
+(ns lang.common.book
+  (:require [lang.common.book-module :as module]
+            [lang.common.book-entry :as entry]
+            [lang.common.book-meta :as meta]))
+
+(defstruct Book [id version lang grammar grammar-coordinate coordinate selection compiler
+                 modules meta parent merged referenced revision])
+
+(defn book?
+  [value]
+  (instance? lang.common.book/Book value))
+
+(defn book
+  [value]
+  (if (nil? (:lang value))
+    (throw (ex-info "Book requires :lang" {:book value})))
+  (if (nil? (:grammar value))
+    (throw (ex-info "Book requires :grammar" {:book value})))
+  (map->Book
+   (merge {:id :default
+           :version 1
+           :modules {}
+           :meta (meta/book-meta {})
+           :parent nil
+           :merged #{(:lang value)}
+           :referenced #{}
+           :revision 0}
+          value
+          {:grammar-coordinate (or (:grammar-coordinate value)
+                                   (:coordinate value))
+           :merged (conj (set (or (:merged value) #{})) (:lang value))})))
+
+(defn book-coordinate
+  [book]
+  [:book (:lang book) (:id book) (:version book)])
+
+(defn get-base-entry
+  [book module-id id section]
+  (get-in book [:modules module-id section id]))
+
+(defn qualified-pair
+  [id]
+  (let [namespace-value (namespace id)]
+    (if namespace-value
+      [(symbol namespace-value) (symbol (name id))]
+      [nil id])))
+
+(defn get-code-entry
+  [book id]
+  (let [pair (qualified-pair id)
+        module-id (first pair)
+        entry-id (second pair)
+        value (or (get-base-entry book module-id entry-id :code)
+                  (get-base-entry book module-id entry-id :header))]
+    (if value
+      value
+      (throw (ex-info "Book code entry not found"
+                      {:book (book-coordinate book)
+                       :module module-id
+                       :entry entry-id})))))
+
+(defn get-fragment-entry
+  [book id]
+  (let [pair (qualified-pair id)
+        module-id (first pair)
+        entry-id (second pair)
+        value (get-base-entry book module-id entry-id :fragment)]
+    (if value
+      value
+      (throw (ex-info "Book fragment entry not found"
+                      {:book (book-coordinate book)
+                       :module module-id
+                       :entry entry-id})))))
+
+(defn get-module
+  [book id]
+  (get-in book [:modules id]))
+
+(defn get-entry
+  [book id]
+  (if (namespace id)
+    (get-code-entry book id)
+    (get-module book id)))
+
+(defn list-entries
+  ([book]
+   (list-entries book :code))
+  ([book entry-type]
+   (cond (= entry-type :module)
+         (keys (:modules book))
+
+         :else
+         (mapcat
+          (fn [pair]
+            (let [module-id (key pair)
+                  module-value (val pair)]
+              (map (fn [entry-id]
+                     (symbol (str module-id) (name entry-id)))
+                   (keys (or (get module-value entry-type) {})))))
+          (:modules book)))))
+
+(defn get-deps
+  [book id]
+  (if (namespace id)
+    (let [entry-value (get-code-entry book id)]
+      (set (or (:deps entry-value)
+               (get-in entry-value [:dependencies :code])
+               #{})))
+    (let [module-value (get-module book id)]
+      (if module-value
+        (module/module-deps-all module-value)
+        #{}))))
+
+(defn get-deps-native
+  [book id]
+  (if (namespace id)
+    (let [entry-value (get-code-entry book id)]
+      (or (:deps-native entry-value)
+          (get-in entry-value [:dependencies :native])
+          {}))
+    (let [module-value (get-module book id)]
+      (if module-value
+        (module/module-deps-native module-value)
+        {}))))
+
+(defn compatible-lang?
+  [book lang]
+  (or (= (:lang book) lang)
+      (contains? (:merged book) lang)))
+
+(defn assert-compatible-lang
+  [book lang]
+  (if (not (compatible-lang? book lang))
+    (throw (ex-info "Book language is not compatible"
+                    {:book (book-coordinate book)
+                     :language lang
+                     :merged (:merged book)})))
+  book)
+
+(defn assert-module
+  [book module-id]
+  (if (nil? (get-module book module-id))
+    (throw (ex-info "Book module not found"
+                    {:book (book-coordinate book)
+                     :module module-id
+                     :available (set (keys (:modules book)))})))
+  book)
+
+(defn next-revision
+  [book]
+  (update book :revision inc))
+
+(defn put-module
+  [book module-value]
+  (assert-compatible-lang book (:lang module-value))
+  (next-revision
+   (assoc-in book [:modules (:id module-value)] module-value)))
+
+(def set-module put-module)
+
+(defn delete-module
+  [book module-id]
+  (next-revision
+   (update book :modules dissoc module-id)))
+
+(defn put-entry
+  [book entry-value]
+  (assert-compatible-lang book (:lang entry-value))
+  (assert-module book (:module entry-value))
+  (next-revision
+   (assoc-in book
+             [:modules (:module entry-value) (:section entry-value) (:id entry-value)]
+             entry-value)))
+
+(def set-entry put-entry)
+
+(defn delete-entry
+  [book module-id section entry-id]
+  (assert-module book module-id)
+  (next-revision
+   (update-in book [:modules module-id section] dissoc entry-id)))
+
+(defn book-merge
+  [book parent]
+  (if (not= (:parent book) (:lang parent))
+    (throw (ex-info "Books are not mergeable"
+                    {:book (book-coordinate book)
+                     :parent (book-coordinate parent)})))
+  (let [modules
+        (reduce-kv
+         (fn [output module-id parent-module]
+           (let [child-module (get output module-id)]
+             (assoc output module-id
+                    (if child-module
+                      (assoc child-module
+                             :code (merge (:code parent-module) (:code child-module))
+                             :fragment (merge (:fragment parent-module)
+                                              (:fragment child-module)))
+                      parent-module))))
+         (:modules book)
+         (:modules parent))]
+    (next-revision
+     (assoc book
+            :modules modules
+            :parent (:parent parent)
+            :merged (conj (:merged book) (:lang parent))))))
+
+(defn book-from
+  [snapshot lang]
+  (loop [current (get-in snapshot [lang :book])]
+    (if (:parent current)
+      (recur (book-merge current
+                         (get-in snapshot [(:parent current) :book])))
+      current)))
+
+(extend-type Book IDeps
+  (dep-get [book id]
+    (get-entry book id))
+  (dep-entries [book id]
+    (get-deps book id))
+  (dep-keys [book]
+    (list-entries book :code)))

@@ -10,8 +10,9 @@
             [lang.core.script :as script]
             [lang.core.script-fragment]
             [lang.core.runtime :as runtime]
-            [lang.model.spec-postgres]
-            [lang.runtime.basic :as basic]))
+            [lang.model.v1.spec-postgres]
+            [lang.runtime.basic :as basic]
+            [std.context.definition :as definition]))
 
 (def book-entry entry/book-entry)
 (def book-entry? entry/book-entry?)
@@ -454,6 +455,44 @@
                  [:grammar :highlight])
          #{})))))
 
+(defn language-definition-kind
+  [operation]
+  (let [operation (name operation)]
+    (cond
+      (or (= operation "defn") (= operation "defn-")) :function
+      (= operation "defmacro") :macro
+      (str/starts-with? operation "deftype") :type
+      :else :definition)))
+
+(defn language-definition-families
+  [lang tags operations]
+  (vec
+   (mapcat
+    (fn [tag]
+      (concat
+       (map
+        (fn [operation]
+          (let [head (str (name operation) "." (name tag))]
+            {:id [:lang lang head]
+             :exact #{head}
+             :kind (language-definition-kind operation)
+             :language lang
+             :operation operation}))
+        operations)
+       (let [head (str "defmacro." (name tag))]
+         [{:id [:lang lang head]
+           :exact #{head}
+           :kind :macro
+           :language lang
+           :operation 'defmacro}])))
+    tags)))
+
+(defn sync-language-definitions!
+  [lang tags operations]
+  (definition/sync-origin!
+   [:lang lang]
+   (language-definition-families lang tags operations)))
+
 (defn script-definition-macro-form
   [lang tag operation]
   (let [macro-symbol
@@ -534,6 +573,7 @@
   [lang]
   (let [tags (script-tags lang)
         definitions (script-definition-symbols lang)
+        _ (sync-language-definitions! lang tags definitions)
         highlights (script-highlight-symbols lang)
         evaluator-forms
         (map (fn [tag]
