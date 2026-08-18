@@ -4,6 +4,225 @@
             [lang.common.book-module :as module]
             [lang.common.book-entry :as entry]))
 
+(def +foundation-module+
+  (module/book-module
+   {:lang :lua :id 'L.core :link {'- 'L.core}
+    :code {'identity-fn
+           (entry/book-entry
+            {:lang :lua :id 'identity-fn :module 'L.core :section :code
+             :form '(defn identity-fn [x] x) :deps #{}})}
+    :fragment {'identity
+               (entry/book-entry
+                {:lang :lua :id 'identity :module 'L.core :section :fragment
+                 :form '(defn identity [x] x) :deps #{}})}}))
+
+(def +foundation-book+
+  (book/set-module
+   (book/book {:lang :lua :grammar {:tag :lua}})
+   +foundation-module+))
+
+^{:refer lang.common.book/get-base-entry :added "4.0"}
+(fact "gets base entries from immutable books"
+  (entry/book-entry?
+   (book/get-base-entry +foundation-book+ 'L.core 'identity :fragment))
+  => true)
+
+^{:refer lang.common.book/get-code-entry :added "4.0"}
+(fact "gets qualified code entries"
+  (:id (book/get-code-entry +foundation-book+ 'L.core/identity-fn))
+  => 'identity-fn)
+
+^{:refer lang.common.book/get-fragment-entry :added "4.0"}
+(fact "gets qualified fragment entries"
+  (:id (book/get-fragment-entry +foundation-book+ 'L.core/identity))
+  => 'identity)
+
+^{:refer lang.common.book/get-entry :added "4.0"}
+(fact "gets modules or qualified entries"
+  [(module/book-module? (book/get-entry +foundation-book+ 'L.core))
+   (entry/book-entry? (book/get-entry +foundation-book+ 'L.core/identity-fn))]
+  => [true true])
+
+^{:refer lang.common.book/get-module :added "4.0"}
+(fact "gets immutable modules"
+  (module/book-module? (book/get-module +foundation-book+ 'L.core)) => true)
+
+^{:refer lang.common.book/get-code-deps :added "4.0"}
+(fact "gets portable code dependencies"
+  (let [value
+        (entry/book-entry
+         {:lang :lua :id 'inc-fn :module 'L.core :section :code
+          :deps #{'L.core/identity-fn}})]
+    (book/get-code-deps (book/set-entry +foundation-book+ value) 'L.core/inc-fn))
+  => #{'L.core/identity-fn})
+
+^{:refer lang.common.book/get-code-entry-view :added "4.1"}
+(fact "materializes the current language code-entry view"
+  (:id (book/get-code-entry-view +foundation-book+ 'L.core/identity-fn))
+  => 'identity-fn
+  (book/get-code-entry-view +foundation-book+ 'L.core/missing) => throws)
+
+^{:refer lang.common.book/get-deps :added "4.0"}
+(fact "gets entry and module dependencies"
+  [(book/get-deps +foundation-book+ 'L.core)
+   (book/get-deps +foundation-book+ 'L.core/identity-fn)]
+  => [#{} #{}])
+
+^{:refer lang.common.book/get-deps-native :added "4.0"}
+(fact "gets native dependencies"
+  (let [value
+        (entry/book-entry
+         {:lang :lua :id 'json :module 'L.core :section :code
+          :deps-native #{"cjson"}})]
+    (book/get-deps-native (book/set-entry +foundation-book+ value) 'L.core/json))
+  => #{"cjson"})
+
+^{:refer lang.common.book/list-entries :added "4.0"}
+(fact "lists modules and qualified code entries"
+  [(set (book/list-entries +foundation-book+ :module))
+   (set (book/list-entries +foundation-book+ :code))]
+  => [#{'L.core} #{'L.core/identity-fn}])
+
+^{:refer lang.common.book/book-string :added "4.0"}
+(fact "renders a stable Book summary"
+  (book/book-string +foundation-book+)
+  => "#book [:lua] {L.core {:code 1, :fragment 1}}")
+
+^{:refer lang.common.book/book? :added "4.0"}
+(fact "recognizes immutable books"
+  (book/book? +foundation-book+) => true)
+
+^{:refer lang.common.book/book :added "4.0"}
+(fact "creates child books"
+  (book/book? (book/book {:lang :lua.redis :grammar {:tag :lua}
+                          :parent :lua}))
+  => true)
+
+^{:refer lang.common.book/book-merge :added "4.0"}
+(fact "merges child books with their declared parent"
+  (book/book?
+   (book/book-merge
+    (book/book {:lang :lua.redis :grammar {:tag :lua} :parent :lua})
+    +foundation-book+))
+  => true)
+
+^{:refer lang.common.book/book-from :added "4.0"}
+(fact "reconstructs merged books from portable snapshots"
+  (let [child (book/book {:lang :lua.redis :grammar {:tag :lua} :parent :lua})]
+    (book/book? (book/book-from {:lua {:book +foundation-book+}
+                                  :lua.redis {:book child}}
+                                 :lua.redis)))
+  => true)
+
+^{:refer lang.common.book/check-compatible-lang :added "4.0"}
+(fact "checks merged language compatibility"
+  (let [child (book/book-merge
+               (book/book {:lang :lua.redis :grammar {:tag :lua} :parent :lua})
+               +foundation-book+)]
+    [(book/check-compatible-lang child :lua)
+     (book/check-compatible-lang child :lua.redis)
+     (book/check-compatible-lang child :js)])
+  => [true true false])
+
+^{:refer lang.common.book/assert-compatible-lang :added "4.0"}
+(fact "asserts merged language compatibility"
+  (book/book? (book/assert-compatible-lang +foundation-book+ :lua)) => true
+  (book/assert-compatible-lang +foundation-book+ :js) => throws)
+
+^{:refer lang.common.book/set-module :added "4.0"}
+(fact "sets modules immutably"
+  (module/book-module?
+   (book/get-module
+    (book/set-module +foundation-book+
+                     (module/book-module {:lang :lua :id 'L.util}))
+    'L.util))
+  => true)
+
+^{:refer lang.common.book/delete-module :added "4.0"}
+(fact "deletes one module immutably"
+  (book/has-module? (book/delete-module +foundation-book+ 'L.core) 'L.core)
+  => false)
+
+^{:refer lang.common.book/has-module? :added "4.0"}
+(fact "checks module membership"
+  [(book/has-module? +foundation-book+ 'L.core)
+   (book/has-module? +foundation-book+ 'L.other)]
+  => [true false])
+
+^{:refer lang.common.book/assert-module :added "4.0"}
+(fact "asserts module membership"
+  (book/book? (book/assert-module +foundation-book+ 'L.core)) => true
+  (book/assert-module +foundation-book+ 'L.other) => throws)
+
+^{:refer lang.common.book/set-entry :added "4.0"}
+(fact "sets entries immutably"
+  (let [value (entry/book-entry
+               {:lang :lua :id 'other :module 'L.core :section :code})]
+    (book/has-entry? (book/set-entry +foundation-book+ value)
+                     'L.core :code 'other))
+  => true)
+
+^{:refer lang.common.book/assert-entry :added "4.0"}
+(fact "asserts entry membership"
+  (book/book? (book/assert-entry +foundation-book+
+                                 'L.core :fragment 'identity)) => true
+  (book/assert-entry +foundation-book+ 'L.core :fragment 'missing) => throws)
+
+^{:refer lang.common.book/delete-entry :added "4.0"}
+(fact "deletes entries immutably"
+  (book/has-entry? (book/delete-entry +foundation-book+
+                                      'L.core :fragment 'identity)
+                   'L.core :fragment 'identity)
+  => false)
+
+^{:refer lang.common.book/module-create-check :added "4.0"}
+(fact "rejects missing module links"
+  (book/module-create-check +foundation-book+ 'L.redis {'u 'L.core}) => true
+  (book/module-create-check +foundation-book+ 'L.redis {'u 'missing}) => throws)
+
+^{:refer lang.common.book/module-create-requires :added "4.0"}
+(fact "normalizes module requirements"
+  (book/module-create-requires [['L.core :as 'u]])
+  => {'L.core {:id 'L.core :as 'u}})
+
+^{:refer lang.common.book/module-normalize-implements :added "4.1"}
+(fact "normalizes module contracts"
+  [(book/module-normalize-implements nil)
+   (book/module-normalize-implements 'IProto)
+   (book/module-normalize-implements #{'IProto 'IOther})]
+  => [[] ['IProto] ['IOther 'IProto]])
+
+^{:refer lang.common.book/module-export-imports :added "4.1"}
+(fact "exports native imports"
+  (book/module-export-imports
+   (module/book-module {:lang :lua :id 'L.util
+                        :native {'cjson {:as 'cjson}}}))
+  => [['cjson :as 'cjson]])
+
+^{:refer lang.common.book/module-specialize-symbol :added "4.1"}
+(fact "specializes self symbols only"
+  [(book/module-specialize-symbol 'L.core 'L.alt 'L.core/value)
+   (book/module-specialize-symbol 'L.core 'L.alt 'L.other/value)]
+  => ['L.alt/value 'L.other/value])
+
+^{:refer lang.common.book/module-specialize-bindings :added "4.1"}
+(fact "normalizes specialization aliases"
+  (book/module-specialize-bindings
+   (module/book-module {:lang :lua :id 'L.core
+                        :link {'cache 'L.cache}
+                        :internal {'L.cache 'cache}})
+   {'cache 'L.custom})
+  => {'L.cache 'L.custom})
+
+^{:refer lang.common.book/module-specialize :added "4.1"}
+(fact "specializes complete modules"
+  (let [base (-> +foundation-book+
+                 (book/set-module
+                  (module/book-module {:lang :lua :id 'L.cache})))
+        result (book/module-specialize base 'L.core 'L.alt)]
+    [(:id result) (:module (get-in result [:code 'identity-fn]))])
+  => ['L.alt 'L.alt])
+
 (fact "books are persistent dependency collections"
   (let [base (book/book {:lang :js :grammar [:grammar :js 1]})
         module-value (module/book-module {:lang :js :id 'demo})
@@ -85,5 +304,108 @@
   => ["core.js" true
       {'demo.data {:id 'demo.data :as 'data :include true}}
       ['demo/A 'demo/B]])
+
+^{:refer lang.common.book/module-export-requires :added "4.1"}
+(fact "module metadata round-trips through portable require and import vectors"
+  (let [value
+        (module/book-module
+         {:id 'L.util :lang :lua
+          :link {'- 'L.util 'u 'L.core}
+          :includes #{'L.core}
+          :native {'cjson {:as 'cjson}
+                   'json {:as 'json
+                          :bundle {'decoder {:version "1"}}}}})]
+    [(book/module-export-requires value)
+     (book/module-export-imports value)])
+  => [[['L.core :as 'u :include true]]
+      [['cjson :as 'cjson]
+       ['json :as 'json :bundle [['decoder :version "1"]]]]])
+
+^{:refer lang.common.book/module-specialize-form :added "4.1"}
+(fact "module specialization recursively rewrites self references"
+  [(book/module-specialize-symbol 'L.core 'L.alt 'L.core/value)
+   (book/module-specialize-form
+    'L.core 'L.alt '(defn f [x] (L.core/identity-fn x)))
+   (book/module-specialize-form
+    'L.core 'L.alt {:value ['L.core/value #{'L.core/other}]})]
+  => ['L.alt/value
+      '(defn f [x] (L.alt/identity-fn x))
+      {:value ['L.alt/value #{'L.alt/other}]}])
+
+^{:refer lang.common.book/module-specialize-entry :added "4.1"}
+(fact "module specialization clones entries without language caches"
+  (let [value
+        (entry/book-entry
+         {:lang :lua :id 'f :module 'L.core :section :code
+          :form '(defn f [x] (L.core/identity-fn x))
+          :form-input '(defn f [x] (L.core/identity-fn x))
+          :deps #{'L.core/identity-fn}
+          :deps-fragment #{'L.core/identity}
+          :static/code.cache (atom {})})
+        specialized (book/module-specialize-entry 'L.core 'L.alt value)]
+    [(:module specialized) (:form specialized) (:deps specialized)
+     (:deps-fragment specialized) (:static/code.cache specialized)])
+  => ['L.alt '(defn f [x] (L.alt/identity-fn x))
+      #{'L.alt/identity-fn} #{'L.alt/identity} nil])
+
+^{:refer lang.common.book/module-create :added "4.0"}
+(fact "module creation and specialization remain provider independent"
+  (let [base (book/book {:lang :lua :grammar {:tag :lua}})
+        source
+        (module/book-module
+         {:lang :lua :id 'L.core
+          :link {'- 'L.core 'cache 'L.cache}
+          :internal {'L.core '- 'L.cache 'cache}
+          :code {'identity
+                 (entry/book-entry
+                  {:lang :lua :id 'identity :module 'L.core :section :code
+                   :form '(defn identity [x] x)})}})
+        complete
+        (-> base
+            (book/put-module (module/book-module {:lang :lua :id 'L.cache}))
+            (book/put-module (module/book-module {:lang :lua :id 'L.custom-cache}))
+            (book/put-module source))
+        created (book/module-create complete 'L.redis
+                                    {:require [['L.core :as 'u]]})
+        specialized
+        (book/module-specialize complete 'L.core 'L.alt
+                                {:bindings {'L.cache 'L.custom-cache}})]
+    [(:link created) (:id specialized)
+     (:module (get-in specialized [:code 'identity]))
+     (:link specialized)])
+  => [{'- 'L.redis 'u 'L.core}
+      'L.alt 'L.alt {'- 'L.alt 'cache 'L.custom-cache}])
+
+^{:refer lang.common.book/put-module :added "4.0"}
+(fact "put-module deep-updates provider-independent module maps"
+  (let [base (book/book {:lang :lua :grammar {:tag :lua}})
+        original
+        (module/book-module {:lang :lua :id 'L.core
+                             :alias {'u 'util}
+                             :code {'value {:id 'value}}})
+        update-value
+        (module/book-module {:lang :lua :id 'L.core
+                             :alias {'s 'string}})
+        updated (book/put-module (book/set-module base original) update-value)
+        result (book/get-module updated 'L.core)]
+    [(module/book-module? result) (:alias result) (keys (:code result))])
+  => [true {'u 'util 's 'string} ['value]])
+
+^{:refer lang.common.book/put-entry :added "4.0"}
+(fact "put-entry retains unspecified fields on immutable entries"
+  (let [base (book/book {:lang :lua :grammar {:tag :lua}})
+        with-module
+        (book/set-module base (module/book-module {:lang :lua :id 'L.core}))
+        original
+        (entry/book-entry {:lang :lua :module 'L.core :id 'value :section :code
+                           :form-input '(def value 1) :deps #{'L.other/value}})
+        update-value
+        (entry/book-entry {:lang :lua :module 'L.core :id 'value :section :code
+                           :form '(def value 2)})
+        result (book/get-code-entry
+                (book/put-entry (book/set-entry with-module original) update-value)
+                'L.core/value)]
+    [(entry/book-entry? result) (:form result) (:form-input result) (:deps result)])
+  => [true '(def value 2) '(def value 1) #{'L.other/value}])
 
 (pr-str (run {:namespace "lang.common.book-test"}))

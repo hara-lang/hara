@@ -106,4 +106,34 @@
      (:migration/error (first (:diagnostics result)))])
   => [1 :foundation/unmapped-reference])
 
+(fact "applying a Foundation import copies without deleting its authority"
+  (let [root (deref (File/temp-directory "/private/tmp"))
+        source-path "reference/test/tahto/base/emit_data_test.clj"
+        target-path "core/lib/test-lang/lang/common/emit_data_test.hal"
+        source "(ns tahto.base.emit-data-test (:use code.test))\n(fact \"one\" 1 => 1)"
+        absolute-source (File/resolve root source-path)
+        _ (deref (File/write absolute-source (str/encode-utf8 source)
+                             {:mode :create :parents? true}))
+        unit (migrate/migrate-foundation-common-test-unit
+              {:path source-path :target/path target-path
+               :target/namespace "lang.common.emit-data-test"
+               :source source})
+        applied (migrate/apply! root {:records [{:data unit}]})
+        source-exists (deref (File/exists? absolute-source))
+        target-exists (deref (File/exists? (File/resolve root target-path)))
+        result [(:copy (first applied)) source-exists target-exists]
+        _ (fs/delete root {:recursive? true :missing-ok? false})]
+    result)
+  => [true true true])
+
+(fact "Foundation test migration is idempotent after canonical routing"
+  (let [source "(ns tahto.base.emit-data-test (:use code.test))\n(fact \"one\" 1 => 1)"
+        first-pass (migrate/migrate-foundation-common-test-source
+                    source "lang.common.emit-data-test")
+        second-pass (migrate/migrate-foundation-common-test-source
+                     (:after first-pass) "lang.common.emit-data-test")]
+    [(:changed first-pass) (:changed second-pass)
+     (= (:after first-pass) (:after second-pass))])
+  => [true false true])
+
 (pr-str (run {:namespace "code.migrate-test"}))

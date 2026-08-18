@@ -122,7 +122,7 @@
                #{})))
     (let [module-value (get-module book id)]
       (if module-value
-        (module/module-deps-all module-value)
+        (module/module-deps-all book module-value)
         #{}))))
 
 (defn get-deps-native
@@ -134,26 +134,29 @@
           {}))
     (let [module-value (get-module book id)]
       (if module-value
-        (module/module-deps-native module-value)
+        (module/module-deps-native book module-value)
         {}))))
 
 (defn compatible-lang?
   [book lang]
-  (or (= (:lang book) lang)
-      (has? (:merged book) lang)))
+  (if (or (= (:lang book) lang)
+          (has? (:merged book) lang))
+    true
+    false))
 
 (def check-compatible-lang compatible-lang?)
 
 (defn book-string
   [book]
-  (str "#book " [(:lang book)] " "
-       (reduce-kv
-        (fn [output id value]
-          (assoc output id
-                 {:code (count (:code value))
-                  :fragment (count (:fragment value))}))
-        {}
-        (:modules book))))
+  (str "#book " [(:lang book)] " {"
+       (str/join
+        ", "
+        (map (fn [pair]
+               (str (key pair)
+                    " {:code " (count (:code (val pair)))
+                    ", :fragment " (count (:fragment (val pair))) "}"))
+             (sort-by (fn [pair] (str (key pair))) (:modules book))))
+       "}"))
 
 (defn assert-compatible-lang
   [book lang]
@@ -177,13 +180,35 @@
   [book]
   (update book :revision inc))
 
-(defn put-module
+(defn set-module
   [book module-value]
   (assert-compatible-lang book (:lang module-value))
   (next-revision
    (assoc-in book [:modules (:id module-value)] module-value)))
 
-(def set-module put-module)
+(defn put-module
+  [book module-value]
+  (assert-compatible-lang book (:lang module-value))
+  (let [existing (get-module book (:id module-value))
+        merged
+        (if existing
+          (let [with-scalars
+                (reduce (fn [output field]
+                          (let [value (get module-value field)]
+                            (if (nil? value) output (assoc output field value))))
+                        existing
+                        [:lang :id :implements :includes :require :require-impl
+                         :export :file :application :schema :source :display])]
+            (reduce (fn [output field]
+                      (assoc output field
+                             (merge (or (get existing field) {})
+                                    (or (get module-value field) {}))))
+                    with-scalars
+                    [:alias :link :native :native-lu :internal
+                     :specialize :fragment :code :static]))
+          module-value)]
+    (next-revision
+     (assoc-in book [:modules (:id module-value)] merged))))
 
 (defn delete-module
   [book module-id]
@@ -198,7 +223,7 @@
   [book module-id]
   (not (nil? (get-module book module-id))))
 
-(defn put-entry
+(defn set-entry
   [book entry-value]
   (assert-compatible-lang book (:lang entry-value))
   (assert-module book (:module entry-value))
@@ -207,7 +232,30 @@
              [:modules (:module entry-value) (:section entry-value) (:id entry-value)]
              entry-value)))
 
-(def set-entry put-entry)
+(defn put-entry
+  [book entry-value]
+  (assert-compatible-lang book (:lang entry-value))
+  (assert-module book (:module entry-value))
+  (let [path [:modules (:module entry-value) (:section entry-value) (:id entry-value)]
+        existing (get-in book path)
+        fields [:lang :id :module :section :declared :form :form-input :deps
+                :deps-fragment :deps-native :xtalk-ops :xtalk-profiles
+                :polyfill-modules :namespace :template :standalone :line
+                :time :priority :display :static/code.cache :static/template.cache]
+        updates
+        (reduce (fn [output key]
+                  (let [value (get entry-value key)]
+                    (if (nil? value) output (assoc output key value))))
+                {}
+                fields)]
+    (next-revision
+     (assoc-in book path
+               (if existing
+                 (reduce (fn [output key]
+                           (assoc output key (get updates key)))
+                         existing
+                         (keys updates))
+                 entry-value)))))
 
 (defn delete-entry
   [book module-id section entry-id]

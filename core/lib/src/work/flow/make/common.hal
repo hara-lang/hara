@@ -54,7 +54,7 @@
    :build ".build"
    :orgfile "Main.org"})
 
-(defn make-config-map [config]
+(defn make-config-map-fn [config]
   (let [_ (if (:default config)
             true
             (throw (ex-info "Requires a default entry." {:input config})))
@@ -62,15 +62,22 @@
         root (or (:root merged) ".")]
     (assoc merged :root root)))
 
+(defmacro make-config-map [config]
+  `(work.flow.make.common/make-config-map-fn
+    (merge {:ns (quote ~(:ns &env))} ~config)))
+
 (defn make-config-fn [config]
-  (MakeConfig (atom (make-config-map config))))
+  (MakeConfig (atom (make-config-map-fn config))))
 
 (defmacro make-config [config]
   `(work.flow.make.common/make-config-fn
-    (merge {:ns (symbol (str (current-namespace)))} ~config)))
+    (merge {:ns (quote ~(:ns &env))} ~config)))
 
 (defn make-config-update [config new-config]
-  (reset! (:instance config) (make-config-map new-config)))
+  (let [current (deref (:instance config))]
+    (reset! (:instance config)
+            (make-config-map-fn
+             (merge {:ns (:ns current)} new-config)))))
 
 (defn make-dir [config]
   (let [value (deref (:instance config))]
