@@ -28,16 +28,18 @@
             nil)})
 
 (defn summarise-evaluate [result]
-  {:status (:status result)
+  {:status (Result/status result)
    :name (result-name result)
-   :path (get-in result [:meta :path])
-   :line (get-in result [:meta :line])
-   :error (:error result)
-   :data (:data result)})
+   :path (get-in (Result/context result) [:test :meta :path])
+   :line (get-in (Result/context result) [:test :meta :line])
+   :error (if (Result/error? result)
+            (ex-message (Result/error-value result))
+            nil)
+   :data (if (Result/success? result) (Result/data result) nil)})
 
 (defn form-printer [result]
   (let [summary (summarise-evaluate result)]
-    (cond (= :exception (:status summary)) (print/print-throw summary)
+    (cond (= :error (:status summary)) (print/print-throw summary)
           (= :timeout (:status summary)) (print/print-timeout summary)
           :else summary)))
 
@@ -48,7 +50,7 @@
           :else (print/print-failed summary))))
 
 (defn form-error-accumulator [result]
-  (if (or (= :exception (:status result)) (= :timeout (:status result))) result nil))
+  (if (Result/error? result) result nil))
 
 (defn check-error-accumulator [result]
   (if (comparison/passed? result) nil (summarise-verify result)))
