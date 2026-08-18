@@ -1,6 +1,36 @@
 use super::*;
 
 #[test]
+fn domain_events_accept_only_named_event_types() {
+    let host = WorkHost::new();
+    let accepted = Rc::new(RefCell::new(Vec::new()));
+    let task_accepted = accepted.clone();
+    let run = host
+        .submit_scoped(
+            WorkOptions::with_id("domain-events").unwrap(),
+            move |context| {
+                task_accepted.borrow_mut().extend([
+                    context.emit(
+                        Value::Keyword("task/keyword".into()),
+                        Value::Number(1),
+                    ),
+                    context.emit(Value::Symbol("task/symbol".into()), Value::Number(2)),
+                    context.emit(Value::String("task/string".into()), Value::Number(3)),
+                    context.emit(Value::Number(42), Value::Number(4)),
+                ]);
+                Ok(Value::Keyword("done".into()))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(
+        run.work_result().state(),
+        PromiseState::Fulfilled(Value::Keyword("done".into()))
+    );
+    assert_eq!(*accepted.borrow(), vec![true, true, true, false]);
+}
+
+#[test]
 fn stop_drains_admitted_work_while_kill_cancels_it() {
     let host = WorkHost::new();
     let draining = host

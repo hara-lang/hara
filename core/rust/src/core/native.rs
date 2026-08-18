@@ -285,7 +285,35 @@ fn native_test_checked_result(name: Value, metadata: Option<Value>, checked: Val
     Value::Map(result)
 }
 
-fn native_test_run(cases: Value, check_function: Option<Value>) -> Result<Value, String> {
+fn native_test_lifecycle_error(phase: &str, error: String) -> Value {
+    let name = Value::String(format!("test {phase}"));
+    let phase = Value::Keyword(phase.into());
+    let mut result = match native_test_error(
+        name,
+        Value::Nil,
+        error,
+    ) {
+        Value::Map(result) => result,
+        _ => unreachable!(),
+    };
+    result = result.assoc_value(Value::Keyword("phase".into()), phase);
+    Value::Map(result)
+}
+
+fn native_test_lifecycle(lifecycle: &Value, phase: &str) -> Result<(), String> {
+    let Some(function) = map_value(lifecycle, &Value::Keyword(phase.into())).cloned() else {
+        return Ok(());
+    };
+    call_value(function, Vec::new())
+        .and_then(native_test_await)
+        .map(|_| ())
+}
+
+fn native_test_run(
+    cases: Value,
+    check_function: Option<Value>,
+    lifecycle: Option<Value>,
+) -> Result<Value, String> {
     let cases = match cases {
         Value::Vector(cases) => cases.iter().cloned().collect::<Vec<_>>(),
         Value::Tuple(cases) => cases.iter().cloned().collect::<Vec<_>>(),
@@ -297,7 +325,18 @@ fn native_test_run(cases: Value, check_function: Option<Value>) -> Result<Value,
         Some(Value::Vector(results)) => results.iter().cloned().collect::<Vec<_>>(),
         _ => Vec::new(),
     };
-    for (index, case) in cases.iter().enumerate() {
+    let setup_ok = match &lifecycle {
+        Some(lifecycle) => match native_test_lifecycle(lifecycle, "setup") {
+            Ok(()) => true,
+            Err(error) => {
+                results.push(native_test_lifecycle_error("setup", error));
+                false
+            }
+        },
+        None => true,
+    };
+    if setup_ok {
+      for (index, case) in cases.iter().enumerate() {
         let fallback_name = Value::String(format!("invalid case {}", index + 1));
         let Some(entries) = map_entries(case) else {
             results.push(native_test_error(
@@ -337,7 +376,13 @@ fn native_test_run(cases: Value, check_function: Option<Value>) -> Result<Value,
                 native_test_error(name, Value::Nil, "Test/run case requires :expected".into())
             }
         };
-        results.push(result);
+          results.push(result);
+      }
+    }
+    if let Some(lifecycle) = &lifecycle {
+        if let Err(error) = native_test_lifecycle(lifecycle, "teardown") {
+            results.push(native_test_lifecycle_error("teardown", error));
+        }
     }
     let output = Value::Vector(PVector::from_iter(results));
     state.intern("results", output.clone());
@@ -446,18 +491,24 @@ fn native_test_operation(
             Ok(native_test_result(name, actual, expected))
         }
         "run" => {
-            if forms.is_empty() || forms.len() > 2 {
+            if forms.is_empty() || forms.len() > 3 {
                 return Err(
-                    "std.native.Test/run expects cases and an optional check function".into(),
+                    "std.native.Test/run expects cases, an optional check function, and an optional lifecycle map".into(),
                 );
             }
             let cases = eval(&forms[0], env)?;
-            let check_function = if forms.len() == 2 {
-                Some(eval(&forms[1], env)?)
-            } else {
-                None
+            let second = if forms.len() >= 2 { Some(eval(&forms[1], env)?) } else { None };
+            let third = if forms.len() == 3 { Some(eval(&forms[2], env)?) } else { None };
+            let (check_function, lifecycle) = match (second, third) {
+                (Some(check), Some(lifecycle)) => (Some(check), Some(lifecycle)),
+                (Some(value), None) if map_entries(&value).is_some() => (None, Some(value)),
+                (check, None) => (check, None),
+                (None, Some(_)) => unreachable!(),
             };
-            native_test_run(cases, check_function)
+            if lifecycle.as_ref().is_some_and(|value| map_entries(value).is_none()) {
+                return Err("std.native.Test/run lifecycle must be a map".into());
+            }
+            native_test_run(cases, check_function, lifecycle)
         }
         "passed?" => {
             if forms.len() != 1 {

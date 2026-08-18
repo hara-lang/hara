@@ -15,6 +15,18 @@ import java.util.Set;
 
 public class HaraGeneratedLibrariesTest {
   @Test
+  public void removedWorkCompatibilityNamespacesCannotBeRequired() {
+    try (Context context = context()) {
+      assertThrows(
+          PolyglotException.class,
+          () -> context.eval(HaraLanguage.ID, "(require 'std.work)"));
+      assertThrows(
+          PolyglotException.class,
+          () -> context.eval(HaraLanguage.ID, "(require 'std.work.recipe)"));
+    }
+  }
+
+  @Test
   @SuppressWarnings("unchecked")
   public void foundationBootstrapFamilyIsExactlySixNamespaces() throws Exception {
     Field field = HaraContext.class.getDeclaredField("GENERATED_LIBRARIES");
@@ -276,6 +288,30 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void nativeTestRunSupportsLifecycleMaps() {
+    try (Context context = context()) {
+      String result = context.eval(HaraLanguage.ID,
+          "(let [events (atom [])] "
+              + "[(Test/run [{:name \"case\" :test (fn [] (swap! events conj :case) 1) :expected 1}] "
+              + "{:setup (fn [] (swap! events conj :setup)) "
+              + ":teardown (fn [] (swap! events conj :teardown))}) @events])").toString();
+      assertTrue(result, result.contains(":pass true"));
+      assertTrue(result, result.contains("[:setup :case :teardown]"));
+
+      String failure = context.eval(HaraLanguage.ID,
+          "(let [events (atom [])] "
+              + "[(Test/run [{:name \"skipped\" :test (fn [] (swap! events conj :case)) :expected nil}] "
+              + "{:setup (fn [] (throw \"setup boom\")) "
+              + ":teardown (fn [] (swap! events conj :teardown) (throw \"teardown boom\"))}) @events])")
+          .toString();
+      assertTrue(failure, failure.contains(":phase :setup"));
+      assertTrue(failure, failure.contains(":phase :teardown"));
+      assertTrue(failure, failure.contains("[:teardown]"));
+      assertTrue(failure, !failure.contains(":name \"skipped\""));
+    }
+  }
+
+  @Test
   public void intrinsicsCanExcludeAndRenameGeneratedAliases() {
     try (Context context = context()) {
       assertEquals(
@@ -412,7 +448,7 @@ public class HaraGeneratedLibrariesTest {
                   HaraLanguage.ID,
                   "(ns app.require-order "
                       + "(:require [std.foundation :refer :all :exclude [filter]] "
-                      + "          [std.work.protocol :as protocol])) "
+                      + "          [work.base.model :as work-model])) "
                       + "(defn filter [value] 42) (filter :value)")
               .asLong());
     }

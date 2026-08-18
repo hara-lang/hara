@@ -1,0 +1,51 @@
+(ns lang.common.book-test
+  (:use code.test)
+  (:require [lang.common.book :as book]
+            [lang.common.book-module :as module]
+            [lang.common.book-entry :as entry]))
+
+(fact "books are persistent dependency collections"
+  (let [base (book/book {:lang :js :grammar [:grammar :js 1]})
+        module-value (module/book-module {:lang :js :id 'demo})
+        entry-value (entry/book-entry {:lang :js
+                                       :module 'demo
+                                       :id 'value
+                                       :section :code
+                                       :deps '#{other/value}})
+        updated (book/put-entry
+                 (book/put-module base module-value)
+                 entry-value)]
+    [(book/book? updated)
+     (:revision base)
+     (:revision updated)
+     (book/get-code-entry updated 'demo/value)
+     (set (IDeps/dep-keys updated))
+     (IDeps/dep-entries updated 'demo/value)])
+  => [true 0 2
+      (entry/book-entry {:lang :js
+                         :module 'demo
+                         :id 'value
+                         :section :code
+                         :deps '#{other/value}})
+      '#{demo/value}
+      '#{other/value}])
+
+(fact "book coordinates pin language, identity, and version"
+  (book/book-coordinate
+   (book/book {:lang :python
+               :id :runtime
+               :version 3
+               :grammar [:grammar :python 2]}))
+  => [:book :python :runtime 3])
+
+(fact "books retain their exact grammar selection"
+  (let [value (book/book {:lang :js
+                          :grammar [:grammar :js 1]
+                          :coordinate [:grammar :js 1]
+                          :selection {:grammar {:token {}}}})]
+    [(:grammar value) (:coordinate value) (:selection value)])
+  => [[:grammar :js 1]
+      [:grammar :js 1]
+      {:grammar {:token {}}}])
+
+(run {:namespace "lang.common.book-test"})

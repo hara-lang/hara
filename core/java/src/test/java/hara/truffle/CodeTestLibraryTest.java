@@ -14,7 +14,7 @@ public class CodeTestLibraryTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(ns code-test-truffle-probe (:use code.test) (:require [std.work :as work])) "
+                  "(ns code-test-truffle-probe (:use code.test) (:require [work.base :as work])) "
                       + "(fact \"portable\" (promise/from 42) => 42) "
                       + "(let [observer (work/recording-observer) "
                       + "      runtime (work/local-runtime {:observer observer}) "

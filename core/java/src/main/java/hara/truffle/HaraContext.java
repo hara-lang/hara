@@ -3495,9 +3495,9 @@ public final class HaraContext {
   }
 
   private Object nativeTestRun(Object[] values) {
-    if (values.length < 1 || values.length > 2) {
+    if (values.length < 1 || values.length > 3) {
       throw new HaraException(
-          "std.native.Test/run expects cases and an optional check function");
+          "std.native.Test/run expects cases, an optional check function, and an optional lifecycle map");
     }
     Object rawCases = HaraBox.unwrap(values[0]);
     boolean vectorCases = rawCases instanceof hara.lang.data.Vector<?>
@@ -3506,9 +3506,16 @@ public final class HaraContext {
       throw new HaraException("std.native.Test/run expects one vector of test cases");
     }
     ILinearType<?> cases = (ILinearType<?>) rawCases;
-    Object checkFunction = values.length == 2 ? HaraBox.unwrap(values[1]) : null;
+    Object second = values.length >= 2 ? HaraBox.unwrap(values[1]) : null;
+    Object lifecycle = values.length == 3 ? HaraBox.unwrap(values[2])
+        : second instanceof IMapType<?, ?> ? second : null;
+    Object checkFunction = lifecycle == second ? null : second;
+    if (lifecycle != null && !(lifecycle instanceof IMapType<?, ?>)) {
+      throw new HaraException("std.native.Test/run lifecycle must be a map");
+    }
+    boolean setupOk = nativeTestLifecycle(lifecycle, "setup");
     int index = 0;
-    for (Object rawCase : cases) {
+    if (setupOk) for (Object rawCase : cases) {
       index += 1;
       Object fallbackName = "invalid case " + index;
       if (!(HaraBox.unwrap(rawCase) instanceof IMapType<?, ?> testCase)) {
@@ -3542,7 +3549,28 @@ public final class HaraContext {
         }
       }
     }
+    nativeTestLifecycle(lifecycle, "teardown");
     return hara.lang.data.Vector.Standard.from(null, nativeTestResults.toArray());
+  }
+
+  @SuppressWarnings("unchecked")
+  private boolean nativeTestLifecycle(Object lifecycle, String phase) {
+    if (!(lifecycle instanceof IMapType<?, ?> lifecycleMap)
+        || !hasMapKey(lifecycleMap, Keyword.create(phase))) {
+      return true;
+    }
+    try {
+      Object function = lookupValue(lifecycleMap, Keyword.create(phase));
+      nativeTestAwait(invokeCallable(function, new Object[0]));
+      return true;
+    } catch (RuntimeException error) {
+      String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+      IMapType<Object, Object> result = (IMapType<Object, Object>) nativeTestError(
+          "test " + phase, null, message);
+      result = (IMapType<Object, Object>) result.assoc(Keyword.create("phase"), Keyword.create(phase));
+      nativeTestResults.add(result);
+      return false;
+    }
   }
 
   private Object nativeTestAwait(Object value) {

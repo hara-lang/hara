@@ -20,15 +20,33 @@
       ["Returns the answer."
        "Returns the schema answer."]])
 
-(fact "native definition families and defimpl constructors are indexed"
+(fact "registered definition families and defstruct constructors are indexed"
   (map (fn [entry] [(:kind entry) (:name entry)])
        (:definitions
         (framework/analyse-source
-         "(ns demo.core)\n(defn.pg fetch [] nil)\n(impl/defimpl Task [value])\n")))
+         "(ns demo.core)\n(defn.pg fetch [] nil)\n(defstruct Task [value])\n")))
   => [[:function "fetch"]
-      [:implementation "Task"]
+      [:struct "Task"]
       [:constructor "map->Task"]
       [:constructor "->Task"]])
+
+(fact "defimpl is not part of the native framework surface"
+  (:definitions
+   (framework/analyse-source
+    "(ns demo.core)\n(impl/defimpl Legacy [value])\n"))
+  => [])
+
+(fact "Test/run analysis recognises checker, lifecycle, and do wrappers"
+  [(select-keys
+    (first
+     (framework/analyse-test-runs
+      "(Test/run [] check {:setup before :teardown after})"))
+    [:checker :lifecycle :setup :teardown])
+   (count
+    (framework/analyse-test-runs
+     "(do (prepare) (Test/run [] {:setup before}))"))]
+  => [{:checker true :lifecycle true :setup true :teardown true}
+      1])
 
 (fact "literal grep reports every exact match column"
   (framework/grep-source "alpha alpha\nbeta" "alpha")

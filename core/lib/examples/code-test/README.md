@@ -11,6 +11,6 @@ Each file declares its own namespace. The `fact` forms register test bodies and 
 results.
 
 `advanced.hal` demonstrates matchers, fixtures, and filtering. `tasks.hal`
-demonstrates `std.work.command` templates with an explicit work runtime.
+demonstrates `work.flow.task.command` templates with an explicit work runtime.
 
 The Java-backed libraries are discovered through the Hara library-provider SPI and installed lazily when their namespace is required.

@@ -22,10 +22,21 @@ final class HbxBundleLibrary {
           "code.test.artifact",
           "code.test.base.context",
           "code.test.base.executive",
-          "std.foundation.pretty",
-          "std.work.template.task");
+          "std.foundation.pretty");
   private static final Set<String> REMOVED_MODULES =
-      Set.of("std.pretty", "std.foundation.pretty.engine");
+      Set.of(
+          "std.pretty",
+          "std.foundation.pretty.engine",
+          "std.work",
+          "std.work.command",
+          "std.work.command.cli",
+          "std.work.command.report",
+          "std.work.command.result",
+          "std.work.command.selector",
+          "std.work.command.task",
+          "std.work.recipe",
+          "std.work.report",
+          "std.work.template.task");
 
   record Module(String namespace, HbxBundleCodec.Module descriptor, HbcProgram program) {}
 

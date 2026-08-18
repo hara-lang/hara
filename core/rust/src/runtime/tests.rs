@@ -2792,6 +2792,36 @@ mod tests {
     }
 
     #[test]
+    fn native_test_run_supports_lifecycle_maps() {
+        let mut runtime = Runtime::new();
+        let output = runtime
+            .eval_text(
+                "(let [events (atom [])] \
+                   [(Test/run [{:name \"case\" :test (fn [] (swap! events conj :case) 1) :expected 1}] \
+                              {:setup (fn [] (swap! events conj :setup)) \
+                               :teardown (fn [] (swap! events conj :teardown))}) \
+                    @events])",
+            )
+            .unwrap();
+        assert!(output.contains(":pass true"), "{output}");
+        assert!(output.contains("[:setup :case :teardown]"), "{output}");
+
+        let failure = runtime
+            .eval_text(
+                "(let [events (atom [])] \
+                   [(Test/run [{:name \"skipped\" :test (fn [] (swap! events conj :case)) :expected nil}] \
+                              {:setup (fn [] (throw \"setup boom\")) \
+                               :teardown (fn [] (swap! events conj :teardown) (throw \"teardown boom\"))}) \
+                    @events])",
+            )
+            .unwrap();
+        assert!(failure.contains(":phase :setup"), "{failure}");
+        assert!(failure.contains(":phase :teardown"), "{failure}");
+        assert!(failure.contains("[:teardown]"), "{failure}");
+        assert!(!failure.contains(":name \"skipped\""), "{failure}");
+    }
+
+    #[test]
     fn removed_builtins_config_is_rejected_by_runtime() {
         let mut runtime = Runtime::new();
         assert!(runtime
@@ -3627,8 +3657,8 @@ mod tests {
                     runtime
                         .eval_native(
                             "(ns std-work-command-rust-probe \
-                       (:require [std.work :as work] \
-                                 [std.work.command :as command])) \
+                       (:require [work.base :as work] \
+                                 [work.flow.task.command :as command])) \
                      (def double-command \
                        (command/single \
                         {:id :probe/double :version 1} \
@@ -3655,6 +3685,20 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    #[test]
+    fn removed_work_compatibility_namespaces_are_not_embedded() {
+        let mut runtime = Runtime::new();
+        for namespace in ["std.work", "std.work.recipe"] {
+            let error = runtime
+                .eval_text(&format!("(require '{namespace})"))
+                .unwrap_err();
+            assert!(
+                error.contains("missing"),
+                "unexpected error requiring removed {namespace}: {error}"
+            );
+        }
     }
 
     #[test]

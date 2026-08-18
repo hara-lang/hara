@@ -366,10 +366,16 @@ public final class HaraWorkHost implements IWorkHost {
 
     public boolean emit(Object type, Object data) {
       if (run.closed()) return false;
-      Keyword eventType =
-          type instanceof Keyword keyword
-              ? keyword
-              : Keyword.create(String.valueOf(type).replaceFirst("^:", ""));
+      Keyword eventType;
+      if (type instanceof Keyword keyword) {
+        eventType = keyword;
+      } else if (type instanceof Symbol symbol) {
+        eventType = Keyword.create(symbol.getNamespace(), symbol.getName());
+      } else if (type instanceof String name) {
+        eventType = Keyword.create(name.replaceFirst("^:", ""));
+      } else {
+        return false;
+      }
       run.publishEvent(eventType, data, false);
       return true;
     }

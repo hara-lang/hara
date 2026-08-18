@@ -63,7 +63,7 @@ test("portable command templates emit structured reports through browser wasm", 
   const runtime = new Runtime();
   const result = runtime.eval(
     "(ns std-work-command-browser-probe" +
-      " (:require [std.work :as work] [std.work.command :as command]))" +
+      " (:require [work.base :as work] [work.flow.task.command :as command]))" +
       " (def double-command" +
       "  (command/single {:id :probe/double :version 1}" +
       "   {:process (work/pure :probe/process" +

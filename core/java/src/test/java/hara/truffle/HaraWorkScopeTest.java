@@ -7,12 +7,15 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import hara.lang.data.Keyword;
+import hara.lang.data.Symbol;
 import hara.lang.data.types.IMapType;
 import hara.lang.protocol.IWorkRun;
 import java.util.UUID;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.graalvm.polyglot.Context;
 import org.junit.Test;
 
@@ -28,6 +31,31 @@ public class HaraWorkScopeTest {
   private static final Keyword CANCELLED = Keyword.create("cancelled");
   private static final Keyword COMPLETED = Keyword.create("completed");
   private static final Keyword DEADLINE_EXCEEDED = Keyword.create("deadline-exceeded");
+
+  @Test
+  public void domainEventsAcceptOnlyNamedEventTypes() {
+    try (Context polyglot = Context.newBuilder(HaraLanguage.ID).build()) {
+      HaraContext context = initialize(polyglot);
+      AtomicReference<List<Boolean>> accepted = new AtomicReference<>();
+      Object executor =
+          context.libraryFunction(
+              "work.scope/events",
+              arguments -> {
+                HaraWorkHost.WorkContext workContext = HaraWorkHost.currentWorkContext();
+                accepted.set(
+                    List.of(
+                        workContext.emit(Keyword.create("task", "keyword"), 1L),
+                        workContext.emit(Symbol.create("task", "symbol"), 2L),
+                        workContext.emit("task/string", 3L),
+                        workContext.emit(42L, 4L)));
+                return Keyword.create("done");
+              });
+
+      IWorkRun run = submit(context, "events", executor, java.util.Map.of());
+      assertEquals(Keyword.create("done"), run.workResult().deref());
+      assertEquals(List.of(true, true, true, false), accepted.get());
+    }
+  }
 
   @Test
   public void repeatedCancellationIsCooperativeAndFinalizesExactlyOnce() throws Exception {
