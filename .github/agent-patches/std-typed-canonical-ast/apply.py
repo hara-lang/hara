@@ -64,6 +64,12 @@ replace_between(
     "\n\n  private Object hostCall",
     payload("java-schema-ast.txt"),
 )
+replace_once(
+    "core/java/src/main/java/hara/truffle/HalcSchema.java",
+    "import hara.lang.data.types.ILinearType;\n",
+    "import hara.lang.data.types.ILinearType;\n"
+    "import hara.lang.data.types.IMapType;\n",
+)
 replace_between(
     "core/java/src/main/java/hara/truffle/HalcSchema.java",
     "    if (schema instanceof hara.lang.data.types.IMapType<?, ?> map) {",
