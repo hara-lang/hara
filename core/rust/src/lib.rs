@@ -91,4 +91,28 @@ pub fn restricted_sandbox_runtime() -> Runtime {
     Runtime::sandbox()
 }
 
+/// Constructs the same restricted Runtime while restoring exactly the fully
+/// qualified `std.native.Host/call` operation behind a caller-supplied handler.
+///
+/// The unqualified `Host` alias and the `describe`, `capabilities`, and
+/// `capability?` methods remain absent. The handler is therefore the sole
+/// authority boundary and is expected to reject every service and method that
+/// the embedding provider has not explicitly granted.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn restricted_sandbox_runtime_with_host(
+    handler: Rc<dyn Fn(String, String, Vec<core::Value>) -> Result<core::Value, String>>,
+) -> Runtime {
+    let mut runtime = Runtime::sandbox();
+    runtime
+        .namespace_registry
+        .find_or_create("std.native.Host")
+        .intern_with_origin(
+            "call",
+            core::structural_function_value("std.native.Host/call"),
+            kernel::VarOrigin::RuntimePrimitive,
+        );
+    runtime.install_native_host_handler(handler);
+    runtime
+}
+
 include!("runtime/tests.rs");
