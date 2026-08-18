@@ -1,8 +1,8 @@
 use hara_wasm::core::Value;
 use hara_wasm::{
-    restricted_sandbox_runtime, EvaluationId, ResolvedSandboxSpec, SandboxError,
-    SandboxErrorCode, SandboxInstance, SandboxPending, SandboxProvider, SandboxSpec,
-    SandboxState, SessionKernel,
+    restricted_sandbox_runtime, restricted_sandbox_runtime_with_host, EvaluationId,
+    ResolvedSandboxSpec, SandboxError, SandboxErrorCode, SandboxInstance, SandboxPending,
+    SandboxProvider, SandboxSpec, SandboxState, SessionKernel,
 };
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -135,11 +135,49 @@ fn external_crate_can_construct_only_the_restricted_runtime_profile() {
         "Socket/connect",
         "Process/exec",
         "Host/call",
+        "std.native.Host/call",
     ] {
         let error = runtime.eval_native_value(forbidden).unwrap_err();
         assert!(
             error.contains("unbound symbol"),
             "restricted Runtime unexpectedly resolved {forbidden}: {error}"
+        );
+    }
+}
+
+#[test]
+fn external_crate_can_inject_only_one_fully_qualified_host_call() {
+    let mut runtime = restricted_sandbox_runtime_with_host(Rc::new(
+        |service, method, arguments| {
+            if service == "hoplite.console" && method == "status" && arguments.is_empty() {
+                Ok(Value::Number(42))
+            } else {
+                Err("sandbox host service denied".into())
+            }
+        },
+    ));
+    assert_eq!(
+        runtime
+            .eval_native_value(
+                "(deref (std.native.Host/call \"hoplite.console\" \"status\" []))",
+            )
+            .unwrap(),
+        Value::Number(42)
+    );
+
+    for forbidden in [
+        "Host/call",
+        "std.native.Host/describe",
+        "std.native.Host/capabilities",
+        "std.native.Host/capability?",
+        "Runtime/current",
+        "Kernel/current",
+        "Sandbox/open",
+    ] {
+        let error = runtime.eval_native_value(forbidden).unwrap_err();
+        assert!(
+            error.contains("unbound symbol"),
+            "narrow sandbox host unexpectedly resolved {forbidden}: {error}"
         );
     }
 }
