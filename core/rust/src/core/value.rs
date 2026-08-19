@@ -639,14 +639,21 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
     vec![
         (
             "ex",
-            native_function("ex", 2, |arguments| {
+            native_variadic_function("ex", |arguments| {
+                if arguments.len() < 2 || arguments.len() % 2 != 0 {
+                    return Err("ex expects a code, attributes map, and key/value pairs".into());
+                }
                 let Value::Keyword(code) = &arguments[0] else {
                     return Err("ex expects a namespaced keyword code".into());
                 };
                 if !code.as_str().contains('/') {
                     return Err("ex expects a namespaced keyword code".into());
                 }
-                let Some(entries) = map_entries(&arguments[1]) else {
+                let mut attributes = arguments[1].clone();
+                for pair in arguments[2..].chunks_exact(2) {
+                    attributes = map_assoc_value(&attributes, pair[0].clone(), pair[1].clone())?;
+                }
+                let Some(entries) = map_entries(&attributes) else {
                     return Err("ex expects an attributes map".into());
                 };
                 let lookup = |name: &str| {
@@ -681,7 +688,7 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                     }
                 }
                 let mut data = map_assoc_value(
-                    &arguments[1],
+                    &attributes,
                     Value::Keyword("ex/code".into()),
                     Value::Keyword(code.clone()),
                 )?;

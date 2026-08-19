@@ -2441,11 +2441,18 @@ public final class HaraContext {
         new VariadicBuiltin(
             "ex",
             values -> {
-              if (values.length != 2) {
-                throw new HaraException("ex expects a code and attributes map");
+              if (values.length < 2 || values.length % 2 != 0) {
+                throw new HaraException("ex expects a code, attributes map, and key/value pairs");
               }
               Object codeValue = values[0];
-              Object attributesValue = values[1];
+              Object attributesValue;
+              if (values.length == 2) {
+                attributesValue = values[1];
+              } else {
+                Object[] assocValues = new Object[values.length - 1];
+                System.arraycopy(values, 1, assocValues, 0, assocValues.length);
+                attributesValue = associateValues(assocValues);
+              }
               Object rawCode = HaraBox.unwrap(codeValue);
               Object rawAttributes = HaraBox.unwrap(attributesValue);
               if (!(rawCode instanceof Keyword code) || code.getNamespace() == null) {

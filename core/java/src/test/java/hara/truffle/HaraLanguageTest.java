@@ -2630,6 +2630,14 @@ public class HaraLanguageTest {
       assertEquals(
           "hara.lang.base.Ex$Info",
           context.eval(HaraLanguage.ID, "(ex-native-type (ex :file/read {}))").asString());
+      assertEquals(
+          "[:file/read \"missing\" :ex.class/io]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [error (ex :file/read {} :ex/message \"missing\" :ex/class :ex.class/io)] "
+                      + "[(:ex/code (ex-data error)) (ex-message error) (ex-class error)])")
+              .toString());
       PolyglotException malformed =
           assertThrows(
               PolyglotException.class,

@@ -4698,6 +4698,15 @@ mod tests {
             ":ex.class/io"
         );
         assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [error (ex :file/read {} :ex/message \"missing\" :ex/class :ex.class/io)] \
+                       [(:ex/code (ex-data error)) (ex-message error) (ex-class error)])"
+                )
+                .unwrap(),
+            "[:file/read \"missing\" :ex.class/io]"
+        );
+        assert_eq!(
             runtime.eval_text("(ex-class (ex :file/read {}))").unwrap(),
             "nil"
         );
