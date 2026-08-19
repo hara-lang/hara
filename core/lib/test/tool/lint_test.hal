@@ -2,35 +2,71 @@
   (:use code.test)
   (:require [tool.lint :as lint]))
 
+(defn report-data
+  [outcome]
+  (Result/data outcome))
+
 ^{:refer 'tool.lint/lint-source
   :id 'resolution-arity-and-literal-types}
 (fact "reports deterministic semantic findings without evaluating source"
   (map :type
-       (lint/lint-source
-        "(ns demo.core)\n(defn add [x] (inc x))\n(add 1 2)\n(inc \"x\")\nmissing"))
+       (:findings
+        (report-data
+         (lint/lint-source
+          "(ns demo.core)\n(defn add [x] (inc x))\n(add 1 2)\n(inc \"x\")\nmissing"))))
   => [:tool.lint/invalid-arity
       :tool.lint/type-mismatch
       :tool.lint/unresolved-symbol])
 
 ^{:refer 'tool.lint/lint-source
   :id 'recovering-reader}
-(fact "continues after malformed top-level forms"
-  (map :type (lint/lint-source "(def x 1)\n)\nmissing"))
-  => [:tool.lint/reader-error :tool.lint/unresolved-symbol])
+(fact "continues after malformed top-level forms and reports in canonical position order"
+  (map :type
+       (:findings
+        (report-data (lint/lint-source "(def x 1)\n)\nmissing"))))
+  => [:tool.lint/unresolved-symbol :tool.lint/reader-error])
 
 ^{:refer 'tool.lint/lint-source
   :id 'redundant-vector-materialization}
 (fact "reports vec only for a proven materialized-vector chain"
   [(map :type
-        (lint/lint-source
-         "(ns demo.core)\n(let [covered (vec [])] (vec (filter identity covered)))"))
+        (:findings
+         (report-data
+          (lint/lint-source
+           "(ns demo.core)\n(let [covered (vec [])] (vec (filter identity covered)))"))))
    (map :type
-        (lint/lint-source
-         "(ns demo.core)\n(let [covered []] (vec (filter identity covered)))"))
+        (:findings
+         (report-data
+          (lint/lint-source
+           "(ns demo.core)\n(let [covered []] (vec (filter identity covered)))"))))
    (map :type
-        (lint/lint-source
-         "(ns demo.core)\n(let [references #{}] (vec (sort-by str (filter identity references))))"))]
+        (:findings
+         (report-data
+          (lint/lint-source
+           "(ns demo.core)\n(let [references #{}] (vec (sort-by str (filter identity references))))"))))]
   => [[:tool.lint/redundant-vec] [] []])
+
+^{:refer 'tool.lint/lint-source
+  :id 'result-report-boundary}
+(fact "returns Result success even when the completed report contains findings"
+  (let [outcome (lint/lint-source "missing")
+        report (Result/data outcome)]
+    [(Result/success? outcome)
+     (map :type (:findings report))
+     (:summary report)
+     (:tool.lint/operation (Result/context outcome))])
+  => [true
+      [:tool.lint/unresolved-symbol]
+      {:total 1 :error 1 :warning 0}
+      :source])
+
+^{:refer 'tool.lint/lint-file
+  :id 'result-error-boundary}
+(fact "returns Result error when the linter boundary itself fails"
+  (let [outcome (lint/lint-file "__tool_lint_missing_result_boundary__.hal")]
+    [(Result/error? outcome)
+     (:tool.lint/operation (Result/context outcome))])
+  => [true :file])
 
 ^{:refer 'tool.lint/analyze-source
   :id 'public-inference-results}
