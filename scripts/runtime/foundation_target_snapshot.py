@@ -14,8 +14,6 @@ from typing import Iterable, Sequence
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY = ROOT / "core/spec/foundation-script-policy.json"
 DEFAULT_INVENTORY = ROOT / "core/spec/foundation-script-inventory.json"
-DEFAULT_ROUTES = ROOT / "core/spec/clj-hal-routes.json"
-DEFAULT_CORPUS = ROOT / "core/spec/clj-hal-corpus.json"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -81,29 +79,6 @@ def script_paths(inventory: dict) -> list[str]:
     return sorted(paths)
 
 
-def corpus_paths(corpus: dict) -> list[str]:
-    paths: set[str] = set()
-    for entry in corpus.get("namespaces", []):
-        for target in entry.get("targets", []):
-            if not isinstance(target, dict) or not target.get("blob"):
-                continue
-            path = evidence_path(target.get("path"))
-            if path:
-                paths.add(path)
-        target = entry.get("target")
-        if isinstance(target, dict) and target.get("blob"):
-            path = evidence_path(target.get("path"))
-            if path:
-                paths.add(path)
-        if entry.get("target_blob"):
-            path = evidence_path(entry.get("target_path"))
-            if path:
-                paths.add(path)
-    if not paths:
-        raise SnapshotError("Clojure-to-HAL corpus has no target blob paths")
-    return sorted(paths)
-
-
 def changed_paths(root: Path, commit: str, paths: Sequence[str]) -> list[str]:
     result = git(root, "diff", "--quiet", commit, "--", *paths, check=False)
     if result.returncode == 0:
@@ -152,43 +127,22 @@ def verify_script_snapshot(
     )
 
 
-def verify_corpus_snapshot(
-    routes: dict,
-    corpus: dict,
-    target_root: Path,
-) -> dict:
-    return verify_ledger(
-        target_root,
-        "Clojure-to-HAL corpus",
-        routes.get("target", {}).get("base_commit", ""),
-        corpus.get("target", {}).get("base_commit", ""),
-        corpus_paths(corpus),
-    )
-
-
 def verify(
     ledger: str,
     policy: dict,
     inventory: dict,
-    routes: dict,
-    corpus: dict,
     target_root: Path,
 ) -> dict:
     result: dict[str, dict] = {}
     if ledger in {"all", "script"}:
-        result["script"] = verify_script_snapshot(policy, inventory, target_root)
-    if ledger in {"all", "corpus"}:
-        result["corpus"] = verify_corpus_snapshot(routes, corpus, target_root)
-    return result
+        result["script"] = verify_script_snapshot(policy, inventory, target_root)    return result
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ledger", choices=("all", "script", "corpus"), default="all")
+    parser.add_argument("--ledger", choices=("all", "script"), default="all"), default="all")
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
-    parser.add_argument("--routes", type=Path, default=DEFAULT_ROUTES)
-    parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--target-root", type=Path, default=ROOT)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
@@ -196,10 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         result = verify(
             args.ledger,
             load_json(args.policy),
-            load_json(args.inventory),
-            load_json(args.routes),
-            load_json(args.corpus),
-            args.target_root,
+            load_json(args.inventory),            args.target_root,
         )
     except SnapshotError as error:
         print(f"foundation-target-snapshot: {error}", file=sys.stderr)

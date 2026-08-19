@@ -45,15 +45,15 @@ FOUNDATION_TEST_PRIMITIVES_TEST = pathlib.Path(
 # These are migration evidence, not live dependencies.  Every other occurrence
 # of a retired namespace is a hard-cut failure.
 LEGACY_ALLOWLIST = {
-    "core/lib/src/code/translate/rules.hal",
-    "core/rust/hal-src/code/translate/rules.hal",
+    "core/lib/src/code/migrate/rules.hal",
+    "core/rust/hal-src/code/migrate/rules.hal",
     "core/lib/test/code/translate_rules_test.hal",
     "core/lib/test-lang/lang/core_test.hal",
     "core/spec/clj-hal-routes.json",
-    "core/spec/clj-hal-corpus.json",
+    "core/spec/foundation-migrate.json",
     "core/spec/foundation-script-inventory.json",
     "core/rust/src/lib.rs",
-    "scripts/runtime/clj_hal_corpus.py",
+    "scripts/runtime/foundation_migrate.py",
     "scripts/runtime/retired_stdlib_hard_cut.py",
     "scripts/runtime/retired_stdlib_hard_cut_test.py",
 }
