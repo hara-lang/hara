@@ -16,31 +16,13 @@
                        (get-in scan [:namespace :name]))
                      scans))))
 
-(defn scan-input
-  "Projects a scanned document to portable task input."
-  [scan]
-  {:file (get-in scan [:document :file])
-   :source (get-in scan [:document :source])})
-
-(defn prepare-scans
-  "Prepares immutable portable task input from host-side scans."
-  [scans options]
-  (let [scans (vec scans)]
-    {:documents (vec (map scan-input scans))
-     :options (or options {})
-     :known-namespaces (scan-namespaces scans)}))
-
-(defn lint-items
-  [input context]
-  (:documents input))
-
 (defn portable-definition
   [definition]
   (select-keys definition
                [:name :qualified :kind :visibility :signature]))
 
 (defn portable-document
-  "Removes live block values before a task result crosses the work boundary."
+  "Projects a host-side block analysis to portable lint data."
   [document]
   {:document (select-keys (:document document) [:file :source])
    :namespace (select-keys (:namespace document)
@@ -51,18 +33,33 @@
    :inferences (:inferences document)
    :inferred-functions (:inferred-functions document)})
 
+(defn prepare-scans
+  "Analyzes block-backed source host-side and prepares portable task input."
+  [scans options]
+  (let [scans (vec scans)
+        options (or options {})
+        known-namespaces (scan-namespaces scans)
+        documents
+        (vec
+         (map
+          (fn [scan]
+            (portable-document
+             (analyze/analyze-scan
+              scan
+              (assoc options :known-namespaces known-namespaces))))
+          scans))]
+    {:documents documents
+     :options options
+     :known-namespaces known-namespaces}))
+
+(defn lint-items
+  [input context]
+  (:documents input))
+
 (defn lint-item
+  "Task item boundary over already-portable source analysis."
   [subject context]
-  (let [input (:task/input subject)
-        item (:task/value subject)
-        options (:options input)
-        scan (analyze/scan-source (:source item) {:file (:file item)})]
-    (portable-document
-     (analyze/analyze-scan
-      scan
-      (assoc options
-             :known-namespaces
-             (:known-namespaces input))))))
+  (:task/value subject))
 
 (def.work lint-scans-work
   [:task]
@@ -86,7 +83,7 @@
                  :errors errors})))))
 
 (defn run-scans
-  "Runs portable prepared input through the canonical work.flow.task definition."
+  "Runs portable analyses through the canonical work.flow.task definition."
   [prepared]
   (flow-documents
    (work/run
@@ -110,10 +107,10 @@
      :summary (model/summarize findings)}))
 
 (defn lint-scans
-  "Lints already scanned documents through work.flow.task.
+  "Lints scans host-side, then routes portable analyses through work.flow.task.
 
-   Namespace discovery happens before execution. Live std.block values remain
-   host-side; each task receives source/file data and reparses locally."
+   std.block values never enter work state. The work layer owns ordered task
+   orchestration and result aggregation over immutable lint data."
   ([scans]
    (lint-scans scans {}))
   ([scans options]
@@ -139,7 +136,7 @@
         (project-paths current-project))))
 
 (defn lint-project
-  "Lints one project through the canonical task workflow."
+  "Lints one project through host analysis plus canonical task aggregation."
   ([current-project]
    (lint-project current-project {}))
   ([current-project options]
