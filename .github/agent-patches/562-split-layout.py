@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -253,5 +254,29 @@ link_fixture(
     benchmarks_checkout,
     ROOT.parent / "website/hara-benchmarks",
 )
+
+# The raw native crate embeds the release browser runtime at compile time.
+# Core CI currently invokes the raw tests without materializing that artifact,
+# so make the prerequisite explicit in this validated transport run.
+subprocess.run(["rustup", "target", "add", "wasm32-unknown-unknown"], check=True)
+wasm_env = os.environ.copy()
+wasm_env["CARGO_TARGET_DIR"] = str(ROOT / "target")
+subprocess.run(
+    [
+        str(ROOT / "scripts/runtime/cargo-wasm-build"),
+        "--manifest-path",
+        str(ROOT / "core/rust/Cargo.toml"),
+        "--target",
+        "wasm32-unknown-unknown",
+        "--release",
+        "--lib",
+    ],
+    cwd=ROOT,
+    env=wasm_env,
+    check=True,
+)
+wasm_artifact = ROOT / "target/wasm32-unknown-unknown/release/hara_wasm.wasm"
+if not wasm_artifact.is_file():
+    raise SystemExit(f"missing raw-test WASM prerequisite: {wasm_artifact}")
 
 print("applied the mechanical #562 compiler and machine layout split")
