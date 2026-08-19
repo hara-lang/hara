@@ -1,0 +1,52 @@
+(ns work.agent.provider.ephemeral
+  (:require [work.agent.protocol :as protocol]))
+
+(defrecord EphemeralAgent
+  [id profile capabilities]
+  protocol/IAgent
+  (agent-id [_] id)
+  (agent-profile [_] profile)
+  (agent-capabilities [_] capabilities))
+
+(defrecord EphemeralAuthority
+  [sequence]
+  protocol/IAgentAuthority
+  (agent-sign [_ envelope]
+    (assoc envelope
+           :signature/type :ephemeral
+           :signature/value
+           (str "ephemeral-" (swap! sequence inc))))
+  (agent-verify [_ envelope]
+    (= :ephemeral
+       (:signature/type envelope)))
+  (agent-authorize [_ _]
+    {:authorized true}))
+
+(defrecord EphemeralCoordinator
+  [state sequence]
+  protocol/IAgentCoordinator
+  (agent-submit [_ command]
+    (let [id (swap! sequence inc)]
+      (swap! state assoc id command)
+      {:receipt/id id
+       :receipt/status :accepted
+       :receipt/command command}))
+  (agent-query [_ query]
+    (filter
+     (fn [[_ value]]
+       (= query (:query value)))
+     @state)))
+
+(defn agent
+  ([id]
+   (agent id nil #{}))
+  ([id profile capabilities]
+   (EphemeralAgent. id profile capabilities)))
+
+(defn authority
+  []
+  (EphemeralAuthority. (atom 0)))
+
+(defn coordinator
+  []
+  (EphemeralCoordinator. (atom {}) (atom 0)))
