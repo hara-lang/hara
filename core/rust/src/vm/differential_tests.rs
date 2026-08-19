@@ -270,8 +270,7 @@ fn supported_forms_match_the_existing_evaluator() {
 
 #[test]
 fn structured_error_code_catches_match_in_evaluator_and_bytecode() {
-    let source =
-        "(try (throw (std.foundation/ex :file/not-found {:ex/message \"missing\"})) \
+    let source = "(try (throw (std.foundation/ex :file/not-found {:ex/message \"missing\"})) \
            (catch :socket/closed error :wrong) \
            (catch [:file/not-found :file/permission-denied] error :file-error))";
     let mut runtime = Runtime::new();
@@ -285,8 +284,7 @@ fn structured_error_code_catches_match_in_evaluator_and_bytecode() {
             .display(),
         ":file-error"
     );
-    let provenance_source =
-        "(let [exception (std.foundation/ex :test/provenance {})] \
+    let provenance_source = "(let [exception (std.foundation/ex :test/provenance {})] \
            (try (throw exception) \
              (catch caught (count (:ex/throws (std.foundation/ex-provenance caught))))))";
     assert_eq!(runtime.eval_native(provenance_source).unwrap(), "1");

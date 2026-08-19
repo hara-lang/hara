@@ -746,20 +746,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     target.reset_value(value.clone());
                     Ok(value)
                 }
-                Form::Symbol(n) if n == "__ex-at" => {
-                    let [_, Form::Number(line), Form::Number(column), arguments @ ..] = fs.as_slice() else {
-                        return Err("internal ex location marker is malformed".into());
-                    };
-                    let mut application = vec![Form::Symbol("ex".into())];
-                    application.extend_from_slice(arguments);
-                    let site = exception_site_at(*line as usize, *column as usize);
-                    with_exception_site(site.clone().unwrap_or(ExceptionSite {
-                        namespace: None,
-                        resource: None,
-                        line: *line as usize,
-                        column: *column as usize,
-                    }), || eval(&Form::List(application), env))
-                }
                 Form::Symbol(n) if n == "__throw-at" => {
                     let [_, Form::Number(line), Form::Number(column), value] = fs.as_slice() else {
                         return Err("internal throw location marker is malformed".into());

@@ -71,7 +71,8 @@ impl Compiler {
                 finally_body.extend_from_slice(&clause_children[1..]);
                 continue;
             }
-            if matches!(clause_children[1].form, Form::Symbol(name) if name != "Exception" && name != "Throwable") {
+            if matches!(clause_children[1].form, Form::Symbol(name) if name != "Exception" && name != "Throwable")
+            {
                 let Form::Symbol(name) = clause_children[1].form else {
                     return Err(CompileError::new(
                         CompileErrorKind::Arity,

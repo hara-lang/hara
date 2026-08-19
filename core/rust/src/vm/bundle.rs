@@ -842,7 +842,11 @@ mod tests {
                 .iter()
                 .map(|module| module.resource.as_str())
                 .collect::<Vec<_>>();
-            assert_eq!(actual.len(), sources.len(), "bundle inventory must be exact");
+            assert_eq!(
+                actual.len(),
+                sources.len(),
+                "bundle inventory must be exact"
+            );
             let mut inventory = actual.clone();
             inventory.sort_unstable();
             let mut expected = crate::FOUNDATION_BOOTSTRAP_INVENTORY.to_vec();

@@ -734,24 +734,6 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
             Box::new(move |r| k(r.map(Value::Recur))),
         ),
         Some("try") => try_cps(v, env, k),
-        Some("__ex-at") => {
-            let [_, Form::Number(line), Form::Number(column), arguments @ ..] = v.as_slice() else {
-                return k(Err("internal ex location marker is malformed".into()));
-            };
-            let site = exception_site_at(*line as usize, *column as usize);
-            let mut application = vec![Form::Symbol("ex".into())];
-            application.extend_from_slice(arguments);
-            one(
-                Form::List(application),
-                env,
-                Box::new(move |result| {
-                    if let Ok(value) = &result {
-                        record_exception_creation(value, site.clone());
-                    }
-                    k(result)
-                }),
-            )
-        }
         Some("__throw-at") => {
             let [_, Form::Number(line), Form::Number(column), value] = v.as_slice() else {
                 return k(Err("internal throw location marker is malformed".into()));
@@ -1226,7 +1208,9 @@ fn finish_try(
             let mut saw_unconditional = false;
             for parts in catches {
                 if saw_unconditional {
-                    return k(Err("unconditional catch must be the last catch clause".into()));
+                    return k(Err(
+                        "unconditional catch must be the last catch clause".into()
+                    ));
                 }
                 let parsed = match parse_catch_clause(&parts) {
                     Ok(parsed) => parsed,

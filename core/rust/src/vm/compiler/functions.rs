@@ -445,7 +445,8 @@ impl Compiler {
                         // (catch name body) or (catch Class name body...).
                         "catch" => {
                             let marked = bound.len();
-                            if matches!(children.get(1).map(|child| child.form), Some(Form::Symbol(name)) if name != "Exception" && name != "Throwable") {
+                            if matches!(children.get(1).map(|child| child.form), Some(Form::Symbol(name)) if name != "Exception" && name != "Throwable")
+                            {
                                 if let Form::Symbol(name) = children[1].form {
                                     bound.push(name.clone());
                                 }

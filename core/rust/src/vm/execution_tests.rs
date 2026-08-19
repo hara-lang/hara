@@ -816,7 +816,10 @@ fn catch_binds_runtime_error_messages() {
 #[test]
 fn uncaught_throws_propagate() {
     assert_eval_error("(throw :failed)", "thrown: :failed");
-    assert_eval_error("(try (throw 41) (catch :problem/value error 0))", "thrown: 41");
+    assert_eval_error(
+        "(try (throw 41) (catch :problem/value error 0))",
+        "thrown: 41",
+    );
     assert_eval_error(
         "(try (try (throw 41) (catch :problem/value error 0)) (catch :problem/value error 0))",
         "thrown: 41",

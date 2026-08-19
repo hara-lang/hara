@@ -17,7 +17,12 @@ fn exception_located_form(node: &kernel::SpannedForm) -> Form {
         Form::Map(values) if node.children.len() == values.len() * 2 => Form::Map(
             node.children
                 .chunks_exact(2)
-                .map(|pair| (exception_located_form(&pair[0]), exception_located_form(&pair[1])))
+                .map(|pair| {
+                    (
+                        exception_located_form(&pair[0]),
+                        exception_located_form(&pair[1]),
+                    )
+                })
                 .collect(),
         ),
         Form::Tagged(tag, _) if node.children.len() == 1 => Form::Tagged(
@@ -36,12 +41,10 @@ fn exception_located_form(node: &kernel::SpannedForm) -> Form {
     let Some(Form::Symbol(operator)) = values.first() else {
         return Form::List(values);
     };
-    let marker = match operator.as_str() {
-        "throw" => "__throw-at",
-        "ex" | "std.foundation/ex" => "__ex-at",
-        _ => return Form::List(values),
-    };
-    values[0] = Form::Symbol(marker.into());
+    if operator != "throw" {
+        return Form::List(values);
+    }
+    values[0] = Form::Symbol("__throw-at".into());
     values.insert(1, Form::Number(node.span.start.line as i64));
     values.insert(2, Form::Number(node.span.start.column as i64));
     Form::List(values)

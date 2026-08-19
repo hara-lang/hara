@@ -31,26 +31,30 @@ pub(crate) fn record_exception_throw(value: &Value, site: Option<ExceptionSite>)
     provenance.throws.push(site);
 }
 
-pub(crate) fn record_exception_creation(value: &Value, site: Option<ExceptionSite>) {
-    let (Value::ExceptionInfo(exception), Some(site)) = (value, site) else {
-        return;
-    };
-    let mut provenance = exception.provenance.borrow_mut();
-    if provenance.created_at.is_none() {
-        provenance.created_at = Some(site);
-    }
-}
-
 fn exception_site_value(site: &ExceptionSite) -> Value {
-    Value::Map([
-        ("namespace", site.namespace.clone().map(Value::String).unwrap_or(Value::Nil)),
-        ("resource", site.resource.clone().map(Value::String).unwrap_or(Value::Nil)),
-        ("line", Value::Number(site.line as i64)),
-        ("column", Value::Number(site.column as i64)),
-    ]
-    .into_iter()
-    .map(|(key, value)| (Value::Keyword(key.into()), value))
-    .collect())
+    Value::Map(
+        [
+            (
+                "namespace",
+                site.namespace
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            (
+                "resource",
+                site.resource
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            ("line", Value::Number(site.line as i64)),
+            ("column", Value::Number(site.column as i64)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (Value::Keyword(key.into()), value))
+        .collect(),
+    )
 }
 
 fn exception_provenance_value(exception: &ExceptionInfo) -> Value {
@@ -703,11 +707,9 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
         (
             "ex-cause",
             native_function("ex-cause", 1, |arguments| match &arguments[0] {
-                Value::ExceptionInfo(value) => Ok(value
-                    .cause
-                    .as_deref()
-                    .cloned()
-                    .unwrap_or(Value::Nil)),
+                Value::ExceptionInfo(value) => {
+                    Ok(value.cause.as_deref().cloned().unwrap_or(Value::Nil))
+                }
                 _ => Err("ex-cause expects an Exception".into()),
             }),
         ),
@@ -975,12 +977,10 @@ pub(crate) fn native_type_function_value(native_type: &str, method: &str) -> Val
                     ("create", [value @ Value::Function(_)]) => {
                         Ok(Value::Coroutine(Rc::new(Coroutine::new(value.clone()))))
                     }
-                    ("instance?", [value]) => {
-                        Ok(Value::Bool(matches!(value, Value::Coroutine(_))))
+                    ("instance?", [value]) => Ok(Value::Bool(matches!(value, Value::Coroutine(_)))),
+                    ("yield" | "await", _) => {
+                        Err(format!("Coroutine/{method} requires the fiber evaluator"))
                     }
-                    ("yield" | "await", _) => Err(format!(
-                        "Coroutine/{method} requires the fiber evaluator"
-                    )),
                     ("create", _) => Err("Coroutine/create expects one function".into()),
                     ("instance?", _) => Err("Coroutine/instance? expects one value".into()),
                     _ => Err(format!("unknown std.native.Coroutine operation: {method}")),
@@ -1019,17 +1019,19 @@ pub(crate) fn native_type_function_value(native_type: &str, method: &str) -> Val
         }
         "Json" => {
             let method = method.to_owned();
-            native_variadic_function(&display_name, move |arguments| match (method.as_str(), arguments.as_slice()) {
-                ("read", [Value::String(source)]) => crate::json::read(source),
-                ("write", [value]) => crate::json::write(value).map(Value::String),
-                ("pretty", [value, options]) if map_entries(options).is_some() => {
-                    crate::json::write_pretty(value).map(Value::String)
+            native_variadic_function(&display_name, move |arguments| {
+                match (method.as_str(), arguments.as_slice()) {
+                    ("read", [Value::String(source)]) => crate::json::read(source),
+                    ("write", [value]) => crate::json::write(value).map(Value::String),
+                    ("pretty", [value, options]) if map_entries(options).is_some() => {
+                        crate::json::write_pretty(value).map(Value::String)
+                    }
+                    ("pretty", [_, _]) => Err("json/pretty expects an options map".into()),
+                    ("read", _) => Err("json/read expects a string".into()),
+                    ("write", _) => Err("json/write expects one value".into()),
+                    ("pretty", _) => Err("json/pretty expects a value and options map".into()),
+                    _ => Err(format!("unknown std.native.Json operation: {method}")),
                 }
-                ("pretty", [_, _]) => Err("json/pretty expects an options map".into()),
-                ("read", _) => Err("json/read expects a string".into()),
-                ("write", _) => Err("json/write expects one value".into()),
-                ("pretty", _) => Err("json/pretty expects a value and options map".into()),
-                _ => Err(format!("unknown std.native.Json operation: {method}")),
             })
         }
         "Host" => {
@@ -1052,10 +1054,12 @@ pub(crate) fn native_type_function_value(native_type: &str, method: &str) -> Val
         }
         "UUID" => {
             let method = method.to_owned();
-            native_variadic_function(&display_name, move |arguments| match (method.as_str(), arguments.as_slice()) {
-                ("instance?", [_]) => Ok(Value::Bool(false)),
-                ("instance?", _) => Err("UUID/instance? expects one value".into()),
-                _ => Err(format!("unknown std.native.UUID operation: {method}")),
+            native_variadic_function(&display_name, move |arguments| {
+                match (method.as_str(), arguments.as_slice()) {
+                    ("instance?", [_]) => Ok(Value::Bool(false)),
+                    ("instance?", _) => Err("UUID/instance? expects one value".into()),
+                    _ => Err(format!("unknown std.native.UUID operation: {method}")),
+                }
             })
         }
         "Result" => {
@@ -1115,7 +1119,10 @@ fn native_edn_values(method: &str, arguments: Vec<Value>) -> Result<Value, Strin
             let forms = crate::kernel::parse_forms(&source)
                 .map_err(|error| format!("read-forms failed: {error}"))?;
             Ok(Value::Vector(PVector::from_iter(
-                forms.iter().map(form_to_value).collect::<Result<Vec<_>, _>>()?,
+                forms
+                    .iter()
+                    .map(form_to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
             )))
         }
         ("write", [value]) => Ok(Value::String(value.display())),
@@ -1175,7 +1182,9 @@ fn native_promise_values(method: &str, arguments: Vec<Value>) -> Result<Value, S
     match (method, arguments.as_slice()) {
         ("instance?", [value]) => Ok(Value::Bool(matches!(value, Value::Promise(_)))),
         ("from", [value]) => Ok(Value::Promise(promise_from(value.clone()))),
-        ("all", [values]) => Ok(Value::Promise(promise_all(iterator_values(values.clone())?))),
+        ("all", [values]) => Ok(Value::Promise(promise_all(iterator_values(
+            values.clone(),
+        )?))),
         ("run", [Value::Function(function)]) => {
             let function = function.clone();
             let task = Rc::new(move || call_function(&function, Vec::new()));
@@ -1224,9 +1233,13 @@ fn native_promise_values(method: &str, arguments: Vec<Value>) -> Result<Value, S
 }
 
 fn native_iter_operation(method: &str, arguments: Vec<Value>) -> Result<Value, String> {
-    let unary = |label: &str| arguments.first().cloned()
-        .filter(|_| arguments.len() == 1)
-        .ok_or_else(|| format!("Iter/{label} expects one argument"));
+    let unary = |label: &str| {
+        arguments
+            .first()
+            .cloned()
+            .filter(|_| arguments.len() == 1)
+            .ok_or_else(|| format!("Iter/{label} expects one argument"))
+    };
     let binary = |label: &str| {
         if arguments.len() == 2 {
             Ok((arguments[0].clone(), arguments[1].clone()))
@@ -1306,16 +1319,22 @@ fn native_iter_operation(method: &str, arguments: Vec<Value>) -> Result<Value, S
             iterator_partition(source, value_index(&amount)?, method.ends_with("-all"))
         }
         "iter-range" => {
-            let bounds = arguments.iter().map(|value| {
-                numeric::to_i64_exact(value)
-                    .map_err(|_| "iter-range bounds must fit signed 64-bit integers".to_string())
-            }).collect::<Result<Vec<_>, _>>()?;
+            let bounds = arguments
+                .iter()
+                .map(|value| {
+                    numeric::to_i64_exact(value).map_err(|_| {
+                        "iter-range bounds must fit signed 64-bit integers".to_string()
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let (start, end) = match bounds.as_slice() {
                 [end] => (0, *end),
                 [start, end] => (*start, *end),
                 _ => return Err("iter-range expects an end or start and end".into()),
             };
-            Ok(iterator_from_values((start..end).map(Value::Number).collect()))
+            Ok(iterator_from_values(
+                (start..end).map(Value::Number).collect(),
+            ))
         }
         "iter-constantly" => Ok(iterator_constant(unary(method)?)),
         "iter-repeatedly" => Ok(iterator_repeated(unary(method)?)),

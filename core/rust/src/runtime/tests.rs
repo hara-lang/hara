@@ -477,14 +477,19 @@ mod tests {
                 .unwrap(),
             ":file-error"
         );
-        assert_eq!(runtime.eval_text("(ex-message (ex :failure/code {}))").unwrap(), "\":failure/code\"");
+        assert_eq!(
+            runtime
+                .eval_text("(ex-message (ex :failure/code {}))")
+                .unwrap(),
+            "\":failure/code\""
+        );
         assert_eq!(
             runtime
                 .eval_text(
                     "(try\n  (throw (ex :test/provenance {}))\n  (catch caught\n    (let [provenance (ex-provenance caught)]\n      [(:line (:ex/created-at provenance))\n       (:column (:ex/created-at provenance))\n       (:line (first (:ex/throws provenance)))\n       (:column (first (:ex/throws provenance)))\n       (count (:ex/throws provenance))])))",
                 )
                 .unwrap(),
-            "[2 10 2 3 1]"
+            "[2 3 2 3 1]"
         );
     }
 
@@ -2123,9 +2128,8 @@ mod tests {
         else {
             return;
         };
-        let protocols =
-            repo_text("00-unsorted/platform-language/draft/conformance/protocols.edn")
-                .expect("protocol contract must accompany its case catalog");
+        let protocols = repo_text("00-unsorted/platform-language/draft/conformance/protocols.edn")
+            .expect("protocol contract must accompany its case catalog");
         assert_eq!(
             protocol_case_surface(&catalog),
             protocol_method_surface(&protocols),
@@ -5864,7 +5868,7 @@ mod tests {
             "iterator/empty-cycle-rejected",
             "runtime/recur-outside-target",
             "runtime/recur-arity",
-            "error/catch-guest-value",
+            "error/catch-exception-value",
             "error/catch-order",
             "error/catch-code",
             "error/catch-code-vector",
@@ -6973,21 +6977,21 @@ mod tests {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
-                .eval_text("(try (throw :failed) (catch error error))")
+                .eval_text("(try (throw (ex :test/failed {})) (catch error (:ex/code (ex-data error))))")
                 .unwrap(),
-            ":failed"
+            ":test/failed"
         );
         assert_eq!(runtime.eval_text("(try 42 (finally 0))").unwrap(), "42");
         assert_eq!(
             runtime
-                .eval_text("(try (throw :failed) (catch error (str error :handled)))")
+                .eval_text("(try (throw (ex :test/failed {})) (catch error (str (:ex/code (ex-data error)) :handled)))")
                 .unwrap(),
-            "\":failed:handled\""
+            "\":test/failed:handled\""
         );
         assert!(runtime
-            .eval_text("(throw :failed)")
+            .eval_text("(throw (ex :test/failed {}))")
             .unwrap_err()
-            .contains("thrown: :failed"));
+            .contains(":test/failed"));
     }
 
     #[test]
@@ -7265,8 +7269,7 @@ mod tests {
 
     #[test]
     fn tool_cli_handlers_treat_default_host_as_a_value() {
-        let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../lib/src/tool/cli");
+        let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lib/src/tool/cli");
         for file in [
             "asset.hal",
             "extension.hal",
