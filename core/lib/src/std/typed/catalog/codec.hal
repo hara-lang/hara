@@ -24,9 +24,13 @@
     (codec-error "schema version must be a non-negative integer"
                  {:schema/version version})))
 
+(defn- utf8-length
+  [content]
+  (bytes/count (string/encode-utf8 content)))
+
 (defn- pack
   [tag content]
-  (str tag (string/length content) ":" content))
+  (str tag (utf8-length content) ":" content))
 
 (defn- pack-many
   [tag parts]
@@ -52,11 +56,32 @@
              (conj output
                    (str (bytes/u8 (bytes/get value index))))))))
 
+(defn- byte-order-token
+  [value]
+  (cond
+    (< value 10) (str "00" value)
+    (< value 100) (str "0" value)
+    :else (str value)))
+
+(defn- utf8-order-key
+  [value]
+  (let [encoded (string/encode-utf8 value)]
+    (loop [index 0
+           output ""]
+      (if (= index (bytes/count encoded))
+        output
+        (recur
+         (inc index)
+         (str output
+              (byte-order-token
+               (bytes/u8 (bytes/get encoded index)))))))))
+
 (declare canonical-value)
 
 (defn- canonical-map-parts
   [value]
-  (sort
+  (sort-by
+   utf8-order-key
    (map
     (fn [entry]
       (pack-many
@@ -81,7 +106,9 @@
     (RegExp/instance? value) (pack "r" (RegExp/pattern value))
     (map? value) (pack-many "m" (canonical-map-parts value))
     (set? value)
-    (pack-many "t" (sort (map canonical-value value)))
+    (pack-many
+     "t"
+     (sort-by utf8-order-key (map canonical-value value)))
     (vector? value)
     (pack-many "v" (map canonical-value value))
     (list? value)
