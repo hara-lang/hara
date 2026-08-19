@@ -136,7 +136,7 @@ replace_once(
 
 def insert_native_surfaces(path: Path, java: bool = False) -> None:
     text = path.read_text()
-    if ':title \\"Age\\" :owner :accounts' in text:
+    if "User record" in text:
         return
     lines = text.splitlines(keepends=True)
     matches = [i for i, line in enumerate(lines) if ":vendor/type" in line]
@@ -145,8 +145,8 @@ def insert_native_surfaces(path: Path, java: bool = False) -> None:
     index = matches[0]
     if java:
         additions = [
-            r'                      + "       (quote [:int {:title \"Age\" :owner :accounts}]) "' + "\n",
-            r'                      + "       (quote [:map {:title \"User record\" :version 2 :owner :accounts} [:name {:required true :description \"Display name\" :default \"Anonymous\"} :str]]) "' + "\n",
+            '                      + "       (quote [:int {:title \\"Age\\" :owner :accounts}]) "\n',
+            '                      + "       (quote [:map {:title \\"User record\\" :version 2 :owner :accounts} [:name {:required true :description \\"Display name\\" :default \\"Anonymous\\"} :str]]) "\n',
         ]
     else:
         line = lines[index]
@@ -167,35 +167,35 @@ insert_native_surfaces(Path("core/java/src/test/java/hara/truffle/StdTypedSchema
 rust_hbc = Path("core/rust/src/vm/artifact/tests.rs")
 replace_once(
     rust_hbc,
-    r'            properties: crate::kernel::parse("{:min-count 1 :max-count 32}").unwrap(),',
-    r'            properties: crate::kernel::parse("{:title \"Display handle\" :version 2 :owner :accounts :min-count 1 :max-count 32}").unwrap(),',
+    r'"{:min-count 1 :max-count 32}"',
+    r'"{:title \"Display handle\" :version 2 :owner :accounts :min-count 1 :max-count 32}"',
 )
 replace_once(
     rust_hbc,
-    r'                properties: Some(crate::kernel::parse("{:optional true}").unwrap()),',
-    r'                properties: Some(crate::kernel::parse("{:required true :description \"Display nickname\" :default \"Anonymous\"}").unwrap()),',
+    r'"{:optional true}"',
+    r'"{:required true :description \"Display nickname\" :default \"Anonymous\"}"',
 )
 replace_once(
     rust_hbc,
-    r'            properties: crate::kernel::parse("{:closed true}").unwrap(),',
-    r'            properties: crate::kernel::parse("{:title \"User profile\" :version 2 :owner :accounts :closed true}").unwrap(),',
+    r'"{:closed true}"',
+    r'"{:title \"User profile\" :version 2 :owner :accounts :closed true}"',
 )
 
 java_hbc = Path("core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java")
 replace_once(
     java_hbc,
-    r'                    HalcSchema.readSurface("{:min-count 1 :max-count 32}")),',
-    r'                    HalcSchema.readSurface("{:title \"Display handle\" :version 2 :owner :accounts :min-count 1 :max-count 32}")),',
+    r'"{:min-count 1 :max-count 32}"',
+    r'"{:title \"Display handle\" :version 2 :owner :accounts :min-count 1 :max-count 32}"',
 )
 replace_once(
     java_hbc,
-    r'                                HalcSchema.readSurface("{:optional true}"),',
-    r'                                HalcSchema.readSurface("{:required true :description \"Display nickname\" :default \"Anonymous\"}"),',
+    r'"{:optional true}"',
+    r'"{:required true :description \"Display nickname\" :default \"Anonymous\"}"',
 )
 replace_once(
     java_hbc,
-    r'                    HalcSchema.readSurface("{:closed true}"))),',
-    r'                    HalcSchema.readSurface("{:title \"User profile\" :version 2 :owner :accounts :closed true}"))),',
+    r'"{:closed true}"',
+    r'"{:title \"User profile\" :version 2 :owner :accounts :closed true}"',
 )
 
 print("promoted #832 schema annotations as lossless portable data")
