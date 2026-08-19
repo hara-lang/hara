@@ -3,6 +3,7 @@
             [tool.lint.model :as model]
             [tool.lint.profile :as profile]
             [tool.lint.report :as report]
+            [tool.lint.schema :as lint-schema]
             [tool.project :as project]
             [work.base :as work :refer [def.work]]
             [work.flow.task :as task]))
@@ -19,10 +20,12 @@
 (defn prepare-scans
   "Prepares immutable shared lint context for a task invocation."
   [scans options]
-  (let [scans (vec scans)]
+  (let [scans (vec scans)
+        options (or options {})]
     {:scans scans
-     :options (or options {})
-     :known-namespaces (scan-namespaces scans)}))
+     :options options
+     :known-namespaces (scan-namespaces scans)
+     :schema-index (lint-schema/build-schema-index scans options)}))
 
 (defn lint-items
   [input context]
@@ -32,12 +35,17 @@
   [subject context]
   (let [input (:task/input subject)
         scan (:task/value subject)
-        options (:options input)]
-    (analyze/analyze-scan
-     scan
-     (assoc options
-            :known-namespaces
-            (:known-namespaces input)))))
+        options (:options input)
+        document
+        (analyze/analyze-scan
+         scan
+         (assoc options
+                :known-namespaces
+                (:known-namespaces input)))]
+    (lint-schema/enrich-document
+     document
+     (:schema-index input)
+     options)))
 
 (def.work lint-scans-work
   [:task]
@@ -78,23 +86,28 @@
          (reduce (fn [output document]
                    (into output (:findings document)))
                  []
-                 documents))]
-    {:profile (or (:profile options) profile/+profile+)
-     :documents documents
-     :findings findings
-     :summary (model/summarize findings)}))
+                 documents))
+        schema-index (:schema-index options)]
+    (cond->
+     {:profile (or (:profile options) profile/+profile+)
+      :documents documents
+      :findings findings
+      :summary (model/summarize findings)}
+      schema-index
+      (assoc :schema-index (lint-schema/public-index schema-index)))))
 
 (defn lint-scans
   "Lints already scanned documents through work.flow.task.
 
    The complete scan set is inspected before any item runs, preserving
-   project-wide qualified namespace resolution while keeping each document
+   project-wide namespace and schema resolution while keeping each document
    analysis independently schedulable."
   ([scans]
    (lint-scans scans {}))
   ([scans options]
    (let [prepared (prepare-scans scans options)]
-     (finish (run-scans prepared) options))))
+     (finish (run-scans prepared)
+             (assoc options :schema-index (:schema-index prepared))))))
 
 (defn project-paths
   [current-project]
