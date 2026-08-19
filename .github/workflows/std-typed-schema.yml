@@ -8,42 +8,121 @@ on:
       - 'core/lib/test/std/typed/**'
       - 'core/lib/src/tool/metaspec/schema.hal'
       - 'core/lib/test/tool/metaspec/**'
-      - '.github/agent-patches/832-promote-metaspec.py'
+      - 'core/spec/std/foundation-base-runtime-schema.md'
+      - 'core/rust/bootstrap.namespaces'
+      - 'core/rust/standard-library.namespaces'
+      - 'core/rust/src/core/protocol.rs'
+      - 'core/rust/src/kernel/schema.rs'
+      - 'core/rust/tests/std_typed_schema.rs'
+      - 'core/java/src/main/java/hara/truffle/HalcSchema.java'
+      - 'core/java/src/main/java/hara/truffle/HaraContext.java'
+      - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
+      - 'scripts/audit-std-typed-boundary.sh'
       - '.github/workflows/std-typed-schema.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/lib/src/std/typed/**'
+      - 'core/lib/test/std/typed/**'
+      - 'core/lib/src/tool/metaspec/schema.hal'
+      - 'core/lib/test/tool/metaspec/**'
+      - 'core/spec/std/foundation-base-runtime-schema.md'
+      - 'core/rust/bootstrap.namespaces'
+      - 'core/rust/standard-library.namespaces'
+      - 'core/rust/src/core/protocol.rs'
+      - 'core/rust/src/kernel/schema.rs'
+      - 'core/rust/tests/std_typed_schema.rs'
+      - 'core/java/src/main/java/hara/truffle/HalcSchema.java'
+      - 'core/java/src/main/java/hara/truffle/HaraContext.java'
+      - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
+      - 'scripts/audit-std-typed-boundary.sh'
+      - '.github/workflows/std-typed-schema.yml'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: std-typed-schema-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  stage-832:
-    if: ${{ github.head_ref == 'agent/promote-metaspec-schema-extensions' && github.actor != 'github-actions[bot]' }}
+  boundary:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: agent/promote-metaspec-schema-extensions
-          fetch-depth: 0
-      - name: Apply canonical property promotion
-        run: python .github/agent-patches/832-promote-metaspec.py
-      - name: Reject generic metaspec schema engines
+      - name: Check the std.typed dependency boundary
+        run: bash scripts/audit-std-typed-boundary.sh
+
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run focused Rust schema parity
+        run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema
+      - name: Run portable schema and explanation facts on Rust
         run: |
-          ! grep -E "defmethod std\.typed\.schema/(normalize|validate-normal) :tool\.metaspec/(map|set|items|refine)" core/lib/src/tool/metaspec/schema.hal
-      - name: Commit generated candidate
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -A \
-            core/lib/src/std/typed/schema.hal \
-            core/lib/src/std/typed.hal \
-            core/lib/src/std/typed/properties.hal \
-            core/lib/src/tool/metaspec/schema.hal \
+          scripts/runtime/run-lib-tests \
+            core/lib/test/std/typed/schema_test.hal \
             core/lib/test/std/typed/properties_test.hal \
-            core/lib/test/tool/metaspec/schema_test.hal
-          git diff --cached --quiet && exit 0
-          git commit -m "Stage std.typed property promotion candidate"
-          git push origin HEAD:agent/promote-metaspec-schema-extensions
+            core/lib/test/std/typed/explain_test.hal
+      - name: Run metaspec adapter facts on Rust
+        run: |
+          scripts/runtime/run-lib-tests \
+            core/lib/test/tool/metaspec/schema_test.hal \
+            core/lib/test/tool/metaspec/conforms_test.hal \
+            core/lib/test/tool/metaspec/verify_test.hal \
+            core/lib/test/tool/metaspec/lint_test.hal \
+            core/lib/test/tool/metaspec/logic_test.hal \
+            core/lib/test/tool/metaspec/model_test.hal
+      - name: Run portable Result schema and inference facts on Rust
+        run: scripts/runtime/run-lib-tests core/lib/test/std/typed/result_test.hal
+
+  hal:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the CLI specification registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Build the native Hara runtime
+        run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
+      - name: Run focused portable registry probe
+        run: |
+          cat \
+            core/lib/src/std/typed/registry.hal \
+            core/lib/src/std/typed/schema.hal \
+            core/lib/src/std/typed/infer.hal \
+            core/lib/src/std/typed/explain.hal \
+            core/lib/src/std/typed.hal \
+            core/lib/test/std/typed/explain_probe.hal \
+            | core/hara --offline stdin
+
+  java:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the CLI specification registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Run focused Truffle schema parity
+        run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedSchemaTest test --file core/java/pom.xml
