@@ -8,7 +8,7 @@
 (def +value-options+
   {"--match" :match "--replacement" :replacement
    "--from" :from "--to" :to "--needle" :needle
-   "--form" :form "--var" :var "--corpus" :corpus
+   "--form" :form "--var" :var
    "--added" :added "--format" :format})
 
 (def +formats+ #{:edn :editor-json})
@@ -165,252 +165,10 @@
            "")))
       (versioned-unit base version))))
 
-(defn translation-field [value keyword-key string-key]
-  (if (map? value)
-    (if (has? value keyword-key)
-      (get value keyword-key)
-      (get value string-key))
-    nil))
 
-(defn translation-entry [entries path]
-  (first
-   (filter
-    (fn [entry]
-      (str/ends-with?
-       path
-       (translation-field entry :source_path "source_path")))
-    entries)))
-
-(defn translation-selected? [entry namespaces]
-  (if entry
-    (let [entry-namespace (translation-field entry :namespace "namespace")
-          recipe (translation-field entry :recipe "recipe")
-          aggregate (= "aggregate"
-                       (translation-field recipe :mode "mode"))]
-      (if (or (empty? namespaces)
-              (not
-               (empty?
-                (filter
-                 (fn [namespace]
-                   (or (= namespace entry-namespace)
-                       (and aggregate
-                            (str/starts-with?
-                             entry-namespace
-                             (str namespace ".")))))
-                 namespaces))))
-      true
-      false))
-    false))
-
-(defn translation-project-path [project-root path]
-  (let [direct (File/join project-root path)]
-    (if (deref (File/exists? direct))
-      direct
-      (if (str/starts-with? path "core/")
-        (File/join project-root (str/slice path 5 (count path)))
-        direct))))
-
-(defn translation-project [target-root]
-  (let [direct (File/join target-root "project.edn")
-        nested-root (File/join target-root "core")
-        nested (File/join nested-root "project.edn")]
-    (cond
-      (deref (File/exists? direct)) {:project/root target-root}
-      (deref (File/exists? nested)) {:project/root nested-root}
-      :else (throw (ex-info "clojure-to-hal --to must name a Hara repository or project"
-                            {:target/root target-root})))))
-
-(defn translation-read-text [path]
-  (try
-    (project/read-text path)
-    (catch Throwable error
-      (throw (ex-info (str "Cannot read translation input " path)
-                      {:path path :cause (ex-message error)})))))
-
-(defn translation-target-path [target-root entry source-root source-path]
-  (let [targets (translation-field entry :targets "targets")
-        target (first targets)
-        routed (if target (translation-field target :path "path") nil)
-        routed (if (and routed
-                        (str/ends-with? target-root "/core")
-                        (str/starts-with? routed "core/"))
-                 (str/slice routed 5 (count routed))
-                 routed)
-        relative (str/slice source-path (count source-root) (count source-path))
-        test-source (str/starts-with? relative "/test/")
-        target-prefix (if test-source "core/lib/test" "core/lib/src")
-        source-offset (if test-source 5 4)
-        fallback (str target-prefix
-                      (str/slice relative source-offset (- (count relative) 4))
-                      ".hal")]
-    (File/join target-root (or routed fallback))))
-
-(defn dedupe-translation-units [units]
-  (:units
-   (reduce
-    (fn [output unit]
-      (let [path (:target/path unit)]
-        (if (has? (:seen output) path)
-          {:seen (:seen output)
-           :units
-           (vec
-            (map
-             (fn [existing]
-               (if (= path (:target/path existing))
-                 (assoc existing
-                        :recipe/sources
-                        (conj (:recipe/sources existing) (:source/path unit)))
-                 existing))
-             (:units output)))}
-          {:seen (assoc (:seen output) path true)
-           :units (conj (:units output)
-                        (assoc unit :recipe/sources [(:source/path unit)]))})))
-    {:seen {} :units []}
-    units)))
-
-(defn translation-routed-path [target-root path]
-  (let [routed (if (and path
-                         (str/ends-with? target-root "/core")
-                         (str/starts-with? path "core/"))
-                 (str/slice path 5 (count path))
-                 path)]
-    (File/join target-root routed)))
-
-(defn translation-recipe-output [current-project recipe-path]
-  (translation-read-text
-   (translation-project-path (:project/root current-project) recipe-path)))
-
-(defn translation-managed-units [current-project source-root target-root unit]
-  (let [entry (:corpus/entry unit)
-        recipe (:translation/recipe unit)
-        mirrors (or (translation-field entry :mirrors "mirrors") [])
-        mirror-units
-        (vec
-         (map
-          (fn [path]
-            (let [target-path (translation-routed-path target-root path)]
-              (assoc unit
-                     :target/path target-path
-                     :target/text
-                     (if (deref (File/exists? target-path))
-                       (translation-read-text target-path)
-                       nil)
-                     :translation/role :mirror)))
-          mirrors))
-        test-route (translation-field entry :test_route "test_route")
-        test-unit
-        (if test-route
-          (let [source-path
-                (File/join source-root
-                           (translation-field test-route :source_path "source_path"))
-                target-path
-                (translation-routed-path
-                 target-root
-                 (translation-field test-route :target_path "target_path"))
-                recipe-path
-                (translation-field test-route :recipe_path "recipe_path")
-                source (translation-read-text source-path)]
-            {:source/path source-path
-             :source/root source-root
-             :source/text source
-             :source/sha256 (str "sha256:" (Crypto/sha256
-                                              (str/encode-utf8 source)))
-             :target/root target-root
-             :target/path target-path
-             :target/text (if (deref (File/exists? target-path))
-                            (translation-read-text target-path)
-                            nil)
-             :corpus/entry entry
-             :translation/role :test
-             :translation/recipe
-             {:id (str (translation-field recipe :id "id") "/test")
-              :output (translation-recipe-output current-project recipe-path)}
-             :translation/options {:mode :review}})
-          nil)]
-    (vec (concat [unit] mirror-units (if test-unit [test-unit] [])))))
-
-(defn translation-units-for [current-project parsed]
-  (let [options (:options parsed)
-        source-root (or (:from options)
-                        (throw (ex-info "clojure-to-hal requires --from" {})))
-        target-root (or (:to options)
-                        (throw (ex-info "clojure-to-hal requires --to" {})))
-        corpus-path (or (:corpus options)
-                        (translation-project-path
-                         (:project/root current-project)
-                         "core/spec/foundation-migrate.json"))
-        corpus (Json/read (translation-read-text corpus-path))
-        entries (translation-field corpus :namespaces "namespaces")
-        selected-entries
-        (filter (fn [entry]
-                  (translation-selected? entry (:namespaces parsed)))
-                entries)
-        paths (vec
-               (map
-                (fn [entry]
-                  (File/join
-                   source-root
-                   (translation-field entry :source_path "source_path")))
-                selected-entries))]
-    (let [canonical
-          (vec
-           (keep
-      (fn [path]
-        (let [entry (translation-entry entries path)]
-          (if (and (str/ends-with? path ".clj")
-                   (translation-selected? entry (:namespaces parsed)))
-          (let [source (translation-read-text path)
-                target-path (translation-target-path target-root entry source-root path)
-                recipe (translation-field entry :recipe "recipe")
-                template-path (if recipe
-                                (translation-field recipe :template_path "template_path")
-                                nil)
-                template-source (if template-path
-                                  (translation-read-text
-                                   (translation-project-path
-                                    (:project/root current-project)
-                                    template-path))
-                                  nil)
-                template-namespace (if recipe
-                                     (translation-field recipe :template_namespace "template_namespace")
-                                     nil)
-                target-namespace (if recipe
-                                   (translation-field recipe :target_namespace "target_namespace")
-                                   nil)
-                template (if (and template-source template-namespace target-namespace)
-                           (str/replace-first template-source template-namespace target-namespace)
-                           template-source)]
-            {:source/path path
-             :source/root source-root
-             :source/text source
-             :source/sha256 (str "sha256:" (Crypto/sha256
-                                              (str/encode-utf8 source)))
-             :target/root target-root
-             :target/path target-path
-             :target/text (if (deref (File/exists? target-path))
-                            (translation-read-text target-path)
-                            nil)
-             :corpus/entry entry
-             :translation/recipe
-             (if recipe
-               {:id (translation-field recipe :id "id")
-                :output template}
-               nil)
-             :translation/options {:mode :review}})
-          nil)))
-            paths))]
-      (dedupe-translation-units
-       (vec
-        (mapcat
-         (fn [unit]
-           (translation-managed-units
-            current-project source-root target-root unit))
-         canonical))))))
-
-(defn units-for [project parsed]
-  (if (= :clojure-to-hal (:operation parsed))
-    (translation-units-for project parsed)
-    (let [test-roots (:project/test-paths project)
+(defn units-for
+  [project parsed]
+  (let [test-roots (:project/test-paths project)
         paths (project/files-in project
                                 (roots-for project (:operation parsed))
                                 ".hal")]
@@ -423,16 +181,18 @@
                 path
                 (if (not
                      (empty?
-                      (filter (fn [root]
-                                (str/includes?
-                                 path
-                                 (File/join (:project/root project) root)))
-                              test-roots)))
+                      (filter
+                       (fn [root]
+                         (str/includes?
+                          path
+                          (File/join (:project/root project) root)))
+                       test-roots)))
                   :test
                   :source)))
          output))
      []
-     paths))))
+     paths)))
+
 
 (defn current-input
   "Constructs the current-namespace input used by callable code.manage tasks."
@@ -523,9 +283,7 @@
                   (:root (:request/options request))
                   (:request/cwd request)
                   (OS/cwd))
-        current-project (if (= :clojure-to-hal (:operation parsed))
-                          (translation-project (get-in parsed [:options :to]))
-                          (project/discover start))
+        current-project (project/discover start)
         plan (manage/plan (:operation parsed)
                           {:units (units-for current-project parsed)
                            :options (:options parsed)})
@@ -534,6 +292,7 @@
       (apply-edits (:project/root current-project) (:edits plan))
       nil)
     (model/success plan [(model/message (str output "\n"))])))
+
 
 (def +command-work+
   (work/step
