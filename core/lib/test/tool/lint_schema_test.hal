@@ -4,6 +4,10 @@
             [tool.lint.analyze :as analyze]
             [tool.lint.schema :as lint-schema]))
 
+(defn report-data
+  [outcome]
+  (Result/data outcome))
+
 (defn finding-types
   [report]
   (vec (map :type (:findings report))))
@@ -21,7 +25,7 @@
          (str "(ns demo.consumer (:require [demo.contracts :as c]))\n"
               "(defn ^{:schema #'c/Unary} label [value] \"ok\")")
          {:file "consumer.hal"})
-        report (deref (lint/lint-scans [consumer contracts]))]
+        report (report-data (lint/lint-scans [consumer contracts]))]
     [(has? (get-in report [:schema-index :definitions]) 'demo.contracts/Unary)
      (get-in report [:schema-index :functions 'demo.consumer/label])
      (finding-types report)])
@@ -33,7 +37,7 @@
 
 ^{:refer 'tool.lint/lint-source
   :id 'metadata-contract-diagnostics}
-(fact "reports invalid, unresolved, value, arity, and return contract problems"
+(fact "reports unresolved, value, function, arity, and return contract problems"
   (let [source
         (str "(ns demo)\n"
              "(def ^{:schema :int} answer \"bad\")\n"
@@ -41,7 +45,7 @@
              "(defn ^{:schema #'Missing} missing-contract [value] value)\n"
              "(defn ^{:schema [:fn [:int :int] :str]} wrong-arity [value] \"ok\")\n"
              "(defn ^{:schema [:fn [:int] :str]} wrong-return [value] 1)")
-        report (deref (lint/lint-source source))
+        report (report-data (lint/lint-source source))
         types (into #{} (finding-types report))]
     (every? (fn [expected] (has? types expected))
             #{:tool.lint/unresolved-schema
@@ -55,9 +59,9 @@
   :id 'schema-mode-policy}
 (fact "keeps schema indexing active when diagnostics are disabled"
   (let [source "(ns demo)\n(def ^{:schema :int} answer \"bad\")"
-        warned (deref (lint/lint-source source))
-        errored (deref (lint/lint-source source {:schema-mode :error}))
-        disabled (deref (lint/lint-source source {:schema-mode :off}))]
+        warned (report-data (lint/lint-source source))
+        errored (report-data (lint/lint-source source {:schema-mode :error}))
+        disabled (report-data (lint/lint-source source {:schema-mode :off}))]
     [(vec (map :level (:findings warned)))
      (vec (map :level (:findings errored)))
      (finding-types disabled)
@@ -66,6 +70,18 @@
       [:error]
       []
       {:kind :primitive :name :int}])
+
+^{:refer 'tool.lint.schema/annotated-top-level-forms
+  :id 'top-level-metadata}
+(fact "unwraps top-level metadata before analysis and retains its contract"
+  (let [source (str "(ns demo)\n"
+                    "^{:schema :int}\n"
+                    "(def answer \"bad\")")
+        report (report-data (lint/lint-source source))]
+    [(get-in report [:schema-index :values 'demo/answer])
+     (finding-types report)])
+  => [{:kind :primitive :name :int}
+      [:tool.lint/schema-value-mismatch]])
 
 ^{:refer 'tool.lint.schema/build-schema-index
   :id 'external-schema-index}
