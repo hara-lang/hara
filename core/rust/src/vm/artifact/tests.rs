@@ -55,6 +55,7 @@ fn programs_round_trip_and_execute() {
     let encoded = encode_program(&program).unwrap();
     assert!(encoded.starts_with(b"HBC0"));
     let decoded = decode_program(&encoded).unwrap();
+    assert_eq!(encode_program(&decoded).unwrap(), encoded);
     assert_eq!(disassemble(&decoded), disassemble(&program));
     assert_eq!(decoded.schema_types, program.schema_types);
     assert_eq!(decoded.function_types, program.function_types);
