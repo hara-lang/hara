@@ -1,23 +1,253 @@
-name: Export clean worktree for issue 562
+name: Apply issue 562 layout split
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/agent-export-562.yml'
+  push:
+    branches:
+      - agent/562-split-vm-layout
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: issue-562-layout-split
+  cancel-in-progress: true
 
 jobs:
-  export:
+  apply-and-validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Package the checked-out source tree
-        run: tar --exclude=.git -czf /tmp/hara-562-worktree.tar.gz .
-      - uses: actions/upload-artifact@v4
         with:
-          name: hara-562-worktree
-          path: /tmp/hara-562-worktree.tar.gz
-          if-no-files-found: error
-          retention-days: 1
+          ref: agent/562-split-vm-layout
+          fetch-depth: 0
+
+      - name: Set up Rust formatting and linting
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Apply the mechanical compiler and machine split
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+
+          globals_path = root / 'core/rust/src/vm/compiler/globals.rs'
+          globals_source = globals_path.read_text()
+          globals_source = globals_source.replace(
+              '    fn require_owned_global(&self, _name: &str, _span: &Span) -> Result<(), CompileError> {',
+              '    pub(super) fn require_owned_global(&self, _name: &str, _span: &Span) -> Result<(), CompileError> {',
+              1,
+          )
+          globals_source = globals_source.replace(
+              '    fn var_metadata(&mut self, metadata: Option<Rc<Metadata>>) -> Option<u16> {',
+              '    pub(super) fn var_metadata(&mut self, metadata: Option<Rc<Metadata>>) -> Option<u16> {',
+              1,
+          )
+          bindings_start = globals_source.index(
+              '    /// `(def name init)`: interns the value in the current namespace and\n'
+          )
+          bindings_end = globals_source.index(
+              '    /// `(declare name ...)`: interns a nil var per name without resetting\n'
+          )
+          bindings_methods = globals_source[bindings_start:bindings_end].rstrip() + '\n'
+          globals_source = globals_source[:bindings_start] + globals_source[bindings_end:]
+          globals_path.write_text(globals_source)
+
+          bindings_source = '''//! Compilation of immutable and mutable global bindings.
+          //!
+          //! This child owns `def`, `set!`, and `var`; namespace declaration,
+          //! callable publication, structures, fields, and functions remain in
+          //! `globals.rs`. The split is structural only and preserves the emitted
+          //! instruction sequences.
+
+          use crate::core::binding_symbol;
+          use crate::kernel::{Form, Span};
+          use crate::vm::error::{CompileError, CompileErrorKind};
+          use crate::vm::opcode::Instruction;
+
+          use super::{Child, Compiler};
+
+          impl Compiler {
+          ''' + bindings_methods + '''}
+
+          fn unsupported(message: impl Into<String>, position: crate::kernel::Position) -> CompileError {
+              CompileError::new(
+                  CompileErrorKind::UnsupportedForm,
+                  message.into(),
+                  Some(position),
+              )
+          }
+          '''
+          (root / 'core/rust/src/vm/compiler/bindings.rs').write_text(bindings_source)
+
+          compiler_path = root / 'core/rust/src/vm/compiler.rs'
+          compiler_source = compiler_path.read_text()
+          compiler_marker = '#[path = "compiler/calls.rs"]\nmod calls;\n'
+          if compiler_marker not in compiler_source:
+              raise RuntimeError('compiler module insertion marker missing')
+          compiler_path.write_text(
+              compiler_source.replace(
+                  compiler_marker,
+                  '#[path = "compiler/bindings.rs"]\nmod bindings;\n' + compiler_marker,
+                  1,
+              )
+          )
+
+          machine_path = root / 'core/rust/src/vm/machine.rs'
+          machine_source = machine_path.read_text()
+
+          enum_start = machine_source.index(
+              '/// Result of executing one instruction. Call actions only carry their\n'
+          )
+          enum_end = machine_source.index(
+              '/// A synchronous interpreter for one function of a validated [`Program`].\n'
+          )
+          dispatch_enum = machine_source[enum_start:enum_end].rstrip() + '\n'
+          machine_source = machine_source[:enum_start] + machine_source[enum_end:]
+
+          dispatch_start = machine_source.index(
+              '    /// Executes one instruction, returning where the `run` loop\n'
+          )
+          dispatch_end = machine_source.index(
+              '    /// Pops the callee and arguments for a Call instruction.\n'
+          )
+          dispatch_method = machine_source[dispatch_start:dispatch_end].rstrip() + '\n'
+          dispatch_method = dispatch_method.replace(
+              '    fn dispatch(\n', '    pub(super) fn dispatch(\n', 1
+          )
+          machine_source = machine_source[:dispatch_start] + machine_source[dispatch_end:]
+
+          constants_start = machine_source.index(
+              '/// Reads a string constant (the global-name operands).\n'
+          )
+          constants_end = machine_source.index(
+              'fn run_entry(program: Rc<Program>) -> Result<Value, VmError> {\n'
+          )
+          constants_methods = machine_source[constants_start:constants_end].rstrip() + '\n'
+          constants_methods = constants_methods.replace(
+              'fn constant_string(', 'pub(super) fn constant_string(', 1
+          )
+          constants_methods = constants_methods.replace(
+              'fn constant_string_vector(', 'pub(super) fn constant_string_vector(', 1
+          )
+          machine_source = machine_source[:constants_start] + machine_source[constants_end:]
+
+          module_marker = (
+              '#[path = "machine/coroutine_runtime.rs"]\n'
+              'mod coroutine_runtime;\n'
+              '#[path = "machine/globals.rs"]\n'
+              'mod globals;\n'
+          )
+          module_replacement = (
+              '#[path = "machine/coroutine_runtime.rs"]\n'
+              'mod coroutine_runtime;\n'
+              '#[path = "machine/constants.rs"]\n'
+              'mod constants;\n'
+              'use constants::{constant_string, constant_string_vector};\n'
+              '#[path = "machine/dispatch.rs"]\n'
+              'mod dispatch;\n'
+              'use dispatch::Dispatch;\n'
+              '#[path = "machine/globals.rs"]\n'
+              'mod globals;\n'
+          )
+          if module_marker not in machine_source:
+              raise RuntimeError('machine module insertion marker missing')
+          machine_path.write_text(machine_source.replace(module_marker, module_replacement, 1))
+
+          constants_source = '''//! Decoding of typed VM constant-pool operands.
+
+          use super::Program;
+          use crate::core::Value;
+
+          ''' + constants_methods
+          (root / 'core/rust/src/vm/machine/constants.rs').write_text(constants_source)
+
+          dispatch_source = '''//! Single-instruction VM dispatch.
+          //!
+          //! The outer `Machine::run` loop remains in `machine.rs`; this child only
+          //! decodes and executes one validated instruction and returns the next
+          //! control action.
+
+          use super::*;
+
+          ''' + dispatch_enum + '\nimpl Machine {\n' + dispatch_method + '}\n'
+          (root / 'core/rust/src/vm/machine/dispatch.rs').write_text(dispatch_source)
+          PY
+
+      - name: Format and synchronize measured layout baselines
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --manifest-path core/rust/Cargo.toml --all
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('core/rust')
+          measured = {
+              'src/vm/compiler/globals.rs': sum(1 for _ in (root / 'src/vm/compiler/globals.rs').open()),
+              'src/vm/machine.rs': sum(1 for _ in (root / 'src/vm/machine.rs').open()),
+          }
+          children = {
+              'src/vm/compiler/bindings.rs': sum(1 for _ in (root / 'src/vm/compiler/bindings.rs').open()),
+              'src/vm/machine/constants.rs': sum(1 for _ in (root / 'src/vm/machine/constants.rs').open()),
+              'src/vm/machine/dispatch.rs': sum(1 for _ in (root / 'src/vm/machine/dispatch.rs').open()),
+          }
+          if measured['src/vm/compiler/globals.rs'] >= 821:
+              raise RuntimeError(f"compiler globals did not shrink: {measured}")
+          if measured['src/vm/machine.rs'] >= 1504:
+              raise RuntimeError(f"machine did not shrink: {measured}")
+          oversized = {path: lines for path, lines in children.items() if lines >= 700}
+          if oversized:
+              raise RuntimeError(f"new child exceeds the 700-line ceiling: {oversized}")
+
+          baseline_path = root / 'scripts/layout-baseline.txt'
+          baseline = baseline_path.read_text()
+          for path, lines in measured.items():
+              baseline, replacements = re.subn(
+                  rf'^lines {re.escape(path)} [0-9]+$',
+                  f'lines {path} {lines}',
+                  baseline,
+                  count=1,
+                  flags=re.MULTILINE,
+              )
+              if replacements != 1:
+                  raise RuntimeError(f"missing layout baseline entry for {path}")
+          baseline_path.write_text(baseline)
+          print({'parents': measured, 'children': children})
+          PY
+          cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
+          git diff --check
+
+      - name: Run layout and full Rust validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash core/rust/scripts/check-layout.test.sh
+          bash core/rust/scripts/check-layout.sh
+          cargo clippy --manifest-path core/rust/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path core/rust/Cargo.toml
+          cargo test --manifest-path core/rust/raw/Cargo.toml
+
+      - name: Commit the validated refactor without temporary machinery
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm .github/workflows/agent-export-562.yml
+          git add core/rust/src/vm/compiler.rs \
+                  core/rust/src/vm/compiler/globals.rs \
+                  core/rust/src/vm/compiler/bindings.rs \
+                  core/rust/src/vm/machine.rs \
+                  core/rust/src/vm/machine/constants.rs \
+                  core/rust/src/vm/machine/dispatch.rs \
+                  core/rust/scripts/layout-baseline.txt
+          git diff --cached --check
+          git config user.name 'hara-issue-agent'
+          git config user.email 'hara-issue-agent@users.noreply.github.com'
+          git commit -m 'Split Rust compiler and machine layout debt (#562)'
+          git push origin HEAD:agent/562-split-vm-layout
