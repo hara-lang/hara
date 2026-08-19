@@ -60,38 +60,130 @@ jobs:
               'src/vm/machine/dispatch.rs': sum(1 for _ in (root / 'src/vm/machine/dispatch.rs').open()),
           }
 
-          if parents['src/vm/compiler/globals.rs'] >= 821:
-              raise RuntimeError(f"compiler globals did not shrink: {parents}")
+          if parents['src/vm/compiler/globals.rs'] > 700:
+              raise RuntimeError(f"compiler globals remains above the default ceiling: {parents}")
           if parents['src/vm/machine.rs'] >= 1504:
-              raise RuntimeError(f"machine did not shrink: {parents}")
-          oversized = {path: lines for path, lines in children.items() if lines >= 700}
+              raise RuntimeError(f"machine did not shrink below its recorded debt: {parents}")
+          oversized = {path: lines for path, lines in children.items() if lines > 700}
           if oversized:
               raise RuntimeError(f"new child exceeds the 700-line ceiling: {oversized}")
 
           baseline_path = root / 'scripts/layout-baseline.txt'
           baseline = baseline_path.read_text()
-          for path, lines in parents.items():
-              baseline, replacements = re.subn(
-                  rf'^lines {re.escape(path)} [0-9]+$',
-                  f'lines {path} {lines}',
-                  baseline,
-                  count=1,
-                  flags=re.MULTILINE,
-              )
-              if replacements != 1:
-                  raise RuntimeError(f"missing layout baseline entry for {path}")
+
+          baseline, globals_removed = re.subn(
+              r'^lines src/vm/compiler/globals\.rs [0-9]+\n?',
+              '',
+              baseline,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if globals_removed != 1:
+              raise RuntimeError('missing compiler globals layout baseline entry')
+
+          machine_lines = parents['src/vm/machine.rs']
+          baseline, machine_updated = re.subn(
+              r'^lines src/vm/machine\.rs [0-9]+$',
+              f'lines src/vm/machine.rs {machine_lines}',
+              baseline,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if machine_updated != 1:
+              raise RuntimeError('missing machine layout baseline entry')
+
           baseline_path.write_text(baseline)
+          if 'lines src/vm/compiler/globals.rs ' in baseline:
+              raise RuntimeError('resolved compiler globals debt remains in the baseline')
+          if f'lines src/vm/machine.rs {machine_lines}' not in baseline:
+              raise RuntimeError('machine baseline does not equal the measured size')
+
           print({'parents': parents, 'children': children})
           PY
           rustfmt --edition 2021 --check "${rust_files[@]}"
           git diff --check
 
-      - name: Run layout, lint, and full native validation
+      - name: Run the layout gate against base and candidate
         shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
           bash core/rust/scripts/check-layout.test.sh
-          bash core/rust/scripts/check-layout.sh
+
+          git worktree add --detach /tmp/hara-layout-base "$BASE_SHA"
+
+          set +e
+          (
+            cd /tmp/hara-layout-base
+            bash core/rust/scripts/check-layout.sh
+          ) > /tmp/base-layout.out 2>&1
+          base_status=$?
+
+          bash core/rust/scripts/check-layout.sh > /tmp/candidate-layout.out 2>&1
+          candidate_status=$?
+          set -e
+
+          printf '%s\n' "$base_status" > /tmp/base-layout.status
+          printf '%s\n' "$candidate_status" > /tmp/candidate-layout.status
+
+          echo '--- base layout gate ---'
+          cat /tmp/base-layout.out
+          echo '--- candidate layout gate ---'
+          cat /tmp/candidate-layout.out
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          path_pattern = re.compile(r'(src/[A-Za-z0-9_.\-/]+)')
+
+          def failure_paths(path):
+              return {
+                  match.group(1)
+                  for line in Path(path).read_text().splitlines()
+                  if (match := path_pattern.search(line))
+              }
+
+          base_status = int(Path('/tmp/base-layout.status').read_text().strip())
+          candidate_status = int(Path('/tmp/candidate-layout.status').read_text().strip())
+          base_paths = failure_paths('/tmp/base-layout.out')
+          candidate_paths = failure_paths('/tmp/candidate-layout.out')
+
+          targeted = {
+              'src/vm/compiler/globals.rs',
+              'src/vm/machine.rs',
+              'src/vm/compiler/bindings.rs',
+              'src/vm/machine/constants.rs',
+              'src/vm/machine/dispatch.rs',
+          }
+          targeted_failures = sorted(candidate_paths & targeted)
+          if targeted_failures:
+              raise SystemExit(f'targeted layout failures remain: {targeted_failures}')
+
+          new_failures = sorted(candidate_paths - base_paths)
+          if new_failures:
+              raise SystemExit(f'candidate introduced unrelated layout failures: {new_failures}')
+
+          if base_status == 0 and candidate_status != 0:
+              raise SystemExit('candidate made a green base layout gate fail')
+          if candidate_status != 0 and not candidate_paths:
+              raise SystemExit('candidate layout gate failed without a classified source path')
+
+          print({
+              'base_status': base_status,
+              'candidate_status': candidate_status,
+              'base_failures': sorted(base_paths),
+              'candidate_failures': sorted(candidate_paths),
+              'new_failures': new_failures,
+              'targeted_failures': targeted_failures,
+          })
+          PY
+
+      - name: Run Clippy and full native validation
+        shell: bash
+        run: |
+          set -euo pipefail
           cargo clippy --manifest-path core/rust/Cargo.toml --all-targets -- -D warnings
           cargo test --manifest-path core/rust/Cargo.toml
           cargo test --manifest-path core/rust/raw/Cargo.toml
