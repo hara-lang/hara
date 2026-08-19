@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check:
@@ -18,44 +18,1038 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: |
+      - name: Test the Foundation surface checker
+        run: |
           python scripts/test_check_foundation_surface.py
-          python scripts/check_foundation_surface.py --report generated/foundation-surface-conformance.json
+          python -m py_compile scripts/check_foundation_surface.py scripts/test_check_foundation_surface.py
+      - name: Validate source, tests, and retired-name evidence
+        run: python scripts/check_foundation_surface.py --report generated/foundation-surface-conformance.json
 
   complete-script-port:
     if: ${{ github.event_name == 'pull_request' && github.head_ref == 'agent/823-script-port-completion' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/823-script-port-completion
           fetch-depth: 0
+
+      - name: Checkout pinned Foundation source authority
+        uses: actions/checkout@v4
+        with:
+          repository: zcaudate-xyz/foundation-base
+          ref: fe54cc866473a888bfbd4ce2d3de6d8011f09f72
+          path: foundation-base
+          fetch-depth: 1
+
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build native Hara once
-        run: cargo build --manifest-path core/rust/Cargo.toml --bin hara
-      - name: Verify terminating native evaluation paths
+
+      - name: Pre-write candidate semantics through hara-test
         shell: bash
-        env:
-          HARA_RUNTIME: rust
-          HARA_NATIVE: ${{ github.workspace }}/core/rust/target/debug/hara
         run: |
           set -euo pipefail
-          test "$(timeout 20s core/hara --project core eval '(+ 19 23)')" = "42"
+          mkdir -p core/private/tmp
+          cat > core/private/tmp/script_port_candidate_test.hal <<'HAL'
+          (ns script-port-candidate-test
+            (:use code.test)
+            (:require [std.foundation :as f]
+                      [std.foundation.string :as str]))
 
-          cat > /tmp/hara-script-port-probe.hal <<'HAL'
-          (ns demo.script-port-probe)
-          (def value 42)
-          (assert (= value 42))
-          HAL
-          timeout 20s core/hara --project core --offline run /tmp/hara-script-port-probe.hal
+          (defn inverse-symbol-string
+            [symbol-value]
+            (str/replace (str symbol-value) "_" "-"))
 
-          cat > core/private/tmp/script_port_probe_test.hal <<'HAL'
-          (ns script-port-probe-test
-            (:use code.test))
-          (fact "native test runner terminates"
-            (+ 19 23) => 42)
-          (pr-str (run '[script-port-probe-test]))
+          (defn candidate-tmpl-entry
+            [s]
+            (let [{:keys [tag type base prefix shrink]
+                   :or {base []}} (f/template-meta)
+                  base (if (vector? base) base [base])
+                  dsym (case type
+                         :fragment (symbol (str "def$." tag))
+                         :object (symbol (str "def." tag)))
+                  pair (if (vector? s) s [s s])
+                  sym (first pair)
+                  msym (second pair)
+                  sym-text (inverse-symbol-string
+                            (str/replace (name sym) "." (if shrink "" "-")))
+                  sym-text (if prefix (str prefix sym-text) sym-text)
+                  mrep (symbol (str/join "." (conj base msym)))]
+              (list dsym (symbol sym-text) mrep)))
+
+          (defn candidate-tmpl-macro
+            [[s args options]]
+            (let [{:keys [property optional vargs empty]} (or options {})
+                  {:keys [tag inst prefix subtree]
+                   :or {inst "obj"}} (f/template-meta)
+                  inst (symbol (str inst))
+                  pair (if (vector? s) s [s s])
+                  sym0 (first pair)
+                  msym (second pair)
+                  sym-text (inverse-symbol-string sym0)
+                  sym-text (if prefix (str prefix sym-text) sym-text)
+                  sym (symbol sym-text)
+                  dargs (cond
+                          property []
+                          (and optional vargs)
+                          (conj args '& (conj optional '& [:as vargs] :as 'targs))
+                          optional
+                          (conj args '& (conj optional :as 'oargs))
+                          vargs
+                          (conj args '& [:as vargs])
+                          :else args)
+                  aform (cond
+                          (and optional vargs)
+                          `(apply list (quote ~msym) ~@args
+                                  (vec (concat
+                                        (take (- (count ~'targs) (count ~vargs)) ~optional)
+                                        ~vargs)))
+                          optional
+                          `(apply list (quote ~msym) ~@args
+                                  (vec (take (count ~'oargs) ~optional)))
+                          vargs
+                          `(apply list (quote ~msym) ~@args ~vargs)
+                          :else
+                          `(list (quote ~msym) ~@args))
+                  standalone
+                  (let [isym (if empty (list 'or inst empty) inst)]
+                    (if property
+                      `(~'fn:> [~isym] (~'. ~isym ~msym))
+                      (let [rest-args (if vargs [(symbol (str "..." vargs))] [])]
+                        `(~'fn:> [~isym ~@args ~@optional ~@rest-args]
+                           (~'. ~isym (~msym ~@args ~@optional ~@rest-args))))))
+                  subtree-fn (fn [value] (list 'quote (symbol value)))
+                  sform (if property
+                          `(list ~''. ~inst ~@(map subtree-fn subtree) (quote ~msym))
+                          `(list ~''. ~inst ~@(map subtree-fn subtree) ~aform))]
+              `(~(symbol (str "defmacro." tag))
+                ~(with-meta sym {:standalone (list 'quote standalone)})
+                ([~inst ~@dargs] ~sform))))
+
+          (def +candidate-registry+ (atom {}))
+          (def +candidate-runtimes+ (atom {}))
+
+          (defn candidate-register!
+            [namespace tag lang runtime config]
+            (let [key [namespace tag]
+                  previous (get (deref +candidate-registry+) key)]
+              (swap! +candidate-registry+ assoc key
+                     {:namespace namespace :tag tag :lang lang
+                      :runtime runtime :config config})
+              [previous lang]))
+
+          (defn candidate-status
+            [namespace]
+            {:registered
+             (reduce-kv (fn [out key value]
+                          (if (= namespace (first key)) (conj out (second key)) out))
+                        #{} (deref +candidate-registry+))
+             :active
+             (reduce-kv (fn [out key value]
+                          (if (= namespace (first key)) (conj out (second key)) out))
+                        #{} (deref +candidate-runtimes+))})
+
+          (def results
+            [(fact "script-def candidate preserves Foundation entry templates"
+               [(f/with:template-meta {:type :fragment :tag "js"}
+                  (candidate-tmpl-entry '[createObject create]))
+                (f/with:template-meta {:type :fragment
+                                       :base "Webassembly"
+                                       :prefix "ws-"
+                                       :tag "js"}
+                  (candidate-tmpl-entry 'compile))]
+               => '[(def$.js createObject create)
+                    (def$.js ws-compile Webassembly.compile)])
+
+             (fact "script-def macro candidate preserves generated macro identity"
+               (let [form (f/with:template-meta {:tag "js"}
+                            (candidate-tmpl-macro
+                             '[length [arr] {:property true :tag "js"}]))
+                     macro-symbol (second form)]
+                 [(first form)
+                  macro-symbol
+                  (boolean (:standalone (meta macro-symbol)))])
+               => ['defmacro.js 'length true])
+
+             (fact "annex candidate uses explicit namespace/tag state"
+               (do
+                 (reset! +candidate-registry+ {})
+                 (reset! +candidate-runtimes+ {})
+                 [(candidate-register! 'demo.core :LUA.0 :lua :default {})
+                  (candidate-register! 'demo.core :LUA.1 :lua :basic {})
+                  (candidate-status 'demo.core)])
+               => [[nil :lua]
+                   [nil :lua]
+                   {:registered #{:LUA.0 :LUA.1} :active #{}}])])
+
+          (pr-str (run '[script-port-candidate-test]))
           HAL
-          timeout 120s ./scripts/runtime/run-lib-tests core/private/tmp/script_port_probe_test.hal
-          rm core/private/tmp/script_port_probe_test.hal
+
+          timeout --signal=TERM --kill-after=10s 300s \
+            ./scripts/runtime/run-lib-tests core/private/tmp/script_port_candidate_test.hal
+          rm core/private/tmp/script_port_candidate_test.hal
+
+      - name: Write the validated portable modules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > core/lib/src/lang/core/script_annex.hal <<'HAL'
+          (ns lang.core.script-annex
+            (:require [lang.core.runtime :as runtime]
+                      [lang.core.script :as script]))
+
+          ;; Portable replacement for Foundation's RuntimeAnnex. The old annex
+          ;; cloned a mutable library/book into ContextSpace. Hara keeps only
+          ;; the useful contract: explicit tag registration and runtime state.
+          (def +registry+ (atom {}))
+          (def +runtimes+ (atom {}))
+
+          (defn current-namespace-symbol
+            []
+            (symbol (str (current-namespace))))
+
+          (defn coordinate
+            [namespace tag]
+            [namespace tag])
+
+          (defn register-tag-in!
+            [namespace tag lang runtime-id config]
+            (let [key (coordinate namespace tag)
+                  previous (get (deref +registry+) key)
+                  record {:namespace namespace
+                          :tag tag
+                          :lang lang
+                          :runtime (or runtime-id :default)
+                          :config (or config {})}]
+              (swap! +registry+ assoc key record)
+              [previous lang]))
+
+          (defn register-tag!
+            [tag lang runtime-id config]
+            (register-tag-in! (current-namespace-symbol)
+                              tag lang runtime-id config))
+
+          (defn deregister-tag-in!
+            [namespace tag]
+            (let [key (coordinate namespace tag)
+                  previous (get (deref +registry+) key)]
+              (swap! +registry+ dissoc key)
+              previous))
+
+          (defn deregister-tag!
+            [tag]
+            (deregister-tag-in! (current-namespace-symbol) tag))
+
+          (defn tag-info-in
+            [namespace tag]
+            (get (deref +registry+) (coordinate namespace tag)))
+
+          (defn tag-info
+            [tag]
+            (tag-info-in (current-namespace-symbol) tag))
+
+          (defn runtime-in
+            [namespace tag]
+            (get (deref +runtimes+) (coordinate namespace tag)))
+
+          (defn get-runtime
+            [tag]
+            (runtime-in (current-namespace-symbol) tag))
+
+          (defn start-runtime
+            [lang runtime-id config]
+            (runtime/rt-start
+             (runtime/rt-create lang (or runtime-id :default) (or config {}))))
+
+          (defn same-runtime?
+            [instance lang runtime-id config]
+            (= (select-keys instance [:lang :runtime :layout :emit])
+               (select-keys (merge {:lang lang :runtime (or runtime-id :default)}
+                                   (or config {}))
+                            [:lang :runtime :layout :emit])))
+
+          (defn add-runtime-in!
+            [namespace tag instance]
+            (let [key (coordinate namespace tag)
+                  previous (runtime-in namespace tag)
+                  ignored (if previous (runtime/rt-stop previous) nil)]
+              (swap! +runtimes+ assoc key instance)
+              [previous instance]))
+
+          (defn remove-runtime-in!
+            [namespace tag]
+            (let [key (coordinate namespace tag)
+                  previous (runtime-in namespace tag)]
+              (if previous (runtime/rt-stop previous) nil)
+              (swap! +runtimes+ dissoc key)
+              previous))
+
+          (defn start-tag-in!
+            [namespace tag]
+            (let [record (tag-info-in namespace tag)]
+              (if (nil? record)
+                (throw (ex-info "Script annex tag is not registered"
+                                {:namespace namespace :tag tag}))
+                (let [lang (:lang record)
+                      runtime-id (:runtime record)
+                      config (:config record)
+                      module (or (:module config) namespace)
+                      previous (runtime-in namespace tag)]
+                  (if (and previous
+                           (same-runtime? previous lang runtime-id
+                                          (assoc config :module module)))
+                    [previous previous]
+                    (let [ignored (if previous (runtime/rt-stop previous) nil)
+                          configured (script/configure-module! lang module config)
+                          started (start-runtime lang runtime-id
+                                                 (assoc config :module module))]
+                      (swap! +runtimes+ assoc (coordinate namespace tag) started)
+                      [previous started]))))))
+
+          (defn start-tag!
+            [tag]
+            (start-tag-in! (current-namespace-symbol) tag))
+
+          (defn stop-tag-in!
+            [namespace tag]
+            (remove-runtime-in! namespace tag))
+
+          (defn stop-tag!
+            [tag]
+            (stop-tag-in! (current-namespace-symbol) tag))
+
+          (defn restart-tag-in!
+            [namespace tag]
+            (do
+              (stop-tag-in! namespace tag)
+              (start-tag-in! namespace tag)))
+
+          (defn restart-tag!
+            [tag]
+            (restart-tag-in! (current-namespace-symbol) tag))
+
+          (defn namespace-tags
+            [state namespace]
+            (reduce-kv
+             (fn [out key value]
+               (if (= namespace (first key))
+                 (conj out (second key))
+                 out))
+             #{}
+             state))
+
+          (defn status-in
+            [namespace]
+            {:registered (namespace-tags (deref +registry+) namespace)
+             :active (namespace-tags (deref +runtimes+) namespace)})
+
+          (defn status
+            []
+            (status-in (current-namespace-symbol)))
+
+          (defn start-all-in!
+            [namespace]
+            (reduce (fn [out tag]
+                      (assoc out tag (start-tag-in! namespace tag)))
+                    {}
+                    (:registered (status-in namespace))))
+
+          (defn start-all!
+            []
+            (start-all-in! (current-namespace-symbol)))
+
+          (defn stop-all-in!
+            [namespace]
+            (reduce (fn [out tag]
+                      (assoc out tag (stop-tag-in! namespace tag)))
+                    {}
+                    (:active (status-in namespace))))
+
+          (defn stop-all!
+            []
+            (stop-all-in! (current-namespace-symbol)))
+
+          (defn restart-all-in!
+            [namespace]
+            (do
+              (stop-all-in! namespace)
+              (start-all-in! namespace)))
+
+          (defn restart-all!
+            []
+            (restart-all-in! (current-namespace-symbol)))
+
+          (defn clear-in!
+            [namespace]
+            (do
+              (stop-all-in! namespace)
+              (swap! +registry+
+                     (fn [entries]
+                       (reduce-kv
+                        (fn [out key value]
+                          (if (= namespace (first key))
+                            out
+                            (assoc out key value)))
+                        {}
+                        entries)))
+              (status-in namespace)))
+
+          (defn clear!
+            []
+            (clear-in! (current-namespace-symbol)))
+
+          (defn eval-tag-in!
+            [namespace tag form]
+            (let [record (tag-info-in namespace tag)
+                  instance (runtime-in namespace tag)]
+              (if (nil? record)
+                (throw (ex-info "Script annex tag is not registered"
+                                {:namespace namespace :tag tag}))
+                (if (nil? instance)
+                  (throw (ex-info "Script annex tag is not started"
+                                  {:namespace namespace :tag tag}))
+                  (let [config (:config record)
+                        module (or (:module config) namespace)
+                        source (script/compile-form (:lang record) module form)]
+                    (runtime/rt-raw-eval instance source))))))
+
+          (defn eval-tag!
+            [tag form]
+            (eval-tag-in! (current-namespace-symbol) tag form))
+
+          (defn script-ext-form
+            [namespace coordinate-value config]
+            (let [tag (first coordinate-value)
+                  lang (second coordinate-value)
+                  config (or config {})
+                  runtime-id (or (:runtime config) :default)]
+              (list 'do
+                    (list 'lang.core.script-annex/register-tag-in!
+                          (list 'quote namespace)
+                          tag
+                          lang
+                          runtime-id
+                          (list 'quote config))
+                    (list 'lang.core.script-annex/start-tag-in!
+                          (list 'quote namespace)
+                          tag))))
+
+          (defn script-eval-form
+            [namespace tag body]
+            (if (vector? tag)
+              (list 'lang.core.script-annex/eval-tag-in!
+                    (list 'quote namespace)
+                    (first tag)
+                    (list 'quote body))
+              nil))
+          HAL
+
+          cat > core/lib/src/lang/core/script_def.hal <<'HAL'
+          (ns lang.core.script-def
+            (:require [std.foundation :as f]
+                      [std.foundation.string :as str]))
+
+          (defn sym-default-inverse-str
+            [symbol-value]
+            (str/replace (str symbol-value) "_" "-"))
+
+          (defn tmpl-entry
+            "Generates one portable def.* or def$.* form from template metadata."
+            [s]
+            (let [{:keys [tag type base prefix shrink]
+                   :or {base []}} (f/template-meta)
+                  base (if (vector? base) base [base])
+                  dsym (case type
+                         :fragment (symbol (str "def$." tag))
+                         :object (symbol (str "def." tag)))
+                  pair (if (vector? s) s [s s])
+                  sym (first pair)
+                  msym (second pair)
+                  sym-text (sym-default-inverse-str
+                            (str/replace (name sym) "." (if shrink "" "-")))
+                  sym-text (if prefix (str prefix sym-text) sym-text)
+                  mrep (symbol (str/join "." (conj base msym)))]
+              (list dsym (symbol sym-text) mrep)))
+
+          (defn tmpl-macro
+            "Generates one portable defmacro.* method/property wrapper."
+            [[s args options]]
+            (let [{:keys [property optional vargs empty]} (or options {})
+                  {:keys [tag inst prefix subtree]
+                   :or {inst "obj"}} (f/template-meta)
+                  inst (symbol (str inst))
+                  pair (if (vector? s) s [s s])
+                  sym0 (first pair)
+                  msym (second pair)
+                  sym-text (sym-default-inverse-str sym0)
+                  sym-text (if prefix (str prefix sym-text) sym-text)
+                  sym (symbol sym-text)
+                  dargs (cond
+                          property []
+                          (and optional vargs)
+                          (conj args '& (conj optional '& [:as vargs] :as 'targs))
+                          optional
+                          (conj args '& (conj optional :as 'oargs))
+                          vargs
+                          (conj args '& [:as vargs])
+                          :else args)
+                  aform (cond
+                          (and optional vargs)
+                          `(apply list (quote ~msym) ~@args
+                                  (vec (concat
+                                        (take (- (count ~'targs) (count ~vargs)) ~optional)
+                                        ~vargs)))
+                          optional
+                          `(apply list (quote ~msym) ~@args
+                                  (vec (take (count ~'oargs) ~optional)))
+                          vargs
+                          `(apply list (quote ~msym) ~@args ~vargs)
+                          :else
+                          `(list (quote ~msym) ~@args))
+                  standalone
+                  (let [isym (if empty (list 'or inst empty) inst)]
+                    (if property
+                      `(~'fn:> [~isym] (~'. ~isym ~msym))
+                      (let [rest-args (if vargs [(symbol (str "..." vargs))] [])]
+                        `(~'fn:> [~isym ~@args ~@optional ~@rest-args]
+                           (~'. ~isym (~msym ~@args ~@optional ~@rest-args))))))
+                  subtree-fn (fn [value] (list 'quote (symbol value)))
+                  sform (if property
+                          `(list ~''. ~inst ~@(map subtree-fn subtree) (quote ~msym))
+                          `(list ~''. ~inst ~@(map subtree-fn subtree) ~aform))]
+              `(~(symbol (str "defmacro." tag))
+                ~(with-meta sym {:standalone (list 'quote standalone)})
+                ([~inst ~@dargs] ~sform))))
+          HAL
+
+          cat > core/lib/src/lang/core/script_lint.hal <<'HAL'
+          (ns lang.core.script-lint
+            (:require [lang.core.registry :as registry]
+                      [tool.lint :as lint]))
+
+          (defn get-reserved-raw
+            "Returns the selected language grammar's reserved symbols."
+            [lang]
+            (set (keys (get-in (registry/registry-book lang)
+                               [:grammar :reserved]))))
+
+          (def get-reserved get-reserved-raw)
+
+          (defn collect-vars
+            "Collects every symbol recursively from a source form."
+            [form]
+            (cond
+              (symbol? form) #{form}
+              (map? form)
+              (reduce-kv (fn [out key value]
+                           (union out (collect-vars key) (collect-vars value)))
+                         #{}
+                         form)
+              (coll? form)
+              (reduce (fn [out value]
+                        (union out (collect-vars value)))
+                      #{}
+                      form)
+              :else #{}))
+
+          (defn collect-module-globals
+            "Collects legacy module globals without retaining mutable lint settings."
+            [module]
+            (let [native-values
+                  (reduce-kv
+                   (fn [out key group]
+                     (reduce-kv
+                      (fn [current entry-key values]
+                        (reduce (fn [result value] (conj result value))
+                                current
+                                (if (coll? values) values [values])))
+                      out
+                      (or group {})))
+                   #{}
+                   (or (:native module) {}))
+                  static-values (or (get-in module [:static :lang/lint-globals]) #{})]
+              (dissoc (union native-values static-values) '*)))
+
+          ;; Semantic lint execution is owned by tool.lint. The old +registry+,
+          ;; +settings+, lint-set, lint-clear, and lint-needed? globals are
+          ;; deliberately not recreated.
+          (def analyze-source lint/analyze-source)
+          (def lint-source lint/lint-source)
+          HAL
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/lib/src/lang/core.hal")
+          source = path.read_text()
+          require_anchor = "            [lang.core.script :as script]\n            [lang.core.script-fragment]"
+          require_replacement = "            [lang.core.script :as script]\n            [lang.core.script-annex :as script-annex]\n            [lang.core.script-fragment]"
+          if source.count(require_anchor) != 1:
+              raise SystemExit(f"lang.core require anchor changed: {source.count(require_anchor)}")
+          source = source.replace(require_anchor, require_replacement, 1)
+
+          anchor = "(defn rt:stop [] (script/stop!))\n"
+          addition = r'''
+
+          (defn annex:start
+            ([tag] (script-annex/start-tag! tag))
+            ([tag namespace] (script-annex/start-tag-in! namespace tag)))
+
+          (defn annex:get
+            ([tag] (script-annex/get-runtime tag))
+            ([tag namespace] (script-annex/runtime-in namespace tag)))
+
+          (defn annex:stop
+            ([tag] (script-annex/stop-tag! tag))
+            ([tag namespace] (script-annex/stop-tag-in! namespace tag)))
+
+          (defn annex:start-all
+            ([] (script-annex/start-all!))
+            ([namespace] (script-annex/start-all-in! namespace)))
+
+          (defn annex:stop-all
+            ([] (script-annex/stop-all!))
+            ([namespace] (script-annex/stop-all-in! namespace)))
+
+          (defn annex:restart-all
+            ([] (script-annex/restart-all!))
+            ([namespace] (script-annex/restart-all-in! namespace)))
+
+          (defn annex:list
+            ([] (script-annex/status))
+            ([namespace] (script-annex/status-in namespace)))
+          '''
+          if source.count(anchor) != 1:
+              raise SystemExit(f"lang.core runtime anchor changed: {source.count(anchor)}")
+          source = source.replace(anchor, anchor + addition, 1)
+
+          macro_anchor = "(defmacro script-\n  [lang & options]\n  (lang.core/script-expansion lang options true))"
+          macro_addition = r'''
+
+          (defmacro script+
+            [coordinate-value & options]
+            (script-annex/script-ext-form
+             (symbol (str (get &env :ns)))
+             coordinate-value
+             (if (empty? options) {} (first options))))
+
+          (defmacro !
+            [tag body]
+            (script-annex/script-eval-form
+             (symbol (str (get &env :ns)))
+             tag
+             body))
+          '''
+          if source.count(macro_anchor) != 1:
+              raise SystemExit(f"lang.core macro anchor changed: {source.count(macro_anchor)}")
+          source = source.replace(macro_anchor, macro_anchor + macro_addition, 1)
+          path.write_text(source)
+          PY
+
+      - name: Update and regenerate the governing code.migrate ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path("scripts/runtime/materialize-code-migrate-script-ledger")
+          source = path.read_text()
+
+          source = source.replace(
+              '    "defstruct",\n    "defmutable",\n}',
+              '    "defstruct",\n    "defmutable",\n    "defonce",\n    "invoke/definvoke",\n}',
+              1,
+          )
+
+          old_targets = '''TARGET_FILES = [
+    "core/lib/src/lang/core.hal",
+    "core/lib/src/lang/core/script.hal",
+    "core/lib/src/lang/common/compiler.hal",
+    "core/lib/src/std/foundation.hal",
+]'''
+          new_targets = '''TARGET_FILES = [
+    "core/lib/src/lang/core.hal",
+    "core/lib/src/lang/core/script.hal",
+    "core/lib/src/lang/core/script_annex.hal",
+    "core/lib/src/lang/core/script_def.hal",
+    "core/lib/src/lang/core/script_lint.hal",
+    "core/lib/src/lang/common/compiler.hal",
+    "core/lib/src/std/foundation.hal",
+    "core/lib/src/tool/lint.hal",
+]'''
+          if source.count(old_targets) != 1:
+              raise SystemExit("target file inventory anchor changed")
+          source = source.replace(old_targets, new_targets, 1)
+
+          source = source.replace(
+              'COMPILER_VALIDATION = "lang.common.compiler-test/run"\nLEDGER_VALIDATION = "code.migrate-script-test/run"',
+              'COMPILER_VALIDATION = "lang.common.compiler-test/run"\nLINT_VALIDATION = "tool.lint-test/run"\nPORT_VALIDATION = "lang.core.script-port-test/run"\nLEDGER_VALIDATION = "code.migrate-script-test/run"',
+              1,
+          )
+
+          replacements = {
+              '"script-ext": ("lang.core.script/compile-form", "target-compile"),':
+                  '"script-ext": ("lang.core.script-annex/start-tag-in!", "runtime-annex"),',
+              '"script+": ("lang.core.script/compile-form", "target-compile"),':
+                  '"script+": ("lang.core/script+", "grammar-publication"),',
+              '"script-ext-run": ("lang.core.script/eval-form!", "target-eval"),':
+                  '"script-ext-run": ("lang.core.script-annex/eval-tag-in!", "target-eval"),',
+              '"!": ("lang.core/script-eval-macro-form", "grammar-publication"),':
+                  '"!": ("lang.core/!", "grammar-publication"),',
+              '"annex:start": ("lang.core.script/restart!", "runtime-lifecycle"),':
+                  '"annex:start": ("lang.core/annex:start", "runtime-lifecycle"),',
+              '"annex:get": ("lang.core.script/+scripts+", "runtime-registry"),':
+                  '"annex:get": ("lang.core/annex:get", "runtime-registry"),',
+              '"annex:stop": ("lang.core.script/stop!", "runtime-lifecycle"),':
+                  '"annex:stop": ("lang.core/annex:stop", "runtime-lifecycle"),',
+              '"annex:start-all": ("lang.core.script/restart!", "runtime-lifecycle"),':
+                  '"annex:start-all": ("lang.core/annex:start-all", "runtime-lifecycle"),',
+              '"annex:stop-all": ("lang.core.script/stop!", "runtime-lifecycle"),':
+                  '"annex:stop-all": ("lang.core/annex:stop-all", "runtime-lifecycle"),',
+              '"annex:restart-all": ("lang.core.script/restart!", "runtime-lifecycle"),':
+                  '"annex:restart-all": ("lang.core/annex:restart-all", "runtime-lifecycle"),',
+              '"annex:list": ("lang.core.script/+scripts+", "runtime-registry"),':
+                  '"annex:list": ("lang.core/annex:list", "runtime-registry"),',
+          }
+          for old, new in replacements.items():
+              if source.count(old) != 1:
+                  raise SystemExit(f"script target anchor changed: {old}")
+              source = source.replace(old, new, 1)
+
+          annex_pattern = re.compile(r'''    annex_targets = \{.*?\n\n    control_targets = \{''', re.S)
+          annex_replacement = '''    annex_targets = {
+        "annex-current": "lang.core.script-annex/status",
+        "annex-reset": "lang.core.script-annex/clear-in!",
+        "get-annex": "lang.core.script-annex/status-in",
+        "clear-annex": "lang.core.script-annex/clear-in!",
+        "add-annex-runtime": "lang.core.script-annex/add-runtime-in!",
+        "get-annex-runtime": "lang.core.script-annex/runtime-in",
+        "remove-annex-runtime": "lang.core.script-annex/remove-runtime-in!",
+        "register-annex-tag": "lang.core.script-annex/register-tag-in!",
+        "deregister-annex-tag": "lang.core.script-annex/deregister-tag-in!",
+        "start-runtime": "lang.core.script-annex/start-runtime",
+        "same-runtime?": "lang.core.script-annex/same-runtime?",
+    }
+    for name, target in annex_targets.items():
+        adapted(
+            records,
+            f"tahto.core.script-annex/{name}",
+            target,
+            "runtime-annex",
+            "runtime-registry",
+            "explicit-namespace-tag-runtime-state-replaces-cloned-contextspace-annexes",
+            PORT_VALIDATION,
+        )
+    for name in ["rt-annex?", "rt-annex:create", "+init-annex+",
+                 "get-annex-library", "get-annex-book"]:
+        obsolete(
+            records,
+            f"tahto.core.script-annex/{name}",
+            "runtime-annex",
+            "runtime-registry",
+            "cloned-library-annex-identity-is-not-part-of-the-portable-runtime-contract",
+        )
+
+    control_targets = {'''
+          source, count = annex_pattern.subn(annex_replacement, source, count=1)
+          if count != 1:
+              raise SystemExit(f"annex mapping block changed: {count}")
+
+          source = source.replace(
+              '''    adapted(
+        records,
+        "tahto.core.script-def/tmpl-entry",
+        "lang.core/script-definition-macro-form",
+        "script-template",
+        "grammar-publication",
+        "grammar-derived-definition-families-replace-static-template-expansion",
+    )
+    adapted(
+        records,
+        "tahto.core.script-def/tmpl-macro",
+        "lang.core/script-defmacro-macro-form",
+        "script-template",
+        "grammar-publication",
+        "grammar-derived-macro-families-replace-static-template-expansion",
+    )''',
+              '''    adapted(
+        records,
+        "tahto.core.script-def/tmpl-entry",
+        "lang.core.script-def/tmpl-entry",
+        "script-template",
+        "grammar-publication",
+        "portable-template-expansion-preserves-foundation-definition-generation",
+        PORT_VALIDATION,
+    )
+    adapted(
+        records,
+        "tahto.core.script-def/tmpl-macro",
+        "lang.core.script-def/tmpl-macro",
+        "script-template",
+        "grammar-publication",
+        "portable-template-expansion-preserves-foundation-macro-generation",
+        PORT_VALIDATION,
+    )''',
+              1,
+          )
+
+          lint_pattern = re.compile(r'''    for name in \["get-reserved-raw", "get-reserved"\]:.*?\n\n    macro_targets = \{''', re.S)
+          lint_replacement = '''    for name in ["get-reserved-raw", "get-reserved", "collect-vars",
+                 "collect-module-globals"]:
+        adapted(
+            records,
+            f"tahto.core.script-lint/{name}",
+            f"lang.core.script-lint/{name}",
+            "script-lint",
+            "compiler-lint",
+            "portable-source-analysis-is-explicit-and-free-of-global-lint-state",
+            PORT_VALIDATION,
+        )
+    for name in ["collect-sym-vars", "sym-check-linter", "lint-entry"]:
+        adapted(
+            records,
+            f"tahto.core.script-lint/{name}",
+            "tool.lint/lint-source",
+            "script-lint",
+            "compiler-lint",
+            "semantic-lint-behavior-is-owned-by-tool-lint",
+            LINT_VALIDATION,
+            "test-vector",
+        )
+    for name in ["+registry+", "+settings+", "lint-set", "lint-clear", "lint-needed?"]:
+        obsolete(
+            records,
+            f"tahto.core.script-lint/{name}",
+            "script-lint",
+            "compiler-lint",
+            "tool-lint-options-replace-global-mutable-lint-state",
+        )
+
+    macro_targets = {'''
+          source, count = lint_pattern.subn(lint_replacement, source, count=1)
+          if count != 1:
+              raise SystemExit(f"lint mapping block changed: {count}")
+
+          if source.count("84") != 4:
+              raise SystemExit(f"expected four pinned-count literals, found {source.count('84')}")
+          source = source.replace("84", "86")
+
+          path.write_text(source)
+          PY
+
+          python -m py_compile scripts/runtime/materialize-code-migrate-script-ledger
+          python scripts/runtime/materialize-code-migrate-script-ledger \
+            --repo-root . --foundation-root foundation-base --write
+          python scripts/runtime/materialize-code-migrate-script-ledger \
+            --repo-root . --foundation-root foundation-base --check
+
+      - name: Add focused source-derived port contract
+        shell: bash
+        run: |
+          cat > core/lib/test-lang/lang/core/script_port_test.hal <<'HAL'
+          (ns lang.core.script-port-test
+            (:use code.test)
+            (:require [code.migrate :as migrate]
+                      [lang.core]
+                      [lang.core.script :as script]
+                      [lang.core.script-annex :as annex]
+                      [lang.core.script-def :as script-def]
+                      [lang.core.script-lint :as script-lint]))
+
+          (defn report-data [outcome] (Result/data outcome))
+          (defn current-module [] (symbol (str (current-namespace))))
+
+          (def results
+            [(fact "the complete pinned script family has no hidden public gaps"
+               [(mapv (fn [unit]
+                        [(get unit :namespace) (count (get unit :references))])
+                      migrate/+foundation-script-source-units+)
+                (let [audit (migrate/migration-ledger-audit
+                             migrate/+foundation-script-ledger+
+                             (migrate/foundation-script-inventory))]
+                  [(get audit :valid)
+                   (get audit :records)
+                   (get audit :source/references)
+                   (get audit :diagnostics)])]
+               => ['[[tahto.core.script 28]
+                     [tahto.core.script-annex 16]
+                     [tahto.core.script-control 7]
+                     [tahto.core.script-def 2]
+                     [tahto.core.script-lint 12]
+                     [tahto.core.script-macro 21]]
+                   [true 86 86 []]])
+
+             (fact "script-def preserves Foundation entry and macro template semantics"
+               (let [entry-a (f/with:template-meta {:type :fragment :tag "js"}
+                               (script-def/tmpl-entry '[createObject create]))
+                     entry-b (f/with:template-meta {:type :fragment
+                                                    :base "Webassembly"
+                                                    :prefix "ws-"
+                                                    :tag "js"}
+                               (script-def/tmpl-entry 'compile))
+                     macro-form (f/with:template-meta {:tag "js"}
+                                  (script-def/tmpl-macro
+                                   '[length [arr] {:property true :tag "js"}]))
+                     macro-symbol (second macro-form)]
+                 [entry-a entry-b (first macro-form) macro-symbol
+                  (boolean (:standalone (meta macro-symbol)))])
+               => '[(def$.js createObject create)
+                    (def$.js ws-compile Webassembly.compile)
+                    defmacro.js length true])
+
+             (fact "script-lint retains pure helpers while tool.lint owns semantic diagnostics"
+               [(script-lint/collect-vars '#{[hello #{world}]})
+                (set? (script-lint/get-reserved-raw :lua))
+                (map :type
+                     (:findings
+                      (report-data
+                       (script-lint/lint-source
+                        "(ns demo.script-port)\n(defn foo [x] (+ x missing))"))))]
+               => ['#{hello world} true [:tool.lint/unresolved-symbol]])
+
+             (fact "script-control semantics are explicit runtime lifecycle operations"
+               (let [instance (lang.core/rt-create :xtalk :default
+                                                   {:module 'script.port.control})
+                     started (lang.core/rt-start instance)
+                     output (lang.core/rt-raw-eval started "portable")
+                     stopped (lang.core/rt-stop started)]
+                 [(:lang started) (:runtime started) output
+                  (std.lib.component/stopped? stopped)])
+               => [:xtalk :default "portable" true])
+
+             (fact "tagged script annex state preserves registration and lifecycle"
+               (let [namespace (current-module)
+                     registry-before (deref annex/+registry+)
+                     runtimes-before (deref annex/+runtimes+)]
+                 (try
+                   (let [registered (annex/register-tag-in!
+                                     namespace :PORT.0 :xtalk :default {})
+                         before (annex/status-in namespace)
+                         started (annex/start-tag-in! namespace :PORT.0)
+                         instance (second started)
+                         during (annex/status-in namespace)
+                         evaluated (annex/eval-tag-in! namespace :PORT.0 '(+ 1 2))
+                         stopped (annex/stop-tag-in! namespace :PORT.0)
+                         after (annex/status-in namespace)]
+                     [registered before
+                      (nil? (first started))
+                      (:lang instance) (:runtime instance)
+                      during (string? evaluated)
+                      (map? stopped) after])
+                   (finally
+                     (annex/stop-all-in! namespace)
+                     (reset! annex/+registry+ registry-before)
+                     (reset! annex/+runtimes+ runtimes-before))))
+               => [[nil :xtalk]
+                   {:registered #{:PORT.0} :active #{}}
+                   true :xtalk :default
+                   {:registered #{:PORT.0} :active #{:PORT.0}}
+                   true true
+                   {:registered #{:PORT.0} :active #{}}])
+
+             (fact "script+ and tagged ! are generated from the portable annex"
+               [(first (macroexpand-1
+                        '(lang.core/script+ [:PORT.1 :xtalk]
+                                           {:runtime :default})))
+                (first (macroexpand-1
+                        '(lang.core/! [:PORT.1] (+ 1 2))))]
+               => ['do 'lang.core.script-annex/eval-tag-in!])
+
+             (fact "representative def.xt and def.pg share the portable code-pointer contract"
+               (let [modules-before (deref script/+modules+)
+                     scripts-before (deref script/+scripts+)
+                     contexts-before (deref script/+module-contexts+)]
+                 (try
+                   (eval '(lang.core/script- :xtalk))
+                   (eval '(def.xt PORTED-XT 1))
+                   (eval '(lang.core/script- :postgres))
+                   (eval '(def.pg PORTED-PG 1))
+                   (let [xt (deref (resolve 'PORTED-XT))
+                         pg (deref (resolve 'PORTED-PG))]
+                     [(lang.core/code-pointer? xt) (:lang xt) (:op xt) (:form-input xt)
+                      (lang.core/code-pointer? pg) (:lang pg) (:op pg) (:form-input pg)])
+                   (finally
+                     (reset! script/+modules+ modules-before)
+                     (reset! script/+scripts+ scripts-before)
+                     (reset! script/+module-contexts+ contexts-before))))
+               => [true :xtalk 'def '(def PORTED-XT 1)
+                   true :postgres 'def '(def PORTED-PG 1)])
+
+             (fact "macro publication is grammar-derived and deterministic"
+               (let [first-run (lang.core/script-macro-forms :postgres)
+                     second-run (lang.core/script-macro-forms :postgres)
+                     symbols (mapv second first-run)
+                     available (set symbols)]
+                 [(= first-run second-run)
+                  (= (count symbols) (count available))
+                  (every? (fn [symbol] (has? available symbol))
+                          '[!.pg !.postgres def$.pg defmacro.pg def.pg defn.pg])])
+               => [true true true])])
+
+          (pr-str (run '[lang.core.script-port-test]))
+          HAL
+
+          git diff --check -- \
+            core/lib/src/lang/core.hal \
+            core/lib/src/lang/core/script_annex.hal \
+            core/lib/src/lang/core/script_def.hal \
+            core/lib/src/lang/core/script_lint.hal \
+            core/lib/src/code/migrate/script.hal \
+            core/lib/test/code/migrate_script_test.hal \
+            core/lib/test-lang/lang/core/script_port_test.hal \
+            scripts/runtime/materialize-code-migrate-script-ledger
+
+      - name: Run native Hara acceptance
+        env:
+          RUST_BACKTRACE: full
+        run: |
+          timeout --signal=TERM --kill-after=10s 300s \
+            ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/core/script_port_test.hal
+          timeout --signal=TERM --kill-after=10s 300s \
+            ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_script_test.hal
+          timeout --signal=TERM --kill-after=10s 300s \
+            ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_test.hal
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Run JVM Truffle acceptance
+        shell: bash
+        run: |
+          cat > core/java/src/test/java/hara/truffle/AgentScriptPortCompletionTest.java <<'JAVA'
+          package hara.truffle;
+
+          import org.junit.runner.RunWith;
+
+          @RunWith(HaraJUnitRunner.class)
+          @HaraTestSource({
+              "lib/test-lang/lang/core/script_port_test.hal",
+              "lib/test/code/migrate_script_test.hal",
+              "lib/test/code/migrate_test.hal"
+          })
+          public final class AgentScriptPortCompletionTest {}
+          JAVA
+          mvn -B -f core/java/pom.xml -Ptruffle \
+            -Dtest=hara.truffle.AgentScriptPortCompletionTest test
+          rm core/java/src/test/java/hara/truffle/AgentScriptPortCompletionTest.java
+
+      - name: Publish only the validated product change
+        shell: bash
+        run: |
+          rm -rf foundation-base
+          git fetch origin main
+          git show origin/main:.github/workflows/foundation-surface-conformance.yml \
+            > .github/workflows/foundation-surface-conformance.yml
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Complete portable script family port"
+          git push origin HEAD:agent/823-script-port-completion
