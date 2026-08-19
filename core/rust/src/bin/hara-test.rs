@@ -50,21 +50,15 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
         .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
     let mut forms = parse_forms(&source)
         .map_err(|error| format!("cannot parse {}: {error}", file.display()))?;
-    let namespace = forms
-        .first()
-        .filter(|form| {
-            matches!(form, Form::List(items) if matches!(items.first(), Some(Form::Symbol(head)) if head == "ns" || head == "ns+"))
-        })
-        .map(ToString::to_string);
-    if namespace.is_some() {
-        forms.remove(0);
-    }
-    let body = forms
+    let final_form = forms
+        .pop()
+        .ok_or_else(|| format!("{} contains no forms", file.display()))?;
+    let prefix = forms
         .into_iter()
         .map(|form| form.to_string())
         .collect::<Vec<_>>()
         .join(" ");
-    let source = format!("(pr-str (do {body}))");
+    let source = format!("{prefix} (pr-str {final_form})");
     let root_text = root
         .to_str()
         .ok_or_else(|| format!("project root is not UTF-8: {}", root.display()))?
@@ -83,11 +77,6 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
             let session = kernel.session_mut(&root_session)?;
             session.install_native_socket_provider();
             session.install_native_process_provider();
-            if let Some(namespace) = namespace {
-                kernel
-                    .eval(&root_session, &namespace)
-                    .map_err(|error| format!("{}: {error}", file.display()))?;
-            }
             let output = kernel
                 .eval(&root_session, &source)
                 .map_err(|error| format!("{}: {error}", file.display()))?;

@@ -2408,15 +2408,22 @@ mod tests {
                      (exp 0) (sqrt 9)]"
                 )
                 .unwrap(),
-            "[true true 0 1 0 0 0 0 0 0 1 0 0 0 0 1 2 8 3 1 3]"
+            "[true true (double 0) (double 1) (double 0) (double 0) (double 0) (double 0) (double 0) (double 0) (double 1) (double 0) (double 0) (double 0) (double 0) (double 1) (double 2) (double 8) 3 (double 1) (double 3)]"
         );
         assert_eq!(runtime.eval_text("(= (sqrt -1) ##NaN)").unwrap(), "true");
-        assert_eq!(runtime.eval_text("(sqrt (long 9.9))").unwrap(), "3");
-        assert_eq!(runtime.eval_text("(sqrt (double 9))").unwrap(), "3");
-        assert!(runtime
-            .eval_text("(abs -9223372036854775808)")
-            .unwrap_err()
-            .contains("overflow"));
+        assert_eq!(
+            runtime.eval_text("(sqrt (long 9))").unwrap(),
+            "(double 3)"
+        );
+        assert!(runtime.eval_text("(long 9.9)").is_err());
+        assert_eq!(
+            runtime.eval_text("(sqrt (double 9))").unwrap(),
+            "(double 3)"
+        );
+        assert_eq!(
+            runtime.eval_text("(abs -9223372036854775808)").unwrap(),
+            "9223372036854775808"
+        );
         assert_eq!(
             runtime
                 .eval_text("[(= (asinh 1.0e300) ##Inf) (= (acosh 1.0e300) ##Inf)]")
@@ -2765,7 +2772,7 @@ mod tests {
                       (bytes/u8 -1)]"
                 )
                 .unwrap(),
-            "[\"#<native-type std.native.Maths>\" \"Maths\" \"std.native\" true 0 \"HARA\" \"HARA\" 255 255]"
+            "[\"#<native-type std.native.Maths>\" \"Maths\" \"std.native\" true (double 0) \"HARA\" \"HARA\" 255 255]"
         );
         assert!(runtime.eval_text("(std.native.Maths 1)").is_err());
     }
@@ -3930,7 +3937,7 @@ mod tests {
         assert_eq!(runtime.eval_text("(cons 0 [1 2])").unwrap(), "(0 1 2)");
         assert_eq!(
             runtime.eval_text("(type (cons 0 [1 2]))").unwrap(),
-            ":hara/Cons"
+            ":std.native.Cons"
         );
         assert_eq!(runtime.eval_text("(count (cons 0 [1 2]))").unwrap(), "3");
         assert_eq!(runtime.eval_text("(get (cons 0 [1 2]) 2)").unwrap(), "2");
@@ -3944,7 +3951,7 @@ mod tests {
             runtime
                 .eval_text("(type (pointer {:context :test :refer 'tool.lint/lint-source :id 'lint-source}))")
                 .unwrap(),
-            ":hara/Pointer"
+            ":std.native.Pointer"
         );
         assert_eq!(
             runtime
@@ -3996,7 +4003,7 @@ mod tests {
             .contains("pointer descriptor requires :context"));
         assert_eq!(
             runtime.eval_text("(type #sample [1 2])").unwrap(),
-            ":hara/TaggedLiteral"
+            ":std.native.TaggedLiteral"
         );
         assert_eq!(runtime.eval_text("(ILookup/lookup (IObjType/meta (IObjType/with-meta (cons 0 [1]) {:doc \"cons\"})) :doc)").unwrap(), "\"cons\"");
     }
@@ -4797,11 +4804,15 @@ mod tests {
             ("(bit-or -2147483648 1)", "-2147483647"),
             ("(bit-xor -1 2147483647)", "-2147483648"),
             ("(bit-shift-left 1 0)", "1"),
-            ("(bit-shift-left 1 31)", "-2147483648"),
-            ("(bit-shift-left 2147483647 1)", "-2"),
+            ("(bit-shift-left 1 31)", "2147483648"),
+            ("(bit-shift-left 2147483647 1)", "4294967294"),
             ("(bit-shift-right -2147483648 31)", "-1"),
             ("(bit-shift-right 2147483647 31)", "0"),
-            ("(bit-shift-left 2147483648 0)", "-2147483648"),
+            ("(bit-shift-left 2147483648 0)", "2147483648"),
+            (
+                "(bit-shift-right (bit-shift-left 1 80) 32)",
+                "281474976710656",
+            ),
         ];
         for (source, expected) in cases {
             assert_eq!(runtime.eval_text(source).unwrap(), expected, "{source}");
@@ -4817,8 +4828,7 @@ mod tests {
             ("(bytes/slice (bytes 1 2) 2 1)", "out of bounds"),
             ("(bytes/slice (bytes 1 2) 0 3)", "out of bounds"),
             ("(str/decode-utf8 (bytes 255))", "invalid UTF-8"),
-            ("(bit-shift-left 1 -1)", "range 0..31"),
-            ("(bit-shift-right 1 32)", "range 0..31"),
+            ("(bit-shift-left 1 -1)", "non-negative"),
         ];
         for (source, message) in invalid {
             assert!(
@@ -4868,13 +4878,13 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(let (it (cycle [1 2])) (do (iter-next it) (iter-next it) (iter-next it)))"
+                    "(first (drop 2 (cycle [1 2])))"
                 )
                 .unwrap(),
             "1"
         );
         assert_eq!(
-            runtime.eval_text("(iter-next (concat [1] [2]))").unwrap(),
+            runtime.eval_text("(first (concat [1] [2]))").unwrap(),
             "1"
         );
     }
@@ -5311,6 +5321,22 @@ mod tests {
             .eval_text("((fn [x & rest] x))")
             .unwrap_err()
             .contains("at least 1"));
+    }
+
+    #[test]
+    fn underscore_bindings_discard_values_and_may_repeat() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[((fn [_ _] 42) 1 2) \
+                     (let [_ 1 _ 2] 42) \
+                     (let [[_ _] [1 2]] 42) \
+                     (let [{_ :ignored} {:ignored 1}] 42)]",
+                )
+                .unwrap(),
+            "[42 42 42 42]"
+        );
     }
 
     #[test]
@@ -6612,7 +6638,7 @@ mod tests {
     }
 
     #[test]
-    fn signed_32_bit_operations_match_core_contract() {
+    fn arbitrary_precision_bit_operations_match_core_contract() {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.eval_text("(bit-and 6 3)").unwrap(), "2");
         assert_eq!(runtime.eval_text("(bit-or 1 2)").unwrap(), "3");
@@ -6621,12 +6647,12 @@ mod tests {
         assert_eq!(runtime.eval_text("(bit-shift-right -4 1)").unwrap(), "-2");
         assert_eq!(
             runtime.eval_text("(bit-shift-left 1 31)").unwrap(),
-            "-2147483648"
+            "2147483648"
         );
         assert!(runtime
             .eval_text("(bit-shift-left 1 -1)")
             .unwrap_err()
-            .contains("distance must be in the range 0..31"));
+            .contains("distance must be a non-negative integer"));
     }
 
     #[test]
@@ -7044,7 +7070,7 @@ mod tests {
         assert_eq!(runtime.eval_text("(second [10 20 30])").unwrap(), "20");
         assert_eq!(runtime.eval_text("(not-empty [])").unwrap(), "nil");
         assert_eq!(runtime.eval_text("(not-empty [1])").unwrap(), "[1]");
-        assert_eq!(runtime.eval_text("(range 3)").unwrap(), "<seq>");
+        assert_eq!(runtime.eval_text("(range 3)").unwrap(), "(0 1 2)");
         assert_eq!(
             runtime
                 .eval_text("(vector? (map (fn [x] (+ x 1)) [1 2 3]))")
@@ -7148,7 +7174,7 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(nth ((take 4) ((map (fn [x] (* x 2))) (iterate (fn [x] (+ x 1)) 0))) 3)"
+                    "(first ((drop 3) ((take 4) ((map (fn [x] (* x 2))) (iterate (fn [x] (+ x 1)) 0)))))"
                 )
                 .unwrap(),
             "6"
@@ -7164,7 +7190,7 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(nth ((take 4) ((mapcat (fn [x] [x x])) (iterate (fn [x] (+ x 1)) 0))) 3)"
+                    "(first ((drop 3) ((take 4) ((mapcat (fn [x] [x x])) (iterate (fn [x] (+ x 1)) 0)))))"
                 )
                 .unwrap(),
             "1"
@@ -7173,26 +7199,26 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(nth ((take 3) (Iter/iter-zip (iterate (fn [x] (+ x 1)) 0) (repeat :x))) 2)"
+                    "(first ((drop 2) ((take 3) (Iter/iter-zip (iterate (fn [x] (+ x 1)) 0) (repeat :x)))))"
                 )
                 .unwrap(),
             "[2 :x]"
         );
         assert_eq!(
             runtime
-                .eval_text("(nth ((take 4) (Iter/iter-interleave (iterate (fn [x] (+ x 1)) 0) (repeat :x))) 3)")
+                .eval_text("(first ((drop 3) ((take 4) (Iter/iter-interleave (iterate (fn [x] (+ x 1)) 0) (repeat :x)))))")
                 .unwrap(),
             ":x"
         );
         assert_eq!(
             runtime
-                .eval_text("(nth ((take 3) ((partition-all 2) (iterate (fn [x] (+ x 1)) 0))) 2)")
+                .eval_text("(first ((drop 2) ((take 3) ((partition-all 2) (iterate (fn [x] (+ x 1)) 0)))))")
                 .unwrap(),
             "[4 5]"
         );
         assert_eq!(
             runtime
-                .eval_text("(nth ((take 2) ((partition 2) (iterate (fn [x] (+ x 1)) 0))) 1)")
+                .eval_text("(first ((drop 1) ((take 2) ((partition 2) (iterate (fn [x] (+ x 1)) 0)))))")
                 .unwrap(),
             "[2 3]"
         );
@@ -7202,7 +7228,10 @@ mod tests {
                 .unwrap(),
             "0"
         );
-        assert_eq!(runtime.eval_text("(second (repeat :x))").unwrap(), ":x");
+        assert_eq!(
+            runtime.eval_text("(first (drop 1 (repeat :x)))").unwrap(),
+            ":x"
+        );
         assert_eq!(
             runtime
                 .eval_text("(first (rest (iterate (fn [x] (+ x 1)) 0)))")
@@ -7211,7 +7240,7 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text("(nth (take 4 (iterate (fn [x] (+ x 2)) 0)) 3)")
+                .eval_text("(first (drop 3 (take 4 (iterate (fn [x] (+ x 2)) 0))))")
                 .unwrap(),
             "6"
         );
@@ -7271,10 +7300,10 @@ mod tests {
                         (difference #{1 2 3} #{2} #{3}) \
                         (subset? #{1 2} #{1 2 3}) \
                         (superset? #{1 2 3} #{1 2}) \
-                        (set (filter odd? #{1 2 3 4}))]"
+                        (= #{1 3} (set (filter odd? #{1 2 3 4})))]"
                 )
                 .unwrap(),
-            "[#{1 2 3} #{3} #{1} true true #{1 3}]"
+            "[#{1 2 3} #{3} #{1} true true true]"
         );
     }
 

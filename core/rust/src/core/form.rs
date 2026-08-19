@@ -588,6 +588,9 @@ pub(crate) fn bind_pattern(
 ) -> Result<(), String> {
     match pattern {
         Form::Symbol(name) => {
+            if name == "_" {
+                return Ok(());
+            }
             if name.contains('/') || bound.iter().any(|candidate| candidate == name) {
                 return Err(format!("invalid or duplicate binding: {name}"));
             }
