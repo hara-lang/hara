@@ -2,11 +2,6 @@
   (:require [std.typed.registry :as registry]
             [std.typed.schema :as typed]))
 
-(defn qualified-keyword?
-  [value]
-  (and (keyword? value)
-       (str/includes? (str value) "/")))
-
 (defn finding
   [status rule requirement path message repair]
   {:finding/id rule
@@ -25,34 +20,9 @@
            :tool.metaspec/generated-document-conformance
            path message repair))
 
-(defn- invalid-value
-  [path expected value]
-  {:finding/type :std.typed.schema/invalid-value
-   :finding/path (vec path)
-   :finding/expected expected
-   :finding/value value})
-
 (defn- member?
   [value values]
   (any? (fn [candidate] (= candidate value)) values))
-
-(defn- digits?
-  [value]
-  (and (string? value)
-       (> (str/length value) 0)
-       (every? (fn [index]
-                 (str/includes? "0123456789"
-                                (str/char-at value index)))
-               (range (str/length value)))))
-
-(defn version-string?
-  [value]
-  (if (string? value)
-    (let [base (first (str/split (first (str/split value "+")) "-"))
-          parts (str/split base ".")]
-      (and (= 3 (count parts))
-           (every? digits? parts)))
-    false))
 
 (defn- primitive-schema
   [type]
@@ -66,291 +36,8 @@
 (defn- primitive-type?
   [type]
   (member? type
-           [:any :nil
-            :bool :boolean
-            :num :number
-            :int :integer
-            :str :string
-            :keyword :symbol
-            :list :vector :map :set :bytes]))
-
-(defn type-valid?
-  [value schema-type]
-  (cond
-    (= schema-type :qualified-keyword)
-    (qualified-keyword? value)
-
-    (= schema-type :version)
-    (version-string? value)
-
-    (primitive-type? schema-type)
-    (typed/valid? (primitive-schema schema-type) value)
-
-    :else false))
-
-(defn- validate-pattern
-  [value pattern path]
-  (cond
-    (= pattern "^alpha$")
-    (if (= value "alpha")
-      []
-      [(schema-finding
-        :fail path
-        (str "Value does not match pattern: " value)
-        {:action/type :replace-value
-         :action/path path
-         :action/expected "alpha"})])
-
-    (or (= pattern "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-        (= pattern "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[a-z0-9.-]+)?$"))
-    (if (version-string? value)
-      []
-      [(schema-finding
-        :fail path
-        (str "Value does not match version pattern: " value)
-        {:action/type :replace-value
-         :action/path path
-         :action/expected :semantic-version})])
-
-    :else
-    [(schema-finding
-      :blocked path
-      (str "Unsupported schema pattern: " pattern)
-      {:action/type :install-pattern-checker
-       :action/pattern pattern})]))
-
-(defn- rebase-finding
-  [path finding]
-  (assoc finding
-         :finding/path
-         (vec
-          (concat path
-                  (or (:finding/path finding) [])))))
-
-(defn- validate-typed-at
-  [schema value path registry-value]
-  (let [findings
-        (if registry-value
-          (typed/validate schema value registry-value)
-          (typed/validate schema value))]
-    (vec (map (fn [finding]
-                (rebase-finding path finding))
-              findings))))
-
-(defn- validate-item-values
-  [item value path registry-value]
-  (loop [index 0
-         values (vec value)
-         output []]
-    (if (= index (count values))
-      output
-      (recur
-       (inc index)
-       values
-       (vec
-        (concat output
-                (validate-typed-at item
-                                   (nth values index)
-                                   (conj path index)
-                                   registry-value)))))))
-
-(defmethod std.typed.schema/normalize :tool.metaspec/map
-  [surface]
-  {:kind :tool.metaspec/map
-   :registry typed/*registry*
-   :required (vec (second surface))
-   :properties
-   (vec
-    (map
-     (fn [entry]
-       {:name (first entry)
-        :type (typed/normalize (second entry))})
-     (nth surface 2)))
-   :closed (= true (nth surface 3))})
-
-(defmethod std.typed.schema/validate-normal :tool.metaspec/map
-  [schema value path]
-  (if (map? value)
-    (let [required-findings
-          (vec
-           (mapcat
-            (fn [key]
-              (if (has? value key)
-                []
-                [(schema-finding
-                  :fail path
-                  (str "Missing required key: " key)
-                  {:action/type :add-key
-                   :action/path path
-                   :action/key key})]))
-            (:required schema)))
-          property-findings
-          (vec
-           (mapcat
-            (fn [property]
-              (let [key (:name property)]
-                (if (has? value key)
-                  (validate-typed-at
-                   (:type property)
-                   (get value key)
-                   (conj path key)
-                   (:registry schema))
-                  [])))
-            (:properties schema)))
-          closed-findings
-          (if (:closed schema)
-            (vec
-             (mapcat
-              (fn [key]
-                (if (any? (fn [property]
-                            (= key (:name property)))
-                          (:properties schema))
-                  []
-                  [(schema-finding
-                    :fail (conj path key)
-                    (str "Key is not allowed by closed schema: " key)
-                    {:action/type :remove-key
-                     :action/path (conj path key)})]))
-              (keys value)))
-            [])]
-      (vec
-       (concat required-findings
-               property-findings
-               closed-findings)))
-    [(invalid-value path schema value)]))
-
-(defmethod std.typed.schema/normalize :tool.metaspec/set
-  [surface]
-  {:kind :tool.metaspec/set
-   :registry typed/*registry*
-   :item (typed/normalize (second surface))})
-
-(defmethod std.typed.schema/validate-normal :tool.metaspec/set
-  [schema value path]
-  (if (set? value)
-    (validate-item-values (:item schema)
-                          value
-                          path
-                          (:registry schema))
-    [(invalid-value path schema value)]))
-
-(defmethod std.typed.schema/normalize :tool.metaspec/items
-  [surface]
-  {:kind :tool.metaspec/items
-   :registry typed/*registry*
-   :item (typed/normalize (second surface))})
-
-(defmethod std.typed.schema/validate-normal :tool.metaspec/items
-  [schema value path]
-  (if (or (vector? value) (set? value))
-    (validate-item-values (:item schema)
-                          value
-                          path
-                          (:registry schema))
-    [(invalid-value path schema value)]))
-
-(defmethod std.typed.schema/normalize :tool.metaspec/refine
-  [surface]
-  {:kind :tool.metaspec/refine
-   :registry typed/*registry*
-   :base (typed/normalize (second surface))
-   :options (nth surface 2)})
-
-(defmethod std.typed.schema/validate-normal :tool.metaspec/refine
-  [schema value path]
-  (let [base-findings
-        (validate-typed-at (:base schema)
-                           value
-                           path
-                           (:registry schema))]
-    (if (empty? base-findings)
-      (let [options (:options schema)
-            constraint-findings
-            (if (and (= :qualified (:constraint options))
-                     (not (qualified-keyword? value)))
-              [(schema-finding
-                :fail path
-                (str "Expected qualified keyword, got " value)
-                {:action/type :qualify-value
-                 :action/path path})]
-              [])
-            min-length-findings
-            (if (and (string? value)
-                     (:min-length options)
-                     (< (str/length value) (:min-length options)))
-              [(schema-finding
-                :fail path
-                (str "String is shorter than " (:min-length options))
-                {:action/type :replace-value
-                 :action/path path
-                 :action/min-length (:min-length options)})]
-              [])
-            max-length-findings
-            (if (and (string? value)
-                     (:max-length options)
-                     (> (str/length value) (:max-length options)))
-              [(schema-finding
-                :fail path
-                (str "String is longer than " (:max-length options))
-                {:action/type :replace-value
-                 :action/path path
-                 :action/max-length (:max-length options)})]
-              [])
-            pattern-findings
-            (if (and (string? value) (:pattern options))
-              (validate-pattern value (:pattern options) path)
-              [])
-            min-count-findings
-            (if (and (or (vector? value)
-                         (set? value)
-                         (map? value)
-                         (list? value))
-                     (:min-count options)
-                     (< (count value) (:min-count options)))
-              [(schema-finding
-                :fail path
-                (str "Collection has fewer than "
-                     (:min-count options)
-                     " members")
-                {:action/type :add-members
-                 :action/path path
-                 :action/min-count (:min-count options)})]
-              [])
-            max-count-findings
-            (if (and (or (vector? value)
-                         (set? value)
-                         (map? value)
-                         (list? value))
-                     (:max-count options)
-                     (> (count value) (:max-count options)))
-              [(schema-finding
-                :fail path
-                (str "Collection has more than "
-                     (:max-count options)
-                     " members")
-                {:action/type :remove-members
-                 :action/path path
-                 :action/max-count (:max-count options)})]
-              [])
-            unique-findings
-            (if (and (= true (:unique options))
-                     (or (vector? value) (set? value))
-                     (not (apply distinct? (vec value))))
-              [(schema-finding
-                :fail path
-                "Collection members must be unique"
-                {:action/type :remove-duplicates
-                 :action/path path})]
-              [])]
-        (vec
-         (concat constraint-findings
-                 min-length-findings
-                 max-length-findings
-                 pattern-findings
-                 min-count-findings
-                 max-count-findings
-                 unique-findings)))
-      base-findings)))
+           [:any :nil :bool :boolean :num :number :int :integer
+            :str :string :keyword :symbol :list :vector :map :set :bytes]))
 
 (defmethod std.typed.schema/normalize :tool.metaspec/unsupported-type
   [surface]
@@ -359,12 +46,10 @@
 
 (defmethod std.typed.schema/validate-normal :tool.metaspec/unsupported-type
   [schema value path]
-  [(schema-finding
-    :fail path
-    (str "Expected " (:type schema) ", got " value)
-    {:action/type :replace-value
-     :action/path path
-     :action/expected (:type schema)})])
+  [{:finding/type :std.typed.schema/invalid-value
+    :finding/path (vec path)
+    :finding/expected schema
+    :finding/value value}])
 
 (defn ^{:schema [:fn [:map] :map]}
   declaration-catalog
@@ -408,91 +93,94 @@
   [id]
   (list 'var (schema-name id)))
 
-(defn- refinement-options
-  [declaration schema-type]
-  {:constraint
-   (if (= schema-type :qualified-keyword)
-     :qualified
-     (:schema/constraint declaration))
-   :min-length (:schema/min-length declaration)
-   :max-length (:schema/max-length declaration)
-   :pattern
-   (if (= schema-type :version)
-     (or (:schema/pattern declaration)
-         "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
-     (:schema/pattern declaration))
-   :min-count (:schema/min-count declaration)
-   :max-count (:schema/max-count declaration)
-   :unique (:schema/unique declaration)})
+(defn- assoc-present
+  [output key value]
+  (if (nil? value) output (assoc output key value)))
 
-(defn- refined?
-  [options]
-  (or (:constraint options)
-      (:min-length options)
-      (:max-length options)
-      (:pattern options)
-      (:min-count options)
-      (:max-count options)
-      (= true (:unique options))))
+(defn- schema-properties
+  [declaration schema-type]
+  (let [qualified
+        (or (= schema-type :qualified-keyword)
+            (= :qualified (:schema/constraint declaration)))
+        min-count (or (:schema/min-count declaration)
+                      (:schema/min-length declaration))
+        max-count (or (:schema/max-count declaration)
+                      (:schema/max-length declaration))
+        pattern
+        (if (= schema-type :version)
+          (or (:schema/pattern declaration)
+              "^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+          (:schema/pattern declaration))]
+    (let [output {}
+          output (if qualified (assoc output :qualified true) output)
+          output (assoc-present output :min-count min-count)
+          output (assoc-present output :max-count max-count)
+          output (assoc-present output :pattern pattern)]
+      (if (= true (:schema/unique declaration))
+        (assoc output :distinct true)
+        output))))
+
+(defn- with-properties
+  [base properties]
+  (if (empty? properties) base [base properties]))
+
+(defn- collection-form
+  [head properties item]
+  (if (empty? properties) [head item] [head properties item]))
 
 (defn- compile-declaration
   [declaration]
   (if-let [reference (:schema/ref declaration)]
     (reference-form reference)
     (let [schema-type (:schema/type declaration)
-          base
+          properties (schema-properties declaration schema-type)]
+      (cond
+        (= schema-type :enum)
+        (vec (concat [:enum] (or (:schema/values declaration) [])))
+
+        (= schema-type :map)
+        (let [required (vec (or (:schema/required declaration) []))
+              root-properties
+              (if (= true (:schema/closed declaration))
+                (assoc properties :closed true)
+                properties)
+              fields
+              (vec
+               (map
+                (fn [entry]
+                  (let [key (key entry)
+                        child (compile-declaration (val entry))]
+                    (if (member? key required)
+                      [key child]
+                      [key {:optional true} child])))
+                (or (:schema/properties declaration) {})))]
+          (vec
+           (concat [:map]
+                   (if (empty? root-properties) [] [root-properties])
+                   fields)))
+
+        (has? declaration :schema/items)
+        (let [item (:schema/items declaration)
+              item-schema
+              (if (map? item)
+                (compile-declaration item)
+                (reference-form item))]
           (cond
-            (= schema-type :enum)
-            (vec (concat [:enum] (or (:schema/values declaration) [])))
+            (= schema-type :vector) (collection-form :vector properties item-schema)
+            (= schema-type :set) (collection-form :set properties item-schema)
+            :else [:or
+                   (collection-form :vector properties item-schema)
+                   (collection-form :set properties item-schema)]))
 
-            (= schema-type :map)
-            (let [properties (or (:schema/properties declaration) {})
-                  fields
-                  (vec
-                   (map
-                    (fn [entry]
-                      [(key entry)
-                       (compile-declaration (val entry))])
-                    properties))]
-              [:tool.metaspec/map
-               (vec (or (:schema/required declaration) []))
-               fields
-               (= true (:schema/closed declaration))])
-
-            (has? declaration :schema/items)
-            (let [item (:schema/items declaration)
-                  item-schema
-                  (if (map? item)
-                    (compile-declaration item)
-                    (reference-form item))]
-              (cond
-                (= schema-type :vector)
-                [:vector item-schema]
-
-                (= schema-type :set)
-                [:tool.metaspec/set item-schema]
-
-                :else
-                [:tool.metaspec/items item-schema]))
-
-            (= schema-type :qualified-keyword)
-            :keyword
-
-            (= schema-type :version)
-            :str
-
-            (nil? schema-type)
-            :any
-
-            (primitive-type? schema-type)
-            (primitive-schema schema-type)
-
-            :else
-            [:tool.metaspec/unsupported-type schema-type])
-          options (refinement-options declaration schema-type)]
-      (if (refined? options)
-        [:tool.metaspec/refine base options]
-        base))))
+        (= schema-type :vector) (collection-form :vector properties :any)
+        (= schema-type :set) (collection-form :set properties :any)
+        (= schema-type :qualified-keyword)
+        (with-properties :keyword (assoc properties :qualified true))
+        (= schema-type :version) (with-properties :str properties)
+        (nil? schema-type) (with-properties :any properties)
+        (primitive-type? schema-type)
+        (with-properties (primitive-schema schema-type) properties)
+        :else [:tool.metaspec/unsupported-type schema-type]))))
 
 (defn ^{:schema [:fn [:map :map] :any]}
   compile-schema
@@ -536,9 +224,6 @@
       (= kind :tuple) :vector
       (= kind :map) :map
       (= kind :reference) (reference-id (:name expected))
-      (= kind :tool.metaspec/map) :map
-      (= kind :tool.metaspec/set) :set
-      (= kind :tool.metaspec/items) :collection
       (= kind :tool.metaspec/unsupported-type) (:type expected)
       :else kind)))
 
@@ -547,6 +232,60 @@
   (let [finding-type (:finding/type finding)
         path (:finding/path finding)]
     (cond
+      (= finding-type :std.typed.schema/missing-key)
+      (let [context (:finding/context finding)
+            parent-path (:parent-path context)
+            key (:key context)]
+        (schema-finding
+         :fail parent-path
+         (str "Missing required key: " key)
+         {:action/type :add-key :action/path parent-path :action/key key}))
+
+      (= finding-type :std.typed.schema/closed-map-key)
+      (schema-finding
+       :fail path
+       (str "Key is not allowed by closed schema: "
+            (:key (:finding/context finding)))
+       {:action/type :remove-key :action/path path})
+
+      (= finding-type :std.typed.schema/property-violation)
+      (let [context (:finding/context finding)
+            constraint (:constraint context)
+            expected (:expected context)
+            value (:finding/value finding)]
+        (cond
+          (= constraint :qualified)
+          (schema-finding :fail path
+                          (str "Expected qualified keyword, got " value)
+                          {:action/type :qualify-value :action/path path})
+          (= constraint :min-count)
+          (schema-finding
+           :fail path (str "Value has fewer than " expected " members")
+           (if (string? value)
+             {:action/type :replace-value :action/path path :action/min-length expected}
+             {:action/type :add-members :action/path path :action/min-count expected}))
+          (= constraint :max-count)
+          (schema-finding
+           :fail path (str "Value has more than " expected " members")
+           (if (string? value)
+             {:action/type :replace-value :action/path path :action/max-length expected}
+             {:action/type :remove-members :action/path path :action/max-count expected}))
+          (= constraint :distinct)
+          (schema-finding :fail path "Collection members must be unique"
+                          {:action/type :remove-duplicates :action/path path})
+          (= constraint :pattern)
+          (schema-finding
+           :fail path (str "Value does not match pattern: " value)
+           {:action/type :replace-value :action/path path
+            :action/expected
+            (if (= expected
+                   "^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+              :semantic-version expected)})
+          :else
+          (schema-finding :fail path "Value violates schema property"
+                          {:action/type :replace-value :action/path path
+                           :action/expected expected})))
+
       (= finding-type :std.typed.schema/invalid-value)
       (let [expected (expected-type (:finding/expected finding))
             value (:finding/value finding)]

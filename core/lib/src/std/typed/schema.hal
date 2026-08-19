@@ -103,12 +103,61 @@
       (first normalized)
       {:kind :function :arities normalized})))
 
-(defn- normalize-field [field]
-  (if (map? field)
-    {:name (:name field)
-     :type (normalize (:type field))}
+(defn- normalize-properties
+  [kind properties allowed]
+  (let [unknown
+        (vec
+         (filter (fn [key] (not (has? allowed key)))
+                 (keys properties)))]
+    (if (empty? unknown)
+      properties
+      (throw
+       (ex-info
+        (str "unsupported " kind " schema property")
+        {:kind kind :properties unknown})))))
+
+(defn- assoc-properties
+  [schema properties]
+  (if (empty? properties)
+    schema
+    (assoc schema :properties properties)))
+
+(defn- normalize-field
+  [field]
+  (cond
+    (map? field)
+    (let [properties
+          (normalize-properties
+           :map-entry
+           (or (:properties field) {})
+           #{:optional})]
+      (assoc-properties
+       {:name (:name field)
+        :type (normalize (:type field))}
+       properties))
+
+    (and (vector? field) (= 2 (count field)))
     {:name (first field)
-     :type (normalize (second field))}))
+     :type (normalize (second field))}
+
+    (and (vector? field)
+         (= 3 (count field))
+         (map? (second field)))
+    (assoc-properties
+     {:name (first field)
+      :type (normalize (nth field 2))}
+     (normalize-properties :map-entry (second field) #{:optional}))
+
+    :else
+    (throw
+     (ex-info
+      "map schema entries must be [key schema] or [key properties schema]"
+      {:entry field}))))
+
+(defn- properties-normal?
+  [schema]
+  (or (not (has? schema :properties))
+      (map? (:properties schema))))
 
 (defn- canonical-normal?
   [schema]
@@ -118,7 +167,8 @@
      (cond
        (= kind :primitive)
        (and (has? schema :name)
-            (keyword? (:name schema)))
+            (keyword? (:name schema))
+            (properties-normal? schema))
 
        (= kind :reference)
        (and (has? schema :name)
@@ -129,7 +179,12 @@
             (every? canonical-normal? (:types schema)))
 
        (= kind :vector)
-       (canonical-normal? (:item schema))
+       (and (properties-normal? schema)
+            (canonical-normal? (:item schema)))
+
+       (= kind :set)
+       (and (properties-normal? schema)
+            (canonical-normal? (:item schema)))
 
        (= kind :tuple)
        (and (vector? (:items schema))
@@ -137,11 +192,13 @@
 
        (= kind :map)
        (and
+        (properties-normal? schema)
         (vector? (:fields schema))
         (every?
          (fn [field]
            (and (map? field)
                 (has? field :name)
+                (properties-normal? field)
                 (canonical-normal? (:type field))))
          (:fields schema)))
 
@@ -187,10 +244,12 @@
           children (get schema :children [])]
       (cond
         (= kind :primitive)
-        (normalize
-         (if (has? schema :name)
-           (:name schema)
-           (first children)))
+        (assoc-properties
+         (normalize
+          (if (has? schema :name)
+            (:name schema)
+            (first children)))
+         (or (:properties schema) {}))
 
         (= kind :reference)
         {:kind :reference
@@ -205,11 +264,22 @@
            children))
 
         (= kind :vector)
-        {:kind :vector
-         :item (normalize
-                (if (has? schema :item)
-                  (:item schema)
-                  (first children)))}
+        (assoc-properties
+         {:kind :vector
+          :item (normalize
+                 (if (has? schema :item)
+                   (:item schema)
+                   (first children)))}
+         (or (:properties schema) {}))
+
+        (= kind :set)
+        (assoc-properties
+         {:kind :set
+          :item (normalize
+                 (if (has? schema :item)
+                   (:item schema)
+                   (first children)))}
+         (or (:properties schema) {}))
 
         (= kind :tuple)
         {:kind :tuple
@@ -220,13 +290,15 @@
                         children)))}
 
         (= kind :map)
-        {:kind :map
-         :fields
-         (vec
-          (map normalize-field
-               (if (has? schema :fields)
-                 (:fields schema)
-                 children)))}
+        (assoc-properties
+         {:kind :map
+          :fields
+          (vec
+           (map normalize-field
+                (if (has? schema :fields)
+                  (:fields schema)
+                  children)))}
+         (or (:properties schema) {}))
 
         (= kind :fn)
         (normalize-fn-map schema)
@@ -314,16 +386,84 @@
   (normalize-union [(second schema) :nil]))
 
 (defmethod normalize :vector [schema]
-  {:kind :vector
-   :item (normalize (second schema))})
+  (let [arguments (vec (rest schema))
+        property-form? (and (not (empty? arguments))
+                            (map? (first arguments)))
+        properties
+        (normalize-properties
+         :vector
+         (if property-form? (first arguments) {})
+         #{:min-count :max-count :distinct})
+        item
+        (if property-form?
+          (if (> (count arguments) 1) (second arguments) :any)
+          (if (empty? arguments) :any (first arguments)))]
+    (assoc-properties
+     {:kind :vector :item (normalize item)}
+     properties)))
+
+(defmethod normalize :set [schema]
+  (let [arguments (vec (rest schema))
+        property-form? (and (not (empty? arguments))
+                            (map? (first arguments)))
+        properties
+        (normalize-properties
+         :set
+         (if property-form? (first arguments) {})
+         #{:min-count :max-count :distinct})
+        item
+        (if property-form?
+          (if (> (count arguments) 1) (second arguments) :any)
+          (if (empty? arguments) :any (first arguments)))]
+    (assoc-properties
+     {:kind :set :item (normalize item)}
+     properties)))
 
 (defmethod normalize :tuple [schema]
   {:kind :tuple
    :items (vec (map normalize (rest schema)))})
 
+(defn- normalize-primitive-properties
+  [schema]
+  (if (and (= 2 (count schema))
+           (map? (second schema)))
+    (assoc-properties
+     {:kind :primitive :name (first schema)}
+     (normalize-properties
+      (first schema)
+      (second schema)
+      #{:min-count :max-count :pattern :qualified :distinct}))
+    (throw
+     (ex-info
+      "primitive schema properties require one property map"
+      {:schema schema}))))
+
+(defmethod normalize :str [schema] (normalize-primitive-properties schema))
+(defmethod normalize :string [schema] (normalize-primitive-properties schema))
+(defmethod normalize :keyword [schema] (normalize-primitive-properties schema))
+(defmethod normalize :symbol [schema] (normalize-primitive-properties schema))
+(defmethod normalize :list [schema] (normalize-primitive-properties schema))
+(defmethod normalize :bytes [schema] (normalize-primitive-properties schema))
+(defmethod normalize :int [schema] (normalize-primitive-properties schema))
+(defmethod normalize :integer [schema] (normalize-primitive-properties schema))
+(defmethod normalize :num [schema] (normalize-primitive-properties schema))
+(defmethod normalize :number [schema] (normalize-primitive-properties schema))
+(defmethod normalize :any [schema] (normalize-primitive-properties schema))
+
 (defmethod normalize :map [schema]
-  {:kind :map
-   :fields (vec (map normalize-field (rest schema)))})
+  (let [arguments (vec (rest schema))
+        property-form? (and (not (empty? arguments))
+                            (map? (first arguments)))
+        properties
+        (normalize-properties
+         :map
+         (if property-form? (first arguments) {})
+         #{:closed :min-count :max-count})
+        fields (if property-form? (rest arguments) arguments)]
+    (assoc-properties
+     {:kind :map
+      :fields (vec (map normalize-field fields))}
+     properties)))
 
 (defmethod normalize :fn [schema]
   (normalize-fn-map
@@ -424,7 +564,7 @@
       (= kind :union)
       (collect-reference-names (:types schema))
 
-      (= kind :vector)
+      (or (= kind :vector) (= kind :set))
       (reference-names-normal (:item schema))
 
       (= kind :tuple)
@@ -506,7 +646,7 @@
       (normalize-union
        (resolve-many (:types schema) registry-value visited))
 
-      (= kind :vector)
+      (or (= kind :vector) (= kind :set))
       (assoc schema :item
              (resolve-normal (:item schema) registry-value visited))
 
@@ -598,6 +738,105 @@
    :finding/expected expected
    :finding/value value})
 
+(defn- property-finding
+  [path expected value constraint expected-value]
+  {:finding/type :std.typed.schema/property-violation
+   :finding/path (vec path)
+   :finding/expected expected
+   :finding/value value
+   :finding/context
+   {:constraint constraint
+    :expected expected-value}})
+
+(defn- missing-key-finding
+  [path field]
+  (let [key (:name field)]
+    {:finding/type :std.typed.schema/missing-key
+     :finding/path (conj (vec path) key)
+     :finding/expected (:type field)
+     :finding/value nil
+     :finding/context
+     {:present? false
+      :constraint :required
+      :key key
+      :parent-path (vec path)}}))
+
+(defn- closed-key-finding
+  [path expected key value]
+  {:finding/type :std.typed.schema/closed-map-key
+   :finding/path (conj (vec path) key)
+   :finding/expected expected
+   :finding/value value
+   :finding/context {:constraint :closed :key key}})
+
+(defn- qualified-keyword?
+  [value]
+  (and (keyword? value)
+       (str/includes? (str value) "/")))
+
+(defn- property-count
+  [value]
+  (cond
+    (string? value) (str/length value)
+    (or (vector? value) (set? value) (map? value) (list? value))
+    (count value)
+    :else nil))
+
+(defn- distinct-values?
+  [value]
+  (if (or (vector? value) (list? value))
+    (apply distinct? (vec value))
+    true))
+
+(defn- validate-properties
+  [schema value path]
+  (let [properties (or (:properties schema) {})
+        count-value (property-count value)
+        min-count (:min-count properties)
+        max-count (:max-count properties)
+        pattern (:pattern properties)]
+    (vec
+     (concat
+      (if (and min-count count-value (< count-value min-count))
+        [(property-finding path schema value :min-count min-count)]
+        [])
+      (if (and max-count count-value (> count-value max-count))
+        [(property-finding path schema value :max-count max-count)]
+        [])
+      (if (and pattern
+               (string? value)
+               (not (re-matches pattern value)))
+        [(property-finding path schema value :pattern pattern)]
+        [])
+      (if (and (= true (:qualified properties))
+               (not (qualified-keyword? value)))
+        [(property-finding path schema value :qualified true)]
+        [])
+      (if (and (= true (:distinct properties))
+               (not (distinct-values? value)))
+        [(property-finding path schema value :distinct true)]
+        [])))))
+
+(defn- field-optional?
+  [field]
+  (= true (:optional (:properties field))))
+
+(defn- known-field?
+  [schema key]
+  (any? (fn [field] (= key (:name field))) (:fields schema)))
+
+(defn- closed-map-findings
+  [schema value path]
+  (if (= true (:closed (:properties schema)))
+    (vec
+     (mapcat
+      (fn [key]
+        (if (known-field? schema key)
+          []
+          [(closed-key-finding path schema key (get value key))]))
+      (sort-by str (keys value))))
+    []))
+
 (defn- validate-dispatch [schema value path]
   (:kind schema))
 
@@ -605,7 +844,7 @@
 
 (defmethod validate-normal :primitive [schema value path]
   (if (primitive-valid? (:name schema) value)
-    []
+    (validate-properties schema value path)
     [(finding path schema value)]))
 
 (defmethod validate-normal :enum [schema value path]
@@ -651,7 +890,7 @@
 (defmethod validate-normal :vector [schema value path]
   (if (vector? value)
     (loop [index 0
-           output []]
+           output (validate-properties schema value path)]
       (if (= index (count value))
         output
         (recur
@@ -661,6 +900,22 @@
                   (validate-normal (:item schema)
                                    (nth value index)
                                    (conj path index)))))))
+    [(finding path schema value)]))
+
+(defmethod validate-normal :set [schema value path]
+  (if (set? value)
+    (let [values (vec (sort-by str value))]
+      (loop [index 0
+             output (validate-properties schema value path)]
+        (if (= index (count values))
+          output
+          (recur
+           (inc index)
+           (vec
+            (concat output
+                    (validate-normal (:item schema)
+                                     (nth values index)
+                                     (conj path index))))))))
     [(finding path schema value)]))
 
 (defmethod validate-normal :tuple [schema value path]
@@ -681,25 +936,29 @@
 
 (defmethod validate-normal :map [schema value path]
   (if (map? value)
-    (loop [remaining (:fields schema)
-           output []]
-      (if (empty? remaining)
-        output
-        (let [field (first remaining)
-              key (:name field)]
-          (recur
-           (rest remaining)
-           (if (has? value key)
-             (vec
-              (concat output
-                      (validate-normal (:type field)
-                                       (get value key)
-                                       (conj path key))))
-             (conj output
-                   (assoc (finding (conj path key)
-                                   (:type field)
-                                   nil)
-                          :finding/context {:present? false})))))))
+    (let [field-findings
+          (loop [remaining (:fields schema)
+                 output []]
+            (if (empty? remaining)
+              output
+              (let [field (first remaining)
+                    key (:name field)]
+                (recur
+                 (rest remaining)
+                 (cond
+                   (has? value key)
+                   (vec
+                    (concat output
+                            (validate-normal (:type field)
+                                             (get value key)
+                                             (conj path key))))
+                   (field-optional? field) output
+                   :else (conj output (missing-key-finding path field)))))))]
+      (vec
+       (concat
+        (validate-properties schema value path)
+        field-findings
+        (closed-map-findings schema value path))))
     [(finding path schema value)]))
 
 (defn- reference-finding
@@ -735,7 +994,7 @@
   [schema value path registry-value trail]
   (if (vector? value)
     (loop [index 0
-           output []]
+           output (validate-properties schema value path)]
       (if (= index (count value))
         output
         (recur
@@ -747,6 +1006,25 @@
                                         (conj path index)
                                         registry-value
                                         trail))))))
+    [(finding path schema value)]))
+
+(defn- validate-set-with
+  [schema value path registry-value trail]
+  (if (set? value)
+    (let [values (vec (sort-by str value))]
+      (loop [index 0
+             output (validate-properties schema value path)]
+        (if (= index (count values))
+          output
+          (recur
+           (inc index)
+           (vec
+            (concat output
+                    (validate-normal-with (:item schema)
+                                          (nth values index)
+                                          (conj path index)
+                                          registry-value
+                                          trail)))))))
     [(finding path schema value)]))
 
 (defn- validate-tuple-with
@@ -771,27 +1049,31 @@
 (defn- validate-map-with
   [schema value path registry-value trail]
   (if (map? value)
-    (loop [remaining (:fields schema)
-           output []]
-      (if (empty? remaining)
-        output
-        (let [field (first remaining)
-              key (:name field)]
-          (recur
-           (rest remaining)
-           (if (has? value key)
-             (vec
-              (concat output
-                      (validate-normal-with (:type field)
-                                            (get value key)
-                                            (conj path key)
-                                            registry-value
-                                            trail)))
-             (conj output
-                   (assoc (finding (conj path key)
-                                   (:type field)
-                                   nil)
-                          :finding/context {:present? false})))))))
+    (let [field-findings
+          (loop [remaining (:fields schema)
+                 output []]
+            (if (empty? remaining)
+              output
+              (let [field (first remaining)
+                    key (:name field)]
+                (recur
+                 (rest remaining)
+                 (cond
+                   (has? value key)
+                   (vec
+                    (concat output
+                            (validate-normal-with (:type field)
+                                                  (get value key)
+                                                  (conj path key)
+                                                  registry-value
+                                                  trail)))
+                   (field-optional? field) output
+                   :else (conj output (missing-key-finding path field)))))))]
+      (vec
+       (concat
+        (validate-properties schema value path)
+        field-findings
+        (closed-map-findings schema value path))))
     [(finding path schema value)]))
 
 (defn- validate-reference-with
@@ -828,6 +1110,9 @@
 
       (= kind :vector)
       (validate-vector-with schema value path registry-value trail)
+
+      (= kind :set)
+      (validate-set-with schema value path registry-value trail)
 
       (= kind :tuple)
       (validate-tuple-with schema value path registry-value trail)
@@ -891,6 +1176,15 @@
          (= :any (:name expected))) true
     (and (= :primitive (:kind actual))
          (= :any (:name actual))) true
+    (and (= :primitive (:kind expected))
+         (= :primitive (:kind actual))
+         (= (:name expected) (:name actual))) true
+    (and (= :vector (:kind expected))
+         (= :vector (:kind actual)))
+    (compatible-normal? (:item expected) (:item actual))
+    (and (= :set (:kind expected))
+         (= :set (:kind actual)))
+    (compatible-normal? (:item expected) (:item actual))
     (= :unknown (:kind expected)) true
     (= :unknown (:kind actual)) true
     (= :union (:kind expected))

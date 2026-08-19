@@ -38,11 +38,17 @@
       {:schema/type :vector
        :schema/items :demo/node}}}]})
 
-(defn- property?
+(defn- field?
   [normalized key]
-  (any? (fn [property]
-          (= key (:name property)))
-        (:properties normalized)))
+  (any? (fn [field] (= key (:name field))) (:fields normalized)))
+
+(defn- required-fields
+  [normalized]
+  (vec
+   (map :name
+        (filter (fn [field]
+                  (not (= true (:optional (:properties field)))))
+                (:fields normalized)))))
 
 ^{:refer 'tool.metaspec.schema/compile-schema
   :id 'compile-named-metaspec-schema}
@@ -54,19 +60,26 @@
          (:meta/document-schema sample))
         normalized (typed/normalize-with compiled registry-value)]
     [(:kind normalized)
-     (:required normalized)
-     (count (:properties normalized))
-     (property? normalized :demo/name)
-     (property? normalized :demo/status)
-     (property? normalized :demo/ignored)
+     (required-fields normalized)
+     (count (:fields normalized))
+     (field? normalized :demo/name)
+     (field? normalized :demo/status)
+     (field? normalized :demo/ignored)
      (registry/names registry-value)])
-  => [:tool.metaspec/map
-      [:demo/name :demo/status]
-      3
-      true
-      true
-      true
+  => [:map [:demo/name :demo/status] 3 true true true
       '[demo/document demo/name demo/status]])
+
+
+^{:refer 'tool.metaspec.schema/compile-schema :id 'no-generic-metaspec-schema-heads}
+(fact "does not emit generic :tool.metaspec schema extensions"
+  (let [compiled (schema/compile-schema sample (:meta/document-schema sample))
+        rendered (str compiled)]
+    [(first compiled)
+     (str/includes? rendered ":tool.metaspec/map")
+     (str/includes? rendered ":tool.metaspec/set")
+     (str/includes? rendered ":tool.metaspec/items")
+     (str/includes? rendered ":tool.metaspec/refine")])
+  => [:map false false false false])
 
 ^{:refer 'std.typed.schema/valid?
   :id 'compiled-schema-is-executable}
@@ -139,7 +152,7 @@
 
 ^{:refer 'tool.metaspec.schema/validate-document
   :id 'refinement-policy}
-(fact "keeps metaspec refinements as namespaced std.typed extensions"
+(fact "lowers metaspec refinements into portable std.typed properties"
   (let [qualified
         {:meta/document-schema
          {:schema/id :demo/qualified
