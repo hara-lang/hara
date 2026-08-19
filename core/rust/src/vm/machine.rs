@@ -1001,7 +1001,24 @@ impl Machine {
                         Err(error) => return Dispatch::Failed(error),
                     }
                 };
-                let message = crate::core::thrown_error(Self::into_value(program.clone(), value));
+                let value = Self::into_value(program.clone(), value);
+                if !matches!(value, Value::ExceptionInfo(_)) {
+                    match self.raise(function, "throw expects an Exception value created by ex") {
+                        Ok(target) => return Dispatch::Unwound(target),
+                        Err(error) => return Dispatch::Failed(error),
+                    }
+                }
+                let position = function.source_map.position(self.ip);
+                crate::core::record_exception_throw(
+                    &value,
+                    position.map(|position| crate::core::ExceptionSite {
+                        namespace: program.namespace.clone(),
+                        resource: None,
+                        line: position.line,
+                        column: position.column,
+                    }),
+                );
+                let message = crate::core::thrown_error(value);
                 match self.raise(function, message) {
                     Ok(target) => return Dispatch::Unwound(target),
                     Err(error) => return Dispatch::Failed(error),

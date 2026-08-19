@@ -3,7 +3,6 @@ package hara.kernel.builtin;
 import hara.kernel.base.Module;
 import hara.lang.base.NumUtils;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 
 @SuppressWarnings({"unchecked", "rawtypes"})
@@ -38,11 +37,6 @@ public interface BuiltinCheck {
         || x instanceof Integer
         || x instanceof Long
         || x instanceof BigInteger;
-  }
-
-  @Module.Fn(name = "decimal?", complete = true)
-  public static <TYPE> boolean isDecimal(TYPE x) {
-    return x instanceof BigDecimal;
   }
 
   @Module.Fn(name = "long?", complete = true)

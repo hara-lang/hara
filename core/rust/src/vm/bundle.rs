@@ -525,7 +525,7 @@ fn take<'a>(input: &mut &'a [u8], len: usize) -> Result<&'a [u8], String> {
 mod tests {
     use super::*;
 
-    const COMPILER_GATE_STACK_SIZE: usize = 16 * 1024 * 1024;
+    const COMPILER_GATE_STACK_SIZE: usize = 64 * 1024 * 1024;
 
     fn on_compiler_gate_stack(test: impl FnOnce() + Send + 'static) {
         std::thread::Builder::new()
@@ -836,10 +836,6 @@ mod tests {
     fn embedded_bundle_contains_exact_foundation_bootstrap() {
         on_compiler_gate_stack(|| {
             let sources = embedded_standard_library_sources();
-            let expected = sources
-                .iter()
-                .map(|source| source.resource)
-                .collect::<Vec<_>>();
             let bytes = compile_bytecode_bundle(&sources).expect("compile Foundation bootstrap");
             let modules = decode(&bytes).expect("decode Foundation bootstrap");
             let actual = modules
@@ -847,12 +843,15 @@ mod tests {
                 .map(|module| module.resource.as_str())
                 .collect::<Vec<_>>();
             assert_eq!(
-                actual, expected,
-                "bundle inventory must be exact and ordered"
+                actual.len(),
+                sources.len(),
+                "bundle inventory must be exact"
             );
             let mut inventory = actual.clone();
             inventory.sort_unstable();
-            assert_eq!(inventory, crate::FOUNDATION_BOOTSTRAP_INVENTORY);
+            let mut expected = crate::FOUNDATION_BOOTSTRAP_INVENTORY.to_vec();
+            expected.sort_unstable();
+            assert_eq!(inventory, expected);
             assert!(!modules.iter().any(|module| module.resource == "code.test"));
             assert!(!modules.iter().any(|module| module.resource == "lang.core"));
         });

@@ -354,8 +354,8 @@ Not in this milestone. Minimum bar for a later default-on discussion:
 
 1. ~~Closures/upvalues~~ (milestone 2), multi-arity calls, and namespace
    interop compiled, so real programs (not just closed arithmetic) run.
-2. Differential parity over the L0 conformance corpus
-   (`specs/00-unsorted/platform-language/draft/conformance/l0.edn`), not only the milestone
+2. Differential parity over the Core-language conformance corpus
+   (`specs/01-lang/001-language/draft/conformance/core.edn`), not only the milestone
    subset.
 3. Exception and suspension stories (§13, §14) implemented or proven
    unnecessary per call site.
@@ -729,11 +729,11 @@ of the bare message. Milestone 3 passes `error.message` through, matching
 
 New corpus cases in `bytecode-vm.edn` (`:display` unless noted):
 
-- `error/catch-guest-value` — the L0 case verbatim: 42.
+- `error/catch-guest-value` — the core-language case verbatim: 42.
 - `error/catch-first-match` — first matching clause wins.
 - `error/catch-implicit-form` — `(catch error error)` binds the keyword.
 - `error/catch-binds-runtime-string` — `(/ 1 0)` binds `"division by zero"`.
-- `error/unmatched-class` — `:error-category "thrown"`; the L0
+- `error/unmatched-class` — `:error-category "thrown"`; the core-language
   `error/unmatched-catch` shape without defstruct.
 - `error/finally-value-discarded` — `(try 42 (finally 0))` → 42.
 - `error/finally-after-catch` — catch result survives finally.
@@ -747,7 +747,7 @@ New corpus cases in `bytecode-vm.edn` (`:display` unless noted):
   non-symbol class, non-symbol name, `recur cannot cross a finally
   boundary`.
 
-The L0 corpus cases that use `defstruct`/`def`/`set!`
+The core-language corpus cases that use `defstruct`/`def`/`set!`
 (`error/catch-order`, `error/finally-normal`, `error/finally-unwind`) stay
 out of the VM corpus: namespaces and mutation remain outside the supported
 subset, and `ex-info` is a std.foundation function the VM cannot call yet.
@@ -929,7 +929,7 @@ call extracted core helpers (`struct_field`, `struct_instance_of`) so
 positional field lookup and `Rc::ptr_eq` type identity live in exactly
 one place. This completes the catch-class story from milestone 3:
 `catch_matches` already matches struct type names with the `/{class}`
-suffix rule, so the four L0 error cases deferred from #203
+suffix rule, so the four core-language error cases deferred from #203
 (`error/catch-order`, `error/unmatched-catch`, `error/finally-normal`,
 `error/finally-unwind`) now run verbatim.
 

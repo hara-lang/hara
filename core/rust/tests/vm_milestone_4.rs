@@ -28,10 +28,7 @@ fn public_runtime_covers_globals_arities_destructuring_and_named_values() {
         "[1 2]"
     );
     assert_eq!(
-        eval(
-            &mut runtime,
-            "((fn [head & tail] [head tail]) 1 2 3)",
-        ),
+        eval(&mut runtime, "((fn [head & tail] [head tail]) 1 2 3)",),
         "[1 (2 3)]"
     );
     assert_eq!(

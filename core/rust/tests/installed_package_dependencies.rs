@@ -23,7 +23,12 @@ fn run(dist: &Path, args: &[&str], input: Option<&str>) -> Output {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();
     if let Some(input) = input {
-        child.stdin.as_mut().unwrap().write_all(input.as_bytes()).unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
     }
     child.wait_with_output().unwrap()
 }
@@ -48,14 +53,14 @@ fn write_package(
     source: &str,
     dependencies: &[(&str, &str)],
 ) {
-    let path = root.join("src").join(format!("{}.hal", namespace.replace('.', "/")));
+    let path = root
+        .join("src")
+        .join(format!("{}.hal", namespace.replace('.', "/")));
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, source).unwrap();
     let dependencies = dependencies
         .iter()
-        .map(|(coordinate, requirement)| {
-            format!(" {coordinate} {{:version \"{requirement}\"}}")
-        })
+        .map(|(coordinate, requirement)| format!(" {coordinate} {{:version \"{requirement}\"}}"))
         .collect::<String>();
     fs::write(
         root.join("project.edn"),
@@ -98,9 +103,7 @@ fn write_consumer(root: &Path, dependencies: &[(&str, &str)], require: &str, cal
     fs::create_dir_all(root.join("test/demo")).unwrap();
     let dependencies = dependencies
         .iter()
-        .map(|(coordinate, requirement)| {
-            format!(" {coordinate} {{:version \"{requirement}\"}}")
-        })
+        .map(|(coordinate, requirement)| format!(" {coordinate} {{:version \"{requirement}\"}}"))
         .collect::<String>();
     fs::write(
         root.join("project.edn"),
@@ -164,8 +167,16 @@ fn activates_highest_matching_transitive_installed_package() {
         "dependency/answer",
     );
 
-    success(&dist, &["--project", consumer.to_str().unwrap(), "check"], None);
-    success(&dist, &["--project", consumer.to_str().unwrap(), "test"], None);
+    success(
+        &dist,
+        &["--project", consumer.to_str().unwrap(), "check"],
+        None,
+    );
+    success(
+        &dist,
+        &["--project", consumer.to_str().unwrap(), "test"],
+        None,
+    );
     let evaluated = success(
         &dist,
         &[
@@ -222,27 +233,98 @@ fn rejects_missing_conflicting_and_cyclic_installed_dependencies() {
     let left = root.join("left");
     let right = root.join("right");
     let conflict = root.join("conflict");
-    write_package(&core_015, "greenways/core", "0.1.5", "greenways.core", "(ns greenways.core)", &[]);
-    write_package(&core_025, "greenways/core", "0.2.5", "greenways.core", "(ns greenways.core)", &[]);
-    write_package(&left, "greenways/left", "1.0.0", "greenways.left", "(ns greenways.left)", &[("greenways/core", "~0.1.0")]);
-    write_package(&right, "greenways/right", "1.0.0", "greenways.right", "(ns greenways.right)", &[("greenways/core", "~0.2.0")]);
+    write_package(
+        &core_015,
+        "greenways/core",
+        "0.1.5",
+        "greenways.core",
+        "(ns greenways.core)",
+        &[],
+    );
+    write_package(
+        &core_025,
+        "greenways/core",
+        "0.2.5",
+        "greenways.core",
+        "(ns greenways.core)",
+        &[],
+    );
+    write_package(
+        &left,
+        "greenways/left",
+        "1.0.0",
+        "greenways.left",
+        "(ns greenways.left)",
+        &[("greenways/core", "~0.1.0")],
+    );
+    write_package(
+        &right,
+        "greenways/right",
+        "1.0.0",
+        "greenways.right",
+        "(ns greenways.right)",
+        &[("greenways/core", "~0.2.0")],
+    );
     for package in [&core_015, &core_025, &left, &right] {
         install(&dist, package);
     }
-    write_consumer(&conflict, &[("greenways/left", "^1.0.0"), ("greenways/right", "^1.0.0")], "greenways.left", "dependency/missing");
-    let output = run(&dist, &["--project", conflict.to_str().unwrap(), "eval", "(require [demo.app])"], None);
+    write_consumer(
+        &conflict,
+        &[("greenways/left", "^1.0.0"), ("greenways/right", "^1.0.0")],
+        "greenways.left",
+        "dependency/missing",
+    );
+    let output = run(
+        &dist,
+        &[
+            "--project",
+            conflict.to_str().unwrap(),
+            "eval",
+            "(require [demo.app])",
+        ],
+        None,
+    );
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no installed version of hara:greenways/core"));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("no installed version of hara:greenways/core"));
 
     let cycle_a = root.join("cycle-a");
     let cycle_b = root.join("cycle-b");
     let cycle = root.join("cycle-consumer");
-    write_package(&cycle_a, "greenways/cycle-a", "1.0.0", "greenways.cycle-a", "(ns greenways.cycle-a)", &[("greenways/cycle-b", "^1.0.0")]);
-    write_package(&cycle_b, "greenways/cycle-b", "1.0.0", "greenways.cycle-b", "(ns greenways.cycle-b)", &[("greenways/cycle-a", "^1.0.0")]);
+    write_package(
+        &cycle_a,
+        "greenways/cycle-a",
+        "1.0.0",
+        "greenways.cycle-a",
+        "(ns greenways.cycle-a)",
+        &[("greenways/cycle-b", "^1.0.0")],
+    );
+    write_package(
+        &cycle_b,
+        "greenways/cycle-b",
+        "1.0.0",
+        "greenways.cycle-b",
+        "(ns greenways.cycle-b)",
+        &[("greenways/cycle-a", "^1.0.0")],
+    );
     install(&dist, &cycle_a);
     install(&dist, &cycle_b);
-    write_consumer(&cycle, &[("greenways/cycle-a", "^1.0.0")], "greenways.cycle-a", "dependency/missing");
-    let output = run(&dist, &["--project", cycle.to_str().unwrap(), "eval", "(require [demo.app])"], None);
+    write_consumer(
+        &cycle,
+        &[("greenways/cycle-a", "^1.0.0")],
+        "greenways.cycle-a",
+        "dependency/missing",
+    );
+    let output = run(
+        &dist,
+        &[
+            "--project",
+            cycle.to_str().unwrap(),
+            "eval",
+            "(require [demo.app])",
+        ],
+        None,
+    );
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("dependency cycle"));
     fs::remove_dir_all(root).unwrap();

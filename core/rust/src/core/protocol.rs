@@ -859,19 +859,16 @@ fn schema_contract(var: &KernelVar<Value>) -> Result<Value, String> {
     Ok(var.schema_contract().unwrap_or(Value::Nil))
 }
 
-fn native_schema_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
-    let method = operation
-        .strip_prefix("std.native.Schema/")
-        .ok_or_else(|| format!("invalid Schema operation: {operation}"))?;
-    if forms.len() != 1 {
+fn native_schema_values(method: &str, values: &[Value]) -> Result<Value, String> {
+    let [value] = values else {
         return Err(format!("Schema/{method} expects one value"));
-    }
-    let value = eval(&forms[0], env)?;
+    };
     match method {
+        "compile" => compile_schema_value(value, None),
+        "of" => match value {
+            Value::Var(var) => schema_contract(var),
+            _ => Err("Schema/of expects a Var".into()),
+        },
         "instance?" => Ok(Value::Bool(matches!(value, Value::Schema(_)))),
         "kind" => match value {
             Value::Schema(schema) => Ok(Value::Keyword(Keyword::from(schema_kind(&schema.ast)))),
@@ -891,7 +888,7 @@ fn native_schema_operation(
             }
             _ => Err("Schema/origin expects a schema".into()),
         },
-        _ => Err(format!("unknown Schema operation: {operation}")),
+        _ => Err(format!("unknown Schema operation: std.native.Schema/{method}")),
     }
 }
 
@@ -917,23 +914,20 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
         "list" => Ok(Value::List(values.to_vec().into())),
         "vector" => Ok(Value::Vector(values.to_vec().into())),
         "vec" => match values {
+            [value @ Value::Vector(_)] => Ok(value.clone()),
             [value] => Ok(Value::Vector(PVector::from_iter(iterator_values(
                 value.clone(),
             )?))),
             _ => Err("Base/vec expects one collection".into()),
         },
         "set" => match values {
+            [value @ (Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_))] => {
+                Ok(value.clone())
+            }
             [value] => Ok(Value::Set(
                 unique_values(iterator_values(value.clone())?).into(),
             )),
             _ => Err("Base/set expects one collection".into()),
-        },
-        "pair" => match values {
-            [left, right] => Ok(Value::Tuple(Box::new(PTuple::from_values(vec![
-                left.clone(),
-                right.clone(),
-            ])?))),
-            _ => Err("Base/pair expects two arguments".into()),
         },
         "tuple" if values.len() <= 8 => Ok(Value::Tuple(Box::new(PTuple::from_values(
             values.to_vec(),
@@ -976,13 +970,34 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [value] => Ok(reduced_value(value.clone())),
             _ => Err("Base/reduced expects one value".into()),
         },
+        "apply" => {
+            if values.len() < 2 {
+                return Err("Base/apply expects a function and a final sequential value".into());
+            }
+            let function = values[0].clone();
+            let mut arguments = values[1..values.len() - 1].to_vec();
+            arguments.extend(iterator_values(values.last().cloned().unwrap())?);
+            call_value(function, arguments)
+        }
+        "not" => match values {
+            [value] => Ok(Value::Bool(!value.truthy())),
+            _ => Err("Base/not expects one value".into()),
+        },
+        "boolean" => match values {
+            [value] => Ok(Value::Bool(value.truthy())),
+            _ => Err("Base/boolean expects one value".into()),
+        },
+        "compare" => match values {
+            [left, right] => Ok(Value::Number(match left.cmp(right) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            })),
+            _ => Err("Base/compare expects two values".into()),
+        },
         "reduced?" => match values {
             [value] => Ok(Value::Bool(is_reduced_value(value))),
             _ => Err("Base/reduced? expects one value".into()),
-        },
-        "unreduced" => match values {
-            [value] => Ok(unreduced_value(value.clone())),
-            _ => Err("Base/unreduced expects one value".into()),
         },
         "satisfies?" => match values {
             [Value::Protocol(protocol), value] => {
@@ -1010,44 +1025,26 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             }
             _ => Err("Base/instance? expects a type descriptor and value".into()),
         },
-        "schema" => match values {
-            [value] => compile_schema_value(value, None),
-            _ => Err("Base/schema expects one value".into()),
-        },
-        "schema-of" => match values {
-            [Value::Var(var)] => schema_contract(var),
-            [value] => Err(format!(
-                "Base/schema-of expects a Var, received {}",
-                portable_type_name(value)
-            )),
-            _ => Err("Base/schema-of expects one Var".into()),
-        },
         predicate if predicate.ends_with('?') => match values {
             [value] => Ok(Value::Bool(match predicate {
                 "nil?" => matches!(value, Value::Nil),
-                "not-nil?" => !matches!(value, Value::Nil),
                 "boolean?" => matches!(value, Value::Bool(_)),
-                "false?" => matches!(value, Value::Bool(false)),
-                "true?" => matches!(value, Value::Bool(true)),
                 "string?" => matches!(value, Value::String(_)),
                 "char?" => matches!(value, Value::Character(_)),
                 "number?" => numeric::is_numeric_value(value),
                 "integer?" => numeric::is_integer_value(value),
-                "decimal?" => matches!(value, Value::Decimal(_)),
                 "long?" => numeric::to_i64_exact(value).is_ok(),
                 "double?" => matches!(value, Value::Float(_)),
                 "keyword?" => matches!(value, Value::Keyword(_)),
                 "symbol?" => matches!(value, Value::Symbol(_)),
                 "pointer?" => matches!(value, Value::Pointer(_)),
                 "atom?" => matches!(value, Value::Atom(_)),
-                "fn?" => named_protocol_satisfies("fn?", value),
                 "function?" => matches!(value, Value::Function(_)),
                 "bytes?" => matches!(value, Value::Bytes(_) | Value::ByteBuffer(_)),
                 "array?" => matches!(value, Value::Array(_)),
                 "object?" => matches!(value, Value::Object(_)),
                 "list?" => matches!(value, Value::List(_)),
                 "cons?" => matches!(value, Value::Cons(_)),
-                "pair?" => matches!(value, Value::Tuple(tuple) if tuple.len() == 2),
                 "vector?" => matches!(value, Value::Vector(_) | Value::Tuple(_)),
                 "tuple?" => matches!(value, Value::Tuple(_)),
                 "map?" => matches!(
@@ -1058,7 +1055,6 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
                         | Value::Trie(_)
                         | Value::PriorityMap(_)
                 ),
-                "map-entry?" => pair_parts(value).is_some(),
                 "set?" => matches!(
                     value,
                     Value::Set(_) | Value::OrderedSet(_) | Value::SortedSet(_)
@@ -1081,19 +1077,15 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
     }
 }
 
-fn native_algo_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_algo_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let method = operation
         .strip_prefix("std.native.Algo/")
         .ok_or_else(|| format!("invalid Algo operation: {operation}"))?;
     if let Some(family) = method.strip_suffix('?') {
-        if forms.len() != 1 {
+        if values.len() != 1 {
             return Err(format!("Algo/{method} expects one value"));
         }
-        let value = eval(&forms[0], env)?;
+        let value = &values[0];
         return Ok(Value::Bool(match family {
             "deque" => matches!(value, Value::Deque(_)),
             "ordered-map" => matches!(value, Value::OrderedMap(_)),
@@ -1108,7 +1100,7 @@ fn native_algo_operation(
     }
     match method {
         "deque" | "ordered-map" | "ordered-set" | "priority-map" | "queue" | "sorted-map"
-        | "sorted-set" | "trie" => eval_collection_constructor(method, forms, env),
+        | "sorted-set" | "trie" => collection_constructor_values(method, values),
         _ => Err(format!("unknown Algo operation: {operation}")),
     }
 }
@@ -1917,7 +1909,10 @@ impl Value {
         )
     }
     fn supports_native_inamespaced(value: &Self) -> bool {
-        matches!(value, Self::Keyword(_) | Self::Symbol(_))
+        matches!(
+            value,
+            Self::Keyword(_) | Self::Symbol(_) | Self::Var(_) | Self::NativeType(_)
+        )
     }
     fn supports_native_ipushfirst(value: &Self) -> bool {
         matches!(
@@ -2072,7 +2067,6 @@ fn named_predicate_protocol(name: &str) -> Option<&'static str> {
         "watchable?" => Some("IWatch"),
         "fn?" => Some("IFn"),
         "applicable?" => Some("IApplicable"),
-        "pair?" => Some("IPair"),
         "mutable?" => Some("IMutable"),
         "persistent?" => Some("IPersistent"),
         _ => None,

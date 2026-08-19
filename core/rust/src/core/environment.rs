@@ -714,6 +714,11 @@ pub(crate) enum NamespaceResource {
 }
 
 pub(crate) fn thrown_error(value: Value) -> String {
+    thrown_error_at(value, current_exception_site())
+}
+
+pub(crate) fn thrown_error_at(value: Value, site: Option<ExceptionSite>) -> String {
+    record_exception_throw(&value, site);
     let error = format!("thrown: {}", value.display());
     ACTIVE_THROWN_VALUE.with(|active| {
         *active.borrow_mut() = Some((error.clone(), value));
@@ -744,6 +749,23 @@ pub(crate) fn caught_error(error: &str) -> Value {
 pub(crate) fn catch_matches(error: &str, class: &str) -> bool {
     if class == "Exception" || class == "Throwable" {
         return true;
+    }
+    if let Some(selectors) = class.strip_prefix('[').and_then(|value| value.strip_suffix(']')) {
+        return selectors
+            .split(',')
+            .any(|selector| catch_matches(error, selector));
+    }
+    if let Some(selector) = class.strip_prefix(':') {
+        return ACTIVE_THROWN_VALUE.with(|active| {
+            active.borrow().as_ref().is_some_and(|(message, value)| {
+                error.starts_with(message)
+                    && matches!(value, Value::ExceptionInfo(info)
+                        if map_entries(&info.data).is_some_and(|entries| entries.iter().any(|(key, value)| {
+                            matches!(key, Value::Keyword(name) if name.as_str() == "ex/code")
+                                && matches!(value, Value::Keyword(code) if code.as_str() == selector)
+                        })))
+            })
+        });
     }
     ACTIVE_THROWN_VALUE.with(|active| {
         active.borrow().as_ref().is_some_and(|(message, value)| {
@@ -789,7 +811,10 @@ pub(crate) fn definition_origin() -> VarOrigin {
 
 pub(crate) fn binding_is_local(var: &KernelVar<Value>) -> bool {
     namespace_registry()
-        .map(|registry| var.symbol().get_namespace() == Some(registry.current().name().as_str()))
+        .map(|registry| {
+            var.symbol().get_namespace().is_none()
+                || var.symbol().get_namespace() == Some(registry.current().name().as_str())
+        })
         .unwrap_or(true)
 }
 
@@ -815,6 +840,9 @@ pub(crate) fn binding_is_native_alias(name: &str, var: &KernelVar<Value>) -> boo
     let Some((qualifier, _)) = name.split_once('/') else {
         return false;
     };
+    if qualifier.starts_with("std.native.") {
+        return var.symbol().get_namespace() == Some(qualifier);
+    }
     let Ok(registry) = namespace_registry() else {
         return false;
     };

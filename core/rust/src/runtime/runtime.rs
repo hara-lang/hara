@@ -1,3 +1,55 @@
+fn exception_located_form(node: &kernel::SpannedForm) -> Form {
+    let rebuilt = match &node.form {
+        Form::List(values) if node.children.len() == values.len() => {
+            Form::List(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::List(values) if node.children.len() + 1 == values.len() => {
+            let mut rebuilt = vec![values[0].clone()];
+            rebuilt.extend(node.children.iter().map(exception_located_form));
+            Form::List(rebuilt)
+        }
+        Form::Vector(values) if node.children.len() == values.len() => {
+            Form::Vector(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::Set(values) if node.children.len() == values.len() => {
+            Form::Set(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::Map(values) if node.children.len() == values.len() * 2 => Form::Map(
+            node.children
+                .chunks_exact(2)
+                .map(|pair| {
+                    (
+                        exception_located_form(&pair[0]),
+                        exception_located_form(&pair[1]),
+                    )
+                })
+                .collect(),
+        ),
+        Form::Tagged(tag, _) if node.children.len() == 1 => Form::Tagged(
+            tag.clone(),
+            Box::new(exception_located_form(&node.children[0])),
+        ),
+        Form::Metadata(metadata, _) if node.children.len() == 1 => Form::Metadata(
+            metadata.clone(),
+            Box::new(exception_located_form(&node.children[0])),
+        ),
+        form => form.clone(),
+    };
+    let Form::List(mut values) = rebuilt else {
+        return rebuilt;
+    };
+    let Some(Form::Symbol(operator)) = values.first() else {
+        return Form::List(values);
+    };
+    if operator != "throw" {
+        return Form::List(values);
+    }
+    values[0] = Form::Symbol("__throw-at".into());
+    values.insert(1, Form::Number(node.span.start.line as i64));
+    values.insert(2, Form::Number(node.span.start.column as i64));
+    Form::List(values)
+}
+
 #[wasm_bindgen]
 impl Runtime {
     fn empty() -> Runtime {
@@ -27,24 +79,20 @@ impl Runtime {
         }
         let native = namespace_registry.find_or_create("std.native");
         for (name, descriptor) in core::native_type_values() {
-            let canonical_name = format!("std.native.{name}");
-            let var = foundation.intern(&canonical_name, descriptor);
+            // The descriptor's canonical Var is std.native/<Type>. Foundation
+            // only refers that Var; it must not manufacture a differently
+            // qualified cell whose spelling happens to contain std.native.
+            let var = native.intern(&name, descriptor);
             foundation.map_var(crate::lang::data::Symbol::parse(&name), var.clone());
-            native.map_var(crate::lang::data::Symbol::parse(&name), var);
-            namespace_registry.find_or_create(canonical_name);
+            namespace_registry.find_or_create(format!("std.native.{name}"));
         }
         for (native_type, methods) in core::NATIVE_TYPES {
             let namespace_name = format!("std.native.{native_type}");
             let namespace = namespace_registry.find_or_create(&namespace_name);
             for method in *methods {
-                let dispatch_name = match *native_type {
-                    "Iter" => (*method).to_owned(),
-                    "String" => format!("str/{method}"),
-                    _ => format!("{namespace_name}/{method}"),
-                };
                 namespace.intern_with_origin(
                     *method,
-                    core::structural_function_value(dispatch_name),
+                    core::native_type_function_value(native_type, method),
                     kernel::VarOrigin::RuntimePrimitive,
                 );
             }
@@ -108,6 +156,11 @@ impl Runtime {
         runtime
             .bootstrap_foundation()
             .expect("embedded std.foundation fallback must be valid");
+        let foundation = runtime.namespace_registry.find_or_create("std.foundation");
+        for (name, value) in core::exception_function_values() {
+            foundation.intern_with_origin(name, value, kernel::VarOrigin::RuntimePrimitive);
+        }
+        runtime.refer_foundation_into("user");
         runtime
     }
 
@@ -131,7 +184,7 @@ impl Runtime {
         runtime
     }
 
-    /// Creates the portable L0 evaluator without loading the language-level
+    /// Creates the portable core-language evaluator without loading the language-level
     /// foundation. This is useful for small embedded surfaces whose commands
     /// only require core forms and should become interactive immediately.
     pub fn core() -> Runtime {
@@ -292,31 +345,6 @@ impl Runtime {
             self.install_structural_primitives();
             self.loaded_resources.insert("std.foundation".into());
         }
-        let json = self.namespace_registry.find_or_create("std.native.Json");
-        json.intern(
-            "read",
-            core::native_function("std.native.Json/read", 1, |arguments| {
-                match arguments.as_slice() {
-                    [core::Value::String(source)] => json::read(source),
-                    _ => Err("json/read expects a string".into()),
-                }
-            }),
-        );
-        json.intern(
-            "write",
-            core::native_function("std.native.Json/write", 1, |arguments| {
-                json::write(&arguments[0]).map(core::Value::String)
-            }),
-        );
-        json.intern(
-            "pretty",
-            core::native_function("std.native.Json/pretty", 2, |arguments| {
-                if core::map_entries(&arguments[1]).is_none() {
-                    return Err("json/pretty expects an options map".into());
-                }
-                json::write_pretty(&arguments[0]).map(core::Value::String)
-            }),
-        );
         #[cfg(not(feature = "bytecode-vm"))]
         for &name in EAGER_HAL_RESOURCES {
             let source = self
@@ -342,8 +370,18 @@ impl Runtime {
 
     fn eval_value_mode(&mut self, source: &str, traced: bool) -> Result<core::Value, String> {
         self.refresh_qualified_bindings();
-        let forms = kernel::parse_forms(source)?;
-        let result = self.eval_forms(forms, traced)?;
+        let forms = kernel::read_forms(source).map_err(|error| error.to_string())?;
+        let mut result = core::Value::Nil;
+        for form in forms {
+            let site = core::ExceptionSite {
+                namespace: Some(self.namespace_registry.current().name().as_str().to_owned()),
+                resource: None,
+                line: form.span.start.line,
+                column: form.span.start.column,
+            };
+            let form = exception_located_form(&form);
+            result = core::with_exception_site(site, || self.eval_forms(vec![form], traced))?;
+        }
         self.save_namespace();
         self.refresh_qualified_bindings();
         Ok(result)
@@ -383,15 +421,26 @@ impl Runtime {
         for form in forms {
             let mut restore_namespace = None;
             if let Form::List(values) = &form {
-                if matches!(values.first(), Some(Form::Symbol(name)) if name == "ns") {
-                    let name = match values.get(1) {
-                        Some(Form::Symbol(name)) if !name.contains('/') => name.clone(),
-                        _ => return Err("ns expects an unqualified namespace symbol".into()),
+                if matches!(values.first(), Some(Form::Symbol(name)) if name == "ns" || name == "ns+")
+                {
+                    let (name, clause_start) = match values.first() {
+                        Some(Form::Symbol(operator)) if operator == "ns" => match values.get(1) {
+                            Some(Form::Symbol(name)) if !name.contains('/') => (name.clone(), 2),
+                            _ => return Err("ns expects an unqualified namespace symbol".into()),
+                        },
+                        Some(Form::Symbol(_)) => {
+                            if matches!(values.get(1), Some(Form::Symbol(_))) {
+                                return Err("ns+ does not accept a namespace name".into());
+                            }
+                            (self.current_namespace(), 1)
+                        }
+                        _ => unreachable!(),
                     };
                     #[cfg(not(target_arch = "wasm32"))]
                     let roots = self.extension_roots.clone();
-                    let config =
-                        kernel::GeneratedNamespaceConfig::configure_with(&values[2..], |target| {
+                    let config = kernel::GeneratedNamespaceConfig::configure_with(
+                        &values[clause_start..],
+                        |target| {
                             if self.namespace_registry.find(target).is_some()
                                 || self.namespace_registry.load_state(target).is_some()
                                 || self.resources.contains_key(target)
@@ -406,7 +455,8 @@ impl Runtime {
                             }
                             #[cfg(target_arch = "wasm32")]
                             false
-                        })?;
+                        },
+                    )?;
                     for target in config.required_namespaces() {
                         if self.resources.contains_key(target)
                             || self.loaded_resources.contains(target)
@@ -446,7 +496,7 @@ impl Runtime {
                     }
                     self.bind_direct_wasm_imports(&config)?;
                     let foundation_bootstrap_child = name.starts_with("std.foundation.");
-                    let require_specs = values[2..]
+                    let require_specs = values[clause_start..]
                         .iter()
                         .flat_map(|clause| match clause {
                             Form::List(items)
@@ -692,8 +742,6 @@ impl Runtime {
                 }
             }
             self.refer_native_types_into(name);
-            #[cfg(feature = "bytecode-vm")]
-            self.install_structural_primitives_into(name);
         } else {
             self.refer_foundation_into(name);
             let target = self.namespace_registry.find_or_create(name);
@@ -735,6 +783,9 @@ impl Runtime {
 
     fn sync_generated_aliases(&self, config: &kernel::GeneratedNamespaceConfig) {
         let target = self.namespace_registry.current();
+        for (_, default_alias) in kernel::generated::foundation_library_aliases() {
+            target.unalias(default_alias);
+        }
         for (alias, namespace) in config.aliases() {
             if let Some(source) = self.namespace_registry.find(&namespace) {
                 target.alias(alias, source);

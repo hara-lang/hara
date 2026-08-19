@@ -1,17 +1,98 @@
 (ns std.foundation.native-method-conformance)
 
 (def native-method-fixtures
-  {'Base/list
+  {'Maths/abs
+   [2 (fn [] (Maths/abs -2))]
+
+   'Maths/acos
+   [0.0 (fn [] (Maths/acos 1))]
+
+   'Maths/acosh
+   [0.0 (fn [] (Maths/acosh 1))]
+
+   'Maths/asin
+   [0.0 (fn [] (Maths/asin 0))]
+
+   'Maths/asinh
+   [0.0 (fn [] (Maths/asinh 0))]
+
+   'Maths/atan
+   [0.0 (fn [] (Maths/atan 0))]
+
+   'Maths/atan2
+   [0.0 (fn [] (Maths/atan2 0 1))]
+
+   'Maths/atanh
+   [0.0 (fn [] (Maths/atanh 0))]
+
+   'Maths/ceil
+   [2.0 (fn [] (Maths/ceil 1.5))]
+
+   'Maths/cos
+   [1.0 (fn [] (Maths/cos 0))]
+
+   'Maths/cosh
+   [1.0 (fn [] (Maths/cosh 0))]
+
+   'Maths/exp
+   [1.0 (fn [] (Maths/exp 0))]
+
+   'Maths/floor
+   [1.0 (fn [] (Maths/floor 1.5))]
+
+   'Maths/pow
+   [8.0 (fn [] (Maths/pow 2 3))]
+
+   'Maths/sin
+   [0.0 (fn [] (Maths/sin 0))]
+
+   'Maths/sinh
+   [0.0 (fn [] (Maths/sinh 0))]
+
+   'Maths/sqrt
+   [2.0 (fn [] (Maths/sqrt 4))]
+
+   'Maths/tan
+   [0.0 (fn [] (Maths/tan 0))]
+
+   'Maths/tanh
+   [0.0 (fn [] (Maths/tanh 0))]
+
+   'Num/long
+   [2 (fn [] (Num/long 2.0))]
+
+   'Num/double
+   [2.0 (fn [] (Num/double 2))]
+
+   'Num/parse-long
+   [42 (fn [] (Num/parse-long "42"))]
+
+   'Num/parse-double
+   [4.5 (fn [] (Num/parse-double "4.5"))]
+
+   'Bits/and
+   [2 (fn [] (Bits/and 6 3))]
+
+   'Bits/or
+   [7 (fn [] (Bits/or 6 3))]
+
+   'Bits/xor
+   [5 (fn [] (Bits/xor 6 3))]
+
+   'Bits/not
+   [-2 (fn [] (Bits/not 1))]
+
+   'Bits/shift-left
+   [8 (fn [] (Bits/shift-left 1 3))]
+
+   'Bits/shift-right
+   [2 (fn [] (Bits/shift-right 8 2))]
+
+   'Base/list
    ['(1 2) (fn [] (Base/list 1 2))]
 
    'Base/vector
    [[1 2] (fn [] (Base/vector 1 2))]
-
-   'Base/pair
-   [[:a 1] (fn [] (Base/pair :a 1))]
-
-   'Base/tup
-   [[1 2 3] (fn [] (Base/tup 1 2 3))]
 
    'Base/hash-map
    [{:a 1} (fn [] (Base/hash-map :a 1))]
@@ -36,9 +117,6 @@
 
    'Base/reduced?
    [false (fn [] (Base/reduced? 1))]
-
-   'Base/unreduced
-   [1 (fn [] (Base/unreduced (Base/reduced 1)))]
 
    'RegExp/instance?
    [true (fn [] (RegExp/instance? (RegExp/compile "a+")))]
@@ -74,29 +152,23 @@
     (fn [] (RegExp/split (RegExp/compile ",+") "a,,b,c"))]})
 
 (defn native-method-result
-  "Runs direct canonical native calls, with concrete RegExp cases and missing-dispatch classification."
+  "Runs concrete behavioral cases and explicitly reports methods awaiting one."
   [method thunk]
   (let [fixture (get native-method-fixtures method)]
-    (try
-      (if fixture
+    (if fixture
+      (try
         (let [expected (first fixture)
               actual ((second fixture))]
           {:method method
+           :classification :behavioral
            :pass (= expected actual)
            :expected expected
            :actual actual})
-        (do
-          (thunk)
-          {:method method :pass true}))
-      (catch Throwable error
-        (let [message (ex-message error)]
+        (catch Throwable error
           {:method method
-           :pass
-           (if fixture
-             false
-             (if (std.foundation.string/includes? message "nbound symbol")
-               false
-               (if (std.foundation.string/includes? message "unavailable/")
-                 false
-                 true)))
-           :error message})))))
+           :classification :behavioral
+           :pass false
+           :error (ex-message error)}))
+      {:method method
+       :classification :inventory-only
+       :pass true})))

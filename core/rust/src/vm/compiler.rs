@@ -58,7 +58,7 @@ use scope::ScopeStack;
 /// operator position they report as unsupported rather than as unbound
 /// symbols; everything else unbound reports as an unbound symbol,
 /// matching the evaluator.
-const UNSUPPORTED_OPERATORS: &[&str] = &["ns", "in-ns", "require", "await"];
+const UNSUPPORTED_OPERATORS: &[&str] = &["in-ns", "require", "await"];
 
 /// Compiles source text into a validated program. Multiple top-level
 /// forms compile as an implicit `do`. Without a namespace registry the
@@ -70,11 +70,39 @@ pub fn compile_source(source: &str) -> Result<Program, CompileError> {
 }
 
 fn compile_spanned_forms(forms: &[SpannedForm]) -> Result<Program, CompileError> {
+    prepare_top_level_namespaces(forms)?;
     let mut compiler = Compiler::new();
     compiler.predeclare_top_level(forms);
     let children = compiler.children(forms);
     compiler.compile_sequence(&children, true)?;
     compiler.finish()
+}
+
+fn prepare_top_level_namespaces(forms: &[SpannedForm]) -> Result<(), CompileError> {
+    fn prepare(form: &Form, position: Position) -> Result<(), CompileError> {
+        let Form::List(items) = crate::core::form_without_metadata(form) else {
+            return Ok(());
+        };
+        match items.first() {
+            Some(Form::Symbol(operator)) if operator == "ns" || operator == "ns+" => {
+                crate::core::prepare_namespace_form(form).map_err(|message| {
+                    CompileError::new(CompileErrorKind::UnsupportedForm, message, Some(position))
+                })
+            }
+            Some(Form::Symbol(operator)) if operator == "do" => {
+                for child in items.iter().skip(1) {
+                    prepare(child, position)?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    for form in forms {
+        prepare(&form.form, form.span.start)?;
+    }
+    Ok(())
 }
 
 /// Compiles against a caller's namespace registry: registry vars
@@ -299,6 +327,7 @@ impl Compiler {
             if !matches!(
                 operator.as_str(),
                 "def"
+                    | "defonce"
                     | "defn"
                     | "defn-"
                     | "defmacro"
@@ -685,7 +714,7 @@ impl Compiler {
                     );
                     Ok(())
                 }
-                None if crate::core::is_bytecode_callable(name) => {
+                None if self.visible_bytecode_callable(name) => {
                     let index = self.name_constant(name, span)?;
                     self.emit(Instruction::BuiltinValue(index), Some(span.start));
                     Ok(())
@@ -818,8 +847,8 @@ impl Compiler {
                     Form::Symbol(name) if name == "defstruct" || name == "defmutable" => {
                         self.compile_named_definition(&children, span, name == "defmutable")
                     }
-                    Form::Symbol(name) if name == "ns+" => {
-                        if children.len() > 1 {
+                    Form::Symbol(name) if name == "ns" || name == "ns+" => {
+                        if !top {
                             return Err(self.unsupported(form, span));
                         }
                         self.emit(Instruction::Nil, Some(span.start));

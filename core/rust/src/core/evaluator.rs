@@ -6,7 +6,10 @@ fn printer_write(text: &str) -> Result<(), String> {
     use std::io::Write;
     if PRINTER_CAPTURES.with(|captures| {
         let mut captures = captures.borrow_mut();
-        captures.last_mut().map(|output| output.push_str(text)).is_some()
+        captures
+            .last_mut()
+            .map(|output| output.push_str(text))
+            .is_some()
     }) {
         return Ok(());
     }
@@ -138,6 +141,9 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() < 3 {
                         return Err("fn expects parameters and a body".into());
                     }
+                    if !matches!(form_without_metadata(&fs[1]), Form::Vector(_)) {
+                        return multi_arity_function("<anonymous>", &fs[1..], env, false);
+                    }
                     let (params, variadic, patterns, variadic_pattern) = function_parts(&fs[1])?;
                     let body = fs[2..].to_vec();
                     Ok(Value::Function(Rc::new(Function {
@@ -236,7 +242,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     result
                 }
-                Form::Symbol(n) if n == "read-forms" || n == "std.native.Edn/read-forms" => {
+                Form::Symbol(n) if n == "read-forms" => {
                     if fs.len() != 2 {
                         return Err("read-forms expects a path string".into());
                     }
@@ -304,10 +310,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     };
                     match target {
                         Value::Var(var) => Ok(Value::Symbol(var.symbol().clone())),
-                        value => Err(format!(
-                            "var-sym expects a var, got {}",
-                            value.display()
-                        )),
+                        value => Err(format!("var-sym expects a var, got {}", value.display())),
                     }
                 }
                 Form::Symbol(n) if n == "resolve" && !env.contains_key(n) => {
@@ -579,51 +582,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     Ok(Value::Var(cell))
                 }
                 Form::Symbol(n)
-                    if n == "schema" || n == "Base/schema" || n == "std.native.Base/schema" =>
-                {
-                    if fs.len() != 2 {
-                        return Err("schema expects one value".into());
-                    }
-                    if let Form::Symbol(name) = form_without_metadata(&fs[1]) {
-                        if let Some(Value::Var(variable)) = env.get(name) {
-                            return compile_schema_value(
-                                &variable.deref_value(),
-                                Some(variable.clone()),
-                            );
-                        }
-                    }
-                    compile_schema_value(&eval(&fs[1], env)?, None)
-                }
-                Form::Symbol(n)
-                    if n == "schema-of"
-                        || n == "Base/schema-of"
-                        || n == "std.native.Base/schema-of" =>
-                {
-                    if fs.len() != 2 {
-                        return Err("schema-of expects one Var".into());
-                    }
-                    if let Form::Symbol(name) = form_without_metadata(&fs[1]) {
-                        let Some(Value::Var(variable)) = env.get(name) else {
-                            return Err("schema-of expects a Var reference".into());
-                        };
-                        return schema_contract(variable);
-                    }
-                    let Form::List(reference) = form_without_metadata(&fs[1]) else {
-                        return Err("schema-of expects a Var reference".into());
-                    };
-                    if reference.len() != 2
-                        || !matches!(&reference[0], Form::Symbol(operator) if operator == "var")
-                    {
-                        return Err("schema-of expects a Var reference".into());
-                    }
-                    let Form::Symbol(name) = &reference[1] else {
-                        return Err("schema-of expects a Var reference".into());
-                    };
-                    let variable =
-                        binding_var(env, name).ok_or_else(|| format!("unbound var: {name}"))?;
-                    schema_contract(&variable)
-                }
-                Form::Symbol(n)
                     if [
                         "type",
                         "compare",
@@ -788,11 +746,27 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     target.reset_value(value.clone());
                     Ok(value)
                 }
+                Form::Symbol(n) if n == "__throw-at" => {
+                    let [_, Form::Number(line), Form::Number(column), value] = fs.as_slice() else {
+                        return Err("internal throw location marker is malformed".into());
+                    };
+                    let value = eval(value, env)?;
+                    if !matches!(value, Value::ExceptionInfo(_)) {
+                        return Err("throw expects an Exception value created by ex".into());
+                    }
+                    Err(thrown_error_at(
+                        value,
+                        exception_site_at(*line as usize, *column as usize),
+                    ))
+                }
                 Form::Symbol(n) if n == "throw" => {
                     if fs.len() != 2 {
                         return Err("throw expects one value".into());
                     }
                     let value = eval(&fs[1], env)?;
+                    if !matches!(value, Value::ExceptionInfo(_)) {
+                        return Err("throw expects an Exception value created by ex".into());
+                    }
                     Err(thrown_error(value))
                 }
                 Form::Symbol(n) if n == "try" => {
@@ -833,18 +807,41 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if let Err(ref error) = result {
                         for parts in catch_forms {
                             if parts.len() < 3 {
-                                return Err("catch expects a class, name, and body".into());
+                                return Err("catch expects a selector, name, and body".into());
                             }
-                            let (class, binding_index, body_index) = match parts.as_slice() {
-                                [_, Form::Symbol(name), ..] if parts.len() == 3 => {
-                                    ("Exception", 1, 2)
+                            let (selector, binding_index, body_index) = match parts.as_slice() {
+                                [_, Form::Symbol(name), ..]
+                                    if name != "Exception" && name != "Throwable" =>
+                                {
+                                    ("Exception".to_owned(), 1, 2)
                                 }
-                                [_, Form::Symbol(class), Form::Symbol(_), ..] => {
-                                    (class.as_str(), 2, 3)
+                                [_, Form::Symbol(class), Form::Symbol(_), ..]
+                                    if class == "Exception" || class == "Throwable" =>
+                                {
+                                    (class.clone(), 2, 3)
                                 }
-                                _ => return Err("catch expects a class, name, and body".into()),
+                                [_, Form::Keyword(code), Form::Symbol(_), ..]
+                                    if code.contains('/') =>
+                                {
+                                    (format!(":{code}"), 2, 3)
+                                }
+                                [_, Form::Vector(codes), Form::Symbol(_), ..]
+                                    if !codes.is_empty()
+                                        && codes.iter().all(|code| matches!(code, Form::Keyword(name) if name.contains('/'))) =>
+                                {
+                                    let selectors = codes
+                                        .iter()
+                                        .map(|code| match code {
+                                            Form::Keyword(name) => format!(":{name}"),
+                                            _ => unreachable!(),
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join(",");
+                                    (format!("[{selectors}]"), 2, 3)
+                                }
+                                _ => return Err("catch selector must be a namespaced keyword, a non-empty vector of namespaced keywords, or omitted".into()),
                             };
-                            if !catch_matches(error, class) {
+                            if !catch_matches(error, &selector) {
                                 continue;
                             }
                             let name = match &parts[binding_index] {
@@ -1617,14 +1614,16 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 Form::Symbol(n)
                     if resolve_macro(n).is_none()
                         && !structural_native_dispatch_active(n)
-                        && binding_var(env, n).is_some_and(|var| {
-                            ((binding_is_local(&var)
-                                && (!cfg!(feature = "bytecode-vm")
-                                    || var.origin() != VarOrigin::RuntimePrimitive))
-                                || var.origin() == VarOrigin::RustLibrary
-                                || binding_is_hal_alias(n, &var))
-                                && matches!(var.deref_value(), Value::Function(_))
-                        }) =>
+                        && (matches!(env.get(n), Some(Value::Function(_)))
+                            || binding_var(env, n).is_some_and(|var| {
+                                ((binding_is_local(&var)
+                                    && (!cfg!(feature = "bytecode-vm")
+                                        || var.origin() != VarOrigin::RuntimePrimitive))
+                                    || var.origin() == VarOrigin::RustLibrary
+                                    || binding_is_native_alias(n, &var)
+                                    || binding_is_hal_alias(n, &var))
+                                    && matches!(var.deref_value(), Value::Function(_))
+                            })) =>
                 {
                     let function = binding_value(env, n).expect("function binding was checked");
                     let arguments = fs[1..]
@@ -1668,65 +1667,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "uuid?" => false,
                         _ => unreachable!(),
                     }))
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Host/") => {
-                    native_host_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Runtime/") => {
-                    native_runtime_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Package/") => {
-                    native_package_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Test/") => {
-                    native_test_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.RegExp/") => {
-                    native_regex_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Document/") => {
-                    let arguments = fs[1..]
-                        .iter()
-                        .map(|form| eval(form, env))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    document_operation(n, arguments)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Crypto/") => {
-                    let arguments = fs[1..]
-                        .iter()
-                        .map(|form| eval(form, env))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    native_crypto::operation(
-                        n.strip_prefix("std.native.Crypto/").unwrap_or(n),
-                        arguments,
-                    )
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Kernel/") => {
-                    let operation = n.strip_prefix("std.native.Kernel/").unwrap_or(n);
-                    let arguments = fs[1..]
-                        .iter()
-                        .map(|form| eval(form, env))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    kernel_provider(operation)?(operation.to_owned(), arguments)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Sandbox/") => {
-                    let method = n.strip_prefix("std.native.Sandbox/").unwrap_or(n);
-                    let operation = format!("sandbox-{method}");
-                    let arguments = fs[1..]
-                        .iter()
-                        .map(|form| eval(form, env))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    kernel_provider(&operation)?(operation, arguments)
-                }
-                Form::Symbol(n)
-                    if n.starts_with("std.native.OS/") || n.starts_with("std.native.Process/") =>
-                {
-                    os_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n)
-                    if n.starts_with("std.native.Arr/") || n.starts_with("std.native.Obj/") =>
-                {
-                    native_mutable_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if n == "promise/new" => {
                     if fs.len() != 2 {
@@ -1877,47 +1817,11 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     protocol_namespaced_namespace(&[eval(&fs[1], env)?])
                 }
-                Form::Symbol(n) if n == "select-keys" => {
-                    if fs.len() != 3 {
-                        return Err("select-keys expects a map and keys".into());
-                    }
-                    let source = eval(&fs[1], env)?;
-                    let entries = map_entries(&source)
-                        .ok_or_else(|| "select-keys expects a map".to_string())?;
-                    let keys = iterator_values(eval(&fs[2], env)?)?;
-                    let selected = keys.into_iter().filter_map(|key| {
-                        entries
-                            .iter()
-                            .find(|(candidate, _)| candidate == &key)
-                            .map(|(_, value)| (key, value.clone()))
-                    });
-                    Ok(Value::OrderedMap(Box::new(POrderedMap::from_iter(
-                        selected,
-                    ))))
-                }
                 Form::Symbol(n) if ["list", "vector", "pair", "tup"].contains(&n.as_str()) => {
                     eval_sequential_constructor(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n == "vec" => {
-                    if fs.len() != 2 {
-                        return Err("vec expects one argument".into());
-                    }
-                    let value = eval(&fs[1], env)?;
-                    Ok(match iterator_to_vec(value) {
-                        Ok(values) => Value::Vector(PVector::from_iter(values)),
-                        Err(error) => return Err(error),
-                    })
-                }
                 Form::Symbol(n) if ["hash-map", "hash-set"].contains(&n.as_str()) => {
                     eval_collection_constructor(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n == "set" => {
-                    if fs.len() != 2 {
-                        return Err("set expects one argument".into());
-                    }
-                    Ok(Value::Set(
-                        unique_values(iterator_values(eval(&fs[1], env)?)?).into(),
-                    ))
                 }
                 Form::Symbol(n) if n == "array" => {
                     let values = fs[1..]
@@ -1967,8 +1871,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "socket/receive-stream",
                         "socket/duplex",
                     ]
-                    .contains(&n.as_str())
-                        || n.starts_with("std.native.Socket/") =>
+                    .contains(&n.as_str()) =>
                 {
                     socket_operation(n, &fs[1..], env)
                 }
@@ -2016,9 +1919,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 {
                     file_operation(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n.starts_with("std.native.File/") => {
-                    file_operation(n, &fs[1..], env)
-                }
                 Form::Symbol(n) if n == "str" => {
                     if fs.len() == 1 {
                         return Ok(Value::String(String::new()));
@@ -2046,11 +1946,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     Ok(Value::String(eval(&fs[1], env)?.display()))
                 }
-                Form::Symbol(n)
-                    if n == "capture"
-                        || n == "Printer/capture"
-                        || n == "std.native.Printer/capture" =>
-                {
+                Form::Symbol(n) if n == "capture" || n == "Printer/capture" => {
                     if fs.len() != 2 {
                         return Err("Printer/capture expects one callable".into());
                     }
@@ -2065,7 +1961,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     });
                     result.map(|_| Value::String(output))
                 }
-                Form::Symbol(n) if n == "p" || n == "std.native.Printer/p" => {
+                Form::Symbol(n) if n == "p" => {
                     let values = fs[1..]
                         .iter()
                         .map(|form| eval(form, env))
@@ -2083,7 +1979,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     printer_write(&text)?;
                     Ok(Value::Nil)
                 }
-                Form::Symbol(n) if n == "println" || n == "std.native.Printer/println" => {
+                Form::Symbol(n) if n == "println" => {
                     let values = fs[1..]
                         .iter()
                         .map(|form| eval(form, env))
@@ -2744,45 +2640,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 {
                     bit_operation(n, &fs[1..], env)
                 }
-                Form::Symbol(n) if n.starts_with("std.native.Base/") => {
-                    let values = fs[1..]
-                        .iter()
-                        .map(|form| eval(form, env))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    native_base_values(n, &values)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Schema/") => {
-                    native_schema_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Algo/") => {
-                    native_algo_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n)
-                    if n.starts_with("std.native.Bits/")
-                        && ["and", "or", "xor", "not", "shift-left", "shift-right"]
-                            .contains(&n.trim_start_matches("std.native.Bits/")) =>
-                {
-                    bit_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n)
-                    if n.starts_with("std.native.Num/")
-                        && ["long", "double", "parse-long", "parse-double"]
-                            .contains(&n.trim_start_matches("std.native.Num/")) =>
-                {
-                    number_conversion(n, &fs[1..], env)
-                }
-                Form::Symbol(n)
-                    if n.starts_with("std.native.Maths/")
-                        && [
-                            "abs", "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh",
-                            "ceil", "cos", "cosh", "exp", "floor", "pow", "sin", "sinh", "sqrt",
-                            "tan", "tanh",
-                        ]
-                        .contains(&n.trim_start_matches("std.native.Maths/")) =>
-                {
-                    math_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n == "std.native.Edn/read" || n == "read-string" => {
+                Form::Symbol(n) if n == "read-string" => {
                     if fs.len() != 2 {
                         return Err(format!("{n} expects one string"));
                     }
@@ -2790,36 +2648,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         Value::String(source) => read_edn(&source),
                         _ => Err(format!("{n} expects a string")),
                     }
-                }
-                Form::Symbol(n) if n == "std.native.Edn/write" => {
-                    if fs.len() != 2 {
-                        return Err("std.native.Edn/write expects one value".into());
-                    }
-                    Ok(Value::String(eval(&fs[1], env)?.display()))
-                }
-                Form::Symbol(n) if n == "std.native.Edn/pretty" => {
-                    if fs.len() != 3 {
-                        return Err("std.native.Edn/pretty expects a value and options map".into());
-                    }
-                    let value = eval(&fs[1], env)?;
-                    let options = eval(&fs[2], env)?;
-                    if map_entries(&options).is_none() {
-                        return Err("edn/pretty expects an options map".into());
-                    }
-                    Ok(Value::String(value.display()))
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Result/") => {
-                    native_result_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n) if n.starts_with("std.native.Stream/") => {
-                    native_stream_operation(n, &fs[1..], env)
-                }
-                Form::Symbol(n)
-                    if n.starts_with("std.native.Error/")
-                        && ["new", "message", "class"]
-                            .contains(&n.trim_start_matches("std.native.Error/")) =>
-                {
-                    native_error_operation(n, &fs[1..], env)
                 }
                 Form::Symbol(n) if ["inc", "dec"].contains(&n.as_str()) => {
                     if fs.len() != 2 {
@@ -2969,82 +2797,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         }
                     }
                     Ok(Value::Bool(n.contains("every?")))
-                }
-                Form::Symbol(n) if n == "reduce" => {
-                    if fs.len() != 3 && fs.len() != 4 {
-                        return Err(
-                            "reduce expects a function, optional initial value, and collection"
-                                .into(),
-                        );
-                    }
-                    let function = eval(&fs[1], env)?;
-                    let initial = if fs.len() == 4 {
-                        Some(eval(&fs[2], env)?)
-                    } else {
-                        None
-                    };
-                    let iterator = make_iterator(eval(&fs[fs.len() - 1], env)?)?;
-                    let result = (|| {
-                        let mut accumulator = match initial {
-                            Some(value) => value,
-                            None => match iterator_try_next(&iterator)? {
-                                Some(value) => value,
-                                None => return call_value(function.clone(), Vec::new()),
-                            },
-                        };
-                        while let Some(value) = iterator_try_next(&iterator)? {
-                            accumulator = call_value(function.clone(), vec![accumulator, value])?;
-                            if is_reduced_value(&accumulator) {
-                                return Ok(unreduced_value(accumulator));
-                            }
-                        }
-                        Ok(accumulator)
-                    })();
-                    let close = iterator_close(&iterator);
-                    match result {
-                        Err(error) => {
-                            let _ = close;
-                            Err(error)
-                        }
-                        Ok(value) => {
-                            close?;
-                            Ok(value)
-                        }
-                    }
-                }
-                Form::Symbol(n) if n == "reduce-kv" => {
-                    if fs.len() != 4 {
-                        return Err("reduce-kv expects a function, initial value, and map".into());
-                    }
-                    let function = eval(&fs[1], env)?;
-                    let mut result = eval(&fs[2], env)?;
-                    let source = eval(&fs[3], env)?;
-                    if map_entries(&source).is_none() {
-                        return Err("reduce-kv expects a map".into());
-                    }
-                    let iterator = make_iterator(source)?;
-                    let reduction = (|| {
-                        while let Some(entry) = iterator_try_next(&iterator)? {
-                            let (key, value) = pair_parts(&entry)
-                                .ok_or_else(|| "reduce-kv expects map entries".to_string())?;
-                            result = call_value(function.clone(), vec![result, key, value])?;
-                            if is_reduced_value(&result) {
-                                return Ok(unreduced_value(result));
-                            }
-                        }
-                        Ok(result)
-                    })();
-                    let close = iterator_close(&iterator);
-                    match reduction {
-                        Err(error) => {
-                            let _ = close;
-                            Err(error)
-                        }
-                        Ok(value) => {
-                            close?;
-                            Ok(value)
-                        }
-                    }
                 }
                 Form::Symbol(n) if n == "constantly" => {
                     if fs.len() != 2 {
@@ -3278,7 +3030,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "char?",
                         "number?",
                         "integer?",
-                        "decimal?",
                         "long?",
                         "double?",
                         "boolean?",
@@ -3328,7 +3079,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         "char?" => matches!(value, Value::Character(_)),
                         "number?" => numeric::is_numeric_value(&value),
                         "integer?" => numeric::is_integer_value(&value),
-                        "decimal?" => matches!(value, Value::Decimal(_)),
                         "long?" => numeric::to_i64_exact(&value).is_ok(),
                         "double?" => matches!(value, Value::Float(_)),
                         "boolean?" => matches!(value, Value::Bool(_)),
@@ -3406,21 +3156,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         .map(|form| eval(form, env))
                         .collect::<Result<Vec<_>, _>>()?;
                     collection_dissoc(&value, &keys)
-                }
-                Form::Symbol(n) if n == "merge" => {
-                    let mut result = Value::Map(PMap::new());
-                    for form in &fs[1..] {
-                        let value = eval(form, env)?;
-                        if matches!(value, Value::Nil) {
-                            continue;
-                        }
-                        let entries =
-                            map_entries(&value).ok_or_else(|| "merge expects maps".to_string())?;
-                        for (key, value) in entries {
-                            result = collection_assoc(&result, &key, value)?;
-                        }
-                    }
-                    Ok(result)
                 }
                 Form::Symbol(n) if n == "get-in" => {
                     if fs.len() != 3 {

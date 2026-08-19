@@ -287,7 +287,7 @@ public interface Parser {
       }
       if (s.matches("[-+]?[0-9].*[NM]")) {
         throw new Ex.Unsupported(
-            "Legacy numeric suffixes N and M are not supported: " + s);
+            "Invalid number: legacy numeric suffixes N and M are not supported: " + s);
       }
       Object n = matchNumber(s);
       if (n == null) throw new NumberFormatException("Invalid number: " + s);
@@ -368,7 +368,7 @@ public interface Parser {
             && value.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) <= 0) {
           return Num.num(value.longValue());
         }
-        return value;
+        throw new NumberFormatException("Invalid number: " + s);
       }
       m = floatPat.matcher(s);
       if (m.matches() && (s.indexOf('.') >= 0 || s.indexOf('e') >= 0 || s.indexOf('E') >= 0)) {

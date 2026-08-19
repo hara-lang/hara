@@ -11,7 +11,9 @@ import hara.lang.data.TaggedLiteral;
 import hara.kernel.builtin.BuiltinStruct;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.ILookup;
+import hara.lang.protocol.IExInfo;
 import hara.lang.data.types.ILinearType;
+import hara.lang.data.types.IMapType;
 import hara.truffle.bytecode.HbcProgram;
 import hara.truffle.bytecode.HbcProgram.Function;
 import hara.truffle.bytecode.HbcProgram.Instruction;
@@ -347,7 +349,22 @@ public final class HbcMachine {
           ip = caller.returnIp;
           continue;
         }
-        case THROW -> throw new HbcThrown(pop(stack));
+        case THROW -> {
+          Object error = pop(stack);
+          if (!(error instanceof IExInfo)) {
+            throw new HaraException("throw expects an Exception value created by ex");
+          }
+          if (error instanceof hara.lang.base.Ex.Info info) {
+            HbcProgram.Position position = function.sourceMap().get(ip);
+            info.recordThrow(
+                new hara.lang.base.Ex.Info.Site(
+                    program.namespace(),
+                    null,
+                    position == null ? 0 : position.line(),
+                    position == null ? 0 : position.column()));
+          }
+          throw new HbcThrown(error);
+        }
         case RETHROW -> throw new HbcThrown(pop(stack));
         }
       } catch (RuntimeException failure) {
@@ -483,6 +500,19 @@ public final class HbcMachine {
   private static boolean catchMatches(RuntimeException failure, String className) {
     if ("Exception".equals(className) || "Throwable".equals(className)) return true;
     if (failure instanceof HbcThrown thrown) {
+      if (className.startsWith(":") || className.startsWith("[")) {
+        Object data = thrown.value instanceof IExInfo info ? info.getData() : null;
+        Object code = data instanceof IMapType map
+            ? map.lookup(Keyword.create("ex", "code"))
+            : null;
+        if (className.startsWith("[") && className.endsWith("]")) {
+          for (String selector : className.substring(1, className.length() - 1).split(",")) {
+            if (Keyword.create(selector.substring(1)).equals(code)) return true;
+          }
+          return false;
+        }
+        return Keyword.create(className.substring(1)).equals(code);
+      }
       String type =
           thrown.value instanceof HaraStruct struct
               ? struct.type().name()

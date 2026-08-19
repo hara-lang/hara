@@ -10,9 +10,7 @@ fn main() {
 
 fn run() -> Result<(), String> {
     validate_embedded_upstream()?;
-    let command = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "check".into());
+    let command = std::env::args().nth(1).unwrap_or_else(|| "check".into());
     let report = run_embedded()?;
     match command.as_str() {
         "check" => {
@@ -23,10 +21,7 @@ fn run() -> Result<(), String> {
                     report.failed_checks()
                 ));
             }
-            println!(
-                "code.vm conformance passed: {} cases",
-                report.cases.len()
-            );
+            println!("code.vm conformance passed: {} cases", report.cases.len());
             Ok(())
         }
         "report" => {

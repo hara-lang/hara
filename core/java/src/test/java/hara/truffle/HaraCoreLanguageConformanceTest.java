@@ -18,22 +18,31 @@ import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 import org.junit.Test;
 
-/** Executes the versioned JVM L0 conformance corpus. */
-public class HaraL0ConformanceTest {
+/** Executes the versioned JVM core-language conformance corpus. */
+public class HaraCoreLanguageConformanceTest {
   private static Keyword key(String name) {
     return Keyword.create(null, name);
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   @Test
-  public void executesEveryJvmL0CorpusCase() throws Exception {
-    String source = Files.readString(Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn"));
+  public void executesEveryJvmCoreLanguageCorpusCase() throws Exception {
+    String registry = System.getenv().getOrDefault("HARA_SPECS_REGISTRY", "../hara-specs-registry");
+    String source =
+        Files.readString(
+            Path.of(registry, "01-lang/001-language/draft/conformance/core.edn"));
     IMapType manifest = (IMapType) Parser.LispReader.readString(source, null);
     ILinearType<?> cases = (ILinearType<?>) manifest.lookup(key("cases"));
     assertTrue(cases.count() > 0);
+    String casePrefix = System.getenv("HARA_CORE_CASE_PREFIX");
     for (Object item : cases) {
       IMapType testCase = (IMapType) item;
-      String id = ((Keyword) testCase.lookup(key("id"))).getName();
+      Keyword idKeyword = (Keyword) testCase.lookup(key("id"));
+      String id =
+          idKeyword.getNamespace() == null
+              ? idKeyword.getName()
+              : idKeyword.getNamespace() + "/" + idKeyword.getName();
+      if (casePrefix != null && !id.startsWith(casePrefix)) continue;
       String className = ((Keyword) testCase.lookup(key("class"))).getName();
       String form = (String) testCase.lookup(key("source"));
       IMapType expected = (IMapType) testCase.lookup(key("expect"));
@@ -88,7 +97,12 @@ public class HaraL0ConformanceTest {
         Object message = expectedMessage(expected);
         if (message != null) {
           assertTrue(
-              id + " should contain its specified error",
+              id
+                  + " should contain its specified error `"
+                  + message
+                  + "`, actual: `"
+                  + error.getMessage()
+                  + "`",
               error.getMessage().contains(message.toString()));
         }
       }
@@ -102,8 +116,12 @@ public class HaraL0ConformanceTest {
   private void assertValueCase(String id, String form, String setup, IMapType expected) {
     try (Context context = context()) {
       if (setup != null) context.eval(HaraLanguage.ID, setup);
-      Value actual = context.eval(HaraLanguage.ID, form);
-      assertExpectedValue(id, actual, expected.lookup(key("value")));
+      try {
+        Value actual = context.eval(HaraLanguage.ID, form);
+        assertExpectedValue(id, actual, expected.lookup(key("value")));
+      } catch (PolyglotException error) {
+        throw new AssertionError(id + " unexpectedly failed: " + error.getMessage(), error);
+      }
     }
   }
 
@@ -118,6 +136,8 @@ public class HaraL0ConformanceTest {
       assertEquals(id, expected, actual.as(BigInteger.class));
     } else if (expected instanceof BigDecimal) {
       assertEquals(id, expected, actual.as(BigDecimal.class));
+    } else if (expected instanceof Keyword) {
+      assertEquals(id, G.display(expected), actual.toString());
     } else if (expected instanceof Number) {
       assertEquals(id, ((Number) expected).longValue(), actual.asLong());
     } else {

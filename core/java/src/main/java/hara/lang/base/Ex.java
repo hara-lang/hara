@@ -4,6 +4,8 @@ import hara.lang.protocol.IExInfo;
 import hara.lang.protocol.IMetadata;
 
 import java.util.NoSuchElementException;
+import java.util.ArrayList;
+import java.util.List;
 
 public interface Ex {
 
@@ -40,6 +42,10 @@ public interface Ex {
   @SuppressWarnings("serial")
   public class Info extends RuntimeException implements IExInfo {
     public final IMetadata data;
+    private Site createdAt;
+    private final ArrayList<Site> throwsAt = new ArrayList<>();
+
+    public record Site(String namespace, String resource, long line, long column) {}
 
     public Info(String s, IMetadata data) {
       this(s, data, null);
@@ -57,6 +63,20 @@ public interface Ex {
     @Override
     public IMetadata getData() {
       return data;
+    }
+
+    public synchronized void recordThrow(Site site) {
+      if (site == null) return;
+      if (createdAt == null) createdAt = site;
+      throwsAt.add(site);
+    }
+
+    public synchronized Site createdAt() {
+      return createdAt;
+    }
+
+    public synchronized List<Site> throwsAt() {
+      return List.copyOf(throwsAt);
     }
 
     @Override

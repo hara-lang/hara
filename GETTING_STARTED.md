@@ -105,7 +105,7 @@ documentation. See the [Hara website docs](../../website/hara-www/docs/) and the
 
 ```shell
 mvn -q -f core/java/pom.xml test
-mvn -q -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraL0ConformanceTest test
+mvn -q -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraCoreLanguageConformanceTest test
 ```
 
 For contributor workflows, test slices, native-image builds, and troubleshooting, read the

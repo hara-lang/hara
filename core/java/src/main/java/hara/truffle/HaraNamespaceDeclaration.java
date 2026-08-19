@@ -15,7 +15,7 @@ import java.util.Set;
 /** Fully validated, immutable interpretation of an ns declaration. */
 final class HaraNamespaceDeclaration {
   private static final Set<String> INTRINSIC_LIBRARIES =
-      Set.of("string", "bytes", "promise", "coroutine");
+      Set.of("string", "bytes", "promise", "coroutine", "pretty");
 
   final Symbol name;
   final boolean blank;

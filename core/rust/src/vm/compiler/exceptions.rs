@@ -71,11 +71,12 @@ impl Compiler {
                 finally_body.extend_from_slice(&clause_children[1..]);
                 continue;
             }
-            if clause_children.len() == 3 {
+            if matches!(clause_children[1].form, Form::Symbol(name) if name != "Exception" && name != "Throwable")
+            {
                 let Form::Symbol(name) = clause_children[1].form else {
                     return Err(CompileError::new(
                         CompileErrorKind::Arity,
-                        "catch expects class, name, and body",
+                        "catch name must be symbol",
                         Some(clause.span.start),
                     ));
                 };
@@ -86,12 +87,32 @@ impl Compiler {
                     clause_children[2..].to_vec(),
                 ));
             } else if clause_children.len() >= 4 {
-                let Form::Symbol(class) = clause_children[1].form else {
-                    return Err(CompileError::new(
-                        CompileErrorKind::Arity,
-                        "catch class must be symbol",
-                        Some(clause_children[1].span.start),
-                    ));
+                let selector = match clause_children[1].form {
+                    Form::Symbol(class) if class == "Exception" || class == "Throwable" => {
+                        class.clone()
+                    }
+                    Form::Keyword(code) if code.contains('/') => format!(":{code}"),
+                    Form::Vector(codes)
+                        if !codes.is_empty()
+                            && codes.iter().all(|code| matches!(code, Form::Keyword(name) if name.contains('/'))) =>
+                    {
+                        let selectors = codes
+                            .iter()
+                            .map(|code| match code {
+                                Form::Keyword(name) => format!(":{name}"),
+                                _ => unreachable!(),
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!("[{selectors}]")
+                    }
+                    _ => {
+                        return Err(CompileError::new(
+                            CompileErrorKind::Arity,
+                            "catch selector must be a namespaced keyword, a non-empty vector of namespaced keywords, or omitted",
+                            Some(clause_children[1].span.start),
+                        ))
+                    }
                 };
                 let Form::Symbol(name) = clause_children[2].form else {
                     return Err(CompileError::new(
@@ -101,7 +122,7 @@ impl Compiler {
                     ));
                 };
                 catches.push((
-                    class.clone(),
+                    selector,
                     name.clone(),
                     clause_children[2].span.start,
                     clause_children[3..].to_vec(),

@@ -477,6 +477,19 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
     for (local, module) in config.native_imports() {
         destination.import(local, module.clone());
     }
+    for (_, default_alias) in crate::kernel::generated::foundation_library_aliases() {
+        destination.unalias(default_alias);
+    }
+    for (alias, target) in config.aliases() {
+        if !target.starts_with("std.foundation.") {
+            continue;
+        }
+        if let Some(namespace) = registry.find(&target) {
+            destination.alias(alias, namespace);
+        } else {
+            destination.lazy_alias(alias, target);
+        }
+    }
     let omitted = match config.exposed_foundation() {
         Some(exposed) => destination
             .mappings()
@@ -514,8 +527,7 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
             {
                 eval_require_specs(&registry, env, &clause_forms[1..])?;
             }
-            Form::List(clause_forms)
-                if matches!(clause_forms.first(), Some(Form::Keyword(k)) if k == "use") =>
+            Form::List(clause_forms) if matches!(clause_forms.first(), Some(Form::Keyword(k)) if k == "use") =>
             {
                 let specs = clause_forms[1..]
                     .iter()
@@ -546,7 +558,24 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
             _ => return Err("unsupported ns clause in evaluator".into()),
         }
     }
+    refresh_namespace_environment(&registry, env);
     Ok(Value::Nil)
+}
+
+/// Applies a top-level namespace declaration before bytecode compilation.
+///
+/// Namespace selection and configuration affect how every later global is
+/// resolved, so the bytecode compiler performs this analysis-time step before
+/// it creates its compilation context. The emitted form still evaluates to
+/// nil; only the namespace registry is prepared here.
+pub(crate) fn prepare_namespace_form(form: &Form) -> Result<(), String> {
+    let Form::List(forms) = form_without_metadata(form) else {
+        return Err("namespace declaration must be a list".into());
+    };
+    if !matches!(forms.first(), Some(Form::Symbol(head)) if head == "ns" || head == "ns+") {
+        return Err("namespace declaration must start with ns or ns+".into());
+    }
+    eval_namespace_form(forms, &mut HashMap::new()).map(|_| ())
 }
 
 #[inline(never)]

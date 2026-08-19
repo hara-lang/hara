@@ -30,6 +30,28 @@ use std::rc::Rc;
 thread_local! {
     static ACTIVE_EVALUATION_INTERRUPT: RefCell<Option<Rc<dyn Fn() -> Option<String>>>> =
         const { RefCell::new(None) };
+    static ACTIVE_EXCEPTION_SITE: RefCell<Option<ExceptionSite>> = const { RefCell::new(None) };
+}
+
+pub(crate) fn with_exception_site<R>(site: ExceptionSite, operation: impl FnOnce() -> R) -> R {
+    ACTIVE_EXCEPTION_SITE.with(|active| {
+        let previous = active.replace(Some(site));
+        let result = operation();
+        active.replace(previous);
+        result
+    })
+}
+
+pub(crate) fn current_exception_site() -> Option<ExceptionSite> {
+    ACTIVE_EXCEPTION_SITE.with(|active| active.borrow().clone())
+}
+
+pub(crate) fn exception_site_at(line: usize, column: usize) -> Option<ExceptionSite> {
+    current_exception_site().map(|mut site| {
+        site.line = line;
+        site.column = column;
+        site
+    })
 }
 
 pub(crate) fn with_evaluation_interrupt<R>(

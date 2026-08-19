@@ -1227,27 +1227,70 @@ final class HaraAnalyzer {
     }
     HaraExpressionNode body = analyzeForms(bodyForms.toArray());
     HaraNodes.Try.CatchClause[] catches = new HaraNodes.Try.CatchClause[catchForms.size()];
+    boolean sawUnconditionalCatch = false;
     for (int i = 0; i < catchForms.size(); i++) {
       List<?> catchForm = catchForms.get(i);
-      if (catchForm.count() < 4
-          || !(catchForm.nth(1) instanceof Symbol)
-          || ((Symbol) catchForm.nth(1)).getNamespace() != null
-          || !(catchForm.nth(2) instanceof Symbol)) {
-        throw error("catch expects an unqualified class, binding, and body", catchForm);
+      if (sawUnconditionalCatch) {
+        throw error("unconditional catch must be the last catch clause", catchForm);
       }
-      int catchSlot = frames.addSlot(FrameSlotKind.Object, catchForm.nth(2), null);
+      if (catchForm.count() < 3) {
+        throw error("catch expects a binding and body, optionally preceded by an error-code selector", catchForm);
+      }
+      Object selector = catchForm.nth(1);
+      Symbol binding;
+      int bodyStart;
+      if (selector instanceof Symbol symbol
+          && symbol.getNamespace() == null
+          && !"Exception".equals(symbol.getName())
+          && !"Throwable".equals(symbol.getName())) {
+        selector = null;
+        binding = symbol;
+        bodyStart = 2;
+        sawUnconditionalCatch = true;
+      } else {
+        if (catchForm.count() < 4 || !(catchForm.nth(2) instanceof Symbol symbol)
+            || symbol.getNamespace() != null) {
+          throw error("selected catch expects a selector, unqualified binding, and body", catchForm);
+        }
+        binding = symbol;
+        bodyStart = 3;
+        validateCatchSelector(selector, catchForm);
+      }
+      int catchSlot = frames.addSlot(FrameSlotKind.Object, binding, null);
       Map<Symbol, Integer> catchLocals = new HashMap<>(locals);
-      catchLocals.put((Symbol) catchForm.nth(2), catchSlot);
+      catchLocals.put(binding, catchSlot);
       HaraAnalyzer catchAnalyzer = subScope(catchLocals, recurTarget);
       catches[i] =
           new HaraNodes.Try.CatchClause(
-              (Symbol) catchForm.nth(1), catchSlot, catchAnalyzer.analyzeDo(catchForm, 3));
+              selector, catchSlot, catchAnalyzer.analyzeDo(catchForm, bodyStart));
     }
     HaraExpressionNode finallyBody = null;
     if (finallyForm != null) {
       finallyBody = analyzeDo(finallyForm, 1);
     }
     return new HaraNodes.Try(body, catches, finallyBody);
+  }
+
+  private void validateCatchSelector(Object selector, Object form) {
+    if (selector instanceof Symbol symbol
+        && symbol.getNamespace() == null
+        && ("Exception".equals(symbol.getName()) || "Throwable".equals(symbol.getName()))) {
+      return;
+    }
+    if (selector instanceof Keyword keyword) {
+      if (keyword.getNamespace() != null) return;
+      throw error("catch error code must be a namespaced keyword", form);
+    }
+    if (selector instanceof ILinearType selectors) {
+      if (selectors.count() == 0) throw error("catch error code vector must not be empty", form);
+      for (Object candidate : selectors) {
+        if (!(candidate instanceof Keyword keyword) || keyword.getNamespace() == null) {
+          throw error("catch error code vector must contain namespaced keywords", form);
+        }
+      }
+      return;
+    }
+    throw error("catch selector must be a namespaced keyword or non-empty vector of namespaced keywords", form);
   }
 
   private void validateTailRecurs(Object form, boolean tail) {

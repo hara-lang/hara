@@ -53,12 +53,16 @@ formatting, and parsing behavior belongs in portable HAL libraries.
 
 ## Base surface
 
-Base includes constructors, primitive predicates, `satisfies?`, `type`, and
-`instance?`. `tuple` accepts zero through eight values. `pair?` is true only for
-the two-element tuple representation. `vec` and `set` convert an iterable into
-their persistent collection types. `not-nil?` is the exact complement of
-`nil?`. `reduce-in` remains a portable Foundation algorithm because its protocol
-composition is not a primitive runtime operation.
+Base includes representation-level constructors, primitive predicates,
+`apply`, truth coercion, comparison, `satisfies?`, `type`, and `instance?`.
+`tuple` accepts zero through eight values. `vec` and `set` use bulk native
+construction and return an existing vector or persistent set unchanged. Derived
+operations such as `pair`, `pair?`, `unreduced`, `not-nil?`, `false?`, `true?`,
+`fn?`, `map-entry?`, `reduce`, `reduce-kv`, `merge`, and `select-keys` are
+canonical HAL source. `reduce-in` remains a portable Foundation algorithm
+because its protocol composition is not a primitive runtime operation;
+`reduce-kv` and `select-keys` use it so mutable-capable destinations retain the
+fast construction path.
 
 ## Runtime type values
 
@@ -132,7 +136,8 @@ events over a Duplex.
 
 ## Schema values and Var contracts
 
-`schema` compiles schema data into an immutable `SchemaType`. It accepts:
+`schema` is a transparent Foundation wrapper over `Schema/compile`, which
+compiles schema data into an immutable `SchemaType`. It accepts:
 
 - raw shorthand data such as `[:map [:name :str]]` or `[:int]`;
 - canonical normalized data such as `{:kind :map :fields [...]}`;
@@ -148,7 +153,7 @@ that Var as its origin; origin is excluded from equality and hashing.
 value is not schema data. In particular, `schema` never reads a Var's `:schema`
 metadata.
 
-`schema-of` is the contract lookup operation. It accepts only a Var reference:
+`schema-of` transparently wraps `Schema/of`, the contract lookup operation. It accepts only a Var reference:
 `(schema-of #'customer-name)` returns the compiled contract snapshot or `nil`.
 Passing the function value is an error. Contracts belong to Vars and functions
 do not inherit them.

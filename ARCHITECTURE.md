@@ -10,7 +10,7 @@ the current implementation target.
           |
           v
 +-------------------+       +----------------------+
-| reader + Truffle AST| ----> | language-neutral L0  |
+| reader + Truffle AST| ----> | core language       |
 +---------+---------+       | protocols / values   |
           |                 +----------+-----------+
           v                            |
@@ -33,7 +33,7 @@ the current implementation target.
 ## Runtime layers
 
 1. **Reader and AST** parse Hara forms into Truffle nodes.
-2. **L0 core** evaluates control flow, functions, namespaces, protocols, collections, and promises.
+2. **core language** evaluates control flow, functions, namespaces, protocols, collections, and promises.
 3. **Generated libraries** expose portable operations through qualified names such as
    `bytes/count`, `promise/then`, and `file/read`.
 4. **Capability/provider boundary** supplies host-dependent behavior. Unsupported and denied

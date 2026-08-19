@@ -1,5 +1,6 @@
 package hara.kernel.base;
 
+import hara.kernel.builtin.BuiltinRuntime;
 import hara.lang.data.Symbol;
 import hara.lang.data.types.ILinearType;
 import org.junit.Test;
@@ -140,8 +141,8 @@ public class RTTest {
   public void testHalResourceLoading() {
     RT.Instance<Object> rt = new RT.Instance<>(null, "test");
 
-    assertEquals(42L, rt.eval(rt.readString("(load-resource \"hara/l0-resource.hal\")")));
-    assertNull(rt.eval(rt.readString("(require \"hara/l0-resource.hal\")")));
-    assertEquals(42L, rt.eval(rt.readString("l0-resource-answer")));
+    assertEquals(42L, BuiltinRuntime.loadResource(rt, "hara/core-language-resource.hal"));
+    assertNull(BuiltinRuntime.require(rt, "hara/core-language-resource.hal"));
+    assertEquals(42L, rt.eval(rt.readString("core-language-resource-answer")));
   }
 }

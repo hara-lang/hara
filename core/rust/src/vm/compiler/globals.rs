@@ -246,6 +246,26 @@ impl Compiler {
                 .unwrap_or(false)
     }
 
+    /// Bytecode-native callables still obey namespace referral and alias
+    /// configuration. Without an active registry (the closed-program helper)
+    /// the historical standalone behavior remains available.
+    pub(super) fn visible_bytecode_callable(&self, name: &str) -> bool {
+        if !crate::core::is_bytecode_callable(name) {
+            return false;
+        }
+        crate::core::namespace_registry()
+            .map(|registry| {
+                let current = registry
+                    .find(&self.namespace)
+                    .unwrap_or_else(|| registry.current());
+                registry
+                    .resolve(&crate::lang::data::Symbol::parse(name))
+                    .or_else(|| current.resolve(&crate::lang::data::Symbol::parse(name)))
+                    .is_some()
+            })
+            .unwrap_or(true)
+    }
+
     /// Emits a `GetGlobal` for a visible name.
     pub(super) fn emit_get_global(&mut self, name: &str, span: &Span) -> Result<(), CompileError> {
         let index = self.global_name_constant(name, span)?;

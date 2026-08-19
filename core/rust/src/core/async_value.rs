@@ -286,7 +286,7 @@ fn drive_stream_step(
             Step::Done(result) => {
                 state.0.set(false);
                 match result {
-                    Ok(value) if matches!(*coroutine.state.borrow(), CoroutineState::Dead) => {
+                    Ok(_) if matches!(*coroutine.state.borrow(), CoroutineState::Dead) => {
                         state.1.set(true);
                         output.resolve(Value::Nil);
                     }
@@ -333,58 +333,51 @@ fn drive_stream_step(
     }
 }
 
-fn native_stream_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_stream_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let method = operation
         .strip_prefix("std.native.Stream/")
         .unwrap_or(operation);
     match method {
         "create" => {
-            if !(1..=2).contains(&forms.len()) {
+            if !(1..=2).contains(&values.len()) {
                 return Err("Stream/create expects next and optional close functions".into());
             }
-            let Value::Function(next) = eval(&forms[0], env)? else {
+            let Value::Function(next) = &values[0] else {
                 return Err("Stream/create expects a next function".into());
             };
-            let close = match forms.get(1).map(|form| eval(form, env)).transpose()? {
+            let close = match values.get(1) {
                 None | Some(Value::Nil) => None,
-                Some(Value::Function(close)) => Some(close),
+                Some(Value::Function(close)) => Some(close.clone()),
                 Some(_) => return Err("Stream/create expects a close function or nil".into()),
             };
-            Ok(Value::Stream(Rc::new(RuntimeStream::guest(next, close))))
+            Ok(Value::Stream(Rc::new(RuntimeStream::guest(next.clone(), close))))
         }
         "generate" => {
-            if forms.is_empty() {
+            if values.is_empty() {
                 return Err("Stream/generate expects a function".into());
             }
-            let body = eval(&forms[0], env)?;
+            let body = values[0].clone();
             if !matches!(body, Value::Function(_)) {
                 return Err("Stream/generate expects a function".into());
             }
-            let arguments = forms[1..]
-                .iter()
-                .map(|form| eval(form, env))
-                .collect::<Result<Vec<_>, _>>()?;
+            let arguments = values[1..].to_vec();
             Ok(Value::Stream(Rc::new(RuntimeStream::new(body, arguments))))
         }
         "instance?" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("Stream/instance? expects one value".into());
             }
             Ok(Value::Bool(matches!(
-                eval(&forms[0], env)?,
+                values[0],
                 Value::Stream(_)
             )))
         }
         "next" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("Stream/next expects one stream".into());
             }
-            match eval(&forms[0], env)? {
-                Value::Stream(stream) => Ok(stream_next(&stream)),
+            match &values[0] {
+                Value::Stream(stream) => Ok(stream_next(stream)),
                 _ => Err("Stream/next expects a stream".into()),
             }
         }
@@ -392,9 +385,6 @@ fn native_stream_operation(
     }
 }
 
-fn parse(source: &str) -> Result<Form, String> {
-    crate::kernel::parse(source)
-}
 fn parse_forms(source: &str) -> Result<Vec<Form>, String> {
     crate::kernel::parse_forms(source)
 }

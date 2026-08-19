@@ -3,6 +3,14 @@ fn os_operation(
     forms: &[Form],
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
+    let values = forms
+        .iter()
+        .map(|form| eval(form, env))
+        .collect::<Result<Vec<_>, _>>()?;
+    os_values(operation, values)
+}
+
+fn os_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation.strip_prefix("os/").unwrap_or(operation);
     let operation = operation
         .strip_prefix("std.native.OS/")
@@ -23,19 +31,19 @@ fn os_operation(
     };
     match operation {
         "time-ms" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("os/time-ms expects no arguments".into());
             }
             return Ok(Value::Number(crate::clock::time_ms()));
         }
         "time-ns" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("os/time-ns expects no arguments".into());
             }
             return Ok(Value::Number(crate::clock::time_ns()));
         }
         "platform" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("os/platform expects no arguments".into());
             }
             let platform = if cfg!(target_os = "linux") {
@@ -50,7 +58,7 @@ fn os_operation(
             return Ok(Value::Keyword(platform.into()));
         }
         "arch" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("os/arch expects no arguments".into());
             }
             let arch = match std::env::consts::ARCH {
@@ -60,7 +68,7 @@ fn os_operation(
             return Ok(Value::Keyword(arch.into()));
         }
         "cwd" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("os/cwd expects no arguments".into());
             }
             return std::env::current_dir()
@@ -68,7 +76,7 @@ fn os_operation(
                 .map_err(|error| format!("os/cwd failed: {error}"));
         }
         "env" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("os/env expects no arguments".into());
             }
             return Ok(Value::Map(PMap::from_iter(
@@ -76,19 +84,19 @@ fn os_operation(
             )));
         }
         "getenv" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("os/getenv expects a name".into());
             }
-            let Value::String(name) = eval(&forms[0], env)? else {
+            let Value::String(name) = &values[0] else {
                 return Err("os/getenv expects a string".into());
             };
             return Ok(std::env::var(name).map(Value::String).unwrap_or(Value::Nil));
         }
         "process?" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("os/process? expects one argument".into());
             }
-            let value = eval(&forms[0], env)?;
+            let value = values[0].clone();
             #[cfg(not(target_arch = "wasm32"))]
             return Ok(Value::Bool(crate::native_process::is_process(&value)));
             #[cfg(target_arch = "wasm32")]
@@ -102,10 +110,10 @@ fn os_operation(
     #[cfg(not(target_arch = "wasm32"))]
     match operation {
         "spawn" => {
-            if !(1..=2).contains(&forms.len()) {
+            if !(1..=2).contains(&values.len()) {
                 return Err("os/spawn expects argv and optional options".into());
             }
-            let argv = iterator_values(eval(&forms[0], env)?)?
+            let argv = iterator_values(values[0].clone())?
                 .into_iter()
                 .map(|value| match value {
                     Value::String(value) => Ok(value),
@@ -114,8 +122,8 @@ fn os_operation(
                 .collect::<Result<Vec<_>, _>>()?;
             let mut cwd = None;
             let mut environment = Vec::new();
-            if forms.len() == 2 {
-                let options = eval(&forms[1], env)?;
+            if values.len() == 2 {
+                let options = values[1].clone();
                 for (key, value) in map_entries(&options)
                     .ok_or_else(|| "os/spawn options must be a map".to_owned())?
                 {
@@ -146,10 +154,10 @@ fn os_operation(
         | "process-stderr"
         | "process-wait"
         | "process-kill") => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err(format!("os/{method} expects a process"));
             }
-            let process = eval(&forms[0], env)?;
+            let process = values[0].clone();
             match method {
                 "process-alive?" => crate::native_process::alive(&process).map(Value::Bool),
                 "process-close-input" => {
@@ -169,10 +177,10 @@ fn os_operation(
             }
         }
         method @ ("process-stdout-stream" | "process-stderr-stream") => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err(format!("os/{method} expects a process"));
             }
-            let process = eval(&forms[0], env)?;
+            let process = values[0].clone();
             let kind = if method == "process-stderr-stream" {
                 "stderr"
             } else {
@@ -185,12 +193,12 @@ fn os_operation(
             ))
         }
         "process-write" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("os/process-write expects a process and bytes".into());
             }
-            let process = eval(&forms[0], env)?;
-            let bytes = match eval(&forms[1], env)? {
-                Value::Bytes(value) => value,
+            let process = values[0].clone();
+            let bytes = match &values[1] {
+                Value::Bytes(value) => value.clone(),
                 Value::ByteBuffer(value) => value.borrow().clone(),
                 _ => return Err("os/process-write expects bytes".into()),
             };
@@ -576,23 +584,19 @@ fn native_test_failure_seq(result: &ResultValue) -> Value {
     Value::Vector(PVector::from_iter(leaves))
 }
 
-fn native_test_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_test_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.Test/")
         .unwrap_or(operation);
     match operation {
         "events" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("std.native.Test/events expects no arguments".into());
             }
             Ok(native_test_events())
         }
         "catalog" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("std.native.Test/catalog expects no arguments".into());
             }
             Ok(Value::Map(PMap::from_iter([
@@ -619,24 +623,24 @@ fn native_test_operation(
             ])))
         }
         "config" => {
-            if forms.len() > 1 {
+            if values.len() > 1 {
                 return Err("std.native.Test/config expects optional options".into());
             }
-            let options = if forms.is_empty() {
+            let options = if values.is_empty() {
                 Value::Map(PMap::new())
             } else {
-                eval(&forms[0], env)?
+                values[0].clone()
             };
             native_test_config(native_test_active_runner()?, options)
         }
         "context" => {
-            if forms.len() > 1 {
+            if values.len() > 1 {
                 return Err("std.native.Test/context expects an optional config".into());
             }
-            let config = if forms.is_empty() {
+            let config = if values.is_empty() {
                 native_test_config(native_test_active_runner()?, Value::Map(PMap::new()))?
             } else {
-                let value = eval(&forms[0], env)?;
+                let value = values[0].clone();
                 let Some(runner) = map_value(&value, &Value::Keyword("runner".into())).cloned()
                 else {
                     return Err("std.native.Test/context expects a Test/config map".into());
@@ -658,38 +662,38 @@ fn native_test_operation(
             )))
         }
         "compare" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("std.native.Test/compare expects actual and expected".into());
             }
-            native_test_compare(eval(&forms[0], env)?, eval(&forms[1], env)?)
+            native_test_compare(values[0].clone(), values[1].clone())
         }
         "result" => {
-            if forms.len() != 4 {
+            if values.len() != 4 {
                 return Err(
                     "std.native.Test/result expects name, actual, expected, and comparison Result"
                         .into(),
                 );
             }
-            let name = eval(&forms[0], env)?;
-            let actual = eval(&forms[1], env)?;
-            let expected = eval(&forms[2], env)?;
-            let comparison = eval(&forms[3], env)?;
+            let name = values[0].clone();
+            let actual = values[1].clone();
+            let expected = values[2].clone();
+            let comparison = values[3].clone();
             native_test_result(name, actual, expected, comparison)
         }
         "run" => {
-            if forms.is_empty() || forms.len() > 3 {
+            if values.is_empty() || values.len() > 3 {
                 return Err(
                     "std.native.Test/run expects cases, an optional check function, and an optional lifecycle map".into(),
                 );
             }
-            let cases = eval(&forms[0], env)?;
-            let second = if forms.len() >= 2 {
-                Some(eval(&forms[1], env)?)
+            let cases = values[0].clone();
+            let second = if values.len() >= 2 {
+                Some(values[1].clone())
             } else {
                 None
             };
-            let third = if forms.len() == 3 {
-                Some(eval(&forms[2], env)?)
+            let third = if values.len() == 3 {
+                Some(values[2].clone())
             } else {
                 None
             };
@@ -708,19 +712,19 @@ fn native_test_operation(
             native_test_run(cases, check_function, lifecycle)
         }
         "passed?" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Test/passed? expects one result".into());
             }
-            let result = native_test_require_result(eval(&forms[0], env)?, "passed?")?;
+            let result = native_test_require_result(values[0].clone(), "passed?")?;
             Ok(Value::Bool(
                 result.is_success() && matches!(result.data, Value::Bool(true)),
             ))
         }
         "actual" | "expected" | "failures" | "failure-seq" | "failure-count" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err(format!("std.native.Test/{operation} expects one Result"));
             }
-            let result = native_test_require_result(eval(&forms[0], env)?, operation)?;
+            let result = native_test_require_result(values[0].clone(), operation)?;
             Ok(match operation {
                 "actual" => native_test_detail(&result, "actual"),
                 "expected" => native_test_detail(&result, "expected"),
@@ -734,12 +738,12 @@ fn native_test_operation(
             })
         }
         "failure" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("std.native.Test/failure expects a Result and index".into());
             }
-            let result = native_test_require_result(eval(&forms[0], env)?, "failure")?;
-            let index = match eval(&forms[1], env)? {
-                Value::Number(index) if index >= 0 => index as usize,
+            let result = native_test_require_result(values[0].clone(), "failure")?;
+            let index = match &values[1] {
+                Value::Number(index) if *index >= 0 => *index as usize,
                 _ => {
                     return Err(
                         "std.native.Test/failure index must be a non-negative integer".into(),
@@ -752,64 +756,58 @@ fn native_test_operation(
             }
         }
         "failure?" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Test/failure? expects one value".into());
             }
-            Ok(Value::Bool(native_test_failure_shape(&eval(
-                &forms[0], env,
-            )?)))
+            Ok(Value::Bool(native_test_failure_shape(&values[0])))
         }
         _ => Err(format!("unknown std.native.Test operation: {operation}")),
     }
 }
-fn native_regex_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_regex_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.RegExp/")
         .unwrap_or(operation);
     match operation {
         "instance?" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.RegExp/instance? expects one value".into());
             }
             Ok(Value::Bool(matches!(
-                eval(&forms[0], env)?,
+                values[0],
                 Value::Regex(_)
             )))
         }
         "compile" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.RegExp/compile expects one string".into());
             }
-            let pattern = match eval(&forms[0], env)? {
-                Value::String(pattern) => pattern,
+            let pattern = match &values[0] {
+                Value::String(pattern) => pattern.clone(),
                 _ => return Err("std.native.RegExp/compile expects one string".into()),
             };
             regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Regex(pattern))
         }
         "pattern" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.RegExp/pattern expects one regexp".into());
             }
-            match eval(&forms[0], env)? {
-                Value::Regex(pattern) => Ok(Value::String(pattern)),
+            match &values[0] {
+                Value::Regex(pattern) => Ok(Value::String(pattern.clone())),
                 _ => Err("std.native.RegExp/pattern expects one regexp".into()),
             }
         }
         "find?" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("std.native.RegExp/find? expects a regexp and string".into());
             }
-            let pattern = match eval(&forms[0], env)? {
-                Value::Regex(pattern) => pattern,
+            let pattern = match &values[0] {
+                Value::Regex(pattern) => pattern.clone(),
                 _ => return Err("std.native.RegExp/find? expects a regexp and string".into()),
             };
-            let input = match eval(&forms[1], env)? {
-                Value::String(input) => input,
+            let input = match &values[1] {
+                Value::String(input) => input.clone(),
                 _ => return Err("std.native.RegExp/find? expects a regexp and string".into()),
             };
             let regexp =
@@ -817,15 +815,15 @@ fn native_regex_operation(
             Ok(Value::Bool(regexp.is_match(&input)))
         }
         "find" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("std.native.RegExp/find expects a regexp and string".into());
             }
-            let pattern = match eval(&forms[0], env)? {
-                Value::Regex(pattern) => pattern,
+            let pattern = match &values[0] {
+                Value::Regex(pattern) => pattern.clone(),
                 _ => return Err("std.native.RegExp/find expects a regexp and string".into()),
             };
-            let input = match eval(&forms[1], env)? {
-                Value::String(input) => input,
+            let input = match &values[1] {
+                Value::String(input) => input.clone(),
                 _ => return Err("std.native.RegExp/find expects a regexp and string".into()),
             };
             let regexp =
@@ -836,15 +834,15 @@ fn native_regex_operation(
                 .unwrap_or(Value::Nil))
         }
         "matches" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("std.native.RegExp/matches expects a regexp and string".into());
             }
-            let pattern = match eval(&forms[0], env)? {
-                Value::Regex(pattern) => pattern,
+            let pattern = match &values[0] {
+                Value::Regex(pattern) => pattern.clone(),
                 _ => return Err("std.native.RegExp/matches expects a regexp and string".into()),
             };
-            let input = match eval(&forms[1], env)? {
-                Value::String(input) => input,
+            let input = match &values[1] {
+                Value::String(input) => input.clone(),
                 _ => return Err("std.native.RegExp/matches expects a regexp and string".into()),
             };
             let anchored = format!(r"\A(?:{pattern})\z");
@@ -853,13 +851,13 @@ fn native_regex_operation(
             Ok(Value::Bool(regexp.is_match(&input)))
         }
         "replace" => {
-            if forms.len() != 3 {
+            if values.len() != 3 {
                 return Err(
                     "std.native.RegExp/replace expects a regexp, string, and replacement".into(),
                 );
             }
-            let pattern = match eval(&forms[0], env)? {
-                Value::Regex(pattern) => pattern,
+            let pattern = match &values[0] {
+                Value::Regex(pattern) => pattern.clone(),
                 _ => {
                     return Err(
                         "std.native.RegExp/replace expects a regexp, string, and replacement"
@@ -867,8 +865,8 @@ fn native_regex_operation(
                     )
                 }
             };
-            let input = match eval(&forms[1], env)? {
-                Value::String(input) => input,
+            let input = match &values[1] {
+                Value::String(input) => input.clone(),
                 _ => {
                     return Err(
                         "std.native.RegExp/replace expects a regexp, string, and replacement"
@@ -876,8 +874,8 @@ fn native_regex_operation(
                     )
                 }
             };
-            let replacement = match eval(&forms[2], env)? {
-                Value::String(replacement) => replacement,
+            let replacement = match &values[2] {
+                Value::String(replacement) => replacement.clone(),
                 _ => {
                     return Err(
                         "std.native.RegExp/replace expects a regexp, string, and replacement"
@@ -894,15 +892,15 @@ fn native_regex_operation(
             ))
         }
         "split" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("std.native.RegExp/split expects a regexp and string".into());
             }
-            let pattern = match eval(&forms[0], env)? {
-                Value::Regex(pattern) => pattern,
+            let pattern = match &values[0] {
+                Value::Regex(pattern) => pattern.clone(),
                 _ => return Err("std.native.RegExp/split expects a regexp and string".into()),
             };
-            let input = match eval(&forms[1], env)? {
-                Value::String(input) => input,
+            let input = match &values[1] {
+                Value::String(input) => input.clone(),
                 _ => return Err("std.native.RegExp/split expects a regexp and string".into()),
             };
             if input.is_empty() {
@@ -1056,6 +1054,14 @@ fn file_operation(
     forms: &[Form],
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
+    let values = forms
+        .iter()
+        .map(|form| eval(form, env))
+        .collect::<Result<Vec<_>, _>>()?;
+    file_values(operation, values)
+}
+
+fn file_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.File/")
         .map(|method| format!("file/{method}"))
@@ -1063,10 +1069,10 @@ fn file_operation(
     let operation = operation.as_str();
     match operation {
         "file/parent" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("file/parent expects a path".into());
             }
-            let Value::String(path) = eval(&forms[0], env)? else {
+            let Value::String(path) = &values[0] else {
                 return Err("file/parent expects a path".into());
             };
             crate::file::logical_parent(&path)
@@ -1074,13 +1080,13 @@ fn file_operation(
                 .map_err(|error| file_error(operation, error))
         }
         "file/join" | "file/resolve" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err(format!("{operation} expects a base and path"));
             }
-            let Value::String(base) = eval(&forms[0], env)? else {
+            let Value::String(base) = &values[0] else {
                 return Err(format!("{operation} expects a base and path"));
             };
-            let Value::String(path) = eval(&forms[1], env)? else {
+            let Value::String(path) = &values[1] else {
                 return Err(format!("{operation} expects a base and path"));
             };
             let result = if operation == "file/join" {
@@ -1093,10 +1099,10 @@ fn file_operation(
                 .map_err(|error| file_error(operation, error))
         }
         "file/read" | "file/exists?" | "file/stat" | "file/entries" | "file/list" | "file/walk" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err(format!("{operation} expects a path"));
             }
-            let Value::String(path) = eval(&forms[0], env)? else {
+            let Value::String(path) = &values[0] else {
                 return Err(format!("{operation} expects a path"));
             };
             Ok(file_effect(
@@ -1115,19 +1121,19 @@ fn file_operation(
             ))
         }
         "file/write" => {
-            if !(2..=3).contains(&forms.len()) {
+            if !(2..=3).contains(&values.len()) {
                 return Err("file/write expects a path, bytes, and optional options".into());
             }
-            let Value::String(path) = eval(&forms[0], env)? else {
+            let Value::String(path) = &values[0] else {
                 return Err("file/write expects a path and bytes".into());
             };
-            let bytes = match eval(&forms[1], env)? {
-                Value::Bytes(value) => value,
+            let bytes = match &values[1] {
+                Value::Bytes(value) => value.clone(),
                 Value::ByteBuffer(value) => value.borrow().clone(),
                 _ => return Err("file/write expects a path and bytes".into()),
             };
-            let options = if forms.len() == 3 {
-                file_options_value(eval(&forms[2], env)?, operation)?
+            let options = if values.len() == 3 {
+                file_options_value(values[2].clone(), operation)?
             } else {
                 Value::Map(PMap::new())
             };
@@ -1137,14 +1143,14 @@ fn file_operation(
             }))
         }
         "file/mkdir" => {
-            if !(1..=2).contains(&forms.len()) {
+            if !(1..=2).contains(&values.len()) {
                 return Err("file/mkdir expects a path and optional options".into());
             }
-            let Value::String(path) = eval(&forms[0], env)? else {
+            let Value::String(path) = &values[0] else {
                 return Err("file/mkdir expects a path".into());
             };
-            let options = if forms.len() == 2 {
-                file_options_value(eval(&forms[1], env)?, operation)?
+            let options = if values.len() == 2 {
+                file_options_value(values[1].clone(), operation)?
             } else {
                 Value::Map(PMap::new())
             };
@@ -1154,14 +1160,14 @@ fn file_operation(
             }))
         }
         "file/delete" => {
-            if !(1..=2).contains(&forms.len()) {
+            if !(1..=2).contains(&values.len()) {
                 return Err("file/delete expects a path and optional options".into());
             }
-            let Value::String(path) = eval(&forms[0], env)? else {
+            let Value::String(path) = &values[0] else {
                 return Err("file/delete expects a path".into());
             };
-            let options = if forms.len() == 2 {
-                file_options_value(eval(&forms[1], env)?, operation)?
+            let options = if values.len() == 2 {
+                file_options_value(values[1].clone(), operation)?
             } else {
                 Value::Map(PMap::new())
             };
@@ -1171,19 +1177,19 @@ fn file_operation(
             }))
         }
         "file/copy" | "file/move" => {
-            if !(2..=3).contains(&forms.len()) {
+            if !(2..=3).contains(&values.len()) {
                 return Err(format!(
                     "{operation} expects source, target, and optional options"
                 ));
             }
-            let Value::String(source) = eval(&forms[0], env)? else {
+            let Value::String(source) = &values[0] else {
                 return Err(format!("{operation} expects source and target paths"));
             };
-            let Value::String(target) = eval(&forms[1], env)? else {
+            let Value::String(target) = &values[1] else {
                 return Err(format!("{operation} expects source and target paths"));
             };
-            let options = if forms.len() == 3 {
-                file_options_value(eval(&forms[2], env)?, operation)?
+            let options = if values.len() == 3 {
+                file_options_value(values[2].clone(), operation)?
             } else {
                 Value::Map(PMap::new())
             };
@@ -1200,14 +1206,14 @@ fn file_operation(
             })
         }
         "file/temp-file" | "file/temp-directory" => {
-            if !(1..=2).contains(&forms.len()) {
+            if !(1..=2).contains(&values.len()) {
                 return Err(format!("{operation} expects a parent and optional options"));
             }
-            let Value::String(parent) = eval(&forms[0], env)? else {
+            let Value::String(parent) = &values[0] else {
                 return Err(format!("{operation} expects a parent path"));
             };
-            let options = if forms.len() == 2 {
-                file_options_value(eval(&forms[1], env)?, operation)?
+            let options = if values.len() == 2 {
+                file_options_value(values[1].clone(), operation)?
             } else {
                 Value::Map(PMap::new())
             };
@@ -1237,15 +1243,23 @@ fn socket_operation(
     forms: &[Form],
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
+    let values = forms
+        .iter()
+        .map(|form| eval(form, env))
+        .collect::<Result<Vec<_>, _>>()?;
+    socket_values(operation, values)
+}
+
+fn socket_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.Socket/")
         .unwrap_or(operation);
     match operation {
         "receive-stream" | "socket/receive-stream" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err(format!("Socket/{operation} expects a socket connection"));
             }
-            let socket = socket_handle(&eval(&forms[0], env)?, &format!("Socket/{operation}"))?;
+            let socket = socket_handle(&values[0], &format!("Socket/{operation}"))?;
             let events = socket_provider(operation)?
                 .events(socket)
                 .map_err(|e| socket_error(operation, e))?;
@@ -1255,20 +1269,19 @@ fn socket_operation(
             ))
         }
         "socket/connect" => {
-            if forms.len() != 4 {
+            if values.len() != 4 {
                 return Err("socket/connect expects a host, port, options, and callback".into());
             }
-            let host = match eval(&forms[0], env)? {
-                Value::String(value) => value,
+            let host = match &values[0] {
+                Value::String(value) => value.clone(),
                 _ => {
                     return Err("socket/connect expects a host, port, options, and callback".into())
                 }
             };
-            let port_value = eval(&forms[1], env)?;
-            let port = value_u16_integer(&port_value, "socket/connect", false)?;
-            let _options = eval(&forms[2], env)?;
-            let callback = match eval(&forms[3], env)? {
-                Value::Function(value) => value,
+            let port = value_u16_integer(&values[1], "socket/connect", false)?;
+            let _options = &values[2];
+            let callback = match &values[3] {
+                Value::Function(value) => value.clone(),
                 _ => return Err("socket/connect expects a callback".into()),
             };
             let callback = Rc::new(move |event| {
@@ -1287,18 +1300,17 @@ fn socket_operation(
                 .map_err(|error| socket_error(operation, error))
         }
         "socket/listen" => {
-            if forms.len() != 4 {
+            if values.len() != 4 {
                 return Err("socket/listen expects a host, port, options, and callback".into());
             }
-            let host = match eval(&forms[0], env)? {
-                Value::String(value) => value,
+            let host = match &values[0] {
+                Value::String(value) => value.clone(),
                 _ => return Err("socket/listen expects a host string".into()),
             };
-            let port_value = eval(&forms[1], env)?;
-            let port = value_u16_integer(&port_value, "socket/listen", true)?;
-            let _options = eval(&forms[2], env)?;
-            let callback = match eval(&forms[3], env)? {
-                Value::Function(value) => value,
+            let port = value_u16_integer(&values[1], "socket/listen", true)?;
+            let _options = &values[2];
+            let callback = match &values[3] {
+                Value::Function(value) => value.clone(),
                 _ => return Err("socket/listen expects a callback".into()),
             };
             let callback = Rc::new(move |event| {
@@ -1310,10 +1322,10 @@ fn socket_operation(
                 .map_err(|error| socket_error(operation, error))
         }
         "socket/endpoint" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("socket/endpoint expects a server".into());
             }
-            let server = socket_handle(&eval(&forms[0], env)?, "socket/endpoint")?;
+            let server = socket_handle(&values[0], "socket/endpoint")?;
             socket_provider(operation)?
                 .endpoint(server)
                 .map(|(host, port)| {
@@ -1325,34 +1337,33 @@ fn socket_operation(
                 .map_err(|error| socket_error(operation, error))
         }
         "socket/events" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("socket/events expects a socket handle and options".into());
             }
-            let handle = socket_handle(&eval(&forms[0], env)?, "socket/events")?;
-            let _options = eval(&forms[1], env)?;
+            let handle = socket_handle(&values[0], "socket/events")?;
+            let _options = &values[1];
             socket_provider(operation)?
                 .events(handle)
                 .map(|stream| Value::Number(stream as i64))
                 .map_err(|error| socket_error(operation, error))
         }
         "socket/next" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("socket/next expects a socket stream".into());
             }
-            let stream = socket_handle(&eval(&forms[0], env)?, "socket/next")?;
+            let stream = socket_handle(&values[0], "socket/next")?;
             socket_provider(operation)?
                 .next(stream)
                 .map(Value::Promise)
                 .map_err(|error| socket_error(operation, error))
         }
         "socket/send" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("socket/send expects a socket connection and bytes".into());
             }
-            let socket_value = eval(&forms[0], env)?;
-            let socket = socket_handle(&socket_value, "socket/send")?;
-            let bytes = match eval(&forms[1], env)? {
-                Value::Bytes(value) => value,
+            let socket = socket_handle(&values[0], "socket/send")?;
+            let bytes = match &values[1] {
+                Value::Bytes(value) => value.clone(),
                 Value::ByteBuffer(value) => value.borrow().clone(),
                 _ => return Err("socket/send expects a socket connection and bytes".into()),
             };
@@ -1362,11 +1373,10 @@ fn socket_operation(
                 .map_err(|error| socket_error(operation, error))
         }
         "socket/close" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("socket/close expects a socket connection".into());
             }
-            let socket_value = eval(&forms[0], env)?;
-            let socket = socket_handle(&socket_value, "socket/close")?;
+            let socket = socket_handle(&values[0], "socket/close")?;
             socket_provider(operation)?
                 .close(socket)
                 .map(|()| Value::Nil)
@@ -1439,30 +1449,26 @@ fn socket_handle(value: &Value, operation: &str) -> Result<SocketHandle, String>
         .map_err(|_| format!("{operation} expects a socket handle"))
 }
 
-fn native_host_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_host_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let method = operation
         .strip_prefix("std.native.Host/")
         .unwrap_or(operation);
     let (service, target, arguments) = match method {
         "call" => {
-            if forms.len() != 3 {
+            if values.len() != 3 {
                 return Err(
                     "std.native.Host/call expects service, method, and an argument vector".into(),
                 );
             }
-            let service = match eval(&forms[0], env)? {
-                Value::String(value) => value,
+            let service = match &values[0] {
+                Value::String(value) => value.clone(),
                 _ => return Err("std.native.Host/call service must be a string".into()),
             };
-            let target = match eval(&forms[1], env)? {
-                Value::String(value) => value,
+            let target = match &values[1] {
+                Value::String(value) => value.clone(),
                 _ => return Err("std.native.Host/call method must be a string".into()),
             };
-            let arguments = match eval(&forms[2], env)? {
+            let arguments = match &values[2] {
                 Value::Vector(values) => values.iter().cloned().collect(),
                 Value::Tuple(values) => values.iter().cloned().collect(),
                 _ => return Err("std.native.Host/call arguments must be a vector".into()),
@@ -1470,19 +1476,19 @@ fn native_host_operation(
             (service, target, arguments)
         }
         "describe" | "capabilities" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err(format!("std.native.Host/{method} expects no arguments"));
             }
             ("host".into(), method.into(), Vec::new())
         }
         "capability?" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Host/capability? expects one capability".into());
             }
             (
                 "host".into(),
                 "capability?".into(),
-                vec![eval(&forms[0], env)?],
+                vec![values[0].clone()],
             )
         }
         _ => return Err(format!("unknown std.native.Host method: {method}")),
@@ -1554,9 +1560,9 @@ fn namespace_descriptor(registry: &NamespaceRegistry<Value>, name: &str) -> Valu
     Value::OrderedMap(Box::new(POrderedMap::from_iter(fields)))
 }
 
-fn native_runtime_operation(
+fn native_runtime_values(
     operation: &str,
-    forms: &[Form],
+    values: Vec<Value>,
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
     let method = operation
@@ -1565,13 +1571,13 @@ fn native_runtime_operation(
     let registry = namespace_registry()?;
     match method {
         "current" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("std.native.Runtime/current expects no arguments".into());
             }
             Ok(Value::Symbol(registry.current().name().clone()))
         }
         "snapshot" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("std.native.Runtime/snapshot expects no arguments".into());
             }
             let namespaces = registry
@@ -1591,7 +1597,7 @@ fn native_runtime_operation(
             ]))))
         }
         "namespaces" => {
-            if !forms.is_empty() {
+            if !values.is_empty() {
                 return Err("std.native.Runtime/namespaces expects no arguments".into());
             }
             Ok(Value::Vector(PVector::from(
@@ -1603,10 +1609,10 @@ fn native_runtime_operation(
             )))
         }
         "namespace" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Runtime/namespace expects one namespace".into());
             }
-            let name = namespace_identifier(eval(&forms[0], env)?, operation)?;
+            let name = namespace_identifier(values[0].clone(), operation)?;
             if registry.load_state(&name).is_none() && registry.find(&name).is_none() {
                 Ok(Value::Nil)
             } else {
@@ -1614,11 +1620,11 @@ fn native_runtime_operation(
             }
         }
         "module" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Runtime/module expects one module path".into());
             }
-            let requested = match eval(&forms[0], env)? {
-                Value::String(path) => path,
+            let requested = match &values[0] {
+                Value::String(path) => path.clone(),
                 Value::Symbol(name) => name.as_str().to_owned(),
                 _ => {
                     return Err(
@@ -1671,13 +1677,13 @@ fn native_runtime_operation(
             ]))))
         }
         "vars" => {
-            if forms.len() > 1 {
+            if values.len() > 1 {
                 return Err("std.native.Runtime/vars expects zero or one namespace".into());
             }
-            let name = if forms.is_empty() {
+            let name = if values.is_empty() {
                 registry.current().name().as_str().to_owned()
             } else {
-                namespace_identifier(eval(&forms[0], env)?, operation)?
+                namespace_identifier(values[0].clone(), operation)?
             };
             let namespace = registry
                 .find(&name)
@@ -1695,35 +1701,174 @@ fn native_runtime_operation(
             ))))
         }
         "resolve" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Runtime/resolve expects one symbol".into());
             }
-            let Value::Symbol(symbol) = eval(&forms[0], env)? else {
+            let Value::Symbol(symbol) = &values[0] else {
                 return Err("std.native.Runtime/resolve expects a symbol".into());
             };
             // Deliberately bypass force_lazy_alias: Runtime inspection must never
             // load source or invoke a package provider.
             Ok(registry
-                .resolve(&symbol)
+                .resolve(symbol)
                 .map(Value::Var)
                 .unwrap_or(Value::Nil))
         }
         "eval" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Runtime/eval expects one form".into());
             }
-            eval_value(eval(&forms[0], env)?, env)
+            eval_value(values[0].clone(), env)
         }
-        "alias-state" | "intern-var" | "eval-in" => {
-            let legacy = match method {
-                "alias-state" => "ns-alias-state",
-                "intern-var" => "intern-var",
-                _ => "eval-in-ns",
+        "load-string" => {
+            let [Value::String(source)] = values.as_slice() else {
+                return Err("std.native.Runtime/load-string expects one string".into());
             };
-            let mut delegated = Vec::with_capacity(forms.len() + 1);
-            delegated.push(Form::Symbol(legacy.to_owned()));
-            delegated.extend_from_slice(forms);
-            eval(&Form::List(delegated), env)
+            eval_value_text(source, env)
+        }
+        "var-sym" => {
+            let [Value::Var(var)] = values.as_slice() else {
+                return Err("std.native.Runtime/var-sym expects one Var".into());
+            };
+            Ok(Value::Symbol(var.symbol().clone()))
+        }
+        "macroexpand-1" | "gensym" => {
+            let mut call = vec![Form::Symbol(method.to_owned())];
+            call.extend(
+                values
+                    .iter()
+                    .map(value_to_form)
+                    .collect::<Result<Vec<_>, _>>()?,
+            );
+            eval(&Form::List(call), env)
+        }
+        "eval-in" => {
+            if values.len() != 2 {
+                return Err("std.native.Runtime/eval-in expects namespace and forms".into());
+            }
+            let target = namespace_identifier(values[0].clone(), operation)?;
+            if registry.find(&target).is_none() {
+                return Err(format!(
+                    "std.native.Runtime/eval-in requires an existing namespace: {target}"
+                ));
+            }
+            let forms = iterator_values(values[1].clone())?
+                .into_iter()
+                .map(|value| value_to_form(&value))
+                .collect::<Result<Vec<_>, _>>()?;
+            let previous = registry.current().name().as_str().to_owned();
+            select_namespace_environment(&registry, env, &target);
+            let result = (|| {
+                let mut result = Value::Nil;
+                for form in &forms {
+                    result = eval(form, env)?;
+                }
+                Ok(result)
+            })();
+            select_namespace_environment(&registry, env, &previous);
+            result
+        }
+        "alias-state" => {
+            if values.len() != 1 && values.len() != 2 {
+                return Err(
+                    "std.native.Runtime/alias-state expects alias or namespace and alias".into(),
+                );
+            }
+            let (owner, alias_value) = if values.len() == 2 {
+                (namespace_identifier(values[0].clone(), operation)?, &values[1])
+            } else {
+                (registry.current().name().as_str().to_owned(), &values[0])
+            };
+            let Value::Symbol(alias) = alias_value else {
+                return Err(
+                    "std.native.Runtime/alias-state expects an unqualified alias symbol".into(),
+                );
+            };
+            if alias.get_namespace().is_some() {
+                return Err(
+                    "std.native.Runtime/alias-state expects an unqualified alias symbol".into(),
+                );
+            }
+            let Some(namespace) = registry.find(&owner) else {
+                return Ok(Value::Nil);
+            };
+            let target = namespace.lazy_target(alias.as_str()).or_else(|| {
+                namespace
+                    .aliases()
+                    .into_iter()
+                    .find(|(name, _)| name == alias)
+                    .map(|(_, target)| target.name().clone())
+            });
+            let Some(target) = target else {
+                return Ok(Value::Nil);
+            };
+            let state = registry
+                .load_state(target.as_str())
+                .or_else(|| {
+                    registry
+                        .find(target.as_str())
+                        .map(|_| NamespaceLoadState::Loaded)
+                })
+                .map(NamespaceLoadState::as_str)
+                .unwrap_or("unknown");
+            Ok(Value::Map(PMap::from_iter([
+                (Value::Keyword("alias".into()), Value::Symbol(alias.clone())),
+                (Value::Keyword("target".into()), Value::Symbol(target)),
+                (Value::Keyword("state".into()), Value::Keyword(state.into())),
+            ])))
+        }
+        "intern-var" => {
+            if values.len() != 3 && values.len() != 4 {
+                return Err(
+                    "std.native.Runtime/intern-var expects namespace, symbol, Var, and optional metadata"
+                        .into(),
+                );
+            }
+            let target = namespace_identifier(values[0].clone(), operation)?;
+            let Value::Symbol(name) = &values[1] else {
+                return Err(
+                    "std.native.Runtime/intern-var expects an unqualified target symbol".into(),
+                );
+            };
+            if name.get_namespace().is_some() {
+                return Err(
+                    "std.native.Runtime/intern-var expects an unqualified target symbol".into(),
+                );
+            }
+            let Value::Var(source) = &values[2] else {
+                return Err("std.native.Runtime/intern-var expects a source Var".into());
+            };
+            let mut metadata = source.metadata();
+            if let Some(extension) = values.get(3) {
+                let Some(entries) = map_entries(extension) else {
+                    return Err(
+                        "std.native.Runtime/intern-var metadata extension must be a map".into(),
+                    );
+                };
+                for (key, value) in entries {
+                    metadata.extra.insert(key.display(), value.display());
+                }
+            }
+            let value = source.deref_value();
+            if let Value::Function(function) = &value {
+                if function.is_macro {
+                    ACTIVE_MACROS.with(|active| {
+                        if let Some(macros) = active.borrow().as_ref() {
+                            macros.borrow_mut().insert(
+                                (target.clone(), name.as_str().to_owned()),
+                                function.clone(),
+                            );
+                        }
+                    });
+                }
+            }
+            Ok(Value::Var(
+                registry.find_or_create(&target).intern_with_metadata(
+                    name.as_str(),
+                    value,
+                    metadata,
+                ),
+            ))
         }
         _ => Err(format!("unknown std.native.Runtime method: {method}")),
     }
@@ -1733,9 +1878,9 @@ fn eval_value(value: Value, env: &mut HashMap<String, Value>) -> Result<Value, S
     eval(&value_to_form(&value)?, env)
 }
 
-fn native_package_operation(
+fn native_package_values(
     operation: &str,
-    forms: &[Form],
+    arguments: Vec<Value>,
     env: &mut HashMap<String, Value>,
 ) -> Result<Value, String> {
     let method = operation
@@ -1747,16 +1892,12 @@ fn native_package_operation(
         "unload" => 1..=2,
         _ => return Err(format!("unknown std.native.Package method: {method}")),
     };
-    if !expected.contains(&forms.len()) {
+    if !expected.contains(&arguments.len()) {
         return Err(format!(
             "std.native.Package/{method} expects {} arguments",
             expected.start()
         ));
     }
-    let arguments = forms
-        .iter()
-        .map(|form| eval(form, env))
-        .collect::<Result<Vec<_>, _>>()?;
     let catalog = package_catalog();
     if method == "catalog" {
         return Ok(catalog.catalog_value());
@@ -1948,6 +2089,7 @@ fn host_error(code: &str, message: &str) -> Value {
             .collect(),
         )),
         cause: None,
+        provenance: Rc::new(RefCell::new(Default::default())),
     }))
 }
 /// Installs the explicit host-call boundary for one evaluation.

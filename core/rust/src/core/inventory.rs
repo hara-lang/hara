@@ -2,6 +2,28 @@ pub fn completion_symbols() -> &'static [&'static str] {
     fiber::completion_symbols()
 }
 
+/// Closed accounting inventory for evaluator/compiler forms. These are not a
+/// native type and do not create Vars in a `std.native.Builtins` namespace.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const LANGUAGE_BUILTINS: &[(&str, &[&str])] = &[
+    (
+        "evaluation",
+        &[
+            "quote", "syntax-quote", "do", "if", "let", "letfn", "binding", "loop",
+            "recur", "throw", "try", "fn",
+        ],
+    ),
+    (
+        "definitions",
+        &[
+            "def", "declare", "var", "set!", "defmacro", "defstruct", "defmutable",
+            "defprotocol", "extend-type", "defmulti", "defmethod",
+        ],
+    ),
+    ("namespaces", &["ns", "ns+", "require", "alias"]),
+    ("interop", &["new", "field", "."]),
+];
+
 pub(crate) fn invoke_function_sync(
     function: Rc<Function>,
     arguments: Vec<Value>,
@@ -497,7 +519,10 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "with-context",
         ],
     ),
-    ("Schema", &["instance?", "kind", "form", "ast", "origin"]),
+    (
+        "Schema",
+        &["compile", "of", "instance?", "kind", "form", "ast", "origin"],
+    ),
     ("Error", &["new", "message", "class"]),
     (
         "Base",
@@ -506,7 +531,6 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "vector",
             "vec",
             "set",
-            "pair",
             "tuple",
             "hash-map",
             "hash-set",
@@ -515,43 +539,37 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "symbol",
             "keyword",
             "reduced",
+            "apply",
+            "not",
+            "boolean",
+            "compare",
             "reduced?",
-            "unreduced",
             "nil?",
-            "not-nil?",
             "boolean?",
-            "false?",
-            "true?",
             "string?",
             "char?",
             "number?",
             "integer?",
-            "decimal?",
             "long?",
             "double?",
             "keyword?",
             "symbol?",
             "pointer?",
             "atom?",
-            "fn?",
             "function?",
             "bytes?",
             "array?",
             "object?",
             "list?",
             "cons?",
-            "pair?",
             "vector?",
             "tuple?",
             "map?",
-            "map-entry?",
             "set?",
             "sequential?",
             "satisfies?",
             "type",
             "instance?",
-            "schema",
-            "schema-of",
         ],
     ),
     (

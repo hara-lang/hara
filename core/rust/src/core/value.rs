@@ -1,8 +1,82 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExceptionSite {
+    pub namespace: Option<String>,
+    pub resource: Option<String>,
+    pub line: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExceptionProvenance {
+    pub created_at: Option<ExceptionSite>,
+    pub throws: Vec<ExceptionSite>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExceptionInfo {
     pub message: String,
     pub data: Box<Value>,
     pub cause: Option<Box<Value>>,
+    pub provenance: Rc<RefCell<ExceptionProvenance>>,
+}
+
+pub(crate) fn record_exception_throw(value: &Value, site: Option<ExceptionSite>) {
+    let (Value::ExceptionInfo(exception), Some(site)) = (value, site) else {
+        return;
+    };
+    let mut provenance = exception.provenance.borrow_mut();
+    if provenance.created_at.is_none() {
+        provenance.created_at = Some(site.clone());
+    }
+    provenance.throws.push(site);
+}
+
+fn exception_site_value(site: &ExceptionSite) -> Value {
+    Value::Map(
+        [
+            (
+                "namespace",
+                site.namespace
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            (
+                "resource",
+                site.resource
+                    .clone()
+                    .map(Value::String)
+                    .unwrap_or(Value::Nil),
+            ),
+            ("line", Value::Number(site.line as i64)),
+            ("column", Value::Number(site.column as i64)),
+        ]
+        .into_iter()
+        .map(|(key, value)| (Value::Keyword(key.into()), value))
+        .collect(),
+    )
+}
+
+fn exception_provenance_value(exception: &ExceptionInfo) -> Value {
+    let provenance = exception.provenance.borrow();
+    Value::Map(
+        [
+            (
+                Value::Keyword("ex/created-at".into()),
+                provenance
+                    .created_at
+                    .as_ref()
+                    .map(exception_site_value)
+                    .unwrap_or(Value::Nil),
+            ),
+            (
+                Value::Keyword("ex/throws".into()),
+                Value::Vector(provenance.throws.iter().map(exception_site_value).collect()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -541,6 +615,58 @@ pub(crate) fn native_fiber_function(
 pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
     vec![
         (
+            "ex",
+            native_function("ex", 2, |arguments| {
+                let Value::Keyword(code) = &arguments[0] else {
+                    return Err("ex expects a namespaced keyword code".into());
+                };
+                if !code.as_str().contains('/') {
+                    return Err("ex expects a namespaced keyword code".into());
+                }
+                let Some(entries) = map_entries(&arguments[1]) else {
+                    return Err("ex expects an attributes map".into());
+                };
+                let lookup = |name: &str| {
+                    entries.iter().find_map(|(key, value)| {
+                        matches!(key, Value::Keyword(key_name) if key_name.as_str() == name)
+                            .then_some(value)
+                    })
+                };
+                let message = match lookup("ex/message") {
+                    Some(Value::String(message)) => message.clone(),
+                    Some(_) => return Err(":ex/message must be a string".into()),
+                    None => format!(":{code}"),
+                };
+                if lookup("ex/code").is_some() {
+                    return Err("ex attributes must not contain :ex/code; pass the code as the first argument".into());
+                }
+                if let Some(cause) = lookup("ex/cause") {
+                    if !matches!(cause, Value::ExceptionInfo(_)) {
+                        return Err(":ex/cause must be an Exception".into());
+                    }
+                }
+                if let Some(context) = lookup("ex/context") {
+                    if map_entries(context).is_none() {
+                        return Err(":ex/context must be a map".into());
+                    }
+                }
+                let data = map_assoc_value(
+                    &arguments[1],
+                    Value::Keyword("ex/code".into()),
+                    Value::Keyword(code.clone()),
+                )?;
+                Ok(Value::ExceptionInfo(Rc::new(ExceptionInfo {
+                    message,
+                    cause: lookup("ex/cause").cloned().map(Box::new),
+                    data: Box::new(data),
+                    provenance: Rc::new(RefCell::new(ExceptionProvenance {
+                        created_at: None,
+                        throws: Vec::new(),
+                    })),
+                })))
+            }),
+        ),
+        (
             "ex-info",
             native_variadic_function("ex-info", |arguments| {
                 if !(2..=3).contains(&arguments.len()) {
@@ -556,6 +682,10 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                     message: message.clone(),
                     data: Box::new(arguments[1].clone()),
                     cause: arguments.get(2).cloned().map(Box::new),
+                    provenance: Rc::new(RefCell::new(ExceptionProvenance {
+                        created_at: None,
+                        throws: Vec::new(),
+                    })),
                 })))
             }),
         ),
@@ -575,10 +705,26 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
             }),
         ),
         (
+            "ex-cause",
+            native_function("ex-cause", 1, |arguments| match &arguments[0] {
+                Value::ExceptionInfo(value) => {
+                    Ok(value.cause.as_deref().cloned().unwrap_or(Value::Nil))
+                }
+                _ => Err("ex-cause expects an Exception".into()),
+            }),
+        ),
+        (
+            "ex-provenance",
+            native_function("ex-provenance", 1, |arguments| match &arguments[0] {
+                Value::ExceptionInfo(value) => Ok(exception_provenance_value(value)),
+                _ => Err("ex-provenance expects an Exception".into()),
+            }),
+        ),
+        (
             "ex-class",
             native_function("ex-class", 1, |arguments| {
                 Ok(Value::String(match &arguments[0] {
-                    Value::ExceptionInfo(_) => "ExceptionInfo".into(),
+                    Value::ExceptionInfo(_) => "Exception".into(),
                     Value::String(_) => "String".into(),
                     value => receiver_category(value).into(),
                 }))
@@ -618,12 +764,6 @@ pub(crate) fn basic_function_values() -> Vec<(&'static str, Value)> {
             "integer?",
             native_function("integer?", 1, |arguments| {
                 Ok(Value::Bool(numeric::is_integer_value(&arguments[0])))
-            }),
-        ),
-        (
-            "decimal?",
-            native_function("decimal?", 1, |arguments| {
-                Ok(Value::Bool(matches!(arguments[0], Value::Decimal(_))))
             }),
         ),
         (
@@ -714,6 +854,536 @@ pub(crate) fn structural_function_value(name: impl Into<String>) -> Value {
         });
         result
     })
+}
+
+/// Creates a callable exported by a `std.native.*` namespace.
+///
+/// Native type methods must terminate in their Rust implementation. They must
+/// not resolve their public HAL facade name and re-enter `eval`, because doing
+/// so makes alias precedence part of native invocation and permits facade →
+/// native → facade recursion.
+pub(crate) fn native_type_function_value(native_type: &str, method: &str) -> Value {
+    let display_name = format!("std.native.{native_type}/{method}");
+    match native_type {
+        "Base" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_base_values(&method, &arguments)
+            })
+        }
+        "Schema" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_schema_values(&method, &arguments)
+            })
+        }
+        "String" => {
+            let operation = format!("str/{method}");
+            native_variadic_function(&display_name, move |arguments| {
+                string_operation(&operation, arguments)
+            })
+        }
+        "Bytes" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_bytes_operation(&method, arguments)
+            })
+        }
+        "Iter" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_iter_operation(&method, arguments)
+            })
+        }
+        "Maths" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                math_values(&method, arguments)
+            })
+        }
+        "Num" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                if arguments.len() != 1 {
+                    return Err(format!("{method} expects one value"));
+                }
+                number_conversion_value(&method, arguments.into_iter().next().unwrap())
+            })
+        }
+        "Bits" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                bit_values(&method, &arguments)
+            })
+        }
+        "Kernel" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                kernel_provider(&method)?(method.clone(), arguments)
+            })
+        }
+        "Sandbox" => {
+            let operation = format!("sandbox-{method}");
+            native_variadic_function(&display_name, move |arguments| {
+                kernel_provider(&operation)?(operation.clone(), arguments)
+            })
+        }
+        "Crypto" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_crypto::operation(&method, arguments)
+            })
+        }
+        "Document" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                document_operation(&method, arguments)
+            })
+        }
+        "Package" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_package_values(&method, arguments, &mut HashMap::new())
+            })
+        }
+        "OS" | "Process" => {
+            let operation = format!("std.native.{native_type}/{method}");
+            native_variadic_function(&display_name, move |arguments| {
+                os_values(&operation, arguments)
+            })
+        }
+        "File" => {
+            let operation = format!("std.native.File/{method}");
+            native_variadic_function(&display_name, move |arguments| {
+                file_values(&operation, arguments)
+            })
+        }
+        "Socket" => {
+            let operation = format!("std.native.Socket/{method}");
+            native_variadic_function(&display_name, move |arguments| {
+                socket_values(&operation, arguments)
+            })
+        }
+        "Promise" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_promise_values(&method, arguments)
+            })
+        }
+        "Coroutine" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                match (method.as_str(), arguments.as_slice()) {
+                    ("create", [value @ Value::Function(_)]) => {
+                        Ok(Value::Coroutine(Rc::new(Coroutine::new(value.clone()))))
+                    }
+                    ("instance?", [value]) => Ok(Value::Bool(matches!(value, Value::Coroutine(_)))),
+                    ("yield" | "await", _) => {
+                        Err(format!("Coroutine/{method} requires the fiber evaluator"))
+                    }
+                    ("create", _) => Err("Coroutine/create expects one function".into()),
+                    ("instance?", _) => Err("Coroutine/instance? expects one value".into()),
+                    _ => Err(format!("unknown std.native.Coroutine operation: {method}")),
+                }
+            })
+        }
+        "Stream" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_stream_values(&method, arguments)
+            })
+        }
+        "Arr" | "Obj" => {
+            let operation = format!("std.native.{native_type}/{method}");
+            native_variadic_function(&display_name, move |arguments| {
+                native_mutable_values(&operation, arguments)
+            })
+        }
+        "Runtime" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_runtime_values(&method, arguments, &mut HashMap::new())
+            })
+        }
+        "Printer" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_printer_values(&method, arguments)
+            })
+        }
+        "Edn" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_edn_values(&method, arguments)
+            })
+        }
+        "Json" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                match (method.as_str(), arguments.as_slice()) {
+                    ("read", [Value::String(source)]) => crate::json::read(source),
+                    ("write", [value]) => crate::json::write(value).map(Value::String),
+                    ("pretty", [value, options]) if map_entries(options).is_some() => {
+                        crate::json::write_pretty(value).map(Value::String)
+                    }
+                    ("pretty", [_, _]) => Err("json/pretty expects an options map".into()),
+                    ("read", _) => Err("json/read expects a string".into()),
+                    ("write", _) => Err("json/write expects one value".into()),
+                    ("pretty", _) => Err("json/pretty expects a value and options map".into()),
+                    _ => Err(format!("unknown std.native.Json operation: {method}")),
+                }
+            })
+        }
+        "Host" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_host_values(&method, arguments)
+            })
+        }
+        "Test" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_test_values(&method, arguments)
+            })
+        }
+        "RegExp" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_regex_values(&method, arguments)
+            })
+        }
+        "UUID" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                match (method.as_str(), arguments.as_slice()) {
+                    ("instance?", [_]) => Ok(Value::Bool(false)),
+                    ("instance?", _) => Err("UUID/instance? expects one value".into()),
+                    _ => Err(format!("unknown std.native.UUID operation: {method}")),
+                }
+            })
+        }
+        "Result" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_result_values(&method, arguments)
+            })
+        }
+        "Error" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_error_values(&method, arguments)
+            })
+        }
+        "Algo" => {
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |arguments| {
+                native_algo_values(&format!("std.native.Algo/{method}"), arguments)
+            })
+        }
+        _ => {
+            let native_type = native_type.to_owned();
+            let method = method.to_owned();
+            native_variadic_function(&display_name, move |_| {
+                Err(format!(
+                    "missing direct native implementation: std.native.{native_type}/{method}"
+                ))
+            })
+        }
+    }
+}
+
+fn native_edn_values(method: &str, arguments: Vec<Value>) -> Result<Value, String> {
+    match (method, arguments.as_slice()) {
+        ("read", [Value::String(source)]) => read_edn(source),
+        ("read-forms", [Value::String(path)]) => {
+            if !(path.ends_with(".hal") || path.ends_with(".hrl")) {
+                return Err("read-forms expects a .hal or .hrl path".into());
+            }
+            let promise = file_provider("read-forms")?
+                .read(path)
+                .map_err(|error| file_error("read-forms", error))?;
+            let bytes = match promise.wait_state() {
+                PromiseState::Fulfilled(Value::Bytes(bytes)) => bytes,
+                PromiseState::Fulfilled(Value::ByteBuffer(bytes)) => bytes.borrow().clone(),
+                PromiseState::Fulfilled(value) => {
+                    return Err(format!(
+                        "read-forms expected file bytes, got {}",
+                        value.display()
+                    ));
+                }
+                PromiseState::Rejected(error) => return Err(error.message()),
+                PromiseState::Pending => return Err("read-forms file read is still pending".into()),
+            };
+            let source = String::from_utf8(bytes)
+                .map_err(|_| format!("read-forms source is not UTF-8: {path}"))?;
+            let forms = crate::kernel::parse_forms(&source)
+                .map_err(|error| format!("read-forms failed: {error}"))?;
+            Ok(Value::Vector(PVector::from_iter(
+                forms
+                    .iter()
+                    .map(form_to_value)
+                    .collect::<Result<Vec<_>, _>>()?,
+            )))
+        }
+        ("write", [value]) => Ok(Value::String(value.display())),
+        ("pretty", [value, options]) if map_entries(options).is_some() => {
+            Ok(Value::String(value.display()))
+        }
+        ("pretty", [_, _]) => Err("edn/pretty expects an options map".into()),
+        ("read", _) => Err("edn/read expects one string".into()),
+        ("read-forms", _) => Err("read-forms expects a path string".into()),
+        ("write", _) => Err("std.native.Edn/write expects one value".into()),
+        ("pretty", _) => Err("std.native.Edn/pretty expects a value and options map".into()),
+        _ => Err(format!("unknown std.native.Edn operation: {method}")),
+    }
+}
+
+fn native_printer_values(method: &str, arguments: Vec<Value>) -> Result<Value, String> {
+    match method {
+        "capture" => {
+            let [callable] = arguments.as_slice() else {
+                return Err("Printer/capture expects one callable".into());
+            };
+            PRINTER_CAPTURES.with(|captures| captures.borrow_mut().push(String::new()));
+            let result = call_value(callable.clone(), Vec::new());
+            let output = PRINTER_CAPTURES.with(|captures| {
+                captures
+                    .borrow_mut()
+                    .pop()
+                    .expect("Printer/capture stack must contain the active capture")
+            });
+            result.map(|_| Value::String(output))
+        }
+        "p" | "println" => {
+            let text = arguments
+                .iter()
+                .map(|value| match (method, value) {
+                    ("p", Value::Nil) => String::new(),
+                    ("p", Value::String(text)) => text.clone(),
+                    ("p", Value::Character(character)) => character.to_string(),
+                    (_, Value::String(text)) => text.clone(),
+                    _ => value.display(),
+                })
+                .collect::<Vec<_>>()
+                .join(if method == "println" { " " } else { "" });
+            let output = if method == "println" {
+                format!("{text}\n")
+            } else {
+                text
+            };
+            printer_write(&output)?;
+            Ok(Value::Nil)
+        }
+        _ => Err(format!("unknown std.native.Printer operation: {method}")),
+    }
+}
+
+fn native_promise_values(method: &str, arguments: Vec<Value>) -> Result<Value, String> {
+    match (method, arguments.as_slice()) {
+        ("instance?", [value]) => Ok(Value::Bool(matches!(value, Value::Promise(_)))),
+        ("from", [value]) => Ok(Value::Promise(promise_from(value.clone()))),
+        ("all", [values]) => Ok(Value::Promise(promise_all(iterator_values(
+            values.clone(),
+        )?))),
+        ("run", [Value::Function(function)]) => {
+            let function = function.clone();
+            let task = Rc::new(move || call_function(&function, Vec::new()));
+            Ok(Value::Promise(promise_provider().run(task)))
+        }
+        ("new", [Value::Function(function)]) => {
+            let promise = Promise::new();
+            let resolving = promise.clone();
+            let resolve = native_function("promise-resolve", 1, move |mut values| {
+                let value = values.remove(0);
+                settle_promise_result(&resolving, Ok(value.clone()));
+                Ok(value)
+            });
+            let rejecting = promise.clone();
+            let reject = native_function("promise-reject", 1, move |mut values| {
+                let value = values.remove(0);
+                rejecting.reject(match &value {
+                    Value::String(error) => error.clone(),
+                    value => value.display(),
+                });
+                Ok(value)
+            });
+            if let Err(error) = call_function(function, vec![resolve, reject]) {
+                promise.reject(error);
+            }
+            Ok(Value::Promise(promise))
+        }
+        ("delay", [millis, Value::Function(function)]) => {
+            let millis = value_u64_integer(millis, "promise/delay")
+                .map_err(|_| "promise/delay expects non-negative milliseconds".to_string())?;
+            let function = function.clone();
+            let task = Rc::new(move || call_function(&function, Vec::new()));
+            Ok(Value::Promise(
+                promise_provider().delay(std::time::Duration::from_millis(millis), task),
+            ))
+        }
+        ("run", _) => Err("promise/run expects one function".into()),
+        ("new", [_]) => Err("promise/new expects a function".into()),
+        ("new", _) => Err("promise/new expects one function".into()),
+        ("from", _) => Err("promise/from expects one value".into()),
+        ("all", _) => Err("promise/all expects one collection".into()),
+        ("delay", _) => Err("promise/delay expects milliseconds and a function".into()),
+        ("instance?", _) => Err("Promise/instance? expects one value".into()),
+        _ => Err(format!("unknown std.native.Promise operation: {method}")),
+    }
+}
+
+fn native_iter_operation(method: &str, arguments: Vec<Value>) -> Result<Value, String> {
+    let unary = |label: &str| {
+        arguments
+            .first()
+            .cloned()
+            .filter(|_| arguments.len() == 1)
+            .ok_or_else(|| format!("Iter/{label} expects one argument"))
+    };
+    let binary = |label: &str| {
+        if arguments.len() == 2 {
+            Ok((arguments[0].clone(), arguments[1].clone()))
+        } else {
+            Err(format!("Iter/{label} expects two arguments"))
+        }
+    };
+    match method {
+        "iter" => make_iterator(unary(method)?),
+        "iter?" => Ok(Value::Bool(matches!(unary(method)?, Value::Iterator(_)))),
+        "iter-finite?" => Ok(Value::Bool(iterator_is_finite(&unary(method)?))),
+        "iter-materialize" => Ok(Value::Vector(iterator_to_vec(unary(method)?)?.into())),
+        "iter-next?" => iterator_has_next(&unary(method)?),
+        "iter-next" => iterator_next(&unary(method)?),
+        "iter-close" => iterator_close(&unary(method)?),
+        "iter-concat" => iterator_concat(arguments),
+        "iter-interleave" => iterator_interleave(arguments),
+        "iter-zip" => iterator_zip(arguments),
+        "iter-map" => {
+            let (function, source) = binary(method)?;
+            iterator_map(function, source)
+        }
+        "iter-filter" => {
+            let (function, source) = binary(method)?;
+            iterator_filter(function, source)
+        }
+        "iter-take-while" => {
+            let (function, source) = binary(method)?;
+            iterator_take_while(function, source)
+        }
+        "iter-drop-while" => {
+            let (function, source) = binary(method)?;
+            iterator_drop_while(function, source)
+        }
+        "iter-mapcat" => {
+            let (function, source) = binary(method)?;
+            iterator_mapcat(function, source)
+        }
+        "iter-keep" => {
+            let (function, source) = binary(method)?;
+            iterator_keep(function, source)
+        }
+        "iter-interpose" => {
+            let (separator, source) = binary(method)?;
+            iterator_interpose(separator, source)
+        }
+        "iter-every?" | "iter-any?" => {
+            let (predicate, source) = binary(method)?;
+            let iterator = make_iterator(source)?;
+            let expect_every = method == "iter-every?";
+            let result = (|| {
+                while let Some(value) = iterator_try_next(&iterator)? {
+                    let matched = call_value(predicate.clone(), vec![value])?.truthy();
+                    if matched != expect_every {
+                        return Ok(Value::Bool(!expect_every));
+                    }
+                }
+                Ok(Value::Bool(expect_every))
+            })();
+            let close = iterator_close(&iterator);
+            close?;
+            result
+        }
+        "iter-take" | "iter-drop" => {
+            let (amount, source) = binary(method)?;
+            let amount = value_index(&amount)?;
+            if method == "iter-take" {
+                iterator_take(source, amount)
+            } else {
+                iterator_drop(source, amount)
+            }
+        }
+        "iter-cycle" => iterator_cycle(unary(method)?),
+        "iter-partition-pair" => iterator_partition(unary(method)?, 2, false),
+        "iter-partition" | "iter-partition-all" => {
+            let (amount, source) = binary(method)?;
+            iterator_partition(source, value_index(&amount)?, method.ends_with("-all"))
+        }
+        "iter-range" => {
+            let bounds = arguments
+                .iter()
+                .map(|value| {
+                    numeric::to_i64_exact(value).map_err(|_| {
+                        "iter-range bounds must fit signed 64-bit integers".to_string()
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let (start, end) = match bounds.as_slice() {
+                [end] => (0, *end),
+                [start, end] => (*start, *end),
+                _ => return Err("iter-range expects an end or start and end".into()),
+            };
+            Ok(iterator_from_values(
+                (start..end).map(Value::Number).collect(),
+            ))
+        }
+        "iter-constantly" => Ok(iterator_constant(unary(method)?)),
+        "iter-repeatedly" => Ok(iterator_repeated(unary(method)?)),
+        "iter-iterate" => {
+            let (function, seed) = binary(method)?;
+            Ok(iterator_iterate(function, seed))
+        }
+        _ => Err(format!("unknown std.native.Iter operation: {method}")),
+    }
+}
+
+fn native_bytes_operation(method: &str, arguments: Vec<Value>) -> Result<Value, String> {
+    match (method, arguments.as_slice()) {
+        ("new", values) => {
+            let values = values
+                .iter()
+                .map(|value| byte_input(value, "bytes"))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::ByteBuffer(Rc::new(RefCell::new(values))))
+        }
+        ("instance?", [value]) => Ok(Value::Bool(matches!(
+            value,
+            Value::Bytes(_) | Value::ByteBuffer(_)
+        ))),
+        ("count", [value]) => byte_count(value),
+        ("get", [value, index]) => byte_get(value, index, None),
+        ("get", [value, index, default]) => byte_get(value, index, Some(default.clone())),
+        ("set", [value, index, item]) => byte_set(value, index, item),
+        ("copy", [value]) => byte_copy(value),
+        ("slice", [value, start]) => {
+            let end = byte_count(value)?;
+            byte_slice(value, start, &end)
+        }
+        ("slice", [value, start, end]) => byte_slice(value, start, end),
+        ("u8" | "s8", [Value::Number(number)]) if (-128..=255).contains(number) => {
+            let raw = (*number as i8) as u8;
+            Ok(Value::Number(if method == "u8" {
+                raw as i64
+            } else {
+                raw as i8 as i64
+            }))
+        }
+        ("u8" | "s8", [_]) => Err(format!(
+            "bytes/{method} expects a value in the range -128..255"
+        )),
+        _ => Err(format!(
+            "std.native.Bytes/{method} received unsupported arguments"
+        )),
+    }
 }
 
 /// Structural evaluator arms that are ordinary callable values.  Rust keeps
@@ -819,7 +1489,6 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "char?",
             "number?",
             "integer?",
-            "decimal?",
             "long?",
             "double?",
             "boolean?",
@@ -840,7 +1509,6 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "casable?",
             "watchable?",
             "applicable?",
-            "pair?",
             "mutable?",
             "persistent?",
             "bytes?",
@@ -878,7 +1546,7 @@ fn register_macro(namespace: &str, name: &str, function: Rc<Function>) -> Result
         active
             .try_borrow_mut()
             .map_err(|_| "macro registry is busy".into())
-            .and_then(|mut opt| {
+            .and_then(|opt| {
                 if let Some(macros) = opt.as_ref() {
                     macros
                         .try_borrow_mut()
@@ -1148,7 +1816,7 @@ fn macro_environment() -> Result<Value, String> {
 fn macroexpand_call(
     name: &str,
     invocation: &[Form],
-    env: &mut HashMap<String, Value>,
+    _env: &mut HashMap<String, Value>,
 ) -> Result<Option<Form>, String> {
     let function = match resolve_macro(name) {
         Some(function) => function,

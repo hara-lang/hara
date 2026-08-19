@@ -111,7 +111,6 @@ impl GeneratedNamespaceConfig {
         let mut exposed_foundation = None;
         let mut override_seen = false;
         let mut blank = false;
-        let mut intrinsics_seen = false;
         let mut config_seen = false;
         let mut native_flavor = None;
         let mut native_imports = Vec::new();
@@ -140,18 +139,7 @@ impl GeneratedNamespaceConfig {
                     )?;
                 }
                 "intrinsics" => {
-                    // Legacy top-level :intrinsics is accepted for backward compatibility,
-                    // but the spec places it inside :config.
-                    if intrinsics_seen {
-                        return Err("ns accepts only one :intrinsics clause".into());
-                    }
-                    intrinsics_seen = true;
-                    if values.len() != 2 {
-                        return Err(":intrinsics expects :all or an options map".into());
-                    }
-                    if !matches!(&values[1], Form::Keyword(name) if name == "all") {
-                        parse_intrinsics(&values[1], &mut excluded, &mut overrides)?;
-                    }
+                    return Err(":intrinsics is valid only inside ns :config".into());
                 }
                 "require" => requires.extend(values[1..].iter().cloned()),
                 "use" => uses.extend(values[1..].iter().cloned()),
@@ -563,6 +551,9 @@ fn parse_intrinsics(
     excluded: &mut HashSet<String>,
     overrides: &mut HashMap<String, String>,
 ) -> Result<(), String> {
+    if matches!(form, Form::Keyword(name) if name == "all") {
+        return Ok(());
+    }
     let options = match form {
         Form::Map(options) => options,
         _ => return Err(":intrinsics expects :all or an options map".into()),
@@ -583,15 +574,15 @@ fn parse_intrinsics(
                     }
                 }
             }
-            "aliases" => {
+            "alias" => {
                 let aliases = match value {
                     Form::Map(aliases) => aliases,
-                    _ => return Err(":intrinsics :aliases expects a map".into()),
+                    _ => return Err(":intrinsics :alias expects a map".into()),
                 };
                 for (library_form, alias_form) in aliases {
                     let library = library(symbol(
                         library_form,
-                        ":intrinsics :aliases expects library symbols",
+                        ":intrinsics :alias expects library symbols",
                     )?)?;
                     let alias =
                         symbol(alias_form, "Intrinsic aliases must be unqualified symbols")?;
@@ -603,7 +594,7 @@ fn parse_intrinsics(
                     }
                 }
             }
-            other => return Err(format!("Unsupported :intrinsics option: :{other}")),
+            other => return Err(format!("Unsupported :config :intrinsics option: :{other}")),
         }
     }
     Ok(())
@@ -668,6 +659,10 @@ fn known_namespace(value: &str) -> bool {
             .any(|(_, namespace, _)| *namespace == value)
 }
 fn canonical(namespace: &str, method: &str) -> String {
+    let namespace = normalize_namespace(namespace);
+    if namespace.starts_with("std.native.") {
+        return format!("{namespace}/{method}");
+    }
     if namespace == "std.foundation" {
         return format!("std.foundation/{method}");
     }
@@ -675,46 +670,17 @@ fn canonical(namespace: &str, method: &str) -> String {
     // function calls. Keep their canonical names so `co/yield` and
     // `co/await` remain visible to the fiber evaluator instead of routing
     // through the synchronous Foundation wrapper namespace.
-    if normalize_namespace(namespace) == "std.foundation.coroutine" {
+    if namespace == "std.foundation.coroutine" {
         return format!("std.foundation.coroutine/{method}");
     }
     if let Some((_, _, alias)) = LIBRARIES
         .iter()
-        .find(|(_, library_namespace, _)| *library_namespace == normalize_namespace(namespace))
+        .find(|(_, library_namespace, _)| *library_namespace == namespace)
     {
         return format!("{alias}/{method}");
     }
-    match (normalize_namespace(namespace), method) {
+    match (namespace, method) {
         ("std.foundation", method) => method.into(),
-        ("std.native.Maths", method) => format!("std.native.Maths/{method}"),
-        ("std.native.Num", method) => format!("std.native.Num/{method}"),
-        ("std.native.Bits", method) => format!("std.native.Bits/{method}"),
-        ("std.native.String", method) => format!("str/{method}"),
-        ("std.native.Bytes", "new") => "bytes".into(),
-        ("std.native.Bytes", "instance?") => "bytes?".into(),
-        ("std.native.Bytes", method) => format!("bytes/{method}"),
-        ("std.native.File", method) => format!("file/{method}"),
-        ("std.native.Socket", method) => format!("socket/{method}"),
-        ("std.native.Promise", "run") => "promise/run".into(),
-        ("std.native.Promise", "instance?") => "promise?".into(),
-        ("std.native.Promise", method) => format!("promise/{method}"),
-        ("std.native.Coroutine", "instance?") => "std.foundation.coroutine/coroutine?".into(),
-        ("std.native.Coroutine", method) => format!("std.foundation.coroutine/{method}"),
-        ("std.native.Arr", "new") => "array".into(),
-        ("std.native.Arr", "instance?") => "array?".into(),
-        ("std.native.Obj", "new") => "object".into(),
-        ("std.native.Obj", "instance?") => "object?".into(),
-        ("std.native.Runtime", "load-string" | "macroexpand-1" | "gensym" | "var-sym") => {
-            method.into()
-        }
-        ("std.native.Runtime", method) => format!("std.native.Runtime/{method}"),
-        ("std.native.Printer", method) => method.into(),
-        ("std.native.Edn", method) => format!("std.native.Edn/{method}"),
-        ("std.native.Json", method) => format!("std.native.Json/{method}"),
-        ("std.native.RegExp", "instance?") => "regexp?".into(),
-        ("std.native.UUID", "instance?") => "uuid?".into(),
-        ("std.native.Error", method) => format!("std.native.Error/{method}"),
-        ("std.native.Iter", method) => format!("std.native.Iter/{method}"),
         ("std.lib.string", method) => format!("str/{method}"),
         ("std.lib.promise", "then") => "promise/then".into(),
         ("std.lib.promise", "catch") => "promise/catch".into(),

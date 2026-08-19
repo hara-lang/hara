@@ -74,19 +74,76 @@ impl Compiler {
                 Some(span.start),
             ));
         }
-        let async_function = metadata_flag(children[1].form, "async")?;
-        let suspend_allowed = async_function
-            || children[2..]
-                .iter()
-                .any(|child| self.form_may_suspend(child.form));
-        self.compile_function(
-            None,
-            &children[1],
-            &children[2..],
-            span,
-            async_function,
-            suspend_allowed,
-        )
+        if matches!(
+            crate::core::form_without_metadata(children[1].form),
+            Form::Vector(_)
+        ) {
+            let async_function = metadata_flag(children[1].form, "async")?;
+            let suspend_allowed = async_function
+                || children[2..]
+                    .iter()
+                    .any(|child| self.form_may_suspend(child.form));
+            return self.compile_function(
+                None,
+                &children[1],
+                &children[2..],
+                span,
+                async_function,
+                suspend_allowed,
+            );
+        }
+
+        let mut count = 0usize;
+        for clause in &children[1..] {
+            let clause_forms = match crate::core::form_without_metadata(clause.form) {
+                Form::List(forms) => forms,
+                _ => {
+                    return Err(CompileError::new(
+                        CompileErrorKind::UnsupportedForm,
+                        "fn multi-arity clauses must be lists",
+                        Some(clause.span.start),
+                    ))
+                }
+            };
+            let clause_children = self.list_children(clause_forms, clause.span, clause.children);
+            if clause_children.len() < 2 {
+                return Err(CompileError::new(
+                    CompileErrorKind::Arity,
+                    "fn clause expects parameters and a body",
+                    Some(clause.span.start),
+                ));
+            }
+            let async_function = metadata_flag(clause_children[0].form, "async")?;
+            let suspend_allowed = async_function
+                || clause_children[1..]
+                    .iter()
+                    .any(|child| self.form_may_suspend(child.form));
+            self.compile_function(
+                None,
+                &clause_children[0],
+                &clause_children[1..],
+                span,
+                async_function,
+                suspend_allowed,
+            )?;
+            count += 1;
+            if count > u8::MAX as usize {
+                return Err(CompileError::new(
+                    CompileErrorKind::Limit,
+                    "fn supports at most 255 arity clauses",
+                    Some(span.start),
+                ));
+            }
+        }
+        let name = self.name_constant("<anonymous>", span)?;
+        self.emit(
+            Instruction::MakeMultiArity {
+                name,
+                count: count as u8,
+            },
+            Some(span.start),
+        );
+        Ok(())
     }
 
     /// Detects an await in one function body. This enables OpenResty-style
@@ -132,7 +189,7 @@ impl Compiler {
             Form::List(_) => {
                 return Err(CompileError::new(
                     CompileErrorKind::UnsupportedForm,
-                    "fn multi-arity is not supported",
+                    "function parameters must be a vector",
                     Some(params.span.start),
                 ))
             }
@@ -305,7 +362,7 @@ impl Compiler {
                 } else if self.ctx().scopes.resolve(name).is_some()
                     || (!self.visible_global(name)
                         && Primitive::from_symbol(name).is_none()
-                        && !crate::core::is_bytecode_callable(name))
+                        && !self.visible_bytecode_callable(name))
                 {
                     // An enclosing lexical binding always wins over a Var or
                     // builtin with the same name. Everything else that is not
@@ -388,7 +445,8 @@ impl Compiler {
                         // (catch name body) or (catch Class name body...).
                         "catch" => {
                             let marked = bound.len();
-                            if children.len() == 3 {
+                            if matches!(children.get(1).map(|child| child.form), Some(Form::Symbol(name)) if name != "Exception" && name != "Throwable")
+                            {
                                 if let Form::Symbol(name) = children[1].form {
                                     bound.push(name.clone());
                                 }
@@ -559,8 +617,33 @@ impl Compiler {
                                     }
                                 }
                                 _ => {
-                                    for c in &children[1..] {
-                                        self.collect_free(c, bound, free);
+                                    for clause in &children[1..] {
+                                        let clause_marked = bound.len();
+                                        match crate::core::form_without_metadata(clause.form) {
+                                            Form::List(parts) if !parts.is_empty() => {
+                                                let parts = self.list_children(
+                                                    parts,
+                                                    clause.span,
+                                                    clause.children,
+                                                );
+                                                if let Some(params) = parts.first() {
+                                                    if let Form::Vector(params) =
+                                                        crate::core::form_without_metadata(
+                                                            params.form,
+                                                        )
+                                                    {
+                                                        for param in params {
+                                                            collect_pattern_names(param, bound);
+                                                        }
+                                                    }
+                                                }
+                                                for body in &parts[1..] {
+                                                    self.collect_free(body, bound, free);
+                                                }
+                                            }
+                                            _ => self.collect_free(clause, bound, free),
+                                        }
+                                        bound.truncate(clause_marked);
                                     }
                                 }
                             }
@@ -582,7 +665,7 @@ impl Compiler {
                                 && !free.iter().any(|(f, _)| f == head)
                                 && (self.ctx().scopes.resolve(head).is_some()
                                     || (!self.visible_global(head)
-                                        && !crate::core::is_bytecode_callable(head)))
+                                        && !self.visible_bytecode_callable(head)))
                             {
                                 free.push((head.clone(), Some(children[0].span.start)));
                             }

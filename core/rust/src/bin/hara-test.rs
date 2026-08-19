@@ -85,9 +85,7 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
                     let namespace = test_namespace
                         .as_deref()
                         .expect("a namespace declaration made the test namespace available");
-                    format!(
-                        "(eval-in-ns (quote {namespace}) (quote [(do {form} nil)]))"
-                    )
+                    format!("(eval-in-ns (quote {namespace}) (quote [(do {form} nil)]))")
                 } else {
                     format!("(do {form} nil)")
                 };
@@ -97,9 +95,9 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
                 namespace_ready |= declares_namespace;
             }
             let final_source = match test_namespace.as_deref() {
-                Some(namespace) => format!(
-                    "(pr-str (eval-in-ns (quote {namespace}) (quote [{final_form}])))"
-                ),
+                Some(namespace) => {
+                    format!("(pr-str (eval-in-ns (quote {namespace}) (quote [{final_form}])))")
+                }
                 None => format!("(pr-str {final_form})"),
             };
             let output = kernel
@@ -469,11 +467,7 @@ mod tests {
     #[test]
     fn preserves_namespace_aliases_across_top_level_test_forms() {
         let root = repository_root();
-        let summary = run_file(
-            root,
-            &root.join("lib/test/std/block/heal/edit_test.hal"),
-        )
-        .unwrap();
+        let summary = run_file(root, &root.join("lib/test/std/block/heal/edit_test.hal")).unwrap();
         assert!(summary.passed, "{}", summary.failure_message());
         assert_eq!(summary.checks, 11);
         assert_eq!(summary.passed_checks, 11);

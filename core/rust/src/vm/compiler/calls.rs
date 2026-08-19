@@ -43,7 +43,7 @@ impl Compiler {
                 let index = self.global_name_constant(name, span)?;
                 self.emit(Instruction::GetGlobal(index), Some(span.start))
             }
-            None if crate::core::is_bytecode_callable(name) => {
+            None if self.visible_bytecode_callable(name) => {
                 let index = self.name_constant(name, span)?;
                 self.emit(Instruction::BuiltinValue(index), Some(span.start))
             }

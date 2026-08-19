@@ -1,10 +1,10 @@
 package hara.truffle;
 
-/** Optional Java implementation of std.foundation.coroutine. */
+/** Native Coroutine substrate used by the source-owned Foundation coroutine library. */
 public final class CoroutineLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
-    return "std.foundation.coroutine";
+    return "std.native.Coroutine";
   }
 
   @Override
@@ -14,8 +14,8 @@ public final class CoroutineLibraryProvider implements HaraLibraryProvider {
 
   @Override
   public void install(HaraContext context) {
-    context.collectBuiltins(namespace(), () -> {
-      HaraStaticLibrary.install(context, namespace(), StdFoundationCoroutine.class);
+    context.collectBuiltins("std.foundation.coroutine", () -> {
+      HaraStaticLibrary.install(context, "std.foundation.coroutine", StdFoundationCoroutine.class);
     });
   }
 }

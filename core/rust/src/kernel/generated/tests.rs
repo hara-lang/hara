@@ -4,7 +4,7 @@ use crate::kernel::parse_forms;
 #[test]
 fn configures_defaults_exclusions_aliases_and_requires_without_sources() {
     let forms = parse_forms(
-        "(:intrinsics {:exclude [bytes] :aliases {string text}}) \
+        "(:config {:intrinsics {:exclude [bytes] :alias {string text}}}) \
              (:require [hara.lib.string :as s :refer [trim]])",
     )
     .unwrap();
@@ -23,6 +23,14 @@ fn configures_defaults_exclusions_aliases_and_requires_without_sources() {
     )
     .unwrap_err()
     .contains("missing generated namespace"));
+}
+
+#[test]
+fn rejects_standalone_intrinsics_clause() {
+    let forms = parse_forms("(:intrinsics :all)").unwrap();
+    assert!(GeneratedNamespaceConfig::configure(&forms)
+        .unwrap_err()
+        .contains(":intrinsics is valid only inside ns :config"));
 }
 
 #[test]
@@ -177,6 +185,30 @@ fn native_aliases_are_universal_and_cannot_be_rebound() {
             .rewrite(parse_forms("Iter/iter-map").unwrap().remove(0))
             .to_string(),
         "std.native.Iter/iter-map"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("String/encode-utf8").unwrap().remove(0))
+            .to_string(),
+        "std.native.String/encode-utf8"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("str/encode-utf8").unwrap().remove(0))
+            .to_string(),
+        "str/encode-utf8"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("Bytes/slice").unwrap().remove(0))
+            .to_string(),
+        "std.native.Bytes/slice"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("bytes/slice").unwrap().remove(0))
+            .to_string(),
+        "bytes/slice"
     );
     assert!(GeneratedNamespaceConfig::configure(
         &parse_forms("(:require [std.native.Maths :as Iter])").unwrap()

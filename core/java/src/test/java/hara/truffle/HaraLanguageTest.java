@@ -978,24 +978,25 @@ public class HaraLanguageTest {
   }
 
   @Test
-  public void supportsOrderedTypedGuestCatchClauses() {
+  public void supportsOrderedGuestErrorCodeCatchClauses() {
     try (Context context = context()) {
       assertEquals(
           7,
           context
               .eval(
                   HaraLanguage.ID,
-                  "(defstruct Problem [value]) "
-                      + "(try (throw (Problem 7)) "
-                      + "(catch Other error 0) "
-                      + "(catch Problem error (:value error)))")
+                  "(try (throw (ex :problem/value {:ex/message \"problem\" :value 7})) "
+                      + "(catch :problem/other error 0) "
+                      + "(catch :problem/value error (:value (ex-data error))))")
               .asLong());
       PolyglotException unmatched =
           assertThrows(
               PolyglotException.class,
               () ->
                   context.eval(
-                      HaraLanguage.ID, "(try (throw (Problem 9)) (catch Other error error))"));
+                      HaraLanguage.ID,
+                      "(try (throw (ex :problem/value {:ex/message \"problem\"})) "
+                          + "(catch :problem/other error error))"));
       assertTrue(unmatched.isGuestException());
     }
   }
@@ -1047,7 +1048,7 @@ public class HaraLanguageTest {
           42,
           context.eval(HaraLanguage.ID, "(load-string \"(def loaded 41)\") (+ loaded 1)").asLong());
 
-      Path file = Files.createTempFile("hara-l0-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-", ".hal");
       try {
         Files.writeString(file, "(def from-file 42)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1063,8 +1064,8 @@ public class HaraLanguageTest {
   public void loadsPackagedHaraResourcesTransactionally() {
     try (Context context = context()) {
       assertEquals(
-          42, context.eval(HaraLanguage.ID, "(load-resource \"hara/l0-resource.hal\")").asLong());
-      assertEquals(42, context.eval(HaraLanguage.ID, "l0-resource-answer").asLong());
+          42, context.eval(HaraLanguage.ID, "(load-resource \"hara/core-language-resource.hal\")").asLong());
+      assertEquals(42, context.eval(HaraLanguage.ID, "core-language-resource-answer").asLong());
       assertTrue(
           assertThrows(
                   PolyglotException.class,
@@ -1092,7 +1093,7 @@ public class HaraLanguageTest {
               .getMessage()
               .contains("Unbound symbol"));
 
-      Path file = Files.createTempFile("hara-l0-failing-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-failing-", ".hal");
       try {
         Files.writeString(file, "(def file-leaked 10) (throw :failed-file)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1113,7 +1114,7 @@ public class HaraLanguageTest {
   @Test
   public void requireCachesCanonicalModulesAndLoadFileIncrementsRevision() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-module-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-module-", ".hal");
       try {
         Files.writeString(file, "(def module-answer 41)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1146,7 +1147,7 @@ public class HaraLanguageTest {
   @Test
   public void requirePreservesCallerNamespaceAndSupportsAliases() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-alias-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-alias-", ".hal");
       try {
         Files.writeString(file, "(ns library) (def answer 42)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1168,7 +1169,7 @@ public class HaraLanguageTest {
   @Test
   public void requireSupportsSelectiveLiveReferences() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-refer-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-refer-", ".hal");
       try {
         Files.writeString(file, "(ns library) (def answer 41) (def other 7)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1184,7 +1185,7 @@ public class HaraLanguageTest {
   @Test
   public void requireSupportsSelectiveMacroReferences() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-macro-refer-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-macro-refer-", ".hal");
       try {
         Files.writeString(
             file, "(ns library-macros) (defmacro unless [test body] `(if ~test nil ~body))");
@@ -1200,7 +1201,7 @@ public class HaraLanguageTest {
   @Test
   public void reloadingARequiredMacroModuleRefreshesNewCompilations() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-macro-reload-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-macro-reload-", ".hal");
       try {
         Files.writeString(file, "(ns reload-macros) (defmacro answer [] 41)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1221,7 +1222,7 @@ public class HaraLanguageTest {
   @Test
   public void requireRejectsCyclesAndRollsBackPartialModules() throws Exception {
     try (Context context = context()) {
-      Path directory = Files.createTempDirectory("hara-l0-cycle-");
+      Path directory = Files.createTempDirectory("hara-core-language-cycle-");
       Path first = directory.resolve("first.hal");
       Path second = directory.resolve("second.hal");
       try {
@@ -1255,7 +1256,7 @@ public class HaraLanguageTest {
   @Test
   public void requireRecordsDeterministicModuleDependencies() throws Exception {
     try (Context context = context()) {
-      Path directory = Files.createTempDirectory("hara-l0-deps-");
+      Path directory = Files.createTempDirectory("hara-core-language-deps-");
       Path child = directory.resolve("child.hal");
       Path parent = directory.resolve("parent.hal");
       try {
@@ -1776,7 +1777,9 @@ public class HaraLanguageTest {
   @Test
   public void exposesTheSharedProtocolInventoryFromFoundation() throws Exception {
     String contract =
-        Files.readString(Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocols.edn"));
+        Files.readString(
+            specsRegistry()
+                .resolve("01-lang/001-language/draft/conformance/protocols.edn"));
     Matcher names = Pattern.compile(":name\\s+(I[A-Za-z]+)").matcher(contract);
     Set<String> protocols = new LinkedHashSet<>();
     while (names.find()) {
@@ -1899,8 +1902,37 @@ public class HaraLanguageTest {
             Path.of("lib/test-fixtures/std/foundation/protocol_functionality.hal"));
     String catalog =
         Files.readString(
-            Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn"));
-    assertEquals(90, catalog.split("\\{:protocol ", -1).length - 1);
+            specsRegistry()
+                .resolve(
+                    "01-lang/001-language/draft/conformance/protocol-method-cases.edn"));
+    String protocols =
+        Files.readString(
+            specsRegistry()
+                .resolve("01-lang/001-language/draft/conformance/protocols.edn"));
+    Set<String> specifiedMethods = new LinkedHashSet<>();
+    Matcher protocolEntries =
+        Pattern.compile(
+                "\\{:name\\s+(I[A-Za-z]+).*?:methods\\s+\\{([^}]*)\\}", Pattern.DOTALL)
+            .matcher(protocols);
+    while (protocolEntries.find()) {
+      String protocol = protocolEntries.group(1);
+      Matcher methods = Pattern.compile("([a-z][a-z?\\-]*)\\s+-?\\d+").matcher(protocolEntries.group(2));
+      while (methods.find()) specifiedMethods.add(protocol + "/" + methods.group(1));
+    }
+    Set<String> catalogMethods = new LinkedHashSet<>();
+    Matcher catalogEntries =
+        Pattern.compile("\\{:protocol\\s+(I[A-Za-z]+)\\s+:method\\s+([^\\s]+)")
+            .matcher(catalog);
+    while (catalogEntries.find()) {
+      catalogMethods.add(catalogEntries.group(1) + "/" + catalogEntries.group(2));
+    }
+    assertEquals(
+        "Behavioral protocol cases must exactly close the authoritative method surface",
+        specifiedMethods,
+        catalogMethods);
+    assertEquals(105, catalog.split("\\{:protocol ", -1).length - 1);
+    int expectedFailureCount =
+        catalog.split(":case :unsupported-receiver", -1).length - 1;
     Matcher methodVars =
         Pattern.compile(
                 "(?m)^\\s*\\[?\\(protocol-case\\s+:[^\\s]+\\s+:[^\\s]+\\s+"
@@ -1910,7 +1942,7 @@ public class HaraLanguageTest {
     try (Context context = context()) {
       String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
-      assertEquals(89, result.split(":pass true", -1).length - 1);
+      assertEquals(105, result.split(":pass true", -1).length - 1);
 
       int methodCount = 0;
       while (methodVars.find()) {
@@ -1925,7 +1957,7 @@ public class HaraLanguageTest {
             methodVar + " returned an uncategorized arity error: " + error.getMessage(),
             error.getMessage().contains("protocol/arity"));
       }
-      assertEquals(89, methodCount);
+      assertEquals(105, methodCount);
 
       int failureCount = 0;
       for (String line : source.split("\\R")) {
@@ -1974,7 +2006,7 @@ public class HaraLanguageTest {
                 + uncategorizedError,
             categorizedCall != null);
       }
-      assertEquals(89, failureCount);
+      assertEquals(expectedFailureCount, failureCount);
       assertTrue(
           context
               .eval(
@@ -2547,7 +2579,55 @@ public class HaraLanguageTest {
     }
   }
 
+  @Test
+  public void catchSelectorsMatchStructuredErrorCodes() {
+    try (Context context = context()) {
+      assertEquals(
+          ":file/not-found",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(try (throw (ex :file/not-found {})) "
+                      + "(catch :socket/closed e :wrong) "
+                      + "(catch :file/not-found e (:ex/code (ex-data e))))")
+              .toString());
+      assertEquals(
+          ":file-error",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(try (throw (ex :file/not-found {:ex/message \"missing\"})) "
+                      + "(catch [:file/not-found :file/permission-denied] e :file-error))")
+              .toString());
+      assertEquals(
+          "42",
+          context.eval(HaraLanguage.ID, "(try (throw (ex :test/x {:ex/message \"x\"})) (catch e 42))").toString());
+      assertEquals(
+          ":failure/code",
+          context.eval(HaraLanguage.ID, "(ex-message (ex :failure/code {}))").asString());
+      assertEquals(
+          "[1 1]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [exception (ex :test/provenance {})] "
+                      + "(try (throw exception) "
+                      + "(catch caught "
+                      + "(let [provenance (ex-provenance caught)] "
+                      + "[(:line (:ex/created-at provenance)) "
+                      + "(count (:ex/throws provenance))]))))")
+              .toString());
+    }
+  }
+
   private static Context context() {
     return Context.newBuilder(HaraLanguage.ID).allowIO(IOAccess.ALL).build();
+  }
+
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 }

@@ -4,7 +4,6 @@ import hara.lang.data.*;
 import org.junit.Test;
 
 import java.math.BigDecimal;
-import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -19,13 +18,13 @@ public class ParserTest {
     assertEquals(0xFFL, Parser.LispReader.readString("0xFF", null));
     RuntimeException integerSuffix =
         assertThrows(RuntimeException.class, () -> Parser.LispReader.readString("123N", null));
-    assertTrue(integerSuffix.getCause().getMessage().contains("Legacy numeric suffixes N and M"));
+    assertTrue(integerSuffix.getCause().getMessage().contains("legacy numeric suffixes N and M"));
     RuntimeException decimalSuffix =
         assertThrows(RuntimeException.class, () -> Parser.LispReader.readString("123.45M", null));
-    assertTrue(decimalSuffix.getCause().getMessage().contains("Legacy numeric suffixes N and M"));
-    assertEquals(
-        new BigInteger("9223372036854775808"),
-        Parser.LispReader.readString("9223372036854775808", null));
+    assertTrue(decimalSuffix.getCause().getMessage().contains("legacy numeric suffixes N and M"));
+    assertThrows(
+        RuntimeException.class,
+        () -> Parser.LispReader.readString("9223372036854775808", null));
   }
 
   @Test
@@ -38,9 +37,12 @@ public class ParserTest {
 
   @Test
   public void l0ConformanceCorpusIsReadableEdn() throws Exception {
+    String registry = System.getenv().getOrDefault("HARA_SPECS_REGISTRY", "../hara-specs-registry");
     Object corpus =
         Parser.LispReader.readString(
-            Files.readString(Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn")), null);
+            Files.readString(
+                Path.of(registry, "01-lang/001-language/draft/conformance/core.edn")),
+            null);
     assertTrue(corpus instanceof hara.lang.data.types.IMapType);
     hara.lang.data.types.IMapType map = (hara.lang.data.types.IMapType) corpus;
     assertEquals("0.0.0-alpha", map.lookup(Keyword.create("spec/version")));

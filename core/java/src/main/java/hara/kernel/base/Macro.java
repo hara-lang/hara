@@ -16,6 +16,7 @@ import hara.lang.data.Vector;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
 import hara.lang.protocol.IFn;
+import hara.lang.protocol.IExInfo;
 import hara.lang.protocol.ILookup;
 import hara.lang.protocol.INth;
 import hara.lang.protocol.IPair;
@@ -401,8 +402,34 @@ public interface Macro {
 
     @Module.Fn(name = "fn", complete = true, env = true, vargs = true)
     @Module.Var(control = true)
-    public static <ITR> IFn fnExpr(IEnv env, ILinearType bindings, ITR args) {
-      return new Env.FnEval(null, env.getRuntime(), env, bindings, list(args).cons(symbol("do")));
+    public static <ITR> IFn fnExpr(IEnv env, Object bindings, ITR args) {
+      if (!(bindings instanceof hara.lang.data.List)) {
+        if (!(bindings instanceof ILinearType)) {
+          throw new Ex.Syntax("fn expects a parameter vector or arity clauses");
+        }
+        return new Env.FnEval(
+            null, env.getRuntime(), env, (ILinearType) bindings, list(args).cons(symbol("do")));
+      }
+      java.util.List<Env.FnEval> functions = new java.util.ArrayList<>();
+      Iterator clauses = Iter.concat(Iter.objects(bindings), Iter.iter(args));
+      while (clauses.hasNext()) {
+        Object clauseValue = clauses.next();
+        if (!(clauseValue instanceof hara.lang.data.List)) {
+          throw new Ex.Syntax("fn multi-arity clauses must be lists");
+        }
+        ILinearType clause = (ILinearType) clauseValue;
+        if (clause.count() < 2 || !(clause.nth(0) instanceof ILinearType)) {
+          throw new Ex.Syntax("fn clause expects parameters and a body");
+        }
+        functions.add(
+            new Env.FnEval(
+                null,
+                env.getRuntime(),
+                env,
+                (ILinearType) clause.nth(0),
+                list(Iter.drop(clause.iterator(), 1)).cons(symbol("do"))));
+      }
+      return new Env.FnMulti(functions);
     }
 
     @Module.Fn(name = "defn", complete = true, env = true, vargs = true)
@@ -552,15 +579,25 @@ public interface Macro {
         boolean caught = false;
         while (cit.hasNext()) {
           List clause = (List) cit.next();
-          Symbol typeSym = (Symbol) clause.nth(1);
-          Symbol bindSym = (Symbol) clause.nth(2);
-          Class type = (Class) Eval.eval(typeSym, env);
+          Object selector = clause.nth(1);
+          Symbol bindSym;
+          int bodyStart;
+          if (selector instanceof Symbol symbol
+              && !symbol.getName().equals("Exception")
+              && !symbol.getName().equals("Throwable")) {
+            bindSym = symbol;
+            selector = null;
+            bodyStart = 2;
+          } else {
+            bindSym = (Symbol) clause.nth(2);
+            bodyStart = 3;
+          }
 
-          if (type.isInstance(cause)) {
+          if (catchMatches(cause, selector, env)) {
             Eval.LocalEnv localEnv = new Eval.LocalEnv(env);
             localEnv.addBinding(bindSym, cause);
 
-            Iterator bit = Iter.drop(clause.iterator(), 3);
+            Iterator bit = Iter.drop(clause.iterator(), bodyStart);
             while (bit.hasNext()) {
               res = Eval.eval(bit.next(), localEnv);
             }
@@ -584,14 +621,47 @@ public interface Macro {
       return res;
     }
 
+    private static boolean catchMatches(Throwable error, Object selector, IEnv env) {
+      if (selector == null) return true;
+      if (selector instanceof Symbol symbol) {
+        Object type = Eval.eval(symbol, env);
+        return type instanceof Class && ((Class) type).isInstance(error);
+      }
+      Object data = error instanceof IExInfo info ? info.getData() : null;
+      Object code =
+          data instanceof IMapType map ? map.lookup(Keyword.create("ex", "code")) : null;
+      if (selector instanceof Keyword keyword) {
+        if (keyword.getNamespace() == null) {
+          throw new Ex.Syntax("catch error code must be a namespaced keyword");
+        }
+        return keyword.equals(code);
+      }
+      if (selector instanceof ILinearType selectors) {
+        if (selectors.count() == 0) {
+          throw new Ex.Syntax("catch error code vector must not be empty");
+        }
+        for (int index = 0; index < selectors.count(); index++) {
+          Object candidate = selectors.nth(index);
+          if (!(candidate instanceof Keyword keyword) || keyword.getNamespace() == null) {
+            throw new Ex.Syntax(
+                "catch error code vector must contain namespaced keywords");
+          }
+          if (candidate.equals(code)) return true;
+        }
+        return false;
+      }
+      throw new Ex.Syntax(
+          "catch selector must be a namespaced keyword, a non-empty vector of namespaced keywords, or omitted");
+    }
+
     @Module.Fn(name = "throw", complete = true, env = true)
     @Module.Var(control = true)
     public static Object throwExpr(IEnv env, Object expr) {
       Object ex = Eval.eval(expr, env);
-      if (ex instanceof Throwable) {
+      if (ex instanceof Throwable && ex instanceof IExInfo) {
         throw Ex.Sneaky((Throwable) ex);
       } else {
-        throw new Ex.Runtime("Throw requires a Throwable, got: " + ex);
+        throw new Ex.Runtime("throw expects an Exception value created by ex");
       }
     }
 
