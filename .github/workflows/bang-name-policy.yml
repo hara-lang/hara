@@ -62,13 +62,17 @@ jobs:
 
           (defn audit-unit
             [summary unit]
-            (let [migration (bang/plan [unit])]
-              {:valid (and (:valid summary) (:valid migration))
+            (let [analyzed (bang/unit-analysis unit)
+                  findings (get-in analyzed [:analysis :reader-findings])
+                  records (bang/bang-definition-records [analyzed])]
+              {:valid (and (:valid summary)
+                           (empty? findings)
+                           (empty? records))
                :files (inc (:files summary))
-               :records (+ (:records summary) (:records migration))
-               :changed/files (+ (:changed/files summary) (:changed/files migration))
-               :diagnostics (into (:diagnostics summary)
-                                  (:diagnostics migration))}))
+               :records (+ (:records summary) (count records))
+               :changed/files 0
+               :diagnostics (into (into (:diagnostics summary) findings)
+                                  records)}))
 
           (defn audit-units
             [units]
