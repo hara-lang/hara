@@ -13,10 +13,15 @@ on:
       - 'core/rust/standard-library.namespaces'
       - 'core/rust/src/core/protocol.rs'
       - 'core/rust/src/kernel/schema.rs'
+      - 'core/rust/src/vm/artifact.rs'
+      - 'core/rust/src/vm/artifact/tests.rs'
       - 'core/rust/tests/std_typed_schema.rs'
+      - 'core/rust/tests/resource_discovery.rs'
       - 'core/java/src/main/java/hara/truffle/HalcSchema.java'
       - 'core/java/src/main/java/hara/truffle/HaraContext.java'
+      - 'core/java/src/main/java/hara/truffle/bytecode/HbcCodec.java'
       - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
+      - 'core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java'
       - 'scripts/audit-std-typed-boundary.sh'
       - '.github/workflows/std-typed-schema.yml'
   push:
@@ -31,10 +36,15 @@ on:
       - 'core/rust/standard-library.namespaces'
       - 'core/rust/src/core/protocol.rs'
       - 'core/rust/src/kernel/schema.rs'
+      - 'core/rust/src/vm/artifact.rs'
+      - 'core/rust/src/vm/artifact/tests.rs'
       - 'core/rust/tests/std_typed_schema.rs'
+      - 'core/rust/tests/resource_discovery.rs'
       - 'core/java/src/main/java/hara/truffle/HalcSchema.java'
       - 'core/java/src/main/java/hara/truffle/HaraContext.java'
+      - 'core/java/src/main/java/hara/truffle/bytecode/HbcCodec.java'
       - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
+      - 'core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java'
       - 'scripts/audit-std-typed-boundary.sh'
       - '.github/workflows/std-typed-schema.yml'
   workflow_dispatch:
@@ -58,11 +68,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Check out the CLI specification registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Mirror registry at Rust include path
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/../hara-specs-registry"
+          ln -s "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
       - uses: dtolnay/rust-toolchain@stable
       - name: Run focused Rust schema parity
         run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema
-      - name: Load std.typed schema source directly
-        run: scripts/runtime/run-lib-tests core/lib/test/std/typed/schema_test.hal
+      - name: Run Rust HBC schema round-trip parity
+        run: RUSTFLAGS=-Awarnings cargo test --manifest-path core/rust/Cargo.toml --lib programs_round_trip_and_execute
+      - name: Load and extend std.typed schema through the native runtime
+        run: cargo test --manifest-path core/rust/Cargo.toml --test resource_discovery typed_bootstrap_is_extensible_and_inference_is_loadable
       - name: Run portable property facts on Rust
         run: scripts/runtime/run-lib-tests core/lib/test/std/typed/properties_test.hal
       - name: Run portable explanation facts on Rust
@@ -127,3 +149,5 @@ jobs:
           cache-dependency-path: core/java/pom.xml
       - name: Run focused Truffle schema parity
         run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedSchemaTest test --file core/java/pom.xml
+      - name: Run Truffle HBC schema round-trip parity
+        run: mvn -B -Ptruffle -Dtest=hara.truffle.bytecode.HbcCodecTest#alphaTypedProgramsRoundTripCanonically test --file core/java/pom.xml

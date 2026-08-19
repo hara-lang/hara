@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaField {
     pub name: Form,
+    pub properties: Option<Form>,
     pub value_type: SchemaType,
 }
 
@@ -26,8 +27,13 @@ pub enum SchemaType {
     Reference(String),
     Union(Vec<SchemaType>),
     Vector(Box<SchemaType>),
+    Set(Box<SchemaType>),
     Tuple(Vec<SchemaType>),
     Map(Vec<SchemaField>),
+    WithProperties {
+        schema: Box<SchemaType>,
+        properties: Form,
+    },
     Function(Vec<FunctionSchema>),
     Enum(Vec<Form>),
     Extension { head: String, arguments: Vec<Form> },
@@ -58,6 +64,9 @@ pub fn schema_shorthand(schema: &SchemaType) -> Form {
         SchemaType::Vector(item) => {
             Form::Vector(vec![Form::Keyword("vector".into()), nested(item)])
         }
+        SchemaType::Set(item) => {
+            Form::Vector(vec![Form::Keyword("set".into()), nested(item)])
+        }
         SchemaType::Tuple(items) => Form::Vector(
             std::iter::once(Form::Keyword("tuple".into()))
                 .chain(items.iter().map(nested))
@@ -67,7 +76,12 @@ pub fn schema_shorthand(schema: &SchemaType) -> Form {
             Form::Vector(
                 std::iter::once(Form::Keyword("map".into()))
                     .chain(fields.iter().map(|field| {
-                        Form::Vector(vec![field.name.clone(), nested(&field.value_type)])
+                        let mut pair = vec![field.name.clone()];
+                        if let Some(properties) = &field.properties {
+                            pair.push(properties.clone());
+                        }
+                        pair.push(nested(&field.value_type));
+                        Form::Vector(pair)
                     }))
                     .collect(),
             )
@@ -100,6 +114,13 @@ pub fn schema_shorthand(schema: &SchemaType) -> Form {
                 .chain(values.iter().cloned())
                 .collect(),
         ),
+        SchemaType::WithProperties { schema, properties } => {
+            let Form::Vector(mut values) = nested(schema) else {
+                return nested(schema);
+            };
+            values.insert(1, properties.clone());
+            Form::Vector(values)
+        }
         SchemaType::Extension { head, arguments } => Form::Vector(
             std::iter::once(Form::Keyword(head.clone()))
                 .chain(arguments.iter().cloned())
@@ -198,8 +219,14 @@ fn normalize_longhand_field(field: &Form) -> Result<SchemaField, String> {
         .ok_or_else(|| "map schema field requires :name".to_string())?;
     let value_type = longhand_value(entries, "type")
         .ok_or_else(|| "map schema field requires :type".to_string())?;
+    let properties = match longhand_value(entries, "properties") {
+        None => None,
+        Some(Form::Map(values)) => Some(Form::Map(values.clone())),
+        Some(_) => return Err("map schema field :properties must be a map".into()),
+    };
     Ok(SchemaField {
         name: name.clone(),
+        properties,
         value_type: normalize_schema(value_type)?,
     })
 }
@@ -282,7 +309,7 @@ fn normalize_longhand(entries: &[(Form, Form)]) -> Result<SchemaType, String> {
         return Ok(SchemaType::Unknown(Form::Map(entries.to_vec())));
     };
     let children = longhand_children(entries)?;
-    match kind.as_str() {
+    let normalized = match kind.as_str() {
         "primitive" => {
             let value = longhand_value(entries, "name").or_else(|| children.first());
             match value {
@@ -304,6 +331,13 @@ fn normalize_longhand(entries: &[(Form, Form)]) -> Result<SchemaType, String> {
                 .and_then(normalize_schema)
                 .map(|value| SchemaType::Vector(Box::new(value)))
         }
+        "set" => {
+            let value = longhand_value(entries, "item").or_else(|| children.first());
+            value
+                .ok_or_else(|| "set schema requires :item".to_string())
+                .and_then(normalize_schema)
+                .map(|value| SchemaType::Set(Box::new(value)))
+        }
         "tuple" => longhand_sequence(entries, "items", children)?
             .iter()
             .map(normalize_schema)
@@ -319,13 +353,7 @@ fn normalize_longhand(entries: &[(Form, Form)]) -> Result<SchemaType, String> {
             } else {
                 children
                     .iter()
-                    .map(|child| match child {
-                        Form::Vector(pair) if pair.len() == 2 => Ok(SchemaField {
-                            name: pair[0].clone(),
-                            value_type: normalize_schema(&pair[1])?,
-                        }),
-                        _ => Err("map schema children must be [name schema] pairs".into()),
-                    })
+                    .map(normalize_map_field)
                     .collect::<Result<Vec<_>, _>>()
                     .map(SchemaType::Map)
             }
@@ -356,6 +384,14 @@ fn normalize_longhand(entries: &[(Form, Form)]) -> Result<SchemaType, String> {
                 .unwrap_or_else(|| Form::Map(entries.to_vec())),
         )),
         _ => Err(format!("unsupported longhand schema kind: {kind}")),
+    }?;
+    match longhand_value(entries, "properties") {
+        None => Ok(normalized),
+        Some(Form::Map(values)) => Ok(SchemaType::WithProperties {
+            schema: Box::new(normalized),
+            properties: Form::Map(values.clone()),
+        }),
+        Some(_) => Err("schema :properties must be a map".into()),
     }
 }
 
@@ -498,13 +534,18 @@ fn resolve_type<'a>(
 ) -> Option<&'a SchemaType> {
     let mut current = schema;
     let mut visited = std::collections::HashSet::new();
-    while let SchemaType::Reference(name) = current {
-        if !visited.insert(name) {
-            return Some(current);
+    loop {
+        match current {
+            SchemaType::WithProperties { schema, .. } => current = schema,
+            SchemaType::Reference(name) => {
+                if !visited.insert(name) {
+                    return Some(current);
+                }
+                current = definitions.get(name)?;
+            }
+            _ => return Some(current),
         }
-        current = definitions.get(name)?;
     }
-    Some(current)
 }
 
 fn unknown_type() -> SchemaType {
@@ -534,14 +575,16 @@ fn infer_expression(form: &Form, environment: &mut HashMap<String, SchemaType>) 
                 .iter()
                 .map(|(name, value)| SchemaField {
                     name: name.clone(),
+                    properties: None,
                     value_type: infer_expression(value, environment),
                 })
                 .collect(),
         ),
-        Form::Set(_) => SchemaType::Extension {
-            head: "set".into(),
-            arguments: Vec::new(),
-        },
+        Form::Set(values) => SchemaType::Set(Box::new(join_types(
+            values
+                .iter()
+                .map(|value| infer_expression(value, environment)),
+        ))),
         Form::List(items) if items.is_empty() => SchemaType::Extension {
             head: "list".into(),
             arguments: Vec::new(),
@@ -631,34 +674,60 @@ fn join_types(types: impl IntoIterator<Item = SchemaType>) -> SchemaType {
     }
 }
 
+fn normalize_map_field(argument: &Form) -> Result<SchemaField, String> {
+    let Form::Vector(pair) = argument else {
+        return Err(":map schema fields must be [name type] or [name properties type]".into());
+    };
+    match pair.as_slice() {
+        [name, value_type] => Ok(SchemaField {
+            name: name.clone(),
+            properties: None,
+            value_type: normalize_schema(value_type)?,
+        }),
+        [name, Form::Map(properties), value_type] => Ok(SchemaField {
+            name: name.clone(),
+            properties: Some(Form::Map(properties.clone())),
+            value_type: normalize_schema(value_type)?,
+        }),
+        _ => Err(":map schema fields must be [name type] or [name properties type]".into()),
+    }
+}
+
+fn supports_properties(head: &str) -> bool {
+    matches!(
+        head,
+        "str"
+            | "string"
+            | "keyword"
+            | "symbol"
+            | "list"
+            | "bytes"
+            | "int"
+            | "integer"
+            | "num"
+            | "number"
+            | "any"
+            | "vector"
+            | "set"
+            | "map"
+    )
+}
+
 fn normalize_composite(items: &[Form]) -> Result<SchemaType, String> {
     let Form::Keyword(head) = &items[0] else {
         return Ok(SchemaType::Unknown(Form::Vector(items.to_vec())));
     };
-    let arguments = &items[1..];
-    match head.as_str() {
-        "or" => {
-            if arguments.is_empty() {
-                return Err(":or schema requires at least one member".into());
-            }
-            let mut members = Vec::new();
-            for argument in arguments {
-                let normalized = normalize_schema(argument)?;
-                match normalized {
-                    SchemaType::Union(nested) => {
-                        for member in nested {
-                            push_unique(&mut members, member);
-                        }
-                    }
-                    member => push_unique(&mut members, member),
-                }
-            }
-            Ok(if members.len() == 1 {
-                members.pop().unwrap()
-            } else {
-                SchemaType::Union(members)
-            })
+    let raw_arguments = &items[1..];
+    let (properties, arguments) = if supports_properties(head) {
+        match raw_arguments.first() {
+            Some(Form::Map(values)) => (Some(Form::Map(values.clone())), &raw_arguments[1..]),
+            _ => (None, raw_arguments),
         }
+    } else {
+        (None, raw_arguments)
+    };
+    let normalized = match head.as_str() {
+        "or" => normalize_union_forms(arguments),
         "maybe" => {
             require_count(head, arguments, 1)?;
             let mut members = Vec::new();
@@ -668,31 +737,22 @@ fn normalize_composite(items: &[Form]) -> Result<SchemaType, String> {
         }
         "vector" => {
             require_count(head, arguments, 1)?;
-            Ok(SchemaType::Vector(Box::new(normalize_schema(
-                &arguments[0],
-            )?)))
+            Ok(SchemaType::Vector(Box::new(normalize_schema(&arguments[0])?)))
+        }
+        "set" => {
+            require_count(head, arguments, 1)?;
+            Ok(SchemaType::Set(Box::new(normalize_schema(&arguments[0])?)))
         }
         "tuple" => arguments
             .iter()
             .map(normalize_schema)
             .collect::<Result<Vec<_>, _>>()
             .map(SchemaType::Tuple),
-        "map" => {
-            let mut fields = Vec::with_capacity(arguments.len());
-            for argument in arguments {
-                let Form::Vector(pair) = argument else {
-                    return Err(":map schema fields must be [name type] pairs".into());
-                };
-                if pair.len() != 2 {
-                    return Err(":map schema fields must be [name type] pairs".into());
-                }
-                fields.push(SchemaField {
-                    name: pair[0].clone(),
-                    value_type: normalize_schema(&pair[1])?,
-                });
-            }
-            Ok(SchemaType::Map(fields))
-        }
+        "map" => arguments
+            .iter()
+            .map(normalize_map_field)
+            .collect::<Result<Vec<_>, _>>()
+            .map(SchemaType::Map),
         "fn" => normalize_function(items).map(|arity| SchemaType::Function(vec![arity])),
         "function" => {
             if arguments.is_empty() {
@@ -715,7 +775,14 @@ fn normalize_composite(items: &[Form]) -> Result<SchemaType, String> {
             head: head.clone(),
             arguments: arguments.to_vec(),
         }),
-    }
+    }?;
+    Ok(match properties {
+        Some(properties) => SchemaType::WithProperties {
+            schema: Box::new(normalized),
+            properties,
+        },
+        None => normalized,
+    })
 }
 
 fn normalize_function(items: &[Form]) -> Result<FunctionSchema, String> {

@@ -689,8 +689,10 @@ fn schema_kind(schema: &crate::kernel::SchemaType) -> &'static str {
         Reference(_) => "reference",
         Union(_) => "union",
         Vector(_) => "vector",
+        Set(_) => "set",
         Tuple(_) => "tuple",
         Map(_) => "map",
+        WithProperties { schema, .. } => schema_kind(schema),
         Function(arities) if arities.len() == 1 => "fn",
         Function(_) => "function",
         Enum(_) => "enum",
@@ -754,6 +756,10 @@ fn schema_ast_form(schema: &crate::kernel::SchemaType) -> Form {
             ("kind", Form::Keyword("vector".into())),
             ("item", schema_ast_form(value)),
         ]),
+        Set(value) => schema_ast_map(vec![
+            ("kind", Form::Keyword("set".into())),
+            ("item", schema_ast_form(value)),
+        ]),
         Tuple(values) => schema_ast_map(vec![
             ("kind", Form::Keyword("tuple".into())),
             (
@@ -769,10 +775,12 @@ fn schema_ast_form(schema: &crate::kernel::SchemaType) -> Form {
                     fields
                         .iter()
                         .map(|field| {
-                            schema_ast_map(vec![
-                                ("name", field.name.clone()),
-                                ("type", schema_ast_form(&field.value_type)),
-                            ])
+                            let mut entries = vec![("name", field.name.clone())];
+                            if let Some(properties) = &field.properties {
+                                entries.push(("properties", properties.clone()));
+                            }
+                            entries.push(("type", schema_ast_form(&field.value_type)));
+                            schema_ast_map(entries)
                         })
                         .collect(),
                 ),
@@ -790,6 +798,13 @@ fn schema_ast_form(schema: &crate::kernel::SchemaType) -> Form {
             ("kind", Form::Keyword("enum".into())),
             ("values", Form::Vector(values.clone())),
         ]),
+        WithProperties { schema, properties } => {
+            let Form::Map(mut entries) = schema_ast_form(schema) else {
+                unreachable!("canonical schema AST must be a map");
+            };
+            entries.push((Form::Keyword("properties".into()), properties.clone()));
+            Form::Map(entries)
+        }
         Extension { head, arguments } => {
             let surface = Form::Vector(
                 std::iter::once(Form::Keyword(head.clone()))

@@ -3297,10 +3297,12 @@ public final class HaraContext {
   }
 
   private static String schemaKind(HalcSchema.Type ast) {
+    if (ast instanceof HalcSchema.Properties decorated) return schemaKind(decorated.schema());
     if (ast instanceof HalcSchema.Primitive) return "primitive";
     if (ast instanceof HalcSchema.Reference) return "reference";
     if (ast instanceof HalcSchema.Union) return "union";
     if (ast instanceof HalcSchema.VectorType) return "vector";
+    if (ast instanceof HalcSchema.SetType) return "set";
     if (ast instanceof HalcSchema.Tuple) return "tuple";
     if (ast instanceof HalcSchema.MapType) return "map";
     if (ast instanceof HalcSchema.FunctionType function && function.arities().size() == 1)
@@ -3333,6 +3335,20 @@ public final class HaraContext {
   }
 
   private static Object schemaAst(HalcSchema.Type ast) {
+    if (ast instanceof HalcSchema.Properties decorated) {
+      Object base = schemaAst(decorated.schema());
+      if (!(base instanceof hara.lang.data.types.IMapType<?, ?> map))
+        throw new HaraException("canonical schema AST must be a map");
+      ArrayList<Object> entries = new ArrayList<>();
+      for (Object item : map) {
+        Map.Entry<?, ?> entry = (Map.Entry<?, ?>) item;
+        entries.add(entry.getKey());
+        entries.add(entry.getValue());
+      }
+      entries.add(Keyword.create("properties"));
+      entries.add(decorated.properties());
+      return schemaAstMap(entries.toArray());
+    }
     if (ast instanceof HalcSchema.Primitive primitive) {
       return schemaAstMap(
           Keyword.create("kind"), Keyword.create("primitive"),
@@ -3355,6 +3371,11 @@ public final class HaraContext {
           Keyword.create("kind"), Keyword.create("vector"),
           Keyword.create("item"), schemaAst(vector.item()));
     }
+    if (ast instanceof HalcSchema.SetType set) {
+      return schemaAstMap(
+          Keyword.create("kind"), Keyword.create("set"),
+          Keyword.create("item"), schemaAst(set.item()));
+    }
     if (ast instanceof HalcSchema.Tuple tuple) {
       ArrayList<Object> items = new ArrayList<>();
       tuple.items().forEach(value -> items.add(schemaAst(value)));
@@ -3365,11 +3386,20 @@ public final class HaraContext {
     if (ast instanceof HalcSchema.MapType map) {
       ArrayList<Object> fields = new ArrayList<>();
       map.fields().forEach(
-          field ->
+          field -> {
+            if (field.properties() == null) {
               fields.add(
                   schemaAstMap(
                       Keyword.create("name"), field.name(),
-                      Keyword.create("type"), schemaAst(field.type()))));
+                      Keyword.create("type"), schemaAst(field.type())));
+            } else {
+              fields.add(
+                  schemaAstMap(
+                      Keyword.create("name"), field.name(),
+                      Keyword.create("properties"), field.properties(),
+                      Keyword.create("type"), schemaAst(field.type())));
+            }
+          });
       return schemaAstMap(
           Keyword.create("kind"), Keyword.create("map"),
           Keyword.create("fields"), schemaAstVector(fields));
