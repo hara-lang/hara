@@ -12,7 +12,7 @@
 (def +module-contexts+ (atom {}))
 (def +module-loaders+ (atom {}))
 
-(defn register-module-loader!
+(defn register-module-loader
   "Registers the only loader permitted to provide one exact script module."
   [module loader]
   (if (not (fn? loader))
@@ -22,7 +22,7 @@
       (swap! +module-loaders+ assoc module loader)
       module)))
 
-(defn remove-module-loader!
+(defn remove-module-loader
   [module]
   (let [loader (get (deref +module-loaders+) module)]
     (swap! +module-loaders+ dissoc module)
@@ -88,9 +88,9 @@
             :fragment {}}
            (select-keys config +module-metadata-keys+))))
 
-(defn configure-module!
+(defn configure-module
   ([lang config]
-   (configure-module! lang (namespace-symbol) config))
+   (configure-module lang (namespace-symbol) config))
   ([lang module config]
    (let [source (namespace-symbol)
          _ (swap! +module-contexts+ assoc source module)
@@ -105,7 +105,7 @@
      (swap! +modules+ assoc module value)
      value)))
 
-(defn register-spec!
+(defn register-spec
   [id type-form metadata]
   (let [module (module-symbol)
         qualified (symbol (name module) (name id))
@@ -127,16 +127,16 @@
         metadata (merge (meta symbol)
                         attributes
                         (if docstring {:docstring docstring} {}))]
-    `(lang.core.script/register-spec!
+    `(lang.core.script/register-spec
       '~symbol '~type-form '~metadata)))
 
 (defmacro defspec.xt
   [symbol & body]
   (lang.core.script/defspec-form symbol body))
 
-(defn register-code!
+(defn register-code
   ([form]
-   (register-code! nil form))
+   (register-code nil form))
   ([explicit-language form]
    (let [module (module-symbol)
         symbol (second form)
@@ -169,7 +169,7 @@
                       (assoc-in current [:code id] entry)))))
      nil)))
 
-(defn register-fragment!
+(defn register-fragment
   [form template]
   (let [module (module-symbol)
         symbol (second form)
@@ -194,7 +194,7 @@
 
 (defmacro defn.xt
   [symbol & body]
-  `(lang.core.script/register-code!
+  `(lang.core.script/register-code
     '~(apply list 'defn symbol body)))
 
 (defn- quote-macro-expansion
@@ -229,7 +229,7 @@
         qualified (symbol (str (:ns &env)) (name sym))]
     `(do
        ~runtime-form
-       (lang.core.script/register-fragment!
+       (lang.core.script/register-fragment
         '~form
         (fn [& args]
           (let [expanded (macroexpand-1
@@ -246,7 +246,7 @@
     true
     false))
 
-(defn load-module!
+(defn load-module
   [spec]
   (let [module (require-module spec)]
     (if (not (module-loaded? module))
@@ -265,7 +265,7 @@
 (defn- script-load-forms
   [config]
   (map (fn [spec]
-         (list 'lang.core.script/load-module!
+         (list 'lang.core.script/load-module
                (list 'quote spec)))
        (or (:require config) [])))
 
@@ -276,7 +276,7 @@
         (list 'quote target-symbol)
         (list 'var (symbol "lang.core.script" (name target-symbol)))))
 
-(defn- install-macro!
+(defn- install-macro
   [target-symbol]
   (let [qualified (symbol "lang.core.script" (name target-symbol))
         source (resolve qualified)]
@@ -296,7 +296,7 @@
 (defn script-form
   [lang options]
   (let [[module config] (script-options options)]
-    (list 'lang.core.script/setup!
+    (list 'lang.core.script/setup
           (list 'quote lang)
           (list 'quote module)
           (list 'quote config)
@@ -306,7 +306,7 @@
   [lang & options]
   (lang.core.script/script-form lang options))
 
-(defn register-script!
+(defn register-script
   [lang module config]
   (let [source (namespace-symbol)
         coordinate [module lang]
@@ -318,23 +318,23 @@
     (swap! +scripts+ assoc coordinate value)
     value))
 
-(defn setup!
+(defn setup
   ([lang config test?]
-   (setup! lang (namespace-symbol) config test?))
+   (setup lang (namespace-symbol) config test?))
   ([lang module config test?]
    (reduce (fn [_ spec]
-             (load-module! spec))
+             (load-module spec))
            nil
            (or (:require config) []))
-   (configure-module! lang module config)
+   (configure-module lang module config)
    (if test?
-     (register-script! lang module config))
+     (register-script lang module config))
    nil))
 
 (defn script-test-form
   [lang options]
   (let [[module config] (script-options options)]
-    (list 'lang.core.script/setup!
+    (list 'lang.core.script/setup
           (list 'quote lang)
           (list 'quote module)
           (list 'quote config)
@@ -497,7 +497,7 @@
           true
           (recur (+ index 2)))))))
 
-(defn restart!
+(defn restart
   []
   (let [module (namespace-symbol)
         entries (filter (fn [entry]
@@ -527,7 +527,7 @@
             entries)
     nil))
 
-(defn stop!
+(defn stop
   []
   (let [module (namespace-symbol)
         entries (filter (fn [entry]
@@ -544,7 +544,7 @@
             entries)
     nil))
 
-(defn eval-form!
+(defn eval-form
   [lang form]
   (let [module (namespace-symbol)
         script (get (deref +scripts+) [module lang])
@@ -561,32 +561,32 @@
             (:value response)
             response))))))
 
-(defn eval-forms!
+(defn eval-forms
   "Evaluates target forms independently and preserves every visible result."
   [lang forms]
-  (let [results (map (fn [form] (eval-form! lang form)) forms)]
+  (let [results (map (fn [form] (eval-form lang form)) forms)]
     (if (= 1 (count results))
       (first results)
       (apply list results))))
 
 (defmacro !.js
   [& body]
-  `(lang.core.script/eval-form! :js '~(if (= 1 (count body))
+  `(lang.core.script/eval-form :js '~(if (= 1 (count body))
                                          (first body)
                                          (apply list 'do body))))
 
 (defmacro !.lua
   [& body]
-  `(lang.core.script/eval-form! :lua '~(if (= 1 (count body))
+  `(lang.core.script/eval-form :lua '~(if (= 1 (count body))
                                           (first body)
                                           (apply list 'do body))))
 
 (defmacro !.py
   [& body]
-  `(lang.core.script/eval-form! :python '~(if (= 1 (count body))
+  `(lang.core.script/eval-form :python '~(if (= 1 (count body))
                                              (first body)
                                          (apply list 'do body))))
 
 (defmacro !.pg
   [& body]
-  `(lang.core.script/eval-forms! :postgres '~body))
+  `(lang.core.script/eval-forms :postgres '~body))

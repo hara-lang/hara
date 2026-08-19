@@ -61,11 +61,11 @@
     (throw (ex-info (str label " accepts exactly one argument")
                     {:arguments arguments}))))
 
-(defn write-text! [path source]
+(defn write-text [path source]
   (deref (file/write path (str/encode-utf8 source)))
   path)
 
-(defn scaffold! [request]
+(defn scaffold [request]
   (let [name (one-argument (:request/arguments request) "new")
         cwd (or (:request/cwd request) (os/cwd))
         destination (if (str/starts-with? name "/") name (file/join cwd name))]
@@ -84,7 +84,7 @@
       (deref (file/mkdir source-root))
       (deref (file/mkdir test-root))
       (deref (file/mkdir (file/join destination "extensions")))
-      (write-text!
+      (write-text
        (file/join destination "project.edn")
        (str "{:hara/type :project\n :hara/version \"1.0.0\"\n"
             " :project/id " name "\n :project/version \"0.1.0\"\n"
@@ -92,13 +92,13 @@
             " :project/extension-paths [\"extensions\"]\n"
             " :project/main " namespace ".main\n :project/capabilities #{}\n"
             " :project/dependencies {}}\n"))
-      (write-text! (file/join destination "workspace.edn")
+      (write-text (file/join destination "workspace.edn")
                    "{:hara/type :workspace :hara/version \"1.0.0\"}\n")
-      (write-text!
+      (write-text
        (file/join source-root "main.hal")
        (str "(ns " namespace ".main)\n\n(defn main []\n  \"Hello from "
             name "\")\n\n(main)\n"))
-      (write-text!
+      (write-text
        (file/join test-root "main_test.hal")
        (str "(ns " namespace ".main-test)\n\n"
             "[(test-check \"starter project runs\" true true)]\n"))
@@ -106,7 +106,7 @@
        {:project/path destination :project/id (symbol name)}
        [(model/message (str "created " destination "\n"))]))))
 
-(defn check! [request]
+(defn check [request]
   (let [arguments (:request/arguments request)]
     (if (> (count arguments) 1)
       (throw (ex-info "check accepts at most one path" {}))
@@ -133,7 +133,7 @@
        (assoc dependencies coordinate {:version version})
        (dissoc dependencies coordinate)))))
 
-(defn edit-dependency! [request add]
+(defn edit-dependency [request add]
   (let [label (if add "add" "remove")
         argument (one-argument (:request/arguments request) label)
         pair (if add (split-coordinate argument) [argument nil])]
@@ -143,7 +143,7 @@
             version (second pair)
             current-project (project/discover (start request))
             document (dependency-document current-project coordinate version)]
-        (write-text! (:project/manifest-path current-project)
+        (write-text (:project/manifest-path current-project)
                      (str (pr-str document) "\n"))
         (model/success
          {:project/id (:project/id current-project)
@@ -168,7 +168,7 @@
     (and (= "0.0.0-alpha" (:lock/format document))
          (= {} (:packages document)))))
 
-(defn sync! [request]
+(defn sync [request]
   (let [current-project (project/discover (start request))
         dependencies (or (:project/dependencies current-project) {})
         mode (sync-mode request)
@@ -186,7 +186,7 @@
         (if (not (valid-empty-lock? lock))
           (throw (ex-info (str lock " is not a lockfile written by this CLI") {}))
           nil))
-      (write-text! lock "{:lock/format \"0.0.0-alpha\" :packages {}}\n"))
+      (write-text lock "{:lock/format \"0.0.0-alpha\" :packages {}}\n"))
     (model/success {:project/lock lock :project/mode mode}
                    [(model/message (str "project sync: " lock "\n"))])))
 
@@ -195,7 +195,7 @@
    {:host/action :production-analyze
     :host/arguments [(pr-str plan)]}))
 
-(defn build! [request]
+(defn build [request]
   (let [arguments (:request/arguments request)]
     (if (not (empty? arguments))
       (throw (ex-info "project build accepts no positional arguments"
@@ -205,19 +205,19 @@
             plan (production/build-plan current-project profile)]
         (build-analysis-result plan)))))
 
-(defn update! [request]
+(defn update [request]
   (throw (ex-info "project update requires the reviewed registry client" {})))
 
 (defn execute [request]
   (let [route (:request/route request)]
     (cond
-      (= route :tool.cli.route/project-new) (scaffold! request)
-      (= route :tool.cli.route/project-check) (check! request)
-      (= route :tool.cli.route/project-build) (build! request)
-      (= route :tool.cli.route/project-add) (edit-dependency! request true)
-      (= route :tool.cli.route/project-remove) (edit-dependency! request false)
-      (= route :tool.cli.route/project-sync) (sync! request)
-      (= route :tool.cli.route/project-update) (update! request)
+      (= route :tool.cli.route/project-new) (scaffold request)
+      (= route :tool.cli.route/project-check) (check request)
+      (= route :tool.cli.route/project-build) (build request)
+      (= route :tool.cli.route/project-add) (edit-dependency request true)
+      (= route :tool.cli.route/project-remove) (edit-dependency request false)
+      (= route :tool.cli.route/project-sync) (sync request)
+      (= route :tool.cli.route/project-update) (update request)
       :else (throw (ex-info (str "unsupported project route " route) {})))))
 
 (def +command-work+

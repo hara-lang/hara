@@ -52,7 +52,7 @@
                 {:run/id id})))
     value))
 
-(defn- update-run!
+(defn- update-run
   [host reference function]
   (let [id (reference-id reference)
         runs
@@ -67,11 +67,11 @@
              (assoc runs id (function value)))))]
     (get runs id)))
 
-(defn- transition!
+(defn- transition
   [host reference function event data]
   (let [id (reference-id reference)
         event-id (next-event-id host)]
-    (update-run!
+    (update-run
      host
      id
      (fn [run]
@@ -123,10 +123,10 @@
   [host reference]
   (:run/events (run-record host reference)))
 
-(defn start!
+(defn start
   "Registers a cooperative agent run and returns its stable reference.
 
-   The run does not advance until step! or run! is called."
+   The run does not advance until step or run is called."
   [host options input]
   (let [options (or options {})
         id (or (:id options) (next-run-id host))
@@ -160,12 +160,12 @@
           (ex-info "Agent run identity already exists"
                    {:run/id id}))
          (assoc runs id run))))
-    (transition! host id (fn [run] run) :agent/started {})
+    (transition host id (fn [run] run) :agent/started {})
     {:run/id id}))
 
-(defn- fail!
+(defn- mark-failed
   [host reference error]
-  (transition!
+  (transition
    host
    reference
    (fn [run]
@@ -176,9 +176,9 @@
    :agent/failed
    {:message (str error)}))
 
-(defn- complete!
+(defn- mark-completed
   [host reference response turn]
-  (transition!
+  (transition
    host
    reference
    (fn [run]
@@ -196,9 +196,9 @@
    :agent/completed
    {:turn turn}))
 
-(defn- ready!
+(defn- mark-ready
   [host reference response outputs turn tool-count]
-  (transition!
+  (transition
    host
    reference
    (fn [run]
@@ -229,7 +229,7 @@
         (cond
           (> turn (:run/max-turns run))
           (public-state
-           (fail!
+           (mark-failed
             host
             reference
             (ex-info "Agent turn limit reached"
@@ -238,7 +238,7 @@
 
           (> tool-count (:run/max-tool-calls run))
           (public-state
-           (fail!
+           (mark-failed
             host
             reference
             (ex-info "Agent tool-call limit reached"
@@ -247,11 +247,11 @@
 
           (empty? calls)
           (public-state
-           (complete! host reference response turn))
+           (mark-completed host reference response turn))
 
           :else
           (do
-            (transition!
+            (transition
              host
              reference
              (fn [run]
@@ -267,7 +267,7 @@
                    (public-state current)
                    (let [outputs (openai/tool-output-items values)]
                      (public-state
-                      (ready!
+                      (mark-ready
                        host
                        reference
                        response
@@ -275,7 +275,7 @@
                        turn
                        tool-count)))))))))))))
 
-(defn step!
+(defn step
   "Advances one model turn and any function calls requested by that response.
 
    The return value is a direct state snapshot or a Promise of one."
@@ -294,7 +294,7 @@
 
       (>= (:run/turn run) (:run/max-turns run))
       (public-state
-       (fail!
+       (mark-failed
         host
         reference
         (ex-info "Agent turn limit reached"
@@ -303,7 +303,7 @@
 
       :else
       (do
-        (transition!
+        (transition
          host
          reference
          (fn [run]
@@ -322,19 +322,19 @@
             (fn [response]
               (process-response host reference response))))
          (fn [error]
-           (public-state (fail! host reference error))))))))
+           (public-state (mark-failed host reference error))))))))
 
-(defn run!
+(defn run
   "Runs cooperative turns until the run reaches a terminal state."
   [host reference]
   (async-result/then
-   (step! host reference)
+   (step host reference)
    (fn [snapshot]
      (if (= :ready (:run/status snapshot))
-       (run! host reference)
+       (run host reference)
        snapshot))))
 
-(defn send!
+(defn send
   "Appends a human message to a ready or completed run.
 
    Completed and failed runs become ready again with their prior transcript."
@@ -349,7 +349,7 @@
                 {:run/id (:run/id run)
                  :run/status status})))
     (public-state
-     (transition!
+     (transition
       host
       reference
       (fn [run]
@@ -365,11 +365,11 @@
       :agent/message-added
       {}))))
 
-(defn cancel!
+(defn cancel
   "Marks a run cancelled. In-flight transports are not forcibly aborted."
   [host reference]
   (public-state
-   (transition!
+   (transition
     host
     reference
     (fn [run]
@@ -381,9 +381,9 @@
   "Runs one isolated agent request and returns its final response text."
   [options input]
   (let [runtime (host)
-        reference (start! runtime options input)]
+        reference (start runtime options input)]
     (async-result/then
-     (run! runtime reference)
+     (run runtime reference)
      (fn [snapshot]
        (if (= :completed (:run/status snapshot))
          (:run/result snapshot)

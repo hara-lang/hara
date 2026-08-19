@@ -29,15 +29,15 @@
 (defn- graph-data? [value] (:walk/data (meta value)))
 (defn- graph-id [value] (:walk/id (meta value)))
 
-(declare collect-graph!)
+(declare collect-graph)
 
-(defn collect-graph! [lookup value]
+(defn collect-graph [lookup value]
   (cond
     (vector? value)
-    (let [_ (reduce (fn [_ item] (collect-graph! lookup item) nil) nil value)]
+    (let [_ (reduce (fn [_ item] (collect-graph lookup item) nil) nil value)]
       (swap! lookup assoc (graph-id value) (vec (map graph-id value))))
     (map? value)
-    (let [_ (reduce-kv (fn [state key item] (collect-graph! lookup item) nil) nil value)]
+    (let [_ (reduce-kv (fn [state key item] (collect-graph lookup item) nil) nil value)]
       (when (and (graph-id value) (not (graph-data? value)))
         (swap! lookup assoc (graph-id value)
                (reduce-kv (fn [out key item]
@@ -48,17 +48,17 @@
 
 (defn insert-generate-graph-tree [data]
   (let [lookup (atom {})]
-    (collect-graph! lookup data)
+    (collect-graph lookup data)
     [data (dissoc @lookup nil)]))
 
-(declare collect-data!)
+(declare collect-data)
 
-(defn collect-data! [lookup value]
+(defn collect-data [lookup value]
   (cond
-    (vector? value) (reduce (fn [_ item] (collect-data! lookup item) nil) nil value)
+    (vector? value) (reduce (fn [_ item] (collect-data lookup item) nil) nil value)
     (map? value)
     (let [_ (when (:id value) (swap! lookup assoc (:id value) (graph-id value)))]
-      (reduce-kv (fn [state key item] (collect-data! lookup item) nil) nil value))
+      (reduce-kv (fn [state key item] (collect-data lookup item) nil) nil value))
     :else nil))
 
 (defn- dependency-values [value]
@@ -66,29 +66,29 @@
         (map? value) (vals value)
         :else []))
 
-(declare topo-visit!)
+(declare topo-visit)
 
-(defn topo-visit! [graph node visiting visited output]
+(defn topo-visit [graph node visiting visited output]
   (when (not (has? @visited node))
     (when (has? @visiting node)
       (throw (ex-info "Graph cycle" {:node node})))
     (swap! visiting conj node)
     (reduce (fn [_ dependency]
-              (topo-visit! graph dependency visiting visited output) nil)
+              (topo-visit graph dependency visiting visited output) nil)
             nil (dependency-values (get graph node)))
     (swap! visited conj node)
     (swap! output conj node)))
 
 (defn insert-associate-graph-data [data graph]
   (let [lookup (atom {})
-        collected (collect-data! lookup data)
+        collected (collect-data lookup data)
         symbols (reduce (fn [out gid] (assoc out gid (symbol (str "gid_" gid))))
                         {} (keys graph))
         visiting (atom #{})
         visited (atom #{})
         output (atom [])
         ordered-result (reduce (fn [_ gid]
-                                 (topo-visit! graph gid visiting visited output) nil)
+                                 (topo-visit graph gid visiting visited output) nil)
                                nil (keys graph))]
     [@output symbols @lookup]))
 

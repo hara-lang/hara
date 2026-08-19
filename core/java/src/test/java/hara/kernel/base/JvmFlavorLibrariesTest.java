@@ -55,7 +55,7 @@ public class JvmFlavorLibrariesTest {
       String added =
           (String)
               runtime.eval(
-                  runtime.readString("(hara.native.jvm.classpath/add! \"" + escaped + "\")"));
+                  runtime.readString("(hara.native.jvm.classpath/add \"" + escaped + "\")"));
       assertTrue(added.startsWith("file:"));
 
     } finally {

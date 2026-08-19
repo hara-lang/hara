@@ -16,7 +16,7 @@ public interface BuiltinRef {
   // Atom
   //
 
-  @Module.Fn(name = "compare:set!", protocol = true)
+  @Module.Fn(name = "cas!", protocol = true)
   public static <V> boolean compareSet(Atom.Swap<Atom, V> atom, V oldVal, V newVal) {
     return atom.cas(oldVal, newVal);
   }
@@ -57,12 +57,10 @@ public interface BuiltinRef {
   // Volatile
   //
 
-  @Module.Fn(name = "vreset!", protocol = true)
   public static <V> V vreset(hara.lang.base.primitive.Volatile<V> v, V val) {
     return v.reset(val);
   }
 
-  @Module.Fn(name = "vswap!", protocol = true, vargs = true)
   public static <V> V vswap(hara.lang.base.primitive.Volatile<V> v, IFn f, Object... args) {
     synchronized (v) {
       Object[] allArgs = new Object[args.length + 1];

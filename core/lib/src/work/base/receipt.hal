@@ -20,7 +20,7 @@
   [provider]
   (or (:provider/id provider) :receipt))
 
-(defn assert-role!
+(defn assert-role
   [provider]
   (if (not= :work/receipt (:provider/role provider))
     (throw
@@ -41,7 +41,7 @@
 
     (and (map? provider)
          (:provider/role provider))
-    (assert-role! provider)
+    (assert-role provider)
 
     (map? provider)
     {:provider/role :work/receipt
@@ -438,7 +438,7 @@
        (:receipt/root outcome)
        (:root outcome))})
 
-(defn acknowledge!
+(defn acknowledge
   [runtime provider claim-id entry outcome]
   (store/call
    (base/runtime-store runtime)
@@ -456,7 +456,7 @@
     :outbox/run-id (:outbox/run-id entry)}
    outcome))
 
-(defn publish-entry!
+(defn publish-entry
   [runtime provider claim-id entry options]
   (result/then
    (deliver provider (:outbox/payload entry) options)
@@ -466,12 +466,12 @@
        (if (or (= status :published)
                (= status :rejected))
          (result/then
-          (acknowledge! runtime provider claim-id entry outcome)
+          (acknowledge runtime provider claim-id entry outcome)
           (fn [_]
             report))
          report)))))
 
-(defn sync-run-status!
+(defn sync-run-status
   [runtime run-id]
   (result/then
    (status runtime run-id)
@@ -484,7 +484,7 @@
                  (not= :pending receipt-status)
                  (not= receipt-status (:run/receipt-status run)))
           (result/then
-           (store/transact-current!
+           (store/transact-current
             (base/runtime-store runtime)
             run-id
             {:transition/run-updates
@@ -500,7 +500,7 @@
     (if (= index (count entries))
       reports
       (let [report
-            (publish-entry! runtime
+            (publish-entry runtime
                             provider
                             claim-id
                             (nth entries index)
@@ -518,7 +518,7 @@
                                    (conj reports resolved))))
           (recur (inc index) (conj reports report)))))))
 
-(defn publish-claimed!
+(defn publish-claimed
   [runtime provider claim-id claimed run-id options]
   (let [receipt-entries (vec (filter receipt-entry? claimed))]
     (result/then
@@ -532,16 +532,16 @@
      (fn [reports]
        (if run-id
          (result/then
-          (sync-run-status! runtime run-id)
+          (sync-run-status runtime run-id)
           (fn [_]
             reports))
          reports)))))
 
-(defn publish-pending!
+(defn publish-pending
   ([runtime]
-   (publish-pending! runtime nil {}))
+   (publish-pending runtime nil {}))
   ([runtime reference]
-   (publish-pending! runtime reference {}))
+   (publish-pending runtime reference {}))
   ([runtime reference options]
    (let [provider (base/runtime-receipt runtime)
          function (get (provider-operations provider) :publish)]
@@ -565,7 +565,7 @@
              :outbox/topic :work/receipt}
             :limit (or (:limit options) 100)})
           (fn [claimed]
-            (publish-claimed! runtime
+            (publish-claimed runtime
                               provider
                               claim-id
                               claimed

@@ -4418,9 +4418,9 @@ public final class HaraContext {
               return jvmProvider().classPath(nativeAccess());
             }));
     classpath.define(
-        "add!",
+        "add",
         new UnaryBuiltin(
-            "classpath/add!",
+            "classpath/add",
             value ->
                 jvmProvider().addClassPath(String.valueOf(HaraBox.unwrap(value)), nativeAccess())));
 

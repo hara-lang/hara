@@ -85,10 +85,10 @@ public final class WorkProtocolLibraryProvider implements HaraLibraryProvider {
         null);
     context.defineLibraryFunction(
         namespace(),
-        "emit!",
+        "emit",
         arguments -> {
-          requireArity("emit!", arguments, 2);
-          return requireCurrent("emit!", arguments, 2).emit(arguments[0], arguments[1]);
+          requireArity("emit", arguments, 2);
+          return requireCurrent("emit", arguments, 2).emit(arguments[0], arguments[1]);
         },
         null);
     context.defineLibraryFunction(

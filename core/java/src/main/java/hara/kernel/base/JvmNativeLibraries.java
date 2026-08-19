@@ -33,9 +33,9 @@ final class JvmNativeLibraries {
         Symbol.create("paths"),
         fn("classpath/paths", v -> provider(runtime).classPath(runtime._nativeAccess), 0));
     classpath.mappings.put(
-        Symbol.create("add!"),
+        Symbol.create("add"),
         fn(
-            "classpath/add!",
+            "classpath/add",
             v -> provider(runtime).addClassPath(String.valueOf(v[0]), runtime._nativeAccess),
             1));
   }

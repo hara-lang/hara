@@ -15,9 +15,9 @@
 
 ^{:refer postgres.typed.typed-analyze/resolve-table :added "4.1"}
 (fact "resolve-table finds table definitions from symbols and keywords"
-  (types/clear-registry!)
+  (types/clear-registry)
   (let [table-def (types/make-table-def "test.ns" "User" [] :id)]
-    (types/register-type! 'test.ns/User table-def)
+    (types/register-type 'test.ns/User table-def)
 
     ;; Resolves symbol directly
     (:name (analyze/resolve-table 'test.ns/User)) => "User"
@@ -31,16 +31,16 @@
     ;; Returns nil for unknown table
     (analyze/resolve-table 'UnknownTable) => nil))
 
-^{:refer postgres.typed.typed-analyze/register-call-analyzer! :added "4.1"}
+^{:refer postgres.typed.typed-analyze/register-call-analyzer :added "4.1"}
 (fact "call analyzers can specialize a resolved function call"
-  (types/clear-registry!)
-  (analyze/reset-cache!)
+  (types/clear-registry)
+  (analyze/reset-cache)
   (let [fn-form '(defn.pg annotate
                    [:jsonb i-message]
                    (return i-message))
         fn-def  (parse/parse-defn fn-form "test.plugin" nil)
-        _       (types/register-type! 'test.plugin/annotate fn-def)
-        _       (analyze/register-call-analyzer!
+        _       (types/register-type 'test.plugin/annotate fn-def)
+        _       (analyze/register-call-analyzer
                  'test.plugin/annotate
                  (fn [payload]
                    (let [ctx (:ctx payload)
@@ -184,9 +184,9 @@
 
 ^{:refer postgres.typed.typed-analyze/resolve-called-fn :added "4.1"}
 (fact "resolve-called-fn resolves function references with aliases"
-  (types/clear-registry!)
+  (types/clear-registry)
   (let [fn-def (types/make-fn-def "test.ns" "my-fn" [] :jsonb {} nil)]
-    (types/register-type! 'test.ns/my-fn fn-def)
+    (types/register-type 'test.ns/my-fn fn-def)
 
     ;; Resolves fully qualified symbol
     (let [[resolved fn-result] (analyze/resolve-called-fn 'test.ns/my-fn {})]
@@ -203,14 +203,14 @@
 
 ^{:refer postgres.typed.typed-analyze/analyze-table-op :added "4.1"}
 (fact "analyze-table-op returns appropriate shape for table operations"
-  (types/clear-registry!)
+  (types/clear-registry)
   (let [table-def (types/make-table-def "test.ns" "Entry"
                                         [(types/make-column-def :id (types/make-type-ref :primitive nil :uuid)
                                                                 {:required true :constraints {:primary true}})
                                          (types/make-column-def :name (types/make-type-ref :primitive nil :text)
                                                                 {:required true})]
                                         :id)]
-    (types/register-type! 'test.ns/Entry table-def)
+    (types/register-type 'test.ns/Entry table-def)
     (let [ctx (types/make-context)]
       ;; Insert returns shaped result
       (:kind (analyze/analyze-table-op 'pg/t:insert ['test.ns/Entry] ctx)) => :shaped
@@ -312,7 +312,7 @@
 
 ^{:refer postgres.typed.typed-analyze/infer-return-type :added "4.1"}
 (fact "infer-return-type resolves referenced function definitions"
-  (types/clear-registry!)
+  (types/clear-registry)
   (let [table (types/make-table-def
                "postgres.sample.scratch-v2" "Entry"
                [(types/make-column-def
@@ -331,25 +331,25 @@
                 [:text i-name :jsonb i-tags :jsonb o-op]
                 (postgres.sample.scratch-v2/insert-entry i-name i-tags o-op))
         fn-def (parse/parse-defn form "test.ns" nil)]
-    (types/register-type! 'postgres.sample.scratch-v2/Entry table)
-    (types/register-type! 'postgres.sample.scratch-v2/insert-entry called)
-    (types/register-type! 'test.ns/call-insert fn-def)
+    (types/register-type 'postgres.sample.scratch-v2/Entry table)
+    (types/register-type 'postgres.sample.scratch-v2/insert-entry called)
+    (types/register-type 'test.ns/call-insert fn-def)
     (let [result (analyze/infer-return-type fn-def)]
       (types/jsonb-shape? result) => true
       (:source-table result) => "Entry")))
 
-^{:refer postgres.typed.typed-analyze/reset-cache! :added "4.1"}
-(fact "reset-cache! clears the infer cache"
+^{:refer postgres.typed.typed-analyze/reset-cache :added "4.1"}
+(fact "reset-cache clears the infer cache"
   (reset! analyze/*infer-cache* {'demo/test {:kind :primitive}})
-  (analyze/reset-cache!)
+  (analyze/reset-cache)
   @analyze/*infer-cache*
   => {})
 
 ^{:refer postgres.typed.typed-analyze/cached-infer :added "4.1"}
 (fact "cached-infer memoizes function inference by namespace and name"
-  (types/clear-registry!)
+  (types/clear-registry)
   (let [fn-def (get-scratch-fn 'insert-entry)]
-    (analyze/reset-cache!)
+    (analyze/reset-cache)
     (analyze/cached-infer fn-def)
     (keys @analyze/*infer-cache*))
   => ['postgres.sample.scratch-v2/insert-entry])
@@ -370,7 +370,7 @@
 
 ^{:refer postgres.typed.typed-analyze/detect-operations :added "4.1"}
 (fact "detect-operations follows nested function calls"
-  (types/clear-registry!)
+  (types/clear-registry)
   (let [user-table (types/make-table-def "test" "User"
                                          [(types/make-column-def :id (types/make-type-ref :primitive nil :uuid)
                                                                  {:required true :primary true})
@@ -412,11 +412,11 @@
                                       [:jsonb]
                                       {:raw-body '[(test.core/set-user auth-user-id {:handle handle} auth-op)]}
                                       "test.rpc")]
-    (types/register-type! 'test/User user-table)
-    (types/register-type! 'test.core/update-user-raw update-fn)
-    (types/register-type! 'test.core/create-user create-fn)
-    (types/register-type! 'test.core/set-user set-user-fn)
-    (types/register-type! 'test.rpc/user-set-handle wrapper-fn)
+    (types/register-type 'test/User user-table)
+    (types/register-type 'test.core/update-user-raw update-fn)
+    (types/register-type 'test.core/create-user create-fn)
+    (types/register-type 'test.core/set-user set-user-fn)
+    (types/register-type 'test.rpc/user-set-handle wrapper-fn)
     (let [ops (analyze/detect-operations wrapper-fn)]
       (count ops) => 2
       (reduce conj #{} (map (fn [operation] (:op operation)) ops))
@@ -463,7 +463,7 @@
 
 ^{:refer postgres.typed.typed-analyze/infer-report :added "4.1"}
 (fact "infer-report groups nested operations by type"
-  (types/clear-registry!)
+  (types/clear-registry)
   (let [user-table (types/make-table-def "test" "User"
                                          [(types/make-column-def :id (types/make-type-ref :primitive nil :uuid)
                                                                  {:required true :primary true})
@@ -505,11 +505,11 @@
                                       [:jsonb]
                                       {:raw-body '[(test.core/set-user auth-user-id {:handle handle} auth-op)]}
                                       "test.rpc")]
-    (types/register-type! 'test/User user-table)
-    (types/register-type! 'test.core/update-user-raw update-fn)
-    (types/register-type! 'test.core/create-user create-fn)
-    (types/register-type! 'test.core/set-user set-user-fn)
-    (types/register-type! 'test.rpc/user-set-handle wrapper-fn)
+    (types/register-type 'test/User user-table)
+    (types/register-type 'test.core/update-user-raw update-fn)
+    (types/register-type 'test.core/create-user create-fn)
+    (types/register-type 'test.core/set-user set-user-fn)
+    (types/register-type 'test.rpc/user-set-handle wrapper-fn)
     (let [report (analyze/infer-report wrapper-fn)]
       (get-in report [:analysis :mutating]) => true
       (get-in report [:analysis :operations-by-type "update" 0 :table]) => "User"

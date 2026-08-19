@@ -131,7 +131,7 @@
 (defn- await-event [stream]
   (evaluation/await (socket/next stream) 5000))
 
-(defn- connect! [{:keys [host port] :as value}]
+(defn- connect [{:keys [host port] :as value}]
   (let [result (atom nil)]
     (socket/connect host port {}
                     (fn [error connection]
@@ -141,7 +141,7 @@
         (throw (ex-info "Hara in-REPL connection failed" {:endpoint value :error error})))
       connection)))
 
-(defn- receive! [state stream]
+(defn- receive [state stream]
   (loop []
     (let [buffer (:buffer (deref state))
           parsed (parse-at buffer 0 0)]
@@ -159,27 +159,27 @@
             (throw (ex-info "Hara in-REPL socket failed" {:error (:error event)}))
             :else (recur)))))))
 
-(defn- send! [connection values]
+(defn- send [connection values]
   (socket/send connection (encode-array values)))
 
-(defn- expect! [frame type]
+(defn- expect [frame type]
   (if (= type (:resp/type frame))
     frame
     (throw (ex-info "Unexpected Hara RESP response"
                     {:expected type :actual frame}))))
 
-(defn- hello! [connection stream state]
-  (send! connection ["HELLO" "4" "CLIENT" "HARA-INREPL"])
-  (let [frame (expect! (receive! state stream) :array)
+(defn- hello [connection stream state]
+  (send connection ["HELLO" "4" "CLIENT" "HARA-INREPL"])
+  (let [frame (expect (receive state stream) :array)
         values (map frame-text (:resp/value frame))]
     (if (and (= "SERVER" (first values)) (= "HARA" (second values)))
       values
       (throw (ex-info "Endpoint is not a Hara RESP server" {:response values})))))
 
-(defn- request! [connection stream state id operation arguments]
-  (send! connection (vec (concat [operation id] arguments)))
-  (let [result (expect! (receive! state stream) :array)
-        done (expect! (receive! state stream) :array)
+(defn- request [connection stream state id operation arguments]
+  (send connection (vec (concat [operation id] arguments)))
+  (let [result (expect (receive state stream) :array)
+        done (expect (receive state stream) :array)
         result-values (:resp/value result)
         done-values (map frame-text (:resp/value done))]
     (if (not= ["DONE" id] (vec (take 2 done-values)))
@@ -194,28 +194,28 @@
     (nth result-values 2)))
 
 (defn- with-client [endpoint-value f]
-  (let [connection (connect! (endpoint endpoint-value))
+  (let [connection (connect (endpoint endpoint-value))
         stream (socket/events connection {})
         state (atom {:buffer (bytes) :request 0})]
     (try
-      (hello! connection stream state)
+      (hello connection stream state)
       (f connection stream state)
       (finally (socket/close connection)))))
 
-(defn- request-next! [connection stream state operation arguments]
+(defn- request-next [connection stream state operation arguments]
   (let [id (str "INREPL-" (get (swap! state update :request inc) :request))]
-    (request! connection stream state id operation arguments)))
+    (request connection stream state id operation arguments)))
 
 (defn- session-names [frame]
-  (map frame-text (:resp/value (expect! frame :array))))
+  (map frame-text (:resp/value (expect frame :array))))
 
-(defn- ensure-session! [connection stream state session]
-  (let [sessions (session-names (request-next! connection stream state "SESSION" ["LIST"]))]
+(defn- ensure-session [connection stream state session]
+  (let [sessions (session-names (request-next connection stream state "SESSION" ["LIST"]))]
     (if (not (some (fn [name] (= name session)) sessions))
-      (request-next! connection stream state "SESSION" ["NEW" session])))
-  (request-next! connection stream state "SESSION" ["ATTACH" session]))
+      (request-next connection stream state "SESSION" ["NEW" session])))
+  (request-next connection stream state "SESSION" ["ATTACH" session]))
 
-(defn- require-loopback-project! [start]
+(defn- require-loopback-project [start]
   (let [current (project/discover start)]
     (if (not (project/inrepl-loopback? current))
       (throw (ex-info "project.edn must opt in with :project/inrepl-capabilities #{:inrepl/loopback}"
@@ -227,14 +227,14 @@
   ([endpoint session source]
    (with-client endpoint
      (fn [connection stream state]
-       (ensure-session! connection stream state session)
-       (frame-text (request-next! connection stream state "EVAL" [source]))))))
+       (ensure-session connection stream state session)
+       (frame-text (request-next connection stream state "EVAL" [source]))))))
 
 (defn eval-project
   ([start endpoint source]
    (eval-project start endpoint +agent-session+ source))
   ([start endpoint session source]
-   (require-loopback-project! start)
+   (require-loopback-project start)
    (eval-source endpoint session source)))
 
 (defn status
@@ -242,10 +242,10 @@
   ([endpoint session]
    (with-client endpoint
      (fn [connection stream state]
-       (ensure-session! connection stream state session)
+       (ensure-session connection stream state session)
        {:endpoint endpoint
         :session session
-        :info (frame-text (request-next! connection stream state "SESSION" ["INFO"]))}))))
+        :info (frame-text (request-next connection stream state "SESSION" ["INFO"]))}))))
 
 (defn reset
   ([endpoint] (reset endpoint +agent-session+))
@@ -254,9 +254,9 @@
      (throw (ex-info "Hara in-REPL never resets ROOT" {:session session})))
    (with-client endpoint
      (fn [connection stream state]
-       (let [sessions (session-names (request-next! connection stream state "SESSION" ["LIST"]))]
+       (let [sessions (session-names (request-next connection stream state "SESSION" ["LIST"]))]
          (if (some (fn [name] (= name session)) sessions)
-           (request-next! connection stream state "SESSION" ["CLOSE" session])))
-       (request-next! connection stream state "SESSION" ["NEW" session])
-       (request-next! connection stream state "SESSION" ["ATTACH" session])
+           (request-next connection stream state "SESSION" ["CLOSE" session])))
+       (request-next connection stream state "SESSION" ["NEW" session])
+       (request-next connection stream state "SESSION" ["ATTACH" session])
        {:endpoint endpoint :session session :reset true}))))
