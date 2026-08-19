@@ -1,0 +1,115 @@
+name: Diagnose code.migrate corpus source
+
+on:
+  push:
+    branches:
+      - agent/524-code-migrate-substrate
+    paths:
+      - '.github/workflows/debug-code-migrate-corpus.yml'
+      - 'core/lib/src/code/migrate/corpus.hal'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/debug-code-migrate-corpus.yml'
+      - 'core/lib/src/code/migrate/corpus.hal'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/524-code-migrate-substrate
+          fetch-depth: 0
+
+      - name: Check delimiters and top-level forms
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('core/lib/src/code/migrate/corpus.hal')
+          source = path.read_text(encoding='utf-8')
+          stack = []
+          forms = []
+          start = None
+          pairs = {')': '(', ']': '[', '}': '{'}
+          in_string = False
+          escaped = False
+          in_comment = False
+          in_character = False
+          line = 1
+          column = 0
+          locations = {}
+          for index, char in enumerate(source):
+              if char == '\n':
+                  line += 1
+                  column = 0
+              else:
+                  column += 1
+              if in_comment:
+                  if char == '\n':
+                      in_comment = False
+                  continue
+              if in_string:
+                  if escaped:
+                      escaped = False
+                  elif char == '\\':
+                      escaped = True
+                  elif char == '"':
+                      in_string = False
+                  continue
+              if in_character:
+                  if char.isspace():
+                      in_character = False
+                  continue
+              if char == ';':
+                  in_comment = True
+                  continue
+              if char == '"':
+                  in_string = True
+                  continue
+              if char == '\\':
+                  in_character = True
+                  continue
+              if char in '([{':
+                  if not stack and char == '(':
+                      start = index
+                  stack.append((char, index, line, column))
+              elif char in ')]}':
+                  if not stack:
+                      raise SystemExit(f'extra closing {char} at {line}:{column}')
+                  opening, opening_index, opening_line, opening_column = stack[-1]
+                  if opening != pairs[char]:
+                      raise SystemExit(
+                          f'mismatched {opening} at {opening_line}:{opening_column} '
+                          f'with {char} at {line}:{column}'
+                      )
+                  stack.pop()
+                  if not stack and start is not None:
+                      form = source[start:index + 1]
+                      match = re.match(r'\(\s*([^\s()\[\]{}]+)', form)
+                      forms.append((line, match.group(1) if match else '?'))
+                      start = None
+          print('bytes', len(source.encode('utf-8')))
+          print('top-level forms', len(forms))
+          print('first forms', forms[:12])
+          print('last forms', forms[-12:])
+          if stack:
+              print('unclosed delimiters:')
+              for opening, _, opening_line, opening_column in stack[-20:]:
+                  print(opening, opening_line, opening_column)
+              raise SystemExit(1)
+          if not forms or forms[0][1] not in {'ns', 'ns+'}:
+              raise SystemExit(f'first top-level form is not ns: {forms[:1]}')
+          PY
+
+      - name: Show namespace header as bytes
+        run: |
+          sed -n '1,12p' core/lib/src/code/migrate/corpus.hal
+          od -An -tx1 -N64 core/lib/src/code/migrate/corpus.hal
