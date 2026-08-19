@@ -1,0 +1,74 @@
+name: Bang-name source policy
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/bang-name-policy.yml'
+      - 'core/lib/src/**/*.hal'
+      - 'core/lib/src-lang/**/*.hal'
+      - 'core/lib/test/code/migrate_bang_test.hal'
+      - 'core/lib/test/tool/lint_test.hal'
+      - 'core/rust/hal-src/**/*.hal'
+      - 'core/spec/code-migrate/bang-vars.edn'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/bang-name-policy.yml'
+      - 'core/lib/src/**/*.hal'
+      - 'core/lib/src-lang/**/*.hal'
+      - 'core/lib/test/code/migrate_bang_test.hal'
+      - 'core/lib/test/tool/lint_test.hal'
+      - 'core/rust/hal-src/**/*.hal'
+      - 'core/spec/code-migrate/bang-vars.edn'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bang-name-policy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run syntax-aware migration audit
+        run: ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_bang_test.hal
+
+      - name: Repeat migration audit in a fresh Hara process
+        run: ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_bang_test.hal
+
+      - name: Run bang-definition lint contract
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/lint_test.hal
+
+      - name: Repeat lint contract in a fresh Hara process
+        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/lint_test.hal
+
+      - name: Reject retained migration scratch artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for path in \
+            .apply-bang.txt \
+            .candidate-bang-v2.txt \
+            .plan-bang.txt \
+            core/.apply-bang-snapshots.hal \
+            core/.candidate-followup.txt \
+            core/.candidate-framework.hal \
+            core/.candidate-lint-analyze.hal \
+            core/.candidate-lint-test.hal \
+            core/.candidate-migrate-bang-test-v2.hal \
+            core/.candidate-migrate-bang-test.hal \
+            core/.candidate-migrate-bang-v2.hal \
+            core/.candidate-migrate-bang.hal
+          do
+            test ! -e "$path"
+          done
