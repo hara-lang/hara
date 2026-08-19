@@ -1,22 +1,59 @@
 (ns tool.lint
   (:require [tool.lint.analyze :as analyze]
             [tool.lint.flow :as flow]
-            [tool.lint.report :as report]))
+            [tool.lint.report :as report]
+            [tool.project :as project]))
 
 (def analyze-source analyze/analyze-source)
 (def analyze-file analyze/analyze-file)
 
+(defn completed
+  "Runs one public lint boundary and returns a native Result<report>."
+  [operation f]
+  (try
+    (Result/create :success
+                   (f)
+                   {:tool.lint/operation operation})
+    (catch Throwable error
+      (Result/create :error
+                     error
+                     {:tool.lint/operation operation}))))
+
 (defn lint-source
   ([source] (lint-source source {}))
-  ([source options] (:findings (analyze/analyze-source source options))))
+  ([source options]
+   (completed
+    :source
+    (fn []
+      (flow/lint-scans
+       [(analyze/scan-source source options)]
+       options)))))
 
 (defn lint-file
   ([path] (lint-file path {}))
-  ([path options] (:findings (analyze/analyze-file path options))))
+  ([path options]
+   (completed
+    :file
+    (fn []
+      (flow/lint-scans
+       [(analyze/scan-source
+         (project/read-text path)
+         (assoc options :file path))]
+       options)))))
 
 (def lint-scans-work flow/lint-scans-work)
-(def lint-scans flow/lint-scans)
-(def lint-project flow/lint-project)
+
+(defn lint-scans
+  ([scans] (lint-scans scans {}))
+  ([scans options]
+   (completed :scans (fn [] (flow/lint-scans scans options)))))
+
+(defn lint-project
+  ([current-project] (lint-project current-project {}))
+  ([current-project options]
+   (completed
+    :project
+    (fn [] (flow/lint-project current-project options)))))
 
 (def text report/text)
 (def edn report/edn)
