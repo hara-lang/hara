@@ -15,13 +15,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Test the Foundation surface checker
         run: |
           python scripts/test_check_foundation_surface.py
           python -m py_compile scripts/check_foundation_surface.py scripts/test_check_foundation_surface.py
+
       - name: Validate source, tests, and retired-name evidence
         run: python scripts/check_foundation_surface.py --report generated/foundation-surface-conformance.json
 
@@ -49,19 +52,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Normalize portable script materializer
+      - name: Normalize portable script materializer guards
         run: |
           python - <<'PY'
           from pathlib import Path
           path = Path('.agent/complete-script-port.py')
           source = path.read_text()
-
           join_old = 'mrep (symbol (str/join "." (conj base msym)))]'
           join_new = 'mrep (symbol (str/join "." (map str (conj base msym))))]'
           if source.count(join_old) != 2:
               raise SystemExit(f'expected two template join sites, found {source.count(join_old)}')
           source = source.replace(join_old, join_new)
-
           guard_old = 'if source.count("84") != 4:'
           guard_new = 'if source.count("84") != 6:'
           if source.count(guard_old) != 1:
@@ -69,28 +70,12 @@ jobs:
           source = source.replace(guard_old, guard_new, 1)
           source = source.replace('expected four pinned-count literals',
                                   'expected six pinned-count literals', 1)
-
-          lint_old = "(script-lint/collect-vars '#{[hello #{world}]})"
-          lint_new = "(sort (map str (script-lint/collect-vars\n                       #{[(symbol \"hello\") #{(symbol \"world\")}]})))"
-          if source.count(lint_old) != 1:
-              raise SystemExit('script-lint port-test fixture anchor changed')
-          source = source.replace(lint_old, lint_new, 1)
-          source = source.replace("=> [#{hello world} true [:tool.lint/unresolved-symbol]])",
-                                  "=> [[\"hello\" \"world\"] true [:tool.lint/unresolved-symbol]])",
-                                  1)
-
-          stop_old = "(map? stopped) after])"
-          stop_new = "(not (nil? stopped)) after])"
-          if source.count(stop_old) != 1:
-              raise SystemExit('annex stop expectation anchor changed')
-          source = source.replace(stop_old, stop_new, 1)
-
           path.write_text(source)
           PY
 
       - name: Materialize pre-write candidate
         run: |
-          python -m py_compile .agent/complete-script-port.py
+          python -m py_compile .agent/complete-script-port.py .agent/patch-script-port.py
           python .agent/complete-script-port.py candidate
           git diff --check -- core/private/tmp/script_port_candidate_test.hal
 
@@ -105,105 +90,7 @@ jobs:
       - name: Write validated product candidate
         run: |
           python .agent/complete-script-port.py write
-
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('core/lib/src/lang/core.hal')
-          source = path.read_text()
-
-          old_code_publish = '''     (intern-var (current-namespace) declaration-symbol pointer))))'''
-          new_code_publish = '''     pointer)))'''
-          if source.count(old_code_publish) != 1:
-              raise SystemExit(f'code-pointer publication anchor changed: {source.count(old_code_publish)}')
-          source = source.replace(old_code_publish, new_code_publish, 1)
-
-          old_fragment_publish = '''    (intern-var (current-namespace) declaration-symbol pointer)))'''
-          new_fragment_publish = '''    pointer))'''
-          if source.count(old_fragment_publish) != 1:
-              raise SystemExit(f'fragment-pointer publication anchor changed: {source.count(old_fragment_publish)}')
-          source = source.replace(old_fragment_publish, new_fragment_publish, 1)
-
-          old_definition = '''    (list
-     'defmacro
-     macro-symbol
-     (vector 'symbol '& 'body)
-     (list
-      'list
-      (list 'quote 'lang.core/register-code-pointer!)
-      lang
-      (list
-       'list
-       (list 'quote 'quote)
-       (list
-        'apply
-        'list
-        (list 'quote operation)
-        'symbol
-        'body))))))'''
-          new_definition = '''    (list
-     'defmacro
-     macro-symbol
-     (vector 'symbol '& 'body)
-     (list
-      'list
-      (list 'quote 'def)
-      'symbol
-      (list
-       'list
-       (list 'quote 'lang.core/register-code-pointer!)
-       lang
-       (list
-        'list
-        (list 'quote 'quote)
-        (list
-         'apply
-         'list
-         (list 'quote operation)
-         'symbol
-         'body)))))))'''
-          if source.count(old_definition) != 1:
-              raise SystemExit(f'definition macro publication anchor changed: {source.count(old_definition)}')
-          source = source.replace(old_definition, new_definition, 1)
-
-          old_fragment = '''    (list
-     'defmacro
-     macro-symbol
-     (vector 'symbol 'value)
-     (list
-      'list
-      (list 'quote 'lang.core/register-fragment-pointer!)
-      lang
-      (list 'list (list 'quote 'quote) 'symbol)
-      (list 'list (list 'quote 'quote) 'value)
-      (list
-       'list
-       (list 'quote 'quote)
-       (list 'or (list 'meta 'symbol) {}))))))'''
-          new_fragment = '''    (list
-     'defmacro
-     macro-symbol
-     (vector 'symbol 'value)
-     (list
-      'list
-      (list 'quote 'def)
-      'symbol
-      (list
-       'list
-       (list 'quote 'lang.core/register-fragment-pointer!)
-       lang
-       (list 'list (list 'quote 'quote) 'symbol)
-       (list 'list (list 'quote 'quote) 'value)
-       (list
-        'list
-        (list 'quote 'quote)
-        (list 'or (list 'meta 'symbol) {})))))))'''
-          if source.count(old_fragment) != 1:
-              raise SystemExit(f'fragment macro publication anchor changed: {source.count(old_fragment)}')
-          source = source.replace(old_fragment, new_fragment, 1)
-
-          path.write_text(source.rstrip() + '\n')
-          PY
-
+          python .agent/patch-script-port.py
           python -m py_compile scripts/runtime/materialize-code-migrate-script-ledger
           python scripts/runtime/materialize-code-migrate-script-ledger \
             --repo-root . --foundation-root foundation-base --write
@@ -254,6 +141,7 @@ jobs:
       - name: Publish only validated product files
         run: |
           rm -rf foundation-base .agent
+          rm -f .github/workflows/agent-840-script-port.yml
           git fetch origin main
           git show origin/main:.github/workflows/foundation-surface-conformance.yml \
             > .github/workflows/foundation-surface-conformance.yml
