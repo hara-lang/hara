@@ -2620,6 +2620,29 @@ public class HaraLanguageTest {
     }
   }
 
+  @Test
+  public void exceptionClassesArePortableAndNativeTypesAreDiagnostic() {
+    try (Context context = context()) {
+      assertEquals(
+          ":ex.class/io",
+          context.eval(HaraLanguage.ID, "(ex-class (ex :file/read {:ex/class :ex.class/io}))").toString());
+      assertTrue(context.eval(HaraLanguage.ID, "(nil? (ex-class (ex :file/read {})))").asBoolean());
+      assertEquals(
+          "hara.lang.base.Ex$Info",
+          context.eval(HaraLanguage.ID, "(ex-native-type (ex :file/read {}))").asString());
+      PolyglotException malformed =
+          assertThrows(
+              PolyglotException.class,
+              () -> context.eval(HaraLanguage.ID, "(ex :file/read {:ex/class :io})"));
+      assertTrue(malformed.getMessage().contains(":ex/class must be a namespaced keyword"));
+      PolyglotException ordinary =
+          assertThrows(
+              PolyglotException.class,
+              () -> context.eval(HaraLanguage.ID, "(ex-native-type 42)"));
+      assertTrue(ordinary.getMessage().contains("ex-native-type expects an Exception"));
+    }
+  }
+
   private static Context context() {
     return Context.newBuilder(HaraLanguage.ID).allowIO(IOAccess.ALL).build();
   }

@@ -2462,17 +2462,37 @@ public final class HaraContext {
                 throw new HaraException(
                     "ex attributes must not contain :ex/code; pass the code as the first argument");
               }
+              Object classValue = attributes.lookup(Keyword.create("ex", "class"));
+              if (classValue != null
+                  && (!(classValue instanceof Keyword exceptionClass)
+                      || exceptionClass.getNamespace() == null)) {
+                throw new HaraException(":ex/class must be a namespaced keyword");
+              }
               Object causeValue = attributes.lookup(Keyword.create("ex", "cause"));
-              if (causeValue != null && !(causeValue instanceof hara.lang.protocol.IExInfo)) {
-                throw new HaraException(":ex/cause must be an Exception");
+              if (causeValue != null && !(causeValue instanceof Throwable)) {
+                throw new HaraException(":ex/cause must be an Exception or host error");
               }
               Object contextValue = attributes.lookup(Keyword.create("ex", "context"));
               if (contextValue != null && !(contextValue instanceof IMapType)) {
                 throw new HaraException(":ex/context must be a map");
               }
+              Throwable cause = causeValue instanceof Throwable ? (Throwable) causeValue : null;
+              if (cause != null && !(cause instanceof hara.lang.base.Ex.Info)) {
+                IMetadata hostData =
+                    (IMetadata)
+                        hara.lang.data.Map.Standard.from(
+                            null,
+                            Keyword.create("ex", "code"),
+                            Keyword.create("host", "native-error"),
+                            Keyword.create("ex", "message"),
+                            cause.getMessage() == null ? cause.toString() : cause.getMessage());
+                cause = new hara.lang.base.Ex.Info(
+                    cause.getMessage() == null ? cause.toString() : cause.getMessage(), hostData);
+                attributes =
+                    (IMapType) attributes.assoc(Keyword.create("ex", "cause"), cause);
+              }
               IMetadata data =
                   (IMetadata) attributes.assoc(Keyword.create("ex", "code"), code);
-              Throwable cause = causeValue instanceof Throwable ? (Throwable) causeValue : null;
               return new hara.lang.base.Ex.Info(
                   message instanceof String ? (String) message : code.display(), data, cause);
             }));
@@ -2551,7 +2571,30 @@ public final class HaraContext {
             "ex-class",
             value -> {
               Object unwrapped = HaraBox.unwrap(value);
-              return unwrapped == null ? null : unwrapped.getClass().getName();
+              if (!(unwrapped instanceof hara.lang.base.Ex.Info info)) {
+                throw new HaraException("ex-class expects an Exception");
+              }
+              if (!(info.getData() instanceof IMapType data)) {
+                throw new HaraException("Exception data must be a map");
+              }
+              Object exceptionClass = data.lookup(Keyword.create("ex", "class"));
+              if (exceptionClass == null) return null;
+              if (!(exceptionClass instanceof Keyword keyword)
+                  || keyword.getNamespace() == null) {
+                throw new HaraException(":ex/class must be a namespaced keyword");
+              }
+              return exceptionClass;
+            }));
+    target.define(
+        "ex-native-type",
+        new UnaryBuiltin(
+            "ex-native-type",
+            value -> {
+              Object unwrapped = HaraBox.unwrap(value);
+              if (!(unwrapped instanceof Throwable throwable)) {
+                throw new HaraException("ex-native-type expects an Exception");
+              }
+              return throwable.getClass().getName();
             }));
     target.define("load-string", new UnaryBuiltin("load-string", this::loadString));
     target.define("read-string", new UnaryBuiltin("read-string", this::readString));
