@@ -25,6 +25,12 @@ globals_source = replace_once(
     "    pub(super) fn var_metadata(&mut self, metadata: Option<Rc<Metadata>>) -> Option<u16> {",
     "var-metadata visibility",
 )
+globals_source = replace_once(
+    globals_source,
+    '            .map_err(|message| unsupported(format!("{message}"), children[1].span.start))?;',
+    '            .map_err(|message| unsupported(message, children[1].span.start))?;',
+    "globals useless format",
+)
 bindings_start = globals_source.index(
     "    /// `(def name init)`: interns the value in the current namespace and\n"
 )
@@ -76,6 +82,15 @@ compiler_path.write_text(
 # Machine dispatch and constant-decoding split.
 machine_path = ROOT / "core/rust/src/vm/machine.rs"
 machine_source = machine_path.read_text()
+machine_source = replace_once(
+    machine_source,
+    "                    let mut next_ip = ip;\n",
+    '                    #[cfg(feature = "tracing-jit")]\n'
+    "                    let mut next_ip = ip;\n"
+    '                    #[cfg(not(feature = "tracing-jit"))]\n'
+    "                    let next_ip = ip;\n",
+    "feature-correct next-ip mutability",
+)
 
 enum_start = machine_source.index(
     "/// Result of executing one instruction. Call actions only carry their\n"
