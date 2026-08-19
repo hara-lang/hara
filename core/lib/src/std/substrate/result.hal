@@ -1,0 +1,70 @@
+(ns std.substrate.result
+  (:require [std.substrate.frame :as frame]
+            [std.substrate.util :as util]))
+
+(defn- result-context
+  [space action transport-id failure response]
+  (let [details {"space" (or space frame/SPACE_NODE)
+                 "action" action}
+        details (if transport-id
+                  (assoc details "transport_id" transport-id)
+                  details)
+        details (if failure
+                  (assoc details "failure" failure)
+                  details)
+        reply-to (if response (get response "reply_to") nil)
+        details (if reply-to
+                  (assoc details "reply_to" reply-to)
+                  details)]
+    {"substrate" details}))
+
+(defn- response-error-value
+  [response]
+  (let [value (get response "error")]
+    (cond
+      (string? value)
+      (ex-info value {:code :substrate/application-error})
+
+      (map? value)
+      (ex-info (or (get value "message")
+                   "substrate application error")
+               {:code :substrate/application-error
+                :error value})
+
+      (nil? value)
+      (ex-info "substrate application error"
+               {:code :substrate/application-error})
+
+      :else value)))
+
+(defn- request-error-result
+  [error space action transport-id]
+  (if (and (map? error) (frame/response-frame? error))
+    (Result/create
+     :error
+     (response-error-value error)
+     (result-context space action transport-id "application" error))
+    (Result/create
+     :error
+     error
+     (result-context space action transport-id
+                     (if transport-id "transport" "application")
+                     nil))))
+
+(defn request-result
+  "Issues a substrate request and fulfils with one native completed Result."
+  [node space action args meta]
+  (let [meta (or meta {})
+        transport-id (util/transport-request-target node meta)
+        context (result-context space action transport-id nil nil)]
+    (try
+      (promise/catch
+       (promise/then
+        (util/request node space action args meta)
+        (fn [data]
+          (Result/create :success data context)))
+       (fn [error]
+         (request-error-result error space action transport-id)))
+      (catch Throwable error
+        (promise/from
+         (request-error-result error space action transport-id))))))
