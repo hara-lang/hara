@@ -1,3 +1,52 @@
+fn exception_located_form(node: &kernel::SpannedForm) -> Form {
+    let rebuilt = match &node.form {
+        Form::List(values) if node.children.len() == values.len() => {
+            Form::List(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::List(values) if node.children.len() + 1 == values.len() => {
+            let mut rebuilt = vec![values[0].clone()];
+            rebuilt.extend(node.children.iter().map(exception_located_form));
+            Form::List(rebuilt)
+        }
+        Form::Vector(values) if node.children.len() == values.len() => {
+            Form::Vector(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::Set(values) if node.children.len() == values.len() => {
+            Form::Set(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::Map(values) if node.children.len() == values.len() * 2 => Form::Map(
+            node.children
+                .chunks_exact(2)
+                .map(|pair| (exception_located_form(&pair[0]), exception_located_form(&pair[1])))
+                .collect(),
+        ),
+        Form::Tagged(tag, _) if node.children.len() == 1 => Form::Tagged(
+            tag.clone(),
+            Box::new(exception_located_form(&node.children[0])),
+        ),
+        Form::Metadata(metadata, _) if node.children.len() == 1 => Form::Metadata(
+            metadata.clone(),
+            Box::new(exception_located_form(&node.children[0])),
+        ),
+        form => form.clone(),
+    };
+    let Form::List(mut values) = rebuilt else {
+        return rebuilt;
+    };
+    let Some(Form::Symbol(operator)) = values.first() else {
+        return Form::List(values);
+    };
+    let marker = match operator.as_str() {
+        "throw" => "__throw-at",
+        "ex" | "std.foundation/ex" => "__ex-at",
+        _ => return Form::List(values),
+    };
+    values[0] = Form::Symbol(marker.into());
+    values.insert(1, Form::Number(node.span.start.line as i64));
+    values.insert(2, Form::Number(node.span.start.column as i64));
+    Form::List(values)
+}
+
 #[wasm_bindgen]
 impl Runtime {
     fn empty() -> Runtime {
@@ -104,6 +153,11 @@ impl Runtime {
         runtime
             .bootstrap_foundation()
             .expect("embedded std.foundation fallback must be valid");
+        let foundation = runtime.namespace_registry.find_or_create("std.foundation");
+        for (name, value) in core::exception_function_values() {
+            foundation.intern_with_origin(name, value, kernel::VarOrigin::RuntimePrimitive);
+        }
+        runtime.refer_foundation_into("user");
         runtime
     }
 
@@ -322,7 +376,8 @@ impl Runtime {
                 line: form.span.start.line,
                 column: form.span.start.column,
             };
-            result = core::with_exception_site(site, || self.eval_forms(vec![form.form], traced))?;
+            let form = exception_located_form(&form);
+            result = core::with_exception_site(site, || self.eval_forms(vec![form], traced))?;
         }
         self.save_namespace();
         self.refresh_qualified_bindings();

@@ -46,6 +46,14 @@ pub(crate) fn current_exception_site() -> Option<ExceptionSite> {
     ACTIVE_EXCEPTION_SITE.with(|active| active.borrow().clone())
 }
 
+pub(crate) fn exception_site_at(line: usize, column: usize) -> Option<ExceptionSite> {
+    current_exception_site().map(|mut site| {
+        site.line = line;
+        site.column = column;
+        site
+    })
+}
+
 pub(crate) fn with_evaluation_interrupt<R>(
     interrupt: Rc<dyn Fn() -> Option<String>>,
     operation: impl FnOnce() -> R,

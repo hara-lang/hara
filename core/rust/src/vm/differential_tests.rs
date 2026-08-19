@@ -278,17 +278,24 @@ fn structured_error_code_catches_match_in_evaluator_and_bytecode() {
     assert_eq!(runtime.eval_native(source).unwrap(), ":file-error");
 
     let registry = crate::embedding_namespace_registry();
-    let foundation = registry.find_or_create("std.foundation");
-    for (name, value) in crate::core::exception_function_values() {
-        foundation.intern(name, value);
-    }
-    registry.current().alias("std.foundation", foundation.clone());
     let program = compile_source_with(source, &registry).unwrap();
     assert_eq!(
         execute_program_with_globals(Rc::new(program), &registry)
             .unwrap()
             .display(),
         ":file-error"
+    );
+    let provenance_source =
+        "(let [exception (std.foundation/ex :test/provenance {})] \
+           (try (throw exception) \
+             (catch caught (count (:ex/throws (std.foundation/ex-provenance caught))))))";
+    assert_eq!(runtime.eval_native(provenance_source).unwrap(), "1");
+    let program = compile_source_with(provenance_source, &registry).unwrap();
+    assert_eq!(
+        execute_program_with_globals(Rc::new(program), &registry)
+            .unwrap()
+            .display(),
+        "1"
     );
 }
 

@@ -31,6 +31,16 @@ pub(crate) fn record_exception_throw(value: &Value, site: Option<ExceptionSite>)
     provenance.throws.push(site);
 }
 
+pub(crate) fn record_exception_creation(value: &Value, site: Option<ExceptionSite>) {
+    let (Value::ExceptionInfo(exception), Some(site)) = (value, site) else {
+        return;
+    };
+    let mut provenance = exception.provenance.borrow_mut();
+    if provenance.created_at.is_none() {
+        provenance.created_at = Some(site);
+    }
+}
+
 fn exception_site_value(site: &ExceptionSite) -> Value {
     Value::Map([
         ("namespace", site.namespace.clone().map(Value::String).unwrap_or(Value::Nil)),
@@ -646,7 +656,7 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                     cause: lookup("ex/cause").cloned().map(Box::new),
                     data: Box::new(data),
                     provenance: Rc::new(RefCell::new(ExceptionProvenance {
-                        created_at: current_exception_site(),
+                        created_at: None,
                         throws: Vec::new(),
                     })),
                 })))
@@ -669,7 +679,7 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                     data: Box::new(arguments[1].clone()),
                     cause: arguments.get(2).cloned().map(Box::new),
                     provenance: Rc::new(RefCell::new(ExceptionProvenance {
-                        created_at: current_exception_site(),
+                        created_at: None,
                         throws: Vec::new(),
                     })),
                 })))
@@ -688,6 +698,17 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                 Value::ExceptionInfo(value) => Ok(Value::String(value.message.clone())),
                 Value::String(value) => Ok(Value::String(value.clone())),
                 value => Ok(Value::String(value.display())),
+            }),
+        ),
+        (
+            "ex-cause",
+            native_function("ex-cause", 1, |arguments| match &arguments[0] {
+                Value::ExceptionInfo(value) => Ok(value
+                    .cause
+                    .as_deref()
+                    .cloned()
+                    .unwrap_or(Value::Nil)),
+                _ => Err("ex-cause expects an Exception".into()),
             }),
         ),
         (

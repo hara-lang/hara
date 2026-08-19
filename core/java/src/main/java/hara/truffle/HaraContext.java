@@ -2535,6 +2535,17 @@ public final class HaraContext {
                   : String.valueOf(unwrapped);
             }));
     target.define(
+        "ex-cause",
+        new UnaryBuiltin(
+            "ex-cause",
+            value -> {
+              Object raw = HaraBox.unwrap(value);
+              if (!(raw instanceof hara.lang.base.Ex.Info info)) {
+                throw new HaraException("ex-cause expects an Exception");
+              }
+              return info.getCause();
+            }));
+    target.define(
         "ex-class",
         new UnaryBuiltin(
             "ex-class",

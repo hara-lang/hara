@@ -481,16 +481,10 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(let [exception (ex :test/provenance {})] \
-                       (try (throw exception) \
-                         (catch caught \
-                           (let [provenance (ex-provenance caught)] \
-                             [(:line (:ex/created-at provenance)) \
-                              (:column (:ex/created-at provenance)) \
-                              (count (:ex/throws provenance))]))))",
+                    "(try\n  (throw (ex :test/provenance {}))\n  (catch caught\n    (let [provenance (ex-provenance caught)]\n      [(:line (:ex/created-at provenance))\n       (:column (:ex/created-at provenance))\n       (:line (first (:ex/throws provenance)))\n       (:column (first (:ex/throws provenance)))\n       (count (:ex/throws provenance))])))",
                 )
                 .unwrap(),
-            "[1 1 1]"
+            "[2 10 2 3 1]"
         );
     }
 
@@ -5876,7 +5870,10 @@ mod tests {
             "error/catch-code-vector",
             "error/exception-message-fallback",
             "error/exception-provenance-line",
+            "error/exception-provenance-throw-column",
             "error/exception-provenance-throw-count",
+            "error/exception-provenance-rethrow-count",
+            "error/exception-cause",
             "error/exception-reject-arbitrary-throw",
             "error/exception-reject-reserved-code",
             "error/unmatched-catch",

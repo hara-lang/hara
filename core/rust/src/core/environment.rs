@@ -721,7 +721,11 @@ pub(crate) enum NamespaceResource {
 }
 
 pub(crate) fn thrown_error(value: Value) -> String {
-    record_exception_throw(&value, current_exception_site());
+    thrown_error_at(value, current_exception_site())
+}
+
+pub(crate) fn thrown_error_at(value: Value, site: Option<ExceptionSite>) -> String {
+    record_exception_throw(&value, site);
     let error = format!("thrown: {}", value.display());
     ACTIVE_THROWN_VALUE.with(|active| {
         *active.borrow_mut() = Some((error.clone(), value));

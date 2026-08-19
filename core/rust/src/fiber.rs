@@ -734,6 +734,41 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
             Box::new(move |r| k(r.map(Value::Recur))),
         ),
         Some("try") => try_cps(v, env, k),
+        Some("__ex-at") => {
+            let [_, Form::Number(line), Form::Number(column), arguments @ ..] = v.as_slice() else {
+                return k(Err("internal ex location marker is malformed".into()));
+            };
+            let site = exception_site_at(*line as usize, *column as usize);
+            let mut application = vec![Form::Symbol("ex".into())];
+            application.extend_from_slice(arguments);
+            one(
+                Form::List(application),
+                env,
+                Box::new(move |result| {
+                    if let Ok(value) = &result {
+                        record_exception_creation(value, site.clone());
+                    }
+                    k(result)
+                }),
+            )
+        }
+        Some("__throw-at") => {
+            let [_, Form::Number(line), Form::Number(column), value] = v.as_slice() else {
+                return k(Err("internal throw location marker is malformed".into()));
+            };
+            let site = exception_site_at(*line as usize, *column as usize);
+            one(
+                value.clone(),
+                env,
+                Box::new(move |result| match result {
+                    Ok(value @ Value::ExceptionInfo(_)) => {
+                        k(Err(thrown_error_at(value, site.clone())))
+                    }
+                    Ok(_) => k(Err("throw expects an Exception value created by ex".into())),
+                    Err(error) => k(Err(error)),
+                }),
+            )
+        }
         Some("throw") => {
             if v.len() != 2 {
                 return k(Err("throw expects one value".into()));
