@@ -2463,10 +2463,10 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     if fs.len() != 3 {
                         return Err(format!("{n} expects a function and collection"));
                     }
-                    let function = match eval(&fs[1], env)? {
-                        Value::Function(function) => function,
-                        _ => return Err(format!("{n} expects a function")),
-                    };
+                    let function = eval(&fs[1], env)?;
+                    if !is_callable_value(&function) {
+                        return Err(format!("{n} expects a function"));
+                    }
                     let value = eval(&fs[2], env)?;
                     let result = iterator_keep(function, value.clone())?;
                     if n == "keep" {
@@ -2879,13 +2879,14 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             }
                             _ => Err("mapcat expects a function".into()),
                         },
-                        "iter-keep" => match parameter {
-                            Value::Function(function) => {
-                                let result = iterator_keep(function, source.clone())?;
+                        "iter-keep" => {
+                            if !is_callable_value(&parameter) {
+                                Err("keep expects a function".into())
+                            } else {
+                                let result = iterator_keep(parameter, source.clone())?;
                                 transform_like(&source, result)
                             }
-                            _ => Err("keep expects a function".into()),
-                        },
+                        }
                         "iter-partition" | "iter-partition-all" => {
                             let result = iterator_partition(
                                 source.clone(),

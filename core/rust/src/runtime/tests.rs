@@ -20,6 +20,21 @@ mod tests {
     }
 
     #[test]
+    fn native_keep_accepts_keyword_callables_across_direct_and_generated_paths() {
+        let mut kernel = SessionKernel::new();
+        let root = SessionId::parse("ROOT").unwrap();
+        assert_eq!(
+            kernel
+                .eval(
+                    &root,
+                    "(let [records [{:source/refer :direct} {} {:source/refer :adapted}]] [(vec (keep :source/refer records)) (vec ((keep :source/refer) records))])",
+                )
+                .unwrap(),
+            "[[:direct :adapted] [:direct :adapted]]"
+        );
+    }
+
+    #[test]
     fn in_process_sandbox_lifecycle_is_private_and_explicitly_non_secure() {
         let mut kernel = SessionKernel::new();
         let provider = Rc::new(InProcessSandboxProvider);

@@ -1385,7 +1385,7 @@ enum IteratorGenerator {
     Map(Rc<Function>, Value, bool),
     Filter(Rc<Function>, Value),
     Mapcat(Rc<Function>, Value, Option<Value>),
-    Keep(Rc<Function>, Value),
+    Keep(Value, Value),
     Prepend(Option<Value>, Value),
     Concat(Vec<Value>, usize),
     Zip(Vec<Value>),
@@ -1617,7 +1617,7 @@ impl IteratorState {
                         self.closed = true;
                         break Ok(None);
                     };
-                    let mapped = call_function(function, vec![value])?;
+                    let mapped = call_value(function.clone(), vec![value])?;
                     if !matches!(mapped, Value::Nil) {
                         break Ok(Some(mapped));
                     }

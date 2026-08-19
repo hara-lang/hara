@@ -861,6 +861,27 @@ fn binding_var(env: &mut HashMap<String, Value>, name: &str) -> Option<KernelVar
     }
 }
 
+pub(crate) fn is_callable_value(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Function(_)
+            | Value::StructType(_)
+            | Value::MutableType(_)
+            | Value::Struct(_)
+            | Value::Mutable(_)
+            | Value::Pointer(_)
+            | Value::Keyword(_)
+            | Value::Map(_)
+            | Value::OrderedMap(_)
+            | Value::SortedMap(_)
+            | Value::Trie(_)
+            | Value::PriorityMap(_)
+            | Value::Set(_)
+            | Value::OrderedSet(_)
+            | Value::SortedSet(_)
+    )
+}
+
 pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value, String> {
     let lookup =
         |target: &Value, key: &Value, fallback: Value| collection_get(target, key, fallback);

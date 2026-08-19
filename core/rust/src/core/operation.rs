@@ -1142,7 +1142,7 @@ fn iterator_mapcat(function: Rc<Function>, value: Value) -> Result<Value, String
         IteratorState::generated(IteratorGenerator::Mapcat(function, source, None)),
     ))))
 }
-fn iterator_keep(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_keep(function: Value, value: Value) -> Result<Value, String> {
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
