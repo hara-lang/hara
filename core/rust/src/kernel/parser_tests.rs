@@ -315,14 +315,18 @@ fn matches_java_symbol_and_number_macro_termination() {
 
 #[test]
 fn shared_reader_corpus_matches_canonical_forms_and_errors() {
-    let Some(path) = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .map(|root| {
-            root.join("hara-specs-registry")
-                .join("01-lang/001-language/draft/conformance/reader.edn")
-        })
-        .find(|candidate| candidate.is_file())
-    else {
+    let relative = "01-lang/001-language/draft/conformance/reader.edn";
+    let path = std::env::var_os("HARA_SPECS_REGISTRY")
+        .map(std::path::PathBuf::from)
+        .map(|root| root.join(relative))
+        .filter(|candidate| candidate.is_file())
+        .or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .map(|root| root.join("hara-specs-registry").join(relative))
+                .find(|candidate| candidate.is_file())
+        });
+    let Some(path) = path else {
         eprintln!(
             "skipping: hara-specs-registry/01-lang/001-language/draft/conformance/reader.edn unavailable (hara-specs-registry sibling repo not present)"
         );

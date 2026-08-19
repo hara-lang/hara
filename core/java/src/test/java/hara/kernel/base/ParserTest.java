@@ -38,9 +38,12 @@ public class ParserTest {
 
   @Test
   public void l0ConformanceCorpusIsReadableEdn() throws Exception {
+    String registry = System.getenv().getOrDefault("HARA_SPECS_REGISTRY", "../hara-specs-registry");
     Object corpus =
         Parser.LispReader.readString(
-            Files.readString(Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn")), null);
+            Files.readString(
+                Path.of(registry, "00-unsorted/platform-language/draft/conformance/l0.edn")),
+            null);
     assertTrue(corpus instanceof hara.lang.data.types.IMapType);
     hara.lang.data.types.IMapType map = (hara.lang.data.types.IMapType) corpus;
     assertEquals("0.0.0-alpha", map.lookup(Keyword.create("spec/version")));

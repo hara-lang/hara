@@ -37,7 +37,11 @@ public class HaraL0ConformanceTest {
     String casePrefix = System.getenv("HARA_L0_CASE_PREFIX");
     for (Object item : cases) {
       IMapType testCase = (IMapType) item;
-      String id = ((Keyword) testCase.lookup(key("id"))).getName();
+      Keyword idKeyword = (Keyword) testCase.lookup(key("id"));
+      String id =
+          idKeyword.getNamespace() == null
+              ? idKeyword.getName()
+              : idKeyword.getNamespace() + "/" + idKeyword.getName();
       if (casePrefix != null && !id.startsWith(casePrefix)) continue;
       String className = ((Keyword) testCase.lookup(key("class"))).getName();
       String form = (String) testCase.lookup(key("source"));
@@ -93,7 +97,12 @@ public class HaraL0ConformanceTest {
         Object message = expectedMessage(expected);
         if (message != null) {
           assertTrue(
-              id + " should contain its specified error",
+              id
+                  + " should contain its specified error `"
+                  + message
+                  + "`, actual: `"
+                  + error.getMessage()
+                  + "`",
               error.getMessage().contains(message.toString()));
         }
       }
@@ -107,8 +116,12 @@ public class HaraL0ConformanceTest {
   private void assertValueCase(String id, String form, String setup, IMapType expected) {
     try (Context context = context()) {
       if (setup != null) context.eval(HaraLanguage.ID, setup);
-      Value actual = context.eval(HaraLanguage.ID, form);
-      assertExpectedValue(id, actual, expected.lookup(key("value")));
+      try {
+        Value actual = context.eval(HaraLanguage.ID, form);
+        assertExpectedValue(id, actual, expected.lookup(key("value")));
+      } catch (PolyglotException error) {
+        throw new AssertionError(id + " unexpectedly failed: " + error.getMessage(), error);
+      }
     }
   }
 
