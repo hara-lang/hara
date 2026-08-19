@@ -8,6 +8,7 @@
             [lang.common.preprocess-value :as value]
             [lang.core.registry :as registry]
             [lang.core.script :as script]
+            [lang.core.script-annex :as script-annex]
             [lang.core.script-fragment]
             [lang.core.runtime :as runtime]
             [lang.model.v1.spec-postgres]
@@ -30,6 +31,35 @@
 (def host-name name)
 
 (defn rt:stop [] (script/stop))
+
+(defn annex:start
+  ([tag] (script-annex/start-tag tag))
+  ([tag namespace] (script-annex/start-tag-in namespace tag)))
+
+(defn annex:get
+  ([tag] (script-annex/get-runtime tag))
+  ([tag namespace] (script-annex/runtime-in namespace tag)))
+
+(defn annex:stop
+  ([tag] (script-annex/stop-tag tag))
+  ([tag namespace] (script-annex/stop-tag-in namespace tag)))
+
+(defn annex:start-all
+  ([] (script-annex/start-all))
+  ([namespace] (script-annex/start-all-in namespace)))
+
+(defn annex:stop-all
+  ([] (script-annex/stop-all))
+  ([namespace] (script-annex/stop-all-in namespace)))
+
+(defn annex:restart-all
+  ([] (script-annex/restart-all))
+  ([namespace] (script-annex/restart-all-in namespace)))
+
+(defn annex:list
+  ([] (script-annex/status))
+  ([namespace] (script-annex/status-in namespace)))
+
 (def script-modules script/+modules+)
 (def script-specs script/+specs+)
 
@@ -207,7 +237,7 @@
                  :namespace source
                  :symbol qualified
                  :context context-key))]
-     (intern-var (current-namespace) declaration-symbol pointer))))
+     pointer)))
 
 (defn register-fragment-pointer
   "Registers one def$.<tag> fragment and interns its language pointer Var."
@@ -247,7 +277,7 @@
                 :namespace source
                 :symbol qualified-source
                 :context context-key))]
-    (intern-var (current-namespace) declaration-symbol pointer)))
+    pointer))
 
 (defn register-macro-fragment
   "Registers one Foundation defmacro.<tag> fragment for its exact language."
@@ -503,17 +533,21 @@
      (vector 'symbol '& 'body)
      (list
       'list
-      (list 'quote 'lang.core/register-code-pointer)
-      lang
+      (list 'quote 'def)
+      'symbol
       (list
        'list
-       (list 'quote 'quote)
+       (list 'quote 'lang.core/register-code-pointer)
+       lang
        (list
-        'apply
         'list
-        (list 'quote operation)
-        'symbol
-        'body))))))
+        (list 'quote 'quote)
+        (list
+         'apply
+         'list
+         (list 'quote operation)
+         'symbol
+         'body)))))))
 
 (defn script-fragment-macro-form
   [lang tag]
@@ -524,14 +558,18 @@
      (vector 'symbol 'value)
      (list
       'list
-      (list 'quote 'lang.core/register-fragment-pointer)
-      lang
-      (list 'list (list 'quote 'quote) 'symbol)
-      (list 'list (list 'quote 'quote) 'value)
+      (list 'quote 'def)
+      'symbol
       (list
        'list
-       (list 'quote 'quote)
-       (list 'or (list 'meta 'symbol) {}))))))
+       (list 'quote 'lang.core/register-fragment-pointer)
+       lang
+       (list 'list (list 'quote 'quote) 'symbol)
+       (list 'list (list 'quote 'quote) 'value)
+       (list
+        'list
+        (list 'quote 'quote)
+        (list 'or (list 'meta 'symbol) {})))))))
 
 (defn script-defmacro-macro-form
   [lang tag]
@@ -666,3 +704,17 @@
 (defmacro script-
   [lang & options]
   (lang.core/script-expansion lang options true))
+
+(defmacro script+
+  [coordinate-value & options]
+  (script-annex/script-ext-form
+   (symbol (str (get &env :ns)))
+   coordinate-value
+   (if (empty? options) {} (first options))))
+
+(defmacro !
+  [tag body]
+  (script-annex/script-eval-form
+   (symbol (str (get &env :ns)))
+   tag
+   body))
