@@ -4,11 +4,9 @@
 
 (def operational-store-operations
   (vec
-   (concat store/run-operations
-           store/transaction-operations
-           store/event-operations
-           store/checkpoint-operations
-           store/outbox-operations)))
+   (concat (store/baseline-operations)
+           (get store/optional-capabilities :outbox)
+           [:next-run-id :validate-run-id :create-run])))
 
 (defn asynchronous-operation
   [function]
@@ -21,6 +19,7 @@
   "Wraps a store so every operation settles through a portable Promise."
   [provider]
   (let [operations (store/operations provider)
+        descriptor (store/descriptor provider)
         wrapped
         (reduce
          (fn [output operation]
@@ -32,10 +31,11 @@
                output)))
          {}
          operational-store-operations)]
-    (assoc provider
-           :provider/id [:async (:provider/id provider)]
-           :provider/operations wrapped
-           :provider/async-source provider)))
+    (store/normalise-provider
+     (assoc descriptor
+            :provider/id [:async (:provider/id descriptor)]
+            :provider/operations wrapped
+            :provider/async-source provider))))
 
 (defn throws?
   [function]
@@ -57,7 +57,35 @@
 
 (defn store-call
   [provider operation & arguments]
-  (settle (apply store/call provider operation arguments)))
+  (settle
+   (case operation
+     :load-run
+     (store/query provider
+                  {:work/query :run/load :run/id (first arguments)})
+
+     :list-runs
+     (store/query provider
+                  {:work/query :run/list
+                   :work/where (or (first arguments) {})})
+
+     :list-events
+     (store/query provider
+                  {:work/query :event/list :run/id (first arguments)})
+
+     :load-checkpoint
+     (store/query provider
+                  {:work/query :checkpoint/load
+                   :checkpoint/key (first arguments)})
+
+     :list-checkpoints
+     (store/query provider
+                  {:work/query :checkpoint/list
+                   :run/id (first arguments)})
+
+     :transact
+     (store/transact provider (first arguments))
+
+     (apply store/call provider operation arguments))))
 
 (defn sample-run
   [id input]
@@ -105,22 +133,23 @@
   [provider run-id]
   (:run/revision (store-call provider :load-run run-id)))
 
-(defn run-store-corpus
-  "Runs the reusable operational-store conformance corpus against a provider
-   factory and returns one boolean per required scenario."
+(defn run-baseline-corpus
+  "Runs only the baseline IWorkStore conformance corpus."
   [factory]
   (let [provider (settle (factory))
         run-id "store-conformance"
         proposed (sample-run run-id {:value 1})
-        created (store-call provider :create-run proposed)
-        repeated (store-call provider :create-run proposed)
+        created-transition (settle (store/create-run! provider proposed))
+        repeated-transition (settle (store/create-run! provider proposed))
+        created (:transition/run created-transition)
+        repeated (:transition/run repeated-transition)
         idempotent-create (= created repeated)
         conflicting-create
         (throws?
          (fn []
-           (store-call provider
-                       :create-run
-                       (sample-run run-id {:value 2}))))
+           (settle
+            (store/create-run! provider
+                               (sample-run run-id {:value 2})))))
         first-transition
         (transact-at
          provider
@@ -225,45 +254,7 @@
                 (:event
                  (last-value (store-call provider :list-events run-id))))
              (= (:transition/revision cancellation)
-                (current-revision provider run-id)))
-        outbox-intent
-        {:outbox/key [run-id :receipt :final]
-         :outbox/topic :work/receipt
-         :outbox/payload {:run/id run-id}}
-        first-outbox
-        (transact-at
-         provider
-         run-id
-         (current-revision provider run-id)
-         {:transition/outbox [outbox-intent]})
-        second-outbox
-        (transact-at
-         provider
-         run-id
-         (current-revision provider run-id)
-         {:transition/outbox [outbox-intent]})
-        first-entry (first (:transition/outbox first-outbox))
-        second-entry (first (:transition/outbox second-outbox))
-        pending-outbox (store-call provider :list-outbox {:status :pending})
-        claimed (store-call provider
-                            :claim-outbox
-                            {:claim/id "conformance-claim"
-                             :limit 1})
-        claimed-entry (first claimed)
-        acked
-        (store-call provider
-                    :ack-outbox
-                    (:outbox/id claimed-entry)
-                    {:claim/id "conformance-claim"
-                     :ack/data {:published true}})
-        outbox-idempotent-and-acked
-        (and (= (:outbox/id first-entry) (:outbox/id second-entry))
-             (= 1 (count pending-outbox))
-             (= :claimed (:outbox/status claimed-entry))
-             (= :acked (:outbox/status acked))
-             (= 1 (count (store-call provider
-                                     :list-outbox
-                                     {:status :acked}))))]
+                (current-revision provider run-id)))]
     {:idempotent-create idempotent-create
      :conflicting-create-rejected conflicting-create
      :monotonic-revisions monotonic-revisions
@@ -271,5 +262,52 @@
      :checkpoint-event-atomic checkpoint-event-atomic
      :stable-event-ordering stable-event-ordering
      :completed-checkpoint-immutable completed-checkpoint-immutable
-     :cancellation-visible cancellation-visible
-     :outbox-idempotent-and-acked outbox-idempotent-and-acked}))
+     :cancellation-visible cancellation-visible}))
+
+(defn run-outbox-corpus
+  "Runs the optional outbox capability corpus independently."
+  [factory]
+  (let [provider (settle (factory))
+        run-id "outbox-conformance"
+        _ (settle (store/create-run!
+                   provider
+                   (sample-run run-id {:value 1})))
+        intent
+        {:outbox/key [run-id :receipt :final]
+         :outbox/topic :work/receipt
+         :outbox/payload {:run/id run-id}}
+        first-transition
+        (transact-at provider run-id 0 {:transition/outbox [intent]})
+        second-transition
+        (transact-at provider run-id 1 {:transition/outbox [intent]})
+        first-entry (first (:transition/outbox first-transition))
+        second-entry (first (:transition/outbox second-transition))
+        pending (store-call provider :list-outbox {:status :pending})
+        claimed
+        (store-call provider
+                    :claim-outbox
+                    {:claim/id "conformance-claim" :limit 1})
+        claimed-entry (first claimed)
+        acked
+        (store-call provider
+                    :ack-outbox
+                    (:outbox/id claimed-entry)
+                    {:claim/id "conformance-claim"
+                     :ack/data {:published true}})]
+    {:outbox-idempotent-and-acked
+     (and (= (:outbox/id first-entry) (:outbox/id second-entry))
+          (= 1 (count pending))
+          (= :claimed (:outbox/status claimed-entry))
+          (= :acked (:outbox/status acked))
+          (= 1 (count (store-call provider
+                                  :list-outbox
+                                  {:status :acked}))))}))
+
+(defn run-store-corpus
+  "Compatibility aggregate for baseline and installed extension corpora."
+  [factory]
+  (let [baseline (run-baseline-corpus factory)
+        provider (settle (factory))]
+    (if (store/capability? provider :outbox)
+      (merge baseline (run-outbox-corpus factory))
+      (assoc baseline :outbox-idempotent-and-acked false))))

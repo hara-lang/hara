@@ -198,8 +198,51 @@
                      (conj (vec (or (:outbox-order data) [])) id))]
                 (recur (inc index) data (conj committed record))))))))))
 
+(defn memory-create-transition
+  [data transition]
+  (let [run-id (memory-validate-run-id (:transition/run-id transition))
+        proposed
+        (normalise-run
+         (assoc (:transition/create-run transition) :run/id run-id))
+        existing (get-in data [:runs run-id])]
+    (if (not= :absent (:transition/expected-revision transition))
+      (throw
+       (ex-info "Work run creation requires an absent revision condition"
+                {:run/id run-id
+                 :transition/expected-revision
+                 (:transition/expected-revision transition)})))
+    (cond
+      (nil? existing)
+      (let [result
+            {:transition/run proposed
+             :transition/revision (:run/revision proposed)
+             :transition/created? true
+             :transition/checkpoints []
+             :transition/events []}]
+        (assoc
+         (assoc-in data [:runs run-id] proposed)
+         :last-transition result))
+
+      (model/compatible-run? existing proposed)
+      (assoc data
+             :last-transition
+             {:transition/run existing
+              :transition/revision (:run/revision existing)
+              :transition/created? false
+              :transition/checkpoints []
+              :transition/events []})
+
+      :else
+      (throw
+       (ex-info "Work run identity conflicts with existing input"
+                {:run/id run-id
+                 :existing/work (:run/work-root existing)
+                 :proposed/work (:run/work-root proposed)})))))
+
 (defn memory-commit-transition
   [data transition]
+  (if (:transition/create-run transition)
+    (memory-create-transition data transition)
   (let [run-id (memory-validate-run-id (:transition/run-id transition))
         run (get-in data [:runs run-id])]
     (if (nil? run)
@@ -234,7 +277,7 @@
            (vec (map (fn [event] (:event/sequence event)) events))
            :transition/outbox-sequences
            (vec (map (fn [entry] (:outbox/sequence entry)) outbox))}]
-      (assoc data :last-transition result))))
+      (assoc data :last-transition result)))))
 
 (defn memory-transact
   [state transition]

@@ -121,8 +121,18 @@ checkpoint load and list
 ```
 
 A query is an immutable map whose discriminator is supplied by
-`:work/query`. Existing provider operation maps remain compatible until the
-store-adapter migration establishes the canonical query profiles.
+`:work/query`. The baseline query vocabulary is exactly:
+
+```clojure
+{:work/query :run/load :run/id id}
+{:work/query :run/list :work/where where}
+{:work/query :event/list :run/id id}
+{:work/query :checkpoint/load :checkpoint/key key}
+{:work/query :checkpoint/list :run/id id}
+```
+
+Existing provider operation maps are wrapped by `StoreAdapter`; managed
+evaluation itself dispatches only through `IWorkStore`.
 
 `work-transact` applies one revision-fenced journal transition. A transition
 may atomically contain:
@@ -132,6 +142,10 @@ run creation or updates
 checkpoint commits
 committed events
 ```
+
+Run creation uses `:transition/create-run` with
+`:transition/expected-revision :absent`. It is committed through
+`work-transact`, not through an independent write method.
 
 The store must preserve these laws:
 
@@ -144,6 +158,11 @@ The store must preserve these laws:
 Transactional outbox, claims, leases, delayed scheduling, receipt publication,
 and distributed fencing are optional capability suites rather than mandatory
 `IWorkStore` methods.
+
+The baseline store capability set is runs, transactions, events, and
+checkpoints. Outbox operations remain accessible only through the explicit
+`:outbox` extension capability and are omitted entirely by baseline-only
+stores.
 
 `IWorkStore` does not extend `IComponent`. A concrete database client may
 separately implement lifecycle protocols.
