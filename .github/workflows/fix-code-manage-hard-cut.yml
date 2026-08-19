@@ -1,4 +1,4 @@
-name: Synchronize Rust HAL inventory
+name: Complete code.manage translator hard cut
 
 on:
   push:
@@ -6,18 +6,20 @@ on:
       - agent/524-code-migrate-substrate
     paths:
       - '.github/workflows/fix-code-manage-hard-cut.yml'
+      - '.github/agent-patches/866-complete-hard-cut.py'
   pull_request:
     branches:
       - main
     paths:
       - '.github/workflows/fix-code-manage-hard-cut.yml'
+      - '.github/agent-patches/866-complete-hard-cut.py'
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  synchronize:
+  hard-cut:
     if: github.repository == 'hara-lang/hara'
     runs-on: ubuntu-latest
     steps:
@@ -26,22 +28,28 @@ jobs:
           ref: agent/524-code-migrate-substrate
           fetch-depth: 0
 
-      - name: Regenerate the inventory from canonical HAL sources
+      - name: Apply the product-only hard cut
         run: |
           set -euo pipefail
-          scripts/runtime/sync-rust-hal-src
-          scripts/runtime/sync-rust-hal-src --check
-          git diff --check -- core/rust/standard-library.namespaces
+          python3 .github/agent-patches/866-complete-hard-cut.py
+          test ! -e .github/agent-patches/866-complete-hard-cut.py
+          test ! -e core/lib/test/code/migrate_manage_route_test.hal
+          ! rg -n 'clojure-to-hal|translation-|foundation-migrate\.json' \
+            core/lib/src/code/manage/cli.hal \
+            core/lib/test/code/manage_cli_test.hal
 
-      - name: Commit the tracked inventory only
+      - name: Synchronize the Rust namespace inventory
         run: |
           set -euo pipefail
-          if git diff --quiet -- core/rust/standard-library.namespaces; then
-            echo 'Rust namespace inventory is already current.'
-            exit 0
-          fi
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/sync-rust-hal-src --check
+
+      - name: Commit the completed hard cut
+        run: |
+          set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add core/rust/standard-library.namespaces
-          git commit -m 'chore(rust): synchronize canonical HAL namespace inventory'
+          git add -A -- ':!.github/workflows'
+          git diff --cached --check
+          git commit -m 'refactor(code.manage): remove the translator CLI hard cut'
           git push origin HEAD:agent/524-code-migrate-substrate
