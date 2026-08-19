@@ -23,6 +23,55 @@
   => #{"comprehension-error" "dotimes" "if-let-form" "macroexpand"
        "subvec" "take-nth" "topological-sort"})
 
+(fact "the catalog records exact location, full definition source, and review state"
+  (let [source (str "(ns demo.core)\n\n"
+                    "(defn demo [value]\n"
+                    "  (throw (ex-info \"bad\" {:error/code :demo/bad :value value})))\n")
+        record (first (transform/catalog-ex-info-source
+                       source
+                       "core/lib/src/demo/core.hal"
+                       {:repository "demo/repo" :revision "abc"}))]
+    [(select-keys record [:site/id :site/status :source/repository
+                          :source/path :source/namespace :source/role
+                          :legacy/error-code :review/status :ex/code :ex/class])
+     (get-in record [:source/range :line])
+     (get-in record [:context/definition :name])
+     (str/includes? (get-in record [:context/definition :source])
+                    "(defn demo")])
+  => [{:site/id ["demo/repo" "core/lib/src/demo/core.hal" "demo.core/demo" 0]
+       :site/status :current
+       :source/repository "demo/repo"
+       :source/path "core/lib/src/demo/core.hal"
+       :source/namespace 'demo.core
+       :source/role :production
+       :legacy/error-code :demo/bad
+       :review/status :pending
+       :ex/code nil
+       :ex/class nil}
+      4
+      'demo.core/demo
+      true])
+
+(fact "Foundation catalog records are pre-approved with semantic classes"
+  (let [record (first
+                (transform/catalog-ex-info-source
+                 "(ns std.foundation) (defn subvec [] (ex-info \"bad\" {}))"
+                 "core/lib/src/std/foundation.hal"
+                 {:repository "hara-lang/hara" :revision "abc"}))]
+    (select-keys record [:review/status :migration/batch :ex/code :ex/class
+                         :expected/matches :expected/changes]))
+  => {:review/status :approved
+      :migration/batch :foundation
+      :ex/code :foundation/invalid-subvec-bounds
+      :ex/class :ex.class/argument
+      :expected/matches 1
+      :expected/changes 1})
+
+(fact "Foundation rewrites add the reviewed semantic class"
+  (transform/migrate-ex-info
+   "(defn subvec [] (ex-info \"bad\" {}))")
+  => "(defn subvec [] (ex :foundation/invalid-subvec-bounds (assoc {} :ex/message \"bad\" :ex/class :ex.class/argument)))")
+
 (fact "large sources are transformed one top-level form at a time"
   (let [source (str/join
                 ""
