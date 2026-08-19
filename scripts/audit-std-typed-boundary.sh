@@ -7,6 +7,8 @@ lint_analyzer='core/lib/src/tool/lint/analyze.hal'
 
 required_paths=(
   'core/lib/src/std/typed.hal'
+  'core/lib/src/std/typed/catalog.hal'
+  'core/lib/src/std/typed/catalog/codec.hal'
   'core/lib/src/std/typed/explain.hal'
   'core/lib/src/std/typed/registry.hal'
   'core/lib/src/std/typed/schema.hal'
@@ -89,22 +91,61 @@ if [[ "${#typed_contract_files[@]}" -gt 0 ]] && \
   failed=1
 fi
 
-for namespace in std.typed std.typed.explain std.typed.registry std.typed.schema std.typed.infer; do
+standard_namespaces=(
+  std.typed
+  std.typed.catalog
+  std.typed.catalog.codec
+  std.typed.explain
+  std.typed.infer
+  std.typed.registry
+  std.typed.schema
+)
+for namespace in "${standard_namespaces[@]}"; do
   if ! grep -Fxq "$namespace" core/rust/standard-library.namespaces; then
     echo "std.typed namespace is missing from the standard-library inventory: $namespace" >&2
     failed=1
   fi
 done
-for namespace in std.typed.registry std.typed.schema; do
+
+bootstrap_namespaces=(
+  std.typed.registry
+  std.typed.schema
+  std.typed.catalog.codec
+  std.typed.catalog
+)
+for namespace in "${bootstrap_namespaces[@]}"; do
   if ! grep -Fxq "$namespace" core/rust/bootstrap.namespaces; then
     echo "Portable schema bootstrap namespace is missing: $namespace" >&2
     failed=1
   fi
 done
-registry_line=$(grep -n -F 'std.typed.registry' core/rust/bootstrap.namespaces | cut -d: -f1)
-schema_line=$(grep -n -F 'std.typed.schema' core/rust/bootstrap.namespaces | cut -d: -f1)
+
+inventory_line() {
+  local path="$1"
+  local namespace="$2"
+  grep -n -Fx "$namespace" "$path" | cut -d: -f1
+}
+
+registry_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.registry)
+schema_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.schema)
+codec_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.codec)
+catalog_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog)
+typed_line=$(inventory_line core/rust/bootstrap.namespaces std.typed)
+
 if [[ -n "$registry_line" && -n "$schema_line" && "$registry_line" -ge "$schema_line" ]]; then
   echo 'std.typed.registry must bootstrap before std.typed.schema.' >&2
+  failed=1
+fi
+if [[ -n "$schema_line" && -n "$codec_line" && "$schema_line" -ge "$codec_line" ]]; then
+  echo 'std.typed.schema must bootstrap before std.typed.catalog.codec.' >&2
+  failed=1
+fi
+if [[ -n "$codec_line" && -n "$catalog_line" && "$codec_line" -ge "$catalog_line" ]]; then
+  echo 'std.typed.catalog.codec must bootstrap before std.typed.catalog.' >&2
+  failed=1
+fi
+if [[ -n "$catalog_line" && -n "$typed_line" && "$catalog_line" -ge "$typed_line" ]]; then
+  echo 'std.typed.catalog must bootstrap before the std.typed facade.' >&2
   failed=1
 fi
 if grep -Fxq 'tool.lint.schema' core/rust/bootstrap.namespaces; then
