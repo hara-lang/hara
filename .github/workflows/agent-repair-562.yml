@@ -1,0 +1,83 @@
+name: Repair issue 562 layout workflow
+
+on:
+  push:
+    branches:
+      - agent/562-split-vm-layout
+
+permissions:
+  contents: write
+
+concurrency:
+  group: issue-562-workflow-repair
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/562-split-vm-layout
+          fetch-depth: 0
+
+      - name: Repair the generated child-module visibility and cleanup
+        id: repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/agent-export-562.yml')
+          source = path.read_text()
+          original = source
+
+          visibility_anchor = (
+              "          dispatch_enum = machine_source[enum_start:enum_end].rstrip() + '\\n'\n"
+              "          machine_source = machine_source[:enum_start] + machine_source[enum_end:]\n"
+          )
+          visibility_replacement = (
+              "          dispatch_enum = machine_source[enum_start:enum_end].rstrip() + '\\n'\n"
+              "          dispatch_enum = dispatch_enum.replace(\n"
+              "              'enum Dispatch {', 'pub(super) enum Dispatch {', 1\n"
+              "          )\n"
+              "          machine_source = machine_source[:enum_start] + machine_source[enum_end:]\n"
+          )
+          if visibility_replacement not in source:
+              if visibility_anchor not in source:
+                  raise RuntimeError('dispatch visibility anchor is missing')
+              source = source.replace(visibility_anchor, visibility_replacement, 1)
+
+          cleanup_anchor = '          git rm .github/workflows/agent-export-562.yml\n'
+          cleanup_replacement = (
+              '          git rm .github/workflows/agent-export-562.yml '
+              '.github/workflows/agent-repair-562.yml\n'
+          )
+          if cleanup_replacement not in source:
+              if cleanup_anchor not in source:
+                  raise RuntimeError('temporary-workflow cleanup anchor is missing')
+              source = source.replace(cleanup_anchor, cleanup_replacement, 1)
+
+          if source != original:
+              path.write_text(source)
+              Path('/tmp/repaired').write_text('yes')
+          PY
+
+          if test -f /tmp/repaired; then
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit the workflow repair
+        if: steps.repair.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add .github/workflows/agent-export-562.yml
+          git diff --cached --check
+          git config user.name 'hara-issue-agent'
+          git config user.email 'hara-issue-agent@users.noreply.github.com'
+          git commit -m 'Repair issue 562 generated module visibility'
+          git push origin HEAD:agent/562-split-vm-layout
