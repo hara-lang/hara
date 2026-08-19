@@ -9,6 +9,10 @@
             [std.typed.schema :as schema]
             [tool.lint.model :as model]))
 
+;; ---------------------------------------------------------------------------
+;; Existing analyzer-facing inference bridge
+;; ---------------------------------------------------------------------------
+
 (def +unknown-schema+ infer/+unknown-schema+)
 (def result infer/result)
 (def unknown infer/unknown)
@@ -18,8 +22,21 @@
 (def infer-function-arity infer/infer-function-arity)
 (def compatible? schema/compatible?)
 
+;; ---------------------------------------------------------------------------
+;; Lint schema policy
+;; ---------------------------------------------------------------------------
+
 (def +schema-heads+
   #{:or :maybe :vector :tuple :map :fn :function :enum :result})
+
+(def +schema-primitives+
+  #{:any :nil
+    :bool :boolean
+    :num :number
+    :int :integer
+    :str :string
+    :keyword :symbol
+    :list :vector :map :set :bytes :fn})
 
 (def +schema-finding-types+
   #{:tool.lint/invalid-schema
@@ -50,11 +67,22 @@
     (when level
       (model/finding anchor code level message requirement))))
 
+(defn definition-finding
+  [definition anchor code message options requirement]
+  (let [finding (schema-finding anchor code message options requirement)]
+    (when finding
+      (assoc finding :file (:file definition)))))
+
+;; ---------------------------------------------------------------------------
+;; std.block -> ordinary metadata adapter
+;; ---------------------------------------------------------------------------
+
 (defn code-children
   [value]
   (vec (filter block/code? (block/children value))))
 
 (defn metadata-map
+  "Returns the reader metadata carried by one :meta block."
   [metadata-block]
   (if (and metadata-block (= :meta (block/tag metadata-block)))
     (let [child (first (code-children metadata-block))
@@ -66,27 +94,37 @@
         :else {}))
     {}))
 
+(defn unwrap-metadata
+  "Returns the expression beneath nested metadata containers plus merged data."
+  [value]
+  (loop [current value
+         metadata {}
+         metadata-block nil]
+    (if (= :meta (block/tag current))
+      (let [children (code-children current)
+            attached (second children)]
+        (if attached
+          (recur attached
+                 (merge metadata (metadata-map current))
+                 (or metadata-block current))
+          {:form current
+           :metadata metadata
+           :metadata-block metadata-block}))
+      {:form current
+       :metadata metadata
+       :metadata-block metadata-block})))
+
 (defn annotated-top-level-forms
-  [scan]
-  (let [root (get-in scan [:document :root])]
-    (loop [remaining (code-children root)
-           metadata {}
-           metadata-block nil
-           output []]
-      (if (empty? remaining)
-        output
-        (let [current (first remaining)]
-          (if (= :meta (block/tag current))
-            (recur (vec (rest remaining))
-                   (merge metadata (metadata-map current))
-                   current
-                   output)
-            (recur (vec (rest remaining))
-                   {}
-                   nil
-                   (conj output {:form current
-                                 :metadata metadata
-                                 :metadata-block metadata-block}))))))))
+  "Projects root expressions to ordinary {form metadata} records.
+
+   Accepts either a root block or an analyzer scan. Metadata containers are
+   unwrapped here so neither std.typed nor the analyzer needs reader-specific
+   metadata traversal."
+  [value]
+  (let [root (if (block/block? value)
+               value
+               (get-in value [:document :root]))]
+    (vec (map unwrap-metadata (code-children root)))))
 
 (defn block-index
   [values target]
@@ -98,22 +136,24 @@
         (recur (inc index))))))
 
 (defn inline-metadata
+  "Returns metadata attached inside a definition, including the name block."
   [definition]
   (let [children (code-children (:form definition))
-        name-index (block-index children (:block definition))]
-    (if (nil? name-index)
-      {:metadata {} :schema-block nil}
-      (reduce
-       (fn [state value]
-         (if (= :meta (block/tag value))
-           (let [metadata (metadata-map value)]
-             {:metadata (merge (:metadata state) metadata)
-              :schema-block (if (has? metadata :schema)
-                              value
-                              (:schema-block state))})
-           state))
-       {:metadata {} :schema-block nil}
-       (vec (take name-index (drop 1 children)))))))
+        name-index (block-index children (:block definition))
+        candidates (if (nil? name-index)
+                     []
+                     (vec (take (inc name-index) (drop 1 children))))]
+    (reduce
+     (fn [state value]
+       (if (= :meta (block/tag value))
+         (let [metadata (metadata-map value)]
+           {:metadata (merge (:metadata state) metadata)
+            :schema-block (if (has? metadata :schema)
+                            value
+                            (:schema-block state))})
+         state))
+     {:metadata {} :schema-block nil}
+     candidates)))
 
 (defn top-level-entry
   [entries form]
@@ -137,6 +177,7 @@
         :else (first tail)))))
 
 (defn definition-records
+  "Enriches analyzer definitions with passive source schema metadata."
   [scan]
   (let [entries (annotated-top-level-forms scan)
         file (get-in scan [:document :file])]
@@ -145,8 +186,11 @@
       (fn [definition]
         (let [entry (top-level-entry entries (:form definition))
               inline (inline-metadata definition)
-              metadata (merge (or (:metadata entry) {}) (:metadata inline))
+              metadata (merge (or (:metadata entry) {})
+                              (or (:metadata definition) {})
+                              (:metadata inline))
               schema-block (or (:schema-block inline)
+                               (:metadata-block definition)
                                (when (has? (or (:metadata entry) {}) :schema)
                                  (:metadata-block entry)))]
           (assoc definition
@@ -157,6 +201,10 @@
                  :schema-block schema-block
                  :initializer (definition-initializer definition))))
       (:definitions scan)))))
+
+;; ---------------------------------------------------------------------------
+;; Namespace and registry adaptation
+;; ---------------------------------------------------------------------------
 
 (defn parse-require-entry
   [entry]
@@ -215,7 +263,7 @@
 
 (defn schema-surface?
   [surface]
-  (or (keyword? surface)
+  (or (and (keyword? surface) (has? +schema-primitives+ surface))
       (and (map? surface) (keyword? (:kind surface)))
       (and (list? surface)
            (= 2 (count surface))
@@ -257,20 +305,8 @@
            (external-definitions options)
            candidates)))
 
-(defn normalized-candidates
-  [candidates raw-global]
-  (reduce
-   (fn [output candidate]
-     (let [local (scan-registry (:scan candidate) raw-global)]
-       (try
-         (assoc output
-                (:qualified candidate)
-                (schema/normalize-with (:surface candidate) local))
-         (catch Throwable error output))))
-   (external-definitions {})
-   candidates))
-
 (defn final-global-registry
+  "Normalizes named project schemas in the namespace where each was declared."
   [candidates options]
   (let [raw (raw-global-registry candidates options)
         normalized
@@ -286,6 +322,10 @@
          candidates)]
     {:registry (registry/registry normalized)
      :definitions normalized}))
+
+;; ---------------------------------------------------------------------------
+;; Contract normalization and diagnostics
+;; ---------------------------------------------------------------------------
 
 (defn schema-problem
   [value]
@@ -339,7 +379,8 @@
            :findings
            (vec
             (filter identity
-                    [(schema-finding
+                    [(definition-finding
+                      definition
                       anchor
                       :tool.lint/invalid-schema
                       (str "invalid schema for " (:qualified definition)
@@ -363,7 +404,8 @@
                 unresolved-findings
                 (map
                  (fn [reference]
-                   (schema-finding
+                   (definition-finding
+                    definition
                     anchor
                     :tool.lint/unresolved-schema
                     (str "unresolved project schema reference: " reference)
@@ -372,7 +414,8 @@
                  local-unresolved)
                 function-finding
                 (when invalid-function
-                  (schema-finding
+                  (definition-finding
+                   definition
                    anchor
                    :tool.lint/invalid-function-schema
                    (str "function " (:qualified definition)
@@ -397,7 +440,8 @@
          :findings
          (vec
           (filter identity
-                  [(schema-finding
+                  [(definition-finding
+                    definition
                     anchor
                     :tool.lint/invalid-schema
                     (str "invalid schema for " (:qualified definition))
@@ -476,6 +520,10 @@
              (= file (get-in record [:definition :file])))
            (:records index))))
 
+;; ---------------------------------------------------------------------------
+;; Conservative contract-vs-source checks
+;; ---------------------------------------------------------------------------
+
 (defn project-arities
   [contract]
   (let [normalized (schema/normalize contract)]
@@ -511,7 +559,8 @@
                (function-schema? contract)
                (or (not (empty? (:arities signature))) (:variadic signature))
                (not= (declared-shapes contract) (actual-shapes signature)))
-      (schema-finding
+      (definition-finding
+       definition
        (:block definition)
        :tool.lint/schema-arity-mismatch
        (str "schema arities for " (:qualified definition)
@@ -530,7 +579,8 @@
       (let [actual (infer/infer-result (block/value initializer))]
         (when (and (infer/known? actual)
                    (not (schema/compatible? contract (:schema actual))))
-          (schema-finding
+          (definition-finding
+           definition
            (:block definition)
            :tool.lint/schema-value-mismatch
            (str "schema for " (:qualified definition)
@@ -569,7 +619,8 @@
                    actual
                    (not= :unknown (:kind actual))
                    (not (schema/compatible? expected actual)))
-          (schema-finding
+          (definition-finding
+           definition
            (:block definition)
            :tool.lint/schema-return-mismatch
            (str "declared return schema for " (:qualified definition)
