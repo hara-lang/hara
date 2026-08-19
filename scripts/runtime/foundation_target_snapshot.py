@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY = ROOT / "core/spec/foundation-script-policy.json"
@@ -135,12 +135,13 @@ def verify(
 ) -> dict:
     result: dict[str, dict] = {}
     if ledger in {"all", "script"}:
-        result["script"] = verify_script_snapshot(policy, inventory, target_root)    return result
+        result["script"] = verify_script_snapshot(policy, inventory, target_root)
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ledger", choices=("all", "script"), default="all"), default="all")
+    parser.add_argument("--ledger", choices=("all", "script"), default="all")
     parser.add_argument("--policy", type=Path, default=DEFAULT_POLICY)
     parser.add_argument("--inventory", type=Path, default=DEFAULT_INVENTORY)
     parser.add_argument("--target-root", type=Path, default=ROOT)
@@ -150,7 +151,8 @@ def main(argv: list[str] | None = None) -> int:
         result = verify(
             args.ledger,
             load_json(args.policy),
-            load_json(args.inventory),            args.target_root,
+            load_json(args.inventory),
+            args.target_root,
         )
     except SnapshotError as error:
         print(f"foundation-target-snapshot: {error}", file=sys.stderr)
