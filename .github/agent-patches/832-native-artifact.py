@@ -44,4 +44,13 @@ if count != 1:
     raise SystemExit(f"artifact test patch marker expected once, found {count}")
 TEST_PATH.write_text(test.replace(old, new, 1))
 
+RUST_PROBE_PATH = ROOT / "core/rust/tests/std_typed_schema.rs"
+probe = RUST_PROBE_PATH.read_text()
+old_marker = ':pattern "^a"'
+new_marker = r':pattern \"^a\"'
+count = probe.count(old_marker)
+if count != 1:
+    raise SystemExit(f"Rust property probe quoting marker expected once, found {count}")
+RUST_PROBE_PATH.write_text(probe.replace(old_marker, new_marker, 1))
+
 print("applied #832 bytecode schema artifact parity")
