@@ -346,6 +346,32 @@
 (defn walk-files [path]
   (vec (deref (File/walk path))))
 
+(defn namespace-from-forms
+  "Returns the declared ns or ns+ name from already-read top-level forms."
+  [forms]
+  (loop [remaining forms]
+    (if (empty? remaining)
+      nil
+      (let [form (first remaining)]
+        (if (and (list? form)
+                 (or (= 'ns (first form))
+                     (= 'ns+ (first form)))
+                 (< 1 (count form)))
+          (str (nth form 1))
+          (recur (rest remaining)))))))
+
+(defn namespace-from-path
+  "Reads a file through the native reader and returns its declared namespace,
+   falling back to a supplied project-relative path when parsing fails."
+  [path relative]
+  (try
+    (let [declared (namespace-from-forms (read-forms path))]
+      (if declared
+        (symbol declared)
+        (if relative (path-namespace relative) nil)))
+    (catch error
+      (if relative (path-namespace relative) nil))))
+
 (defn files-in
   ([project roots] (files-in project roots nil))
   ([project roots suffix]
@@ -368,7 +394,7 @@
    (reduce
     (fn [state path]
       (let [source (read-text path)
-            namespace (block/namespace-name source)]
+            namespace (namespace-from-forms (read-forms path))]
         (if (nil? namespace)
           (throw (ex-info (str path " does not declare an ns or ns+ namespace")
                           {:path path})))
@@ -529,7 +555,7 @@
                 (:project/test-paths project) (:project/source-paths project))
         root (matching-root project path roots)
         relative (path-relative-to-root project path root)
-        namespace (namespace-from-source source relative)]
+        namespace (namespace-from-path path relative)]
     {:path path :relative-path (project-relative-path project path)
      :namespace namespace :type (file-type project path) :source source}))
 
