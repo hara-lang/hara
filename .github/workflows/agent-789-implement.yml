@@ -1,0 +1,163 @@
+name: Implement cross-runtime V1 grammar reference canonicalization
+
+on:
+  push:
+    branches:
+      - agent/789-v1-grammar-fingerprint-parity
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/789-v1-grammar-fingerprint-parity
+          fetch-depth: 0
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Patch source and regression fact
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path("core/lib/src/code/migrate.hal")
+          source = source_path.read_text(encoding="utf-8")
+
+          anchor = '''(defn v1-grammar-reference-symbol
+            [value]
+            (if (or (nil? value) (symbol? value))
+              value
+              (let [text (pr-str value)]
+                (if (str/starts-with? text "#'")
+                  (symbol (subs text 2))
+                  value))))
+
+          (defn v1-grammar-snapshot-data'''.replace("          ", "")
+          replacement = '''(defn v1-grammar-reference-symbol
+            [value]
+            (if (or (nil? value) (symbol? value))
+              value
+              (let [text (pr-str value)]
+                (if (str/starts-with? text "#'")
+                  (symbol (subs text 2))
+                  value))))
+
+          (defn v1-grammar-reference-at
+            "Extracts executable grammar identity before runtime call dereferencing."
+            [entry field]
+            (let [value (get entry field)]
+              (if (or (nil? value) (symbol? value))
+                value
+                (try
+                  (var-sym (get entry field))
+                  (catch Exception _
+                    (v1-grammar-reference-symbol value))))))
+
+          (defn v1-grammar-snapshot-data'''.replace("          ", "")
+          if source.count(anchor) != 1:
+              raise SystemExit(f"expected one reference helper anchor, found {source.count(anchor)}")
+          source = source.replace(anchor, replacement)
+
+          old_feature = '''(assoc record field
+                               (v1-grammar-reference-symbol
+                                (get record field)))'''
+          new_feature = '''(assoc record field
+                               (v1-grammar-reference-at record field))'''
+          if source.count(old_feature) != 1:
+              raise SystemExit(f"expected one feature reference extraction, found {source.count(old_feature)}")
+          source = source.replace(old_feature, new_feature)
+
+          old_entry = '''(assoc record field
+                     (v1-grammar-reference-symbol (get record field)))'''
+          new_entry = '''(assoc record field
+                     (v1-grammar-reference-at record field))'''
+          if source.count(old_entry) != 1:
+              raise SystemExit(f"expected one group reference extraction, found {source.count(old_entry)}")
+          source = source.replace(old_entry, new_entry)
+          source_path.write_text(source, encoding="utf-8")
+
+          test_path = Path("core/lib/test/code/migrate_test.hal")
+          test = test_path.read_text(encoding="utf-8")
+          test_anchor = '''(fact "the checked-in V1 grammar equals current code.migrate materialization"'''
+          regression = '''(fact "V1 snapshot extraction preserves qualified grammar reference identity"
+            (let [entry (first (first migrate/+v1-grammar-macro-categories+))
+                  snapshot (migrate/v1-grammar-entry-snapshot-data entry)
+                  reference (:macro snapshot)]
+              [(symbol? reference) (str reference)])
+            => [true "lang.common.grammar-macro/tf-macroexpand"])
+
+          '''.replace("          ", "")
+          if test.count(test_anchor) != 1:
+              raise SystemExit(f"expected one checked-in snapshot fact, found {test.count(test_anchor)}")
+          if "V1 snapshot extraction preserves qualified grammar reference identity" not in test:
+              test = test.replace(test_anchor, regression + test_anchor)
+          test_path.write_text(test, encoding="utf-8")
+          PY
+
+          git diff --check -- core/lib/src/code/migrate.hal core/lib/test/code/migrate_test.hal
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run native code.migrate acceptance
+        env:
+          RUST_BACKTRACE: full
+        run: |
+          timeout --signal=TERM --kill-after=10s 240s \
+            ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_test.hal
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Run the same code.migrate suite on JVM Truffle
+        shell: bash
+        run: |
+          cat > core/java/src/test/java/hara/truffle/AgentV1GrammarFingerprintTest.java <<'JAVA'
+          package hara.truffle;
+
+          import org.junit.runner.RunWith;
+
+          @RunWith(HaraJUnitRunner.class)
+          @HaraTestSource({"lib/test/code/migrate_test.hal"})
+          public final class AgentV1GrammarFingerprintTest {}
+          JAVA
+
+          mvn -B -f core/java/pom.xml -Ptruffle \
+            -Dtest=hara.truffle.AgentV1GrammarFingerprintTest test
+          rm core/java/src/test/java/hara/truffle/AgentV1GrammarFingerprintTest.java
+
+      - name: Remove diagnostics and publish the product change
+        shell: bash
+        run: |
+          rm -f .agent/v1-grammar-native-diagnostic.txt
+          rm -f .agent/v1-reference-identity.txt
+          rmdir .agent 2>/dev/null || true
+          rm -f .github/workflows/agent-789-diagnose.yml
+          rm -f .github/workflows/agent-789-diagnose-v2.yml
+          rm -f .github/workflows/agent-789-diagnose-v3.yml
+          rm -f .github/workflows/agent-789-implement.yml
+
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Canonicalize V1 grammar references before dereference"
+          git push origin HEAD:agent/789-v1-grammar-fingerprint-parity
