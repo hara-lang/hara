@@ -1,0 +1,786 @@
+#!/usr/bin/env python3
+"""Materialize and audit the portable tahto.core.script* migration ledger."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+SOURCE_REPOSITORY = "zcaudate-xyz/foundation-base"
+SOURCE_REVISION = "fe54cc866473a888bfbd4ce2d3de6d8011f09f72"
+SOURCE_FILES = [
+    "src/tahto/core/script.clj",
+    "src/tahto/core/script_annex.clj",
+    "src/tahto/core/script_control.clj",
+    "src/tahto/core/script_def.clj",
+    "src/tahto/core/script_lint.clj",
+    "src/tahto/core/script_macro.clj",
+]
+TARGET_FILES = [
+    "core/lib/src/lang/core.hal",
+    "core/lib/src/lang/core/script.hal",
+    "core/lib/src/lang/common/compiler.hal",
+    "core/lib/src/std/foundation.hal",
+]
+SCRIPT_VALIDATION = "lang.core.script-contract-test/run"
+COMPILER_VALIDATION = "lang.common.compiler-test/run"
+LEDGER_VALIDATION = "code.migrate-script-test/run"
+DEFINE_HEADS = {
+    "def",
+    "defn",
+    "defmacro",
+    "defrecord",
+    "deftype",
+    "defprotocol",
+    "defmulti",
+    "defstruct",
+    "defmutable",
+}
+
+
+def top_level_forms(text: str) -> list[str]:
+    forms: list[str] = []
+    start: int | None = None
+    depth = 0
+    in_string = False
+    escaped = False
+    in_comment = False
+    for index, char in enumerate(text):
+        if in_comment:
+            if char == "\n":
+                in_comment = False
+            continue
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == ";":
+            in_comment = True
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "(":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == ")" and depth:
+            depth -= 1
+            if depth == 0 and start is not None:
+                forms.append(text[start : index + 1])
+                start = None
+    if depth != 0:
+        raise RuntimeError("unbalanced top-level form")
+    return forms
+
+
+def form_head(form: str) -> str | None:
+    match = re.match(r"\(\s*([^\s\[\](){}]+)", form)
+    return match.group(1) if match else None
+
+
+def skip_metadata(source: str, offset: int) -> int:
+    length = len(source)
+    while True:
+        while offset < length and source[offset].isspace():
+            offset += 1
+        if offset >= length or source[offset] != "^":
+            return offset
+        offset += 1
+        while offset < length and source[offset].isspace():
+            offset += 1
+        if offset < length and source[offset] in "{[":
+            opener = source[offset]
+            closer = "}" if opener == "{" else "]"
+            depth = 0
+            in_string = False
+            escaped = False
+            while offset < length:
+                char = source[offset]
+                if in_string:
+                    if escaped:
+                        escaped = False
+                    elif char == "\\":
+                        escaped = True
+                    elif char == '"':
+                        in_string = False
+                elif char == '"':
+                    in_string = True
+                elif char == opener:
+                    depth += 1
+                elif char == closer:
+                    depth -= 1
+                    if depth == 0:
+                        offset += 1
+                        break
+                offset += 1
+        else:
+            while offset < length and not source[offset].isspace():
+                offset += 1
+
+
+def definition(form: str) -> dict[str, str] | None:
+    head = form_head(form)
+    if head not in DEFINE_HEADS:
+        return None
+    cursor = form.find(head) + len(head)
+    cursor = skip_metadata(form, cursor)
+    match = re.match(r"([^\s\[\](){}]+)", form[cursor:])
+    if not match:
+        raise RuntimeError(f"cannot read definition name from {form[:100]!r}")
+    name = match.group(1)
+    prefix = form[:cursor]
+    if "^:private" in prefix or ":private true" in prefix:
+        return None
+    return {"head": head, "name": name}
+
+
+def namespace_name(forms: list[str]) -> str:
+    for form in forms:
+        if form_head(form) == "ns":
+            match = re.match(r"\(\s*ns\s+([^\s\[\](){}]+)", form)
+            if match:
+                return match.group(1)
+    raise RuntimeError("namespace form not found")
+
+
+def inventory(path: Path, display_path: str) -> dict[str, Any]:
+    forms = top_level_forms(path.read_text(encoding="utf-8"))
+    namespace = namespace_name(forms)
+    definitions = [item for form in forms if (item := definition(form))]
+    references = [f"{namespace}/{item['name']}" for item in definitions]
+    if len(references) != len(set(references)):
+        raise RuntimeError(f"duplicate definitions in {display_path}")
+    return {
+        "namespace": namespace,
+        "path": display_path,
+        "definitions": definitions,
+        "references": references,
+    }
+
+
+def put(
+    records: dict[str, dict[str, str | None]],
+    source: str,
+    *,
+    target: str | None,
+    disposition: str,
+    stage_from: str,
+    stage_to: str,
+    reason: str,
+    validation: str | None,
+) -> None:
+    if source in records:
+        raise RuntimeError(f"duplicate disposition for {source}")
+    records[source] = {
+        "target": target,
+        "disposition": disposition,
+        "stage_from": stage_from,
+        "stage_to": stage_to,
+        "reason": reason,
+        "validation": validation,
+    }
+
+
+def adapted(
+    records: dict[str, dict[str, str | None]],
+    source: str,
+    target: str,
+    stage_from: str,
+    stage_to: str,
+    reason: str,
+    validation: str = SCRIPT_VALIDATION,
+    disposition: str = "adapted",
+) -> None:
+    put(
+        records,
+        source,
+        target=target,
+        disposition=disposition,
+        stage_from=stage_from,
+        stage_to=stage_to,
+        reason=reason,
+        validation=validation,
+    )
+
+
+def obsolete(
+    records: dict[str, dict[str, str | None]],
+    source: str,
+    stage_from: str,
+    stage_to: str,
+    reason: str,
+) -> None:
+    put(
+        records,
+        source,
+        target=None,
+        disposition="obsolete",
+        stage_from=stage_from,
+        stage_to=stage_to,
+        reason=reason,
+        validation=None,
+    )
+
+
+def build_records(source_references: list[str]) -> dict[str, dict[str, str | None]]:
+    records: dict[str, dict[str, str | None]] = {}
+
+    script_targets = {
+        "install": ("lang.core/install-lang!", "language-registration"),
+        "+module-keys+": ("lang.core.script/+module-metadata-keys+", "module-config"),
+        "+runtime-keys+": ("lang.core/runtime-spec", "runtime-config"),
+        "script-ns-import": ("lang.core.script/load-module!", "module-loader"),
+        "script-macro-import": ("lang.core/script-import-symbols", "grammar-publication"),
+        "script-require-target-id": ("lang.core.script/load-module!", "module-loader"),
+        "script-specialize-merge-contracts": ("lang.core.script/configure-module!", "module-config"),
+        "script-specialize-require": ("lang.core.script/load-module!", "module-loader"),
+        "script-specialize-config": ("lang.core.script/configure-module!", "module-config"),
+        "resolve-runtime-config": ("lang.core/runtime-spec", "runtime-config"),
+        "script-fn-base": ("lang.core/script-expansion", "grammar-publication"),
+        "script-fn": ("lang.core/script-expansion", "grammar-publication"),
+        "script": ("lang.core/script", "grammar-publication"),
+        "script-test-prep": ("lang.core.script/script-test-form", "test-publication"),
+        "script-test": ("lang.core/script-", "test-publication"),
+        "script-": ("lang.core/script-", "test-publication"),
+        "script-ext": ("lang.core.script/compile-form", "target-compile"),
+        "script+": ("lang.core.script/compile-form", "target-compile"),
+        "script-ext-run": ("lang.core.script/eval-form!", "target-eval"),
+        "!": ("lang.core/script-eval-macro-form", "grammar-publication"),
+        "annex:start": ("lang.core.script/restart!", "runtime-lifecycle"),
+        "annex:get": ("lang.core.script/+scripts+", "runtime-registry"),
+        "annex:stop": ("lang.core.script/stop!", "runtime-lifecycle"),
+        "annex:start-all": ("lang.core.script/restart!", "runtime-lifecycle"),
+        "annex:stop-all": ("lang.core.script/stop!", "runtime-lifecycle"),
+        "annex:restart-all": ("lang.core.script/restart!", "runtime-lifecycle"),
+        "annex:list": ("lang.core.script/+scripts+", "runtime-registry"),
+    }
+    for name, (target, stage_to) in script_targets.items():
+        adapted(
+            records,
+            f"tahto.core.script/{name}",
+            target,
+            "script",
+            stage_to,
+            "script-registration-is-owned-by-explicit-language-and-runtime-registries",
+        )
+    obsolete(
+        records,
+        "tahto.core.script/script-test-mode?",
+        "script",
+        "test-publication",
+        "explicit-script-test-forms-replace-dynamic-test-mode",
+    )
+
+    annex_targets = {
+        "rt-annex:create": "lang.core.script/register-script!",
+        "annex-current": "lang.core.script/+scripts+",
+        "annex-reset": "lang.core.script/stop!",
+        "get-annex": "lang.core.script/+scripts+",
+        "clear-annex": "lang.core.script/stop!",
+        "get-annex-library": "lang.core/registry-book",
+        "get-annex-book": "lang.core/registry-book",
+        "add-annex-runtime": "lang.core.script/register-script!",
+        "get-annex-runtime": "lang.core.script/+scripts+",
+        "remove-annex-runtime": "lang.core.script/stop!",
+        "register-annex-tag": "lang.core.script/register-module-loader!",
+        "deregister-annex-tag": "lang.core.script/remove-module-loader!",
+        "start-runtime": "lang.core/rt-start",
+    }
+    for name, target in annex_targets.items():
+        adapted(
+            records,
+            f"tahto.core.script-annex/{name}",
+            target,
+            "runtime-annex",
+            "runtime-registry",
+            "explicit-script-runtime-registry-replaces-global-annex-state",
+        )
+    for name in ["rt-annex?", "+init-annex+", "same-runtime?"]:
+        obsolete(
+            records,
+            f"tahto.core.script-annex/{name}",
+            "runtime-annex",
+            "runtime-registry",
+            "global-annex-identity-is-not-part-of-the-explicit-runtime-contract",
+        )
+
+    control_targets = {
+        "script-rt-prep": "lang.core/rt-create",
+        "script-rt-get": "lang.core/rt-start",
+        "script-rt-stop": "lang.core/rt-stop",
+        "script-rt-restart": "lang.core.script/restart!",
+        "script-rt-oneshot-eval": "lang.core.script/eval-form!",
+        "script-rt-oneshot": "lang.core/rt-oneshot",
+    }
+    for name, target in control_targets.items():
+        adapted(
+            records,
+            f"tahto.core.script-control/{name}",
+            target,
+            "script-control",
+            "runtime-lifecycle",
+            "runtime-lifecycle-is-owned-by-lang-core-runtime-and-script",
+        )
+    obsolete(
+        records,
+        "tahto.core.script-control/+watch-keys+",
+        "script-control",
+        "runtime-lifecycle",
+        "explicit-runtime-state-replaces-library-watch-key-coordination",
+    )
+
+    adapted(
+        records,
+        "tahto.core.script-def/tmpl-entry",
+        "lang.core/script-definition-macro-form",
+        "script-template",
+        "grammar-publication",
+        "grammar-derived-definition-families-replace-static-template-expansion",
+    )
+    adapted(
+        records,
+        "tahto.core.script-def/tmpl-macro",
+        "lang.core/script-defmacro-macro-form",
+        "script-template",
+        "grammar-publication",
+        "grammar-derived-macro-families-replace-static-template-expansion",
+    )
+
+    for name in ["get-reserved-raw", "get-reserved"]:
+        adapted(
+            records,
+            f"tahto.core.script-lint/{name}",
+            "lang.core/grammar-to-reserved",
+            "script-lint",
+            "grammar-analysis",
+            "reserved-symbols-are-derived-from-the-selected-grammar",
+        )
+    for name in ["collect-vars", "collect-sym-vars", "sym-check-linter", "lint-entry"]:
+        adapted(
+            records,
+            f"tahto.core.script-lint/{name}",
+            "lang.common.compiler/compile-entry",
+            "script-lint",
+            "compiler-lint",
+            "compiler-stage-vectors-preserve-lint-behavior-and-provenance",
+            COMPILER_VALIDATION,
+            "test-vector",
+        )
+    for name in ["+settings+", "lint-set", "lint-clear", "lint-needed?"]:
+        obsolete(
+            records,
+            f"tahto.core.script-lint/{name}",
+            "script-lint",
+            "compiler-lint",
+            "compiler-invocation-options-replace-global-mutable-lint-settings",
+        )
+
+    macro_targets = {
+        "body-arglists": "lang.core/script-definition-macro-form",
+        "intern-in": "std.foundation/intern-all",
+        "intern-prep": "lang.core/script-context",
+        "intern-def$-fn": "lang.core/register-fragment-pointer!",
+        "intern-def$": "lang.core/script-fragment-macro-form",
+        "intern-defmacro-fn": "lang.core/register-macro-fragment!",
+        "intern-defmacro": "lang.core/script-defmacro-macro-form",
+        "call-thunk": "lang.core.script/eval-form!",
+        "intern-!-fn": "lang.core/script-eval-macro-form",
+        "intern-!": "lang.core/script-eval-macro-form",
+        "intern-free-fn": "lang.core/register-code-pointer!",
+        "intern-free": "lang.core/script-definition-macro-form",
+        "hydrate-top-level-entry": "lang.core/register-language-code!",
+        "intern-top-level-fn": "lang.core/register-code-pointer!",
+        "intern-top-level": "lang.core/script-definition-macro-form",
+        "intern-macros": "lang.core/script-macro-forms",
+        "intern-highlights": "lang.core/script-highlight-macro-form",
+        "intern-grammar": "lang.core/sync-language-definitions!",
+        "intern-defmacro-rt-fn": "lang.core/register-macro-fragment!",
+        "defmacro.!": "lang.core/script-defmacro-macro-form",
+    }
+    for name, target in macro_targets.items():
+        adapted(
+            records,
+            f"tahto.core.script-macro/{name}",
+            target,
+            "script-macro",
+            "grammar-publication",
+            "grammar-derived-publication-replaces-imperative-macro-interning",
+            LEDGER_VALIDATION if name == "intern-in" else SCRIPT_VALIDATION,
+        )
+    obsolete(
+        records,
+        "tahto.core.script-macro/+form-allow+",
+        "script-macro",
+        "grammar-publication",
+        "grammar-entry-metadata-replaces-a-separate-form-allowlist",
+    )
+
+    missing = [reference for reference in source_references if reference not in records]
+    extra = [reference for reference in records if reference not in set(source_references)]
+    if missing or extra:
+        raise RuntimeError(f"ledger mapping mismatch: missing={missing}, extra={extra}")
+    return records
+
+
+COMPATIBILITY = [
+    ("defspec.xt", "lang.core/defspec.xt", "lang.core.script/defspec.xt", "retire-copy-after-contract-parity"),
+    ("defn.xt", "lang.core/defn.xt", "lang.core.script/defn.xt", "retire-copy-after-loader-parity"),
+    ("defmacro.xt", "lang.core/defmacro.xt", "lang.core.script/defmacro.xt", "retire-copy-after-loader-parity"),
+    ("script", "lang.core/script", "lang.core.script/script", "retire-copy-after-contract-parity"),
+    ("script-", "lang.core/script-", "lang.core.script/script-", "retire-copy-after-contract-parity"),
+    ("!.js", "lang.core/!.js", "lang.core.script/!.js", "retire-copy-after-runtime-parity"),
+    ("!.lua", "lang.core/!.lua", "lang.core.script/!.lua", "retire-copy-after-runtime-parity"),
+    ("!.py", "lang.core/!.py", "lang.core.script/!.py", "retire-copy-after-runtime-parity"),
+    ("!.pg", "lang.core/!.pg", "lang.core.script/!.pg", "retire-copy-after-runtime-parity"),
+]
+
+
+def quote_symbol(value: str) -> str:
+    return "'" + value
+
+
+def render_child(
+    units: list[dict[str, Any]],
+    source_references: list[str],
+    records: dict[str, dict[str, str | None]],
+) -> str:
+    paths = {
+        reference: unit["path"]
+        for unit in units
+        for reference in unit["references"]
+    }
+    targets: list[str] = []
+    validations: list[str] = []
+    for reference in source_references:
+        record = records[reference]
+        target = record["target"]
+        validation = record["validation"]
+        if target and target not in targets:
+            targets.append(target)
+        if validation and validation not in validations:
+            validations.append(validation)
+
+    unit_forms: list[str] = []
+    for unit in units:
+        references = "\n".join(
+            "     " + quote_symbol(reference) for reference in unit["references"]
+        )
+        unit_forms.append(
+            "  {:namespace "
+            + quote_symbol(unit["namespace"])
+            + "\n   :path "
+            + json.dumps(unit["path"])
+            + "\n   :references\n   [\n"
+            + references
+            + "\n   ]}"
+        )
+
+    ledger_forms: list[str] = []
+    for reference in source_references:
+        record = records[reference]
+        lines = ["  {:source/refer " + quote_symbol(reference)]
+        if record["target"]:
+            lines.append("   :target/refer " + quote_symbol(str(record["target"])))
+        lines.extend(
+            [
+                "   :disposition :" + str(record["disposition"]),
+                "   :stage/from :" + str(record["stage_from"]),
+                "   :stage/to :" + str(record["stage_to"]),
+                "   :reason :" + str(record["reason"]),
+                "   :provenance",
+                f'   {{:repository "{SOURCE_REPOSITORY}"',
+                f'    :revision "{SOURCE_REVISION}"',
+                "    :path " + json.dumps(paths[reference]) + "}",
+            ]
+        )
+        if record["validation"]:
+            lines.append("   :validation " + quote_symbol(str(record["validation"])))
+        lines[-1] += "}"
+        ledger_forms.append("\n".join(lines))
+
+    compatibility_forms = [
+        "  {:surface "
+        + quote_symbol(surface)
+        + "\n   :authority "
+        + quote_symbol(authority)
+        + "\n   :compatibility "
+        + quote_symbol(copy)
+        + "\n   :disposition :"
+        + disposition
+        + "\n   :reason :grammar-derived-lang-core-publication-is-authoritative}"
+        for surface, authority, copy, disposition in COMPATIBILITY
+    ]
+
+    return f'''(ns code.migrate.script)
+
+(def +foundation-script-source+
+  {{:repository "{SOURCE_REPOSITORY}"
+   :revision "{SOURCE_REVISION}"}})
+
+(def +foundation-script-source-units+
+ [
+{chr(10).join(unit_forms)}
+ ])
+
+(def +foundation-script-source-references+
+  (vec
+   (mapcat (fn [unit]
+             (get unit :references))
+           +foundation-script-source-units+)))
+
+(def +foundation-script-target-references+
+ [
+{chr(10).join('  ' + quote_symbol(target) for target in targets)}
+ ])
+
+(def +foundation-script-validation-references+
+ [
+{chr(10).join('  ' + quote_symbol(validation) for validation in validations)}
+ ])
+
+(def +foundation-script-ledger+
+ [
+{chr(10).join(ledger_forms)}
+ ])
+
+(def +foundation-script-compatibility-ledger+
+ [
+{chr(10).join(compatibility_forms)}
+ ])
+
+(defn foundation-script-inventory
+  []
+  {{:source/references +foundation-script-source-references+
+   :target/references +foundation-script-target-references+
+   :validation/references +foundation-script-validation-references+}})
+'''
+
+
+def render_test(
+    units: list[dict[str, Any]],
+    source_references: list[str],
+    records: dict[str, dict[str, str | None]],
+) -> str:
+    counts = Counter(str(records[reference]["disposition"]) for reference in source_references)
+    expected_counts = "{" + " ".join(
+        f":{name} {counts[name]}" for name in sorted(counts)
+    ) + "}"
+    surfaces = "[" + " ".join(quote_symbol(item[0]) for item in COMPATIBILITY) + "]"
+    paths = "[" + " ".join(json.dumps(unit["path"]) for unit in units) + "]"
+    return f'''(ns code.migrate-script-test
+  (:use code.test)
+  (:require [code.migrate :as migrate]
+            [code.migrate.script :as script]))
+
+(defn disposition-counts
+  [records]
+  (reduce (fn [counts record]
+            (update counts
+                    (get record :disposition)
+                    (fn [current]
+                      (inc (or current 0)))))
+          {{}}
+          records))
+
+(def results
+  [(fact "the script migration source authority is pinned and complete"
+     [(get script/+foundation-script-source+ :repository)
+      (get script/+foundation-script-source+ :revision)
+      (mapv (fn [unit] (get unit :path))
+            script/+foundation-script-source-units+)
+      (count script/+foundation-script-source-references+)
+      (= (count script/+foundation-script-source-references+)
+         (count (set script/+foundation-script-source-references+)))]
+     => ["{SOURCE_REPOSITORY}"
+         "{SOURCE_REVISION}"
+         {paths}
+         84
+         true])
+
+   (fact "code.migrate publishes the child ledger through intern-all"
+     [(= migrate/+foundation-script-source-units+
+         script/+foundation-script-source-units+)
+      (= migrate/+foundation-script-ledger+
+         script/+foundation-script-ledger+)
+      (= (migrate/foundation-script-inventory)
+         (script/foundation-script-inventory))]
+     => [true true true])
+
+   (fact "every portable script source has one valid disposition"
+     [(migrate/migration-ledger-valid? migrate/+foundation-script-ledger+)
+      (disposition-counts migrate/+foundation-script-ledger+)]
+     => [true {expected_counts}])
+
+   (fact "the script ledger audit has no gaps, duplicates, or stale references"
+     (let [audit
+           (migrate/migration-ledger-audit
+            migrate/+foundation-script-ledger+
+            (migrate/foundation-script-inventory))]
+       [(get audit :valid)
+        (get audit :records)
+        (get audit :source/references)
+        (get audit :diagnostics)])
+     => [true 84 84 []])
+
+   (fact "the migration plan is deterministic and non-writing"
+     (let [plan
+           (migrate/migration-ledger-plan
+            migrate/+foundation-script-ledger+
+            (migrate/foundation-script-inventory))]
+       [(get plan :write)
+        (get plan :valid)
+        (count (get plan :queue))
+        (every? (fn [item]
+                  (= :ready (get item :status)))
+                (get plan :queue))])
+     => [false true 84 true])
+
+   (fact "all current script compatibility copies have explicit retirement gates"
+     [(mapv (fn [record] (get record :surface))
+            migrate/+foundation-script-compatibility-ledger+)
+      (= 9
+         (count
+          (set
+           (map (fn [record] (get record :surface))
+                migrate/+foundation-script-compatibility-ledger+))))]
+     => [{surfaces} true])])
+
+(pr-str (run '[code.migrate-script-test]))
+'''
+
+
+def patch_migrate(source: str) -> str:
+    if "[code.migrate.script]" not in source:
+        anchor = (
+            "  (:require [code.framework :as framework]\n"
+            "            [code.manage.unit.structure :as structure]"
+        )
+        replacement = (
+            "  (:require [code.framework :as framework]\n"
+            "            [code.manage.unit.structure :as structure]\n"
+            "            [code.migrate.script]\n"
+            "            [std.foundation :as f]"
+        )
+        if source.count(anchor) != 1:
+            raise RuntimeError("code.migrate require anchor changed")
+        source = source.replace(anchor, replacement)
+    if "(f/intern-all code.migrate.script)" not in source:
+        anchor = "))\n\n(def rule-id :std.task/def-work)"
+        replacement = "))\n\n(f/intern-all code.migrate.script)\n\n(def rule-id :std.task/def-work)"
+        if source.count(anchor) != 1:
+            raise RuntimeError("code.migrate publication anchor changed")
+        source = source.replace(anchor, replacement)
+    return source
+
+
+def target_references(
+    repo_root: Path,
+    records: dict[str, dict[str, str | None]],
+) -> list[str]:
+    available: set[str] = set()
+    for relative in TARGET_FILES:
+        unit = inventory(repo_root / relative, relative)
+        available.update(unit["references"])
+    active = [
+        str(record["target"])
+        for record in records.values()
+        if record["target"] is not None
+    ]
+    missing = sorted(set(active) - available)
+    if missing:
+        raise RuntimeError(f"active targets are absent from product source: {missing}")
+    return active
+
+
+def output_files(
+    repo_root: Path,
+    foundation_root: Path,
+) -> tuple[dict[Path, str], dict[str, Any]]:
+    units = [
+        inventory(foundation_root / relative, relative)
+        for relative in SOURCE_FILES
+    ]
+    source_references = [
+        reference
+        for unit in units
+        for reference in unit["references"]
+    ]
+    if len(source_references) != 84:
+        raise RuntimeError(
+            f"expected 84 pinned script references, found {len(source_references)}"
+        )
+    if len(source_references) != len(set(source_references)):
+        raise RuntimeError("pinned script inventory contains duplicate references")
+    records = build_records(source_references)
+    target_references(repo_root, records)
+
+    migrate_path = repo_root / "core/lib/src/code/migrate.hal"
+    outputs = {
+        repo_root / "core/lib/src/code/migrate/script.hal": render_child(
+            units, source_references, records
+        ),
+        repo_root / "core/lib/test/code/migrate_script_test.hal": render_test(
+            units, source_references, records
+        ),
+        migrate_path: patch_migrate(migrate_path.read_text(encoding="utf-8")),
+    }
+    report = {
+        "source_repository": SOURCE_REPOSITORY,
+        "source_revision": SOURCE_REVISION,
+        "source_references": len(source_references),
+        "source_units": len(units),
+        "target_references": len(
+            {
+                record["target"]
+                for record in records.values()
+                if record["target"] is not None
+            }
+        ),
+        "compatibility_surfaces": len(COMPATIBILITY),
+        "dispositions": dict(sorted(Counter(
+            str(record["disposition"]) for record in records.values()
+        ).items())),
+    }
+    return outputs, report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--foundation-root", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--write", action="store_true")
+    mode.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+
+    repo_root = Path(args.repo_root).resolve()
+    foundation_root = Path(args.foundation_root).resolve()
+    outputs, report = output_files(repo_root, foundation_root)
+
+    stale: list[str] = []
+    for path, expected in outputs.items():
+        if args.write:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(expected, encoding="utf-8")
+        else:
+            actual = path.read_text(encoding="utf-8") if path.exists() else None
+            if actual != expected:
+                stale.append(str(path.relative_to(repo_root)))
+
+    if stale:
+        raise SystemExit("stale script migration materialization: " + ", ".join(stale))
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
