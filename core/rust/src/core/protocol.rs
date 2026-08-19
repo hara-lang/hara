@@ -1320,9 +1320,7 @@ fn protocol_pair_value(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_peek_first(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
-        [value] if builtin_protocol_satisfies("IPeekFirst", value) => {
-            collection_first(value.clone())
-        }
+        [value] if native_protocol_supports("IPeekFirst", value) => collection_first(value.clone()),
         [_] => Err("protocol/unsupported-receiver: IPeekFirst/peek-first".into()),
         _ => Err("IPeekFirst/peek-first expects one collection".into()),
     }
@@ -1330,7 +1328,7 @@ fn protocol_peek_first(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_peek_last(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
-        [value] if builtin_protocol_satisfies("IPeekLast", value) => collection_last(value.clone()),
+        [value] if native_protocol_supports("IPeekLast", value) => collection_last(value.clone()),
         [_] => Err("protocol/unsupported-receiver: IPeekLast/peek-last".into()),
         _ => Err("IPeekLast/peek-last expects one collection".into()),
     }
@@ -1679,263 +1677,369 @@ fn mutable_linear_satisfies(value: &Value, list_or_queue: bool, vector: bool) ->
         || matches!(collection, MutableCollection::Vector(_)) && vector
 }
 
-fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
+impl Value {
+    fn supports_native_icoll(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Map(_)
+                | Self::OrderedMap(_)
+                | Self::SortedMap(_)
+                | Self::Trie(_)
+                | Self::PriorityMap(_)
+                | Self::Set(_)
+                | Self::OrderedSet(_)
+                | Self::SortedSet(_)
+                | Self::List(_)
+                | Self::Cons(_)
+                | Self::Queue(_)
+                | Self::Deque(_)
+                | Self::Tuple(_)
+                | Self::Vector(_)
+                | Self::Seq(_)
+        )
+    }
+    fn supports_native_iconj(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Nil | Self::Array(_) | Self::Object(_) | Self::MutableCollection(_)
+        ) || (Self::supports_native_icoll(value) && !matches!(value, Self::Seq(_)))
+    }
+    fn supports_native_icons(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Cons(_)
+                | Self::Tuple(_)
+                | Self::Vector(_)
+                | Self::List(_)
+                | Self::Queue(_)
+                | Self::Deque(_)
+                | Self::Nil
+                | Self::Seq(_)
+        )
+    }
+    fn supports_native_iempty(value: &Self) -> bool {
+        Self::supports_native_icoll(value)
+            || matches!(
+                value,
+                Self::Nil | Self::Array(_) | Self::Object(_) | Self::Struct(_)
+            )
+    }
+    fn supports_native_itomutable(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Map(_)
+                | Self::OrderedMap(_)
+                | Self::SortedMap(_)
+                | Self::Trie(_)
+                | Self::Set(_)
+                | Self::OrderedSet(_)
+                | Self::SortedSet(_)
+                | Self::List(_)
+                | Self::Queue(_)
+                | Self::Vector(_)
+        )
+    }
+    fn supports_native_itopersistent(value: &Self) -> bool {
+        matches!(value, Self::MutableCollection(_))
+    }
+    fn supports_native_iiter(value: &Self) -> bool {
+        Self::supports_native_icoll(value)
+            || matches!(
+                value,
+                Self::Iterator(_)
+                    | Self::Nil
+                    | Self::String(_)
+                    | Self::Bytes(_)
+                    | Self::ByteBuffer(_)
+                    | Self::Array(_)
+                    | Self::Object(_)
+                    | Self::Struct(_)
+                    | Self::Mutable(_)
+                    | Self::MutableCollection(_)
+                    | Self::Pointer(_)
+            )
+    }
+    fn supports_native_ireduce(value: &Self) -> bool {
+        Self::supports_native_iiter(value)
+    }
+    fn supports_native_ipeekfirst(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::List(_)
+                | Self::Cons(_)
+                | Self::Queue(_)
+                | Self::Deque(_)
+                | Self::Tuple(_)
+                | Self::Vector(_)
+                | Self::Seq(_)
+                | Self::PriorityMap(_)
+        ) || mutable_linear_satisfies(value, true, true)
+    }
+    fn supports_native_ipeeklast(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::List(_)
+                | Self::Queue(_)
+                | Self::Deque(_)
+                | Self::Tuple(_)
+                | Self::Vector(_)
+                | Self::PriorityMap(_)
+        ) || mutable_linear_satisfies(value, true, true)
+    }
+    fn supports_native_iiterator(value: &Self) -> bool {
+        matches!(value, Self::Iterator(_))
+    }
+    fn supports_native_icount(value: &Self) -> bool {
+        Self::supports_native_icoll(value)
+            || matches!(
+                value,
+                Self::String(_)
+                    | Self::Bytes(_)
+                    | Self::ByteBuffer(_)
+                    | Self::Array(_)
+                    | Self::Object(_)
+                    | Self::Struct(_)
+                    | Self::Mutable(_)
+                    | Self::Pointer(_)
+                    | Self::MutableCollection(_)
+                    | Self::Iterator(_)
+                    | Self::Nil
+            )
+    }
+    fn supports_native_inth(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::List(_)
+                | Self::Cons(_)
+                | Self::Queue(_)
+                | Self::Deque(_)
+                | Self::Tuple(_)
+                | Self::Vector(_)
+                | Self::String(_)
+                | Self::Bytes(_)
+                | Self::ByteBuffer(_)
+                | Self::Array(_)
+        )
+    }
+    fn supports_native_map(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Map(_)
+                | Self::OrderedMap(_)
+                | Self::SortedMap(_)
+                | Self::Trie(_)
+                | Self::PriorityMap(_)
+        )
+    }
+    fn supports_native_iassoc(value: &Self) -> bool {
+        Self::supports_native_map(value) || matches!(value, Self::Vector(_))
+    }
+    fn supports_native_idissoc(value: &Self) -> bool {
+        Self::supports_native_iassoc(value)
+    }
+    fn supports_native_ifind(value: &Self) -> bool {
+        Self::supports_native_map(value)
+            || matches!(
+                value,
+                Self::Set(_)
+                    | Self::OrderedSet(_)
+                    | Self::SortedSet(_)
+                    | Self::List(_)
+                    | Self::Cons(_)
+                    | Self::Queue(_)
+                    | Self::Deque(_)
+                    | Self::Vector(_)
+                    | Self::Tuple(_)
+                    | Self::Pointer(_)
+                    | Self::Object(_)
+                    | Self::Struct(_)
+                    | Self::Mutable(_)
+                    | Self::MutableCollection(_)
+            )
+    }
+    fn supports_native_ilookup(value: &Self) -> bool {
+        Self::supports_native_map(value)
+            || matches!(value, Self::Vector(_) | Self::Tuple(_) | Self::Pointer(_))
+    }
+    fn supports_native_ideref(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Atom(_)
+                | Self::Promise(_)
+                | Self::Var(_)
+                | Self::Result(_)
+                | Self::Pointer(_)
+                | Self::Schema(_)
+        )
+    }
+    fn supports_native_idereftimeout(value: &Self) -> bool {
+        matches!(value, Self::Promise(_) | Self::Atom(_) | Self::Var(_))
+    }
+    fn supports_native_ireset(value: &Self) -> bool {
+        matches!(value, Self::Atom(_))
+    }
+    fn supports_native_icas(value: &Self) -> bool {
+        matches!(value, Self::Atom(_))
+    }
+    fn supports_native_iwatch(value: &Self) -> bool {
+        matches!(value, Self::Atom(_))
+    }
+    fn supports_native_ipointer(value: &Self) -> bool {
+        matches!(value, Self::Pointer(_))
+    }
+    fn supports_native_iapplicable(value: &Self) -> bool {
+        Self::supports_native_ipointer(value)
+    }
+    fn supports_native_iinvokein(value: &Self) -> bool {
+        Self::supports_native_ipointer(value)
+    }
+    fn supports_native_ipair(value: &Self) -> bool {
+        pair_parts(value).is_some()
+    }
+    fn supports_native_iobjtype(value: &Self) -> bool {
+        Self::supports_native_icoll(value)
+            || matches!(
+                value,
+                Self::Symbol(_)
+                    | Self::Keyword(_)
+                    | Self::Pointer(_)
+                    | Self::Var(_)
+                    | Self::Function(_)
+                    | Self::Struct(_)
+                    | Self::Mutable(_)
+                    | Self::NativeType(_)
+            )
+    }
+    fn supports_native_istringlike(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::String(_) | Self::Keyword(_) | Self::Symbol(_) | Self::Bytes(_)
+        )
+    }
+    fn supports_native_inamespaced(value: &Self) -> bool {
+        matches!(value, Self::Keyword(_) | Self::Symbol(_))
+    }
+    fn supports_native_ipushfirst(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::List(_) | Self::Cons(_) | Self::Tuple(_) | Self::Queue(_) | Self::Deque(_)
+        ) || mutable_linear_satisfies(value, true, false)
+    }
+    fn supports_native_ipushlast(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::List(_) | Self::Tuple(_) | Self::Vector(_) | Self::Queue(_) | Self::Deque(_)
+        ) || mutable_linear_satisfies(value, true, true)
+    }
+    fn supports_native_ipopfirst(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::List(_)
+                | Self::Cons(_)
+                | Self::Tuple(_)
+                | Self::Queue(_)
+                | Self::Deque(_)
+                | Self::PriorityMap(_)
+                | Self::Seq(_)
+        ) || mutable_linear_satisfies(value, true, false)
+    }
+    fn supports_native_ipoplast(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::List(_)
+                | Self::Tuple(_)
+                | Self::Vector(_)
+                | Self::Queue(_)
+                | Self::Deque(_)
+                | Self::PriorityMap(_)
+        ) || mutable_linear_satisfies(value, true, true)
+    }
+    fn supports_native_imutable(value: &Self) -> bool {
+        matches!(value, Self::Mutable(_) | Self::MutableCollection(_))
+    }
+    fn supports_native_ipersistent(value: &Self) -> bool {
+        Self::supports_native_icoll(value) || matches!(value, Self::Struct(_))
+    }
+    fn supports_native_iequality(_: &Self) -> bool {
+        true
+    }
+    fn supports_native_idisplay(_: &Self) -> bool {
+        true
+    }
+    fn supports_native_iencodable(_: &Self) -> bool {
+        true
+    }
+    fn supports_native_iexinfo(value: &Self) -> bool {
+        matches!(value, Self::ExceptionInfo(_))
+    }
+    fn supports_native_ihash(_: &Self) -> bool {
+        true
+    }
+    fn supports_native_ipromise(value: &Self) -> bool {
+        matches!(value, Self::Promise(_))
+    }
+    fn supports_native_icoroutine(value: &Self) -> bool {
+        matches!(value, Self::Coroutine(_))
+    }
+    fn supports_native_istream(value: &Self) -> bool {
+        matches!(value, Self::Stream(_))
+    }
+    fn supports_native_iclose(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Stream(_) | Self::Coroutine(_) | Self::Iterator(_)
+        )
+    }
+}
+
+fn native_protocol_supports(protocol: &str, value: &Value) -> bool {
     let name = protocol.rsplit('/').next().unwrap_or(protocol);
-    let persistent_collection = matches!(
-        value,
-        Value::Map(_)
-            | Value::OrderedMap(_)
-            | Value::SortedMap(_)
-            | Value::Trie(_)
-            | Value::PriorityMap(_)
-            | Value::Set(_)
-            | Value::OrderedSet(_)
-            | Value::SortedSet(_)
-            | Value::List(_)
-            | Value::Cons(_)
-            | Value::Queue(_)
-            | Value::Deque(_)
-            | Value::Tuple(_)
-            | Value::Vector(_)
-            | Value::Seq(_)
-    );
-    let map_like = matches!(
-        value,
-        Value::Map(_)
-            | Value::OrderedMap(_)
-            | Value::SortedMap(_)
-            | Value::Trie(_)
-            | Value::PriorityMap(_)
-    );
-    let sequential = matches!(
-        value,
-        Value::List(_)
-            | Value::Cons(_)
-            | Value::Queue(_)
-            | Value::Deque(_)
-            | Value::Tuple(_)
-            | Value::Vector(_)
-    );
-    let mutable_convertible = matches!(
-        value,
-        Value::Map(_)
-            | Value::OrderedMap(_)
-            | Value::SortedMap(_)
-            | Value::Trie(_)
-            | Value::Set(_)
-            | Value::OrderedSet(_)
-            | Value::SortedSet(_)
-            | Value::List(_)
-            | Value::Queue(_)
-            | Value::Vector(_)
-    );
-    let iterable = persistent_collection
-        || matches!(
-            value,
-            Value::Iterator(_)
-                | Value::Nil
-                | Value::String(_)
-                | Value::Bytes(_)
-                | Value::ByteBuffer(_)
-                | Value::Array(_)
-                | Value::Object(_)
-                | Value::Struct(_)
-                | Value::Mutable(_)
-                | Value::MutableCollection(_)
-                | Value::Pointer(_)
-        );
-    let metadata_capable = persistent_collection
-        || matches!(
-            value,
-            Value::Symbol(_)
-                | Value::Keyword(_)
-                | Value::Pointer(_)
-                | Value::Var(_)
-                | Value::Function(_)
-                | Value::Struct(_)
-                | Value::Mutable(_)
-                | Value::NativeType(_)
-        );
     match name {
-        "IColl" => persistent_collection,
-        "IConj" => {
-            matches!(value, Value::Nil)
-                || (persistent_collection && !matches!(value, Value::Seq(_)))
-                || matches!(
-                    value,
-                    Value::Array(_) | Value::Object(_) | Value::MutableCollection(_)
-                )
-        }
-        "IEmpty" => {
-            persistent_collection
-                || matches!(
-                    value,
-                    Value::Nil | Value::Array(_) | Value::Object(_) | Value::Struct(_)
-                )
-        }
-        "IToMutable" => mutable_convertible,
-        "IToPersistent" => matches!(value, Value::MutableCollection(_)),
-        "IIter" | "IReduce" => iterable,
-        "IPeekFirst" => {
-            matches!(
-                value,
-                Value::List(_)
-                    | Value::Cons(_)
-                    | Value::Queue(_)
-                    | Value::Deque(_)
-                    | Value::Tuple(_)
-                    | Value::Vector(_)
-                    | Value::Seq(_)
-                    | Value::PriorityMap(_)
-            ) || mutable_linear_satisfies(value, true, true)
-        }
-        "IPeekLast" => {
-            matches!(
-                value,
-                Value::List(_)
-                    | Value::Queue(_)
-                    | Value::Deque(_)
-                    | Value::Tuple(_)
-                    | Value::Vector(_)
-                    | Value::PriorityMap(_)
-            ) || mutable_linear_satisfies(value, true, true)
-        }
-        "IIterator" => matches!(value, Value::Iterator(_)),
-        "ICount" => {
-            persistent_collection
-                || matches!(
-                    value,
-                    Value::String(_)
-                        | Value::Bytes(_)
-                        | Value::ByteBuffer(_)
-                        | Value::Array(_)
-                        | Value::Object(_)
-                        | Value::Struct(_)
-                        | Value::Mutable(_)
-                        | Value::Pointer(_)
-                        | Value::MutableCollection(_)
-                        | Value::Iterator(_)
-                        | Value::Nil
-                )
-        }
-        "INth" => {
-            sequential
-                || matches!(
-                    value,
-                    Value::String(_) | Value::Bytes(_) | Value::ByteBuffer(_) | Value::Array(_)
-                )
-        }
-        "IAssoc" | "IDissoc" => map_like || matches!(value, Value::Vector(_)),
-        "IFind" => {
-            map_like
-                || matches!(
-                    value,
-                    Value::Set(_)
-                        | Value::OrderedSet(_)
-                        | Value::SortedSet(_)
-                        | Value::List(_)
-                        | Value::Cons(_)
-                        | Value::Queue(_)
-                        | Value::Deque(_)
-                        | Value::Vector(_)
-                        | Value::Tuple(_)
-                        | Value::Pointer(_)
-                        | Value::Object(_)
-                        | Value::Struct(_)
-                        | Value::Mutable(_)
-                        | Value::MutableCollection(_)
-                )
-        }
-        "ILookup" => {
-            map_like
-                || matches!(
-                    value,
-                    Value::Vector(_) | Value::Tuple(_) | Value::Pointer(_)
-                )
-        }
-        "IDeref" => matches!(
-            value,
-            Value::Atom(_)
-                | Value::Promise(_)
-                | Value::Var(_)
-                | Value::Pointer(_)
-                | Value::Schema(_)
-        ),
-        "IReset" => matches!(value, Value::Atom(_) | Value::Var(_)),
-        "ICas" | "IWatch" => matches!(value, Value::Atom(_)),
-        "IFn" => matches!(
-            value,
-            Value::Function(_)
-                | Value::StructType(_)
-                | Value::MutableType(_)
-                | Value::Pointer(_)
-                | Value::Keyword(_)
-                | Value::Map(_)
-                | Value::OrderedMap(_)
-                | Value::SortedMap(_)
-                | Value::Trie(_)
-                | Value::PriorityMap(_)
-                | Value::Set(_)
-                | Value::OrderedSet(_)
-                | Value::SortedSet(_)
-        ),
-        "IPointer" | "IApplicable" | "IInvokeIn" => matches!(value, Value::Pointer(_)),
-        "IPair" => pair_parts(value).is_some(),
-        "IObjType" => metadata_capable,
-        "IStringLike" => matches!(
-            value,
-            Value::String(_) | Value::Keyword(_) | Value::Symbol(_) | Value::Bytes(_)
-        ),
-        "IPushFirst" => {
-            matches!(
-                value,
-                Value::List(_)
-                    | Value::Cons(_)
-                    | Value::Tuple(_)
-                    | Value::Queue(_)
-                    | Value::Deque(_)
-            ) || mutable_linear_satisfies(value, true, false)
-        }
-        "IPushLast" => {
-            matches!(
-                value,
-                Value::List(_)
-                    | Value::Tuple(_)
-                    | Value::Vector(_)
-                    | Value::Queue(_)
-                    | Value::Deque(_)
-            ) || mutable_linear_satisfies(value, true, true)
-        }
-        "IPopFirst" => {
-            matches!(
-                value,
-                Value::List(_)
-                    | Value::Cons(_)
-                    | Value::Tuple(_)
-                    | Value::Queue(_)
-                    | Value::Deque(_)
-                    | Value::PriorityMap(_)
-                    | Value::Seq(_)
-            ) || mutable_linear_satisfies(value, true, false)
-        }
-        "IPopLast" => {
-            matches!(
-                value,
-                Value::List(_)
-                    | Value::Tuple(_)
-                    | Value::Vector(_)
-                    | Value::Queue(_)
-                    | Value::Deque(_)
-                    | Value::PriorityMap(_)
-            ) || mutable_linear_satisfies(value, true, true)
-        }
-        "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
-        "IPersistent" => persistent_collection || matches!(value, Value::Struct(_)),
-        "IStream" => matches!(value, Value::Stream(_)),
-        "IClose" => matches!(
-            value,
-            Value::Stream(_) | Value::Coroutine(_) | Value::Iterator(_)
-        ),
+        "IColl" => Value::supports_native_icoll(value),
+        "IConj" => Value::supports_native_iconj(value),
+        "ICons" => Value::supports_native_icons(value),
+        "IEmpty" => Value::supports_native_iempty(value),
+        "IToMutable" => Value::supports_native_itomutable(value),
+        "IToPersistent" => Value::supports_native_itopersistent(value),
+        "IIter" => Value::supports_native_iiter(value),
+        "IReduce" => Value::supports_native_ireduce(value),
+        "IPeekFirst" => Value::supports_native_ipeekfirst(value),
+        "IPeekLast" => Value::supports_native_ipeeklast(value),
+        "IIterator" => Value::supports_native_iiterator(value),
+        "ICount" => Value::supports_native_icount(value),
+        "INth" => Value::supports_native_inth(value),
+        "IAssoc" => Value::supports_native_iassoc(value),
+        "IDissoc" => Value::supports_native_idissoc(value),
+        "IFind" => Value::supports_native_ifind(value),
+        "ILookup" => Value::supports_native_ilookup(value),
+        "IDeref" => Value::supports_native_ideref(value),
+        "IDerefTimeout" => Value::supports_native_idereftimeout(value),
+        "IReset" => Value::supports_native_ireset(value),
+        "ICas" => Value::supports_native_icas(value),
+        "IWatch" => Value::supports_native_iwatch(value),
+        "IFn" => Value::supports_native_ifn(value),
+        "IPointer" => Value::supports_native_ipointer(value),
+        "IApplicable" => Value::supports_native_iapplicable(value),
+        "IInvokeIn" => Value::supports_native_iinvokein(value),
+        "IPair" => Value::supports_native_ipair(value),
+        "IObjType" => Value::supports_native_iobjtype(value),
+        "IStringLike" => Value::supports_native_istringlike(value),
+        "INamespaced" => Value::supports_native_inamespaced(value),
+        "IPushFirst" => Value::supports_native_ipushfirst(value),
+        "IPushLast" => Value::supports_native_ipushlast(value),
+        "IPopFirst" => Value::supports_native_ipopfirst(value),
+        "IPopLast" => Value::supports_native_ipoplast(value),
+        "IMutable" => Value::supports_native_imutable(value),
+        "IPersistent" => Value::supports_native_ipersistent(value),
+        "IEquality" => Value::supports_native_iequality(value),
+        "IDisplay" => Value::supports_native_idisplay(value),
+        "IEncodable" => Value::supports_native_iencodable(value),
+        "IExInfo" => Value::supports_native_iexinfo(value),
+        "IHash" => Value::supports_native_ihash(value),
+        "IPromise" => Value::supports_native_ipromise(value),
+        "ICoroutine" => Value::supports_native_icoroutine(value),
+        "IStream" => Value::supports_native_istream(value),
+        "IClose" => Value::supports_native_iclose(value),
         _ => false,
     }
 }
@@ -1976,14 +2080,18 @@ fn named_predicate_protocol(name: &str) -> Option<&'static str> {
 }
 
 fn named_protocol_satisfies(name: &str, value: &Value) -> bool {
-    if name == "pair?" {
-        return matches!(value, Value::Tuple(tuple) if tuple.len() == 2);
-    }
     let Some(protocol_name) = named_predicate_protocol(name) else {
         return false;
     };
     if protocol_name == "IColl" {
-        return builtin_protocol_satisfies(protocol_name, value);
+        return protocol_satisfies(
+            &GuestProtocol {
+                name: builtin_protocol_name(protocol_name),
+                methods: HashMap::new(),
+                parents: Vec::new(),
+            },
+            value,
+        );
     }
     let Some((_, methods)) = FOUNDATION_PROTOCOLS
         .iter()

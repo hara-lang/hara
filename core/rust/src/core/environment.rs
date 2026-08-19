@@ -10,6 +10,7 @@ struct ProtocolImplementation {
 #[derive(Default, Clone)]
 pub struct ProtocolRegistry {
     methods: Rc<RefCell<HashMap<(String, String), Vec<ProtocolImplementation>>>>,
+    markers: Rc<RefCell<HashMap<String, Vec<ProtocolSupports>>>>,
     extension_methods: Rc<RefCell<HashMap<(String, String, String, String), ProtocolFn>>>,
     extension_categories: Rc<RefCell<HashSet<(String, String, String)>>>,
     guest_methods: Rc<RefCell<HashMap<(String, String, String), Rc<Function>>>>,
@@ -19,6 +20,7 @@ pub struct ProtocolRegistry {
 #[derive(Clone)]
 pub(crate) struct ProtocolRegistrySnapshot {
     methods: HashMap<(String, String), Vec<ProtocolImplementation>>,
+    markers: HashMap<String, Vec<ProtocolSupports>>,
     extension_methods: HashMap<(String, String, String, String), ProtocolFn>,
     extension_categories: HashSet<(String, String, String)>,
     guest_methods: HashMap<(String, String, String), Rc<Function>>,
@@ -34,6 +36,7 @@ impl ProtocolRegistry {
     pub(crate) fn snapshot(&self) -> ProtocolRegistrySnapshot {
         ProtocolRegistrySnapshot {
             methods: self.methods.borrow().clone(),
+            markers: self.markers.borrow().clone(),
             extension_methods: self.extension_methods.borrow().clone(),
             extension_categories: self.extension_categories.borrow().clone(),
             guest_methods: self.guest_methods.borrow().clone(),
@@ -43,6 +46,7 @@ impl ProtocolRegistry {
 
     pub(crate) fn restore(&self, snapshot: ProtocolRegistrySnapshot) {
         *self.methods.borrow_mut() = snapshot.methods;
+        *self.markers.borrow_mut() = snapshot.markers;
         *self.extension_methods.borrow_mut() = snapshot.extension_methods;
         *self.extension_categories.borrow_mut() = snapshot.extension_categories;
         *self.guest_methods.borrow_mut() = snapshot.guest_methods;
@@ -57,7 +61,25 @@ impl ProtocolRegistry {
     ) where
         F: Fn(&[Value]) -> Result<Value, String> + 'static,
     {
-        self.register_when(protocol, method, |_| true, function);
+        let protocol = canonical_protocol_name(&protocol.into());
+        let supported_protocol = protocol.clone();
+        self.register_when(
+            protocol,
+            method,
+            move |value| native_protocol_supports(&supported_protocol, value),
+            function,
+        );
+    }
+
+    pub fn register_marker<S>(&mut self, protocol: impl Into<String>, supports: S)
+    where
+        S: Fn(&Value) -> bool + 'static,
+    {
+        self.markers
+            .borrow_mut()
+            .entry(canonical_protocol_name(&protocol.into()))
+            .or_default()
+            .push(Rc::new(supports));
     }
 
     pub fn register_when<S, F>(
@@ -162,15 +184,20 @@ impl ProtocolRegistry {
         method: impl Into<String>,
         function: Rc<Function>,
     ) {
-        self.guest_methods
-            .borrow_mut()
-            .insert((protocol.into(), type_name.into(), method.into()), function);
+        self.guest_methods.borrow_mut().insert(
+            (
+                canonical_protocol_name(&protocol.into()),
+                type_name.into(),
+                method.into(),
+            ),
+            function,
+        );
     }
 
     pub fn declare_guest(&self, protocol: impl Into<String>, method: impl Into<String>) {
         self.guest_declarations
             .borrow_mut()
-            .insert((protocol.into(), method.into()));
+            .insert((canonical_protocol_name(&protocol.into()), method.into()));
     }
 
     pub fn invoke(
@@ -236,7 +263,9 @@ impl ProtocolRegistry {
         let implementations = methods
             .get(&(protocol.to_string(), method.to_string()))
             .ok_or_else(|| format!("missing protocol method: {protocol}/{method}"))?;
-        let last_error = format!("missing protocol implementation: {protocol}/{method}");
+        let last_error = format!(
+            "protocol/unsupported-receiver: missing protocol implementation: {protocol}/{method}"
+        );
         let receiver = arguments
             .first()
             .ok_or_else(|| format!("missing protocol receiver: {protocol}/{method}"))?;
@@ -310,28 +339,13 @@ impl ProtocolRegistry {
             if !protocol.parents.is_empty() {
                 return true;
             }
-            return match protocol_name.rsplit('/').next().unwrap_or("") {
-                "IMutable" => matches!(value, Value::Mutable(_) | Value::MutableCollection(_)),
-                "IPersistent" => matches!(
-                    value,
-                    Value::Map(_)
-                        | Value::OrderedMap(_)
-                        | Value::SortedMap(_)
-                        | Value::Trie(_)
-                        | Value::PriorityMap(_)
-                        | Value::Set(_)
-                        | Value::OrderedSet(_)
-                        | Value::SortedSet(_)
-                        | Value::List(_)
-                        | Value::Cons(_)
-                        | Value::Queue(_)
-                        | Value::Deque(_)
-                        | Value::Tuple(_)
-                        | Value::Vector(_)
-                        | Value::Struct(_)
-                ),
-                _ => false,
-            };
+            return self
+                .markers
+                .borrow()
+                .get(&protocol_name)
+                .is_some_and(|implementations| {
+                    implementations.iter().rev().any(|supports| supports(value))
+                });
         }
         if let Value::Extension(receiver) = value {
             return protocol.methods.keys().all(|method| {
@@ -374,12 +388,19 @@ impl ProtocolRegistry {
         }) {
             return true;
         }
-        builtin_protocol_satisfies(&protocol_name, value)
+        false
     }
 
     /// Returns the built-in collection protocol registry used by evaluator dispatch.
     pub fn core() -> Self {
         let mut registry = Self::new();
+        registry.register_marker("std.protocol.icoll/IColl", Value::supports_native_icoll);
+        registry.register_marker("std.protocol.imutable/IMutable", |value| {
+            native_protocol_supports("IMutable", value)
+        });
+        registry.register_marker("std.protocol.ipersistent/IPersistent", |value| {
+            native_protocol_supports("IPersistent", value)
+        });
         registry.register("std.protocol.icount/ICount", "count", protocol_count);
         registry.register("std.protocol.inth/INth", "nth", protocol_nth);
         registry.register("std.protocol.ilookup/ILookup", "lookup", protocol_lookup);

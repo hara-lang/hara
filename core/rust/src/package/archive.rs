@@ -84,6 +84,7 @@ pub(super) fn build_archive(project: &Project, output: &Path) -> Result<(), Stri
             .map_err(|error| format!("cannot read {}: {error}", source.display()))?;
         contents.push((archive.clone(), bytes));
     }
+    #[cfg(feature = "bytecode-vm")]
     let hal_modules = contents
         .iter()
         .filter(|(path, _)| path.extension().and_then(|value| value.to_str()) == Some("hal"))
@@ -100,6 +101,7 @@ pub(super) fn build_archive(project: &Project, output: &Path) -> Result<(), Stri
             Ok((namespace, source.to_owned()))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    #[cfg(feature = "bytecode-vm")]
     if !hal_modules.is_empty() {
         let sources = hal_modules
             .iter()

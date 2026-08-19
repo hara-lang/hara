@@ -2024,11 +2024,22 @@ mod tests {
         else {
             return;
         };
-        assert_eq!(catalog.matches("{:protocol ").count(), 89);
+        let expected_cases = catalog
+            .lines()
+            .filter(|line| {
+                let line = line.trim_start();
+                line.starts_with("{:protocol ") || line.starts_with("[{:protocol ")
+            })
+            .count();
+        assert!(expected_cases > 0, "protocol method catalog is empty");
         let mut runtime = Runtime::new();
         let result = runtime.eval_text(source).unwrap();
         assert!(!result.contains(":pass false"), "{result}");
-        assert_eq!(result.matches(":pass true").count(), 89, "{result}");
+        assert_eq!(
+            result.matches(":pass true").count(),
+            expected_cases,
+            "{result}"
+        );
 
         let method_vars = source
             .lines()
@@ -2040,7 +2051,7 @@ mod tests {
                     .nth(2)
             })
             .collect::<Vec<_>>();
-        assert_eq!(method_vars.len(), 89);
+        assert_eq!(method_vars.len(), expected_cases);
         for method_var in method_vars {
             let mut segments = method_var.split(['.', '/']);
             let protocol_namespace = segments.nth(2).expect("protocol namespace");
@@ -2078,7 +2089,7 @@ mod tests {
                 None
             })
             .collect::<Vec<_>>();
-        assert_eq!(failure_forms.len(), 89);
+        assert_eq!(failure_forms.len(), expected_cases);
         for failure_form in failure_forms {
             let call = failure_form.replacen("unsupported", "(UnsupportedUseCase)", 1);
             let error = runtime.eval_text(&call).unwrap_err();
@@ -2426,10 +2437,7 @@ mod tests {
             "[true true (double 0) (double 1) (double 0) (double 0) (double 0) (double 0) (double 0) (double 0) (double 1) (double 0) (double 0) (double 0) (double 0) (double 1) (double 2) (double 8) 3 (double 1) (double 3)]"
         );
         assert_eq!(runtime.eval_text("(= (sqrt -1) ##NaN)").unwrap(), "true");
-        assert_eq!(
-            runtime.eval_text("(sqrt (long 9))").unwrap(),
-            "(double 3)"
-        );
+        assert_eq!(runtime.eval_text("(sqrt (long 9))").unwrap(), "(double 3)");
         assert!(runtime.eval_text("(long 9.9)").is_err());
         assert_eq!(
             runtime.eval_text("(sqrt (double 9))").unwrap(),
@@ -2949,7 +2957,9 @@ mod tests {
         assert_eq!(runtime.eval_text("(first \"ab\")").unwrap(), "\\a");
         assert_eq!(runtime.eval_text("(seq \"ab\")").unwrap(), "(\\a \\b)");
         assert_eq!(
-            runtime.eval_text("(sequential? (map identity [1]))").unwrap(),
+            runtime
+                .eval_text("(sequential? (map identity [1]))")
+                .unwrap(),
             "true"
         );
         assert_eq!(
@@ -2971,7 +2981,10 @@ mod tests {
         assert_eq!(runtime.eval_text("(identity 42)").unwrap(), "42");
         assert_eq!(runtime.eval_text("(apply + [19 23])").unwrap(), "42");
         assert_eq!(runtime.eval_text("(apply + 19 [23])").unwrap(), "42");
-        assert_eq!(runtime.eval_text("(apply assoc [{} :a 1])").unwrap(), "{:a 1}");
+        assert_eq!(
+            runtime.eval_text("(apply assoc [{} :a 1])").unwrap(),
+            "{:a 1}"
+        );
         assert_eq!(runtime.eval_text("(apply :a [{:a 42}])").unwrap(), "42");
         assert_eq!(
             runtime.eval_text("(every? :a [{:a true} {:a 1}])").unwrap(),
@@ -4526,18 +4539,26 @@ mod tests {
         }
 
         fn install(&self, protocols: &mut core::ProtocolRegistry) {
-            protocols.register("IIter", "iter", |arguments| match arguments.first() {
-                Some(core::Value::Extension(value))
-                    if value.provider == "range" && value.type_name == "range" =>
-                {
-                    Ok(core::iterator_from_values(
-                        (0..value.handle)
-                            .map(|index| core::Value::Number(index as i64))
-                            .collect(),
-                    ))
-                }
-                _ => Err("range/IIter does not accept this value".into()),
-            });
+            protocols.register_when(
+                "IIter",
+                "iter",
+                |value| {
+                    matches!(value, core::Value::Extension(value)
+                    if value.provider == "range" && value.type_name == "range")
+                },
+                |arguments| match arguments.first() {
+                    Some(core::Value::Extension(value))
+                        if value.provider == "range" && value.type_name == "range" =>
+                    {
+                        Ok(core::iterator_from_values(
+                            (0..value.handle)
+                                .map(|index| core::Value::Number(index as i64))
+                                .collect(),
+                        ))
+                    }
+                    _ => Err("range/IIter does not accept this value".into()),
+                },
+            );
         }
 
         fn construct(
@@ -5007,17 +5028,10 @@ mod tests {
             "2"
         );
         assert_eq!(
-            runtime
-                .eval_text(
-                    "(first (drop 2 (cycle [1 2])))"
-                )
-                .unwrap(),
+            runtime.eval_text("(first (drop 2 (cycle [1 2])))").unwrap(),
             "1"
         );
-        assert_eq!(
-            runtime.eval_text("(first (concat [1] [2]))").unwrap(),
-            "1"
-        );
+        assert_eq!(runtime.eval_text("(first (concat [1] [2]))").unwrap(), "1");
     }
 
     #[test]
@@ -5266,9 +5280,12 @@ mod tests {
                 .unwrap(),
             r#"{"b" 10}"#
         );
-        runtime
-            .protocols
-            .register("IIter", "iter", protocol_custom_iterator);
+        runtime.protocols.register_when(
+            "IIter",
+            "iter",
+            |value| matches!(value, core::Value::Number(99)),
+            protocol_custom_iterator,
+        );
         assert_eq!(runtime.eval_text("(iter-next (iter 99))").unwrap(), "7");
         assert!(runtime.has_protocol_method("IAssoc", "assoc"));
         assert!(runtime
@@ -5414,7 +5431,12 @@ mod tests {
     #[test]
     fn protocol_registry_dispatches_by_protocol_and_method() {
         let mut registry = core::ProtocolRegistry::new();
-        registry.register("IIdentity", "identity", protocol_identity);
+        registry.register_when(
+            "IIdentity",
+            "identity",
+            |value| matches!(value, core::Value::Number(_)),
+            protocol_identity,
+        );
         assert!(core::ProtocolRegistry::core().contains("IAssoc", "assoc"));
         assert!(registry.contains("IIdentity", "identity"));
         assert_eq!(
@@ -5430,6 +5452,55 @@ mod tests {
         assert_eq!(
             core::receiver_category(&core::Value::Vector(Default::default())),
             "vector"
+        );
+    }
+
+    #[test]
+    fn protocol_registry_matchers_interlock_satisfaction_dispatch_and_overrides() {
+        let mut registry = core::ProtocolRegistry::new();
+        registry.register_when(
+            "IProbe",
+            "probe",
+            |value| matches!(value, core::Value::Number(_)),
+            |_| Ok(core::Value::Keyword("number".into())),
+        );
+        registry.register_when(
+            "IProbe",
+            "probe",
+            |value| matches!(value, core::Value::String(_)),
+            |_| Ok(core::Value::Keyword("string".into())),
+        );
+        let protocol = core::GuestProtocol {
+            name: "IProbe".into(),
+            methods: HashMap::from([("probe".into(), 1)]),
+            parents: Vec::new(),
+        };
+        assert!(registry.satisfies(&protocol, &core::Value::Number(1)));
+        assert!(registry.satisfies(&protocol, &core::Value::String("x".into())));
+        assert!(!registry.satisfies(&protocol, &core::Value::Bool(true)));
+        assert_eq!(
+            registry
+                .invoke("IProbe", "probe", &[core::Value::Number(1)])
+                .unwrap(),
+            core::Value::Keyword("number".into())
+        );
+        assert_eq!(
+            registry
+                .invoke("IProbe", "probe", &[core::Value::String("x".into())])
+                .unwrap(),
+            core::Value::Keyword("string".into())
+        );
+        registry.register_when(
+            "IProbe",
+            "probe",
+            |value| matches!(value, core::Value::Number(_)),
+            |_| Ok(core::Value::Keyword("override".into())),
+        );
+        assert_eq!(
+            registry
+                .invoke("IProbe", "probe", &[core::Value::Number(1)])
+                .unwrap(),
+            core::Value::Keyword("override".into())
         );
     }
 
@@ -6910,6 +6981,54 @@ mod tests {
             .contains("missing protocol implementation"));
     }
 
+    #[cfg(feature = "bytecode-vm")]
+    #[test]
+    fn bytecode_vm_ifn_applicability_matches_interpreter_and_predicates() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_bytecode_native(
+                    "(do
+                       (defstruct VmInvokable [value])
+                       (defstruct VmPlain [value])
+                       (defmutable VmMutableInvokable [value])
+                       (defmutable VmMutablePlain [value])
+                       (extend-type VmInvokable std.protocol.ifn/IFn
+                         (invoke [self] (:value self)))
+                       (extend-type VmMutableInvokable std.protocol.ifn/IFn
+                         (invoke [self] (:value self)))
+                       (let [function (fn [value] value)
+                             pointer (pointer {:context :kernel :id \"ROOT\"})
+                             invokable (VmInvokable 7)
+                             mutable-invokable (VmMutableInvokable 8)]
+                         [[(fn? function) (satisfies? std.protocol.ifn/IFn function)
+                           (function 1)]
+                          [(fn? :key) (satisfies? std.protocol.ifn/IFn :key)
+                           (:key {:key 2})]
+                          [(fn? {:key 3}) (satisfies? std.protocol.ifn/IFn {:key 3})
+                           ({:key 3} :key)]
+                          [(fn? #{:key}) (satisfies? std.protocol.ifn/IFn #{:key})
+                           (#{:key} :key)]
+                          [(fn? VmInvokable) (satisfies? std.protocol.ifn/IFn VmInvokable)]
+                          [(fn? pointer) (satisfies? std.protocol.ifn/IFn pointer)]
+                          [(fn? invokable) (satisfies? std.protocol.ifn/IFn invokable)
+                           (invokable)]
+                          [(fn? mutable-invokable)
+                           (satisfies? std.protocol.ifn/IFn mutable-invokable)
+                           (mutable-invokable)]
+                          [(fn? (VmPlain 1))
+                           (satisfies? std.protocol.ifn/IFn (VmPlain 1))]
+                          [(fn? (VmMutablePlain 1))
+                           (satisfies? std.protocol.ifn/IFn (VmMutablePlain 1))]
+                          [(fn? 42) (satisfies? std.protocol.ifn/IFn 42)]]))",
+                )
+                .unwrap(),
+            "[[true true 1] [true true 2] [true true 3] [true true :key] \
+             [true true] [true true] [true true 7] [true true 8] \
+             [false false] [false false] [false false]]"
+        );
+    }
+
     #[test]
     fn namespace_use_refers_public_values() {
         let mut runtime = Runtime::new();
@@ -7469,7 +7588,9 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text("(first ((drop 1) ((take 2) ((partition 2) (iterate (fn [x] (+ x 1)) 0)))))")
+                .eval_text(
+                    "(first ((drop 1) ((take 2) ((partition 2) (iterate (fn [x] (+ x 1)) 0)))))"
+                )
                 .unwrap(),
             "[2 3]"
         );

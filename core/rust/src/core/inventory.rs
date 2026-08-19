@@ -919,6 +919,23 @@ mod native_work_protocol_tests {
     }
 
     #[test]
+    fn canonical_protocol_names_preserve_std_protocol_identity() {
+        assert_eq!(canonical_protocol_name("IFn"), "std.protocol.ifn/IFn");
+        assert_eq!(
+            canonical_protocol_name("std.foundation/IFn"),
+            "std.protocol.ifn/IFn"
+        );
+        assert_eq!(
+            canonical_protocol_name("std.protocol.ifn/IFn"),
+            "std.protocol.ifn/IFn"
+        );
+        assert_eq!(
+            canonical_protocol_name("std.protocol.application/Portable"),
+            "std.protocol.application/Portable"
+        );
+    }
+
+    #[test]
     fn native_work_protocol_methods_are_stable() {
         assert_eq!(methods("IWork"), vec![("work-spec", 1)]);
         assert_eq!(methods("IWorkExecutor"), vec![("work-execute", 2)]);
