@@ -1,0 +1,195 @@
+name: Emitter migration native applicability
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/emitter-migration-native.yml'
+      - 'core/lib/src/code/migrate.hal'
+      - 'core/lib/test/code/migrate_test.hal'
+      - 'core/lib/src/lang/common/**'
+      - 'core/lib/test-lang/lang/common/emit*_test.hal'
+      - 'core/rust/**'
+      - 'scripts/runtime/run-lib-tests'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emitter-migration-native-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-rust:
+    name: Native Rust emitter acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native diagnostics
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gdb strace
+          sudo sysctl -w kernel.yama.ptrace_scope=0 || true
+
+      - name: Build the native Hara test runner
+        run: cargo build --locked --manifest-path core/rust/Cargo.toml --bin hara-test
+
+      - name: Validate the code.migrate ledger
+        env:
+          RUST_BACKTRACE: full
+        run: |
+          timeout --signal=TERM --kill-after=10s 180s \
+            ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_test.hal
+
+      - name: Execute every emitter suite with bounded diagnostics
+        env:
+          RUST_BACKTRACE: full
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          runner="$GITHUB_WORKSPACE/core/rust/target/debug/hara-test"
+          output_root="$GITHUB_WORKSPACE/target/emitter-native"
+          mkdir -p "$output_root"
+
+          suites=(
+            core/lib/test-lang/lang/common/emit_assign_test.hal
+            core/lib/test-lang/lang/common/emit_block_test.hal
+            core/lib/test-lang/lang/common/emit_common_test.hal
+            core/lib/test-lang/lang/common/emit_compat_test.hal
+            core/lib/test-lang/lang/common/emit_data_test.hal
+            core/lib/test-lang/lang/common/emit_fn_test.hal
+            core/lib/test-lang/lang/common/emit_helper_test.hal
+            core/lib/test-lang/lang/common/emit_orchestration_test.hal
+            core/lib/test-lang/lang/common/emit_preprocess_test.hal
+            core/lib/test-lang/lang/common/emit_rewrite_test.hal
+            core/lib/test-lang/lang/common/emit_special_test.hal
+            core/lib/test-lang/lang/common/emit_template_test.hal
+            core/lib/test-lang/lang/common/emit_test.hal
+            core/lib/test-lang/lang/common/emit_top_level_test.hal
+          )
+
+          for suite in "${suites[@]}"; do
+            name="$(basename "$suite" .hal)"
+            stdout_log="$output_root/$name.log"
+            process_log="$output_root/$name.processes.log"
+            backtrace_log="$output_root/$name.backtrace.log"
+            trace_prefix="$output_root/$name.strace"
+
+            echo "::group::$name"
+            "$runner" --root "$GITHUB_WORKSPACE/core" "$GITHUB_WORKSPACE/$suite" \
+              >"$stdout_log" 2>&1 &
+            target_pid=$!
+            deadline=$((SECONDS + 120))
+
+            while kill -0 "$target_pid" 2>/dev/null && (( SECONDS < deadline )); do
+              sleep 1
+            done
+
+            if kill -0 "$target_pid" 2>/dev/null; then
+              status=124
+              {
+                echo "suite=$suite"
+                echo "target_pid=$target_pid"
+                echo
+                ps -eLf
+              } >"$process_log"
+
+              sudo gdb -q -batch \
+                -ex 'set pagination off' \
+                -ex 'info threads' \
+                -ex 'thread apply all bt full' \
+                -p "$target_pid" >"$backtrace_log" 2>&1 || true
+
+              timeout --signal=INT --kill-after=2s 8s \
+                strace -ff -tt -T -s 256 -o "$trace_prefix" \
+                -p "$target_pid" >/dev/null 2>&1 || true
+
+              kill -TERM "$target_pid" 2>/dev/null || true
+              sleep 2
+              kill -KILL "$target_pid" 2>/dev/null || true
+              wait "$target_pid" 2>/dev/null || true
+            else
+              wait "$target_pid"
+              status=$?
+            fi
+
+            cat "$stdout_log"
+
+            if [[ "$status" -ne 0 ]]; then
+              echo "::error file=$suite::Native emitter suite failed or timed out with status $status"
+              if compgen -G "$trace_prefix.*" >/dev/null; then
+                for trace in "$trace_prefix".*; do
+                  echo "--- tail: $trace"
+                  tail -n 120 "$trace" || true
+                done
+              fi
+              if [[ -s "$backtrace_log" ]]; then
+                echo "--- native backtrace"
+                cat "$backtrace_log"
+              fi
+              echo "::endgroup::"
+              exit "$status"
+            fi
+
+            echo "::endgroup::"
+          done
+
+      - name: Upload native emitter diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emitter-native-${{ github.event.pull_request.head.sha || github.sha }}
+          path: target/emitter-native
+          if-no-files-found: warn
+
+  jvm-truffle:
+    name: JVM Truffle emitter acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Execute the complete JVM emitter family
+        run: |
+          mvn -B -f core/java/pom.xml -Ptruffle \
+            -Dtest=hara.truffle.HaraLangEmitterTest test
