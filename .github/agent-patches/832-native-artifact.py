@@ -34,4 +34,14 @@ replace_once(
 )
 
 PATH.write_text(text)
+
+TEST_PATH = ROOT / "core/rust/src/vm/artifact/tests.rs"
+test = TEST_PATH.read_text()
+old = """        SchemaType::Map(vec![SchemaField {\n            name: crate::kernel::parse(\":id\").unwrap(),\n            value_type: SchemaType::Primitive(\"int\".into()),\n        }]),\n    );\n    program.function_types.insert("""
+new = """        SchemaType::Map(vec![SchemaField {\n            name: crate::kernel::parse(\":id\").unwrap(),\n            properties: None,\n            value_type: SchemaType::Primitive(\"int\".into()),\n        }]),\n    );\n    program.schema_types.insert(\n        \"demo/Labels\".into(),\n        SchemaType::Set(Box::new(SchemaType::Primitive(\"keyword\".into()))),\n    );\n    program.schema_types.insert(\n        \"demo/Handle\".into(),\n        SchemaType::WithProperties {\n            schema: Box::new(SchemaType::Primitive(\"str\".into())),\n            properties: crate::kernel::parse(\"{:min-count 1 :max-count 32}\").unwrap(),\n        },\n    );\n    program.schema_types.insert(\n        \"demo/Profile\".into(),\n        SchemaType::WithProperties {\n            schema: Box::new(SchemaType::Map(vec![SchemaField {\n                name: crate::kernel::parse(\":nickname\").unwrap(),\n                properties: Some(crate::kernel::parse(\"{:optional true}\").unwrap()),\n                value_type: SchemaType::Primitive(\"str\".into()),\n            }])),\n            properties: crate::kernel::parse(\"{:closed true}\").unwrap(),\n        },\n    );\n    program.function_types.insert("""
+count = test.count(old)
+if count != 1:
+    raise SystemExit(f"artifact test patch marker expected once, found {count}")
+TEST_PATH.write_text(test.replace(old, new, 1))
+
 print("applied #832 bytecode schema artifact parity")
