@@ -1,0 +1,138 @@
+(ns std.typed.catalog-test
+  (:use code.test)
+  (:require [std.typed.catalog :as catalog]
+            [std.typed.catalog.codec :as codec]))
+
+(def +base+
+  (catalog/catalog
+   [{:schema/id :model/id
+     :schema/version 1
+     :schema/form :int}
+    {:schema/id :model/status
+     :schema/version 1
+     :schema/form '[:enum :active :disabled]}]
+   {:namespace 'model}))
+
+(def +application+
+  (catalog/catalog
+   [{:schema/id :app/user
+     :schema/version 1
+     :schema/form
+     '[:map
+       [:id (var id)]
+       [:status (var m/status)]]}
+    {:schema/id :app/user
+     :schema/version 2
+     :schema/form
+     '[:map
+       {:title "User record"
+        :owner :accounts}
+       [:id (var id)]
+       [:status (var m/status)]
+       [:email {:optional true
+                :description "Primary email"}
+        :str]]}]
+   {:namespace 'app
+    :aliases {'m 'model}
+    :refers {'id 'model/id}
+    :parents [+base+]}))
+
+(def +recursive+
+  (catalog/catalog
+   [{:schema/id :tree/node
+     :schema/version 1
+     :schema/form
+     '[:map
+       [:value :int]
+       [:children [:vector (var node)]]]}]
+   {:namespace 'tree}))
+
+^{:refer 'std.typed.catalog.codec/content-hash
+  :id 'canonical-schema-hash}
+(fact "hashes normalized schema content rather than surface spelling"
+  (let [plain (codec/content-hash :demo/value 1 :int)
+        vector-spelling (codec/content-hash :demo/value 1 [:int])
+        reordered
+        (codec/content-hash
+         :demo/record
+         1
+         [:map
+          {:owner :accounts :title "Record"}
+          [:id :int]])
+        ordered
+        (codec/content-hash
+         :demo/record
+         1
+         [:map
+          {:title "Record" :owner :accounts}
+          [:id :int]])]
+    [(= plain vector-spelling)
+     (= reordered ordered)
+     (not= plain (codec/content-hash :demo/value 2 :int))
+     (not= plain
+           (codec/content-hash
+            :demo/value
+            1
+            [:int {:title "Integer"}]))
+     (re-matches "sha256:[0-9a-f]{64}" plain)])
+  => [true true true true true])
+
+^{:refer 'std.typed.catalog/lookup
+  :id 'latest-and-exact-lookup}
+(fact "looks up latest identities and exact immutable coordinates"
+  [(:schema/version (catalog/lookup +application+ :app/user))
+   (:schema/version (catalog/lookup +application+ 'user))
+   (:schema/version (catalog/lookup +application+ :app/user 1))
+   (:schema/id (catalog/lookup +application+ :model/id))
+   (:kind (:schema/ast
+           (catalog/lookup +application+ :app/user 2)))]
+  => [2 2 1 :model/id :map])
+
+^{:refer 'std.typed.catalog/dependencies
+  :id 'exact-dependency-graph}
+(fact "pins named references to deterministic exact coordinates"
+  (let [report (catalog/dependencies +application+ :app/user 2)
+        direct (:dependencies/direct report)]
+    [(vec (map (fn [coordinate] (:schema/id coordinate)) direct))
+     (vec (map (fn [coordinate] (:schema/version coordinate)) direct))
+     (= direct (:dependencies/transitive report))
+     (empty? (:dependencies/recursive report))])
+  => [[:model/id :model/status] [1 1] true true])
+
+^{:refer 'std.typed.catalog/dependencies
+  :id 'structural-recursion}
+(fact "accepts structural recursion and reports the recursive exact edge"
+  (let [entry (catalog/lookup +recursive+ :tree/node)
+        report (catalog/dependencies +recursive+ :tree/node)]
+    [(= :map (:kind (:schema/ast entry)))
+     (vec
+      (map (fn [coordinate] (:schema/id coordinate))
+           (:dependencies/direct report)))
+     (vec
+      (map (fn [coordinate] (:schema/id coordinate))
+           (:dependencies/recursive report)))])
+  => [true [:tree/node] [:tree/node]])
+
+^{:refer 'std.typed.catalog/resolve
+  :id 'catalog-resolution}
+(fact "resolves catalog entries through the canonical structural registry"
+  (let [resolved (catalog/resolve +application+ :app/user 2)]
+    [(:schema/id resolved)
+     (:schema/version resolved)
+     (:kind (:schema/resolved resolved))
+     (:kind
+      (:type
+       (first (:fields (:schema/resolved resolved)))))])
+  => [:app/user 2 :map :primitive])
+
+^{:refer 'std.typed.catalog/verify
+  :id 'catalog-verification}
+(fact "verifies entry hashes and exact dependency links"
+  [(:valid (catalog/verify +base+))
+   (:valid (catalog/verify +application+))
+   (:valid (catalog/verify +recursive+))
+   (catalog/verify-entry
+    (catalog/lookup +application+ :app/user 2))]
+  => [true true true true])
+
+(pr-str (run '[std.typed.catalog-test]))
