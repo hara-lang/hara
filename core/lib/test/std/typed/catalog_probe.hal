@@ -1,0 +1,89 @@
+(ns std.typed.catalog-probe
+  (:require [std.typed.catalog :as catalog]
+            [std.typed.catalog.codec :as codec]))
+
+(def +base+
+  (catalog/catalog
+   [{:schema/id :model/id
+     :schema/version 1
+     :schema/form :int}
+    {:schema/id :model/status
+     :schema/version 1
+     :schema/form '[:enum :active :disabled]}]
+   {:namespace 'model}))
+
+(def +application+
+  (catalog/catalog
+   [{:schema/id :app/user
+     :schema/version 1
+     :schema/form
+     '[:map
+       [:id (var id)]
+       [:status (var m/status)]]}
+    {:schema/id :app/user
+     :schema/version 2
+     :schema/form
+     '[:map
+       {:title "User record" :owner :accounts}
+       [:id (var id)]
+       [:status (var m/status)]
+       [:email {:optional true} :str]]}]
+   {:namespace 'app
+    :aliases {'m 'model}
+    :refers {'id 'model/id}
+    :parents [+base+]}))
+
+(def +recursive+
+  (catalog/catalog
+   [{:schema/id :tree/node
+     :schema/version 1
+     :schema/form
+     '[:map
+       [:value :int]
+       [:children [:vector (var node)]]]}]
+   {:namespace 'tree}))
+
+(let [latest (catalog/lookup +application+ :app/user)
+      exact (catalog/lookup +application+ :app/user 1)
+      inherited (catalog/lookup +application+ :model/id)
+      dependency-report
+      (catalog/dependencies +application+ :app/user 2)
+      recursive-report
+      (catalog/dependencies +recursive+ :tree/node)
+      plain-hash (codec/content-hash :demo/value 1 :int)
+      shorthand-hash (codec/content-hash :demo/value 1 [:int])
+      checks
+      [[:latest-version (= 2 (:schema/version latest))]
+       [:exact-version (= 1 (:schema/version exact))]
+       [:parent-lookup (= :model/id (:schema/id inherited))]
+       [:canonical-hash (= plain-hash shorthand-hash)]
+       [:hash-shape
+        (re-matches "sha256:[0-9a-f]{64}" plain-hash)]
+       [:dependency-ids
+        (= [:model/id :model/status]
+           (vec
+            (map (fn [coordinate] (:schema/id coordinate))
+                 (:dependencies/direct dependency-report))))]
+       [:recursive-edge
+        (= [:tree/node]
+           (vec
+            (map (fn [coordinate] (:schema/id coordinate))
+                 (:dependencies/recursive recursive-report))))]
+       [:catalog-valid (:valid (catalog/verify +application+))]
+       [:recursive-valid (:valid (catalog/verify +recursive+))]]
+      failures
+      (vec
+       (keep (fn [check]
+               (if (second check)
+                 nil
+                 (first check)))
+             checks))]
+  (if (empty? failures)
+    :ok
+    (throw
+     (ex-info "std.typed catalog probe failed"
+              {:failures failures
+               :latest latest
+               :exact exact
+               :dependencies dependency-report
+               :recursive recursive-report}))))
