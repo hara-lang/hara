@@ -10,5 +10,10 @@ replacement = "(and (= :primitive (:kind actual))\n         (= :any (:name actua
 if source.count(needle) < 2:
     raise SystemExit("expected compatibility marker in canonical transformer source")
 source = source.replace(needle, replacement, 2)
+workflow_marker = '\npath = ".github/workflows/std-typed-schema.yml"\n'
+workflow_index = source.rfind(workflow_marker)
+if workflow_index < 0:
+    raise SystemExit("expected workflow tail in canonical transformer source")
+source = source[:workflow_index] + '\nprint("applied #832 product candidate")\n'
 namespace = {"__file__": str(Path(__file__).resolve()), "__name__": "__main__"}
 exec(compile(source, __file__, "exec"), namespace)
