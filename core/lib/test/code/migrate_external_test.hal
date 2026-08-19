@@ -1,0 +1,72 @@
+(ns code.migrate-external-test
+  (:use code.test)
+  (:require [code.migrate.external :as external]))
+
+(fact "the exact external-name catalog has no pending disposition"
+  (external/validate-catalog)
+  => {:valid? true
+      :names 83
+      :pending []
+      :portable ["clojure.string"]})
+
+(fact "reader types, JVM classes, and publication symbols stay diagnostic"
+  (map
+   (fn [name]
+     (select-keys
+      (external/review name)
+      [:route/kind :review/disposition :rewrite/safety]))
+   ["clojure.tools.reader.reader-types"
+    "java.io.File"
+    "defimpl.xt"])
+  => [{:route/kind :namespace
+       :review/disposition :manual-boundary
+       :rewrite/safety :manual}
+      {:route/kind :jvm-class
+       :review/disposition :host-runtime-adapter
+       :rewrite/safety :manual}
+      {:route/kind :referred-symbol
+       :review/disposition :obsolete
+       :rewrite/safety :manual}])
+
+(fact "portable string symbols are exact or explicitly renamed"
+  [(external/string-symbol-target "blank?")
+   (external/string-symbol-target "triml")
+   (external/string-symbol-target "trimr")
+   (external/string-symbol-target "trim-newline")
+   (external/string-symbol-target "index-of")]
+  => ["blank?" "trim-left" "trim-right" "trim-newlines" nil])
+
+(fact "route review preserves exact source evidence"
+  (select-keys
+   (external/review-route
+    {:external/namespace "clojure.string"
+     :source/namespace "std.demo"
+     :source/path "src/std/demo.clj"
+     :source/blob "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})
+   [:external/namespace :source/namespace :source/path :source/blob
+    :review/disposition :hara/candidate :profile/id])
+  => {:external/namespace "clojure.string"
+      :source/namespace "std.demo"
+      :source/path "src/std/demo.clj"
+      :source/blob "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      :review/disposition :portable-substitute
+      :hara/candidate "std.foundation.string"
+      :profile/id :foundation-baa75a})
+
+(fact "every reviewed route contributes deterministic summary counts"
+  (select-keys
+   (external/external-summary
+    [{:external/namespace "clojure.string"}
+     {:external/namespace "java.io.File"}
+     {:external/namespace "defimpl"}])
+   [:routes :names :reviewed :pending :by/disposition])
+  => {:routes 3
+      :names 3
+      :reviewed 3
+      :pending 0
+      :by/disposition
+      {:portable-substitute 1
+       :host-runtime-adapter 1
+       :obsolete 1}})
+
+(pr-str (run {:namespace "code.migrate-external-test"}))
