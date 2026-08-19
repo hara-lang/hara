@@ -1,8 +1,8 @@
 (ns std.typed.catalog.codec
   (:require [std.foundation.bytes :as bytes]
             [std.foundation.string :as string]
-            [std.typed.registry :as registry]
-            [std.typed.schema :as schema]))
+            [std.typed.registry]
+            [std.typed.schema]))
 
 (def +hash-algorithm+ :std.typed.catalog/sha256-v1)
 
@@ -82,12 +82,14 @@
   [value]
   (sort-by
    utf8-order-key
-   (map
-    (fn [entry]
-      (pack-many
-       "p"
-       [(canonical-value (key entry))
-        (canonical-value (val entry))]))
+   (reduce-kv
+    (fn [output key value]
+      (conj output
+            (pack-many
+             "p"
+             [(canonical-value key)
+              (canonical-value value)])))
+    []
     value)))
 
 (defn ^{:schema [:fn [:any] :str]}
@@ -143,10 +145,14 @@
   content-hash
   "Hashes a schema identity, version, and canonical normalized content."
   ([identity version schema-form]
-   (content-hash identity version schema-form registry/+empty+))
+   (content-hash identity
+                 version
+                 schema-form
+                 std.typed.registry/+empty+))
   ([identity version schema-form registry-value]
    (hash-ast
     identity
     version
-    (schema/normalize-with schema-form
-                           (registry/ensure registry-value)))))
+    (std.typed.schema/normalize-with
+     schema-form
+     (std.typed.registry/ensure registry-value)))))
