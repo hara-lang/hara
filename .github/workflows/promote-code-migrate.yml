@@ -1,0 +1,61 @@
+name: Promote code.migrate hard cut
+
+on:
+  push:
+    branches:
+      - 'agent/524-code-migrate-substrate'
+    paths:
+      - 'scripts/runtime/promote_code_migrate.py'
+      - '.github/workflows/promote-code-migrate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: promote-code-migrate-substrate
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/524-code-migrate-substrate
+
+      - name: Prepare exact Foundation objects without a checkout
+        run: |
+          set -euo pipefail
+          git init --bare .foundation.git
+          git --git-dir=.foundation.git remote add origin \
+            https://github.com/zcaudate-xyz/foundation-base.git
+          git --git-dir=.foundation.git fetch --depth=1 origin \
+            baa75aabd6a879753d7d5cb07271b1448271e7cb
+          test "$(git --git-dir=.foundation.git rev-parse \
+            'baa75aabd6a879753d7d5cb07271b1448271e7cb^{commit}')" = \
+            baa75aabd6a879753d7d5cb07271b1448271e7cb
+          test "$(git --git-dir=.foundation.git rev-parse \
+            'baa75aabd6a879753d7d5cb07271b1448271e7cb^{tree}')" = \
+            26d494f60c4970df56eba8ac40f92affeee4e159
+
+      - name: Promote the canonical source layout and evidence
+        env:
+          FOUNDATION_GIT: ${{ github.workspace }}/.foundation.git
+        run: |
+          set -euo pipefail
+          python -m py_compile scripts/runtime/promote_code_migrate.py
+          python scripts/runtime/promote_code_migrate.py
+          test ! -e scripts/runtime/promote_code_migrate.py
+          test ! -e .github/workflows/promote-code-migrate.yml
+
+      - name: Commit the product-only hard cut
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m 'refactor(code.migrate): canonicalize Foundation porting'
+          git push origin HEAD:agent/524-code-migrate-substrate
