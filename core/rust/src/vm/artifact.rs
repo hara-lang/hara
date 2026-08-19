@@ -692,17 +692,38 @@ fn write_schema_type(out: &mut Writer, schema: &SchemaType) -> Result<(), String
             out.byte(3);
             write_schema_type(out, item)?;
         }
+        SchemaType::Set(item) => {
+            out.byte(10);
+            write_schema_type(out, item)?;
+        }
         SchemaType::Tuple(items) => {
             out.byte(4);
             write_schema_types(out, items)?;
         }
         SchemaType::Map(fields) => {
-            out.byte(5);
+            // Keep tag 5 byte-for-byte compatible with existing artifacts.
+            // Property-aware fields use tag 12 so older schema maps remain readable.
+            let property_aware = fields.iter().any(|field| field.properties.is_some());
+            out.byte(if property_aware { 12 } else { 5 });
             out.len(fields.len())?;
             for field in fields {
                 write_schema_form(out, &field.name)?;
+                if property_aware {
+                    match &field.properties {
+                        Some(properties) => {
+                            out.byte(1);
+                            write_schema_form(out, properties)?;
+                        }
+                        None => out.byte(0),
+                    }
+                }
                 write_schema_type(out, &field.value_type)?;
             }
+        }
+        SchemaType::WithProperties { schema, properties } => {
+            out.byte(11);
+            write_schema_type(out, schema)?;
+            write_schema_form(out, properties)?;
         }
         SchemaType::Function(arities) => {
             out.byte(6);
@@ -746,6 +767,7 @@ fn read_schema_type(reader: &mut Reader<'_>) -> Result<SchemaType, String> {
         5 => SchemaType::Map(reader.many(|reader| {
             Ok(SchemaField {
                 name: read_schema_form(reader)?,
+                properties: None,
                 value_type: read_schema_type(reader)?,
             })
         })?),
@@ -768,6 +790,24 @@ fn read_schema_type(reader: &mut Reader<'_>) -> Result<SchemaType, String> {
             arguments: read_schema_forms(reader)?,
         },
         9 => SchemaType::Unknown(read_schema_form(reader)?),
+        10 => SchemaType::Set(Box::new(read_schema_type(reader)?)),
+        11 => SchemaType::WithProperties {
+            schema: Box::new(read_schema_type(reader)?),
+            properties: read_schema_form(reader)?,
+        },
+        12 => SchemaType::Map(reader.many(|reader| {
+            let name = read_schema_form(reader)?;
+            let properties = if reader.boolean()? {
+                Some(read_schema_form(reader)?)
+            } else {
+                None
+            };
+            Ok(SchemaField {
+                name,
+                properties,
+                value_type: read_schema_type(reader)?,
+            })
+        })?),
         _ => return Err("bytecode artifact contains unknown schema type".into()),
     })
 }

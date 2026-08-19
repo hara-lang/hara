@@ -288,18 +288,33 @@ public final class HbcCodec {
         out.u8(3);
         writeSchemaType(out, vector.item());
       }
+      case HalcSchema.SetType set -> {
+        out.u8(10);
+        writeSchemaType(out, set.item());
+      }
       case HalcSchema.Tuple tuple -> {
         out.u8(4);
         out.many(tuple.items(), type -> writeSchemaType(out, type));
       }
       case HalcSchema.MapType map -> {
-        out.u8(5);
+        // Preserve tag 5 for property-free maps so existing HBC artifacts remain stable.
+        boolean propertyAware = map.fields().stream().anyMatch(field -> field.properties() != null);
+        out.u8(propertyAware ? 12 : 5);
         out.many(
             map.fields(),
             field -> {
               writeSchemaSurface(out, field.name());
+              if (propertyAware) {
+                out.bool(field.properties() != null);
+                if (field.properties() != null) writeSchemaSurface(out, field.properties());
+              }
               writeSchemaType(out, field.type());
             });
+      }
+      case HalcSchema.Properties properties -> {
+        out.u8(11);
+        writeSchemaType(out, properties.schema());
+        writeSchemaSurface(out, properties.properties());
       }
       case HalcSchema.FunctionType function -> {
         out.u8(6);
@@ -340,7 +355,7 @@ public final class HbcCodec {
               in.many(
                   reader ->
                       new HalcSchema.Field(
-                          readSchemaSurface(reader), readSchemaType(reader))));
+                          readSchemaSurface(reader), null, readSchemaType(reader))));
       case 6 ->
           new HalcSchema.FunctionType(
               in.many(
@@ -352,6 +367,16 @@ public final class HbcCodec {
       case 7 -> new HalcSchema.EnumType(readSchemaSurfaces(in));
       case 8 -> new HalcSchema.Extension(in.string(), readSchemaSurfaces(in));
       case 9 -> new HalcSchema.Unknown(readSchemaSurface(in));
+      case 10 -> new HalcSchema.SetType(readSchemaType(in));
+      case 11 -> new HalcSchema.Properties(readSchemaType(in), readSchemaSurface(in));
+      case 12 ->
+          new HalcSchema.MapType(
+              in.many(
+                  reader -> {
+                    Object name = readSchemaSurface(reader);
+                    Object properties = reader.bool() ? readSchemaSurface(reader) : null;
+                    return new HalcSchema.Field(name, properties, readSchemaType(reader));
+                  }));
       default -> throw malformed("bytecode artifact contains unknown schema type");
     };
   }

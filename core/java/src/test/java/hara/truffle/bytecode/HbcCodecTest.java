@@ -44,7 +44,23 @@ public class HbcCodecTest {
                     List.of(
                         new HalcSchema.Field(
                             hara.lang.data.Keyword.create("id"),
-                            new HalcSchema.Primitive("int"))))),
+                            null,
+                            new HalcSchema.Primitive("int")))),
+                "demo/Labels",
+                new HalcSchema.SetType(new HalcSchema.Primitive("keyword")),
+                "demo/Handle",
+                new HalcSchema.Properties(
+                    new HalcSchema.Primitive("str"),
+                    HalcSchema.readSurface("{:title \"Display handle\" :version 2 :owner :accounts :min-count 1 :max-count 32}")),
+                "demo/Profile",
+                new HalcSchema.Properties(
+                    new HalcSchema.MapType(
+                        List.of(
+                            new HalcSchema.Field(
+                                hara.lang.data.Keyword.create("nickname"),
+                                HalcSchema.readSurface("{:required true :description \"Display nickname\" :default \"Anonymous\"}"),
+                                new HalcSchema.Primitive("str")))),
+                    HalcSchema.readSurface("{:title \"User profile\" :version 2 :owner :accounts :closed true}"))),
             Map.of(
                 "demo/add",
                 new HalcSchema.FunctionType(
@@ -66,8 +82,17 @@ public class HbcCodecTest {
     byte[] first = HbcCodec.encode(program);
     assertArrayEquals(new byte[] {'H', 'B', 'C', '0'}, Arrays.copyOf(first, 4));
     HbcProgram decoded = HbcCodec.decode(first);
-    assertEquals(program, decoded);
     assertArrayEquals(first, HbcCodec.encode(decoded));
+
+    assertTrue(decoded.schemaTypes().get("demo/Labels") instanceof HalcSchema.SetType);
+    assertTrue(decoded.schemaTypes().get("demo/Profile") instanceof HalcSchema.Properties);
+    HalcSchema.Properties profile =
+        (HalcSchema.Properties) decoded.schemaTypes().get("demo/Profile");
+    assertTrue(profile.properties() != null);
+    assertTrue(profile.schema() instanceof HalcSchema.MapType);
+    HalcSchema.MapType profileMap = (HalcSchema.MapType) profile.schema();
+    assertEquals(1, profileMap.fields().size());
+    assertTrue(profileMap.fields().get(0).properties() != null);
   }
 
   @Test

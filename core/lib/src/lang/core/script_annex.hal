@@ -1,0 +1,247 @@
+(ns lang.core.script-annex
+  (:require [lang.core.runtime :as runtime]
+            [lang.core.script :as script]))
+
+;; Portable replacement for Foundation's RuntimeAnnex. The old annex cloned a
+;; mutable library/book into ContextSpace. Hara keeps only the useful contract:
+;; explicit tag registration and runtime state keyed by source namespace.
+(def +registry+ (atom {}))
+(def +runtimes+ (atom {}))
+
+(defn current-namespace-symbol
+  []
+  (symbol (str (current-namespace))))
+
+(defn coordinate
+  [namespace tag]
+  [namespace tag])
+
+(defn register-tag-in
+  [namespace tag lang runtime-id config]
+  (let [key (coordinate namespace tag)
+        previous (get (deref +registry+) key)
+        record {:namespace namespace
+                :tag tag
+                :lang lang
+                :runtime (or runtime-id :default)
+                :config (or config {})}]
+    (swap! +registry+ assoc key record)
+    [previous lang]))
+
+(defn register-tag
+  [tag lang runtime-id config]
+  (register-tag-in (current-namespace-symbol) tag lang runtime-id config))
+
+(defn deregister-tag-in
+  [namespace tag]
+  (let [key (coordinate namespace tag)
+        previous (get (deref +registry+) key)]
+    (swap! +registry+ dissoc key)
+    previous))
+
+(defn deregister-tag
+  [tag]
+  (deregister-tag-in (current-namespace-symbol) tag))
+
+(defn tag-info-in
+  [namespace tag]
+  (get (deref +registry+) (coordinate namespace tag)))
+
+(defn tag-info
+  [tag]
+  (tag-info-in (current-namespace-symbol) tag))
+
+(defn runtime-in
+  [namespace tag]
+  (get (deref +runtimes+) (coordinate namespace tag)))
+
+(defn get-runtime
+  [tag]
+  (runtime-in (current-namespace-symbol) tag))
+
+(defn start-runtime
+  [lang runtime-id config]
+  (runtime/rt-start
+   (runtime/rt-create lang (or runtime-id :default) (or config {}))))
+
+(defn same-runtime?
+  [instance lang runtime-id config]
+  (= (select-keys instance [:lang :runtime :layout :emit])
+     (select-keys (merge {:lang lang :runtime (or runtime-id :default)}
+                         (or config {}))
+                  [:lang :runtime :layout :emit])))
+
+(defn add-runtime-in
+  [namespace tag instance]
+  (let [key (coordinate namespace tag)
+        previous (runtime-in namespace tag)
+        ignored (if previous (runtime/rt-stop previous) nil)]
+    (swap! +runtimes+ assoc key instance)
+    [previous instance]))
+
+(defn remove-runtime-in
+  [namespace tag]
+  (let [key (coordinate namespace tag)
+        previous (runtime-in namespace tag)]
+    (if previous (runtime/rt-stop previous) nil)
+    (swap! +runtimes+ dissoc key)
+    previous))
+
+(defn start-tag-in
+  [namespace tag]
+  (let [record (tag-info-in namespace tag)]
+    (if (nil? record)
+      (throw (ex-info "Script annex tag is not registered"
+                      {:namespace namespace :tag tag}))
+      (let [lang (:lang record)
+            runtime-id (:runtime record)
+            config (:config record)
+            module (or (:module config) namespace)
+            previous (runtime-in namespace tag)]
+        (if (and previous
+                 (same-runtime? previous lang runtime-id
+                                (assoc config :module module)))
+          [previous previous]
+          (let [ignored (if previous (runtime/rt-stop previous) nil)
+                configured (script/configure-module lang module config)
+                started (start-runtime lang runtime-id
+                                       (assoc config :module module))]
+            (swap! +runtimes+ assoc (coordinate namespace tag) started)
+            [previous started]))))))
+
+(defn start-tag
+  [tag]
+  (start-tag-in (current-namespace-symbol) tag))
+
+(defn stop-tag-in
+  [namespace tag]
+  (remove-runtime-in namespace tag))
+
+(defn stop-tag
+  [tag]
+  (stop-tag-in (current-namespace-symbol) tag))
+
+(defn restart-tag-in
+  [namespace tag]
+  (do
+    (stop-tag-in namespace tag)
+    (start-tag-in namespace tag)))
+
+(defn restart-tag
+  [tag]
+  (restart-tag-in (current-namespace-symbol) tag))
+
+(defn namespace-tags
+  [state namespace]
+  (reduce-kv
+   (fn [out key value]
+     (if (= namespace (first key))
+       (conj out (second key))
+       out))
+   #{}
+   state))
+
+(defn status-in
+  [namespace]
+  {:registered (namespace-tags (deref +registry+) namespace)
+   :active (namespace-tags (deref +runtimes+) namespace)})
+
+(defn status
+  []
+  (status-in (current-namespace-symbol)))
+
+(defn start-all-in
+  [namespace]
+  (reduce (fn [out tag]
+            (assoc out tag (start-tag-in namespace tag)))
+          {}
+          (:registered (status-in namespace))))
+
+(defn start-all
+  []
+  (start-all-in (current-namespace-symbol)))
+
+(defn stop-all-in
+  [namespace]
+  (reduce (fn [out tag]
+            (assoc out tag (stop-tag-in namespace tag)))
+          {}
+          (:active (status-in namespace))))
+
+(defn stop-all
+  []
+  (stop-all-in (current-namespace-symbol)))
+
+(defn restart-all-in
+  [namespace]
+  (do
+    (stop-all-in namespace)
+    (start-all-in namespace)))
+
+(defn restart-all
+  []
+  (restart-all-in (current-namespace-symbol)))
+
+(defn clear-in
+  [namespace]
+  (do
+    (stop-all-in namespace)
+    (swap! +registry+
+           (fn [entries]
+             (reduce-kv
+              (fn [out key value]
+                (if (= namespace (first key))
+                  out
+                  (assoc out key value)))
+              {}
+              entries)))
+    (status-in namespace)))
+
+(defn clear
+  []
+  (clear-in (current-namespace-symbol)))
+
+(defn eval-tag-in
+  [namespace tag form]
+  (let [record (tag-info-in namespace tag)
+        instance (runtime-in namespace tag)]
+    (if (nil? record)
+      (throw (ex-info "Script annex tag is not registered"
+                      {:namespace namespace :tag tag}))
+      (if (nil? instance)
+        (throw (ex-info "Script annex tag is not started"
+                        {:namespace namespace :tag tag}))
+        (let [config (:config record)
+              module (or (:module config) namespace)
+              source (script/compile-form (:lang record) module form)]
+          (runtime/rt-raw-eval instance source))))))
+
+(defn eval-tag
+  [tag form]
+  (eval-tag-in (current-namespace-symbol) tag form))
+
+(defn script-ext-form
+  [namespace coordinate-value config]
+  (let [tag (first coordinate-value)
+        lang (second coordinate-value)
+        config (or config {})
+        runtime-id (or (:runtime config) :default)]
+    (list 'do
+          (list 'lang.core.script-annex/register-tag-in
+                (list 'quote namespace)
+                tag
+                lang
+                runtime-id
+                (list 'quote config))
+          (list 'lang.core.script-annex/start-tag-in
+                (list 'quote namespace)
+                tag))))
+
+(defn script-eval-form
+  [namespace tag body]
+  (if (vector? tag)
+    (list 'lang.core.script-annex/eval-tag-in
+          (list 'quote namespace)
+          (first tag)
+          (list 'quote body))
+    nil))

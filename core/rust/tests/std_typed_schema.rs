@@ -41,10 +41,17 @@ fn native_schema_ast_is_the_portable_normal_form() {
                  (let [surfaces \
                        [:int \
                         :vendor/type \
+                        (quote [:int {:title \"Age\" :owner :accounts}]) \
+                        (quote [:map {:title \"User record\" :version 2 :owner :accounts} [:name {:required true :description \"Display name\" :default \"Anonymous\"} :str]]) \
                         (quote [:or :int :str :int]) \
                         (quote [:vector [:maybe :int]]) \
+                        (quote [:str {:min-count 1 :max-count 8 :pattern \"^a\"}]) \
+                        (quote [:keyword {:qualified true}]) \
+                        (quote [:vector {:min-count 1 :max-count 3 :distinct true} :int]) \
+                        (quote [:set {:min-count 1 :max-count 3} :keyword]) \
                         (quote [:tuple :keyword :int :str]) \
                         (quote [:map [:name :str] [:tags [:vector :keyword]]]) \
+                        (quote [:map {:closed true} [:id :int] [:nickname {:optional true} :str]]) \
                         (quote [:fn [:str & :any] :str]) \
                         (quote [:function [:fn [:int] :int] \
                                           [:fn [:str & :any] :str]]) \
@@ -64,15 +71,29 @@ fn native_schema_ast_is_the_portable_normal_form() {
                           :type {:kind :vector \
                                  :item {:kind :primitive \
                                         :name :keyword}}}]}) \
+                    (= (typed/normalize \
+                        (quote [:map {:closed true} \
+                                     [:id :int] \
+                                     [:nickname {:optional true} :str]])) \
+                       {:kind :map \
+                        :properties {:closed true} \
+                        :fields \
+                        [{:name :id \
+                          :type {:kind :primitive :name :int}} \
+                         {:name :nickname \
+                          :properties {:optional true} \
+                          :type {:kind :primitive :name :str}}]}) \
                     [(Schema/kind (schema (quote [:or :int :str]))) \
                      (Schema/kind (schema (quote [:fn [:int] :int]))) \
+                     (Schema/kind (schema (quote [:set :int]))) \
+                     (Schema/kind (schema (quote [:str {:min-count 1}]))) \
                      (Schema/kind \
                       (schema \
                        (quote [:function [:fn [:int] :int] \
                                          [:fn [:str] :str]])))]])"
             )
             .unwrap(),
-        "[true true [:union :fn :function]]"
+        "[true true true [:union :fn :set :primitive :function]]"
     );
 }
 fn registry_runtime() -> Runtime {

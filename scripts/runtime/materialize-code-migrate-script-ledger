@@ -23,11 +23,17 @@ SOURCE_FILES = [
 TARGET_FILES = [
     "core/lib/src/lang/core.hal",
     "core/lib/src/lang/core/script.hal",
+    "core/lib/src/lang/core/script_annex.hal",
+    "core/lib/src/lang/core/script_def.hal",
+    "core/lib/src/lang/core/script_lint.hal",
     "core/lib/src/lang/common/compiler.hal",
     "core/lib/src/std/foundation.hal",
+    "core/lib/src/tool/lint.hal",
 ]
 SCRIPT_VALIDATION = "lang.core.script-contract-test/run"
 COMPILER_VALIDATION = "lang.common.compiler-test/run"
+LINT_VALIDATION = "tool.lint-test/run"
+PORT_VALIDATION = "lang.core.script-port-test/run"
 LEDGER_VALIDATION = "code.migrate-script-test/run"
 DEFINE_HEADS = {
     "def",
@@ -39,6 +45,8 @@ DEFINE_HEADS = {
     "defmulti",
     "defstruct",
     "defmutable",
+    "defonce",
+    "invoke/definvoke",
 }
 
 
@@ -235,15 +243,15 @@ def build_records(source_references: list[str]) -> dict[str, dict[str, str | Non
     records: dict[str, dict[str, str | None]] = {}
 
     script_targets = {
-        "install": ("lang.core/install-lang!", "language-registration"),
+        "install": ("lang.core/install-lang", "language-registration"),
         "+module-keys+": ("lang.core.script/+module-metadata-keys+", "module-config"),
         "+runtime-keys+": ("lang.core/runtime-spec", "runtime-config"),
-        "script-ns-import": ("lang.core.script/load-module!", "module-loader"),
+        "script-ns-import": ("lang.core.script/load-module", "module-loader"),
         "script-macro-import": ("lang.core/script-import-symbols", "grammar-publication"),
-        "script-require-target-id": ("lang.core.script/load-module!", "module-loader"),
-        "script-specialize-merge-contracts": ("lang.core.script/configure-module!", "module-config"),
-        "script-specialize-require": ("lang.core.script/load-module!", "module-loader"),
-        "script-specialize-config": ("lang.core.script/configure-module!", "module-config"),
+        "script-require-target-id": ("lang.core.script/load-module", "module-loader"),
+        "script-specialize-merge-contracts": ("lang.core.script/configure-module", "module-config"),
+        "script-specialize-require": ("lang.core.script/load-module", "module-loader"),
+        "script-specialize-config": ("lang.core.script/configure-module", "module-config"),
         "resolve-runtime-config": ("lang.core/runtime-spec", "runtime-config"),
         "script-fn-base": ("lang.core/script-expansion", "grammar-publication"),
         "script-fn": ("lang.core/script-expansion", "grammar-publication"),
@@ -251,17 +259,17 @@ def build_records(source_references: list[str]) -> dict[str, dict[str, str | Non
         "script-test-prep": ("lang.core.script/script-test-form", "test-publication"),
         "script-test": ("lang.core/script-", "test-publication"),
         "script-": ("lang.core/script-", "test-publication"),
-        "script-ext": ("lang.core.script/compile-form", "target-compile"),
-        "script+": ("lang.core.script/compile-form", "target-compile"),
-        "script-ext-run": ("lang.core.script/eval-form!", "target-eval"),
-        "!": ("lang.core/script-eval-macro-form", "grammar-publication"),
-        "annex:start": ("lang.core.script/restart!", "runtime-lifecycle"),
-        "annex:get": ("lang.core.script/+scripts+", "runtime-registry"),
-        "annex:stop": ("lang.core.script/stop!", "runtime-lifecycle"),
-        "annex:start-all": ("lang.core.script/restart!", "runtime-lifecycle"),
-        "annex:stop-all": ("lang.core.script/stop!", "runtime-lifecycle"),
-        "annex:restart-all": ("lang.core.script/restart!", "runtime-lifecycle"),
-        "annex:list": ("lang.core.script/+scripts+", "runtime-registry"),
+        "script-ext": ("lang.core.script-annex/start-tag-in", "runtime-annex"),
+        "script+": ("lang.core/script+", "grammar-publication"),
+        "script-ext-run": ("lang.core.script-annex/eval-tag-in", "target-eval"),
+        "!": ("lang.core/!", "grammar-publication"),
+        "annex:start": ("lang.core/annex:start", "runtime-lifecycle"),
+        "annex:get": ("lang.core/annex:get", "runtime-registry"),
+        "annex:stop": ("lang.core/annex:stop", "runtime-lifecycle"),
+        "annex:start-all": ("lang.core/annex:start-all", "runtime-lifecycle"),
+        "annex:stop-all": ("lang.core/annex:stop-all", "runtime-lifecycle"),
+        "annex:restart-all": ("lang.core/annex:restart-all", "runtime-lifecycle"),
+        "annex:list": ("lang.core/annex:list", "runtime-registry"),
     }
     for name, (target, stage_to) in script_targets.items():
         adapted(
@@ -281,19 +289,17 @@ def build_records(source_references: list[str]) -> dict[str, dict[str, str | Non
     )
 
     annex_targets = {
-        "rt-annex:create": "lang.core.script/register-script!",
-        "annex-current": "lang.core.script/+scripts+",
-        "annex-reset": "lang.core.script/stop!",
-        "get-annex": "lang.core.script/+scripts+",
-        "clear-annex": "lang.core.script/stop!",
-        "get-annex-library": "lang.core/registry-book",
-        "get-annex-book": "lang.core/registry-book",
-        "add-annex-runtime": "lang.core.script/register-script!",
-        "get-annex-runtime": "lang.core.script/+scripts+",
-        "remove-annex-runtime": "lang.core.script/stop!",
-        "register-annex-tag": "lang.core.script/register-module-loader!",
-        "deregister-annex-tag": "lang.core.script/remove-module-loader!",
-        "start-runtime": "lang.core/rt-start",
+        "annex-current": "lang.core.script-annex/status",
+        "annex-reset": "lang.core.script-annex/clear-in",
+        "get-annex": "lang.core.script-annex/status-in",
+        "clear-annex": "lang.core.script-annex/clear-in",
+        "add-annex-runtime": "lang.core.script-annex/add-runtime-in",
+        "get-annex-runtime": "lang.core.script-annex/runtime-in",
+        "remove-annex-runtime": "lang.core.script-annex/remove-runtime-in",
+        "register-annex-tag": "lang.core.script-annex/register-tag-in",
+        "deregister-annex-tag": "lang.core.script-annex/deregister-tag-in",
+        "start-runtime": "lang.core.script-annex/start-runtime",
+        "same-runtime?": "lang.core.script-annex/same-runtime?",
     }
     for name, target in annex_targets.items():
         adapted(
@@ -302,23 +308,25 @@ def build_records(source_references: list[str]) -> dict[str, dict[str, str | Non
             target,
             "runtime-annex",
             "runtime-registry",
-            "explicit-script-runtime-registry-replaces-global-annex-state",
+            "explicit-namespace-tag-runtime-state-replaces-cloned-contextspace-annexes",
+            PORT_VALIDATION,
         )
-    for name in ["rt-annex?", "+init-annex+", "same-runtime?"]:
+    for name in ["rt-annex?", "rt-annex:create", "+init-annex+",
+                 "get-annex-library", "get-annex-book"]:
         obsolete(
             records,
             f"tahto.core.script-annex/{name}",
             "runtime-annex",
             "runtime-registry",
-            "global-annex-identity-is-not-part-of-the-explicit-runtime-contract",
+            "cloned-library-annex-identity-is-not-part-of-the-portable-runtime-contract",
         )
 
     control_targets = {
         "script-rt-prep": "lang.core/rt-create",
         "script-rt-get": "lang.core/rt-start",
         "script-rt-stop": "lang.core/rt-stop",
-        "script-rt-restart": "lang.core.script/restart!",
-        "script-rt-oneshot-eval": "lang.core.script/eval-form!",
+        "script-rt-restart": "lang.core.script/restart",
+        "script-rt-oneshot-eval": "lang.core.script/eval-form",
         "script-rt-oneshot": "lang.core/rt-oneshot",
     }
     for name, target in control_targets.items():
@@ -341,69 +349,73 @@ def build_records(source_references: list[str]) -> dict[str, dict[str, str | Non
     adapted(
         records,
         "tahto.core.script-def/tmpl-entry",
-        "lang.core/script-definition-macro-form",
+        "lang.core.script-def/tmpl-entry",
         "script-template",
         "grammar-publication",
-        "grammar-derived-definition-families-replace-static-template-expansion",
+        "portable-template-expansion-preserves-foundation-definition-generation",
+        PORT_VALIDATION,
     )
     adapted(
         records,
         "tahto.core.script-def/tmpl-macro",
-        "lang.core/script-defmacro-macro-form",
+        "lang.core.script-def/tmpl-macro",
         "script-template",
         "grammar-publication",
-        "grammar-derived-macro-families-replace-static-template-expansion",
+        "portable-template-expansion-preserves-foundation-macro-generation",
+        PORT_VALIDATION,
     )
 
-    for name in ["get-reserved-raw", "get-reserved"]:
+    for name in ["get-reserved-raw", "get-reserved", "collect-vars",
+                 "collect-module-globals"]:
         adapted(
             records,
             f"tahto.core.script-lint/{name}",
-            "lang.core/grammar-to-reserved",
-            "script-lint",
-            "grammar-analysis",
-            "reserved-symbols-are-derived-from-the-selected-grammar",
-        )
-    for name in ["collect-vars", "collect-sym-vars", "sym-check-linter", "lint-entry"]:
-        adapted(
-            records,
-            f"tahto.core.script-lint/{name}",
-            "lang.common.compiler/compile-entry",
+            f"lang.core.script-lint/{name}",
             "script-lint",
             "compiler-lint",
-            "compiler-stage-vectors-preserve-lint-behavior-and-provenance",
-            COMPILER_VALIDATION,
+            "portable-source-analysis-is-explicit-and-free-of-global-lint-state",
+            PORT_VALIDATION,
+        )
+    for name in ["collect-sym-vars", "sym-check-linter", "lint-entry"]:
+        adapted(
+            records,
+            f"tahto.core.script-lint/{name}",
+            "tool.lint/lint-source",
+            "script-lint",
+            "compiler-lint",
+            "semantic-lint-behavior-is-owned-by-tool-lint",
+            LINT_VALIDATION,
             "test-vector",
         )
-    for name in ["+settings+", "lint-set", "lint-clear", "lint-needed?"]:
+    for name in ["+registry+", "+settings+", "lint-set", "lint-clear", "lint-needed?"]:
         obsolete(
             records,
             f"tahto.core.script-lint/{name}",
             "script-lint",
             "compiler-lint",
-            "compiler-invocation-options-replace-global-mutable-lint-settings",
+            "tool-lint-options-replace-global-mutable-lint-state",
         )
 
     macro_targets = {
         "body-arglists": "lang.core/script-definition-macro-form",
         "intern-in": "std.foundation/intern-all",
         "intern-prep": "lang.core/script-context",
-        "intern-def$-fn": "lang.core/register-fragment-pointer!",
+        "intern-def$-fn": "lang.core/register-fragment-pointer",
         "intern-def$": "lang.core/script-fragment-macro-form",
-        "intern-defmacro-fn": "lang.core/register-macro-fragment!",
+        "intern-defmacro-fn": "lang.core/register-macro-fragment",
         "intern-defmacro": "lang.core/script-defmacro-macro-form",
-        "call-thunk": "lang.core.script/eval-form!",
+        "call-thunk": "lang.core.script/eval-form",
         "intern-!-fn": "lang.core/script-eval-macro-form",
         "intern-!": "lang.core/script-eval-macro-form",
-        "intern-free-fn": "lang.core/register-code-pointer!",
+        "intern-free-fn": "lang.core/register-code-pointer",
         "intern-free": "lang.core/script-definition-macro-form",
-        "hydrate-top-level-entry": "lang.core/register-language-code!",
-        "intern-top-level-fn": "lang.core/register-code-pointer!",
+        "hydrate-top-level-entry": "lang.core/register-language-code",
+        "intern-top-level-fn": "lang.core/register-code-pointer",
         "intern-top-level": "lang.core/script-definition-macro-form",
         "intern-macros": "lang.core/script-macro-forms",
         "intern-highlights": "lang.core/script-highlight-macro-form",
-        "intern-grammar": "lang.core/sync-language-definitions!",
-        "intern-defmacro-rt-fn": "lang.core/register-macro-fragment!",
+        "intern-grammar": "lang.core/sync-language-definitions",
+        "intern-defmacro-rt-fn": "lang.core/register-macro-fragment",
         "defmacro.!": "lang.core/script-defmacro-macro-form",
     }
     for name, target in macro_targets.items():
@@ -603,7 +615,7 @@ def render_test(
      => ["{SOURCE_REPOSITORY}"
          "{SOURCE_REVISION}"
          {paths}
-         84
+         86
          true])
 
    (fact "code.migrate publishes the child ledger through intern-all"
@@ -629,7 +641,7 @@ def render_test(
         (get audit :records)
         (get audit :source/references)
         (get audit :diagnostics)])
-     => [true 84 84 []])
+     => [true 86 86 []])
 
    (fact "the migration plan is deterministic and non-writing"
      (let [plan
@@ -642,7 +654,7 @@ def render_test(
         (every? (fn [item]
                   (= :ready (get item :status)))
                 (get plan :queue))])
-     => [false true 84 true])
+     => [false true 86 true])
 
    (fact "all current script compatibility copies have explicit retirement gates"
      [(mapv (fn [record] (get record :surface))
@@ -714,9 +726,9 @@ def output_files(
         for unit in units
         for reference in unit["references"]
     ]
-    if len(source_references) != 84:
+    if len(source_references) != 86:
         raise RuntimeError(
-            f"expected 84 pinned script references, found {len(source_references)}"
+            f"expected 86 pinned script references, found {len(source_references)}"
         )
     if len(source_references) != len(set(source_references)):
         raise RuntimeError("pinned script inventory contains duplicate references")
