@@ -121,7 +121,7 @@ fn decode_envelope(bytes: &[u8]) -> Result<(Vec<u8>, HalcOrigin), String> {
         return Err("trailing bytes".into());
     }
     let actual_hash = Sha256::digest(&payload);
-    if actual_hash.as_slice() != expected_hash.as_slice() {
+    if actual_hash[..] != expected_hash[..] {
         return Err("payload checksum mismatch".into());
     }
     Ok((payload, origin))
@@ -445,7 +445,7 @@ pub fn encode_halc_module(
     let mut payload = Vec::new();
     write_string(&mut payload, namespace);
     write_string(&mut payload, resource);
-    payload.extend_from_slice(Sha256::digest(source.as_bytes()).as_slice());
+    payload.extend_from_slice(&Sha256::digest(source.as_bytes()));
     write_count(&mut payload, forms.len() as i32);
     for form in forms {
         write_value(&mut payload, &form);
@@ -455,7 +455,7 @@ pub fn encode_halc_module(
     artifact.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
     artifact.extend_from_slice(&EXECUTABLE_FOUNDATION_FLAG.to_be_bytes());
     artifact.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-    artifact.extend_from_slice(Sha256::digest(&payload).as_slice());
+    artifact.extend_from_slice(&Sha256::digest(&payload));
     artifact.extend_from_slice(&payload);
     Ok(artifact)
 }

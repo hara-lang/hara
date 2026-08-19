@@ -1040,7 +1040,8 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
                 "symbol?" => matches!(value, Value::Symbol(_)),
                 "pointer?" => matches!(value, Value::Pointer(_)),
                 "atom?" => matches!(value, Value::Atom(_)),
-                "fn?" => matches!(value, Value::Function(_)),
+                "fn?" => named_protocol_satisfies("fn?", value),
+                "function?" => matches!(value, Value::Function(_)),
                 "bytes?" => matches!(value, Value::Bytes(_) | Value::ByteBuffer(_)),
                 "array?" => matches!(value, Value::Array(_)),
                 "object?" => matches!(value, Value::Object(_)),
@@ -1070,6 +1071,7 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
                         | Value::Deque(_)
                         | Value::Vector(_)
                         | Value::Tuple(_)
+                        | Value::Seq(_)
                 ),
                 _ => return Err(format!("unknown Base predicate: {predicate}")),
             })),
@@ -1264,8 +1266,37 @@ fn protocol_hash(arguments: &[Value]) -> Result<Value, String> {
 
 fn protocol_invoke(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
-        [callable, rest @ ..] => call_value(callable.clone(), rest.to_vec()),
+        [callable, rest @ ..] => callable.invoke(rest.to_vec()),
         _ => Err("IFn/invoke expects a callable receiver".into()),
+    }
+}
+
+impl Value {
+    fn supports_native_ifn(value: &Self) -> bool {
+        matches!(
+            value,
+            Self::Function(_)
+                | Self::Keyword(_)
+                | Self::Map(_)
+                | Self::OrderedMap(_)
+                | Self::SortedMap(_)
+                | Self::Trie(_)
+                | Self::PriorityMap(_)
+                | Self::Set(_)
+                | Self::OrderedSet(_)
+                | Self::SortedSet(_)
+                | Self::Pointer(_)
+                | Self::StructType(_)
+                | Self::MutableType(_)
+        )
+    }
+}
+
+impl IFn<Vec<Value>> for Value {
+    type Output = Result<Value, String>;
+
+    fn invoke(&self, arguments: Vec<Value>) -> Self::Output {
+        call_value(self.clone(), arguments)
     }
 }
 
@@ -1497,6 +1528,7 @@ fn protocol_conj(arguments: &[Value]) -> Result<Value, String> {
     let collection = &arguments[0];
     let item = &arguments[1];
     match collection {
+        Value::Nil => Ok(Value::List(std::iter::once(item.clone()).collect())),
         Value::Extension(receiver) => {
             extension_protocol_call(receiver, "std.protocol.iconj/IConj", "conj", arguments)
         }
@@ -1727,7 +1759,8 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
     match name {
         "IColl" => persistent_collection,
         "IConj" => {
-            (persistent_collection && !matches!(value, Value::Seq(_)))
+            matches!(value, Value::Nil)
+                || (persistent_collection && !matches!(value, Value::Seq(_)))
                 || matches!(
                     value,
                     Value::Array(_) | Value::Object(_) | Value::MutableCollection(_)
@@ -1832,7 +1865,19 @@ fn builtin_protocol_satisfies(protocol: &str, value: &Value) -> bool {
         "ICas" | "IWatch" => matches!(value, Value::Atom(_)),
         "IFn" => matches!(
             value,
-            Value::Function(_) | Value::StructType(_) | Value::MutableType(_) | Value::Pointer(_)
+            Value::Function(_)
+                | Value::StructType(_)
+                | Value::MutableType(_)
+                | Value::Pointer(_)
+                | Value::Keyword(_)
+                | Value::Map(_)
+                | Value::OrderedMap(_)
+                | Value::SortedMap(_)
+                | Value::Trie(_)
+                | Value::PriorityMap(_)
+                | Value::Set(_)
+                | Value::OrderedSet(_)
+                | Value::SortedSet(_)
         ),
         "IPointer" | "IApplicable" | "IInvokeIn" => matches!(value, Value::Pointer(_)),
         "IPair" => pair_parts(value).is_some(),
@@ -1921,7 +1966,7 @@ fn named_predicate_protocol(name: &str) -> Option<&'static str> {
         "resettable?" => Some("IReset"),
         "casable?" => Some("ICas"),
         "watchable?" => Some("IWatch"),
-        "callable?" => Some("IFn"),
+        "fn?" => Some("IFn"),
         "applicable?" => Some("IApplicable"),
         "pair?" => Some("IPair"),
         "mutable?" => Some("IMutable"),

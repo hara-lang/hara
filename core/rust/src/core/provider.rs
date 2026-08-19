@@ -216,8 +216,6 @@ pub trait SocketProvider {
 use std::io::{Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{Shutdown, TcpListener, TcpStream};
-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-use std::path::{Path, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(not(target_arch = "wasm32"))]
@@ -931,4 +929,3 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::ExceptionInfo(_) => "error",
     }
 }
-

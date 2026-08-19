@@ -91,6 +91,69 @@ public class MainTest {
   }
 
   @Test
+  public void directSourceCommandsResolveExplicitProjectNamespaces() throws Exception {
+    Path root = Files.createTempDirectory("hara-cli-direct-source-");
+    try {
+      Files.createDirectories(root.resolve("src/demo_app"));
+      Files.writeString(
+          root.resolve("project.edn"),
+          "{:hara/type :project :hara/version \"1.0.0\" :project/id direct-source "
+              + ":project/version \"0.1.0\" :project/source-paths [\"src\"] "
+              + ":project/test-paths [] :project/extension-paths [] "
+              + ":project/capabilities #{} :project/dependencies {}}");
+      Files.writeString(
+          root.resolve("src/demo_app/value.hal"),
+          "(ns demo_app.value) (def answer 42)");
+      Path runFile = root.resolve("direct-run.hal");
+      Files.writeString(
+          runFile,
+          "(ns demo_app.direct-run (:require [demo_app.value :as value])) value/answer");
+      ByteArrayOutputStream output = new ByteArrayOutputStream();
+      ByteArrayOutputStream error = new ByteArrayOutputStream();
+      PrintStream stdout = new PrintStream(output, true, StandardCharsets.UTF_8);
+      PrintStream stderr = new PrintStream(error, true, StandardCharsets.UTF_8);
+      String[] prefix = {"--project", root.toString(), "--offline"};
+
+      int eval =
+          Main.run(
+              new String[] {
+                prefix[0],
+                prefix[1],
+                prefix[2],
+                "eval",
+                "(do (require (quote demo_app.value)) demo_app.value/answer)"
+              },
+              stdout,
+              stderr);
+      int run =
+          Main.run(
+              new String[] {prefix[0], prefix[1], prefix[2], "run", runFile.toString()},
+              stdout,
+              stderr);
+      int stdin =
+          Main.run(
+              new String[] {prefix[0], prefix[1], prefix[2], "stdin"},
+              new ByteArrayInputStream(
+                  "(do (require (quote demo_app.value)) demo_app.value/answer)"
+                      .getBytes(StandardCharsets.UTF_8)),
+              stdout,
+              stderr);
+
+      assertEquals(error.toString(StandardCharsets.UTF_8), 0, eval);
+      assertEquals(error.toString(StandardCharsets.UTF_8), 0, run);
+      assertEquals(error.toString(StandardCharsets.UTF_8), 0, stdin);
+      assertEquals("42\n42\n42\n", output.toString(StandardCharsets.UTF_8));
+    } finally {
+      Files.walk(root).sorted(Comparator.reverseOrder()).forEach(path -> {
+        try {
+          Files.deleteIfExists(path);
+        } catch (Exception ignored) {
+        }
+      });
+    }
+  }
+
+  @Test
   public void projectTestAcceptsDirectTestRunVectors() throws Exception {
     Path root = Files.createTempDirectory("hara-cli-direct-test-");
     try {

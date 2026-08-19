@@ -119,11 +119,27 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
         | Primitive::Divide
         | Primitive::Remainder => {
             if arguments.is_empty() {
+                if primitive == Primitive::Add {
+                    return Ok(Value::Number(0));
+                }
+                if primitive == Primitive::Multiply {
+                    return Ok(Value::Number(1));
+                }
                 return Err(format!("{op} expects arguments"));
+            }
+            if primitive == Primitive::Remainder && arguments.len() != 2 {
+                return Err("% expects two numbers".into());
             }
             if arguments.len() == 1 {
                 if primitive == Primitive::Subtract {
                     return numeric::numeric_negate(&arguments[0]);
+                }
+                if primitive == Primitive::Divide {
+                    return apply_binary_primitive(
+                        Primitive::Divide,
+                        &Value::Number(1),
+                        &arguments[0],
+                    );
                 }
                 if !numeric::is_numeric_value(&arguments[0]) {
                     return Err(format!("{op} expects numbers"));

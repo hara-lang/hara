@@ -824,6 +824,7 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "double?",
             "boolean?",
             "fn?",
+            "function?",
             "satisfies?",
             "coll?",
             "iterable?",
@@ -838,7 +839,6 @@ pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'stati
             "resettable?",
             "casable?",
             "watchable?",
-            "callable?",
             "applicable?",
             "pair?",
             "mutable?",
@@ -981,6 +981,7 @@ pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
         Value::BigInteger(value) => Ok(Form::BigInteger(value.clone())),
         Value::Decimal(value) => Ok(Form::Decimal(value.clone())),
         Value::Character(value) => Ok(Form::Character(*value)),
+        Value::Regex(value) => Ok(Form::Regex(value.clone())),
         Value::String(value) => Ok(Form::String(value.clone())),
         Value::Keyword(value) => Ok(Form::Keyword(value.as_str().into())),
         Value::Symbol(value) => Ok(Form::Symbol(value.as_str().into())),
@@ -1375,17 +1376,17 @@ fn append_trace(error: String) -> String {
 enum IteratorGenerator {
     Seq(PSeq<Result<Value, String>>),
     Constant(Value),
-    Repeated(Rc<Function>),
-    Iterate(Rc<Function>, Value),
+    Repeated(Value),
+    Iterate(Value, Value),
     Take(Value, usize),
     Drop(Value, usize),
     Cycle(Value, Vec<Value>, usize, bool),
-    TakeWhile(Rc<Function>, Value),
-    DropWhile(Rc<Function>, Value, bool),
-    Map(Rc<Function>, Value, bool),
-    Filter(Rc<Function>, Value),
-    Mapcat(Rc<Function>, Value, Option<Value>),
-    Keep(Rc<Function>, Value),
+    TakeWhile(Value, Value),
+    DropWhile(Value, Value, bool),
+    Map(Value, Value, bool),
+    Filter(Value, Value),
+    Mapcat(Value, Value, Option<Value>),
+    Keep(Value, Value),
     Prepend(Option<Value>, Value),
     Concat(Vec<Value>, usize),
     Zip(Vec<Value>),
@@ -1469,11 +1470,11 @@ impl IteratorState {
                 },
                 IteratorGenerator::Constant(value) => Ok(Some(value.clone())),
                 IteratorGenerator::Repeated(function) => {
-                    call_function(function, Vec::new()).map(Some)
+                    call_value(function.clone(), Vec::new()).map(Some)
                 }
                 IteratorGenerator::Iterate(function, current) => {
                     let output = current.clone();
-                    *current = call_function(function, vec![current.clone()])?;
+                    *current = call_value(function.clone(), vec![current.clone()])?;
                     Ok(Some(output))
                 }
                 IteratorGenerator::Take(source, remaining) => {
@@ -1547,7 +1548,7 @@ impl IteratorState {
                         self.closed = true;
                         return Ok(None);
                     };
-                    if call_function(function, vec![value.clone()])?.truthy() {
+                    if call_value(function.clone(), vec![value.clone()])?.truthy() {
                         Ok(Some(value))
                     } else {
                         close_iterator_source(source);
@@ -1561,7 +1562,7 @@ impl IteratorState {
                         self.closed = true;
                         break Ok(None);
                     };
-                    if *started || !call_function(function, vec![value.clone()])?.truthy() {
+                    if *started || !call_value(function.clone(), vec![value.clone()])?.truthy() {
                         *started = true;
                         break Ok(Some(value));
                     }
@@ -1573,14 +1574,14 @@ impl IteratorState {
                         return Ok(None);
                     };
                     match value {
-                        value if !*spread => call_function(function, vec![value]),
+                        value if !*spread => call_value(function.clone(), vec![value]),
                         Value::Tuple(values) => {
-                            call_function(function, values.iter().cloned().collect())
+                            call_value(function.clone(), values.iter().cloned().collect())
                         }
                         Value::Vector(values) => {
-                            call_function(function, values.iter().cloned().collect())
+                            call_value(function.clone(), values.iter().cloned().collect())
                         }
-                        value => call_function(function, vec![value]),
+                        value => call_value(function.clone(), vec![value]),
                     }
                     .map(Some)
                 }
@@ -1590,7 +1591,7 @@ impl IteratorState {
                         self.closed = true;
                         break Ok(None);
                     };
-                    if call_function(function, vec![value.clone()])?.truthy() {
+                    if call_value(function.clone(), vec![value.clone()])?.truthy() {
                         break Ok(Some(value));
                     }
                 },
@@ -1609,7 +1610,7 @@ impl IteratorState {
                         self.closed = true;
                         break Ok(None);
                     };
-                    *pending = Some(make_iterator(call_function(function, vec![value])?)?);
+                    *pending = Some(make_iterator(call_value(function.clone(), vec![value])?)?);
                 },
                 IteratorGenerator::Keep(function, source) => loop {
                     let Some(value) = iterator_try_next(source)? else {
@@ -1617,7 +1618,7 @@ impl IteratorState {
                         self.closed = true;
                         break Ok(None);
                     };
-                    let mapped = call_function(function, vec![value])?;
+                    let mapped = call_value(function.clone(), vec![value])?;
                     if !matches!(mapped, Value::Nil) {
                         break Ok(Some(mapped));
                     }

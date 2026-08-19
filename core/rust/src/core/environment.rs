@@ -1,8 +1,15 @@
 pub type ProtocolFn = Rc<dyn Fn(&[Value]) -> Result<Value, String>>;
+pub type ProtocolSupports = Rc<dyn Fn(&Value) -> bool>;
+
+#[derive(Clone)]
+struct ProtocolImplementation {
+    supports: ProtocolSupports,
+    invoke: ProtocolFn,
+}
 
 #[derive(Default, Clone)]
 pub struct ProtocolRegistry {
-    methods: Rc<RefCell<HashMap<(String, String), Vec<ProtocolFn>>>>,
+    methods: Rc<RefCell<HashMap<(String, String), Vec<ProtocolImplementation>>>>,
     extension_methods: Rc<RefCell<HashMap<(String, String, String, String), ProtocolFn>>>,
     extension_categories: Rc<RefCell<HashSet<(String, String, String)>>>,
     guest_methods: Rc<RefCell<HashMap<(String, String, String), Rc<Function>>>>,
@@ -11,7 +18,7 @@ pub struct ProtocolRegistry {
 
 #[derive(Clone)]
 pub(crate) struct ProtocolRegistrySnapshot {
-    methods: HashMap<(String, String), Vec<ProtocolFn>>,
+    methods: HashMap<(String, String), Vec<ProtocolImplementation>>,
     extension_methods: HashMap<(String, String, String, String), ProtocolFn>,
     extension_categories: HashSet<(String, String, String)>,
     guest_methods: HashMap<(String, String, String), Rc<Function>>,
@@ -50,12 +57,28 @@ impl ProtocolRegistry {
     ) where
         F: Fn(&[Value]) -> Result<Value, String> + 'static,
     {
+        self.register_when(protocol, method, |_| true, function);
+    }
+
+    pub fn register_when<S, F>(
+        &mut self,
+        protocol: impl Into<String>,
+        method: impl Into<String>,
+        supports: S,
+        function: F,
+    ) where
+        S: Fn(&Value) -> bool + 'static,
+        F: Fn(&[Value]) -> Result<Value, String> + 'static,
+    {
         let protocol = canonical_protocol_name(&protocol.into());
         self.methods
             .borrow_mut()
             .entry((protocol, method.into()))
             .or_default()
-            .push(Rc::new(function));
+            .push(ProtocolImplementation {
+                supports: Rc::new(supports),
+                invoke: Rc::new(function),
+            });
     }
 
     /// Registers a protocol implementation for one opaque extension type.
@@ -213,11 +236,13 @@ impl ProtocolRegistry {
         let implementations = methods
             .get(&(protocol.to_string(), method.to_string()))
             .ok_or_else(|| format!("missing protocol method: {protocol}/{method}"))?;
-        let mut last_error = format!("missing protocol implementation: {protocol}/{method}");
-        for implementation in implementations {
-            match implementation(arguments) {
-                Ok(value) => return Ok(value),
-                Err(error) => last_error = error,
+        let last_error = format!("missing protocol implementation: {protocol}/{method}");
+        let receiver = arguments
+            .first()
+            .ok_or_else(|| format!("missing protocol receiver: {protocol}/{method}"))?;
+        for implementation in implementations.iter().rev() {
+            if (implementation.supports)(receiver) {
+                return (implementation.invoke)(arguments);
             }
         }
         Err(last_error)
@@ -336,25 +361,25 @@ impl ProtocolRegistry {
                 ))
             });
         }
+        let methods = self.methods.borrow();
+        if protocol.methods.keys().all(|method| {
+            methods
+                .get(&(protocol_name.clone(), method.clone()))
+                .is_some_and(|implementations| {
+                    implementations
+                        .iter()
+                        .rev()
+                        .any(|implementation| (implementation.supports)(value))
+                })
+        }) {
+            return true;
+        }
         builtin_protocol_satisfies(&protocol_name, value)
     }
 
     /// Returns the built-in collection protocol registry used by evaluator dispatch.
     pub fn core() -> Self {
         let mut registry = Self::new();
-        for (protocol, methods) in FOUNDATION_PROTOCOLS {
-            for (method, _) in *methods {
-                let protocol_name = builtin_protocol_name(protocol);
-                let method_name = (*method).to_owned();
-                let missing_protocol = protocol_name.clone();
-                let missing_method = method_name.clone();
-                registry.register(protocol_name, method_name, move |_| {
-                    Err(format!(
-                        "missing protocol implementation: {missing_protocol}/{missing_method}"
-                    ))
-                });
-            }
-        }
         registry.register("std.protocol.icount/ICount", "count", protocol_count);
         registry.register("std.protocol.inth/INth", "nth", protocol_nth);
         registry.register("std.protocol.ilookup/ILookup", "lookup", protocol_lookup);
@@ -396,7 +421,12 @@ impl ProtocolRegistry {
             },
         );
         registry.register("std.protocol.ihash/IHash", "hash", protocol_hash);
-        registry.register("std.protocol.ifn/IFn", "invoke", protocol_invoke);
+        registry.register_when(
+            "std.protocol.ifn/IFn",
+            "invoke",
+            Value::supports_native_ifn,
+            protocol_invoke,
+        );
         registry.register("std.protocol.ipair/IPair", "key", protocol_pair_key);
         registry.register("std.protocol.ipair/IPair", "value", protocol_pair_value);
         registry.register(
@@ -747,6 +777,38 @@ pub(crate) fn binding_is_local(var: &KernelVar<Value>) -> bool {
     namespace_registry()
         .map(|registry| var.symbol().get_namespace() == Some(registry.current().name().as_str()))
         .unwrap_or(true)
+}
+
+/// True when `name` reaches `var` through an explicit non-native namespace
+/// alias in the current namespace. Native type aliases such as `String` keep
+/// structural-native precedence; library aliases such as `str` call the HAL
+/// facade they name.
+pub(crate) fn binding_is_hal_alias(name: &str, var: &KernelVar<Value>) -> bool {
+    let Some((qualifier, _)) = name.split_once('/') else {
+        return false;
+    };
+    let Ok(registry) = namespace_registry() else {
+        return false;
+    };
+    registry.current().aliases().into_iter().any(|(alias, target)| {
+        alias.as_str() == qualifier
+            && !target.name().as_str().starts_with("std.native.")
+            && var.symbol().get_namespace() == Some(target.name().as_str())
+    })
+}
+
+pub(crate) fn binding_is_native_alias(name: &str, var: &KernelVar<Value>) -> bool {
+    let Some((qualifier, _)) = name.split_once('/') else {
+        return false;
+    };
+    let Ok(registry) = namespace_registry() else {
+        return false;
+    };
+    registry.current().aliases().into_iter().any(|(alias, target)| {
+        alias.as_str() == qualifier
+            && target.name().as_str().starts_with("std.native.")
+            && var.symbol().get_namespace() == Some(target.name().as_str())
+    })
 }
 
 /// Names a fresh local var cell: qualified to the current namespace when

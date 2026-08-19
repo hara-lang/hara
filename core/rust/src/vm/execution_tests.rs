@@ -264,11 +264,14 @@ fn do_sequences() {
 
 #[test]
 fn arithmetic() {
+    assert_eq!(eval("(+)"), "0");
     assert_eq!(eval("(+ 19 23)"), "42");
     assert_eq!(eval("(+ 1 2 3 4)"), "10");
     assert_eq!(eval("(+ 5)"), "5");
     assert_eq!(eval("(- 10 3)"), "7");
     assert_eq!(eval("(* 6 7)"), "42");
+    assert_eq!(eval("(*)"), "1");
+    assert_eq!(eval("(/ 2)"), "0");
     assert_eq!(eval("(/ 17 5)"), "3");
     assert_eq!(eval("(/ -17 5)"), "-3");
     assert_eq!(eval("(% 17 5)"), "2");
@@ -277,7 +280,8 @@ fn arithmetic() {
 
 #[test]
 fn arithmetic_errors() {
-    assert_eval_error("(+)", "+ expects arguments [line 1, column 1]");
+    assert_eval_error("(-)", "- expects arguments [line 1, column 1]");
+    assert_eval_error("(/)", "/ expects arguments [line 1, column 1]");
     assert_eval_error("(/ 1 0)", "division by zero [line 1, column 1]");
     assert_eval_error("(% 1 0)", "division by zero [line 1, column 1]");
     assert_eval_error("(mod 1 0)", "division by zero [line 1, column 1]");
@@ -286,8 +290,10 @@ fn arithmetic_errors() {
     assert_eq!(eval("(* 9223372036854775807 2)"), "18446744073709551614");
     assert_eval_error("(+ 1 \"a\")", "+ expects numbers [line 1, column 1]");
     assert_eq!(eval("(+ 1 1.5)"), "2.5");
-    // `mod` reports its operator as `%`, matching the evaluator.
-    assert_eval_error("(mod \"a\" 1)", "% expects numbers [line 1, column 1]");
+    assert_eval_error(
+        "(mod \"a\" 1)",
+        "expected numeric values [line 1, column 1]",
+    );
 }
 
 #[test]

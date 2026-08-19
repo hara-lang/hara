@@ -18,7 +18,7 @@ use crate::lang::data::{
 };
 use crate::lang::hash::JavaHash;
 use crate::lang::protocol::{
-    IDisplay, IEmpty, IMetadata, INamespaced, IPopFirst, IPopLast, IToMutable, IToPersistent,
+    IDisplay, IEmpty, IFn, IMetadata, INamespaced, IPopFirst, IPopLast, IToMutable, IToPersistent,
 };
 use crate::numeric::{self, ArithmeticOp};
 pub use crate::task::{

@@ -1989,6 +1989,21 @@ mod tests {
     }
 
     #[test]
+    fn namespace_declarations_require_builtin_protocol_interfaces_without_extensions() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns native.protocol-consumer
+                       (:require [std.protocol.imatch :as match]))
+                     (= match/IMatch std.protocol.imatch/IMatch)",
+                )
+                .unwrap(),
+            "true"
+        );
+    }
+
+    #[test]
     fn shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime() {
         let mut runtime = Runtime::new();
         let result = runtime
@@ -2930,17 +2945,56 @@ mod tests {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.eval_text("\"hello\"").unwrap(), "\"hello\"");
         assert_eq!(runtime.eval_text("{\"a\" 1}").unwrap(), "{\"a\" 1}");
+        assert_eq!(runtime.eval_text("(str nil \"x\" nil)").unwrap(), "\"x\"");
+        assert_eq!(runtime.eval_text("(first \"ab\")").unwrap(), "\\a");
+        assert_eq!(runtime.eval_text("(seq \"ab\")").unwrap(), "(\\a \\b)");
+        assert_eq!(
+            runtime.eval_text("(sequential? (map identity [1]))").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            runtime.eval_text("(str/split-lines \"a\\nb\")").unwrap(),
+            "[\"a\" \"b\"]"
+        );
     }
 
     #[test]
     fn application_and_pair_helpers_support_bootstrap_code() {
         let mut runtime = Runtime::new();
+        assert_eq!(runtime.eval_text("(or false false)").unwrap(), "false");
+        assert_eq!(
+            runtime
+                .eval_text("(Printer/capture (fn [] (p \"a\") (println \"b\")))")
+                .unwrap(),
+            "\"ab\\n\""
+        );
         assert_eq!(runtime.eval_text("(identity 42)").unwrap(), "42");
         assert_eq!(runtime.eval_text("(apply + [19 23])").unwrap(), "42");
         assert_eq!(runtime.eval_text("(apply + 19 [23])").unwrap(), "42");
+        assert_eq!(runtime.eval_text("(apply assoc [{} :a 1])").unwrap(), "{:a 1}");
+        assert_eq!(runtime.eval_text("(apply :a [{:a 42}])").unwrap(), "42");
+        assert_eq!(
+            runtime.eval_text("(every? :a [{:a true} {:a 1}])").unwrap(),
+            "true"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(filter :a [{:a true} {:b 1}]) \
+                      (take 1 ((filter :a) [{:a 1} {:b 2}]))]",
+                )
+                .unwrap(),
+            "[[{:a true}] [{:a 1}]]"
+        );
         assert_eq!(runtime.eval_text("(key [1 2])").unwrap(), "1");
         assert_eq!(runtime.eval_text("(val [1 2])").unwrap(), "2");
         assert_eq!(runtime.eval_text("(reverse [1 2 3])").unwrap(), "(3 2 1)");
+        assert_eq!(
+            runtime
+                .eval_text("[(conj nil 1) (satisfies? IConj nil)]")
+                .unwrap(),
+            "[(1) true]"
+        );
     }
 
     #[test]
@@ -3832,6 +3886,83 @@ mod tests {
                         .unwrap_or_else(|error| panic!("{source}: {error}"));
                     assert_eq!(actual, expected, "{source}");
                 }
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[test]
+    fn portable_block_heal_parses_and_pairs_delimiters() {
+        std::thread::Builder::new()
+            .name("portable-std-block-heal-probe".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(|| {
+                let mut runtime = development_runtime();
+                runtime
+                    .eval_text(
+                        "(ns std-block-heal-rust-probe \
+                         (:require [code.test.checker.common :as checker] \
+                                   [std.block.heal.edit :as edit] \
+                                   [std.block.heal.parse :as parse]))",
+                    )
+                    .unwrap();
+                assert_eq!(
+                    runtime
+                        .eval_text("(parse/parse-delimiters \"(a)\")")
+                        .unwrap(),
+                    "[{:style :paren :type :open :line 1 :col 1 :char \"(\"} {:style :paren :type :close :line 1 :col 3 :char \")\"}]"
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text(
+                            "(let [pairs (parse/pair-delimiters (parse/parse-delimiters \"(a)\"))] \
+                               [(count pairs) (every? :pair-id pairs)])",
+                        )
+                        .unwrap(),
+                    "[2 true]"
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text(
+                            "[(function? vector?) ((checker/satisfies vector?) [1 2])]",
+                        )
+                        .unwrap(),
+                    "[true true]"
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text(
+                            "(edit/update-content \"(\" [{:action :insert :col 1 :line 1 :new-char \")\"}])",
+                        )
+                        .unwrap(),
+                    "\"()\""
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text(
+                            "[(vector? (parse/parse-lines \"(a)\")) \
+                              ((checker/satisfies vector?) (parse/parse-lines \"(a)\"))]",
+                        )
+                        .unwrap(),
+                    "[true true]"
+                );
+                assert_eq!(
+                    runtime
+                        .eval_text(
+                            "(Test/run [{:name \"edit\" \
+                                         :test (fn [] \
+                                                 (edit/update-content \
+                                                   \"(\" \
+                                                   [{:action :insert \
+                                                     :col 1 \
+                                                     :line 1 \
+                                                     :new-char \")\"}])) \
+                                         :expected \"()\"}])",
+                        )
+                        .unwrap(),
+                    "[#hara/Result[:success true nil {:failures [] :test {:name \"edit\" :actual \"()\" :expected \"()\"}}]]"
+                );
             })
             .unwrap()
             .join()
@@ -6586,6 +6717,20 @@ mod tests {
         );
         assert_eq!(runtime.eval_text("(do (def answer 1) (defn add [x y] (+ x y)) (alter-var-root (var answer) add 40) answer)").unwrap(), "41");
         assert_eq!(
+            runtime
+                .eval_text("(do (def answer 1) ((fn [value] (var-sym value)) (var answer)))")
+                .unwrap(),
+            "user/answer"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do (def answer 1) ((fn [value] (std.foundation/var-sym value)) (var answer)))",
+                )
+                .unwrap(),
+            "user/answer"
+        );
+        assert_eq!(
             runtime.eval_text("(assoc [1 2 3] 0 :x)").unwrap(),
             "[:x 2 3]"
         );
@@ -6689,13 +6834,12 @@ mod tests {
                       (resettable? (atom 1))
                       (casable? (atom 1))
                       (watchable? (atom 1))
-                      (callable? (fn [value] value))
                       (pair? (first {:value 1}))
                       (persistent? [])
                       (mutable? (to-mutable (vec [])))]",
                 )
                 .unwrap(),
-            "[true true true true true true true true true true true true true true true true true]"
+            "[true true true true true true true true true true true true true true true true]"
         );
         assert!(runtime.eval_text("(collection? [])").is_err());
 
@@ -6711,6 +6855,113 @@ mod tests {
                 )
                 .unwrap(),
             "[false true]"
+        );
+    }
+
+    #[test]
+    fn function_predicates_distinguish_ifn_from_function_values() {
+        let mut runtime = Runtime::core();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(do
+                       (defstruct Invokable [value])
+                       (defstruct Plain [value])
+                       (defmutable MutableInvokable [value])
+                       (defmutable MutablePlain [value])
+                       (extend-type Invokable std.protocol.ifn/IFn
+                         (invoke [self] (:value self)))
+                       (extend-type MutableInvokable std.protocol.ifn/IFn
+                         (invoke [self] (:value self)))
+                       (let [function (fn [value] value)
+                             pointer (pointer {:context :kernel :id \"ROOT\"})]
+                         [[(fn? function) (function? function)]
+                          [(fn? inc) (function? inc)]
+                          [(fn? :key) (function? :key)]
+                          [(fn? {:key 1}) (function? {:key 1})]
+                          [(fn? #{:key}) (function? #{:key})]
+                          [(fn? Invokable) (function? Invokable)]
+                          [(fn? pointer) (function? pointer)]
+                          [(fn? (Invokable 1))
+                           (function? (Invokable 1))
+                           (satisfies? std.protocol.ifn/IFn (Invokable 1))
+                           ((Invokable 1))]
+                          [(fn? (MutableInvokable 2))
+                           (function? (MutableInvokable 2))
+                           (satisfies? std.protocol.ifn/IFn (MutableInvokable 2))
+                           ((MutableInvokable 2))]
+                          [(fn? (Plain 1))
+                           (satisfies? std.protocol.ifn/IFn (Plain 1))]
+                          [(fn? (MutablePlain 2))
+                           (satisfies? std.protocol.ifn/IFn (MutablePlain 2))]
+                          [(fn? 42) (function? 42)]
+                          (nil? (resolve 'callable?))]))",
+                )
+                .unwrap(),
+            "[[true true] [true true] [true false] [true false] [true false] [true false] [true false] [true false true 1] [true false true 2] [false false] [false false] [false false] true]"
+        );
+        assert!(runtime
+            .eval_text("((Plain 1))")
+            .unwrap_err()
+            .contains("missing protocol implementation"));
+        assert!(runtime
+            .eval_text("((MutablePlain 2))")
+            .unwrap_err()
+            .contains("missing protocol implementation"));
+    }
+
+    #[test]
+    fn namespace_use_refers_public_values() {
+        let mut runtime = Runtime::new();
+        runtime.register_resource(
+            "native-use-fixture",
+            "(ns native-use-fixture) (def answer 42)",
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns native-use-probe (:use native-use-fixture))\n\
+                     answer",
+                )
+                .unwrap(),
+            "42"
+        );
+    }
+
+    #[test]
+    fn evaluated_regex_values_can_reenter_code_paths() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text("(eval (list 'identity #\"a+\"))")
+                .unwrap(),
+            "#\"a+\""
+        );
+    }
+
+    #[test]
+    fn empty_regexp_split_matches_jvm_character_partitioning() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime.eval_text("(str/split \"+%?\" #\"\")").unwrap(),
+            "[\"+\" \"%\" \"?\"]"
+        );
+    }
+
+    #[test]
+    fn qualified_hal_facades_do_not_override_native_type_aliases() {
+        let mut runtime = development_runtime();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns qualified-facade-probe (:require [std.foundation.string :as str]))\n\
+                     [(str/blank? nil)\n\
+                      (str/to-fixed 1.25 2)\n\
+                      (str (String/encode-utf8 \"f\"))\n\
+                      (str (str/encode-utf8 \"f\"))]",
+                )
+                .unwrap(),
+            "[true \"1.25\" \"(bytes 102)\" \"(bytes 102)\"]"
         );
     }
 
@@ -7456,7 +7707,20 @@ mod tests {
     #[test]
     fn arithmetic() {
         let mut runtime = Runtime::new();
-        assert_eq!(runtime.eval_text("(+ 19 23)").unwrap(), "42");
+        assert_eq!(
+            runtime
+                .eval_text("[(+) (+ 19 23) (*) (* 2 3 4) (- 10) (/ 2)]")
+                .unwrap(),
+            "[0 42 1 24 -10 0]"
+        );
+        assert_eq!(runtime.eval_text("(apply + [])").unwrap(), "0");
+        assert_eq!(runtime.eval_text("(apply * [])").unwrap(), "1");
+        assert!(runtime.eval_text("(-)").unwrap_err().contains("expects"));
+        assert!(runtime.eval_text("(/)").unwrap_err().contains("expects"));
+        assert!(runtime
+            .eval_text("(% 3)")
+            .unwrap_err()
+            .contains("two numbers"));
     }
 
     #[test]

@@ -248,6 +248,8 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "pow",
     "quot",
     "pr-str",
+    "capture",
+    "Printer/capture",
     "println",
     "promise",
     "promise/run",
@@ -335,6 +337,7 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "vector",
     "vector?",
     "fn?",
+    "function?",
     "hash-map",
     "hash-set",
     "zero?",
@@ -721,7 +724,7 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
             )
         }
         Some("and") => and_cps(Rc::new(v[1..].to_vec()), 0, Value::Bool(true), env, k),
-        Some("or") => or_cps(Rc::new(v[1..].to_vec()), 0, env, k),
+        Some("or") => or_cps(Rc::new(v[1..].to_vec()), 0, Value::Nil, env, k),
         Some("cond") => {
             if v.len() % 2 == 0 {
                 return k(Err("cond expects test/expression pairs".into()));
@@ -802,11 +805,12 @@ fn and_cps(
 fn or_cps(
     forms: Rc<Vec<Form>>,
     index: usize,
+    last: Value,
     env: Rc<RefCell<HashMap<String, Value>>>,
     k: Cont,
 ) -> Step {
     if index == forms.len() {
-        return k(Ok(Value::Nil));
+        return k(Ok(last));
     }
     let next = forms.clone();
     let e = env.clone();
@@ -815,7 +819,7 @@ fn or_cps(
         env,
         Box::new(move |result| match result {
             Ok(value) if value.truthy() => k(Ok(value)),
-            Ok(_) => or_cps(next, index + 1, e, k),
+            Ok(value) => or_cps(next, index + 1, value, e, k),
             Err(error) => k(Err(error)),
         }),
     )
@@ -1277,7 +1281,12 @@ fn application(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) 
         _ => None,
     };
     if let Some(name) = head_symbol {
-        if CORE_SPECIAL_FORMS.contains(&name) || name.starts_with("std.native.") {
+        let native_alias = binding_var(&mut env.borrow_mut(), name)
+            .is_some_and(|var| binding_is_native_alias(name, &var));
+        if CORE_SPECIAL_FORMS.contains(&name)
+            || name.starts_with("std.native.")
+            || native_alias
+        {
             return eval_special_form(v, env, k);
         }
     }
@@ -1425,6 +1434,13 @@ fn call(f: Rc<Function>, args: Vec<Value>, k: Cont) -> Step {
             f.params.len()
         )));
     }
+    let namespace_scope = namespace_registry().ok().and_then(|registry| {
+        f.namespace.as_ref().map(|namespace| {
+            let previous = registry.current().name().as_str().to_owned();
+            registry.set_current(namespace);
+            (registry, previous)
+        })
+    });
     let mut env = f.captured.borrow().clone();
     for (n, x) in f.params.iter().zip(args.iter()) {
         env.insert(n.clone(), x.clone());
@@ -1454,8 +1470,18 @@ fn call(f: Rc<Function>, args: Vec<Value>, k: Cont) -> Step {
         Value::Nil,
         Rc::new(RefCell::new(env)),
         Box::new(move |r| match r {
-            Ok(Value::Recur(_)) => k(Err("recur must be inside loop".into())),
-            r => k(r),
+            Ok(Value::Recur(_)) => {
+                if let Some((registry, previous)) = namespace_scope {
+                    registry.set_current(&previous);
+                }
+                k(Err("recur must be inside loop".into()))
+            }
+            r => {
+                if let Some((registry, previous)) = namespace_scope {
+                    registry.set_current(&previous);
+                }
+                k(r)
+            }
         }),
     )
 }

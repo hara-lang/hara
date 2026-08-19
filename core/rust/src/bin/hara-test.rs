@@ -48,6 +48,7 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
     }
     let source = fs::read_to_string(&file)
         .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    let test_namespace = declared_namespace(&source);
     let mut forms = parse_forms(&source)
         .map_err(|error| format!("cannot parse {}: {error}", file.display()))?;
     let final_form = forms
@@ -55,10 +56,11 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
         .ok_or_else(|| format!("{} contains no forms", file.display()))?;
     let prefix = forms
         .into_iter()
-        .map(|form| form.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let source = format!("{prefix} (pr-str {final_form})");
+        .map(|form| {
+            let declares_namespace = declared_namespace_form(&form).is_some();
+            (form.to_string(), declares_namespace)
+        })
+        .collect::<Vec<_>>();
     let root_text = root
         .to_str()
         .ok_or_else(|| format!("project root is not UTF-8: {}", root.display()))?
@@ -77,9 +79,47 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
             let session = kernel.session_mut(&root_session)?;
             session.install_native_socket_provider();
             session.install_native_process_provider();
+            let mut namespace_ready = false;
+            for (form, declares_namespace) in prefix {
+                let source = if namespace_ready {
+                    let namespace = test_namespace
+                        .as_deref()
+                        .expect("a namespace declaration made the test namespace available");
+                    format!(
+                        "(eval-in-ns (quote {namespace}) (quote [(do {form} nil)]))"
+                    )
+                } else {
+                    format!("(do {form} nil)")
+                };
+                kernel
+                    .eval(&root_session, &source)
+                    .map_err(|error| format!("{}: {error}", file.display()))?;
+                namespace_ready |= declares_namespace;
+            }
+            let final_source = match test_namespace.as_deref() {
+                Some(namespace) => format!(
+                    "(pr-str (eval-in-ns (quote {namespace}) (quote [{final_form}])))"
+                ),
+                None => format!("(pr-str {final_form})"),
+            };
             let output = kernel
-                .eval(&root_session, &source)
+                .eval(&root_session, &final_source)
                 .map_err(|error| format!("{}: {error}", file.display()))?;
+            let initial_error = match parse_summary(file.clone(), &output) {
+                Ok(summary) => return Ok(summary),
+                Err(error) => error,
+            };
+            let Some(namespace) = test_namespace else {
+                return Err(format!("{}: {initial_error}", file.display()));
+            };
+            let output = kernel
+                .eval(&root_session, &test_run_source(&namespace))
+                .map_err(|error| {
+                    format!(
+                        "{}: cannot execute test namespace {namespace}: {error}",
+                        file.display()
+                    )
+                })?;
             parse_summary(file.clone(), &output)
                 .map_err(|error| format!("{}: {error}", file.display()))
         })
@@ -92,19 +132,31 @@ pub fn run_file(root: &Path, file: &Path) -> Result<TestSummary, String> {
 }
 
 fn declared_namespace(source: &str) -> Option<String> {
-    parse_forms(source).ok()?.into_iter().find_map(|form| {
-        let Form::List(items) = form else {
-            return None;
-        };
-        match items.as_slice() {
+    parse_forms(source)
+        .ok()?
+        .iter()
+        .find_map(declared_namespace_form)
+}
+
+fn declared_namespace_form(form: &Form) -> Option<String> {
+    match form {
+        Form::Metadata(_, value) => declared_namespace_form(value),
+        Form::List(items) => match items.as_slice() {
             [Form::Symbol(head), Form::Symbol(namespace), ..]
                 if (head == "ns" || head == "ns+") && !namespace.contains('/') =>
             {
                 Some(namespace.clone())
             }
             _ => None,
-        }
-    })
+        },
+        _ => None,
+    }
+}
+
+fn test_run_source(namespace: &str) -> String {
+    format!(
+        "(pr-str (let [summary (code.test/run {{:namespace \"{namespace}\"}}) failures (filter (fn [result] (not= :passed (:status result))) (:results summary)) diagnostic (map (fn [result] (let [check (first (filter (fn [item] (not (:pass item))) (:checks result))) error (or (:error result) (:error check))] {{:name (:name result) :status (:status result) :error (if error (apply str (take 2000 error)) nil) :actual (:actual check) :expected (:expected check)}})) failures)] (assoc (dissoc summary :results :report) :results (str diagnostic))))"
+    )
 }
 
 fn register_project_sources(root: &Path, kernel: &mut SessionKernel) -> Result<(), String> {
@@ -129,10 +181,23 @@ pub fn run_paths(root: &Path, paths: &[PathBuf]) -> Result<Vec<TestSummary>, Str
     if files.is_empty() {
         return Err("no .hal test files found".into());
     }
-    files
+    Ok(files
         .iter()
-        .map(|file| run_file(root, file).map_err(|error| format!("{}: {error}", file.display())))
-        .collect::<Result<Vec<_>, _>>()
+        .map(|file| match run_file(root, file) {
+            Ok(summary) => summary,
+            Err(error) => TestSummary {
+                path: file.clone(),
+                passed: false,
+                facts: 0,
+                checks: 0,
+                passed_checks: 0,
+                failed_checks: 0,
+                errors: 1,
+                timeouts: 0,
+                raw: error,
+            },
+        })
+        .collect())
 }
 
 fn collect(path: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
@@ -162,7 +227,9 @@ fn collect(path: &Path, output: &mut Vec<PathBuf>) -> Result<(), String> {
 
 fn parse_summary(path: PathBuf, output: &str) -> Result<TestSummary, String> {
     let mut form = parse(output).map_err(|error| format!("invalid test result: {error}"))?;
-    for _ in 0..2 {
+    // SessionKernel renders string results, while some legacy test files also
+    // return `(pr-str (run ...))`; unwrap both transport and test-owned layers.
+    for _ in 0..8 {
         let Form::String(encoded) = form else {
             break;
         };
@@ -347,13 +414,26 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::run_file;
+    use super::{declared_namespace, run_file, run_paths};
+    use std::fs;
     use std::path::Path;
 
     fn repository_root() -> &'static Path {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("rust crate must have repository parent")
+    }
+
+    #[test]
+    fn discovers_bare_and_metadata_wrapped_namespaces() {
+        assert_eq!(
+            declared_namespace("(ns example.bare)"),
+            Some("example.bare".into())
+        );
+        assert_eq!(
+            declared_namespace("^{:seedgen/skip true}\n(ns example.metadata)"),
+            Some("example.metadata".into())
+        );
     }
 
     #[test]
@@ -384,6 +464,86 @@ mod tests {
         assert_eq!(summary.checks, 3);
         assert_eq!(summary.passed_checks, 3);
         assert_eq!(summary.failed_checks, 0);
+    }
+
+    #[test]
+    fn preserves_namespace_aliases_across_top_level_test_forms() {
+        let root = repository_root();
+        let summary = run_file(
+            root,
+            &root.join("lib/test/std/block/heal/edit_test.hal"),
+        )
+        .unwrap();
+        assert!(summary.passed, "{}", summary.failure_message());
+        assert_eq!(summary.checks, 11);
+        assert_eq!(summary.passed_checks, 11);
+    }
+
+    #[test]
+    fn runs_metadata_wrapped_code_test_namespace() {
+        let root = repository_root();
+        let path = std::env::temp_dir().join(format!(
+            "hara-metadata-wrapped-test-{}.hal",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "^{:seedgen/skip true}\n(ns std.native.metadata-wrapped-test\n  (:use code.test))\n\n(fact \"runs metadata-wrapped namespaces\"\n  (+ 20 22) => 42)\n",
+        )
+        .unwrap();
+        let summary = run_file(root, &path);
+        fs::remove_file(&path).unwrap();
+        let summary = summary.unwrap();
+        assert!(summary.passed, "{}", summary.failure_message());
+        assert_eq!(summary.facts, 1);
+        assert_eq!(summary.checks, 1);
+        assert_eq!(summary.passed_checks, 1);
+        assert_eq!(summary.failed_checks, 0);
+    }
+
+    #[test]
+    fn reports_namespace_execution_errors_instead_of_using_invalid_output() {
+        let root = repository_root();
+        let path = std::env::temp_dir().join(format!(
+            "hara-invalid-test-namespace-{}.hal",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            "^{:seedgen/skip true}\n(ns std.native.invalid-test-namespace)\n\n:not-a-test-result\n",
+        )
+        .unwrap();
+        let error = run_file(root, &path).unwrap_err();
+        fs::remove_file(&path).unwrap();
+        assert!(error.contains("cannot execute test namespace"), "{error}");
+        assert!(error.contains("unbound symbol: code.test/run"), "{error}");
+    }
+
+    #[test]
+    fn run_paths_preserves_file_errors_and_continues_the_inventory() {
+        let root = repository_root();
+        let path = std::env::temp_dir().join(format!(
+            "hara-runtime-error-test-{}.hal",
+            std::process::id()
+        ));
+        fs::write(&path, "(missing-runtime-function)").unwrap();
+        let summaries = run_paths(
+            root,
+            &[
+                path.clone(),
+                root.join("lib/test-fixtures/std/native/test_runner_pass.hal"),
+            ],
+        )
+        .unwrap();
+        fs::remove_file(&path).unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries.iter().filter(|summary| summary.passed).count(), 1);
+        let failure = summaries
+            .iter()
+            .find(|summary| !summary.passed)
+            .expect("runtime error summary");
+        assert_eq!(failure.errors, 1);
+        assert!(failure.raw.contains("unbound symbol"), "{}", failure.raw);
     }
 
     #[test]

@@ -202,7 +202,10 @@ public final class Main {
           return 2;
       }
 
-      try (Context context = context(capabilities)) {
+      HaraProject project = capabilities.project == null ? null : runtimeProject(capabilities);
+      try (HaraJvmProject ignored =
+              project == null ? null : HaraJvmProject.prepare(project, capabilities.offline);
+          Context context = context(capabilities, project)) {
         Value result = context.eval(HaraLanguage.ID, source);
         output.println(display(result));
       }

@@ -908,6 +908,13 @@ fn native_regex_operation(
             if input.is_empty() {
                 return Ok(Value::Nil);
             }
+            if pattern.is_empty() {
+                return Ok(Value::Vector(PVector::from_iter(
+                    input
+                        .chars()
+                        .map(|character| Value::String(character.to_string())),
+                )));
+            }
             let regexp =
                 regex::Regex::new(&pattern).map_err(|error| format!("invalid regexp: {error}"))?;
             Ok(Value::Vector(PVector::from_iter(

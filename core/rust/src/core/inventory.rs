@@ -425,7 +425,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "eval",
         ],
     ),
-    ("Printer", &["p", "println"]),
+    ("Printer", &["p", "println", "capture"]),
     (
         "Document",
         &[
@@ -534,6 +534,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "pointer?",
             "atom?",
             "fn?",
+            "function?",
             "bytes?",
             "array?",
             "object?",

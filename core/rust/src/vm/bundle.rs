@@ -311,7 +311,7 @@ pub fn decode_bytecode_bundle(bytes: &[u8]) -> Result<Vec<BytecodeBundleModule>,
         return Err("invalid HBX0 bytecode bundle header".into());
     }
     let payload = &bytes[36..];
-    if Sha256::digest(payload).as_slice() != &bytes[4..36] {
+    if Sha256::digest(payload)[..] != bytes[4..36] {
         return Err("HBX0 bytecode bundle checksum mismatch".into());
     }
     let mut input = payload;

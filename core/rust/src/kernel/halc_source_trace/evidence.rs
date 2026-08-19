@@ -94,7 +94,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 pub(super) fn sha256(bytes: &[u8]) -> String {
-    hex(Sha256::digest(bytes).as_slice())
+    hex(&Sha256::digest(bytes))
 }
 
 fn bounded_text(value: &str, limit: usize) -> (String, bool) {

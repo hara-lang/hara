@@ -130,7 +130,7 @@ Renaming breaks spec-conformant code and should be reconciled.
 | `map? set?` | ✅ |
 | `map-entry?` | ❌ |
 | `array? object? bytes? promise? coroutine? atom?` | ❌ |
-| `callable? iterable? iterator? counted? indexed? associative? derefable? watchable?` | ❌ |
+| `fn? function? iterable? iterator? counted? indexed? associative? derefable? watchable?` | ❌ |
 
 #### Evaluation
 
@@ -298,7 +298,7 @@ internal helpers in `core.rs:3344`, but `eval` also exposes them publicly as
    `distinct`, and user reductions.
 3. **Add `vec` and spec-named predicates (`string?`, `keyword?`, `symbol?`,
    `number?`, `boolean?`, `array?`, `object?`, `bytes?`, `promise?`,
-   `atom?`, `callable?`, `iterable?`, etc.).** Foundation code relies on
+   `atom?`, `fn?`, `function?`, `iterable?`, etc.).** Foundation code relies on
    many of these.
 
 ### Important

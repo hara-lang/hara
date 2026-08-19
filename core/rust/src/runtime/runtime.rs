@@ -410,6 +410,8 @@ impl Runtime {
                     for target in config.required_namespaces() {
                         if self.resources.contains_key(target)
                             || self.loaded_resources.contains(target)
+                            || self.namespace_registry.load_state(target)
+                                == Some(kernel::NamespaceLoadState::Loaded)
                             || self.has_bytecode_resource(target)
                         {
                             continue;

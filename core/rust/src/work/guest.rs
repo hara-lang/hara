@@ -1,9 +1,7 @@
 use super::*;
 use crate::core::{ExtensionValue, ProtocolRegistry};
-use crate::lang::protocol::IComponent;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::time::Duration;
 
 const PROVIDER: &str = "work.native";

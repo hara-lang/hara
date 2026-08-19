@@ -2498,6 +2498,7 @@ public final class HaraNodes {
         case GET:
           return receiver == null
               || receiver instanceof hara.lang.protocol.ILookup
+              || receiver instanceof hara.lang.data.types.ISetType
               || receiver instanceof byte[];
         case NTH:
           return receiver instanceof hara.lang.protocol.INth || receiver instanceof byte[];
@@ -2535,6 +2536,11 @@ public final class HaraNodes {
         hara.lang.protocol.ILookup<Object, Object> lookup =
             (hara.lang.protocol.ILookup<Object, Object>) receiver;
         return values.length == 3 ? lookup.lookup(values[1], values[2]) : lookup.lookup(values[1]);
+      }
+      if (receiver instanceof hara.lang.data.types.ISetType<?> set) {
+        Object found =
+            ((hara.lang.protocol.IFind<Object, Object>) set).find(values[1]);
+        return found == null && values.length == 3 ? values[2] : found;
       }
       byte[] bytes = (byte[]) receiver;
       if (!(values[1] instanceof Number)) {

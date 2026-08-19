@@ -6,6 +6,10 @@ mod observation;
 pub(super) mod semantic;
 #[path = "coroutine/snapshot.rs"]
 mod snapshot;
+// These are the private coroutine subsystem's shared API. Some build targets
+// exercise only a subset, but keeping the re-export central avoids parallel
+// snapshot type paths in observation and semantic instrumentation.
+#[allow(unused_imports)]
 pub use snapshot::{
     EvalBindingSnapshot, EvalErrorSnapshot, EvalFocusSnapshot, EvalFrameSnapshot,
     EvalObservationLimits, EvalObservationSnapshot, EvalObservationStatus, EvalObservedBoundary,

@@ -68,6 +68,14 @@ public class HaraGeneratedLibrariesTest {
       assertTrue(context.eval(HaraLanguage.ID, "(not (regexp? :a))").asBoolean());
       assertTrue(context.eval(HaraLanguage.ID, "(fn? (fn [value] value))").asBoolean());
       assertTrue(context.eval(HaraLanguage.ID, "(fn? :a)").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(fn? {:a 1})").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(fn? #{:a})").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(function? (fn [value] value))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(function? inc)").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(not (function? :a))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(not (function? {:a 1}))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(not (function? #{:a}))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(nil? (resolve 'callable?))").asBoolean());
     }
   }
 

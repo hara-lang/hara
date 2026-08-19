@@ -23,6 +23,7 @@ import hara.lang.data.List;
 import hara.lang.data.Keyword;
 import hara.lang.data.types.IMapType;
 import hara.lang.data.types.ILinearType;
+import hara.lang.data.types.ObjFn;
 import hara.lang.protocol.IFn;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IDeref;
@@ -212,7 +213,7 @@ public final class HaraContext {
                   "pointer", "symbol", "keyword", "reduced", "reduced?", "unreduced",
                   "nil?", "not-nil?", "boolean?", "false?", "true?", "string?", "char?", "number?", "integer?",
                   "decimal?", "long?", "double?", "keyword?", "symbol?", "pointer?",
-                  "atom?", "fn?", "bytes?", "array?", "object?", "list?", "cons?", "pair?", "vector?",
+                  "atom?", "fn?", "function?", "bytes?", "array?", "object?", "list?", "cons?", "pair?", "vector?",
                   "tuple?", "map?", "map-entry?", "set?", "sequential?", "satisfies?",
                   "type", "instance?", "schema", "schema-of")),
           Map.entry(
@@ -2237,7 +2238,8 @@ public final class HaraContext {
     target.define(
         "symbol?",
         new UnaryBuiltin("symbol?", value -> HaraBox.unwrap(value) instanceof Symbol));
-    target.define("fn?", new UnaryBuiltin("fn?", this::isFunctionValue));
+    target.define("fn?", new UnaryBuiltin("fn?", value -> protocolSatisfies("IFn", value)));
+    target.define("function?", new UnaryBuiltin("function?", this::isNativeFunctionValue));
     target.define(
         "keyword?",
         new UnaryBuiltin("keyword?", value -> HaraBox.unwrap(value) instanceof Keyword));
@@ -2278,7 +2280,6 @@ public final class HaraContext {
         HaraBox.unwrap(value) instanceof HaraPromise));
     target.define("coroutine?", new UnaryBuiltin("coroutine?", value ->
         HaraBox.unwrap(value) instanceof StdFoundationCoroutine.HaraCoroutine));
-    target.define("callable?", new UnaryBuiltin("callable?", value -> protocolSatisfies("IFn", value)));
     target.define("iterator?", new UnaryBuiltin("iterator?", value -> protocolSatisfies("IIterator", value)));
     target.define("iterable?", new UnaryBuiltin("iterable?", value -> protocolSatisfies("IIter", value)));
     target.define("counted?", new UnaryBuiltin("counted?", value -> protocolSatisfies("ICount", value)));
@@ -7649,9 +7650,27 @@ public final class HaraContext {
         || function instanceof VariadicBuiltin;
   }
 
+  private boolean isNativeFunctionValue(Object value) {
+    Object function = HaraBox.unwrap(value);
+    return function instanceof HaraFunction
+        || function instanceof HaraMultiFunction
+        || function instanceof ObjFn
+        || function instanceof HaraBuiltinFunction
+        || function instanceof HbcMachine.HbcClosure
+        || function instanceof HbcMachine.HbcMultiArity
+        || function instanceof HbcMachine.HbcNativeCallable;
+  }
+
   private boolean protocolSatisfies(String protocolName, Object value) {
     Object receiver = HaraBox.unwrap(value);
+    if ("IFn".equals(protocolName)) {
+      return isFunctionValue(receiver);
+    }
     if ("IConj".equals(protocolName) && receiver instanceof hara.lang.data.Seq<?>) {
+      return false;
+    }
+    // Sets answer ILookup/lookup (get) but, matching the native runtime, do not satisfy ILookup.
+    if ("ILookup".equals(protocolName) && receiver instanceof hara.lang.data.types.ISetType<?>) {
       return false;
     }
     if ("IColl".equals(protocolName)) {

@@ -806,10 +806,21 @@ fn deref_value(value: Value) -> Value {
     }
 }
 
+fn deref_binding_value(name: &str, value: Value) -> Value {
+    match value {
+        Value::Var(var)
+            if var.symbol().get_name() == Symbol::parse(name).get_name() =>
+        {
+            var.deref_value()
+        }
+        value => value,
+    }
+}
+
 fn binding_value(env: &HashMap<String, Value>, name: &str) -> Option<Value> {
     env.get(name)
         .cloned()
-        .map(deref_value)
+        .map(|value| deref_binding_value(name, value))
         .or_else(|| {
             namespace_registry()
                 .ok()?
@@ -820,7 +831,11 @@ fn binding_value(env: &HashMap<String, Value>, name: &str) -> Option<Value> {
             let (qualifier, local) = name.rsplit_once('/')?;
             let registry = namespace_registry().ok()?;
             (registry.current().name().as_str() == qualifier)
-                .then(|| env.get(local).cloned().map(deref_value))
+                .then(|| {
+                    env.get(local)
+                        .cloned()
+                        .map(|value| deref_binding_value(local, value))
+                })
                 .flatten()
         })
 }

@@ -2199,6 +2199,19 @@ public class HaraLanguageTest {
   }
 
   @Test
+  public void collectionGetHandlesSetReceivers() {
+    try (Context context = context()) {
+      assertEquals(2, context.eval(HaraLanguage.ID, "(get #{1 2} 2)").asLong());
+      assertTrue(context.eval(HaraLanguage.ID, "(get #{1 2} 9)").isNull());
+      assertTrue(context.eval(HaraLanguage.ID, "(= :missing (get #{1 2} 9 :missing))").asBoolean());
+      assertEquals(2, context.eval(HaraLanguage.ID, "(get (hash-set 1 2) 2)").asLong());
+      assertEquals(2, context.eval(HaraLanguage.ID, "(ILookup/lookup #{1 2} 2)").asLong());
+      // Sets answer get but, matching the native runtime, do not satisfy ILookup.
+      assertTrue(context.eval(HaraLanguage.ID, "(not (lookupable? #{1 2}))").asBoolean());
+    }
+  }
+
+  @Test
   public void hasHandlesAssociativeCollectionKeys() {
     try (Context context = context()) {
       assertTrue(context.eval(HaraLanguage.ID, "(has? {:a 1} :a)").asBoolean());

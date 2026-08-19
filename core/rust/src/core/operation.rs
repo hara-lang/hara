@@ -129,6 +129,12 @@ fn string_operation(operation: &str, values: Vec<Value>) -> Result<Value, String
                     .map(|part| Value::String(part.into()))
                     .collect(),
                 Value::Regex(pattern) => {
+                    if pattern.is_empty() {
+                        return Ok(Value::Vector(PVector::from_iter(
+                            text.chars()
+                                .map(|character| Value::String(character.to_string())),
+                        )));
+                    }
                     let mut parts: Vec<Value> = regex::Regex::new(pattern)
                         .map_err(|error| format!("invalid regexp: {error}"))?
                         .split(text)
@@ -141,18 +147,18 @@ fn string_operation(operation: &str, values: Vec<Value>) -> Result<Value, String
                 }
                 _ => return Err("str/split expects a string and string or regexp separator".into()),
             };
-            Ok(Value::Array(Rc::new(RefCell::new(parts))))
+            Ok(Value::Vector(parts.into()))
         }
         "str/split-lines" => {
             if values.len() != 1 {
                 return Err("str/split-lines expects one string".into());
             }
             let text = string_value(&values[0], operation)?;
-            let parts = text
+            let parts: Vec<Value> = text
                 .split('\n')
                 .map(|part| Value::String(part.into()))
                 .collect();
-            Ok(Value::Array(Rc::new(RefCell::new(parts))))
+            Ok(Value::Vector(parts.into()))
         }
         "str/join" => {
             if values.len() != 2 {
@@ -213,10 +219,8 @@ fn string_operation(operation: &str, values: Vec<Value>) -> Result<Value, String
             if values.len() != 2 {
                 return Err("str/to-fixed expects a number and precision".into());
             }
-            let number = match values[0] {
-                Value::Number(number) => number as f64,
-                _ => return Err("str/to-fixed expects a number and precision".into()),
-            };
+            let number = numeric::to_f64_explicit(&values[0])
+                .map_err(|_| "str/to-fixed expects a number and precision".to_string())?;
             let precision = value_index(&values[1])?;
             if precision > 100 {
                 return Err("str/to-fixed precision must be in the range 0..100".into());
@@ -798,7 +802,7 @@ fn iterator_values(value: Value) -> Result<Vec<Value>, String> {
                 Value::Tuple(Box::new(PTuple::from_values(vec![key, value]).unwrap()))
             })
             .collect()),
-        Value::String(text) => Ok(text.chars().map(|c| Value::String(c.to_string())).collect()),
+        Value::String(text) => Ok(text.chars().map(Value::Character).collect()),
         Value::Bytes(bytes) => Ok(bytes
             .into_iter()
             .map(|byte| Value::Number(byte as i8 as i64))
@@ -1037,17 +1041,17 @@ fn iterator_prepend(head: Value, source: Value) -> Result<Value, String> {
     let mut state = IteratorState::generated(IteratorGenerator::Prepend(Some(head), source));
     Ok(Value::Iterator(Rc::new(RefCell::new(state))))
 }
-fn iterator_repeated(function: Rc<Function>) -> Value {
+fn iterator_repeated(function: Value) -> Value {
     Value::Iterator(Rc::new(RefCell::new(IteratorState::generated(
         IteratorGenerator::Repeated(function),
     ))))
 }
-fn iterator_iterate(function: Rc<Function>, seed: Value) -> Value {
+fn iterator_iterate(function: Value, seed: Value) -> Value {
     Value::Iterator(Rc::new(RefCell::new(IteratorState::generated(
         IteratorGenerator::Iterate(function, seed),
     ))))
 }
-fn iterator_take_while(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_take_while(function: Value, value: Value) -> Result<Value, String> {
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
@@ -1056,13 +1060,13 @@ fn iterator_take_while(function: Rc<Function>, value: Value) -> Result<Value, St
         IteratorState::generated(IteratorGenerator::TakeWhile(function, source)),
     ))))
 }
-fn iterator_map(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_map(function: Value, value: Value) -> Result<Value, String> {
     iterator_map_with(function, value, false)
 }
-fn iterator_map_spread(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_map_spread(function: Value, value: Value) -> Result<Value, String> {
     iterator_map_with(function, value, true)
 }
-fn iterator_map_with(function: Rc<Function>, value: Value, spread: bool) -> Result<Value, String> {
+fn iterator_map_with(function: Value, value: Value, spread: bool) -> Result<Value, String> {
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
@@ -1133,7 +1137,7 @@ fn iterator_zip(values: Vec<Value>) -> Result<Value, String> {
     ))))
 }
 
-fn iterator_mapcat(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_mapcat(function: Value, value: Value) -> Result<Value, String> {
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
@@ -1142,7 +1146,7 @@ fn iterator_mapcat(function: Rc<Function>, value: Value) -> Result<Value, String
         IteratorState::generated(IteratorGenerator::Mapcat(function, source, None)),
     ))))
 }
-fn iterator_keep(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_keep(function: Value, value: Value) -> Result<Value, String> {
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
@@ -1152,7 +1156,7 @@ fn iterator_keep(function: Rc<Function>, value: Value) -> Result<Value, String> 
     ))))
 }
 
-fn iterator_filter(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_filter(function: Value, value: Value) -> Result<Value, String> {
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
@@ -1162,7 +1166,7 @@ fn iterator_filter(function: Rc<Function>, value: Value) -> Result<Value, String
     ))))
 }
 
-fn iterator_drop_while(function: Rc<Function>, value: Value) -> Result<Value, String> {
+fn iterator_drop_while(function: Value, value: Value) -> Result<Value, String> {
     let source = match value {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,

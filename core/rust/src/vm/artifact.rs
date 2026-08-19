@@ -66,7 +66,7 @@ pub fn decode_program(bytes: &[u8]) -> Result<Program, String> {
         return Err("bytecode artifact length mismatch".into());
     }
     let payload = &bytes[8..payload_end];
-    if Sha256::digest(payload).as_slice() != &bytes[payload_end..] {
+    if Sha256::digest(payload)[..] != bytes[payload_end..] {
         return Err("bytecode artifact checksum mismatch".into());
     }
     let mut reader = Reader::new(payload);

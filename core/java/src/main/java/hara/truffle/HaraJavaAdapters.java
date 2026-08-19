@@ -311,6 +311,15 @@ public final class HaraJavaAdapters {
     protocol.extendIntrinsic(Tuple.Tup0.class, "lookup", HaraJavaAdapters::lookupTuple);
     protocol.extendIntrinsic(Tuple.Tup1.class, "lookup", HaraJavaAdapters::lookupTuple);
     protocol.extendIntrinsic(byte[].class, "lookup", HaraJavaAdapters::lookupBytes);
+    protocol.extendIntrinsic(
+        ISetType.class,
+        "lookup",
+        (receiver, arguments) -> {
+          if (arguments.length < 1 || arguments.length > 2) {
+            throw new HaraException("ILookup/lookup expects one or two arguments");
+          }
+          return setValue((ISetType<?>) receiver, arguments);
+        });
     protocol.extendNilIntrinsic(
         "lookup",
         (receiver, arguments) -> {

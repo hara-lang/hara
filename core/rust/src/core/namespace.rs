@@ -515,6 +515,22 @@ fn eval_namespace_form(fs: &[Form], env: &mut HashMap<String, Value>) -> Result<
                 eval_require_specs(&registry, env, &clause_forms[1..])?;
             }
             Form::List(clause_forms)
+                if matches!(clause_forms.first(), Some(Form::Keyword(k)) if k == "use") =>
+            {
+                let specs = clause_forms[1..]
+                    .iter()
+                    .map(|namespace| match namespace {
+                        Form::Symbol(name) if !name.contains('/') => Ok(Form::Vector(vec![
+                            Form::Symbol(name.clone()),
+                            Form::Keyword("refer".into()),
+                            Form::Keyword("all".into()),
+                        ])),
+                        _ => Err("ns :use expects namespace symbols".to_string()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                eval_require_specs(&registry, env, &specs)?;
+            }
+            Form::List(clause_forms)
                 if matches!(
                     clause_forms.first(),
                     Some(Form::Keyword(k)) if k == "config" || k == "intrinsics"
