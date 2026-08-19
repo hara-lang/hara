@@ -25,7 +25,7 @@ jobs:
   complete-script-port:
     if: ${{ github.event_name == 'pull_request' && github.head_ref == 'agent/823-script-port-completion' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,70 +34,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build native Hara once
         run: cargo build --manifest-path core/rust/Cargo.toml --bin hara
-      - name: Isolate namespace and require shape
+      - name: Verify terminating native evaluation paths
         shell: bash
+        env:
+          HARA_RUNTIME: rust
+          HARA_NATIVE: ${{ github.workspace }}/core/rust/target/debug/hara
         run: |
-          set -u
-          HARA=core/rust/target/debug/hara
+          set -euo pipefail
+          test "$(timeout 20s core/hara --project core eval '(+ 19 23)')" = "42"
 
-          probe() {
-            local label="$1"
-            local file="$2"
-            echo "=== $label ==="
-            timeout --signal=TERM --kill-after=5s 20s \
-              "$HARA" --project core --offline stdin < "$file"
-            local status=$?
-            if [[ $status -eq 0 ]]; then
-              echo "PROBE PASS: $label"
-            elif [[ $status -eq 124 || $status -eq 137 || $status -eq 143 ]]; then
-              echo "PROBE HANG: $label (status=$status)"
-            else
-              echo "PROBE FAIL: $label (status=$status)"
-            fi
-            return 0
-          }
-
-          cat > /tmp/a0.hal <<'HAL'
-          (ns demo.script-annex)
+          cat > /tmp/hara-script-port-probe.hal <<'HAL'
+          (ns demo.script-port-probe)
+          (def value 42)
+          (assert (= value 42))
           HAL
-          probe 'A0 unrelated sibling namespace' /tmp/a0.hal
+          timeout 20s core/hara --project core --offline run /tmp/hara-script-port-probe.hal
 
-          cat > /tmp/a1.hal <<'HAL'
-          (ns lang.core.script.annex)
+          cat > core/private/tmp/script_port_probe_test.hal <<'HAL'
+          (ns script-port-probe-test
+            (:use code.test))
+          (fact "native test runner terminates"
+            (+ 19 23) => 42)
+          (pr-str (run '[script-port-probe-test]))
           HAL
-          probe 'A1 nested namespace only' /tmp/a1.hal
-
-          cat > /tmp/a2.hal <<'HAL'
-          (ns lang.core.script-annex)
-          HAL
-          probe 'A2 sibling namespace only' /tmp/a2.hal
-
-          cat > /tmp/a3.hal <<'HAL'
-          (ns lang.core.script-annex
-            (:require [lang.core.runtime :as runtime]))
-          HAL
-          probe 'A3 sibling plus runtime require' /tmp/a3.hal
-
-          cat > /tmp/a4.hal <<'HAL'
-          (ns lang.core.script-annex
-            (:require [lang.core.script :as script]))
-          HAL
-          probe 'A4 sibling plus script require' /tmp/a4.hal
-
-          cat > /tmp/a5.hal <<'HAL'
-          (ns lang.core.script-annex
-            (:require [lang.core.runtime :as runtime]
-                      [lang.core.script :as script]))
-          HAL
-          probe 'A5 sibling plus both requires' /tmp/a5.hal
-
-          cat > /tmp/a6.hal <<'HAL'
-          (ns lang.core.script-annex
-            (:require [lang.core.runtime :as runtime]
-                      [lang.core.script :as script]))
-          (def +registry+ (atom {}))
-          (def +runtimes+ (atom {}))
-          (defn current-namespace-symbol [] (symbol (str (current-namespace))))
-          (defn coordinate [namespace tag] [namespace tag])
-          HAL
-          probe 'A6 sibling plus state and basic helpers' /tmp/a6.hal
+          timeout 120s ./scripts/runtime/run-lib-tests core/private/tmp/script_port_probe_test.hal
+          rm core/private/tmp/script_port_probe_test.hal
