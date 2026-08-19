@@ -25,10 +25,10 @@ jobs:
           ref: agent/554-external-clojure-mappings
           fetch-depth: 0
 
-      - name: Print the exact external namespace inventory
+      - name: Print exact names and seed symbol use
         run: |
           python3 - <<'PY'
-          from collections import Counter
+          from collections import Counter, defaultdict
           from pathlib import Path
           import re
 
@@ -41,7 +41,36 @@ jobs:
           names = re.findall(r':external/namespace "([^"]+)"', route_segment)
           counts = Counter(names)
           print(f'route occurrences: {len(names)}')
-          print(f'unique namespaces: {len(counts)}')
+          print(f'unique names: {len(counts)}')
           for name in sorted(counts):
               print(f'{counts[name]:4d}\t{name}')
+
+          seeds = {
+              'clojure.string',
+              'clojure.tools.reader',
+              'clojure.tools.reader.reader-types',
+          }
+          references = defaultdict(set)
+          for namespace, owner, symbol in re.findall(
+              r':namespace "([^"]+)" :owner "([^"]+)" :symbol "([^"]+)"',
+              source,
+          ):
+              if namespace in seeds:
+                  references[namespace].add((owner, symbol))
+
+          print('\nseed qualified references')
+          for namespace in sorted(seeds):
+              print(f'[{namespace}]')
+              for owner, symbol in sorted(references[namespace]):
+                  print(f'  {owner}/{symbol}')
+
+          print('\nseed referred entries')
+          for namespace in sorted(seeds):
+              pattern = re.compile(
+                  r':namespace "' + re.escape(namespace) + r'" :entry "([^"]+)"'
+              )
+              entries = sorted(set(pattern.findall(source)))
+              print(f'[{namespace}]')
+              for entry in entries:
+                  print(f'  {entry}')
           PY
