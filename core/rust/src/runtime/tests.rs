@@ -6981,6 +6981,31 @@ mod tests {
             .contains("missing protocol implementation"));
     }
 
+    #[test]
+    fn tool_cli_handlers_treat_default_host_as_a_value() {
+        let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../lib/src/tool/cli");
+        for file in [
+            "asset.hal",
+            "extension.hal",
+            "host.hal",
+            "identity.hal",
+            "language.hal",
+            "lint.hal",
+            "package.hal",
+            "project_command.hal",
+            "snapshot.hal",
+            "spec.hal",
+            "tap.hal",
+        ] {
+            let source = std::fs::read_to_string(cli_root.join(file)).unwrap();
+            assert!(
+                !source.contains("(work/default-host)"),
+                "{file} calls the default host value as a function"
+            );
+        }
+    }
+
     #[cfg(feature = "bytecode-vm")]
     #[test]
     fn bytecode_vm_ifn_applicability_matches_interpreter_and_predicates() {
