@@ -204,15 +204,24 @@ jobs:
             local worktree=$1
             local target=$2
             local output=$3
+            local status_file=$4
+            set +e
             (
               cd "$worktree"
               CARGO_TARGET_DIR="$target" \
-                cargo clippy --manifest-path core/rust/Cargo.toml --all-targets --message-format=json
+                cargo clippy \
+                  --manifest-path core/rust/Cargo.toml \
+                  --all-targets \
+                  --message-format=json \
+                  -- -D warnings
             ) > "$output" 2> "${output%.json}.stderr"
+            local status=$?
+            set -e
+            printf '%s\n' "$status" > "$status_file"
           }
 
-          run_clippy /tmp/hara-layout-base /tmp/target-clippy-base /tmp/clippy-base.json
-          run_clippy "$GITHUB_WORKSPACE" /tmp/target-clippy-candidate /tmp/clippy-candidate.json
+          run_clippy /tmp/hara-layout-base /tmp/target-clippy-base /tmp/clippy-base.json /tmp/clippy-base.status
+          run_clippy "$GITHUB_WORKSPACE" /tmp/target-clippy-candidate /tmp/clippy-candidate.json /tmp/clippy-candidate.status
 
           python3 <<'PY'
           from collections import Counter
@@ -229,23 +238,34 @@ jobs:
                   if event.get('reason') != 'compiler-message':
                       continue
                   message = event.get('message') or {}
-                  if message.get('level') != 'warning':
+                  if message.get('level') not in {'warning', 'error'}:
                       continue
                   code = (message.get('code') or {}).get('code') or '<uncoded>'
-                  values.append((code, message.get('message') or ''))
+                  text = message.get('message') or ''
+                  if text.startswith('aborting due to'):
+                      continue
+                  values.append((code, text))
               return Counter(values)
 
+          base_status = int(Path('/tmp/clippy-base.status').read_text().strip())
+          candidate_status = int(Path('/tmp/clippy-candidate.status').read_text().strip())
           base = diagnostics('/tmp/clippy-base.json')
           candidate = diagnostics('/tmp/clippy-candidate.json')
           added = candidate - base
           removed = base - candidate
           if added:
-              raise SystemExit('candidate introduced Clippy warnings: ' + json.dumps([
+              raise SystemExit('candidate introduced Clippy diagnostics: ' + json.dumps([
                   {'code': code, 'message': message, 'count': count}
                   for (code, message), count in sorted(added.items())
               ], indent=2))
+          if base_status == 0 and candidate_status != 0:
+              raise SystemExit('candidate made the repository-wide Clippy command fail')
+          if candidate_status != 0 and not candidate:
+              raise SystemExit('candidate Clippy failed without structured diagnostics')
 
           summary = {
+              'base_status': base_status,
+              'candidate_status': candidate_status,
               'base_warning_count': sum(base.values()),
               'candidate_warning_count': sum(candidate.values()),
               'new_warning_count': sum(added.values()),
@@ -365,7 +385,7 @@ jobs:
 
           body = f'''## Product export complete
 
-          Clean branch: `{branch}`
+          Clean branch: `{branch}`  
           Product head: `{head}`
 
           ### Measured layout
