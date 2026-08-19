@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -8,6 +9,52 @@ def replace_once(text: str, old: str, new: str, label: str) -> str:
     if count != 1:
         raise SystemExit(f"{label}: expected one marker, found {count}")
     return text.replace(old, new, 1)
+
+
+def checkout_fixture(repository: str, revision: str, destination: Path) -> None:
+    """Materialize a pinned public fixture repository for native tests."""
+    if destination.exists():
+        return
+    destination.mkdir(parents=True)
+    subprocess.run(["git", "-C", str(destination), "init"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "remote",
+            "add",
+            "origin",
+            f"https://github.com/{repository}.git",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(destination),
+            "fetch",
+            "--depth",
+            "1",
+            "origin",
+            revision,
+        ],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(destination), "checkout", "--detach", "FETCH_HEAD"],
+        check=True,
+    )
+
+
+def link_fixture(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.is_symlink():
+        destination.unlink()
+    elif destination.exists():
+        raise SystemExit(f"fixture destination already exists: {destination}")
+    destination.symlink_to(source, target_is_directory=True)
 
 
 # Compiler bindings split.
@@ -188,5 +235,23 @@ use super::*;
 
 """ + dispatch_enum + "\nimpl Machine {\n" + dispatch_method + "}\n"
 (ROOT / "core/rust/src/vm/machine/dispatch.rs").write_text(dispatch_source)
+
+# Match Core CI's external fixture layout. These repositories are transport-only
+# inputs and are not staged into the clean product commit.
+specs_checkout = ROOT / "hara-specs-registry"
+checkout_fixture("hara-lang/hara-specs-registry", "main", specs_checkout)
+link_fixture(specs_checkout, ROOT.parent / "hara-specs-registry")
+link_fixture(specs_checkout, Path("/tmp/hara-specs-registry"))
+
+benchmarks_checkout = ROOT / "hara-benchmarks"
+checkout_fixture(
+    "hara-lang/hara-benchmarks",
+    "05234295ac1c706eb1adee505873b10783d42163",
+    benchmarks_checkout,
+)
+link_fixture(
+    benchmarks_checkout,
+    ROOT.parent.parent / "website/hara-benchmarks",
+)
 
 print("applied the mechanical #562 compiler and machine layout split")
