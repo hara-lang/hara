@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -15,139 +15,95 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Test the Foundation surface checker
-        run: |
+      - run: |
           python scripts/test_check_foundation_surface.py
-          python -m py_compile \
-            scripts/check_foundation_surface.py \
-            scripts/test_check_foundation_surface.py
-
-      - name: Validate source, tests, and retired-name evidence
-        run: |
-          python scripts/check_foundation_surface.py \
-            --report generated/foundation-surface-conformance.json
-
-      - name: Upload the conformance report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: foundation-surface-conformance
-          path: generated/foundation-surface-conformance.json
-          if-no-files-found: warn
-          retention-days: 30
+          python scripts/check_foundation_surface.py --report generated/foundation-surface-conformance.json
 
   complete-script-port:
     if: ${{ github.event_name == 'pull_request' && github.head_ref == 'agent/823-script-port-completion' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
           ref: agent/823-script-port-completion
           fetch-depth: 0
-
       - uses: dtolnay/rust-toolchain@stable
-
       - name: Build native Hara once
         run: cargo build --manifest-path core/rust/Cargo.toml --release --bin hara
-
-      - name: Construct and evaluate the portable annex candidate
+      - name: Bisect portable annex namespace load
         shell: bash
         run: |
-          cat > /tmp/script-annex.hal <<'HAL'
-          (ns lang.core.script.annex
-            (:require [lang.core.eval :as evaluation]
-                      [lang.core.runtime :as runtime]
-                      [lang.core.script :as script]))
+          set -euo pipefail
+          HARA=core/rust/target/release/hara
 
+          cat > /tmp/annex-a.hal <<'HAL'
+          (ns lang.core.script.annex
+            (:require [lang.core.runtime :as runtime]
+                      [lang.core.script :as script]))
           (def +registry+ (atom {}))
           (def +runtimes+ (atom {}))
+          (defn current-namespace-symbol [] (symbol (str (current-namespace))))
+          (defn coordinate [namespace tag] [namespace tag])
+          HAL
+          echo '=== annex A: namespace + state ==='
+          "$HARA" --project core --offline stdin < /tmp/annex-a.hal
 
-          (defn current-namespace-symbol
-            []
-            (symbol (str (current-namespace))))
-
-          (defn coordinate
-            [namespace tag]
-            [namespace tag])
-
-          (defn register-tag-in!
-            "Registers one explicit tagged script runtime without cloning a library."
-            [namespace tag lang config]
+          cp /tmp/annex-a.hal /tmp/annex-b.hal
+          cat >> /tmp/annex-b.hal <<'HAL'
+          (defn register-tag-in! [namespace tag lang config]
             (let [key (coordinate namespace tag)
                   previous (get (deref +registry+) key)
-                  record {:namespace namespace
-                          :tag tag
-                          :lang lang
+                  record {:namespace namespace :tag tag :lang lang
                           :runtime (or (get config :runtime) :default)
                           :config config}]
               (swap! +registry+ assoc key record)
               [previous record]))
-
-          (defn register-tag!
-            [tag lang config]
-            (register-tag-in! (current-namespace-symbol) tag lang config))
-
-          (defn deregister-tag-in!
-            [namespace tag]
+          (defn deregister-tag-in! [namespace tag]
             (let [key (coordinate namespace tag)
                   previous (get (deref +registry+) key)]
               (swap! +registry+ dissoc key)
               previous))
-
-          (defn deregister-tag!
-            [tag]
-            (deregister-tag-in! (current-namespace-symbol) tag))
-
-          (defn tag-info-in
-            [namespace tag]
+          (defn tag-info-in [namespace tag]
             (get (deref +registry+) (coordinate namespace tag)))
-
-          (defn tag-info
-            [tag]
-            (tag-info-in (current-namespace-symbol) tag))
-
-          (defn runtime-in
-            [namespace tag]
+          (defn runtime-in [namespace tag]
             (get (deref +runtimes+) (coordinate namespace tag)))
+          (defn namespace-tags [state namespace]
+            (reduce-kv (fn [out key ignored]
+                         (if (= namespace (first key))
+                           (conj out (second key))
+                           out))
+                       #{} state))
+          (defn status-in [namespace]
+            {:registered (namespace-tags (deref +registry+) namespace)
+             :active (namespace-tags (deref +runtimes+) namespace)})
+          HAL
+          echo '=== annex B: registry helpers ==='
+          "$HARA" --project core --offline stdin < /tmp/annex-b.hal
 
-          (defn runtime
-            [tag]
-            (runtime-in (current-namespace-symbol) tag))
-
-          (defn start-tag-in!
-            "Creates and starts the runtime registered for namespace/tag."
-            [namespace tag]
+          cp /tmp/annex-b.hal /tmp/annex-c.hal
+          cat >> /tmp/annex-c.hal <<'HAL'
+          (defn start-tag-in! [namespace tag]
             (let [key (coordinate namespace tag)
                   record (tag-info-in namespace tag)]
               (if (nil? record)
                 (throw (ex-info "Script annex tag is not registered"
                                 {:namespace namespace :tag tag}))
                 (let [previous (runtime-in namespace tag)
-                      _ (if previous (runtime/rt-stop previous))
+                      ignored (if previous (runtime/rt-stop previous) nil)
                       lang (get record :lang)
                       config (get record :config)
                       module (or (get config :module) namespace)
-                      _ (script/configure-module! lang module config)
-                      instance (runtime/rt-create
-                                lang
-                                (get record :runtime)
-                                (assoc config :module module))
+                      configured (script/configure-module! lang module config)
+                      instance (runtime/rt-create lang (get record :runtime)
+                                                  (assoc config :module module))
                       started (runtime/rt-start instance)]
                   (swap! +runtimes+ assoc key started)
                   started))))
-
-          (defn start-tag!
-            [tag]
-            (start-tag-in! (current-namespace-symbol) tag))
-
-          (defn stop-tag-in!
-            [namespace tag]
+          (defn stop-tag-in! [namespace tag]
             (let [key (coordinate namespace tag)
                   instance (runtime-in namespace tag)]
               (if instance
@@ -155,77 +111,27 @@ jobs:
                   (swap! +runtimes+ dissoc key)
                   stopped)
                 nil)))
+          (defn restart-tag-in! [namespace tag]
+            (do (stop-tag-in! namespace tag)
+                (start-tag-in! namespace tag)))
+          (defn start-all-in! [namespace]
+            (reduce (fn [out tag]
+                      (assoc out tag (start-tag-in! namespace tag)))
+                    {} (get (status-in namespace) :registered)))
+          (defn stop-all-in! [namespace]
+            (reduce (fn [out tag]
+                      (assoc out tag (stop-tag-in! namespace tag)))
+                    {} (get (status-in namespace) :active)))
+          (defn restart-all-in! [namespace]
+            (do (stop-all-in! namespace)
+                (start-all-in! namespace)))
+          HAL
+          echo '=== annex C: runtime lifecycle ==='
+          "$HARA" --project core --offline stdin < /tmp/annex-c.hal
 
-          (defn stop-tag!
-            [tag]
-            (stop-tag-in! (current-namespace-symbol) tag))
-
-          (defn restart-tag-in!
-            [namespace tag]
-            (do
-              (stop-tag-in! namespace tag)
-              (start-tag-in! namespace tag)))
-
-          (defn restart-tag!
-            [tag]
-            (restart-tag-in! (current-namespace-symbol) tag))
-
-          (defn namespace-tags
-            [state namespace]
-            (reduce-kv
-             (fn [out key value]
-               (if (= namespace (first key))
-                 (conj out (second key))
-                 out))
-             #{}
-             state))
-
-          (defn status-in
-            [namespace]
-            {:registered (namespace-tags (deref +registry+) namespace)
-             :active (namespace-tags (deref +runtimes+) namespace)})
-
-          (defn status
-            []
-            (status-in (current-namespace-symbol)))
-
-          (defn start-all-in!
-            [namespace]
-            (reduce
-             (fn [out tag]
-               (assoc out tag (start-tag-in! namespace tag)))
-             {}
-             (get (status-in namespace) :registered)))
-
-          (defn start-all!
-            []
-            (start-all-in! (current-namespace-symbol)))
-
-          (defn stop-all-in!
-            [namespace]
-            (reduce
-             (fn [out tag]
-               (assoc out tag (stop-tag-in! namespace tag)))
-             {}
-             (get (status-in namespace) :active)))
-
-          (defn stop-all!
-            []
-            (stop-all-in! (current-namespace-symbol)))
-
-          (defn restart-all-in!
-            [namespace]
-            (do
-              (stop-all-in! namespace)
-              (start-all-in! namespace)))
-
-          (defn restart-all!
-            []
-            (restart-all-in! (current-namespace-symbol)))
-
-          (defn eval-tag-in!
-            "Compiles and evaluates one form through the selected tagged runtime."
-            [namespace tag form]
+          cp /tmp/annex-c.hal /tmp/annex-d.hal
+          cat >> /tmp/annex-d.hal <<'HAL'
+          (defn eval-tag-in! [namespace tag form]
             (let [record (tag-info-in namespace tag)
                   instance (runtime-in namespace tag)]
               (if (nil? record)
@@ -236,376 +142,36 @@ jobs:
                                   {:namespace namespace :tag tag}))
                   (let [config (get record :config)
                         module (or (get config :module) namespace)
-                        source (script/compile-form (get record :lang) module form)
-                        response (evaluation/eval-await instance source {})]
-                    (if (and (map? response) (has? response :value))
-                      (get response :value)
-                      response))))))
+                        source (script/compile-form (get record :lang) module form)]
+                    (runtime/rt-raw-eval instance source))))))
+          HAL
+          echo '=== annex D: tagged evaluation ==='
+          "$HARA" --project core --offline stdin < /tmp/annex-d.hal
 
-          (defn eval-tag!
-            [tag form]
-            (eval-tag-in! (current-namespace-symbol) tag form))
-
-          (defn clear-in!
-            [namespace]
-            (do
-              (stop-all-in! namespace)
-              (swap! +registry+
-                     (fn [entries]
-                       (reduce-kv
-                        (fn [out key value]
-                          (if (= namespace (first key))
-                            out
-                            (assoc out key value)))
-                        {}
-                        entries)))
-              (status-in namespace)))
-
-          (defn clear!
-            []
-            (clear-in! (current-namespace-symbol)))
-
-          (defn script-ext-form
-            [namespace coordinate config]
-            (let [tag (first coordinate)
-                  lang (second coordinate)
+          cp /tmp/annex-d.hal /tmp/annex-e.hal
+          cat >> /tmp/annex-e.hal <<'HAL'
+          (defn script-ext-form [namespace coordinate-value config]
+            (let [tag (first coordinate-value)
+                  lang (second coordinate-value)
                   config (or config {})]
               (list 'do
                     (list 'lang.core.script.annex/register-tag-in!
-                          (list 'quote namespace)
-                          tag
-                          lang
-                          (list 'quote config))
+                          (list 'quote namespace) tag lang (list 'quote config))
                     (list 'lang.core.script.annex/start-tag-in!
-                          (list 'quote namespace)
-                          tag))))
-
-          (defn script-eval-form
-            [namespace tag body]
+                          (list 'quote namespace) tag))))
+          (defn script-eval-form [namespace tag body]
             (if (vector? tag)
               (list 'lang.core.script.annex/eval-tag-in!
-                    (list 'quote namespace)
-                    (first tag)
-                    (list 'quote body))
+                    (list 'quote namespace) (first tag) (list 'quote body))
               nil))
-
-          (defmacro script+
-            [coordinate & [config]]
+          (defmacro script+ [coordinate-value & options]
             (lang.core.script.annex/script-ext-form
              (symbol (str (get &env :ns)))
-             coordinate
-             (or config {})))
-
-          (defmacro !
-            [tag body]
+             coordinate-value
+             (if (empty? options) {} (first options))))
+          (defmacro ! [tag body]
             (lang.core.script.annex/script-eval-form
-             (symbol (str (get &env :ns)))
-             tag
-             body))
+             (symbol (str (get &env :ns))) tag body))
           HAL
-
-          core/rust/target/release/hara --project core --offline stdin < /tmp/script-annex.hal
-          ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/core/script_contract_test.hal
-
-      - name: Write and re-evaluate the annex source
-        shell: bash
-        run: |
-          mkdir -p core/lib/src/lang/core/script
-          cp /tmp/script-annex.hal core/lib/src/lang/core/script/annex.hal
-          core/rust/target/release/hara --project core --offline run core/lib/src/lang/core/script/annex.hal
-          ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/core/script_contract_test.hal
-
-      - name: Construct and evaluate the lang.core facade candidate
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("core/lib/src/lang/core.hal")
-          source = path.read_text()
-          require_old = "            [lang.core.script :as script]\n            [lang.core.script-fragment]"
-          require_new = "            [lang.core.script :as script]\n            [lang.core.script.annex :as script-annex]\n            [lang.core.script-fragment]"
-          if source.count(require_old) != 1:
-              raise SystemExit(f"lang.core annex require anchor changed: {source.count(require_old)}")
-          source = source.replace(require_old, require_new, 1)
-
-          anchor = "(defn rt:restart [] (restart-script!))\n"
-          addition = r'''
-
-          ;; Portable replacement for the old tahto.core.script RuntimeAnnex.
-          ;; State is explicit and keyed by [source-namespace tag]; no cloned
-          ;; Foundation library or ContextSpace is retained.
-          (defn annex:start
-            ([tag] (script-annex/start-tag! tag))
-            ([tag namespace] (script-annex/start-tag-in! namespace tag)))
-
-          (defn annex:get
-            ([tag] (script-annex/runtime tag))
-            ([tag namespace] (script-annex/runtime-in namespace tag)))
-
-          (defn annex:stop
-            ([tag] (script-annex/stop-tag! tag))
-            ([tag namespace] (script-annex/stop-tag-in! namespace tag)))
-
-          (defn annex:start-all
-            ([] (script-annex/start-all!))
-            ([namespace] (script-annex/start-all-in! namespace)))
-
-          (defn annex:stop-all
-            ([] (script-annex/stop-all!))
-            ([namespace] (script-annex/stop-all-in! namespace)))
-
-          (defn annex:restart-all
-            ([] (script-annex/restart-all!))
-            ([namespace] (script-annex/restart-all-in! namespace)))
-
-          (defn annex:list
-            ([] (script-annex/status))
-            ([namespace] (script-annex/status-in namespace)))
-
-          (defmacro script+
-            [coordinate & [config]]
-            (script-annex/script-ext-form
-             (symbol (str (get &env :ns)))
-             coordinate
-             (or config {})))
-
-          (defmacro !
-            [tag body]
-            (script-annex/script-eval-form
-             (symbol (str (get &env :ns)))
-             tag
-             body))
-          '''
-          if source.count(anchor) != 1:
-              raise SystemExit(f"lang.core runtime facade anchor changed: {source.count(anchor)}")
-          source = source.replace(anchor, anchor + addition, 1)
-          Path("/tmp/lang-core.hal").write_text(source)
-          PY
-
-          core/rust/target/release/hara --project core --offline stdin < /tmp/lang-core.hal
-          ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/core/script_contract_test.hal
-
-      - name: Write and re-evaluate lang.core
-        shell: bash
-        run: |
-          cp /tmp/lang-core.hal core/lib/src/lang/core.hal
-          core/rust/target/release/hara --project core --offline run core/lib/src/lang/core.hal
-          ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/core/script_contract_test.hal
-
-      - name: Construct and evaluate the source-derived port contract
-        shell: bash
-        run: |
-          cat > /tmp/script-port-test.hal <<'HAL'
-          (ns lang.core.script-port-test
-            (:use code.test)
-            (:require [code.migrate :as migrate]
-                      [lang.core]
-                      [lang.core.script :as script]
-                      [lang.core.script.annex :as annex]
-                      [tool.lint :as lint]))
-
-          (defn current-module
-            []
-            (symbol (str (current-namespace))))
-
-          (defn report-data
-            [outcome]
-            (Result/data outcome))
-
-          (def results
-            [(fact "all six Foundation script authorities remain exhaustively governed"
-               (mapv (fn [unit]
-                       [(get unit :namespace)
-                        (count (get unit :references))])
-                     migrate/+foundation-script-source-units+)
-               => '[[tahto.core.script 28]
-                    [tahto.core.script-annex 16]
-                    [tahto.core.script-control 7]
-                    [tahto.core.script-def 2]
-                    [tahto.core.script-lint 10]
-                    [tahto.core.script-macro 21]])
-
-             (fact "script-def and script-macro publication is grammar-derived and deterministic"
-               (let [definition
-                     (lang.core/script-definition-macro-form :postgres :pg 'def)
-                     fragment
-                     (lang.core/script-fragment-macro-form :postgres :pg)
-                     macro
-                     (lang.core/script-defmacro-macro-form :postgres :pg)
-                     first-run (lang.core/script-macro-forms :postgres)
-                     second-run (lang.core/script-macro-forms :postgres)
-                     symbols (mapv second first-run)
-                     symbol-set (set symbols)]
-                 [(second definition)
-                  (second fragment)
-                  (second macro)
-                  (= first-run second-run)
-                  (= (count symbols) (count symbol-set))
-                  (every? (fn [symbol] (has? symbol-set symbol))
-                          '[!.pg !.postgres
-                            def$.pg def$.postgres
-                            defmacro.pg defmacro.postgres
-                            def.pg defn.pg deftype.pg deftrigger.pg
-                            defenum.pg defconst.pg])])
-               => ['def.pg 'def$.pg 'defmacro.pg true true true])
-
-             (fact "script-lint behavior is owned by portable tool.lint rather than mutable lint globals"
-               [(map :type
-                     (:findings
-                      (report-data
-                       (lint/lint-source
-                        "(ns demo.script-port)\n(defn foo [x] (+ x missing))"))))
-                (map :type
-                     (:findings
-                      (report-data
-                       (lint/lint-source
-                        "(ns demo.script-port)\n(defn foo [x] (+ x 1))"))))]
-               => [[:tool.lint/unresolved-symbol] []])
-
-             (fact "representative def.xt and def.pg declarations use the same pointer contract"
-               (let [modules-before (deref script/+modules+)
-                     contexts-before (deref script/+module-contexts+)]
-                 (try
-                   (eval '(lang.core/script- :xtalk))
-                   (eval '(def.xt PORTED-XT 1))
-                   (eval '(lang.core/script- :postgres))
-                   (eval '(def.pg PORTED-PG 1))
-                   (let [xt-var (resolve 'PORTED-XT)
-                         pg-var (resolve 'PORTED-PG)
-                         xt (deref xt-var)
-                         pg (deref pg-var)]
-                     [(var? xt-var)
-                      (lang.core/code-pointer? xt)
-                      (get xt :lang)
-                      (get xt :op)
-                      (get xt :form-input)
-                      (var? pg-var)
-                      (lang.core/code-pointer? pg)
-                      (get pg :lang)
-                      (get pg :op)
-                      (get pg :form-input)])
-                   (finally
-                     (reset! script/+modules+ modules-before)
-                     (reset! script/+module-contexts+ contexts-before))))
-               => [true true :xtalk 'def '(def PORTED-XT 1)
-                   true true :postgres 'def '(def PORTED-PG 1)])
-
-             (fact "tagged script annexes use explicit namespace/tag state and preserve lifecycle"
-               (let [registry-before (deref annex/+registry+)
-                     runtimes-before (deref annex/+runtimes+)]
-                 (try
-                   (let [started (lang.core/script+ [:PORT.0 :xtalk]
-                                                   {:runtime :default})
-                         emitted (lang.core/! [:PORT.0] (+ 1 2))
-                         active (lang.core/annex:list)
-                         selected (= started (lang.core/annex:get :PORT.0))
-                         _ (lang.core/annex:stop :PORT.0)
-                         stopped (lang.core/annex:list)
-                         restarted (lang.core/annex:start :PORT.0)
-                         restarted-status (lang.core/annex:list)
-                         _ (lang.core/annex:stop-all)
-                         final-status (lang.core/annex:list)]
-                     [(get started :lang)
-                      (get started :runtime)
-                      (string? emitted)
-                      selected
-                      active
-                      stopped
-                      (get restarted :lang)
-                      restarted-status
-                      final-status])
-                   (finally
-                     (lang.core/annex:stop-all)
-                     (reset! annex/+registry+ registry-before)
-                     (reset! annex/+runtimes+ runtimes-before))))
-               => [:xtalk :default true true
-                   {:registered #{:PORT.0} :active #{:PORT.0}}
-                   {:registered #{:PORT.0} :active #{}}
-                   :xtalk
-                   {:registered #{:PORT.0} :active #{:PORT.0}}
-                   {:registered #{:PORT.0} :active #{}}])
-
-             (fact "tagged script evaluation rejects missing and stopped tags explicitly"
-               (let [namespace (current-module)
-                     registry-before (deref annex/+registry+)
-                     runtimes-before (deref annex/+runtimes+)]
-                 (try
-                   [(try
-                      (annex/eval-tag-in! namespace :MISSING '(+ 1 2))
-                      false
-                      (catch Exception _ true))
-                    (do
-                      (annex/register-tag-in! namespace :STOPPED :xtalk
-                                              {:runtime :default})
-                      (try
-                        (annex/eval-tag-in! namespace :STOPPED '(+ 1 2))
-                        false
-                        (catch Exception _ true)))]
-                   (finally
-                     (annex/stop-all-in! namespace)
-                     (reset! annex/+registry+ registry-before)
-                     (reset! annex/+runtimes+ runtimes-before))))
-               => [true true])])
-
-          (pr-str (run '[lang.core.script-port-test]))
-          HAL
-
-          core/rust/target/release/hara --project core --offline stdin < /tmp/script-port-test.hal
-
-      - name: Write and run the focused port contract
-        shell: bash
-        run: |
-          cp /tmp/script-port-test.hal core/lib/test-lang/lang/core/script_port_test.hal
-          core/rust/target/release/hara --project core --offline run core/lib/test-lang/lang/core/script_port_test.hal
-          ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/core/script_port_test.hal
-          ./scripts/runtime/run-lib-tests core/lib/test-lang/lang/core/script_contract_test.hal
-          ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_script_test.hal
-          git diff --check -- \
-            core/lib/src/lang/core.hal \
-            core/lib/src/lang/core/script/annex.hal \
-            core/lib/test-lang/lang/core/script_port_test.hal
-
-      - name: Run JVM Truffle script parity
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
-
-      - name: Verify the same port contracts on JVM Truffle
-        shell: bash
-        run: |
-          cat > core/java/src/test/java/hara/truffle/AgentScriptPortCompletionTest.java <<'JAVA'
-          package hara.truffle;
-
-          import org.junit.runner.RunWith;
-
-          @RunWith(HaraJUnitRunner.class)
-          @HaraTestSource({
-              "lib/test-lang/lang/core/script_port_test.hal",
-              "lib/test-lang/lang/core/script_contract_test.hal",
-              "lib/test/code/migrate_script_test.hal"
-          })
-          public final class AgentScriptPortCompletionTest {}
-          JAVA
-          mvn -B -f core/java/pom.xml -Ptruffle \
-            -Dtest=hara.truffle.AgentScriptPortCompletionTest test
-          rm core/java/src/test/java/hara/truffle/AgentScriptPortCompletionTest.java
-
-      - name: Publish only the validated product change
-        shell: bash
-        run: |
-          git fetch origin main
-          git show origin/main:.github/workflows/foundation-surface-conformance.yml \
-            > .github/workflows/foundation-surface-conformance.yml
-          git add core/lib/src/lang/core.hal \
-                  core/lib/src/lang/core/script/annex.hal \
-                  core/lib/test-lang/lang/core/script_port_test.hal \
-                  .github/workflows/foundation-surface-conformance.yml
-          git diff --cached --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Complete portable script annex and parity port"
-          git push origin HEAD:agent/823-script-port-completion
+          echo '=== annex E: macro surface ==='
+          "$HARA" --project core --offline stdin < /tmp/annex-e.hal
