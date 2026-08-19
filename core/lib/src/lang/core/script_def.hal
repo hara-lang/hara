@@ -1,0 +1,75 @@
+(ns lang.core.script-def
+  (:require [std.foundation :as f]
+            [std.foundation.string :as str]))
+
+(defn sym-default-inverse-str
+  [symbol-value]
+  (str/replace (str symbol-value) "_" "-"))
+
+(defn tmpl-entry
+  "Generates one portable def.* or def$.* form from template metadata."
+  [s]
+  (let [{:keys [tag type base prefix shrink]
+         :or {base []}} (f/template-meta)
+        base (if (vector? base) base [base])
+        dsym (case type
+               :fragment (symbol (str "def$." tag))
+               :object (symbol (str "def." tag)))
+        pair (if (vector? s) s [s s])
+        sym (first pair)
+        msym (second pair)
+        sym-text (sym-default-inverse-str
+                  (str/replace (name sym) "." (if shrink "" "-")))
+        sym-text (if prefix (str prefix sym-text) sym-text)
+        mrep (symbol (str/join "." (map str (conj base msym))))]
+    (list dsym (symbol sym-text) mrep)))
+
+(defn tmpl-macro
+  "Generates one portable defmacro.* method/property wrapper."
+  [[s args options]]
+  (let [{:keys [property optional vargs empty]} (or options {})
+        {:keys [tag inst prefix subtree]
+         :or {inst "obj"}} (f/template-meta)
+        inst (symbol (str inst))
+        pair (if (vector? s) s [s s])
+        sym0 (first pair)
+        msym (second pair)
+        sym-text (sym-default-inverse-str sym0)
+        sym-text (if prefix (str prefix sym-text) sym-text)
+        sym (symbol sym-text)
+        dargs (cond
+                property []
+                (and optional vargs)
+                (conj args '& (conj optional '& [:as vargs] :as 'targs))
+                optional
+                (conj args '& (conj optional :as 'oargs))
+                vargs
+                (conj args '& [:as vargs])
+                :else args)
+        aform (cond
+                (and optional vargs)
+                `(apply list (quote ~msym) ~@args
+                        (vec (concat
+                              (take (- (count ~'targs) (count ~vargs)) ~optional)
+                              ~vargs)))
+                optional
+                `(apply list (quote ~msym) ~@args
+                        (vec (take (count ~'oargs) ~optional)))
+                vargs
+                `(apply list (quote ~msym) ~@args ~vargs)
+                :else
+                `(list (quote ~msym) ~@args))
+        standalone
+        (let [isym (if empty (list 'or inst empty) inst)]
+          (if property
+            `(~'fn:> [~isym] (~'. ~isym ~msym))
+            (let [rest-args (if vargs [(symbol (str "..." vargs))] [])]
+              `(~'fn:> [~isym ~@args ~@optional ~@rest-args]
+                 (~'. ~isym (~msym ~@args ~@optional ~@rest-args))))))
+        subtree-fn (fn [value] (list 'quote (symbol value)))
+        sform (if property
+                `(list ~''. ~inst ~@(map subtree-fn subtree) (quote ~msym))
+                `(list ~''. ~inst ~@(map subtree-fn subtree) ~aform))]
+    `(~(symbol (str "defmacro." tag))
+      ~(with-meta sym {:standalone (list 'quote standalone)})
+      ([~inst ~@dargs] ~sform))))

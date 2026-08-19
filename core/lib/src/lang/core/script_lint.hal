@@ -1,0 +1,52 @@
+(ns lang.core.script-lint
+  (:require [lang.core.registry :as registry]
+            [tool.lint :as lint]))
+
+(defn get-reserved-raw
+  "Returns the selected language grammar's reserved symbols."
+  [lang]
+  (set (keys (get-in (registry/registry-book lang)
+                     [:grammar :reserved]))))
+
+(def get-reserved get-reserved-raw)
+
+(defn collect-vars
+  "Collects every symbol recursively from a source form."
+  [form]
+  (cond
+    (symbol? form) #{form}
+    (map? form)
+    (reduce-kv (fn [out key value]
+                 (union out (collect-vars key) (collect-vars value)))
+               #{}
+               form)
+    (coll? form)
+    (reduce (fn [out value]
+              (union out (collect-vars value)))
+            #{}
+            form)
+    :else #{}))
+
+(defn collect-module-globals
+  "Collects legacy module globals without retaining mutable lint settings."
+  [module]
+  (let [native-values
+        (reduce-kv
+         (fn [out key group]
+           (reduce-kv
+            (fn [current entry-key values]
+              (reduce (fn [result value] (conj result value))
+                      current
+                      (if (coll? values) values [values])))
+            out
+            (or group {})))
+         #{}
+         (or (:native module) {}))
+        static-values (or (get-in module [:static :lang/lint-globals]) #{})]
+    (dissoc (union native-values static-values) '*)))
+
+;; Semantic lint execution is owned by tool.lint. The old +registry+,
+;; +settings+, lint-set, lint-clear, and lint-needed? globals are deliberately
+;; not recreated.
+(def analyze-source lint/analyze-source)
+(def lint-source lint/lint-source)
