@@ -63,6 +63,8 @@ public class StdTypedSchemaTest {
                       + "(let [surfaces "
                       + "      [:int "
                       + "       :vendor/type "
+                      + "       (quote [:int {:title \"Age\" :owner :accounts}]) "
+                      + "       (quote [:map {:title \"User record\" :version 2 :owner :accounts} [:name {:required true :description \"Display name\" :default \"Anonymous\"} :str]]) "
                       + "       (quote [:or :int :str :int]) "
                       + "       (quote [:vector [:maybe :int]]) "
                       + "       (quote [:str {:min-count 1 :max-count 8 :pattern \"^a\"}]) "

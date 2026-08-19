@@ -247,7 +247,22 @@ public final class HalcSchema {
   }
 
   private static boolean supportsProperties(String head) {
-    return List.of("str", "keyword", "vector", "set", "map").contains(head);
+    return List.of(
+            "str",
+            "string",
+            "keyword",
+            "symbol",
+            "list",
+            "bytes",
+            "int",
+            "integer",
+            "num",
+            "number",
+            "any",
+            "vector",
+            "set",
+            "map")
+        .contains(head);
   }
 
   private static Entry<Object, Object> longhandEntry(

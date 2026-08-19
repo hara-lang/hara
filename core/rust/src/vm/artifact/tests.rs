@@ -22,7 +22,7 @@ fn programs_round_trip_and_execute() {
         "demo/Handle".into(),
         SchemaType::WithProperties {
             schema: Box::new(SchemaType::Primitive("str".into())),
-            properties: crate::kernel::parse("{:min-count 1 :max-count 32}").unwrap(),
+            properties: crate::kernel::parse("{:title \"Display handle\" :version 2 :owner :accounts :min-count 1 :max-count 32}").unwrap(),
         },
     );
     program.schema_types.insert(
@@ -30,10 +30,10 @@ fn programs_round_trip_and_execute() {
         SchemaType::WithProperties {
             schema: Box::new(SchemaType::Map(vec![SchemaField {
                 name: crate::kernel::parse(":nickname").unwrap(),
-                properties: Some(crate::kernel::parse("{:optional true}").unwrap()),
+                properties: Some(crate::kernel::parse("{:required true :description \"Display nickname\" :default \"Anonymous\"}").unwrap()),
                 value_type: SchemaType::Primitive("str".into()),
             }])),
-            properties: crate::kernel::parse("{:closed true}").unwrap(),
+            properties: crate::kernel::parse("{:title \"User profile\" :version 2 :owner :accounts :closed true}").unwrap(),
         },
     );
     program.function_types.insert(

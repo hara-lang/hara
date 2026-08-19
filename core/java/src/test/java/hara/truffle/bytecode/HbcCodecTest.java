@@ -51,16 +51,16 @@ public class HbcCodecTest {
                 "demo/Handle",
                 new HalcSchema.Properties(
                     new HalcSchema.Primitive("str"),
-                    HalcSchema.readSurface("{:min-count 1 :max-count 32}")),
+                    HalcSchema.readSurface("{:title \"Display handle\" :version 2 :owner :accounts :min-count 1 :max-count 32}")),
                 "demo/Profile",
                 new HalcSchema.Properties(
                     new HalcSchema.MapType(
                         List.of(
                             new HalcSchema.Field(
                                 hara.lang.data.Keyword.create("nickname"),
-                                HalcSchema.readSurface("{:optional true}"),
+                                HalcSchema.readSurface("{:required true :description \"Display nickname\" :default \"Anonymous\"}"),
                                 new HalcSchema.Primitive("str")))),
-                    HalcSchema.readSurface("{:closed true}"))),
+                    HalcSchema.readSurface("{:title \"User profile\" :version 2 :owner :accounts :closed true}"))),
             Map.of(
                 "demo/add",
                 new HalcSchema.FunctionType(

@@ -694,7 +694,23 @@ fn normalize_map_field(argument: &Form) -> Result<SchemaField, String> {
 }
 
 fn supports_properties(head: &str) -> bool {
-    matches!(head, "str" | "keyword" | "vector" | "set" | "map")
+    matches!(
+        head,
+        "str"
+            | "string"
+            | "keyword"
+            | "symbol"
+            | "list"
+            | "bytes"
+            | "int"
+            | "integer"
+            | "num"
+            | "number"
+            | "any"
+            | "vector"
+            | "set"
+            | "map"
+    )
 }
 
 fn normalize_composite(items: &[Form]) -> Result<SchemaType, String> {
