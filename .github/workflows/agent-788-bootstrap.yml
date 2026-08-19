@@ -1,0 +1,59 @@
+name: Bootstrap code.migrate callable parity
+
+on:
+  push:
+    branches:
+      - agent/788-code-migrate-callable-parity
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/788-code-migrate-callable-parity
+          fetch-depth: 0
+
+      - name: Replace JVM-only keyword callable use
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/lib/src/code/migrate.hal")
+          source = path.read_text(encoding="utf-8")
+          old = "  (let [accounted (set (keep :source/refer records))]"
+          new = """  (let [accounted
+                (set
+                 (keep (fn [record]
+                         (get record :source/refer))
+                       records))]"""
+
+          occurrences = source.count(old)
+          if occurrences != 1:
+              raise SystemExit(
+                  f"expected exactly one keyword-callable inventory site, found {occurrences}"
+              )
+
+          updated = source.replace(old, new)
+          if "(keep :source/refer records)" in updated:
+              raise SystemExit("keyword-callable inventory site remains after replacement")
+          if updated.count("(get record :source/refer)") != 1:
+              raise SystemExit("explicit source-reference lookup was not installed exactly once")
+
+          path.write_text(updated, encoding="utf-8")
+          PY
+
+      - name: Commit the focused source change
+        shell: bash
+        run: |
+          rm .github/workflows/agent-788-bootstrap.yml
+          git add -A core/lib/src/code/migrate.hal .github/workflows/agent-788-bootstrap.yml
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Make code.migrate inventory lookup callable-portable"
+          git push origin HEAD:agent/788-code-migrate-callable-parity
