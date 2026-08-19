@@ -14,18 +14,46 @@
 (def +allowed-special-forms+ '#{set!})
 
 (def +embedded-rust-snapshot-ledger+
-  [{:source/path "lib/src/code/translate.hal"
-    :target/path "rust/hal-src/code/translate.hal"
-    :migration/action :regenerate
-    :migration/owner :code.migrate}
-   {:source/path "lib/src/code/translate/clojure.hal"
-    :target/path "rust/hal-src/code/translate/clojure.hal"
-    :migration/action :regenerate
-    :migration/owner :code.migrate}
+  [{:source/path "lib/src/code/framework/source.hal"
+    :target/path "rust/hal-src/code/framework/source.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/framework/navigation.hal"
+    :target/path "rust/hal-src/code/framework/navigation.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/project.hal"
+    :target/path "rust/hal-src/code/migrate/project.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/clojure.hal"
+    :target/path "rust/hal-src/code/migrate/clojure.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/rule.hal"
+    :target/path "rust/hal-src/code/migrate/rule.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/rules.hal"
+    :target/path "rust/hal-src/code/migrate/rules.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/profile.hal"
+    :target/path "rust/hal-src/code/migrate/profile.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/git.hal"
+    :target/path "rust/hal-src/code/migrate/git.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/corpus.hal"
+    :target/path "rust/hal-src/code/migrate/corpus.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/report.hal"
+    :target/path "rust/hal-src/code/migrate/report.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/migrate/write.hal"
+    :target/path "rust/hal-src/code/migrate/write.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
+   {:source/path "lib/src/code/manage/migrate.hal"
+    :target/path "rust/hal-src/code/manage/migrate.hal"
+    :migration/action :regenerate :migration/owner :code.migrate}
    {:source/path "lib/src/std/dom/common.hal"
     :target/path "rust/hal-src/std/dom/common.hal"
-    :migration/action :regenerate
-    :migration/owner :code.migrate}])
+    :migration/action :regenerate :migration/owner :code.migrate}])
+
 
 (def +rename-overrides+
   '{tool.sh/require-success tool.sh/require-success
@@ -376,15 +404,15 @@
 
 (defn plan-unit
   [unit ledger-index]
-  (let [edits (unit-rename-edits unit ledger-index)
-        after (structure/apply-edits (:source unit) edits)]
-    {:path (:path unit)
-     :before (:source unit)
-     :after after
-     :changed (not= (:source unit) after)
-     :edits edits
-     :diagnostics []
-     :write false}))
+  (let [edits (unit-rename-edits unit ledger-index)]
+    (framework/transform-code
+     unit
+     (fn [source]
+       {:after (structure/apply-edits source edits)
+        :edits edits
+        :rules [:bang-vars/rename]
+        :diagnostics []}))))
+
 
 (defn plan
   ([units]
@@ -448,14 +476,19 @@
   (let [root (:project/root current-project)
         source (project/read-text (File/join root (:source/path record)))
         target (project/read-text (File/join root (:target/path record)))]
-    (merge record
-           {:path (:target/path record)
-            :before target
-            :after source
-            :changed (not= target source)
-            :write false
-            :rules [:bang-vars/embedded-rust-snapshot]
-            :diagnostics []})))
+    (framework/transform-code
+     {:source/path (:source/path record)
+      :source/text source
+      :target/path (:target/path record)
+      :target/text target}
+     (fn [_]
+       {:after source
+        :rules [:bang-vars/embedded-rust-snapshot]
+        :diagnostics []
+        :provenance
+        {:migration/action (:migration/action record)
+         :migration/owner (:migration/owner record)}}))))
+
 
 (defn embedded-snapshot-plan
   [current-project]

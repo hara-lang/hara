@@ -1,5 +1,6 @@
 (ns code.manage.unit
-  (:require [code.framework :as framework]
+  (:require [code.framework.source :as source]
+            [code.framework :as framework]
             [code.manage.unit.scaffold :as scaffold]
             [code.manage.unit.structure :as structure]))
 
@@ -26,62 +27,17 @@
   [unit]
   (:docstrings (analyse unit)))
 
-(defn transform-function
-  [transform-or-options]
-  (cond
-    (function? transform-or-options)
-    transform-or-options
+(def transform-function source/transform-function)
 
-    (map? transform-or-options)
-    (or (:transform transform-or-options) identity)
 
-    (nil? transform-or-options)
-    identity
+(def transform-code source/transform-code)
 
-    :else
-    (throw
-     (ex :code.manage/invalid-transform
-         {:ex/message "code.manage transform must be a function or options map"
-          :transform transform-or-options}))))
 
-(defn transform-code
-  [unit transform-or-options]
-  (let [before (:source unit)
-        transform (transform-function transform-or-options)
-        after (transform before)]
-    {:path (:path unit)
-     :changed (not= before after)
-     :before before
-     :after after
-     :create false
-     :write false}))
+(def grep source/grep-code)
 
-(defn grep
-  [unit needle-or-options]
-  (let [needle
-        (if (map? needle-or-options)
-          (:needle needle-or-options)
-          needle-or-options)]
-    (if needle
-      (vec
-       (map
-        (fn [entry]
-          (assoc entry :path (:path unit)))
-        (framework/grep-source (:source unit) needle)))
-      [])))
 
-(defn grep-replace
-  ([unit options]
-   (if (:match options)
-     (grep-replace unit
-                   (:match options)
-                   (or (:replacement options) ""))
-     (transform-code unit identity)))
-  ([unit match replacement]
-   (transform-code
-    unit
-    (fn [source]
-      (str/replace source match replacement)))))
+(def grep-replace source/grep-replace)
+
 
 (defn heal-code
   [unit]
@@ -234,24 +190,11 @@
      :write false
      :purged (count edits)}))
 
-(defn replacements
-  [options]
-  (or (:replacements options)
-      (if (and (:match options)
-               (:replacement options))
-        [[(:match options)
-          (:replacement options)]]
-        [])))
+(def replacements source/replacements)
 
-(defn replace-all
-  [source pairs]
-  (reduce
-   (fn [output pair]
-     (str/replace output
-                  (str (first pair))
-                  (str (second pair))))
-   source
-   pairs))
+
+(def replace-all source/replace-all)
+
 
 (defn refactor-code
   [unit options]

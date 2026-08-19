@@ -42,7 +42,7 @@ The migration classes are normative and are defined in
 
 ## Standard owner requiring placement review (`:owner-review`, 20)
 
-`code.deploy`, `code.framework`, `code.manage`, `code.translate`, `code.translate.clojure`
+`code.deploy`, `code.framework`, `code.manage`, `code.migrate.project`, `code.migrate.clojure`
 `std.foundation.pretty`, `std.foundation.string`, `std.lib.fs.path`, `std.lib.fs.walk`
 `std.sandbox`, `std.substrate`, `tool.inrepl`, `tool.package`, `tool.project`, `tool.runtime`
 `tool.sh`, `tool.sh.docker`, `tool.sh.git`, `tool.sh.tmux`, `tool.vm`
