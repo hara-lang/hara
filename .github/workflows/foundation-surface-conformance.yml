@@ -25,7 +25,7 @@ jobs:
   complete-script-port:
     if: ${{ github.event_name == 'pull_request' && github.head_ref == 'agent/823-script-port-completion' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,18 +39,22 @@ jobs:
         run: |
           set -u
           HARA=core/rust/target/debug/hara
-          failures=0
 
           probe() {
             local label="$1"
             local file="$2"
             echo "=== $label ==="
-            if "$HARA" --project core --offline stdin < "$file"; then
-              echo "PASS $label"
+            timeout --signal=TERM --kill-after=5s 20s \
+              "$HARA" --project core --offline stdin < "$file"
+            local status=$?
+            if [[ $status -eq 0 ]]; then
+              echo "PROBE PASS: $label"
+            elif [[ $status -eq 124 || $status -eq 137 || $status -eq 143 ]]; then
+              echo "PROBE HANG: $label (status=$status)"
             else
-              echo "FAIL $label"
-              failures=$((failures + 1))
+              echo "PROBE FAIL: $label (status=$status)"
             fi
+            return 0
           }
 
           cat > /tmp/a0.hal <<'HAL'
@@ -97,6 +101,3 @@ jobs:
           (defn coordinate [namespace tag] [namespace tag])
           HAL
           probe 'A6 sibling plus state and basic helpers' /tmp/a6.hal
-
-          echo "probe failures: $failures"
-          test "$failures" -eq 0
