@@ -49,17 +49,27 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Normalize portable template path joins
+      - name: Normalize portable script materializer guards
         run: |
           python - <<'PY'
           from pathlib import Path
           path = Path('.agent/complete-script-port.py')
           source = path.read_text()
-          old = 'mrep (symbol (str/join "." (conj base msym)))]'
-          new = 'mrep (symbol (str/join "." (map str (conj base msym))))]'
-          if source.count(old) != 2:
-              raise SystemExit(f'expected two template join sites, found {source.count(old)}')
-          path.write_text(source.replace(old, new))
+
+          join_old = 'mrep (symbol (str/join "." (conj base msym)))]'
+          join_new = 'mrep (symbol (str/join "." (map str (conj base msym))))]'
+          if source.count(join_old) != 2:
+              raise SystemExit(f'expected two template join sites, found {source.count(join_old)}')
+          source = source.replace(join_old, join_new)
+
+          guard_old = 'if source.count("84") != 4:'
+          guard_new = 'if source.count("84") != 6:'
+          if source.count(guard_old) != 1:
+              raise SystemExit('script inventory count guard changed')
+          source = source.replace(guard_old, guard_new, 1)
+          source = source.replace('expected four pinned-count literals',
+                                  'expected six pinned-count literals', 1)
+          path.write_text(source)
           PY
 
       - name: Materialize pre-write candidate
