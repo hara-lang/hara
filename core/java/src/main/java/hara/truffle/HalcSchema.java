@@ -22,8 +22,10 @@ public final class HalcSchema {
           Reference,
           Union,
           VectorType,
+          SetType,
           Tuple,
           MapType,
+          Properties,
           FunctionType,
           EnumType,
           Extension,
@@ -41,19 +43,23 @@ public final class HalcSchema {
 
   public record VectorType(Type item) implements Type {}
 
+  public record SetType(Type item) implements Type {}
+
   public record Tuple(List<Type> items) implements Type {
     public Tuple {
       items = List.copyOf(items);
     }
   }
 
-  public record Field(Object name, Type type) {}
+  public record Field(Object name, Object properties, Type type) {}
 
   public record MapType(List<Field> fields) implements Type {
     public MapType {
       fields = List.copyOf(fields);
     }
   }
+
+  public record Properties(Type schema, Object properties) implements Type {}
 
   public record Function(List<Type> fixed, Type rest, Type output) {
     public Function {
@@ -82,6 +88,15 @@ public final class HalcSchema {
   public record Unknown(Object surface) implements Type {}
 
   public static Object shorthand(Type schema) {
+    if (schema instanceof Properties decorated) {
+      ILinearType<?> surface = vector(shorthand(decorated.schema()));
+      if (surface == null || surface.count() == 0) return shorthand(decorated.schema());
+      ArrayList<Object> values = new ArrayList<>();
+      values.add(surface.nth(0));
+      values.add(decorated.properties());
+      for (int index = 1; index < surface.count(); index++) values.add(surface.nth(index));
+      return vectorOf(values.toArray());
+    }
     if (schema instanceof Primitive primitive) {
       return vectorOf(Keyword.create(primitive.name()));
     }
@@ -98,6 +113,9 @@ public final class HalcSchema {
     if (schema instanceof VectorType vector) {
       return vectorOf(Keyword.create("vector"), shorthand(vector.item()));
     }
+    if (schema instanceof SetType set) {
+      return vectorOf(Keyword.create("set"), shorthand(set.item()));
+    }
     if (schema instanceof Tuple tuple) {
       ArrayList<Object> values = headed("tuple");
       tuple.items().forEach(value -> values.add(shorthand(value)));
@@ -106,7 +124,12 @@ public final class HalcSchema {
     if (schema instanceof MapType map) {
       ArrayList<Object> values = headed("map");
       map.fields().forEach(
-          field -> values.add(vectorOf(field.name(), shorthand(field.type()))));
+          field -> {
+            if (field.properties() == null)
+              values.add(vectorOf(field.name(), shorthand(field.type())));
+            else
+              values.add(vectorOf(field.name(), field.properties(), shorthand(field.type())));
+          });
       return vectorOf(values.toArray());
     }
     if (schema instanceof FunctionType function) {
@@ -180,7 +203,11 @@ public final class HalcSchema {
     if (!(vector.nth(0) instanceof Keyword head)) return new Unknown(schema);
     List<Object> arguments = values(vector, 1);
     String headName = keywordName(head);
-    return switch (headName) {
+    Object properties = null;
+    if (supportsProperties(headName) && !arguments.isEmpty() && schemaMap(arguments.get(0)) != null) {
+      properties = arguments.remove(0);
+    }
+    Type normalized = switch (headName) {
       case "or" -> normalizeUnion(arguments);
       case "maybe" -> {
         requireCount(headName, arguments, 1);
@@ -189,6 +216,10 @@ public final class HalcSchema {
       case "vector" -> {
         requireCount(headName, arguments, 1);
         yield new VectorType(normalize(arguments.get(0)));
+      }
+      case "set" -> {
+        requireCount(headName, arguments, 1);
+        yield new SetType(normalize(arguments.get(0)));
       }
       case "tuple" -> new Tuple(normalizeAll(arguments));
       case "map" -> normalizeMap(arguments);
@@ -212,6 +243,11 @@ public final class HalcSchema {
           ? new Primitive(headName)
           : new Extension(headName, arguments);
     };
+    return properties == null ? normalized : new Properties(normalized, properties);
+  }
+
+  private static boolean supportsProperties(String head) {
+    return List.of("str", "keyword", "vector", "set", "map").contains(head);
   }
 
   private static Entry<Object, Object> longhandEntry(
@@ -267,9 +303,12 @@ public final class HalcSchema {
       }
       Entry<Object, Object> name = longhandEntry(field, "name");
       Entry<Object, Object> type = longhandEntry(field, "type");
+      Object properties = longhandValue(field, "properties");
       if (name == null) throw invalid("map schema field requires :name");
       if (type == null) throw invalid("map schema field requires :type");
-      fields.add(new Field(name.getValue(), normalize(type.getValue())));
+      if (properties != null && schemaMap(properties) == null)
+        throw invalid("map schema field :properties must be a map");
+      fields.add(new Field(name.getValue(), properties, normalize(type.getValue())));
     }
     return new MapType(fields);
   }
@@ -337,7 +376,7 @@ public final class HalcSchema {
 
   private static Type normalizeLonghand(IMapType<Object, Object> schema, String kind) {
     List<Object> children = longhandValues(schema, "children", List.of());
-    return switch (kind) {
+    Type normalized = switch (kind) {
       case "primitive" -> {
         Object name = longhandValue(schema, "name");
         if (name == null && !children.isEmpty()) name = children.get(0);
@@ -351,19 +390,23 @@ public final class HalcSchema {
         if (name == null && !children.isEmpty()) name = children.get(0);
         yield normalizeReference(name);
       }
-      case "union", "or" ->
-          normalizeUnion(longhandValues(schema, "types", children));
+      case "union", "or" -> normalizeUnion(longhandValues(schema, "types", children));
       case "vector" -> {
         Object item = longhandValue(schema, "item");
         if (item == null && !children.isEmpty()) item = children.get(0);
         if (item == null) throw invalid("vector schema requires :item");
         yield new VectorType(normalize(item));
       }
+      case "set" -> {
+        Object item = longhandValue(schema, "item");
+        if (item == null && !children.isEmpty()) item = children.get(0);
+        if (item == null) throw invalid("set schema requires :item");
+        yield new SetType(normalize(item));
+      }
       case "tuple" -> new Tuple(normalizeAll(longhandValues(schema, "items", children)));
       case "map" -> normalizeLonghandMap(schema, children);
       case "fn" -> new FunctionType(List.of(normalizeLonghandFunction(schema)));
-      case "function" ->
-          normalizeLonghandFunctions(longhandValues(schema, "arities", children));
+      case "function" -> normalizeLonghandFunctions(longhandValues(schema, "arities", children));
       case "enum" -> new EnumType(longhandValues(schema, "values", children));
       case "extension" -> {
         Object headValue = longhandValue(schema, "head");
@@ -371,8 +414,7 @@ public final class HalcSchema {
         if (!(headValue instanceof Keyword head)) {
           throw invalid("extension schema :head must be a keyword");
         }
-        yield new Extension(
-            keywordName(head), longhandValues(schema, "arguments", children));
+        yield new Extension(keywordName(head), longhandValues(schema, "arguments", children));
       }
       case "unknown" -> {
         Object surface = longhandValue(schema, "surface");
@@ -381,6 +423,10 @@ public final class HalcSchema {
       }
       default -> throw invalid("unsupported longhand schema kind: " + kind);
     };
+    Object properties = longhandValue(schema, "properties");
+    if (properties == null) return normalized;
+    if (schemaMap(properties) == null) throw invalid("schema :properties must be a map");
+    return new Properties(normalized, properties);
   }
 
   /** Conservative body-derived function facts used by lowering tiers. */
@@ -464,12 +510,16 @@ public final class HalcSchema {
 
   private static Type resolve(Type type, Map<String, Type> definitions) {
     HashSet<String> visited = new HashSet<>();
-    while (type instanceof Reference reference && visited.add(reference.name())) {
+    while (true) {
+      if (type instanceof Properties decorated) {
+        type = decorated.schema();
+        continue;
+      }
+      if (!(type instanceof Reference reference) || !visited.add(reference.name())) return type;
       Type next = definitions.get(reference.name());
-      if (next == null) break;
+      if (next == null) return type;
       type = next;
     }
-    return type;
   }
 
   private static Function matchingArity(Type type, ILinearType<?> parameters) {
@@ -512,12 +562,15 @@ public final class HalcSchema {
       List<Field> fields = new ArrayList<>();
       for (Object item : map) {
         Entry<?, ?> entry = (Entry<?, ?>) item;
-        fields.add(new Field(entry.getKey(), inferExpression(entry.getValue(), environment)));
+        fields.add(new Field(entry.getKey(), null, inferExpression(entry.getValue(), environment)));
       }
       return new MapType(fields);
     }
-    if (form instanceof hara.lang.data.types.ISetType<?>)
-      return new Extension("set", List.of());
+    if (form instanceof hara.lang.data.types.ISetType<?> set) {
+      List<Type> members = new ArrayList<>();
+      for (Object value : set) pushJoined(members, inferExpression(value, environment));
+      return new SetType(join(members));
+    }
     if (!(form instanceof hara.lang.data.List<?> list) || list.count() == 0
         || !(list.nth(0) instanceof Symbol operator)) return unknown();
     return inferList(list, operator.getName(), environment);
@@ -613,10 +666,17 @@ public final class HalcSchema {
     List<Field> fields = new ArrayList<>();
     for (Object argument : arguments) {
       ILinearType<?> pair = vector(argument);
-      if (pair == null || pair.count() != 2) {
-        throw invalid(":map schema fields must be [name type] pairs");
+      if (pair == null || (pair.count() != 2 && pair.count() != 3)) {
+        throw invalid(":map schema fields must be [name type] or [name properties type]");
       }
-      fields.add(new Field(pair.nth(0), normalize(pair.nth(1))));
+      if (pair.count() == 2) {
+        fields.add(new Field(pair.nth(0), null, normalize(pair.nth(1))));
+      } else {
+        Object properties = pair.nth(1);
+        if (schemaMap(properties) == null)
+          throw invalid(":map schema field properties must be a map");
+        fields.add(new Field(pair.nth(0), properties, normalize(pair.nth(2))));
+      }
     }
     return new MapType(fields);
   }
