@@ -3,7 +3,7 @@
 Hara is a programmable, runtime-neutral kernel for building, inspecting, and
 changing live systems. Programs communicate with the kernel through HAL (Hara
 Lisp), an EDN-compatible, host-neutral notation and data format. The current
-supported runtime is Truffle: it provides a compact L0 core, persistent data,
+supported runtime is Truffle: it provides a compact core language, persistent data,
 explicit mutable `array`/`object` markers, protocols, promises, bytes,
 capability-gated I/O, and a JLine REPL.
 
@@ -268,7 +268,7 @@ CI workflows check out `hara-lang/hara-www` automatically when they need it.
 
 ## Status
 
-Hara is an active experimental runtime. The L0 slice and focused conformance suites are the source
+Hara is an active experimental runtime. The core-language slice and focused conformance suites are the source
 of truth. Provider discovery and WASM execution are documented contracts with
 implementation work still in progress.
 

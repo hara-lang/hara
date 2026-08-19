@@ -362,7 +362,7 @@ impl Compiler {
                 } else if self.ctx().scopes.resolve(name).is_some()
                     || (!self.visible_global(name)
                         && Primitive::from_symbol(name).is_none()
-                        && !crate::core::is_bytecode_callable(name))
+                        && !self.visible_bytecode_callable(name))
                 {
                     // An enclosing lexical binding always wins over a Var or
                     // builtin with the same name. Everything else that is not
@@ -665,7 +665,7 @@ impl Compiler {
                                 && !free.iter().any(|(f, _)| f == head)
                                 && (self.ctx().scopes.resolve(head).is_some()
                                     || (!self.visible_global(head)
-                                        && !crate::core::is_bytecode_callable(head)))
+                                        && !self.visible_bytecode_callable(head)))
                             {
                                 free.push((head.clone(), Some(children[0].span.start)));
                             }

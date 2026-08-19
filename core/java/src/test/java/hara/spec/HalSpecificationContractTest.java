@@ -19,17 +19,15 @@ import org.junit.Test;
 /** Structural checks for the draft HAL meta-spec and its first language document. */
 public class HalSpecificationContractTest {
   private static final Path METASPEC =
-      Path.of("../hara-specs-registry/01-lang/001-language/metaspec/language-metaspec.edn");
+      specsRegistry().resolve("01-lang/001-language/metaspec/language-metaspec.edn");
   private static final Path LANGSPEC =
-      Path.of("../hara-specs-registry/01-lang/001-language/draft/hal-langspec.edn");
-  private static final Path L0_CORPUS =
-      Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn");
+      specsRegistry().resolve("01-lang/001-language/draft/hal-langspec.edn");
+  private static final Path CORE_LANGUAGE_CORPUS =
+      specsRegistry().resolve("01-lang/001-language/draft/conformance/core.edn");
   private static final Path READER_CORPUS =
-      Path.of("../hara-specs-registry/01-lang/001-language/draft/conformance/reader.edn");
+      specsRegistry().resolve("01-lang/001-language/draft/conformance/reader.edn");
   private static final Path MODULE_CORPUS =
-      Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/modules.edn");
-  private static final Path PARITY_CORPUS =
-      Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/parity/jvm-truffle.edn");
+      specsRegistry().resolve("01-lang/001-language/draft/conformance/modules.edn");
 
   @Test
   public void languageDraftHasResolvableIdentityStructureAndEvidence() throws Exception {
@@ -69,7 +67,10 @@ public class HalSpecificationContractTest {
     ILinearType forms = linear(langspec, key("spec", "forms"));
     Map<Object, IMapType> formsById = index(forms, key("form", "id"));
     Map<Object, Set<Object>> suiteCases =
-        Map.of(Keyword.create("hal", "reader"), caseIds(READER_CORPUS));
+        Map.of(
+            Keyword.create("hal", "reader"), caseIds(READER_CORPUS),
+            Keyword.create("hal", "core"), caseIds(CORE_LANGUAGE_CORPUS),
+            Keyword.create("hal", "modules"), caseIds(MODULE_CORPUS));
     Set<Object> requirementIds = new HashSet<>();
     collectRequirements(
         linear(langspec, key("spec", "invariants")), requirementIds, suiteCases);
@@ -94,7 +95,7 @@ public class HalSpecificationContractTest {
       String relativePath = (String) reference.lookup(key("reference", "path"));
       Path target = LANGSPEC.getParent().resolve(relativePath).normalize();
       assertTrue("Missing specification reference: " + target, Files.exists(target));
-      if (target.startsWith(Path.of("../hara-specs-registry/99-archive/planning"))) {
+      if (target.startsWith(specsRegistry().resolve("99-archive/planning").normalize())) {
         assertEquals(
             "Planning archive references must be historical",
             Keyword.create("historical"),
@@ -116,6 +117,13 @@ public class HalSpecificationContractTest {
     Object value = Parser.LispReader.readString(Files.readString(path), null);
     assertTrue("Expected EDN map: " + path, value instanceof IMapType);
     return (IMapType) value;
+  }
+
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 
   private static IMapType map(IMapType parent, Keyword key) {

@@ -19,7 +19,7 @@ public class FoundationRuntimeCorpusTest {
   private static final Path CORPUS =
       specsRegistry()
           .resolve(
-              "00-unsorted/platform-language/draft/conformance/parity/foundation-runtime.edn");
+              "01-lang/001-language/draft/conformance/parity/foundation-runtime.edn");
 
   @Test
   @SuppressWarnings("rawtypes")
@@ -29,7 +29,7 @@ public class FoundationRuntimeCorpusTest {
     Object rawCases = manifest.lookup(Keyword.create("cases"));
     assertTrue("Foundation runtime corpus must contain :cases", rawCases instanceof ILinearType);
     ILinearType cases = (ILinearType) rawCases;
-    assertTrue("Foundation runtime corpus unexpectedly shrank", cases.count() >= 12);
+    assertTrue("Foundation runtime corpus unexpectedly shrank", cases.count() >= 16);
     Set<Object> ids = new HashSet<>();
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       for (Object rawCase : cases) {

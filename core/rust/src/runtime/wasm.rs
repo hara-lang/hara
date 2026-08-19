@@ -188,5 +188,5 @@ pub fn target_profile() -> String {
 
 #[wasm_bindgen]
 pub fn version() -> String {
-    "hara-wasm/0.1 L0 slice".to_string()
+    "hara-wasm/0.1 core-language slice".to_string()
 }

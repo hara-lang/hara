@@ -1048,7 +1048,7 @@ public class HaraLanguageTest {
           42,
           context.eval(HaraLanguage.ID, "(load-string \"(def loaded 41)\") (+ loaded 1)").asLong());
 
-      Path file = Files.createTempFile("hara-l0-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-", ".hal");
       try {
         Files.writeString(file, "(def from-file 42)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1064,8 +1064,8 @@ public class HaraLanguageTest {
   public void loadsPackagedHaraResourcesTransactionally() {
     try (Context context = context()) {
       assertEquals(
-          42, context.eval(HaraLanguage.ID, "(load-resource \"hara/l0-resource.hal\")").asLong());
-      assertEquals(42, context.eval(HaraLanguage.ID, "l0-resource-answer").asLong());
+          42, context.eval(HaraLanguage.ID, "(load-resource \"hara/core-language-resource.hal\")").asLong());
+      assertEquals(42, context.eval(HaraLanguage.ID, "core-language-resource-answer").asLong());
       assertTrue(
           assertThrows(
                   PolyglotException.class,
@@ -1093,7 +1093,7 @@ public class HaraLanguageTest {
               .getMessage()
               .contains("Unbound symbol"));
 
-      Path file = Files.createTempFile("hara-l0-failing-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-failing-", ".hal");
       try {
         Files.writeString(file, "(def file-leaked 10) (throw :failed-file)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1114,7 +1114,7 @@ public class HaraLanguageTest {
   @Test
   public void requireCachesCanonicalModulesAndLoadFileIncrementsRevision() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-module-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-module-", ".hal");
       try {
         Files.writeString(file, "(def module-answer 41)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1147,7 +1147,7 @@ public class HaraLanguageTest {
   @Test
   public void requirePreservesCallerNamespaceAndSupportsAliases() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-alias-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-alias-", ".hal");
       try {
         Files.writeString(file, "(ns library) (def answer 42)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1169,7 +1169,7 @@ public class HaraLanguageTest {
   @Test
   public void requireSupportsSelectiveLiveReferences() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-refer-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-refer-", ".hal");
       try {
         Files.writeString(file, "(ns library) (def answer 41) (def other 7)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1185,7 +1185,7 @@ public class HaraLanguageTest {
   @Test
   public void requireSupportsSelectiveMacroReferences() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-macro-refer-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-macro-refer-", ".hal");
       try {
         Files.writeString(
             file, "(ns library-macros) (defmacro unless [test body] `(if ~test nil ~body))");
@@ -1201,7 +1201,7 @@ public class HaraLanguageTest {
   @Test
   public void reloadingARequiredMacroModuleRefreshesNewCompilations() throws Exception {
     try (Context context = context()) {
-      Path file = Files.createTempFile("hara-l0-macro-reload-", ".hal");
+      Path file = Files.createTempFile("hara-core-language-macro-reload-", ".hal");
       try {
         Files.writeString(file, "(ns reload-macros) (defmacro answer [] 41)");
         String path = file.toString().replace("\\", "\\\\").replace("\"", "\\\"");
@@ -1222,7 +1222,7 @@ public class HaraLanguageTest {
   @Test
   public void requireRejectsCyclesAndRollsBackPartialModules() throws Exception {
     try (Context context = context()) {
-      Path directory = Files.createTempDirectory("hara-l0-cycle-");
+      Path directory = Files.createTempDirectory("hara-core-language-cycle-");
       Path first = directory.resolve("first.hal");
       Path second = directory.resolve("second.hal");
       try {
@@ -1256,7 +1256,7 @@ public class HaraLanguageTest {
   @Test
   public void requireRecordsDeterministicModuleDependencies() throws Exception {
     try (Context context = context()) {
-      Path directory = Files.createTempDirectory("hara-l0-deps-");
+      Path directory = Files.createTempDirectory("hara-core-language-deps-");
       Path child = directory.resolve("child.hal");
       Path parent = directory.resolve("parent.hal");
       try {
@@ -1776,7 +1776,7 @@ public class HaraLanguageTest {
     String contract =
         Files.readString(
             specsRegistry()
-                .resolve("00-unsorted/platform-language/draft/conformance/protocols.edn"));
+                .resolve("01-lang/001-language/draft/conformance/protocols.edn"));
     Matcher names = Pattern.compile(":name\\s+(I[A-Za-z]+)").matcher(contract);
     Set<String> protocols = new LinkedHashSet<>();
     while (names.find()) {
@@ -1901,11 +1901,11 @@ public class HaraLanguageTest {
         Files.readString(
             specsRegistry()
                 .resolve(
-                    "00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn"));
+                    "01-lang/001-language/draft/conformance/protocol-method-cases.edn"));
     String protocols =
         Files.readString(
             specsRegistry()
-                .resolve("00-unsorted/platform-language/draft/conformance/protocols.edn"));
+                .resolve("01-lang/001-language/draft/conformance/protocols.edn"));
     Set<String> specifiedMethods = new LinkedHashSet<>();
     Matcher protocolEntries =
         Pattern.compile(

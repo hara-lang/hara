@@ -90,7 +90,7 @@ Java/Truffle runtime:
 
 ```shell
 mvn -f core/java/pom.xml -Ptruffle package        # build + full test suite
-mvn -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraL0ConformanceTest test
+mvn -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraCoreLanguageConformanceTest test
 ./core/hara eval '(+ 19 23)'                      # CLI smoke test (shaded jar)
 ./scripts/runtime/run-lib-tests                 # library .hal test harness
 bash scripts/runtime/build-truffle-native       # native-image build (core/target/hara-truffle)

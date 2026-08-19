@@ -545,9 +545,9 @@ public final class Main {
     try (InputStream resource =
         Main.class
             .getClassLoader()
-            .getResourceAsStream("00-unsorted/platform-language/draft/conformance/l0.edn")) {
+            .getResourceAsStream("01-lang/001-language/draft/conformance/core.edn")) {
       if (resource == null) {
-        error.println("Missing packaged L0 conformance manifest");
+        error.println("Missing packaged Core-language conformance manifest");
         return 1;
       }
       String source = new String(resource.readAllBytes(), StandardCharsets.UTF_8);
@@ -605,10 +605,10 @@ public final class Main {
         }
         completed++;
       }
-      output.println("L0 conformance passed: " + completed + " cases");
+      output.println("Core-language conformance passed: " + completed + " cases");
       return 0;
     } catch (Exception failure) {
-      error.println("L0 conformance failed: " + failure.getMessage());
+      error.println("Core-language conformance failed: " + failure.getMessage());
       return 1;
     }
   }
@@ -628,6 +628,9 @@ public final class Main {
     } else if (expected instanceof BigDecimal) {
       if (!actual.as(BigDecimal.class).equals(expected))
         throw new IllegalStateException(id + " bigdec mismatch");
+    } else if (expected instanceof Keyword) {
+      if (!actual.toString().equals(G.display(expected)))
+        throw new IllegalStateException(id + " keyword mismatch");
     } else if (expected instanceof Number) {
       if (actual.asLong() != ((Number) expected).longValue())
         throw new IllegalStateException(id + " number mismatch");

@@ -25,7 +25,7 @@ import org.junit.Test;
 public class NativeMethodParityTest {
   private static final Path CONTRACT =
       specsRegistry()
-          .resolve("00-unsorted/platform-language/draft/conformance/native.edn");
+          .resolve("01-lang/001-language/draft/conformance/native.edn");
   private static final Path FIXTURE =
       Path.of("lib/test-fixtures/std/foundation/native_method_conformance.hal");
 

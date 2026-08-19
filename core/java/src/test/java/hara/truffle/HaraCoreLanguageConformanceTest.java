@@ -18,23 +18,23 @@ import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Value;
 import org.junit.Test;
 
-/** Executes the versioned JVM L0 conformance corpus. */
-public class HaraL0ConformanceTest {
+/** Executes the versioned JVM core-language conformance corpus. */
+public class HaraCoreLanguageConformanceTest {
   private static Keyword key(String name) {
     return Keyword.create(null, name);
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   @Test
-  public void executesEveryJvmL0CorpusCase() throws Exception {
+  public void executesEveryJvmCoreLanguageCorpusCase() throws Exception {
     String registry = System.getenv().getOrDefault("HARA_SPECS_REGISTRY", "../hara-specs-registry");
     String source =
         Files.readString(
-            Path.of(registry, "00-unsorted/platform-language/draft/conformance/l0.edn"));
+            Path.of(registry, "01-lang/001-language/draft/conformance/core.edn"));
     IMapType manifest = (IMapType) Parser.LispReader.readString(source, null);
     ILinearType<?> cases = (ILinearType<?>) manifest.lookup(key("cases"));
     assertTrue(cases.count() > 0);
-    String casePrefix = System.getenv("HARA_L0_CASE_PREFIX");
+    String casePrefix = System.getenv("HARA_CORE_CASE_PREFIX");
     for (Object item : cases) {
       IMapType testCase = (IMapType) item;
       Keyword idKeyword = (Keyword) testCase.lookup(key("id"));
@@ -136,6 +136,8 @@ public class HaraL0ConformanceTest {
       assertEquals(id, expected, actual.as(BigInteger.class));
     } else if (expected instanceof BigDecimal) {
       assertEquals(id, expected, actual.as(BigDecimal.class));
+    } else if (expected instanceof Keyword) {
+      assertEquals(id, G.display(expected), actual.toString());
     } else if (expected instanceof Number) {
       assertEquals(id, ((Number) expected).longValue(), actual.asLong());
     } else {

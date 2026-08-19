@@ -101,6 +101,19 @@ pub(crate) fn error_category(message: &str) -> &'static str {
         // var", not "unbound symbol", so order is safe either way.
         (&["unbound var"], "unbound var"),
         (&["unbound symbol"], "unbound symbol"),
+        (
+            &[
+                "ns+ does not accept",
+                "ns accepts only one",
+                "ns clause",
+                ":config",
+                ":intrinsics",
+                "intrinsic",
+                "Intrinsic",
+                "Namespace alias",
+            ],
+            "namespace config",
+        ),
         (&["recur"], "recur"),
         (&["Invalid number"], "reader"),
         (&["EOF while reading"], "reader"),

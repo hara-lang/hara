@@ -50,7 +50,7 @@ help: ## Show the available runtime targets
 	@echo '  make build-all                  Build JVM, Rust release, and raw WASM'
 	@echo '  make check-all                  Run core layout and runtime test suites'
 	@echo '  make java-test                  Run the Truffle test suite'
-	@echo '  make java-conformance           Run JVM L0 conformance'
+	@echo '  make java-conformance           Run JVM Core-language conformance'
 	@echo '  make rust-test                  Run the native Rust test suite'
 	@echo '  make rust-raw-test              Run raw WASM crate tests'
 	@echo '  make rust-layout                Check Rust module layout'
@@ -91,8 +91,8 @@ java-headless: java-build ## Run the JVM Truffle RESP server
 java-test: ## Run the JVM Truffle test suite
 	$(MAVEN) -f java/pom.xml -Ptruffle test
 
-java-conformance: ## Run JVM L0 conformance
-	$(MAVEN) -f java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraL0ConformanceTest test
+java-conformance: ## Run JVM Core-language conformance
+	$(MAVEN) -f java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraCoreLanguageConformanceTest test
 
 rust-build: ## Build the Rust native runtime
 	$(CARGO) build --manifest-path $(RUST_MANIFEST) --bin hara

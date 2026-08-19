@@ -158,7 +158,7 @@ impl RuntimeBroker {
         Self::start_with_bootstrap(None, false, false, false, RuntimeBootstrap::Full)
     }
 
-    /// Starts an isolated broker with the portable L0 runtime.
+    /// Starts an isolated broker with the portable core-language runtime.
     ///
     /// This is intended for small embedding surfaces and focused tests
     /// that do not require the language-level Foundation bundle.

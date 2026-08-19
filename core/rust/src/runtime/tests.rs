@@ -563,7 +563,7 @@ mod tests {
                 })
         }
 
-        let corpus = repo_text("00-unsorted/platform-language/draft/conformance/modules.edn")
+        let corpus = repo_text("01-lang/001-language/draft/conformance/modules.edn")
             .expect("specs submodule must be initialized for module conformance tests");
         let manifest = kernel::parse_forms(&corpus)
             .expect("module conformance corpus must parse")
@@ -613,7 +613,7 @@ mod tests {
                 })
         }
 
-        let corpus = repo_text("00-unsorted/platform-language/draft/conformance/modules.edn")
+        let corpus = repo_text("01-lang/001-language/draft/conformance/modules.edn")
             .expect("specs submodule must be initialized for module conformance tests");
         let manifest = kernel::parse_forms(&corpus)
             .expect("module conformance corpus must parse")
@@ -1574,7 +1574,7 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(ns app (:intrinsics {:exclude [bytes] :aliases {string text}})                       (:require [hara.lib.string :as s :refer [trim]]))                       (trim (s/trim (text/upper \" x \")))"
+                    "(ns app (:config {:intrinsics {:exclude [bytes] :alias {string text}}})                       (:require [hara.lib.string :as s :refer [trim]]))                       (trim (s/trim (text/upper \" x \")))"
                 )
                 .unwrap(),
             "\"X\""
@@ -1918,8 +1918,7 @@ mod tests {
     #[test]
     fn foundation_protocols_are_canonical_and_method_names_reject_bangs() {
         let mut runtime = Runtime::new();
-        let Some(contract) =
-            repo_text("00-unsorted/platform-language/draft/conformance/protocols.edn")
+        let Some(contract) = repo_text("01-lang/001-language/draft/conformance/protocols.edn")
         else {
             return;
         };
@@ -2124,11 +2123,11 @@ mod tests {
         let source =
             include_str!("../../hal-test-fixtures/std/foundation/protocol_functionality.hal");
         let Some(catalog) =
-            repo_text("00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn")
+            repo_text("01-lang/001-language/draft/conformance/protocol-method-cases.edn")
         else {
             return;
         };
-        let protocols = repo_text("00-unsorted/platform-language/draft/conformance/protocols.edn")
+        let protocols = repo_text("01-lang/001-language/draft/conformance/protocols.edn")
             .expect("protocol contract must accompany its case catalog");
         assert_eq!(
             protocol_case_surface(&catalog),
@@ -2645,8 +2644,7 @@ mod tests {
                 .unwrap_or_else(|_| panic!("unknown wrapper source: {path}"))
         }
 
-        let Some(contract_source) =
-            repo_text("00-unsorted/platform-language/draft/conformance/native.edn")
+        let Some(contract_source) = repo_text("01-lang/001-language/draft/conformance/native.edn")
         else {
             return;
         };
@@ -5818,7 +5816,7 @@ mod tests {
     }
 
     #[test]
-    fn issue_133_cases_run_from_the_shared_l0_conformance_corpus() {
+    fn issue_133_cases_run_from_the_shared_core_language_conformance_corpus() {
         fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> &'a Form {
             entries
                 .iter()
@@ -5829,16 +5827,15 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing :{key}"))
         }
 
-        let Some(corpus) = repo_text("00-unsorted/platform-language/draft/conformance/l0.edn")
-        else {
+        let Some(corpus) = repo_text("01-lang/001-language/draft/conformance/core.edn") else {
             return;
         };
         let manifest = kernel::parse_forms(&corpus).unwrap().remove(0);
         let Form::Map(manifest) = manifest else {
-            panic!("L0 conformance corpus must be a map")
+            panic!("Core-language conformance corpus must be a map")
         };
         let Form::Vector(cases) = entry(&manifest, "cases") else {
-            panic!("L0 conformance :cases must be a vector")
+            panic!("Core-language conformance :cases must be a vector")
         };
         let ids = [
             "function/closure-capture",
@@ -5868,7 +5865,7 @@ mod tests {
             "iterator/empty-cycle-rejected",
             "runtime/recur-outside-target",
             "runtime/recur-arity",
-            "error/catch-exception-value",
+            "error/catch-guest-value",
             "error/catch-order",
             "error/catch-code",
             "error/catch-code-vector",
@@ -5883,6 +5880,33 @@ mod tests {
             "error/unmatched-catch",
             "error/finally-normal",
             "error/finally-unwind",
+            "namespace/config-intrinsics-all",
+            "namespace/named-selects-definition-scope",
+            "namespace/anonymous-reuses-current-scope",
+            "namespace/anonymous-applies-config",
+            "namespace/anonymous-config-override",
+            "namespace/anonymous-config-expose",
+            "namespace/anonymous-config-expose-omits-unlisted",
+            "namespace/anonymous-config-intrinsic-alias",
+            "namespace/anonymous-config-intrinsic-exclude",
+            "namespace/config-blank-override-conflict",
+            "namespace/config-override-expose-conflict",
+            "namespace/config-blank-type",
+            "namespace/anonymous-rejects-name",
+            "namespace/builtins-are-not-vars-or-native-type",
+            "namespace/config-exclude-and-alias",
+            "namespace/config-exclude-removes-alias",
+            "namespace/standalone-intrinsics-invalid",
+            "namespace/standalone-builtins-invalid",
+            "namespace/duplicate-config",
+            "namespace/unknown-config-key",
+            "namespace/unknown-intrinsics-option",
+            "namespace/unknown-intrinsic-library",
+            "namespace/exclude-alias-conflict",
+            "namespace/alias-collision",
+            "namespace/blank-suppresses-referral",
+            "namespace/blank-keeps-special-forms-and-aliases",
+            "namespace/builtins-config-is-internal",
         ];
 
         for id in ids {
@@ -5917,6 +5941,7 @@ mod tests {
                     Form::BigInteger(value) => value.clone(),
                     Form::String(value) => format!("{value:?}"),
                     Form::Bool(value) => value.to_string(),
+                    Form::Keyword(value) => format!(":{value}"),
                     Form::Nil => "nil".to_owned(),
                     value => panic!(":{id} has unsupported expected value {value:?}"),
                 };
@@ -5939,8 +5964,7 @@ mod tests {
                 })
         }
 
-        let Some(corpus) = repo_text("00-unsorted/platform-language/draft/conformance/modules.edn")
-        else {
+        let Some(corpus) = repo_text("01-lang/001-language/draft/conformance/modules.edn") else {
             return;
         };
         let manifest = kernel::parse_forms(&corpus).unwrap().remove(0);
@@ -6107,7 +6131,7 @@ mod tests {
 
     #[test]
     fn issue_134_lazy_namespace_state_is_non_forcing_and_failure_is_sticky() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6295,7 +6319,7 @@ mod tests {
 
     #[test]
     fn issue_134_dependency_order_cycles_and_canonical_cache_are_transactional() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6421,7 +6445,7 @@ mod tests {
 
     #[test]
     fn issue_134_with_ns_uses_target_globals_and_restores_the_caller() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6466,7 +6490,7 @@ mod tests {
 
     #[test]
     fn issue_134_facade_vars_copy_roots_and_metadata_without_sharing_identity() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6514,7 +6538,7 @@ mod tests {
 
     #[test]
     fn issue_134_aliases_and_refers_share_live_var_identity() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6564,7 +6588,7 @@ mod tests {
 
     #[test]
     fn issue_134_macro_reload_only_changes_new_compilations() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6602,7 +6626,7 @@ mod tests {
 
     #[test]
     fn issue_134_session_namespace_module_and_macro_state_is_isolated() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6665,7 +6689,7 @@ mod tests {
 
     #[test]
     fn issue_134_source_and_hir_have_value_metadata_and_error_parity() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6722,7 +6746,7 @@ mod tests {
 
     #[test]
     fn issue_134_runtime_profile_declares_deterministic_resource_precedence() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6758,7 +6782,7 @@ mod tests {
 
     #[test]
     fn issue_134_sessions_unwind_bindings_and_transfer_only_immutable_data() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6839,7 +6863,7 @@ mod tests {
 
     #[test]
     fn issue_134_retained_repl_state_survives_errors_and_multiline_forms() {
-        if repo_text("00-unsorted/platform-language/draft/conformance/modules.edn").is_none() {
+        if repo_text("01-lang/001-language/draft/conformance/modules.edn").is_none() {
             return;
         }
         assert_eq!(
@@ -6978,7 +7002,9 @@ mod tests {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime
-                .eval_text("(try (throw (ex :test/failed {})) (catch error (:ex/code (ex-data error))))")
+                .eval_text(
+                    "(try (throw (ex :test/failed {})) (catch error (:ex/code (ex-data error))))"
+                )
                 .unwrap(),
             ":test/failed"
         );
@@ -7159,7 +7185,7 @@ mod tests {
     }
 
     #[test]
-    fn l0_numeric_and_truth_predicates_are_available() {
+    fn core_language_numeric_and_truth_predicates_are_available() {
         let mut runtime = Runtime::new();
         assert_eq!(runtime.eval_text("(inc 41)").unwrap(), "42");
         assert_eq!(runtime.eval_text("(dec 43)").unwrap(), "42");
@@ -7713,7 +7739,7 @@ mod tests {
         // The code.translate native type list must equal the closed native.edn
         // inventory (both spell the canonical RegExp).
         if let Some(contract_source) =
-            repo_text("00-unsorted/platform-language/draft/conformance/native.edn")
+            repo_text("01-lang/001-language/draft/conformance/native.edn")
         {
             let contract = kernel::parse_forms(&contract_source).unwrap().remove(0);
             let Form::Map(contract) = contract else {
@@ -8008,7 +8034,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_associative_helpers_match_l0_shapes() {
+    fn nested_associative_helpers_match_core_language_shapes() {
         let mut runtime = Runtime::new();
         assert_eq!(
             runtime.eval_text("(get-in {:a {:b 42}} [:a :b])").unwrap(),
@@ -8364,7 +8390,7 @@ mod tests {
     }
 
     #[test]
-    fn lesson_definition_cases_run_from_the_l0_conformance_corpus() {
+    fn lesson_definition_cases_run_from_the_core_language_conformance_corpus() {
         fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> &'a Form {
             entries
                 .iter()

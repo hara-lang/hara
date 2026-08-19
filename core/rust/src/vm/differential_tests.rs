@@ -23,16 +23,28 @@ use std::rc::Rc;
 /// by later forms.
 fn differential(runtime: &mut Runtime, source: &str) {
     let reference = runtime.eval_native(source);
-    let vm = eval_source(source).map(|value| value.display());
+    let registry = crate::embedding_namespace_registry();
+    let vm = compile_source_with(source, &registry)
+        .map_err(|error| error.to_string())
+        .and_then(|program| {
+            execute_program_with_globals(Rc::new(program), &registry)
+                .map(|value| value.display())
+                .map_err(|error| error.to_string())
+        });
     match (&reference, &vm) {
         (Ok(expected), Ok(actual)) => {
             assert_eq!(expected, actual, "value divergence for {source}")
         }
-        (Err(expected), Err(actual)) => assert_eq!(
-            error_category(expected),
-            error_category(actual),
-            "error category divergence for {source}: {expected} vs {actual}"
-        ),
+        (Err(expected), Err(actual)) => {
+            let bytecode_message = actual.split(" [line ").next().unwrap_or(actual);
+            if expected != bytecode_message {
+                assert_eq!(
+                    error_category(expected),
+                    error_category(actual),
+                    "error category divergence for {source}: {expected} vs {actual}"
+                );
+            }
+        }
         _ => panic!("divergence for {source}: reference {reference:?} vs vm {vm:?}"),
     }
 }
@@ -40,11 +52,11 @@ fn differential(runtime: &mut Runtime, source: &str) {
 fn shared_runtime_corpus_path() -> PathBuf {
     if let Some(root) = std::env::var_os("HARA_SPECS_REGISTRY") {
         return PathBuf::from(root)
-            .join("00-unsorted/platform-language/draft/conformance/parity/jvm-truffle.edn");
+            .join("01-lang/001-language/draft/conformance/parity/jvm-truffle.edn");
     }
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../hara-specs-registry")
-        .join("00-unsorted/platform-language/draft/conformance/parity/jvm-truffle.edn")
+        .join("01-lang/001-language/draft/conformance/parity/jvm-truffle.edn")
 }
 
 fn shared_foundation_corpus_path() -> PathBuf {
@@ -52,6 +64,14 @@ fn shared_foundation_corpus_path() -> PathBuf {
         .parent()
         .expect("parity corpus directory")
         .join("foundation-runtime.edn")
+}
+
+fn shared_core_language_corpus_path() -> PathBuf {
+    shared_runtime_corpus_path()
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("language conformance directory")
+        .join("core.edn")
 }
 
 fn map_value<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
@@ -159,7 +179,7 @@ fn shared_foundation_runtime_corpus_matches_expected_results() {
         );
     }
     assert!(
-        cases.len() >= 12,
+        cases.len() >= 16,
         "Foundation runtime corpus unexpectedly shrank"
     );
 }
@@ -456,11 +476,15 @@ fn callable_var_namespace_cases_match_shared_spec() {
         })
     }
 
-    let manifest = crate::kernel::parse_forms(include_str!(
-        "../../../../../hara-specs-registry/00-unsorted/platform-language/draft/conformance/modules.edn"
-    ))
-    .expect("module conformance corpus parses")
-    .remove(0);
+    let path = shared_core_language_corpus_path()
+        .parent()
+        .expect("language conformance directory")
+        .join("modules.edn");
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read module corpus {}: {error}", path.display()));
+    let manifest = crate::kernel::parse_forms(&source)
+        .expect("module conformance corpus parses")
+        .remove(0);
     let crate::kernel::Form::Map(manifest) = manifest else {
         panic!("module conformance corpus must be a map")
     };
@@ -517,11 +541,11 @@ fn callable_var_namespace_cases_match_shared_spec() {
     }
 }
 
-/// Namespace- and arity-dependent cases from the normative L0 corpus
-/// (`hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn`),
+/// Namespace- and arity-dependent cases from the normative core-language corpus
+/// (`hara-specs-registry/01-lang/001-language/draft/conformance/core.edn`),
 /// deferred by milestones 2-3 until globals existed (issue #223).
 #[test]
-fn l0_namespace_corpus_cases_match() {
+fn core_language_namespace_corpus_cases_match() {
     fn entry<'a>(
         entries: &'a [(crate::kernel::Form, crate::kernel::Form)],
         key: &str,
@@ -543,29 +567,32 @@ fn l0_namespace_corpus_cases_match() {
         "function/variadic-arity",
         "function/multiple-arities",
     ];
-    let manifest = crate::kernel::parse_forms(include_str!(
-        "../../../../../hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn"
-    ))
-    .expect("L0 conformance corpus parses")
-    .remove(0);
+    let path = shared_core_language_corpus_path();
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read core-language corpus {}: {error}", path.display()));
+    let manifest = crate::kernel::parse_forms(&source)
+        .expect("Core-language conformance corpus parses")
+        .remove(0);
     let crate::kernel::Form::Map(manifest) = manifest else {
-        panic!("L0 conformance corpus must be a map")
+        panic!("Core-language conformance corpus must be a map")
     };
     let Some(crate::kernel::Form::Vector(cases)) = entry(&manifest, "cases") else {
-        panic!("L0 conformance corpus must declare :cases")
+        panic!("Core-language conformance corpus must declare :cases")
     };
-    for id in supported {
-        let case = cases
-            .iter()
-            .find_map(|case| match case {
-                crate::kernel::Form::Map(entries)
-                    if matches!(entry(entries, "id"), Some(crate::kernel::Form::Keyword(candidate)) if candidate == id) =>
-                {
-                    Some(entries)
-                }
-                _ => None,
-            })
-            .unwrap_or_else(|| panic!("missing L0 case :{id}"));
+    for case in cases {
+        let crate::kernel::Form::Map(case) = case else {
+            panic!("core-language cases must be maps")
+        };
+        let Some(crate::kernel::Form::Keyword(id)) = entry(case, "id") else {
+            panic!("core-language case must declare :id")
+        };
+        let is_namespace = matches!(
+            entry(case, "class"),
+            Some(crate::kernel::Form::Keyword(class)) if class == "namespace"
+        );
+        if !is_namespace && !supported.contains(&id.as_str()) {
+            continue;
+        }
         let Some(crate::kernel::Form::String(source)) = entry(case, "source") else {
             panic!(":{id} must declare string :source")
         };

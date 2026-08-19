@@ -370,7 +370,7 @@ public class MainTest {
   }
 
   @Test
-  public void runsThePackagedL0ConformanceCorpus() {
+  public void runsThePackagedCoreLanguageConformanceCorpus() {
     ByteArrayOutputStream output = new ByteArrayOutputStream();
     ByteArrayOutputStream error = new ByteArrayOutputStream();
 
@@ -381,7 +381,7 @@ public class MainTest {
             new PrintStream(error, true, StandardCharsets.UTF_8));
 
     assertEquals(error.toString(StandardCharsets.UTF_8), 0, status);
-    assertTrue(output.toString(StandardCharsets.UTF_8).contains("L0 conformance passed:"));
+    assertTrue(output.toString(StandardCharsets.UTF_8).contains("Core-language conformance passed:"));
     assertEquals("", error.toString(StandardCharsets.UTF_8));
   }
 

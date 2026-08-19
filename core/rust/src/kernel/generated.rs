@@ -111,7 +111,6 @@ impl GeneratedNamespaceConfig {
         let mut exposed_foundation = None;
         let mut override_seen = false;
         let mut blank = false;
-        let mut intrinsics_seen = false;
         let mut config_seen = false;
         let mut native_flavor = None;
         let mut native_imports = Vec::new();
@@ -140,18 +139,7 @@ impl GeneratedNamespaceConfig {
                     )?;
                 }
                 "intrinsics" => {
-                    // Legacy top-level :intrinsics is accepted for backward compatibility,
-                    // but the spec places it inside :config.
-                    if intrinsics_seen {
-                        return Err("ns accepts only one :intrinsics clause".into());
-                    }
-                    intrinsics_seen = true;
-                    if values.len() != 2 {
-                        return Err(":intrinsics expects :all or an options map".into());
-                    }
-                    if !matches!(&values[1], Form::Keyword(name) if name == "all") {
-                        parse_intrinsics(&values[1], &mut excluded, &mut overrides)?;
-                    }
+                    return Err(":intrinsics is valid only inside ns :config".into());
                 }
                 "require" => requires.extend(values[1..].iter().cloned()),
                 "use" => uses.extend(values[1..].iter().cloned()),
@@ -563,6 +551,9 @@ fn parse_intrinsics(
     excluded: &mut HashSet<String>,
     overrides: &mut HashMap<String, String>,
 ) -> Result<(), String> {
+    if matches!(form, Form::Keyword(name) if name == "all") {
+        return Ok(());
+    }
     let options = match form {
         Form::Map(options) => options,
         _ => return Err(":intrinsics expects :all or an options map".into()),
@@ -583,15 +574,15 @@ fn parse_intrinsics(
                     }
                 }
             }
-            "aliases" => {
+            "alias" => {
                 let aliases = match value {
                     Form::Map(aliases) => aliases,
-                    _ => return Err(":intrinsics :aliases expects a map".into()),
+                    _ => return Err(":intrinsics :alias expects a map".into()),
                 };
                 for (library_form, alias_form) in aliases {
                     let library = library(symbol(
                         library_form,
-                        ":intrinsics :aliases expects library symbols",
+                        ":intrinsics :alias expects library symbols",
                     )?)?;
                     let alias =
                         symbol(alias_form, "Intrinsic aliases must be unqualified symbols")?;
@@ -603,7 +594,7 @@ fn parse_intrinsics(
                     }
                 }
             }
-            other => return Err(format!("Unsupported :intrinsics option: :{other}")),
+            other => return Err(format!("Unsupported :config :intrinsics option: :{other}")),
         }
     }
     Ok(())

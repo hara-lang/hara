@@ -4,7 +4,7 @@ use crate::kernel::parse_forms;
 #[test]
 fn configures_defaults_exclusions_aliases_and_requires_without_sources() {
     let forms = parse_forms(
-        "(:intrinsics {:exclude [bytes] :aliases {string text}}) \
+        "(:config {:intrinsics {:exclude [bytes] :alias {string text}}}) \
              (:require [hara.lib.string :as s :refer [trim]])",
     )
     .unwrap();
@@ -23,6 +23,14 @@ fn configures_defaults_exclusions_aliases_and_requires_without_sources() {
     )
     .unwrap_err()
     .contains("missing generated namespace"));
+}
+
+#[test]
+fn rejects_standalone_intrinsics_clause() {
+    let forms = parse_forms("(:intrinsics :all)").unwrap();
+    assert!(GeneratedNamespaceConfig::configure(&forms)
+        .unwrap_err()
+        .contains(":intrinsics is valid only inside ns :config"));
 }
 
 #[test]

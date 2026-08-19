@@ -184,7 +184,7 @@ impl Runtime {
         runtime
     }
 
-    /// Creates the portable L0 evaluator without loading the language-level
+    /// Creates the portable core-language evaluator without loading the language-level
     /// foundation. This is useful for small embedded surfaces whose commands
     /// only require core forms and should become interactive immediately.
     pub fn core() -> Runtime {
@@ -421,15 +421,26 @@ impl Runtime {
         for form in forms {
             let mut restore_namespace = None;
             if let Form::List(values) = &form {
-                if matches!(values.first(), Some(Form::Symbol(name)) if name == "ns") {
-                    let name = match values.get(1) {
-                        Some(Form::Symbol(name)) if !name.contains('/') => name.clone(),
-                        _ => return Err("ns expects an unqualified namespace symbol".into()),
+                if matches!(values.first(), Some(Form::Symbol(name)) if name == "ns" || name == "ns+")
+                {
+                    let (name, clause_start) = match values.first() {
+                        Some(Form::Symbol(operator)) if operator == "ns" => match values.get(1) {
+                            Some(Form::Symbol(name)) if !name.contains('/') => (name.clone(), 2),
+                            _ => return Err("ns expects an unqualified namespace symbol".into()),
+                        },
+                        Some(Form::Symbol(_)) => {
+                            if matches!(values.get(1), Some(Form::Symbol(_))) {
+                                return Err("ns+ does not accept a namespace name".into());
+                            }
+                            (self.current_namespace(), 1)
+                        }
+                        _ => unreachable!(),
                     };
                     #[cfg(not(target_arch = "wasm32"))]
                     let roots = self.extension_roots.clone();
-                    let config =
-                        kernel::GeneratedNamespaceConfig::configure_with(&values[2..], |target| {
+                    let config = kernel::GeneratedNamespaceConfig::configure_with(
+                        &values[clause_start..],
+                        |target| {
                             if self.namespace_registry.find(target).is_some()
                                 || self.namespace_registry.load_state(target).is_some()
                                 || self.resources.contains_key(target)
@@ -444,7 +455,8 @@ impl Runtime {
                             }
                             #[cfg(target_arch = "wasm32")]
                             false
-                        })?;
+                        },
+                    )?;
                     for target in config.required_namespaces() {
                         if self.resources.contains_key(target)
                             || self.loaded_resources.contains(target)
@@ -484,7 +496,7 @@ impl Runtime {
                     }
                     self.bind_direct_wasm_imports(&config)?;
                     let foundation_bootstrap_child = name.starts_with("std.foundation.");
-                    let require_specs = values[2..]
+                    let require_specs = values[clause_start..]
                         .iter()
                         .flat_map(|clause| match clause {
                             Form::List(items)
@@ -730,8 +742,6 @@ impl Runtime {
                 }
             }
             self.refer_native_types_into(name);
-            #[cfg(feature = "bytecode-vm")]
-            self.install_structural_primitives_into(name);
         } else {
             self.refer_foundation_into(name);
             let target = self.namespace_registry.find_or_create(name);
@@ -773,6 +783,9 @@ impl Runtime {
 
     fn sync_generated_aliases(&self, config: &kernel::GeneratedNamespaceConfig) {
         let target = self.namespace_registry.current();
+        for (_, default_alias) in kernel::generated::foundation_library_aliases() {
+            target.unalias(default_alias);
+        }
         for (alias, namespace) in config.aliases() {
             if let Some(source) = self.namespace_registry.find(&namespace) {
                 target.alias(alias, source);
