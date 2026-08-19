@@ -1,7 +1,7 @@
 # Work Capability ABI
 
 Status: implementation contract for the `work.*` algebra migration tracked by
-#803 and #804.
+#803, #805, and #806.
 
 ## Purpose
 
@@ -61,9 +61,10 @@ is ordinary Hara data.
 A leaf request is a map. The stable vocabulary is expected to include:
 
 ```clojure
-{:run/id optional-run-id
+{:work/request :execute-leaf
+ :run/id optional-run-id
  :work/root work-root
- :work/boundary :pure-or-step
+ :work/boundary :step
  :node/id node-id
  :node/path node-path
  :item/id optional-item-id
@@ -74,9 +75,30 @@ A leaf request is a map. The stable vocabulary is expected to include:
  :work/deadline optional-deadline}
 ```
 
-This initial ABI slice defines the protocol identity and arity. The canonical
-request validation and target profiles are introduced with the store-free Work
-evaluator.
+The target profiles are explicit:
+
+```clojure
+{:target/type :local :target/fn local-callable}
+{:target/type :qualified :target/name portable-name}
+{:target/type :pinned
+ :target/name portable-name
+ :target/version version
+ :target/digest content-digest}
+```
+
+Only the local profile carries a callable. Qualified targets resolve by name;
+pinned targets resolve by the exact `[name version digest]` registry key, with
+no unpinned fallback.
+
+`work.eval/run` is the store-free reference path. It owns every structural Work
+operation and invokes `IWorkExecutor` only for `:step` leaves. `:pure` remains
+an evaluator-local computation and is never sent to an executor. The inline
+executor accepts explicit local closure targets and named targets from its
+immutable target map.
+
+Legacy executor provider maps are temporarily wrapped behind an adapter. The
+adapter receives only the leaf Work description carried by the canonical
+request; it never receives the enclosing structural Work tree.
 
 `IWorkExecutor` does not extend `IComponent`. A concrete process pool, remote
 worker, or sandbox executor may separately implement lifecycle protocols.

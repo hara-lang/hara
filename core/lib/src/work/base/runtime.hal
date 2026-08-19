@@ -41,15 +41,10 @@
 
 (defn configured-executor
   [options]
-  (let [provider
-        (execution/normalise-provider
-         (or (:work/executor options)
-             (:executor options)
-             (inline/inline-executor)))]
-    (execution/with-handlers
-     provider
-     (or (:handlers options)
-         (:work/handlers (:work/hooks options))))))
+  (execution/normalise-provider
+   (or (:work/executor options)
+       (:executor options)
+       (inline/inline-executor))))
 
 (defn configured-registry
   [options]
@@ -68,13 +63,17 @@
 (defn configured-hooks
   [options]
   (let [hooks (or (:work/hooks options) {})]
-    (merge
-     {:work/receipt
-      (receipt/normalise-provider
-       (or (:work/receipt hooks) (:receipt options)))
-      :work/observer
-      (or (:work/observer hooks) (:observer options))}
-     hooks)))
+    (assoc
+     (merge
+      {:work/receipt
+       (receipt/normalise-provider
+        (or (:work/receipt hooks) (:receipt options)))
+       :work/observer
+       (or (:work/observer hooks) (:observer options))}
+      hooks)
+     :work/handlers
+     (merge (or (:handlers options) {})
+            (or (:work/handlers hooks) {})))))
 
 (defn runtime
   [mode options]
@@ -108,15 +107,16 @@
   [runtime operation handler]
   (let [runtime (base/normalise-runtime runtime)]
     (assoc runtime
-           :work/executor
-           (execution/with-handler
-            (base/runtime-executor runtime)
-            operation
-            handler))))
+           :work/hooks
+           (assoc (base/runtime-hooks runtime)
+                  :work/handlers
+                  (assoc (base/runtime-handlers runtime)
+                         operation
+                         handler)))))
 
 (defn handler-operations
   [runtime]
-  (vec (keys (base/runtime-handlers runtime))))
+  (vec (keys (execution/evaluator-handlers runtime))))
 
 (defn receipts
   [runtime reference]
