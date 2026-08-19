@@ -9,10 +9,7 @@
             [std.typed.schema :as schema]
             [tool.lint.model :as model]))
 
-;; ---------------------------------------------------------------------------
-;; Existing analyzer-facing inference bridge
-;; ---------------------------------------------------------------------------
-
+;; Existing analyzer-facing inference bridge.
 (def +unknown-schema+ infer/+unknown-schema+)
 (def result infer/result)
 (def unknown infer/unknown)
@@ -21,10 +18,6 @@
 (def infer-result infer/infer-result)
 (def infer-function-arity infer/infer-function-arity)
 (def compatible? schema/compatible?)
-
-;; ---------------------------------------------------------------------------
-;; Lint schema policy
-;; ---------------------------------------------------------------------------
 
 (def +schema-heads+
   #{:or :maybe :vector :tuple :map :fn :function :enum :result})
@@ -44,7 +37,8 @@
     :tool.lint/invalid-function-schema
     :tool.lint/schema-arity-mismatch
     :tool.lint/schema-value-mismatch
-    :tool.lint/schema-return-mismatch})
+    :tool.lint/schema-return-mismatch
+    :tool.lint/schema-argument-mismatch})
 
 (defn schema-mode
   [options]
@@ -117,13 +111,14 @@
 (defn annotated-top-level-forms
   "Projects root expressions to ordinary {form metadata} records.
 
-   Accepts either a root block or an analyzer scan. Metadata containers are
-   unwrapped here so neither std.typed nor the analyzer needs reader-specific
-   metadata traversal."
+   A map containing :document is an analyzer scan. Every other input is
+   treated as the root block directly; this avoids protocol probing ordinary
+   maps while preserving the std.block boundary."
   [value]
-  (let [root (if (block/block? value)
-               value
-               (get-in value [:document :root]))]
+  (let [scan? (and (map? value) (has? value :document))
+        root (if scan?
+               (get-in value [:document :root])
+               value)]
     (vec (map unwrap-metadata (code-children root)))))
 
 (defn block-index
@@ -136,7 +131,7 @@
         (recur (inc index))))))
 
 (defn inline-metadata
-  "Returns metadata attached inside a definition, including the name block."
+  "Returns metadata attached inside a definition, including its name block."
   [definition]
   (let [children (code-children (:form definition))
         name-index (block-index children (:block definition))
@@ -168,7 +163,8 @@
           tail (if (nil? name-index)
                  []
                  (vec
-                  (filter (fn [value] (not= :meta (block/tag value)))
+                  (filter (fn [value]
+                            (not= :meta (block/tag value)))
                           (drop (inc name-index) children))))]
       (cond
         (empty? tail) nil
@@ -300,10 +296,11 @@
 (defn raw-global-registry
   [candidates options]
   (registry/registry
-   (reduce (fn [output candidate]
-             (assoc output (:qualified candidate) (:surface candidate)))
-           (external-definitions options)
-           candidates)))
+   (reduce
+    (fn [output candidate]
+      (assoc output (:qualified candidate) (:surface candidate)))
+    (external-definitions options)
+    candidates)))
 
 (defn final-global-registry
   "Normalizes named project schemas in the namespace where each was declared."
@@ -378,22 +375,22 @@
            :surface surface
            :findings
            (vec
-            (filter identity
-                    [(definition-finding
-                      definition
-                      anchor
-                      :tool.lint/invalid-schema
-                      (str "invalid schema for " (:qualified definition)
-                           ": " problem)
-                      options
-                      :tool.source-analysis/schema-normalization)]))}
+            (filter
+             identity
+             [(definition-finding
+               definition
+               anchor
+               :tool.lint/invalid-schema
+               (str "invalid schema for " (:qualified definition)
+                    ": " problem)
+               options
+               :tool.source-analysis/schema-normalization)]))}
           (let [unresolved (schema/unresolved-references normalized registry-value)
                 local-unresolved
-                (vec (filter (fn [reference]
-                               (local-reference? reference namespaces))
-                             unresolved))
-                external-unresolved
-                (not= (count unresolved) (count local-unresolved))
+                (vec
+                 (filter (fn [reference]
+                           (local-reference? reference namespaces))
+                         unresolved))
                 resolved (if (empty? unresolved)
                            (schema/resolve-recursive normalized registry-value)
                            normalized)
@@ -428,25 +425,26 @@
              :normalized normalized
              :resolved resolved
              :unresolved unresolved
-             :external-unresolved external-unresolved
              :invalid-function invalid-function
              :findings
-             (vec (filter identity
-                          (concat unresolved-findings [function-finding])))})))
+             (vec
+              (filter identity
+                      (concat unresolved-findings [function-finding])))})))
       (catch Throwable error
         {:definition definition
          :scan scan
          :surface surface
          :findings
          (vec
-          (filter identity
-                  [(definition-finding
-                    definition
-                    anchor
-                    :tool.lint/invalid-schema
-                    (str "invalid schema for " (:qualified definition))
-                    options
-                    :tool.source-analysis/schema-normalization)]))}))))
+          (filter
+           identity
+           [(definition-finding
+             definition
+             anchor
+             :tool.lint/invalid-schema
+             (str "invalid schema for " (:qualified definition))
+             options
+             :tool.source-analysis/schema-normalization)]))}))))
 
 (defn public-contract?
   [record]
@@ -477,10 +475,12 @@
   ([scans] (build-schema-index scans {}))
   ([scans options]
    (let [scans (vec scans)
-         namespaces (into #{} (filter identity
-                                      (map (fn [scan]
-                                             (get-in scan [:namespace :name]))
-                                           scans)))
+         namespaces
+         (into #{}
+               (filter identity
+                       (map (fn [scan]
+                              (get-in scan [:namespace :name]))
+                            scans)))
          candidates (candidate-records scans)
          global (final-global-registry candidates options)
          records
@@ -490,11 +490,14 @@
              (let [local (scan-registry scan (:registry global))]
                (map
                 (fn [definition]
-                  (normalize-annotation definition scan local namespaces options))
-                (filter :has-schema (definition-records scan)))))
+                  (normalize-annotation
+                   definition scan local namespaces options))
+                (filter
+                 (fn [definition] (:has-schema definition))
+                 (definition-records scan)))))
            scans))
          tables (contract-tables records)
-         findings (vec (mapcat :findings records))]
+         findings (vec (mapcat (fn [record] (:findings record)) records))]
      {:registry (:registry global)
       :definitions (:definitions global)
       :values (merge (or (get-in options [:schema-index :values]) {})
@@ -511,7 +514,9 @@
 
 (defn file-findings
   [index file]
-  (vec (filter (fn [finding] (= file (:file finding))) (:findings index))))
+  (vec
+   (filter (fn [finding] (= file (:file finding)))
+           (:findings index))))
 
 (defn file-records
   [index file]
@@ -639,9 +644,13 @@
           (:findings document)
           (file-findings index file)
           (filter identity
-                  (map (fn [record] (schema-arity-finding record options)) records))
+                  (map (fn [record]
+                         (schema-arity-finding record options))
+                       records))
           (filter identity
-                  (map (fn [record] (value-schema-finding record options)) records))
+                  (map (fn [record]
+                         (value-schema-finding record options))
+                       records))
           (filter identity
                   (map (fn [record]
                          (return-schema-finding record document options))
