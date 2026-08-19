@@ -24,7 +24,12 @@ jobs:
           fetch-depth: 1
           submodules: false
 
-      - name: Apply pending runtime patch
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Apply pending runtime transformation
         shell: bash
         run: |
           set -euo pipefail
@@ -32,9 +37,107 @@ jobs:
           if [[ ! -f "$patch_payload" ]]; then
             exit 0
           fi
-          base64 --decode "$patch_payload" | gzip --decompress > /tmp/agent-runtime.patch
-          git apply --check /tmp/agent-runtime.patch
-          git apply /tmp/agent-runtime.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(
+                      f"expected one replacement in {path}, found {count}: {old!r}"
+                  )
+              file.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "core/rust/src/core/value.rs",
+              "    Keep(Rc<Function>, Value),",
+              "    Keep(Value, Value),",
+          )
+          replace_once(
+              "core/rust/src/core/value.rs",
+              """                IteratorGenerator::Keep(function, source) => loop {
+                    let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
+                        self.closed = true;
+                        break Ok(None);
+                    };
+                    let mapped = call_function(function, vec![value])?;
+                    if !matches!(mapped, Value::Nil) {
+                        break Ok(Some(mapped));
+                    }
+                },""",
+              """                IteratorGenerator::Keep(function, source) => loop {
+                    let Some(value) = iterator_try_next(source)? else {
+                        close_iterator_source(source);
+                        self.closed = true;
+                        break Ok(None);
+                    };
+                    let mapped = call_value(function.clone(), vec![value])?;
+                    if !matches!(mapped, Value::Nil) {
+                        break Ok(Some(mapped));
+                    }
+                },""",
+          )
+          replace_once(
+              "core/rust/src/core/operation.rs",
+              "fn iterator_keep(function: Rc<Function>, value: Value) -> Result<Value, String> {",
+              "fn iterator_keep(function: Value, value: Value) -> Result<Value, String> {",
+          )
+
+          callable_helper = """pub(crate) fn is_callable_value(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Function(_)
+            | Value::StructType(_)
+            | Value::MutableType(_)
+            | Value::Struct(_)
+            | Value::Mutable(_)
+            | Value::Pointer(_)
+            | Value::Keyword(_)
+            | Value::Map(_)
+            | Value::OrderedMap(_)
+            | Value::SortedMap(_)
+            | Value::Trie(_)
+            | Value::PriorityMap(_)
+            | Value::Set(_)
+            | Value::OrderedSet(_)
+            | Value::SortedSet(_)
+    )
+}
+
+"""
+          replace_once(
+              "core/rust/src/core/form.rs",
+              "pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value, String> {",
+              callable_helper
+              + "pub(crate) fn call_value(callable: Value, arguments: Vec<Value>) -> Result<Value, String> {",
+          )
+          replace_once(
+              "core/rust/src/core/evaluator.rs",
+              """                        \"iter-keep\" => match parameter {
+                            Value::Function(function) => {
+                                let result = iterator_keep(function, source.clone())?;
+                                transform_like(&source, result)
+                            }
+                            _ => Err(\"keep expects a function\".into()),
+                        },""",
+              """                        \"iter-keep\" => {
+                            if !is_callable_value(&parameter) {
+                                Err(\"keep expects a callable value\".into())
+                            } else {
+                                let result = iterator_keep(parameter, source.clone())?;
+                                transform_like(&source, result)
+                            }
+                        }""",
+          )
+          PY
+
+          cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
+          cargo check --locked --manifest-path core/rust/Cargo.toml --lib
+
           rm "$patch_payload"
           rm -f .github/agent-runtime-trigger
           git config user.name 'github-actions[bot]'
@@ -64,10 +167,8 @@ jobs:
       - name: Compile Truffle runtime
         run: mvn -f core/java/pom.xml -Ptruffle -DskipTests package
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
       - name: Capture Rust test diagnostics
+        id: rust-tests
         shell: bash
         run: |
           set +e
@@ -78,7 +179,7 @@ jobs:
           printf '%s\n' "$status" > /tmp/cargo-test.status
 
       - name: Upload Rust test diagnostics
-        if: always()
+        if: always() && steps.rust-tests.outcome != 'skipped'
         uses: actions/upload-artifact@v4
         with:
           name: hara-rust-diagnostics-${{ github.sha }}
