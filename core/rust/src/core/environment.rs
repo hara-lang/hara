@@ -241,40 +241,33 @@ impl ProtocolRegistry {
             if let Some(function) = guest_function {
                 return call_function(&function, arguments.to_vec());
             }
-            if FOUNDATION_PROTOCOLS
-                .iter()
-                .any(|(name, _)| builtin_protocol_name(name) == protocol)
-            {
-                return Err(format!(
-                    "protocol/unsupported-receiver: missing protocol implementation: {protocol}/{method}"
-                ));
+        }
+        let methods = self.methods.borrow();
+        let receiver = arguments
+            .first()
+            .ok_or_else(|| format!("missing protocol receiver: {protocol}/{method}"))?;
+        let last_error = format!(
+            "protocol/unsupported-receiver: missing protocol implementation: {protocol}/{method}"
+        );
+        if let Some(implementations) = methods.get(&(protocol.to_string(), method.to_string())) {
+            for implementation in implementations.iter().rev() {
+                if (implementation.supports)(receiver) {
+                    return (implementation.invoke)(arguments);
+                }
             }
         }
         if self
             .guest_declarations
             .borrow()
             .contains(&(protocol.to_owned(), method.to_owned()))
+            || FOUNDATION_PROTOCOLS
+                .iter()
+                .any(|(name, _)| builtin_protocol_name(name) == protocol)
         {
-            return Err(format!(
-                "missing protocol implementation: {protocol}/{method}"
-            ));
+            Err(last_error)
+        } else {
+            Err(format!("missing protocol method: {protocol}/{method}"))
         }
-        let methods = self.methods.borrow();
-        let implementations = methods
-            .get(&(protocol.to_string(), method.to_string()))
-            .ok_or_else(|| format!("missing protocol method: {protocol}/{method}"))?;
-        let last_error = format!(
-            "protocol/unsupported-receiver: missing protocol implementation: {protocol}/{method}"
-        );
-        let receiver = arguments
-            .first()
-            .ok_or_else(|| format!("missing protocol receiver: {protocol}/{method}"))?;
-        for implementation in implementations.iter().rev() {
-            if (implementation.supports)(receiver) {
-                return (implementation.invoke)(arguments);
-            }
-        }
-        Err(last_error)
     }
 
     pub fn contains(&self, protocol: &str, method: &str) -> bool {
