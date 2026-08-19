@@ -251,7 +251,7 @@ checkout_fixture(
 )
 link_fixture(
     benchmarks_checkout,
-    ROOT.parent.parent / "website/hara-benchmarks",
+    ROOT.parent / "website/hara-benchmarks",
 )
 
 print("applied the mechanical #562 compiler and machine layout split")
