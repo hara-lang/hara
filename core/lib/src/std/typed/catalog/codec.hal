@@ -1,0 +1,125 @@
+(ns std.typed.catalog.codec
+  (:require [std.foundation.bytes :as bytes]
+            [std.foundation.string :as string]
+            [std.typed.registry :as registry]
+            [std.typed.schema :as schema]))
+
+(def +hash-algorithm+ :std.typed.catalog/sha256-v1)
+
+(defn- codec-error
+  [message data]
+  (throw
+   (ex-info message
+            (assoc data :type :std.typed.catalog/invalid-hash-input))))
+
+(defn- qualified-keyword?
+  [value]
+  (and (keyword? value)
+       (not (nil? (namespace value)))))
+
+(defn- require-version
+  [version]
+  (if (and (long? version) (not (< version 0)))
+    version
+    (codec-error "schema version must be a non-negative integer"
+                 {:schema/version version})))
+
+(defn- pack
+  [tag content]
+  (str tag (string/length content) ":" content))
+
+(defn- pack-many
+  [tag parts]
+  (pack tag
+        (string/join
+         ""
+         (map (fn [part] (pack "e" part)) parts))))
+
+(defn- namespaced-text
+  [value]
+  (let [prefix (namespace value)]
+    (if prefix
+      (str prefix "/" (name value))
+      (name value))))
+
+(defn- byte-parts
+  [value]
+  (loop [index 0
+         output []]
+    (if (= index (bytes/count value))
+      output
+      (recur (inc index)
+             (conj output
+                   (str (bytes/u8 (bytes/get value index))))))))
+
+(declare canonical-value)
+
+(defn- canonical-map-parts
+  [value]
+  (sort
+   (map
+    (fn [entry]
+      (pack-many
+       "p"
+       [(canonical-value (key entry))
+        (canonical-value (val entry))]))
+    value)))
+
+(defn ^{:schema [:fn [:any] :str]}
+  canonical-value
+  "Returns the versioned deterministic token stream used by schema hashes."
+  [value]
+  (cond
+    (nil? value) (pack "n" "")
+    (boolean? value) (pack "b" (if value "1" "0"))
+    (number? value) (pack "d" (pr-str value))
+    (char? value) (pack "c" (str value))
+    (string? value) (pack "s" value)
+    (keyword? value) (pack "k" (namespaced-text value))
+    (symbol? value) (pack "y" (namespaced-text value))
+    (bytes? value) (pack-many "x" (byte-parts value))
+    (RegExp/instance? value) (pack "r" (RegExp/pattern value))
+    (map? value) (pack-many "m" (canonical-map-parts value))
+    (set? value)
+    (pack-many "t" (sort (map canonical-value value)))
+    (vector? value)
+    (pack-many "v" (map canonical-value value))
+    (list? value)
+    (pack-many "l" (map canonical-value value))
+    (sequential? value)
+    (pack-many "q" (map canonical-value value))
+    :else
+    (codec-error "schema hash input contains unsupported data"
+                 {:value value})))
+
+(defn ^{:schema [:fn [:keyword :int :map] :str]}
+  hash-ast
+  "Hashes an identity, version, and already-normalized canonical schema AST."
+  [identity version ast]
+  (if (not (qualified-keyword? identity))
+    (codec-error "schema identity must be a qualified keyword"
+                 {:schema/id identity}))
+  (require-version version)
+  (if (not (map? ast))
+    (codec-error "schema hash expects a normalized schema AST"
+                 {:schema/ast ast}))
+  (str
+   "sha256:"
+   (sha256
+    (string/encode-utf8
+     (canonical-value
+      [+hash-algorithm+ identity version ast])))))
+
+(defn ^{:schema [:function
+                 [:fn [:keyword :int :any] :str]
+                 [:fn [:keyword :int :any :any] :str]]}
+  content-hash
+  "Hashes a schema identity, version, and canonical normalized content."
+  ([identity version schema-form]
+   (content-hash identity version schema-form registry/+empty+))
+  ([identity version schema-form registry-value]
+   (hash-ast
+    identity
+    version
+    (schema/normalize-with schema-form
+                           (registry/ensure registry-value)))))
