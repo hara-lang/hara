@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/shape-preserving-foundation-collections
+  pull_request:
+    branches:
+      - agent/shape-preserving-foundation-collections
 
 permissions:
   contents: write
@@ -11,10 +14,13 @@ permissions:
 jobs:
   bootstrap:
     runs-on: ubuntu-latest
+    env:
+      TARGET_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref_name }}
           fetch-depth: 1
           submodules: false
 
@@ -30,11 +36,13 @@ jobs:
           git apply --check /tmp/agent-runtime.patch
           git apply /tmp/agent-runtime.patch
           rm "$patch_payload"
+          rm -f .github/agent-runtime-trigger
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add --all
-          git commit -m 'Implement Base reduction runtime substrate'
-          git push
+          git diff --cached --check
+          git commit -m 'Accept Hara callables in native keep'
+          git push origin "HEAD:${TARGET_BRANCH}"
 
       - name: Check out hara-specs-registry
         uses: actions/checkout@v4
