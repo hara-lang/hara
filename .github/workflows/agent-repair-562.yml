@@ -1,9 +1,10 @@
 name: Repair issue 562 layout workflow
 
 on:
-  push:
-    branches:
-      - agent/562-split-vm-layout
+  pull_request:
+    paths:
+      - '.github/workflows/agent-repair-562.yml'
+      - '.github/workflows/agent-export-562.yml'
 
 permissions:
   contents: write
@@ -21,7 +22,7 @@ jobs:
           ref: agent/562-split-vm-layout
           fetch-depth: 0
 
-      - name: Repair the generated child-module visibility and cleanup
+      - name: Repair the observable validation trigger, child visibility, and cleanup
         id: repair
         shell: bash
         run: |
@@ -32,6 +33,24 @@ jobs:
           path = Path('.github/workflows/agent-export-562.yml')
           source = path.read_text()
           original = source
+
+          event_anchor = (
+              'on:\n'
+              '  push:\n'
+              '    branches:\n'
+              '      - agent/562-split-vm-layout\n'
+          )
+          event_replacement = (
+              'on:\n'
+              '  pull_request:\n'
+              '    paths:\n'
+              "      - '.github/workflows/agent-export-562.yml'\n"
+              "      - '.github/workflows/agent-repair-562.yml'\n"
+          )
+          if event_replacement not in source:
+              if event_anchor not in source:
+                  raise RuntimeError('validation event anchor is missing')
+              source = source.replace(event_anchor, event_replacement, 1)
 
           visibility_anchor = (
               "          dispatch_enum = machine_source[enum_start:enum_end].rstrip() + '\\n'\n"
@@ -79,5 +98,5 @@ jobs:
           git diff --cached --check
           git config user.name 'hara-issue-agent'
           git config user.email 'hara-issue-agent@users.noreply.github.com'
-          git commit -m 'Repair issue 562 generated module visibility'
+          git commit -m 'Repair issue 562 observable validation workflow'
           git push origin HEAD:agent/562-split-vm-layout
