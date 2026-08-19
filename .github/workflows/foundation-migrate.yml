@@ -11,10 +11,9 @@ on:
       - 'core/lib/test/code/manage*'
       - 'core/lib/test/code/migrate*'
       - 'core/spec/code-migrate/**'
-      - 'core/rust/hal-src/code/framework/**'
-      - 'core/rust/hal-src/code/manage/**'
-      - 'core/rust/hal-src/code/migrate/**'
+      - 'core/rust/standard-library.namespaces'
       - 'scripts/runtime/foundation_target_snapshot*'
+      - 'scripts/runtime/sync-rust-hal-src'
       - '.github/workflows/foundation-migrate.yml'
   pull_request:
     branches: [main, testing]
@@ -26,10 +25,9 @@ on:
       - 'core/lib/test/code/manage*'
       - 'core/lib/test/code/migrate*'
       - 'core/spec/code-migrate/**'
-      - 'core/rust/hal-src/code/framework/**'
-      - 'core/rust/hal-src/code/manage/**'
-      - 'core/rust/hal-src/code/migrate/**'
+      - 'core/rust/standard-library.namespaces'
       - 'scripts/runtime/foundation_target_snapshot*'
+      - 'scripts/runtime/sync-rust-hal-src'
       - '.github/workflows/foundation-migrate.yml'
   workflow_dispatch:
 
@@ -63,8 +61,10 @@ jobs:
           test "$(git --git-dir=.foundation.git rev-parse \
             'baa75aabd6a879753d7d5cb07271b1448271e7cb^{tree}')" = \
             26d494f60c4970df56eba8ac40f92affeee4e159
-          git --git-dir=.foundation.git show-ref > target-foundation-before.refs
-          git --git-dir=.foundation.git count-objects -v > target-foundation-before.objects
+          git --git-dir=.foundation.git show-ref \
+            > target-foundation-before.refs || true
+          git --git-dir=.foundation.git count-objects -v \
+            > target-foundation-before.objects
 
       - name: Enforce the hard cut and deterministic audit bytes
         run: |
@@ -93,8 +93,10 @@ jobs:
       - name: Verify Foundation object status is unchanged
         run: |
           set -euo pipefail
-          git --git-dir=.foundation.git show-ref > target-foundation-after.refs
-          git --git-dir=.foundation.git count-objects -v > target-foundation-after.objects
+          git --git-dir=.foundation.git show-ref \
+            > target-foundation-after.refs || true
+          git --git-dir=.foundation.git count-objects -v \
+            > target-foundation-after.objects
           cmp target-foundation-before.refs target-foundation-after.refs
           cmp target-foundation-before.objects target-foundation-after.objects
           test -z "$(git --git-dir=.foundation.git for-each-ref refs/heads)"
@@ -135,6 +137,13 @@ jobs:
       - name: Run complete Hara library harness
         run: ./scripts/runtime/run-lib-tests
 
+      - name: Materialize the canonical Rust HAL snapshot
+        run: |
+          set -euo pipefail
+          scripts/runtime/sync-rust-hal-src
+          git diff --exit-code -- core/rust/standard-library.namespaces
+          scripts/runtime/sync-rust-hal-src --check
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -144,29 +153,5 @@ jobs:
           cargo test --manifest-path core/rust/Cargo.toml
           cargo test --manifest-path core/rust/raw/Cargo.toml
 
-      - name: Verify canonical Rust source mirrors
-        run: |
-          set -euo pipefail
-          for relative in \
-            code/framework.hal \
-            code/framework/navigation.hal \
-            code/framework/source.hal \
-            code/manage.hal \
-            code/manage/unit.hal \
-            code/manage/migrate.hal \
-            code/migrate.hal \
-            code/migrate/bang.hal \
-            code/migrate/clojure.hal \
-            code/migrate/corpus.hal \
-            code/migrate/git.hal \
-            code/migrate/profile.hal \
-            code/migrate/project.hal \
-            code/migrate/report.hal \
-            code/migrate/rule.hal \
-            code/migrate/rules.hal \
-            code/migrate/write.hal
-          do
-            test -f "core/lib/src/$relative"
-            test -f "core/rust/hal-src/$relative"
-            cmp "core/lib/src/$relative" "core/rust/hal-src/$relative"
-          done
+      - name: Recheck canonical Rust source materialization
+        run: scripts/runtime/sync-rust-hal-src --check
