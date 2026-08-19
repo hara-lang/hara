@@ -22,16 +22,17 @@
               (throw (ex-info "lint --format requires text or edn" {})))))
         (recur (vec (rest remaining)) format (conj paths (first remaining)))))))
 
+(defn lint-report
+  "Returns a completed lint report, rethrowing a native Result error."
+  [outcome]
+  (deref outcome))
+
 (defn lint-target
   [path]
   (let [metadata (deref (file/stat path))]
     (if (= :directory (:type metadata))
-      (lint/lint-project (project/discover path))
-      (let [findings (report/sort-findings (lint/lint-file path))]
-        {:profile profile/+profile+
-         :documents []
-         :findings findings
-         :summary (lint-model/summarize findings)}))))
+      (lint-report (lint/lint-project (project/discover path)))
+      (lint-report (lint/lint-file path)))))
 
 (defn combine-results
   [results]
@@ -52,7 +53,7 @@
         cwd (or (:request/cwd request) (os/cwd))
         paths (:paths parsed)
         result (if (empty? paths)
-                 (lint/lint-project (project/discover cwd))
+                 (lint-report (lint/lint-project (project/discover cwd)))
                  (combine-results (map lint-target paths)))
         findings (:findings result)
         output (if (= :edn (:format parsed))
