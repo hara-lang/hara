@@ -1,0 +1,81 @@
+name: Repair code.migrate corpus form
+
+on:
+  push:
+    branches:
+      - agent/524-code-migrate-substrate
+    paths:
+      - '.github/workflows/repair-code-migrate-corpus.yml'
+      - '.github/agent-patches/866-close-corpus.py'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/repair-code-migrate-corpus.yml'
+      - '.github/agent-patches/866-close-corpus.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    if: github.repository == 'hara-lang/hara'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/524-code-migrate-substrate
+          fetch-depth: 0
+
+      - name: Apply and validate the product-only repair
+        run: |
+          set -euo pipefail
+          python3 .github/agent-patches/866-close-corpus.py
+          test ! -e .github/agent-patches/866-close-corpus.py
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('core/lib/src/code/migrate/corpus.hal').read_text()
+          stack = []
+          pairs = {')': '(', ']': '[', '}': '{'}
+          in_string = escaped = in_comment = in_character = False
+          for index, char in enumerate(source):
+              if in_comment:
+                  if char == '\n': in_comment = False
+                  continue
+              if in_string:
+                  if escaped: escaped = False
+                  elif char == '\\': escaped = True
+                  elif char == '"': in_string = False
+                  continue
+              if in_character:
+                  if char.isspace(): in_character = False
+                  continue
+              if char == ';': in_comment = True
+              elif char == '"': in_string = True
+              elif char == '\\': in_character = True
+              elif char in '([{': stack.append(char)
+              elif char in ')]}':
+                  if not stack or stack[-1] != pairs[char]:
+                      raise SystemExit(f'unbalanced delimiter at {index}')
+                  stack.pop()
+          if stack:
+              raise SystemExit(f'unclosed delimiters: {stack}')
+          PY
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/sync-rust-hal-src --check
+          git diff --check -- \
+            core/lib/src/code/migrate/corpus.hal \
+            core/rust/standard-library.namespaces
+
+      - name: Commit the repaired source and inventory
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A -- ':!.github/workflows'
+          git diff --cached --check
+          git commit -m 'fix(code.migrate): close the corpus report form'
+          git fetch origin agent/524-code-migrate-substrate
+          git rebase origin/agent/524-code-migrate-substrate
+          git push origin HEAD:agent/524-code-migrate-substrate
