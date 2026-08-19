@@ -17,35 +17,60 @@
                        (get-in scan [:namespace :name]))
                      scans))))
 
+(defn scan-input
+  "Projects a scanned document to portable task input."
+  [scan]
+  {:file (get-in scan [:document :file])
+   :source (get-in scan [:document :source])})
+
 (defn prepare-scans
-  "Prepares immutable shared lint context for a task invocation."
+  "Prepares portable task input plus host-side schema context."
   [scans options]
   (let [scans (vec scans)
         options (or options {})]
-    {:scans scans
+    {:documents (vec (map scan-input scans))
      :options options
      :known-namespaces (scan-namespaces scans)
      :schema-index (lint-schema/build-schema-index scans options)}))
 
+(defn task-input
+  "Returns only values that may cross the work task boundary."
+  [prepared]
+  (select-keys prepared [:documents :options :known-namespaces]))
+
 (defn lint-items
   [input context]
-  (:scans input))
+  (:documents input))
+
+(defn portable-definition
+  [definition]
+  (select-keys definition
+               [:name :qualified :kind :visibility :signature]))
+
+(defn portable-document
+  "Removes live block values before a task result crosses the work boundary."
+  [document]
+  {:document (select-keys (:document document) [:file :source])
+   :namespace (select-keys (:namespace document)
+                           [:name :aliases :refers :requires])
+   :definitions (vec (map portable-definition (:definitions document)))
+   :reader-findings (:reader-findings document)
+   :findings (:findings document)
+   :inferences (:inferences document)
+   :inferred-functions (:inferred-functions document)})
 
 (defn lint-item
   [subject context]
   (let [input (:task/input subject)
-        scan (:task/value subject)
+        item (:task/value subject)
         options (:options input)
-        document
-        (analyze/analyze-scan
-         scan
-         (assoc options
-                :known-namespaces
-                (:known-namespaces input)))]
-    (lint-schema/enrich-document
-     document
-     (:schema-index input)
-     options)))
+        scan (analyze/scan-source (:source item) {:file (:file item)})]
+    (portable-document
+     (analyze/analyze-scan
+      scan
+      (assoc options
+             :known-namespaces
+             (:known-namespaces input))))))
 
 (def.work lint-scans-work
   [:task]
@@ -69,13 +94,13 @@
                  :errors errors})))))
 
 (defn run-scans
-  "Runs prepared scans through the canonical work.flow.task definition."
+  "Runs portable prepared input through the canonical work.flow.task definition."
   [prepared]
   (flow-documents
    (work/run
     (work/local-runtime)
     lint-scans-work
-    (task/invocation prepared))))
+    (task/invocation (task-input prepared)))))
 
 (defn finish
   "Builds the stable public lint result from ordered document analyses."
@@ -87,27 +112,33 @@
                    (into output (:findings document)))
                  []
                  documents))
+        output
+        {:profile (or (:profile options) profile/+profile+)
+         :documents documents
+         :findings findings
+         :summary (model/summarize findings)}
         schema-index (:schema-index options)]
-    (cond->
-     {:profile (or (:profile options) profile/+profile+)
-      :documents documents
-      :findings findings
-      :summary (model/summarize findings)}
-      schema-index
-      (assoc :schema-index (lint-schema/public-index schema-index)))))
+    (if schema-index
+      (assoc output :schema-index (lint-schema/public-index schema-index))
+      output)))
 
 (defn lint-scans
-  "Lints already scanned documents through work.flow.task.
+  "Lints scans through work.flow.task, then applies host-side schema policy.
 
-   The complete scan set is inspected before any item runs, preserving
-   project-wide namespace and schema resolution while keeping each document
-   analysis independently schedulable."
+   Live std.block values and schema annotation records remain host-side. Tasks
+   receive source/file data, reparse locally, and return portable analyses."
   ([scans]
    (lint-scans scans {}))
   ([scans options]
-   (let [prepared (prepare-scans scans options)]
-     (finish (run-scans prepared)
-             (assoc options :schema-index (:schema-index prepared))))))
+   (let [prepared (prepare-scans scans options)
+         documents (run-scans prepared)
+         schema-index (:schema-index prepared)
+         enriched
+         (vec
+          (map (fn [document]
+                 (lint-schema/enrich-document document schema-index options))
+               documents))]
+     (finish enriched (assoc options :schema-index schema-index)))))
 
 (defn project-paths
   [current-project]
