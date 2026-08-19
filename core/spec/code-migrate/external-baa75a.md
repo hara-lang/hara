@@ -17,6 +17,6 @@
 
 ## Reusable rule admission
 
-Only `clojure.string` is admitted as a portable substitute. Its exact Hara source and paired test blobs are recorded in the EDN evidence. `triml`, `trimr`, and `trim-newline` use explicit symbol mappings.
+Only `clojure.string` is admitted as a portable substitute. Its Hara source and paired-test blobs are recorded in the EDN evidence. Historical `triml`, `trimr`, and `trim-newline` names use explicit symbol mappings.
 
-Reader types, JVM classes/interfaces, project integrations, and publication symbols remain diagnostic-only. No pending candidate is counted as reviewed.
+Reader state, JVM classes/interfaces, publication symbols, and project-specific integrations remain diagnostic-only. No pending candidate counts as reviewed.
