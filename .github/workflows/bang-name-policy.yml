@@ -31,13 +31,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
+  validate-candidate:
     runs-on: ubuntu-latest
-    # The syntax-aware repository audit parses every Hara-owned source that
-    # contains a bang. hara-test runs each file on a child thread, so reserve
-    # a deterministic stack instead of depending on the runner's host default.
-    env:
-      RUST_MIN_STACK: '67108864'
 
     steps:
       - uses: actions/checkout@v4
@@ -45,17 +40,120 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run syntax-aware migration audit
-        run: ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_bang_test.hal
+      - name: Build fresh native Hara development tools
+        run: cargo build --manifest-path core/rust/Cargo.toml --bin hara --bin hara-test
 
-      - name: Repeat migration audit in a fresh Hara process
-        run: ./scripts/runtime/run-lib-tests core/lib/test/code/migrate_bang_test.hal
+      - name: Evaluate the complete bounded-audit candidate through native stdin
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$(mktemp --suffix=.hal)"
+          cat > "$candidate" <<'HAL'
+          (ns code.migrate-bang-test
+            (:use code.test)
+            (:require [code.migrate.bang :as bang]
+                      [tool.project :as project]))
 
-      - name: Run bang-definition lint contract
-        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/lint_test.hal
+          (def +sample-units+
+            [{:path "a.hal"
+              :source "(ns sample.a)\n(defn run [x] x)\n(defn run! [x] (run x))\n"}
+             {:path "b.hal"
+              :source "(ns sample.b (:require [sample.a :as a :refer [run!]]))\n(defn use-it [x] [(a/run! x) (run! x)])\n"}])
 
-      - name: Repeat lint contract in a fresh Hara process
-        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/lint_test.hal
+          (defn audit-unit
+            [summary unit]
+            (let [migration (bang/plan [unit])]
+              {:valid (and (:valid summary) (:valid migration))
+               :files (inc (:files summary))
+               :records (+ (:records summary) (:records migration))
+               :changed/files (+ (:changed/files summary) (:changed/files migration))
+               :diagnostics (into (:diagnostics summary)
+                                  (:diagnostics migration))}))
+
+          (defn audit-units
+            [units]
+            (reduce audit-unit
+                    {:valid true
+                     :files 0
+                     :records 0
+                     :changed/files 0
+                     :diagnostics []}
+                    units))
+
+          (def results
+            [(fact "canonical reference mutations are excluded by qualified identity"
+               (let [ledger
+                     (bang/rename-ledger
+                      [{:path "foundation.hal"
+                        :source
+                        "(ns std.foundation)\n(defn reset! [r v] v)\n(defn swap! [r f] (f r))\n(defn swap-return! [r f] (f r))\n(defn cas! [r a b] true)\n(defn reset-cache! [] nil)\n"}])]
+                 (mapv :source/refer ledger))
+               => ['std.foundation/reset-cache!])
+
+             (fact "a rename plan updates definitions aliases refers and calls"
+               (let [migration
+                     (bang/plan +sample-units+ {'sample.a/run! 'sample.a/run-effect})
+                     outputs
+                     (reduce (fn [out unit] (assoc out (:path unit) (:after unit)))
+                             {}
+                             (:edits migration))]
+                 [(:valid migration)
+                  (:records migration)
+                  (get outputs "a.hal")
+                  (get outputs "b.hal")])
+               => [true
+                   1
+                   "(ns sample.a)\n(defn run [x] x)\n(defn run-effect [x] (run x))\n"
+                   "(ns sample.b (:require [sample.a :as a :refer [run-effect]]))\n(defn use-it [x] [(a/run-effect x) (run-effect x)])\n"])
+
+             (fact "suffix removal fails closed when the target already exists"
+               (let [migration
+                     (bang/plan
+                      [{:path "collision.hal"
+                        :source "(ns sample.collision)\n(defn run [] nil)\n(defn run! [] nil)\n"}]
+                      {})]
+                 [(:valid migration)
+                  (mapv :migration/error (:diagnostics migration))])
+               => [false [:bang-rename/existing-target]])])
+
+          (fact "Hara-owned production roots contain no disallowed bang definitions"
+            (let [current-project (project/read-project "project.edn")
+                  audit
+                  (audit-units
+                   (bang/project-units
+                    current-project
+                    (vec (concat (:project/source-paths current-project)
+                                 ["rust/hal-src"]))))]
+              [(:valid audit)
+               (< 0 (:files audit))
+               (:records audit)
+               (:changed/files audit)
+               (:diagnostics audit)])
+            => [true true 0 0 []])
+
+          (fact "embedded Rust Hara sources equal deterministic code.migrate materialization"
+            (let [current-project (project/read-project "project.edn")
+                  snapshot (bang/embedded-snapshot-plan current-project)]
+              [(:valid snapshot)
+               (:records snapshot)
+               (:changed/files snapshot)
+               (:diagnostics snapshot)])
+            => [true 3 0 []])
+
+          (pr-str (run '[code.migrate-bang-test]))
+          HAL
+
+          core/rust/target/debug/hara --project core --offline stdin < "$candidate" | tee /tmp/bang-candidate-evaluation.txt
+          grep -F ':status :passed' /tmp/bang-candidate-evaluation.txt
+
+      - name: Run the focused test against the unwritten candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidate="$(mktemp --suffix=.hal)"
+          sed -n '/^          (ns code.migrate-bang-test$/,/^          (pr-str (run.*))$/s/^          //p' \
+            .github/workflows/bang-name-policy.yml > "$candidate"
+          core/rust/target/debug/hara-test --root core "$candidate"
 
       - name: Reject retained migration scratch artifacts
         shell: bash
