@@ -1,51 +1,32 @@
-name: Repair script ledger implementation driver
+name: Agent source snapshot
 
 on:
   push:
     branches:
-      - agent/823-script-migration-ledger
+      - agent/shape-preserving-foundation-collections
     paths:
       - .github/workflows/agent-source-snapshot.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  repair:
+  snapshot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
         with:
-          ref: agent/823-script-migration-ledger
-          fetch-depth: 0
+          fetch-depth: 1
+          submodules: false
 
-      - name: Remove the stray escaped newline from the Python generator
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
+      - name: Archive working tree
+        run: tar --exclude=.git -czf /tmp/hara-source.tar.gz .
 
-          path = Path(".github/workflows/foundation-surface-conformance.yml")
-          source = path.read_text(encoding="utf-8")
-          old = '                  "   :provenance",\\n                  "   {:repository'
-          new = '                  "   :provenance",\n                  "   {:repository'
-          if source.count(old) != 1:
-              raise SystemExit(
-                  f"expected one malformed provenance line, found {source.count(old)}"
-              )
-          path.write_text(source.replace(old, new), encoding="utf-8")
-          PY
-
-      - name: Restore this helper and publish the repaired driver
-        shell: bash
-        run: |
-          git fetch origin agent/789-v1-grammar-fingerprint-parity
-          git show origin/agent/789-v1-grammar-fingerprint-parity:.github/workflows/agent-source-snapshot.yml \
-            > .github/workflows/agent-source-snapshot.yml
-          git add .github/workflows/foundation-surface-conformance.yml \
-            .github/workflows/agent-source-snapshot.yml
-          git diff --cached --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Repair portable script ledger generator"
-          git push origin HEAD:agent/823-script-migration-ledger
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: hara-source-${{ github.sha }}
+          path: /tmp/hara-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1

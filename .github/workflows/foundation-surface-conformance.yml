@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -40,103 +40,3 @@ jobs:
           path: generated/foundation-surface-conformance.json
           if-no-files-found: warn
           retention-days: 30
-
-  implement-script-migration-ledger:
-    if: ${{ github.event_name == 'pull_request' && github.head_ref == 'agent/823-script-migration-ledger' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/823-script-migration-ledger
-          fetch-depth: 0
-
-      - name: Checkout the pinned Foundation source authority
-        uses: actions/checkout@v4
-        with:
-          repository: zcaudate-xyz/foundation-base
-          ref: fe54cc866473a888bfbd4ce2d3de6d8011f09f72
-          path: foundation-base
-          fetch-depth: 1
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Materialize and recheck the source-owned ledger
-        shell: bash
-        run: |
-          python -m py_compile scripts/runtime/materialize-code-migrate-script-ledger
-          python scripts/runtime/materialize-code-migrate-script-ledger \
-            --repo-root . \
-            --foundation-root foundation-base \
-            --write
-          python scripts/runtime/materialize-code-migrate-script-ledger \
-            --repo-root . \
-            --foundation-root foundation-base \
-            --check
-          chmod +x scripts/runtime/materialize-code-migrate-script-ledger
-          git diff --check
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Build native Hara once
-        run: cargo build --locked --manifest-path core/rust/Cargo.toml --bin hara-test
-
-      - name: Run focused native migration-ledger acceptance
-        env:
-          RUST_BACKTRACE: full
-        shell: bash
-        run: |
-          timeout --signal=TERM --kill-after=10s 300s \
-            core/rust/target/debug/hara-test \
-            --root "$GITHUB_WORKSPACE/core" \
-            "$GITHUB_WORKSPACE/core/lib/test/code/migrate_script_test.hal"
-          timeout --signal=TERM --kill-after=10s 300s \
-            core/rust/target/debug/hara-test \
-            --root "$GITHUB_WORKSPACE/core" \
-            "$GITHUB_WORKSPACE/core/lib/test/code/migrate_test.hal"
-
-      - uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
-
-      - name: Run the same migration-ledger acceptance on JVM Truffle
-        shell: bash
-        run: |
-          cat > core/java/src/test/java/hara/truffle/AgentScriptMigrationLedgerTest.java <<'JAVA'
-          package hara.truffle;
-
-          import org.junit.runner.RunWith;
-
-          @RunWith(HaraJUnitRunner.class)
-          @HaraTestSource({
-              "lib/test/code/migrate_script_test.hal",
-              "lib/test/code/migrate_test.hal"
-          })
-          public final class AgentScriptMigrationLedgerTest {}
-          JAVA
-
-          mvn -B -f core/java/pom.xml -Ptruffle \
-            -Dtest=hara.truffle.AgentScriptMigrationLedgerTest test
-          rm core/java/src/test/java/hara/truffle/AgentScriptMigrationLedgerTest.java
-
-      - name: Publish only the validated product change
-        shell: bash
-        run: |
-          rm -rf .agent
-          git fetch origin "$GITHUB_BASE_REF"
-          git show "origin/$GITHUB_BASE_REF:.github/workflows/foundation-surface-conformance.yml" \
-            > .github/workflows/foundation-surface-conformance.yml
-          git show "origin/$GITHUB_BASE_REF:.github/workflows/agent-source-snapshot.yml" \
-            > .github/workflows/agent-source-snapshot.yml
-
-          git add -A
-          git diff --cached --check
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Govern portable script migration through code.migrate"
-          git push origin HEAD:agent/823-script-migration-ledger
