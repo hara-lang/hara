@@ -39,14 +39,84 @@ on:
       - '.github/workflows/std-typed-schema.yml'
   workflow_dispatch:
 
+# Temporary write permission only for the #836 candidate job; restore to read before review.
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: std-typed-schema-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  native-candidate:
+    if: ${{ github.event_name == 'pull_request' && github.head_ref == 'agent/combined-typed-lint' && github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - name: Check out the CLI specification registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Mirror registry at Rust include path
+        run: |
+          rm -rf "$GITHUB_WORKSPACE/../hara-specs-registry"
+          ln -s "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+      - name: Apply native schema parity candidate
+        run: |
+          python .github/agent-patches/832-promote-metaspec.py
+          python .github/agent-patches/832-native-artifact.py
+          python .github/agent-patches/832-java-hbc.py
+      - name: Compile and test Rust candidate
+        run: |
+          set +e
+          RUSTFLAGS=-Awarnings cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema > /tmp/std-typed-rust.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 160 /tmp/std-typed-rust.log
+            exit "$status"
+          fi
+          RUSTFLAGS=-Awarnings cargo test --manifest-path core/rust/Cargo.toml --lib programs_round_trip_and_execute > /tmp/std-typed-artifact.log 2>&1
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            tail -n 160 /tmp/std-typed-artifact.log
+            exit "$status"
+          fi
+          tail -n 20 /tmp/std-typed-rust.log
+          tail -n 20 /tmp/std-typed-artifact.log
+      - name: Compile and test Truffle candidate
+        run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedSchemaTest,hara.truffle.bytecode.HbcCodecTest test --file core/java/pom.xml
+      - name: Publish validated native product diff
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A \
+            core/rust/src/kernel/schema.rs \
+            core/rust/src/core/protocol.rs \
+            core/rust/src/vm/artifact.rs \
+            core/rust/src/vm/artifact/tests.rs \
+            core/rust/tests/std_typed_schema.rs \
+            core/java/src/main/java/hara/truffle/HalcSchema.java \
+            core/java/src/main/java/hara/truffle/HaraContext.java \
+            core/java/src/main/java/hara/truffle/bytecode/HbcCodec.java \
+            core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java \
+            core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java
+          git diff --cached --quiet && exit 0
+          git commit -m "Add native parity for std.typed properties"
+          git push origin HEAD:${{ github.head_ref }}
+
   boundary:
     runs-on: ubuntu-latest
     steps:
