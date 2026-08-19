@@ -16,28 +16,53 @@
                        (get-in scan [:namespace :name]))
                      scans))))
 
+(defn scan-input
+  "Projects a scanned document to portable task input."
+  [scan]
+  {:file (get-in scan [:document :file])
+   :source (get-in scan [:document :source])})
+
 (defn prepare-scans
-  "Prepares immutable shared lint context for a task invocation."
+  "Prepares immutable portable task input from host-side scans."
   [scans options]
   (let [scans (vec scans)]
-    {:scans scans
+    {:documents (vec (map scan-input scans))
      :options (or options {})
      :known-namespaces (scan-namespaces scans)}))
 
 (defn lint-items
   [input context]
-  (:scans input))
+  (:documents input))
+
+(defn portable-definition
+  [definition]
+  (select-keys definition
+               [:name :qualified :kind :visibility :signature]))
+
+(defn portable-document
+  "Removes live block values before a task result crosses the work boundary."
+  [document]
+  {:document (select-keys (:document document) [:file :source])
+   :namespace (select-keys (:namespace document)
+                           [:name :aliases :refers :requires])
+   :definitions (vec (map portable-definition (:definitions document)))
+   :reader-findings (:reader-findings document)
+   :findings (:findings document)
+   :inferences (:inferences document)
+   :inferred-functions (:inferred-functions document)})
 
 (defn lint-item
   [subject context]
   (let [input (:task/input subject)
-        scan (:task/value subject)
-        options (:options input)]
-    (analyze/analyze-scan
-     scan
-     (assoc options
-            :known-namespaces
-            (:known-namespaces input)))))
+        item (:task/value subject)
+        options (:options input)
+        scan (analyze/scan-source (:source item) {:file (:file item)})]
+    (portable-document
+     (analyze/analyze-scan
+      scan
+      (assoc options
+             :known-namespaces
+             (:known-namespaces input))))))
 
 (def.work lint-scans-work
   [:task]
@@ -61,7 +86,7 @@
                  :errors errors})))))
 
 (defn run-scans
-  "Runs prepared scans through the canonical work.flow.task definition."
+  "Runs portable prepared input through the canonical work.flow.task definition."
   [prepared]
   (flow-documents
    (work/run
@@ -87,9 +112,8 @@
 (defn lint-scans
   "Lints already scanned documents through work.flow.task.
 
-   The complete scan set is inspected before any item runs, preserving
-   project-wide qualified namespace resolution while keeping each document
-   analysis independently schedulable."
+   Namespace discovery happens before execution. Live std.block values remain
+   host-side; each task receives source/file data and reparses locally."
   ([scans]
    (lint-scans scans {}))
   ([scans options]
