@@ -1,0 +1,177 @@
+(ns code.migrate.transform.lib-core
+  (:require [std.foundation :refer :all]
+            [std.block :as block]
+            [std.block.parse :as parse]
+            [std.block.navigate :as navigate]))
+
+(def +lib-core-ex-info-codes+
+  {"subvec" :foundation/invalid-subvec-bounds
+   "take-nth" :foundation/invalid-take-nth
+   "topological-sort" :foundation/circular-dependency
+   "macroexpand" :foundation/macro-expansion-limit
+   "if-let-form" :foundation/invalid-if-let-bindings
+   "comprehension-error" :foundation/invalid-comprehension-bindings
+   "dotimes" :foundation/invalid-dotimes-binding})
+
+(defn code-children
+  [value]
+  (vec
+   (filter block/code?
+           (or (navigate/children (navigate/navigator value)) []))))
+
+(defn form-head
+  [value]
+  (let [head (first (code-children value))]
+    (if head (block/string head) nil)))
+
+(defn definition-name
+  [value]
+  (let [head (form-head value)]
+    (if (and head (str/starts-with? head "def"))
+      (first
+       (keep
+        (fn [child]
+          (if (= :meta (block/tag child))
+            (let [children (code-children child)]
+              (if (empty? children)
+                nil
+                (block/string (last children))))
+            (block/string child)))
+        (vec (drop 1 (code-children value)))))
+      nil)))
+
+(defn ex-info-block?
+  [value]
+  (let [head (form-head value)]
+    (and (= :list (block/tag value))
+         (or (= "ex-info" head)
+             (= "std.foundation/ex-info" head)))))
+
+(defn block-range
+  [value]
+  (select-keys (:props value) [:start-offset :end-offset]))
+
+(defn migration-context
+  [value definition]
+  (let [children (code-children value)
+        arguments (vec (rest children))]
+    {:range (block-range value)
+     :source (block/string value)
+     :definition definition
+     :message (if (< 0 (count arguments))
+                (block/string (first arguments))
+                nil)
+     :data (if (< 1 (count arguments))
+             (block/string (second arguments))
+             nil)
+     :cause (if (< 2 (count arguments))
+              (block/string (nth arguments 2))
+              nil)}))
+
+(defn resolve-code
+  [value definition code-or-resolver]
+  (let [context (migration-context value definition)
+        code
+        (cond
+          (function? code-or-resolver)
+          (code-or-resolver context)
+
+          (map? code-or-resolver)
+          (get code-or-resolver (:definition context))
+
+          :else
+          code-or-resolver)]
+    (if (and (keyword? code) (namespace code))
+      code
+      (throw
+       (ex :code.migrate/invalid-ex-info-code
+           {:ex/message "ex-info migration requires a qualified keyword code"
+            :code code
+            :context context})))))
+
+(declare rewrite-block)
+
+(defn rewrite-children
+  [source value definition code-or-resolver]
+  (let [start (:start-offset (:props value))
+        children (vec (block/children value))]
+    (reduce
+     (fn [current child]
+       (let [before (block/string child)
+             after (rewrite-block child definition code-or-resolver)]
+         (if (= before after)
+           current
+           (let [child-start (- (:start-offset (:props child)) start)
+                 child-end (- (:end-offset (:props child)) start)]
+             (str (str/slice current 0 child-start)
+                  after
+                  (str/slice current child-end))))))
+     source
+     (reverse children))))
+
+(defn replacement-source
+  [value definition code-or-resolver]
+  (let [children (code-children value)
+        arguments (vec (rest children))
+        amount (count arguments)
+        code (resolve-code value definition code-or-resolver)]
+    (if (or (< amount 2) (< 3 amount))
+      (throw
+       (ex :code.migrate/invalid-ex-info-form
+           {:ex/message "ex-info migration expects message, data, and optional cause"
+            :context (migration-context value definition)}))
+      (let [rewritten
+            (vec
+             (map
+              (fn [argument]
+                (rewrite-block argument definition code-or-resolver))
+              arguments))]
+        (str "(ex " code " (assoc "
+             (second rewritten)
+             " :ex/message "
+             (first rewritten)
+             (if (= amount 3)
+               (str " :ex/cause " (nth rewritten 2))
+               "")
+             "))")))))
+
+(defn rewrite-block
+  [value definition code-or-resolver]
+  (if (ex-info-block? value)
+    (replacement-source value definition code-or-resolver)
+    (if (block/container? value)
+      (rewrite-children
+       (block/string value)
+       value
+       (or (definition-name value) definition)
+       code-or-resolver)
+      (block/string value))))
+
+(defn migrate-ex-info-block
+  [source code-or-resolver]
+  (let [value (parse/parse-first source)]
+    (rewrite-block value
+                   (definition-name value)
+                   code-or-resolver)))
+
+(defn migrate-ex-info
+  "Structurally rewrites ex-info calls to canonical ex calls. Each top-level
+   form is parsed and transformed independently so large source files do not
+   require one eagerly materialized navigation tree. The code source may be a
+   qualified keyword, a map from enclosing definition name to code, or a
+   resolver function accepting migration-context."
+  ([source]
+   (migrate-ex-info source +lib-core-ex-info-codes+))
+  ([source code-or-resolver]
+   (loop [index 0 output []]
+     (if (= index (str/length source))
+       (str/join "" output)
+       (let [[value end] (parse/parse-at source index)
+             segment (str/slice source index end)
+             replacement
+             (if (= -1 (str/index-of segment "ex-info"))
+               segment
+               (rewrite-block value
+                              (definition-name value)
+                              code-or-resolver))]
+         (recur end (conj output replacement)))))))
