@@ -2,12 +2,16 @@
   (:use code.test)
   (:require [tool.lint :as lint]))
 
+(defn report-data
+  [outcome]
+  (Result/data outcome))
+
 ^{:refer 'tool.lint/lint-source
   :id 'resolution-arity-and-literal-types}
 (fact "reports deterministic semantic findings without evaluating source"
   (map :type
        (:findings
-        (deref
+        (report-data
          (lint/lint-source
           "(ns demo.core)\n(defn add [x] (inc x))\n(add 1 2)\n(inc \"x\")\nmissing"))))
   => [:tool.lint/invalid-arity
@@ -19,7 +23,7 @@
 (fact "continues after malformed top-level forms"
   (map :type
        (:findings
-        (deref (lint/lint-source "(def x 1)\n)\nmissing"))))
+        (report-data (lint/lint-source "(def x 1)\n)\nmissing"))))
   => [:tool.lint/reader-error :tool.lint/unresolved-symbol])
 
 ^{:refer 'tool.lint/lint-source
@@ -27,17 +31,17 @@
 (fact "reports vec only for a proven materialized-vector chain"
   [(map :type
         (:findings
-         (deref
+         (report-data
           (lint/lint-source
            "(ns demo.core)\n(let [covered (vec [])] (vec (filter identity covered)))"))))
    (map :type
         (:findings
-         (deref
+         (report-data
           (lint/lint-source
            "(ns demo.core)\n(let [covered []] (vec (filter identity covered)))"))))
    (map :type
         (:findings
-         (deref
+         (report-data
           (lint/lint-source
            "(ns demo.core)\n(let [references #{}] (vec (sort-by str (filter identity references))))"))))]
   => [[:tool.lint/redundant-vec] [] []])
