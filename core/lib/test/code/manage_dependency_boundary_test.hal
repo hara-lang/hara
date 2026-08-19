@@ -1,0 +1,47 @@
+(ns code.manage-dependency-boundary-test)
+
+(defn read-text
+  [path]
+  (str/decode-utf8 (deref (File/read path))))
+
+(defn hal-files
+  [path]
+  (vec
+   (filter
+    (fn [entry]
+      (str/ends-with? entry ".hal"))
+    (vec (deref (File/walk path))))))
+
+(def managed-files
+  (vec
+   (concat
+    (hal-files "lib/src/code/manage")
+    (hal-files "lib/src/code/migrate"))))
+
+(def forbidden-dependencies
+  (vec
+   (keep
+    (fn [path]
+      (if (str/includes? (read-text path) "[code.translate")
+        path
+        nil))
+    managed-files)))
+
+(def results
+  [(test-check
+    "managed units and migration helpers do not depend on code.translate"
+    forbidden-dependencies
+    [])
+
+   (test-check
+    "the ex-info migration uses parser ranges and the Foundation navigator"
+    (let [source
+          (read-text
+           "lib/src/code/migrate/transform/lib_core.hal")]
+      [(str/includes? source "[std.block.parse :as parse]")
+       (str/includes? source "[std.block.navigate :as navigate]")
+       (str/includes? source ":start-offset")
+       (str/includes? source ":end-offset")])
+    [true true true true])])
+
+results
