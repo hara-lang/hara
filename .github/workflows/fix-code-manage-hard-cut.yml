@@ -1,4 +1,4 @@
-name: Repair code.manage hard cut
+name: Synchronize Rust HAL inventory
 
 on:
   push:
@@ -17,7 +17,7 @@ permissions:
   contents: write
 
 jobs:
-  repair:
+  synchronize:
     if: github.repository == 'hara-lang/hara'
     runs-on: ubuntu-latest
     steps:
@@ -26,112 +26,22 @@ jobs:
           ref: agent/524-code-migrate-substrate
           fetch-depth: 0
 
-      - name: Repair the portable facade
+      - name: Regenerate the inventory from canonical HAL sources
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
+          scripts/runtime/sync-rust-hal-src
+          scripts/runtime/sync-rust-hal-src --check
+          git diff --check -- core/rust/standard-library.namespaces
 
-          path = Path('core/lib/src/code/manage.hal')
-          source = path.read_text(encoding='utf-8')
-
-          source = source.replace(
-              '  (:require [code.manage.migrate :as migrate]\n'
-              '            [code.manage.automation :as automation]',
-              '  (:require [code.manage.automation :as automation]',
-          )
-
-          source, count = re.subn(
-              r'\(def legacy-operations\n.*?\n\(def parity-inventory',
-              '''(def legacy-operations
-            [:analyse :extract :vars :docstrings :transform-code :import :purge
-             :missing :todos :incomplete :incomplete-report :orphaned :scaffold
-             :create-tests :in-order :arrange :factcheck-remove :factcheck-generate
-             :snapto :isolate :locate-code :locate-test :grep :grep-replace :unclean
-             :unchecked :commented :pedantic :refactor-code :refactor-test :ns-format
-             :ns-rename :find-usages :require-file :heal-code])
-
-          (def editing-operations
-            #{:transform-code :import :purge :scaffold :create-tests :arrange
-              :factcheck-remove :factcheck-generate :snapto :isolate :grep-replace
-              :refactor-code :refactor-test :ns-format :ns-rename :heal-code})
-
-          (def parity-inventory''',
-              source,
-              count=1,
-              flags=re.DOTALL,
-          )
-          if count != 1:
-              raise SystemExit(f'legacy/editing block replacement count: {count}')
-
-          source, count = re.subn(
-              r'(\(def \+tasks\+\n\s*\{.*?\n\s*:heal-code heal-code)\n\n(\(def operation-tasks)',
-              r'\1})\n\n\2',
-              source,
-              count=1,
-              flags=re.DOTALL,
-          )
-          if count != 1:
-              raise SystemExit(f'task map closure replacement count: {count}')
-
-          source = re.sub(
-              r'\n\(def foundation-audit migrate/audit\)\n'
-              r'\(def foundation-write-audit migrate/write-audit\)\s*$',
-              '\n',
-              source,
-          )
-          source = re.sub(r'\n{4,}', '\n\n\n', source)
-          source = source.rstrip() + '\n'
-
-          prohibited = ['code.manage.migrate', 'clojure-to-hal', 'foundation-audit']
-          for token in prohibited:
-              if token in source:
-                  raise SystemExit(f'prohibited portable facade token remains: {token}')
-
-          pairs = {')': '(', ']': '[', '}': '{'}
-          stack = []
-          in_string = False
-          escaped = False
-          in_comment = False
-          for index, char in enumerate(source):
-              if in_comment:
-                  if char == '\n':
-                      in_comment = False
-                  continue
-              if in_string:
-                  if escaped:
-                      escaped = False
-                  elif char == '\\':
-                      escaped = True
-                  elif char == '"':
-                      in_string = False
-                  continue
-              if char == ';':
-                  in_comment = True
-              elif char == '"':
-                  in_string = True
-              elif char in '([{':
-                  stack.append((char, index))
-              elif char in ')]}':
-                  if not stack or stack[-1][0] != pairs[char]:
-                      raise SystemExit(f'unbalanced delimiter at {index}: {char}')
-                  stack.pop()
-          if stack:
-              raise SystemExit(f'unclosed delimiters: {stack[-5:]}')
-
-          path.write_text(source, encoding='utf-8')
-          PY
-
-          git diff --check -- core/lib/src/code/manage.hal
-          ! rg -n 'code\.manage\.migrate|clojure-to-hal|foundation-audit' \
-            core/lib/src/code/manage.hal
-
-      - name: Commit the source-only repair
+      - name: Commit the tracked inventory only
         run: |
           set -euo pipefail
+          if git diff --quiet -- core/rust/standard-library.namespaces; then
+            echo 'Rust namespace inventory is already current.'
+            exit 0
+          fi
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add core/lib/src/code/manage.hal
-          git commit -m 'fix(code.manage): complete the translator hard cut'
+          git add core/rust/standard-library.namespaces
+          git commit -m 'chore(rust): synchronize canonical HAL namespace inventory'
           git push origin HEAD:agent/524-code-migrate-substrate
