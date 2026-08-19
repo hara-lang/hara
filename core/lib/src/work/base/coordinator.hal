@@ -31,7 +31,7 @@
         spec (base/work-spec-map work)
         root (runtime-root runtime spec options)
         version (definition-version spec options)]
-    (base/register-definition! runtime root version work)))
+    (base/register-definition runtime root version work)))
 
 (defn initial-frame
   [run options]
@@ -50,15 +50,15 @@
       (= :failed status)
       (= :cancelled status)))
 
-(defn commit-run-event!
+(defn commit-run-event
   [runtime frame updates event data]
-  (frame/transact!
+  (frame/transact
    runtime
    frame
    {:transition/run-updates (or updates {})
     :transition/events [(frame/event-record frame event data)]}))
 
-(defn complete-run!
+(defn complete-run
   [runtime frame id value]
   (result/then
    (store/query (base/runtime-store runtime)
@@ -66,9 +66,9 @@
    (fn [current]
      (result/then
       (if (= :cancelled (:run/status current))
-        (frame/emit! runtime frame :work/run-cancelled
+        (frame/emit runtime frame :work/run-cancelled
                      {:result value})
-        (commit-run-event!
+        (commit-run-event
          runtime
          frame
          {:run/status :completed
@@ -79,7 +79,7 @@
       (fn [_]
         (base/work-reference id))))))
 
-(defn fail-run!
+(defn fail-run
   [runtime frame id error]
   (result/then
    (store/query (base/runtime-store runtime)
@@ -87,9 +87,9 @@
    (fn [current]
      (result/then
       (if (= :cancelled (:run/status current))
-        (frame/emit! runtime frame :work/run-cancelled
+        (frame/emit runtime frame :work/run-cancelled
                      {:error (str error)})
-        (commit-run-event!
+        (commit-run-event
          runtime
          frame
          {:run/status :failed
@@ -99,14 +99,14 @@
       (fn [_]
         (base/work-reference id))))))
 
-(defn execute-run!
+(defn execute-run
   [runtime run work options]
   (let [id (:run/id run)
         frame (initial-frame run options)]
     (result/attempt
      (fn []
        (result/then
-        (commit-run-event!
+        (commit-run-event
          runtime
          frame
          {:run/status :running
@@ -121,9 +121,9 @@
                                    work
                                    (:run/input run))
            (fn [value]
-             (complete-run! runtime frame id value))))))
+             (complete-run runtime frame id value))))))
      (fn [error]
-       (fail-run! runtime frame id error)))))
+       (fail-run runtime frame id error)))))
 
 (def run-counter (atom 0))
 
@@ -168,10 +168,10 @@
             (ex-info "Work run identity conflicts with existing input"
                      {:run/id id})))
          (result/then
-          (store/create-run! (base/runtime-store runtime) proposed)
+          (store/create-run (base/runtime-store runtime) proposed)
           (fn [committed]
             (if (:transition/created? committed)
-              (execute-run! runtime
+              (execute-run runtime
                             (:transition/run committed)
                             work
                             options)
@@ -249,7 +249,7 @@
                 (ex-info "Pinned work definition is not available"
                          {:work/root (:run/work-root run)
                           :work/version (:run/work-version run)}))
-               (execute-run! runtime
+               (execute-run runtime
                              run
                              work
                              (merge (or (:run/options run) {})
@@ -275,7 +275,7 @@
                   (merge (or (:run/options current) {})
                          (or options {})))]
              (result/then
-              (commit-run-event!
+              (commit-run-event
                runtime
                frame
                {:run/status :cancelled}
@@ -328,7 +328,7 @@
    []
    checkpoints))
 
-(defn copy-checkpoints-before!
+(defn copy-checkpoints-before
   [runtime source-id target-id selected]
   (result/then
    (store/query (base/runtime-store runtime)
@@ -350,7 +350,7 @@
          (if (empty? clones)
            0
            (result/then
-            (store/transact-current!
+            (store/transact-current
              (base/runtime-store runtime)
              target-id
              {:transition/checkpoints clones})
@@ -360,9 +360,9 @@
 (defn fork-created-run
   [runtime source-id id selected run work fork-options]
   (result/then
-   (copy-checkpoints-before! runtime source-id id selected)
+   (copy-checkpoints-before runtime source-id id selected)
    (fn [_]
-     (execute-run! runtime run work fork-options))))
+     (execute-run runtime run work fork-options))))
 
 (defn fork-run-with-id
   [runtime source source-id id work fork-options options]
@@ -395,7 +395,7 @@
                       :source source-id
                       :checkpoint (:checkpoint options)})))
          (result/then
-          (store/create-run! (base/runtime-store runtime) proposed)
+          (store/create-run (base/runtime-store runtime) proposed)
           (fn [committed]
             (if (:transition/created? committed)
               (fork-created-run runtime

@@ -1,0 +1,24 @@
+(ns apply-bang-snapshots
+  (:require [code.migrate :as migrate]
+            [code.migrate.bang :as bang]
+            [tool.project :as project]))
+
+(let [current-project (project/read-project "project.edn")
+      plan (bang/embedded-snapshot-plan current-project)
+      rust-plan
+      (assoc plan
+             :edits
+             (mapv (fn [unit]
+                     (assoc unit :path
+                            (str/slice (:path unit)
+                                       (str/length "rust/")
+                                       (str/length (:path unit)))))
+                   (:edits plan)))
+      applied
+      (migrate/apply
+       "/rust"
+       (bang/code-migrate-plan rust-plan))]
+  (pr-str
+   {:planned (:records plan)
+    :changed (:changed/files plan)
+    :written (count (filter :write applied))}))

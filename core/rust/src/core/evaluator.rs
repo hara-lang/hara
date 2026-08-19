@@ -1088,9 +1088,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         let Form::Symbol(method) = &parts[0] else {
                             unreachable!()
                         };
-                        if method.ends_with('!') {
-                            return Err("protocol method names must not end with !".into());
-                        }
                         let Form::Vector(arguments) = &parts[1] else {
                             unreachable!()
                         };

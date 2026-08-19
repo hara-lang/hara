@@ -29,15 +29,15 @@
 (def value-standalone value/value-standalone)
 (def host-name name)
 
-(defn rt:stop [] (script/stop!))
+(defn rt:stop [] (script/stop))
 (def script-modules script/+modules+)
 (def script-specs script/+specs+)
 
 ;; Foundation-compatible runtime/bootstrap entry points.
-(def bootstrap! runtime/bootstrap!)
-(def install-lang! runtime/install-lang!)
-(def select-lang-version! runtime/select-lang-version!)
-(def install-type! runtime/install-type!)
+(def bootstrap runtime/bootstrap)
+(def install-lang runtime/install-lang)
+(def select-lang-version runtime/select-lang-version)
+(def install-type runtime/install-type)
 (def rt-create runtime/rt-create)
 (def rt-start runtime/rt-start)
 (def rt-stop runtime/rt-stop)
@@ -49,9 +49,9 @@
 (def registry-book-info registry/registry-book-info)
 (def registry-book-versions registry/registry-book-versions)
 (def registry-book-default-version registry/registry-book-default-version)
-(def registry-book-add! registry/registry-book-add!)
-(def registry-book-remove! registry/registry-book-remove!)
-(def registry-book-set-default! registry/registry-book-set-default!)
+(def registry-book-add registry/registry-book-add)
+(def registry-book-remove registry/registry-book-remove)
+(def registry-book-set-default registry/registry-book-set-default)
 
 (def rt-default runtime/rt-default)
 (def rt-default:create runtime/rt-default:create)
@@ -62,7 +62,7 @@
 
 ;; Loading lang.core installs each language's configured default book and the
 ;; first local runtimes. No target process is started during bootstrap.
-(def +bootstrap+ (bootstrap!))
+(def +bootstrap+ (bootstrap))
 
 (defn code-pointer
   "Creates the portable language pointer rooted in a script definition Var."
@@ -139,7 +139,7 @@
   (or (get (deref script/+modules+) module)
       (script-module-default lang module)))
 
-(defn register-module-entry!
+(defn register-module-entry
   [lang module section id entry]
   (swap! script/+modules+
          (fn [modules]
@@ -150,7 +150,7 @@
                     (assoc-in current [section id] entry)))))
   entry)
 
-(defn register-language-code!
+(defn register-language-code
   "Registers one grammar-derived top-level definition in the active module."
   [explicit-language form]
   (let [module (script/current-module-id)
@@ -186,14 +186,14 @@
         entry (if (has? metadata :public)
                 (assoc entry :static/public (:public metadata))
                 entry)]
-    (register-module-entry! language module :code id entry)))
+    (register-module-entry language module :code id entry)))
 
-(defn register-code-pointer!
+(defn register-code-pointer
   "Registers one code entry and interns its source symbol as a language pointer."
   ([form]
-   (register-code-pointer! nil form))
+   (register-code-pointer nil form))
   ([explicit-language form]
-   (let [entry (register-language-code! explicit-language form)
+   (let [entry (register-language-code explicit-language form)
          module (:module entry)
          source (symbol (str (current-namespace)))
          declaration-symbol (script-definition-symbol (second form))
@@ -209,7 +209,7 @@
                  :context context-key))]
      (intern-var (current-namespace) declaration-symbol pointer))))
 
-(defn register-fragment-pointer!
+(defn register-fragment-pointer
   "Registers one def$.<tag> fragment and interns its language pointer Var."
   [explicit-language declaration-symbol value metadata]
   (let [module (script/current-module-id)
@@ -236,7 +236,7 @@
                (if (nil? return-value)
                  {}
                  {:static/return return-value}))
-        _ (register-module-entry!
+        _ (register-module-entry
            language module :fragment id entry)
         context-key (script-context language)
         qualified-source (symbol (name source) (name id))
@@ -249,7 +249,7 @@
                 :context context-key))]
     (intern-var (current-namespace) declaration-symbol pointer)))
 
-(defn register-macro-fragment!
+(defn register-macro-fragment
   "Registers one Foundation defmacro.<tag> fragment for its exact language."
   [explicit-language form template]
   (let [module (script/current-module-id)
@@ -279,7 +279,7 @@
                 :form-input form
                 :template template
                 :standalone (:standalone metadata)})]
-    (register-module-entry! language module :fragment id entry)
+    (register-module-entry language module :fragment id entry)
     nil))
 
 (defn script-quote-macro-expansion
@@ -319,7 +319,7 @@
         (symbol (str namespace-symbol) (name declaration-symbol))]
     `(do
        ~runtime-form
-       (lang.core/register-macro-fragment!
+       (lang.core/register-macro-fragment
         ~lang
         '~form
         (fn [& args]
@@ -330,7 +330,7 @@
               (second expanded)
               expanded)))))))
 
-(defn start-script!
+(defn start-script
   "Creates, starts, records, and returns the runtime for one script coordinate."
   [lang module config]
   (let [coordinate [module lang]
@@ -351,12 +351,12 @@
            started
            (or (:require config) []))
           started)
-        record (script/register-script! lang module config)
+        record (script/register-script lang module config)
         record (assoc record :runtime started)]
     (swap! script/+scripts+ assoc coordinate record)
     started))
 
-(defn restart-script!
+(defn restart-script
   "Restarts every script declared by the current source namespace."
   []
   (let [source (symbol (str (current-namespace)))
@@ -366,13 +366,13 @@
                 (deref script/+scripts+))]
     (reduce (fn [_ entry]
               (let [record (second entry)]
-                (start-script! (:lang record)
+                (start-script (:lang record)
                                (:module record)
                                (:config record))))
             nil
             entries)))
 
-(defn rt:restart [] (restart-script!))
+(defn rt:restart [] (restart-script))
 
 (def +script-tag-aliases+
   {:xtalk :xt
@@ -399,7 +399,7 @@
        (vector '& 'body)
        (list
         'list
-        (list 'quote 'lang.core.script/eval-forms!)
+        (list 'quote 'lang.core.script/eval-forms)
         lang
         (list 'list
               (list 'quote 'quote)
@@ -410,7 +410,7 @@
        (vector '& 'body)
        (list
         'list
-        (list 'quote 'lang.core.script/eval-form!)
+        (list 'quote 'lang.core.script/eval-form)
         lang
         (list
          'list
@@ -487,9 +487,9 @@
            :operation 'defmacro}])))
     tags)))
 
-(defn sync-language-definitions!
+(defn sync-language-definitions
   [lang tags operations]
-  (definition/sync-origin!
+  (definition/sync-origin
    [:lang lang]
    (language-definition-families lang tags operations)))
 
@@ -503,7 +503,7 @@
      (vector 'symbol '& 'body)
      (list
       'list
-      (list 'quote 'lang.core/register-code-pointer!)
+      (list 'quote 'lang.core/register-code-pointer)
       lang
       (list
        'list
@@ -524,7 +524,7 @@
      (vector 'symbol 'value)
      (list
       'list
-      (list 'quote 'lang.core/register-fragment-pointer!)
+      (list 'quote 'lang.core/register-fragment-pointer)
       lang
       (list 'list (list 'quote 'quote) 'symbol)
       (list 'list (list 'quote 'quote) 'value)
@@ -573,7 +573,7 @@
   [lang]
   (let [tags (script-tags lang)
         definitions (script-definition-symbols lang)
-        _ (sync-language-definitions! lang tags definitions)
+        _ (sync-language-definitions lang tags definitions)
         highlights (script-highlight-symbols lang)
         evaluator-forms
         (map (fn [tag]
@@ -626,7 +626,7 @@
         module (first parsed)
         config (second parsed)
         setup-form
-        (list 'lang.core.script/setup!
+        (list 'lang.core.script/setup
               (list 'quote lang)
               (list 'quote module)
               (list 'quote config)
@@ -634,7 +634,7 @@
         final-form
         (if test?
           nil
-          (list 'lang.core/start-script!
+          (list 'lang.core/start-script
                 (list 'quote lang)
                 (list 'quote module)
                 (list 'quote config)))]
@@ -658,7 +658,7 @@
         metadata (merge (meta symbol)
                         attributes
                         (if docstring {:docstring docstring} {}))]
-    (list 'lang.core.script/register-spec!
+    (list 'lang.core.script/register-spec
           (list 'quote symbol)
           (list 'quote type-form)
           (list 'quote metadata))))

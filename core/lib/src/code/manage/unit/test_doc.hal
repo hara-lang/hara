@@ -474,7 +474,7 @@
         (recur (inc index)
                (if unit (conj output unit) output)))))))
 
-(defn write-text!
+(defn write-text
   [path source]
   (let [parent (File/parent path)]
     (if parent (deref (File/mkdir parent)) nil)
@@ -483,7 +483,7 @@
                        {:mode :replace :parents? true}))
     path))
 
-(defn export-one!
+(defn export-one
   [unit options]
   (let [result (document-result unit)
         value (:document result)]
@@ -496,20 +496,20 @@
                          (:test-root options)
                          (:document-root options)
                          ".edn")]
-        (write-text! document-path (str (pr-str value) "\n"))
+        (write-text document-path (str (pr-str value) "\n"))
         {:path (:path unit)
          :test-path (:test-path value)
          :document-path document-path
          :unresolved (:unresolved value)
          :status (if (= 0 (:unresolved value)) :documented :unresolved)}))))
 
-(defn export!
+(defn export
   [test-root options]
   (if (nil? (:document-root options))
     (throw (ex-info "test document export requires :document-root" {}))
     (mapv-loop
      (fn [unit]
-       (export-one! unit (assoc options :test-root test-root)))
+       (export-one unit (assoc options :test-root test-root)))
      (test-units test-root))))
 
 (defn document-files
@@ -529,7 +529,7 @@
       (throw (ex-info "unsupported test document format"
                       {:path path :format (:format value)})))))
 
-(defn generate-one!
+(defn generate-one
   [document-path options]
   (let [value (read-document document-path)]
     (if (not= 0 (:unresolved value))
@@ -543,22 +543,22 @@
                         (relative-path document-path (:document-root options))
                         ".edn"
                         ".hal"))]
-        (write-text! generated-path (render value))
+        (write-text generated-path (render value))
         {:document-path document-path
          :generated-path generated-path
          :test-path (:test-path value)
          :status :generated}))))
 
-(defn generate!
+(defn generate
   [document-root options]
   (if (nil? (:generated-root options))
     (throw (ex-info "test generation requires :generated-root" {}))
     (mapv-loop
      (fn [path]
-       (generate-one! path (assoc options :document-root document-root)))
+       (generate-one path (assoc options :document-root document-root)))
      (document-files document-root))))
 
-(defn validate-generated!
+(defn validate-generated
   [generated-root options]
   (sh/run [(:hara-test options)
            "--root"
@@ -566,7 +566,7 @@
            generated-root]
           {:cwd (:project-root options)}))
 
-(defn delete-verified!
+(defn delete-verified
   [generated test-root]
   (mapv-loop
    (fn [entry]
@@ -575,23 +575,23 @@
        path))
    (filter (fn [entry] (= :generated (:status entry))) generated)))
 
-(defn migrate!
+(defn migrate
   [test-root options]
   (let [required [:document-root :generated-root :project-root :hara-test]
         missing (vec (filter (fn [key] (nil? (get options key))) required))]
     (if (not (empty? missing))
       (throw (ex-info "test migration requires explicit roots and runner"
                       {:missing missing}))
-      (let [exported (export! test-root options)
-            generated (generate! (:document-root options) options)
+      (let [exported (export test-root options)
+            generated (generate (:document-root options) options)
             ready (filter (fn [entry] (= :generated (:status entry))) generated)
             validation
             (if (empty? ready)
               {:exit 0 :stdout "" :stderr ""}
-              (validate-generated! (:generated-root options) options))
+              (validate-generated (:generated-root options) options))
             deleted
             (if (= 0 (:exit validation))
-              (delete-verified! generated test-root)
+              (delete-verified generated test-root)
               [])]
         {:exported (frequencies (map :status exported))
          :generated (frequencies (map :status generated))

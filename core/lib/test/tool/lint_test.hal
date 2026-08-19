@@ -19,6 +19,47 @@
       :tool.lint/unresolved-symbol])
 
 ^{:refer 'tool.lint/lint-source
+  :id 'hara-owned-bang-definition-policy}
+(fact "flags Hara-owned bang definitions without restricting external parsing"
+  (let [source
+        (str "(ns demo.core)\n"
+             "(defn run! [] nil)\n"
+             "^{:public true} (defn.xt effect! [] nil)\n"
+             "(defmacro- wrap! [] nil)\n"
+             "'(defn quoted! [] nil)\n"
+             "(run!)")
+        ordinary (report-data (lint/lint-source source))
+        governed
+        (report-data
+         (lint/lint-source
+          source
+          {:rules #{:tool.lint/bang-suffixed-definition}}))]
+    [(mapv :type (:findings ordinary))
+     (mapv (fn [finding]
+             (select-keys finding
+                          [:type :definition/var :definition/form
+                           :rename/candidate :rename/collision]))
+           (filter (fn [finding]
+                     (= :tool.lint/bang-suffixed-definition (:type finding)))
+                   (:findings governed)))])
+  => [[]
+      [{:type :tool.lint/bang-suffixed-definition
+        :definition/var 'effect!
+        :definition/form 'defn.xt
+        :rename/candidate 'demo.core/effect
+        :rename/collision false}
+       {:type :tool.lint/bang-suffixed-definition
+        :definition/var 'run!
+        :definition/form 'defn
+        :rename/candidate 'demo.core/run
+        :rename/collision false}
+       {:type :tool.lint/bang-suffixed-definition
+        :definition/var 'wrap!
+        :definition/form 'defmacro-
+        :rename/candidate 'demo.core/wrap
+        :rename/collision false}]])
+
+^{:refer 'tool.lint/lint-source
   :id 'recovering-reader}
 (fact "continues after malformed top-level forms and reports in canonical position order"
   (map :type

@@ -1707,7 +1707,7 @@ public class HaraLanguageTest {
   }
 
   @Test
-  public void protocolMethodsAllowPredicatesAndRejectBangNames() {
+  public void protocolMethodsAllowPredicatesAndBangNames() {
     try (Context context = context()) {
       assertTrue(
           context
@@ -1719,13 +1719,16 @@ public class HaraLanguageTest {
               .eval(HaraLanguage.ID, "user/ready?")
               .toString()
               .contains("user/ready?"));
-      PolyglotException error =
-          assertThrows(
-              PolyglotException.class,
-              () ->
-                  context.eval(
-                      HaraLanguage.ID, "(defprotocol MutatingProtocol (mutate! [self]))"));
-      assertTrue(error.getMessage().contains("protocol method names must not end with !"));
+      assertTrue(
+          context
+              .eval(HaraLanguage.ID, "(defprotocol MutatingProtocol (mutate! [self]))")
+              .toString()
+              .contains("user/MutatingProtocol"));
+      assertTrue(
+          context
+              .eval(HaraLanguage.ID, "user/mutate!")
+              .toString()
+              .contains("user/mutate!"));
     }
   }
 

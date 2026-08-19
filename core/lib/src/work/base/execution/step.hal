@@ -60,14 +60,14 @@
   (if (and (< attempt maximum)
            (retry-allowed? (or (:retry spec) {}) error))
     (result/then
-     (frame/emit! runtime frame :work/step-retry
+     (frame/emit runtime frame :work/step-retry
                   {:step/id (:id spec)
                    :attempt attempt
                    :next-attempt (inc attempt)})
      (fn [_]
        (step-attempt runtime frame spec input (inc attempt) maximum)))
     (result/then
-     (frame/emit! runtime frame :work/step-failed
+     (frame/emit runtime frame :work/step-failed
                   {:step/id (:id spec)
                    :attempt attempt
                    :error (str error)})
@@ -93,7 +93,7 @@
                           maximum
                           error))))
 
-(defn assert-step-identity!
+(defn assert-step-identity
   [runtime spec]
   (if (and (base/durable? runtime)
            (nil? (:id spec)))
@@ -132,13 +132,13 @@
           :attempts attempts})
         committed
         (if (base/durable? runtime)
-          (frame/transact!
+          (frame/transact
            runtime
            frame
            {:transition/checkpoints
             [(checkpoint-record frame spec input value attempts key)]
             :transition/events [completed]})
-          (frame/emit! runtime frame :work/step-completed
+          (frame/emit runtime frame :work/step-completed
                        {:step/id (:id spec)
                         :checkpoint/key key
                         :attempts attempts}))]
@@ -149,7 +149,7 @@
   (let [retry (or (:retry spec) {})
         maximum (or (:maximum retry) 1)]
     (result/then
-     (frame/emit! runtime frame :work/step-started
+     (frame/emit runtime frame :work/step-started
                   {:step/id (:id spec)
                    :checkpoint/key key})
      (fn [_]
@@ -168,7 +168,7 @@
 
 (defn run-step
   [execute runtime frame spec input]
-  (let [_ (assert-step-identity! runtime spec)
+  (let [_ (assert-step-identity runtime spec)
         frame (frame/leaf-frame frame spec)
         key (frame/checkpoint-key frame)
         checkpoint
@@ -182,7 +182,7 @@
      (fn [record]
        (if (= :completed (:checkpoint/status record))
          (result/then
-          (frame/emit! runtime frame :work/step-replayed
+          (frame/emit runtime frame :work/step-replayed
                        {:step/id (:id spec)
                         :checkpoint/key key})
           (fn [_]

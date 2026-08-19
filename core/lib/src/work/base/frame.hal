@@ -59,7 +59,7 @@
           :item/id (:item/id frame)}
          (or data {})))
 
-(defn notify-event!
+(defn notify-event
   [runtime event]
   (let [observer (base/runtime-observer runtime)]
     (if observer
@@ -68,20 +68,20 @@
         (catch Throwable error nil))))
   event)
 
-(defn notify-events!
+(defn notify-events
   [runtime events]
   (reduce
    (fn [notified event]
-     (notify-event! runtime event)
+     (notify-event runtime event)
      (inc notified))
    0
    (or events [])))
 
-(defn transact!
+(defn transact
   [runtime frame changes]
   (let [store-provider (base/runtime-store runtime)]
     (result/then
-     (store/load-run! store-provider (:run/id frame))
+     (store/load-run store-provider (:run/id frame))
      (fn [run]
        (let [derived
              (if (store/capability? store-provider :outbox)
@@ -100,30 +100,30 @@
                  (vec (or (:transition/outbox changes) []))
                  derived)))]
          (result/then
-          (store/transact-current!
+          (store/transact-current
            store-provider
            (:run/id frame)
            changes)
           (fn [committed]
             ;; Observers see only records that the store returned as committed.
-            (notify-events! runtime (:transition/events committed))
+            (notify-events runtime (:transition/events committed))
             committed)))))))
 
-(defn emit!
+(defn emit
   [runtime frame event data]
   (let [record (event-record frame event data)]
     (cond
       (native-runtime? runtime)
       (do
-        (native/emit! event record)
+        (native/emit event record)
         record)
 
       (nil? (base/runtime-store runtime))
-      (notify-event! runtime record)
+      (notify-event runtime record)
 
       :else
       (result/then
-       (transact! runtime
+       (transact runtime
                   frame
                   {:transition/events [record]})
        (fn [committed]
@@ -143,9 +143,9 @@
   ([runtime frame]
    (assoc
     (leaf-context frame)
-    :work/emit!
+    :work/emit
     (fn [event data]
-      (emit! runtime frame event data)))))
+      (emit runtime frame event data)))))
 
 (defn cancelled?
   [runtime frame]
@@ -164,7 +164,7 @@
      (fn [run]
        (= :cancelled (:run/status run))))))
 
-(defn assert-running!
+(defn assert-running
   [runtime frame]
   (if (and (native-runtime? runtime)
            (not (:work/cleanup? frame)))

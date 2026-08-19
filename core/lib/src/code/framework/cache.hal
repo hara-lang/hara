@@ -12,7 +12,7 @@
 (def ^:dynamic *memory-loaded* (atom false))
 (def ^:dynamic *memory* (atom {}))
 
-(declare init-memory!)
+(declare init-memory)
 
 (defn map-values [function input]
   (reduce-kv (fn [output key value]
@@ -62,7 +62,7 @@
   ([namespace file-path]
    (fetch namespace file-path *memory* +cache-dir+))
   ([namespace file-path current cache-dir]
-   (if (not (deref *memory-loaded*)) (init-memory! current cache-dir) nil)
+   (if (not (deref *memory-loaded*)) (init-memory current cache-dir) nil)
    (let [entry (get (deref current) namespace)]
      (if (and (not (nil? entry))
               (not (file-modified? namespace file-path current cache-dir)))
@@ -71,7 +71,7 @@
 (defn cache-path [cache-dir namespace cache-suffix]
   (path/join cache-dir (str namespace cache-suffix)))
 
-(defn write-text! [file-path source]
+(defn write-text [file-path source]
   (fs/write-bytes file-path (str/encode-utf8 source)
                   {:mode (if (fs/exists? file-path) :replace :create)
                    :parents? true}))
@@ -92,7 +92,7 @@
                            :meta {:file-modified file-modified
                                   :file-signature signature
                                   :namespace namespace})
-           _ (write-text! output-path (Edn/write document))
+           _ (write-text output-path (Edn/write document))
            cache-modified (modified-at output-path)]
        (swap! current assoc namespace
               {:cache-modified cache-modified
@@ -102,7 +102,7 @@
        data)
      nil)))
 
-(defn load-cache-file! [current file-path]
+(defn load-cache-file [current file-path]
   (try
     (let [document (Edn/read (read-text file-path))
           metadata (:meta document)
@@ -118,14 +118,14 @@
           namespace)))
     (catch Throwable error nil)))
 
-(defn init-memory!
-  ([] (init-memory! *memory* +cache-dir+))
+(defn init-memory
+  ([] (init-memory *memory* +cache-dir+))
   ([current cache-dir]
    (if (not (fs/exists? cache-dir))
      (fs/create-directory cache-dir {:parents? true :exists-ok? true}) nil)
    (let [files (fs/select cache-dir (fn [entry] (= :file (:type entry))))
          loaded (vec (keep (fn [entry]
-                             (load-cache-file! current (:path entry))) files))]
+                             (load-cache-file current (:path entry))) files))]
      (reset! *memory-loaded* true)
      loaded)))
 

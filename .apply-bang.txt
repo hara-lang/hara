@@ -1,0 +1,44 @@
+(ns code.migrate-bang-apply
+  (:require [code.migrate :as migrate]
+            [code.migrate.bang :as bang]
+            [tool.project :as project]))
+
+(let [current-project (project/read-project "project.edn")
+      migration (bang/plan (bang/project-units current-project))
+      ledger-path "spec/code-migrate/bang-vars.edn"]
+  (when (not (:valid migration))
+    (throw (ex-info "Bang-name migration plan is invalid"
+                    {:diagnostics (:diagnostics migration)})))
+  (deref (File/write ledger-path
+                     (str/encode-utf8
+                      (str (pr-str (:ledger migration)) "\n"))
+                     {:mode :replace :parents? true}))
+  (let [full-plan (bang/code-migrate-plan migration)
+        rooted-plan
+        (fn [prefix]
+          {:records
+           (vec
+            (keep
+             (fn [record]
+               (let [unit (:data record)
+                     path (:source/path unit)]
+                 (when (str/starts-with? path prefix)
+                   (assoc record :data
+                          (assoc unit
+                                 :source/path
+                                 (str/slice path (str/length prefix) (str/length path))
+                                 :target/path
+                                 (str/slice path (str/length prefix) (str/length path)))))))
+             (:records full-plan)))})
+        lib-plan (rooted-plan "lib/")
+        rust-plan (rooted-plan "rust/")
+        lib-edits (migrate/planned-edits lib-plan)
+        rust-edits (migrate/planned-edits rust-plan)]
+    (vec (map (fn [unit] (migrate/validate-unit! "/lib" unit)) lib-edits))
+    (vec (map (fn [unit] (migrate/validate-unit! "/rust" unit)) rust-edits))
+    (let [written (vec (concat (migrate/apply! "/lib" lib-plan)
+                               (migrate/apply! "/rust" rust-plan)))]
+    (pr-str {:records (:records migration)
+             :changed/files (:changed/files migration)
+             :written/files (count written)
+             :ledger/path ledger-path}))))

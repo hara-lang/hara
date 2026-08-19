@@ -1812,7 +1812,7 @@ mod tests {
     }
 
     #[test]
-    fn foundation_protocols_are_canonical_and_method_names_reject_bangs() {
+    fn foundation_protocols_are_canonical() {
         let mut runtime = Runtime::new();
         let Some(contract) =
             repo_text("00-unsorted/platform-language/draft/conformance/protocols.edn")
@@ -1952,10 +1952,17 @@ mod tests {
                 .unwrap(),
             "#protocol[user/PredicateProtocol]"
         );
-        assert!(runtime
-            .eval_text("(defprotocol MutatingProtocol (mutate! [self]))")
-            .unwrap_err()
-            .contains("protocol method names must not end with !"));
+    }
+
+    #[test]
+    fn external_protocol_method_names_allow_bangs() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text("(defprotocol MutatingProtocol (mutate! [self]))")
+                .unwrap(),
+            "#protocol[user/MutatingProtocol]"
+        );
     }
 
     #[test]
