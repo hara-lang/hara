@@ -20,6 +20,29 @@ pub struct ExceptionInfo {
     pub provenance: Rc<RefCell<ExceptionProvenance>>,
 }
 
+fn portable_host_error(message: String) -> Value {
+    let data = Value::Map(
+        [
+            (
+                Value::Keyword("ex/code".into()),
+                Value::Keyword("host/native-error".into()),
+            ),
+            (
+                Value::Keyword("ex/message".into()),
+                Value::String(message.clone()),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    Value::ExceptionInfo(Rc::new(ExceptionInfo {
+        message,
+        data: Box::new(data),
+        cause: None,
+        provenance: Rc::new(RefCell::new(ExceptionProvenance::default())),
+    }))
+}
+
 pub(crate) fn record_exception_throw(value: &Value, site: Option<ExceptionSite>) {
     let (Value::ExceptionInfo(exception), Some(site)) = (value, site) else {
         return;
@@ -640,24 +663,38 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                 if lookup("ex/code").is_some() {
                     return Err("ex attributes must not contain :ex/code; pass the code as the first argument".into());
                 }
-                if let Some(cause) = lookup("ex/cause") {
-                    if !matches!(cause, Value::ExceptionInfo(_)) {
-                        return Err(":ex/cause must be an Exception".into());
+                if let Some(class) = lookup("ex/class") {
+                    match class {
+                        Value::Keyword(class) if class.get_namespace().is_some() => {}
+                        _ => return Err(":ex/class must be a namespaced keyword".into()),
                     }
                 }
+                let cause = match lookup("ex/cause") {
+                    Some(cause @ Value::ExceptionInfo(_)) => Some(cause.clone()),
+                    Some(Value::String(message)) => Some(portable_host_error(message.clone())),
+                    Some(_) => return Err(":ex/cause must be an Exception or host error".into()),
+                    None => None,
+                };
                 if let Some(context) = lookup("ex/context") {
                     if map_entries(context).is_none() {
                         return Err(":ex/context must be a map".into());
                     }
                 }
-                let data = map_assoc_value(
+                let mut data = map_assoc_value(
                     &arguments[1],
                     Value::Keyword("ex/code".into()),
                     Value::Keyword(code.clone()),
                 )?;
+                if let Some(cause) = &cause {
+                    data = map_assoc_value(
+                        &data,
+                        Value::Keyword("ex/cause".into()),
+                        cause.clone(),
+                    )?;
+                }
                 Ok(Value::ExceptionInfo(Rc::new(ExceptionInfo {
                     message,
-                    cause: lookup("ex/cause").cloned().map(Box::new),
+                    cause: cause.map(Box::new),
                     data: Box::new(data),
                     provenance: Rc::new(RefCell::new(ExceptionProvenance {
                         created_at: None,
@@ -722,12 +759,30 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
         ),
         (
             "ex-class",
-            native_function("ex-class", 1, |arguments| {
-                Ok(Value::String(match &arguments[0] {
-                    Value::ExceptionInfo(_) => "Exception".into(),
-                    Value::String(_) => "String".into(),
-                    value => receiver_category(value).into(),
-                }))
+            native_function("ex-class", 1, |arguments| match &arguments[0] {
+                Value::ExceptionInfo(value) => {
+                    let Some(entries) = map_entries(&value.data) else {
+                        return Err("Exception data must be a map".into());
+                    };
+                    match entries.iter().find_map(|(key, value)| {
+                        matches!(key, Value::Keyword(name) if name.as_str() == "ex/class")
+                            .then_some(value)
+                    }) {
+                        None => Ok(Value::Nil),
+                        Some(Value::Keyword(class)) if class.get_namespace().is_some() => {
+                            Ok(Value::Keyword(class.clone()))
+                        }
+                        Some(_) => Err(":ex/class must be a namespaced keyword".into()),
+                    }
+                }
+                _ => Err("ex-class expects an Exception".into()),
+            }),
+        ),
+        (
+            "ex-native-type",
+            native_function("ex-native-type", 1, |arguments| match &arguments[0] {
+                Value::ExceptionInfo(_) => Ok(Value::String("ExceptionInfo".into())),
+                _ => Err("ex-native-type expects an Exception".into()),
             }),
         ),
     ]

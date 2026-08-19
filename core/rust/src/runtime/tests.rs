@@ -4687,10 +4687,22 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text("(ex-class (ex-info \"broken\" {:phase :test}))")
+                .eval_text("(ex-native-type (ex-info \"broken\" {:phase :test}))")
                 .unwrap(),
             "\"ExceptionInfo\""
         );
+        assert_eq!(
+            runtime
+                .eval_text("(ex-class (ex :file/read {:ex/class :ex.class/io}))")
+                .unwrap(),
+            ":ex.class/io"
+        );
+        assert_eq!(
+            runtime.eval_text("(ex-class (ex :file/read {}))").unwrap(),
+            "nil"
+        );
+        assert!(runtime.eval_text("(ex :file/read {:ex/class :io})").is_err());
+        assert!(runtime.eval_text("(ex-native-type 42)").is_err());
     }
 
     #[test]
