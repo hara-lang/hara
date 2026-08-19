@@ -1,12 +1,15 @@
 ;; Lint-owned adapter over the portable std.typed implementation.
 ;;
-;; Keep direct std.typed dependencies here so source analysis can evolve its
-;; block adapter without pulling std.block, tool.lint, or code.test into the
-;; portable typed namespaces.
+;; Source blocks and lint policy stop here. std.typed only receives ordinary
+;; forms, values, and portable registries.
 (ns tool.lint.schema
-  (:require [std.typed.infer :as infer]
-            [std.typed.schema :as schema]))
+  (:require [std.block :as block]
+            [std.typed.infer :as infer]
+            [std.typed.registry :as registry]
+            [std.typed.schema :as schema]
+            [tool.lint.model :as model]))
 
+;; Existing analyzer-facing inference bridge.
 (def +unknown-schema+ infer/+unknown-schema+)
 (def result infer/result)
 (def unknown infer/unknown)
@@ -15,3 +18,643 @@
 (def infer-result infer/infer-result)
 (def infer-function-arity infer/infer-function-arity)
 (def compatible? schema/compatible?)
+
+(def +schema-heads+
+  #{:or :maybe :vector :tuple :map :fn :function :enum :result})
+
+(def +schema-primitives+
+  #{:any :nil
+    :bool :boolean
+    :num :number
+    :int :integer
+    :str :string
+    :keyword :symbol
+    :list :vector :map :set :bytes :fn})
+
+(def +schema-finding-types+
+  #{:tool.lint/invalid-schema
+    :tool.lint/unresolved-schema
+    :tool.lint/invalid-function-schema
+    :tool.lint/schema-arity-mismatch
+    :tool.lint/schema-value-mismatch
+    :tool.lint/schema-return-mismatch
+    :tool.lint/schema-argument-mismatch})
+
+(defn schema-mode
+  [options]
+  (let [mode (or (:schema-mode options) :warn)]
+    (if (has? #{:off :warn :error} mode)
+      mode
+      :warn)))
+
+(defn schema-level
+  [options]
+  (let [mode (schema-mode options)]
+    (cond
+      (= mode :off) nil
+      (= mode :error) :error
+      :else :warning)))
+
+(defn schema-finding
+  [anchor code message options requirement]
+  (let [level (schema-level options)]
+    (when level
+      (model/finding anchor code level message requirement))))
+
+(defn definition-finding
+  [definition anchor code message options requirement]
+  (let [finding (schema-finding anchor code message options requirement)]
+    (when finding
+      (assoc finding :file (:file definition)))))
+
+;; ---------------------------------------------------------------------------
+;; std.block -> ordinary metadata adapter
+;; ---------------------------------------------------------------------------
+
+(defn code-children
+  [value]
+  (vec (filter block/code? (block/children value))))
+
+(defn metadata-map
+  "Returns the reader metadata carried by one :meta block."
+  [metadata-block]
+  (if (and metadata-block (= :meta (block/tag metadata-block)))
+    (let [child (first (code-children metadata-block))
+          value (when child (block/value child))]
+      (cond
+        (map? value) value
+        (keyword? value) {value true}
+        (symbol? value) {:tag value}
+        :else {}))
+    {}))
+
+(defn unwrap-metadata
+  "Returns the expression beneath nested metadata containers plus merged data."
+  [value]
+  (loop [current value
+         metadata {}
+         metadata-block nil]
+    (if (= :meta (block/tag current))
+      (let [children (code-children current)
+            attached (second children)]
+        (if attached
+          (recur attached
+                 (merge metadata (metadata-map current))
+                 (or metadata-block current))
+          {:form current
+           :metadata metadata
+           :metadata-block metadata-block}))
+      {:form current
+       :metadata metadata
+       :metadata-block metadata-block})))
+
+(defn annotated-top-level-forms
+  "Projects root expressions to ordinary {form metadata} records.
+
+   A map containing :document is an analyzer scan. Every other input is
+   treated as the root block directly; this avoids protocol probing ordinary
+   maps while preserving the std.block boundary."
+  [value]
+  (let [scan? (and (map? value) (has? value :document))
+        root (if scan?
+               (get-in value [:document :root])
+               value)]
+    (vec (map unwrap-metadata (code-children root)))))
+
+(defn block-index
+  [values target]
+  (loop [index 0]
+    (if (= index (count values))
+      nil
+      (if (= (nth values index) target)
+        index
+        (recur (inc index))))))
+
+(defn inline-metadata
+  "Returns metadata attached inside a definition, including its name block."
+  [definition]
+  (let [children (code-children (:form definition))
+        name-index (block-index children (:block definition))
+        candidates (if (nil? name-index)
+                     []
+                     (vec (take (inc name-index) (drop 1 children))))]
+    (reduce
+     (fn [state value]
+       (if (= :meta (block/tag value))
+         (let [metadata (metadata-map value)]
+           {:metadata (merge (:metadata state) metadata)
+            :schema-block (if (has? metadata :schema)
+                            value
+                            (:schema-block state))})
+         state))
+     {:metadata {} :schema-block nil}
+     candidates)))
+
+(defn top-level-entry
+  [entries form]
+  (first (filter (fn [entry] (= form (:form entry))) entries)))
+
+(defn definition-initializer
+  [definition]
+  (if (not= :var (:kind definition))
+    nil
+    (let [children (code-children (:form definition))
+          name-index (block-index children (:block definition))
+          tail (if (nil? name-index)
+                 []
+                 (vec
+                  (filter (fn [value]
+                            (not= :meta (block/tag value)))
+                          (drop (inc name-index) children))))]
+      (cond
+        (empty? tail) nil
+        (and (string? (block/value (first tail))) (> (count tail) 1))
+        (second tail)
+        :else (first tail)))))
+
+(defn definition-records
+  "Enriches analyzer definitions with passive source schema metadata."
+  [scan]
+  (let [entries (annotated-top-level-forms scan)
+        file (get-in scan [:document :file])]
+    (vec
+     (map
+      (fn [definition]
+        (let [entry (top-level-entry entries (:form definition))
+              inline (inline-metadata definition)
+              metadata (merge (or (:metadata entry) {})
+                              (or (:metadata definition) {})
+                              (:metadata inline))
+              schema-block (or (:schema-block inline)
+                               (:metadata-block definition)
+                               (when (has? (or (:metadata entry) {}) :schema)
+                                 (:metadata-block entry)))]
+          (assoc definition
+                 :file file
+                 :metadata metadata
+                 :has-schema (has? metadata :schema)
+                 :schema-surface (get metadata :schema)
+                 :schema-block schema-block
+                 :initializer (definition-initializer definition))))
+      (:definitions scan)))))
+
+;; ---------------------------------------------------------------------------
+;; Namespace and registry adaptation
+;; ---------------------------------------------------------------------------
+
+(defn parse-require-entry
+  [entry]
+  (if (vector? entry)
+    (let [target (first entry)]
+      (loop [remaining (vec (rest entry)) alias nil refers #{}]
+        (if (empty? remaining)
+          {:namespace target :alias alias :refers refers}
+          (let [option (first remaining)
+                value (second remaining)]
+            (cond
+              (= option :as)
+              (recur (vec (drop 2 remaining)) value refers)
+
+              (= option :refer)
+              (recur (vec (drop 2 remaining))
+                     alias
+                     (if (or (vector? value) (list? value) (set? value))
+                       (into refers value)
+                       refers))
+
+              :else
+              (recur (vec (rest remaining)) alias refers))))))
+    {:namespace entry :alias nil :refers #{}}))
+
+(defn scan-refer-map
+  [scan]
+  (let [ns-block (get-in scan [:namespace :block])
+        form (when ns-block (block/value ns-block))
+        clauses (if form (drop 2 form) [])
+        requirements
+        (reduce
+         (fn [output clause]
+           (if (and (list? clause) (= :require (first clause)))
+             (into output (map parse-require-entry (rest clause)))
+             output))
+         [] clauses)]
+    (reduce
+     (fn [output requirement]
+       (reduce
+        (fn [acc referred]
+          (assoc acc referred
+                 (symbol (str (:namespace requirement)) (name referred))))
+        output
+        (:refers requirement)))
+     {} requirements)))
+
+(defn scan-registry
+  [scan parent]
+  (registry/registry
+   {}
+   {:namespace (get-in scan [:namespace :name])
+    :aliases (or (get-in scan [:namespace :aliases]) {})
+    :refers (scan-refer-map scan)
+    :parents (if parent [parent] [])}))
+
+(defn schema-surface?
+  [surface]
+  (or (and (keyword? surface) (has? +schema-primitives+ surface))
+      (and (map? surface) (keyword? (:kind surface)))
+      (and (list? surface)
+           (= 2 (count surface))
+           (= 'var (first surface))
+           (symbol? (second surface)))
+      (and (vector? surface)
+           (keyword? (first surface))
+           (has? +schema-heads+ (first surface)))))
+
+(defn candidate-records
+  [scans]
+  (vec
+   (mapcat
+    (fn [scan]
+      (filter
+       identity
+       (map
+        (fn [definition]
+          (let [initializer (:initializer definition)
+                surface (when initializer (block/value initializer))]
+            (when (and (= :var (:kind definition))
+                       (schema-surface? surface))
+              {:qualified (:qualified definition)
+               :surface surface
+               :scan scan
+               :definition definition})))
+        (definition-records scan))))
+    scans)))
+
+(defn external-definitions
+  [options]
+  (or (get-in options [:schema-index :definitions]) {}))
+
+(defn raw-global-registry
+  [candidates options]
+  (registry/registry
+   (reduce
+    (fn [output candidate]
+      (assoc output (:qualified candidate) (:surface candidate)))
+    (external-definitions options)
+    candidates)))
+
+(defn final-global-registry
+  "Normalizes named project schemas in the namespace where each was declared."
+  [candidates options]
+  (let [raw (raw-global-registry candidates options)
+        normalized
+        (reduce
+         (fn [output candidate]
+           (let [local (scan-registry (:scan candidate) raw)]
+             (try
+               (assoc output
+                      (:qualified candidate)
+                      (schema/normalize-with (:surface candidate) local))
+               (catch Throwable error output))))
+         (external-definitions options)
+         candidates)]
+    {:registry (registry/registry normalized)
+     :definitions normalized}))
+
+;; ---------------------------------------------------------------------------
+;; Contract normalization and diagnostics
+;; ---------------------------------------------------------------------------
+
+(defn schema-problem
+  [value]
+  (let [kind (:kind value)]
+    (cond
+      (= kind :unknown) :unknown
+      (= kind :extension) :extension
+      (= kind :union)
+      (first (filter identity (map schema-problem (:types value))))
+      (= kind :vector) (schema-problem (:item value))
+      (= kind :tuple)
+      (first (filter identity (map schema-problem (:items value))))
+      (= kind :map)
+      (first
+       (filter identity
+               (map (fn [field] (schema-problem (:type field)))
+                    (:fields value))))
+      (= kind :fn)
+      (or (first
+           (filter identity
+                   (map schema-problem (get-in value [:inputs :fixed]))))
+          (when (get-in value [:inputs :rest])
+            (schema-problem (get-in value [:inputs :rest])))
+          (schema-problem (:output value)))
+      (= kind :function)
+      (first (filter identity (map schema-problem (:arities value))))
+      (= kind :result) (schema-problem (:data value))
+      :else nil)))
+
+(defn function-schema?
+  [value]
+  (has? #{:fn :function} (:kind value)))
+
+(defn local-reference?
+  [reference namespaces]
+  (let [prefix (namespace reference)]
+    (or (nil? prefix)
+        (has? namespaces (symbol prefix)))))
+
+(defn normalize-annotation
+  [definition scan registry-value namespaces options]
+  (let [surface (:schema-surface definition)
+        anchor (or (:schema-block definition) (:block definition))]
+    (try
+      (let [normalized (schema/normalize-with surface registry-value)
+            problem (schema-problem normalized)]
+        (if problem
+          {:definition definition
+           :scan scan
+           :surface surface
+           :findings
+           (vec
+            (filter
+             identity
+             [(definition-finding
+               definition
+               anchor
+               :tool.lint/invalid-schema
+               (str "invalid schema for " (:qualified definition)
+                    ": " problem)
+               options
+               :tool.source-analysis/schema-normalization)]))}
+          (let [unresolved (schema/unresolved-references normalized registry-value)
+                local-unresolved
+                (vec
+                 (filter (fn [reference]
+                           (local-reference? reference namespaces))
+                         unresolved))
+                resolved (if (empty? unresolved)
+                           (schema/resolve-recursive normalized registry-value)
+                           normalized)
+                invalid-function
+                (and (= :function (:kind definition))
+                     (empty? unresolved)
+                     (not (function-schema? resolved)))
+                unresolved-findings
+                (map
+                 (fn [reference]
+                   (definition-finding
+                    definition
+                    anchor
+                    :tool.lint/unresolved-schema
+                    (str "unresolved project schema reference: " reference)
+                    options
+                    :tool.source-analysis/schema-resolution))
+                 local-unresolved)
+                function-finding
+                (when invalid-function
+                  (definition-finding
+                   definition
+                   anchor
+                   :tool.lint/invalid-function-schema
+                   (str "function " (:qualified definition)
+                        " requires a :fn or :function schema")
+                   options
+                   :tool.source-analysis/function-schema))]
+            {:definition definition
+             :scan scan
+             :surface surface
+             :normalized normalized
+             :resolved resolved
+             :unresolved unresolved
+             :invalid-function invalid-function
+             :findings
+             (vec
+              (filter identity
+                      (concat unresolved-findings [function-finding])))})))
+      (catch Throwable error
+        {:definition definition
+         :scan scan
+         :surface surface
+         :findings
+         (vec
+          (filter
+           identity
+           [(definition-finding
+             definition
+             anchor
+             :tool.lint/invalid-schema
+             (str "invalid schema for " (:qualified definition))
+             options
+             :tool.source-analysis/schema-normalization)]))}))))
+
+(defn public-contract?
+  [record]
+  (and (:resolved record)
+       (empty? (:unresolved record))
+       (not (:invalid-function record))))
+
+(defn contract-tables
+  [records]
+  (reduce
+   (fn [output record]
+     (let [definition (:definition record)]
+       (if (not (public-contract? record))
+         output
+         (cond
+           (= :function (:kind definition))
+           (assoc-in output [:functions (:qualified definition)] (:resolved record))
+
+           (= :var (:kind definition))
+           (assoc-in output [:values (:qualified definition)] (:resolved record))
+
+           :else output))))
+   {:values {} :functions {}}
+   records))
+
+(defn build-schema-index
+  "Builds a project-wide registry and passive metadata contract index."
+  ([scans] (build-schema-index scans {}))
+  ([scans options]
+   (let [scans (vec scans)
+         namespaces
+         (into #{}
+               (filter identity
+                       (map (fn [scan]
+                              (get-in scan [:namespace :name]))
+                            scans)))
+         candidates (candidate-records scans)
+         global (final-global-registry candidates options)
+         records
+         (vec
+          (mapcat
+           (fn [scan]
+             (let [local (scan-registry scan (:registry global))]
+               (map
+                (fn [definition]
+                  (normalize-annotation
+                   definition scan local namespaces options))
+                (filter
+                 (fn [definition] (:has-schema definition))
+                 (definition-records scan)))))
+           scans))
+         tables (contract-tables records)
+         findings (vec (mapcat (fn [record] (:findings record)) records))]
+     {:registry (:registry global)
+      :definitions (:definitions global)
+      :values (merge (or (get-in options [:schema-index :values]) {})
+                     (:values tables))
+      :functions (merge (or (get-in options [:schema-index :functions]) {})
+                        (:functions tables))
+      :records records
+      :findings findings
+      :mode (schema-mode options)})))
+
+(defn public-index
+  [index]
+  (select-keys index [:definitions :values :functions :mode]))
+
+(defn file-findings
+  [index file]
+  (vec
+   (filter (fn [finding] (= file (:file finding)))
+           (:findings index))))
+
+(defn file-records
+  [index file]
+  (vec
+   (filter (fn [record]
+             (= file (get-in record [:definition :file])))
+           (:records index))))
+
+;; ---------------------------------------------------------------------------
+;; Conservative contract-vs-source checks
+;; ---------------------------------------------------------------------------
+
+(defn project-arities
+  [contract]
+  (let [normalized (schema/normalize contract)]
+    (cond
+      (= :fn (:kind normalized)) [normalized]
+      (= :function (:kind normalized)) (:arities normalized)
+      :else [])))
+
+(defn arity-shape
+  [arity]
+  [(count (get-in arity [:inputs :fixed]))
+   (not (nil? (get-in arity [:inputs :rest])))])
+
+(defn declared-shapes
+  [contract]
+  (into #{} (map arity-shape (project-arities contract))))
+
+(defn actual-shapes
+  [signature]
+  (let [fixed (vec (map (fn [count] [count false]) (:arities signature)))
+        variadic (if (:variadic signature)
+                   [[(:minimum signature) true]]
+                   [])]
+    (into #{} (concat fixed variadic))))
+
+(defn schema-arity-finding
+  [record options]
+  (let [definition (:definition record)
+        contract (:resolved record)
+        signature (:signature definition)]
+    (when (and (= :function (:kind definition))
+               (public-contract? record)
+               (function-schema? contract)
+               (or (not (empty? (:arities signature))) (:variadic signature))
+               (not= (declared-shapes contract) (actual-shapes signature)))
+      (definition-finding
+       definition
+       (:block definition)
+       :tool.lint/schema-arity-mismatch
+       (str "schema arities for " (:qualified definition)
+            " do not match its parameter list")
+       options
+       :tool.source-analysis/schema-arity))))
+
+(defn value-schema-finding
+  [record options]
+  (let [definition (:definition record)
+        initializer (:initializer definition)
+        contract (:resolved record)]
+    (when (and (= :var (:kind definition))
+               initializer
+               (public-contract? record))
+      (let [actual (infer/infer-result (block/value initializer))]
+        (when (and (infer/known? actual)
+                   (not (schema/compatible? contract (:schema actual))))
+          (definition-finding
+           definition
+           (:block definition)
+           :tool.lint/schema-value-mismatch
+           (str "schema for " (:qualified definition)
+                " does not accept inferred initializer " (:schema actual))
+           options
+           :tool.source-analysis/schema-value))))))
+
+(defn matching-arity
+  [contract argument-count]
+  (first
+   (filter
+    (fn [arity]
+      (let [fixed (count (get-in arity [:inputs :fixed]))
+            rest-schema (get-in arity [:inputs :rest])]
+        (if rest-schema
+          (<= fixed argument-count)
+          (= fixed argument-count))))
+    (project-arities contract))))
+
+(defn return-schema-finding
+  [record document options]
+  (let [definition (:definition record)
+        contract (:resolved record)
+        inferred (get-in document [:inferred-functions (:name definition)])
+        signature (:signature definition)]
+    (when (and (= :function (:kind definition))
+               (public-contract? record)
+               (function-schema? contract)
+               inferred
+               (= 1 (count (:arities signature))))
+      (let [argument-count (first (:arities signature))
+            declared (matching-arity contract argument-count)
+            expected (:output declared)
+            actual (:output inferred)]
+        (when (and declared
+                   actual
+                   (not= :unknown (:kind actual))
+                   (not (schema/compatible? expected actual)))
+          (definition-finding
+           definition
+           (:block definition)
+           :tool.lint/schema-return-mismatch
+           (str "declared return schema for " (:qualified definition)
+                " does not accept inferred " actual)
+           options
+           :tool.source-analysis/schema-return))))))
+
+(defn enrich-document
+  "Adds metadata contract findings and the public project schema index."
+  [document index options]
+  (let [file (get-in document [:document :file])
+        records (file-records index file)
+        findings
+        (vec
+         (concat
+          (:findings document)
+          (file-findings index file)
+          (filter identity
+                  (map (fn [record]
+                         (schema-arity-finding record options))
+                       records))
+          (filter identity
+                  (map (fn [record]
+                         (value-schema-finding record options))
+                       records))
+          (filter identity
+                  (map (fn [record]
+                         (return-schema-finding record document options))
+                       records))))]
+    (assoc document
+           :findings findings
+           :schema-index (public-index index))))

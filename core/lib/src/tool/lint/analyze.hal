@@ -124,11 +124,19 @@
   (let [parsed (block/parse-source source options)
         root (:block parsed)
         ns-info (namespace-info root)
-        definitions (vec
-                     (filter identity
-                             (map (fn [form]
-                                    (definition-info form (:name ns-info)))
-                                  (code-children root))))]
+        entries (infer/annotated-top-level-forms root)
+        definitions
+        (vec
+         (filter
+          identity
+          (map
+           (fn [entry]
+             (let [definition (definition-info (:form entry) (:name ns-info))]
+               (when definition
+                 (assoc definition
+                        :metadata (:metadata entry)
+                        :metadata-block (:metadata-block entry)))))
+           entries)))]
     {:document {:file (or (:file options) "<memory>")
                 :source source
                 :root root}
@@ -501,7 +509,9 @@
                   (assoc output (:name definition)
                          (inferred-function-schema definition context)))
                 {} definitions)
-        forms (code-children (get-in scan [:document :root]))
+        forms (vec (map :form
+                        (infer/annotated-top-level-forms
+                         (get-in scan [:document :root]))))
         file (get-in scan [:document :file])
         analyses (sequence-analysis forms context)
         findings (vec

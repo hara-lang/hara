@@ -3,6 +3,7 @@
             [tool.lint.model :as model]
             [tool.lint.profile :as profile]
             [tool.lint.report :as report]
+            [tool.lint.schema :as lint-schema]
             [tool.project :as project]
             [work.base :as work :refer [def.work]]
             [work.flow.task :as task]))
@@ -34,30 +35,40 @@
    :inferred-functions (:inferred-functions document)})
 
 (defn prepare-scans
-  "Analyzes block-backed source host-side and prepares portable task input."
+  "Builds schema context and host-side analyses before the work boundary."
   [scans options]
   (let [scans (vec scans)
         options (or options {})
         known-namespaces (scan-namespaces scans)
+        schema-index (lint-schema/build-schema-index scans options)
         documents
         (vec
          (map
           (fn [scan]
             (portable-document
-             (analyze/analyze-scan
-              scan
-              (assoc options :known-namespaces known-namespaces))))
+             (lint-schema/enrich-document
+              (analyze/analyze-scan
+               scan
+               (assoc options :known-namespaces known-namespaces))
+              schema-index
+              options)))
           scans))]
     {:documents documents
      :options options
-     :known-namespaces known-namespaces}))
+     :known-namespaces known-namespaces
+     :schema-index schema-index}))
+
+(defn task-input
+  "Returns only values that may cross the work task boundary."
+  [prepared]
+  (select-keys prepared [:documents :options :known-namespaces]))
 
 (defn lint-items
   [input context]
   (:documents input))
 
 (defn lint-item
-  "Task item boundary over already-portable source analysis."
+  "Task item boundary over already-portable lint analysis."
   [document context]
   {:data document})
 
@@ -89,7 +100,7 @@
    (work/run
     (work/local-runtime)
     lint-scans-work
-    (task/invocation prepared))))
+    (task/invocation (task-input prepared)))))
 
 (defn finish
   "Builds the stable public lint result from ordered document analyses."
@@ -100,22 +111,28 @@
          (reduce (fn [output document]
                    (into output (:findings document)))
                  []
-                 documents))]
-    {:profile (or (:profile options) profile/+profile+)
-     :documents documents
-     :findings findings
-     :summary (model/summarize findings)}))
+                 documents))
+        output
+        {:profile (or (:profile options) profile/+profile+)
+         :documents documents
+         :findings findings
+         :summary (model/summarize findings)}
+        schema-index (:schema-index options)]
+    (if schema-index
+      (assoc output :schema-index (lint-schema/public-index schema-index))
+      output)))
 
 (defn lint-scans
   "Lints scans host-side, then routes portable analyses through work.flow.task.
 
-   std.block values never enter work state. The work layer owns ordered task
-   orchestration and result aggregation over immutable lint data."
+   std.block values and schema annotation records never enter work state. The
+   work layer owns ordered orchestration and aggregation over immutable data."
   ([scans]
    (lint-scans scans {}))
   ([scans options]
    (let [prepared (prepare-scans scans options)]
-     (finish (run-scans prepared) options))))
+     (finish (run-scans prepared)
+             (assoc options :schema-index (:schema-index prepared))))))
 
 (defn project-paths
   [current-project]

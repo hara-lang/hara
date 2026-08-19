@@ -1,0 +1,109 @@
+(ns tool.lint-schema-test
+  (:use code.test)
+  (:require [tool.lint :as lint]
+            [tool.lint.analyze :as analyze]
+            [tool.lint.schema :as lint-schema]))
+
+(defn report-data
+  [outcome]
+  (Result/data outcome))
+
+(defn finding-types
+  [report]
+  (vec (map :type (:findings report))))
+
+^{:refer 'tool.lint.schema/build-schema-index
+  :id 'project-registry-and-alias-resolution}
+(fact "builds one project schema registry and resolves metadata through aliases"
+  (let [contracts
+        (analyze/scan-source
+         (str "(ns demo.contracts)\n"
+              "(def Unary [:fn [:int] :str])")
+         {:file "contracts.hal"})
+        consumer
+        (analyze/scan-source
+         (str "(ns demo.consumer (:require [demo.contracts :as c]))\n"
+              "(defn ^{:schema #'c/Unary} label [value] \"ok\")")
+         {:file "consumer.hal"})
+        report (report-data (lint/lint-scans [consumer contracts]))]
+    [(has? (get-in report [:schema-index :definitions]) 'demo.contracts/Unary)
+     (get-in report [:schema-index :functions 'demo.consumer/label])
+     (finding-types report)])
+  => [true
+      {:kind :fn
+       :inputs {:fixed [{:kind :primitive :name :int}] :rest nil}
+       :output {:kind :primitive :name :str}}
+      []])
+
+^{:refer 'tool.lint/lint-source
+  :id 'metadata-contract-diagnostics}
+(fact "reports unresolved, value, function, arity, and return contract problems"
+  (let [source
+        (str "(ns demo)\n"
+             "(def ^{:schema :int} answer \"bad\")\n"
+             "(defn ^{:schema :int} not-contract [value] value)\n"
+             "(defn ^{:schema #'Missing} missing-contract [value] value)\n"
+             "(defn ^{:schema [:fn [:int :int] :str]} wrong-arity [value] \"ok\")\n"
+             "(defn ^{:schema [:fn [:int] :str]} wrong-return [value] 1)")
+        report (report-data (lint/lint-source source))
+        types (into #{} (finding-types report))]
+    (every? (fn [expected] (has? types expected))
+            #{:tool.lint/unresolved-schema
+              :tool.lint/invalid-function-schema
+              :tool.lint/schema-arity-mismatch
+              :tool.lint/schema-value-mismatch
+              :tool.lint/schema-return-mismatch}))
+  => true)
+
+^{:refer 'tool.lint/lint-source
+  :id 'schema-mode-policy}
+(fact "keeps schema indexing active when diagnostics are disabled"
+  (let [source "(ns demo)\n(def ^{:schema :int} answer \"bad\")"
+        warned (report-data (lint/lint-source source))
+        errored (report-data (lint/lint-source source {:schema-mode :error}))
+        disabled (report-data (lint/lint-source source {:schema-mode :off}))]
+    [(vec (map :level (:findings warned)))
+     (vec (map :level (:findings errored)))
+     (finding-types disabled)
+     (get-in disabled [:schema-index :values 'demo/answer])])
+  => [[:warning]
+      [:error]
+      []
+      {:kind :primitive :name :int}])
+
+^{:refer 'tool.lint.schema/annotated-top-level-forms
+  :id 'top-level-metadata}
+(fact "unwraps top-level metadata before analysis and retains its contract"
+  (let [source (str "(ns demo)\n"
+                    "^{:schema :int}\n"
+                    "(def answer \"bad\")")
+        report (report-data (lint/lint-source source))]
+    [(get-in report [:schema-index :values 'demo/answer])
+     (finding-types report)])
+  => [{:kind :primitive :name :int}
+      [:tool.lint/schema-value-mismatch]])
+
+^{:refer 'tool.lint.schema/build-schema-index
+  :id 'external-schema-index}
+(fact "uses supplied dependency schemas without evaluating project code"
+  (let [consumer
+        (analyze/scan-source
+         (str "(ns demo (:require [external.contracts :as ext]))\n"
+              "(defn ^{:schema #'ext/Unary} label [value] value)")
+         {:file "consumer.hal"})
+        index
+        (lint-schema/build-schema-index
+         [consumer]
+         {:schema-index
+          {:definitions
+           {'external.contracts/Unary
+            {:kind :fn
+             :inputs {:fixed [{:kind :primitive :name :int}] :rest nil}
+             :output {:kind :primitive :name :int}}}}})]
+    (get-in (lint-schema/public-index index)
+            [:functions 'demo/label]))
+  => {:kind :fn
+      :inputs {:fixed [{:kind :primitive :name :int}] :rest nil}
+      :output {:kind :primitive :name :int}})
+
+(pr-str (run '[tool.lint-schema-test]))
