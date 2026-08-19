@@ -15,7 +15,8 @@ import org.junit.Test;
 
 public class HaraDifferentialConformanceTest {
   private static final Path MANIFEST =
-      Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/parity/jvm-truffle.edn");
+      specsRegistry()
+          .resolve("00-unsorted/platform-language/draft/conformance/parity/jvm-truffle.edn");
 
   @Test
   public void portableCasesMatchAcrossJvmInterpreterAndTruffle() throws Exception {
@@ -69,5 +70,12 @@ public class HaraDifferentialConformanceTest {
   private static List<HaraDifferentialRunner.TestCase> cases() throws Exception {
     String source = Files.readString(MANIFEST);
     return HaraDifferentialRunner.readCases(Parser.LispReader.readString(source, null));
+  }
+
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 }

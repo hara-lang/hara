@@ -238,6 +238,11 @@ public interface Env {
       }
     }
 
+    public boolean accepts(int size) {
+      return (_restParam == null && size == _fixedArity)
+          || (_restParam != null && size >= _fixedArity);
+    }
+
     @Override
     public Supplier getArg0() {
       checkArgs(0);
@@ -275,6 +280,53 @@ public interface Env {
       } catch (Throwable t) {
         throw Ex.Sneaky(t);
       }
+    }
+  }
+
+  public static class FnMulti extends ObjFn implements IFn {
+    final java.util.List<FnEval> _clauses;
+
+    public FnMulti(java.util.List<FnEval> clauses) {
+      super(null);
+      _clauses = clauses;
+    }
+
+    private FnEval select(int size) {
+      FnEval variadic = null;
+      for (FnEval clause : _clauses) {
+        if (clause._restParam == null && clause._fixedArity == size) return clause;
+        if (clause._restParam != null
+            && clause.accepts(size)
+            && (variadic == null || clause._fixedArity > variadic._fixedArity)) {
+          variadic = clause;
+        }
+      }
+      if (variadic != null) return variadic;
+      throw new Ex.Arity(size, "No matching function arity");
+    }
+
+    private Object invokeMulti(java.util.List args) {
+      return select(args.size()).invokeEval(args);
+    }
+
+    @Override
+    public Supplier getArg0() {
+      return () -> invokeMulti(java.util.List.of());
+    }
+
+    @Override
+    public Function getArg1() {
+      return (arg) -> invokeMulti(java.util.List.of(arg));
+    }
+
+    @Override
+    public BiFunction getArg2() {
+      return (left, right) -> invokeMulti(java.util.List.of(left, right));
+    }
+
+    @Override
+    public Function getArgN() {
+      return (arguments) -> invokeMulti(Iter.toArrayList(Iter.iter(arguments)));
     }
   }
 

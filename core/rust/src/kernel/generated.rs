@@ -668,6 +668,10 @@ fn known_namespace(value: &str) -> bool {
             .any(|(_, namespace, _)| *namespace == value)
 }
 fn canonical(namespace: &str, method: &str) -> String {
+    let namespace = normalize_namespace(namespace);
+    if namespace.starts_with("std.native.") {
+        return format!("{namespace}/{method}");
+    }
     if namespace == "std.foundation" {
         return format!("std.foundation/{method}");
     }
@@ -675,46 +679,17 @@ fn canonical(namespace: &str, method: &str) -> String {
     // function calls. Keep their canonical names so `co/yield` and
     // `co/await` remain visible to the fiber evaluator instead of routing
     // through the synchronous Foundation wrapper namespace.
-    if normalize_namespace(namespace) == "std.foundation.coroutine" {
+    if namespace == "std.foundation.coroutine" {
         return format!("std.foundation.coroutine/{method}");
     }
     if let Some((_, _, alias)) = LIBRARIES
         .iter()
-        .find(|(_, library_namespace, _)| *library_namespace == normalize_namespace(namespace))
+        .find(|(_, library_namespace, _)| *library_namespace == namespace)
     {
         return format!("{alias}/{method}");
     }
-    match (normalize_namespace(namespace), method) {
+    match (namespace, method) {
         ("std.foundation", method) => method.into(),
-        ("std.native.Maths", method) => format!("std.native.Maths/{method}"),
-        ("std.native.Num", method) => format!("std.native.Num/{method}"),
-        ("std.native.Bits", method) => format!("std.native.Bits/{method}"),
-        ("std.native.String", method) => format!("str/{method}"),
-        ("std.native.Bytes", "new") => "bytes".into(),
-        ("std.native.Bytes", "instance?") => "bytes?".into(),
-        ("std.native.Bytes", method) => format!("bytes/{method}"),
-        ("std.native.File", method) => format!("file/{method}"),
-        ("std.native.Socket", method) => format!("socket/{method}"),
-        ("std.native.Promise", "run") => "promise/run".into(),
-        ("std.native.Promise", "instance?") => "promise?".into(),
-        ("std.native.Promise", method) => format!("promise/{method}"),
-        ("std.native.Coroutine", "instance?") => "std.foundation.coroutine/coroutine?".into(),
-        ("std.native.Coroutine", method) => format!("std.foundation.coroutine/{method}"),
-        ("std.native.Arr", "new") => "array".into(),
-        ("std.native.Arr", "instance?") => "array?".into(),
-        ("std.native.Obj", "new") => "object".into(),
-        ("std.native.Obj", "instance?") => "object?".into(),
-        ("std.native.Runtime", "load-string" | "macroexpand-1" | "gensym" | "var-sym") => {
-            method.into()
-        }
-        ("std.native.Runtime", method) => format!("std.native.Runtime/{method}"),
-        ("std.native.Printer", method) => method.into(),
-        ("std.native.Edn", method) => format!("std.native.Edn/{method}"),
-        ("std.native.Json", method) => format!("std.native.Json/{method}"),
-        ("std.native.RegExp", "instance?") => "regexp?".into(),
-        ("std.native.UUID", "instance?") => "uuid?".into(),
-        ("std.native.Error", method) => format!("std.native.Error/{method}"),
-        ("std.native.Iter", method) => format!("std.native.Iter/{method}"),
         ("std.lib.string", method) => format!("str/{method}"),
         ("std.lib.promise", "then") => "promise/then".into(),
         ("std.lib.promise", "catch") => "promise/catch".into(),

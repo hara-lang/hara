@@ -243,7 +243,9 @@ fn usage() {
     println!("Hara application runner");
     println!();
     println!("Usage:");
-    println!("  hara-app [--project PATH] [--allow-file] [--allow-process] [--allow-net] -- [ARGS...]");
+    println!(
+        "  hara-app [--project PATH] [--allow-file] [--allow-process] [--allow-net] -- [ARGS...]"
+    );
     println!();
     println!("The application receives a data request from hara.cli.application/request.");
     println!("A map with :hara.app/stdout, :hara.app/stderr and :hara.app/exit is emitted as a process result.");

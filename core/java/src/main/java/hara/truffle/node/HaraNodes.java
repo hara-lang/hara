@@ -21,9 +21,11 @@ import hara.lang.base.Iter;
 import hara.lang.base.primitive.Cast;
 import hara.lang.base.primitive.Num;
 import hara.lang.data.Symbol;
+import hara.lang.data.Keyword;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
 import hara.lang.data.types.ISetType;
+import hara.lang.protocol.IExInfo;
 import hara.lang.protocol.IFn;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
@@ -1235,7 +1237,20 @@ public final class HaraNodes {
 
     @Override
     public Object execute(VirtualFrame frame) {
-      throw new ThrownValue(value.execute(frame));
+      Object error = value.execute(frame);
+      if (!(error instanceof IExInfo)) {
+        throw new HaraException("throw expects an Exception value created by ex", this);
+      }
+      if (error instanceof Ex.Info info) {
+        com.oracle.truffle.api.source.SourceSection source = getSourceSection();
+        info.recordThrow(
+            new Ex.Info.Site(
+                HaraLanguage.currentContext(this).currentNamespaceName(),
+                source == null ? null : source.getSource().getName(),
+                source == null ? 0 : source.getStartLine(),
+                source == null ? 0 : source.getStartColumn()));
+      }
+      throw new ThrownValue(error);
     }
   }
 
@@ -1245,17 +1260,29 @@ public final class HaraNodes {
     @Child private HaraExpressionNode finallyBody;
 
     public static final class CatchClause extends HaraExpressionNode {
-      private final Symbol type;
+      private final Object selector;
       private final int catchSlot;
       @Child private HaraExpressionNode body;
 
-      public CatchClause(Symbol type, int catchSlot, HaraExpressionNode body) {
-        this.type = type;
+      public CatchClause(Object selector, int catchSlot, HaraExpressionNode body) {
+        this.selector = selector;
         this.catchSlot = catchSlot;
         this.body = body;
       }
 
       private boolean matches(Object value) {
+        if (selector == null) return true;
+        if (selector instanceof Keyword keyword) {
+          return keyword.equals(errorCode(value));
+        }
+        if (selector instanceof ILinearType selectors) {
+          Object code = errorCode(value);
+          for (int index = 0; index < selectors.count(); index++) {
+            if (selectors.nth(index).equals(code)) return true;
+          }
+          return false;
+        }
+        Symbol type = (Symbol) selector;
         String typeName = type.getName();
         if ("Object".equals(typeName)
             || "Exception".equals(typeName)
@@ -1282,6 +1309,13 @@ public final class HaraNodes {
           return HaraLanguage.currentContext(this).matchesNativeThrowable(type, (Throwable) value);
         }
         return false;
+      }
+
+      private static Object errorCode(Object value) {
+        Object data = value instanceof IExInfo info ? info.getData() : null;
+        return data instanceof IMapType map
+            ? map.lookup(Keyword.create("ex", "code"))
+            : null;
       }
 
       @Override

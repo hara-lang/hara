@@ -93,13 +93,8 @@ fn yield_parks_the_machine_and_resume_value_becomes_the_expression_result() {
         VmFiberState::Yielded(Value::Number(41))
     ));
 
-    let state = with_namespace_registry(&registry, || {
-        fiber.resume_yield(Value::Number(42))
-    });
-    assert!(matches!(
-        state,
-        VmFiberState::Completed(Value::Number(42))
-    ));
+    let state = with_namespace_registry(&registry, || fiber.resume_yield(Value::Number(42)));
+    assert!(matches!(state, VmFiberState::Completed(Value::Number(42))));
 }
 
 #[test]

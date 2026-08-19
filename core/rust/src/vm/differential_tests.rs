@@ -5,10 +5,12 @@
 //! misuse at different stages (compile time vs runtime) and phrase
 //! positions differently.
 
-use super::error_category;
-use super::eval_source;
+use super::{compile_source_with, error_category, eval_source, execute_program_with_globals};
 use crate::core::Value;
+use crate::kernel::Form;
 use crate::Runtime;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 /// `runtime` is shared across a test's forms to avoid a std.foundation
 /// bootstrap per form (~0.3s each in a debug build, which dominated
@@ -33,6 +35,133 @@ fn differential(runtime: &mut Runtime, source: &str) {
         ),
         _ => panic!("divergence for {source}: reference {reference:?} vs vm {vm:?}"),
     }
+}
+
+fn shared_runtime_corpus_path() -> PathBuf {
+    if let Some(root) = std::env::var_os("HARA_SPECS_REGISTRY") {
+        return PathBuf::from(root)
+            .join("00-unsorted/platform-language/draft/conformance/parity/jvm-truffle.edn");
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../hara-specs-registry")
+        .join("00-unsorted/platform-language/draft/conformance/parity/jvm-truffle.edn")
+}
+
+fn shared_foundation_corpus_path() -> PathBuf {
+    shared_runtime_corpus_path()
+        .parent()
+        .expect("parity corpus directory")
+        .join("foundation-runtime.edn")
+}
+
+fn map_value<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
+    entries.iter().find_map(|(candidate, value)| {
+        matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
+    })
+}
+
+#[test]
+fn shared_jvm_truffle_rust_runtime_corpus_matches() {
+    let path = shared_runtime_corpus_path();
+    let source = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read shared runtime corpus {}: {error}", path.display()));
+    let forms = crate::kernel::parse_forms(&source).expect("parse shared runtime corpus");
+    let [Form::Map(root)] = forms.as_slice() else {
+        panic!("shared runtime corpus must contain one map");
+    };
+    let Some(Form::Vector(cases)) = map_value(root, "cases") else {
+        panic!("shared runtime corpus must contain :cases");
+    };
+    let mut compared = 0usize;
+    for case in cases {
+        let Form::Map(case) = case else {
+            panic!("shared runtime corpus cases must be maps");
+        };
+        if !matches!(map_value(case, "classification"), Some(Form::Keyword(value)) if value == "portable")
+        {
+            continue;
+        }
+        let Some(Form::Keyword(id)) = map_value(case, "id") else {
+            panic!("shared runtime corpus case is missing :id");
+        };
+        let Some(Form::String(source)) = map_value(case, "source") else {
+            panic!("shared runtime corpus case :{id} is missing :source");
+        };
+        let mut evaluator = Runtime::new();
+        let reference = evaluator.eval_native(source);
+        let registry = crate::embedding_namespace_registry();
+        let bytecode: Result<String, String> = compile_source_with(source, &registry)
+            .map_err(|error| error.to_string())
+            .and_then(|program| {
+                execute_program_with_globals(Rc::new(program), &registry)
+                    .map(|value| value.display())
+                    .map_err(|error| error.to_string())
+            });
+        match (&reference, &bytecode) {
+            (Ok(expected), Ok(actual)) => assert_eq!(expected, actual, "corpus case :{id}"),
+            (Err(expected), Err(actual)) => assert_eq!(
+                error_category(expected),
+                error_category(actual),
+                "corpus case :{id}: evaluator={expected}, bytecode={actual}"
+            ),
+            _ => {
+                panic!("corpus case :{id} diverged: evaluator={reference:?}, bytecode={bytecode:?}")
+            }
+        }
+        compared += 1;
+    }
+    assert!(compared >= 30, "shared runtime corpus unexpectedly shrank");
+}
+
+#[test]
+fn shared_foundation_runtime_corpus_matches_expected_results() {
+    let path = shared_foundation_corpus_path();
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!("read Foundation runtime corpus {}: {error}", path.display())
+    });
+    let forms = crate::kernel::parse_forms(&source).expect("parse Foundation runtime corpus");
+    let [Form::Map(root)] = forms.as_slice() else {
+        panic!("Foundation runtime corpus must contain one map");
+    };
+    let Some(Form::Vector(cases)) = map_value(root, "cases") else {
+        panic!("Foundation runtime corpus must contain :cases");
+    };
+    for case in cases {
+        let Form::Map(case) = case else {
+            panic!("Foundation runtime corpus cases must be maps");
+        };
+        let Some(Form::Keyword(id)) = map_value(case, "id") else {
+            panic!("Foundation runtime corpus case is missing :id");
+        };
+        let Some(Form::String(source)) = map_value(case, "source") else {
+            panic!("Foundation runtime corpus case :{id} is missing :source");
+        };
+        let Some(Form::String(expected)) = map_value(case, "expect") else {
+            panic!("Foundation runtime corpus case :{id} is missing :expect");
+        };
+        let mut evaluator = Runtime::new();
+        assert_eq!(
+            evaluator
+                .eval_native(source)
+                .unwrap_or_else(|error| panic!("Foundation case :{id} evaluator: {error}")),
+            *expected,
+            "Foundation case :{id} evaluator"
+        );
+        let registry = crate::embedding_namespace_registry();
+        let program = compile_source_with(source, &registry)
+            .unwrap_or_else(|error| panic!("Foundation case :{id} compiler: {error}"));
+        assert_eq!(
+            execute_program_with_globals(Rc::new(program), &registry)
+                .unwrap_or_else(|error| panic!("Foundation case :{id} bytecode: {error}"))
+                .display(),
+            *expected,
+            "Foundation case :{id} bytecode"
+        );
+    }
+    assert!(
+        cases.len() >= 12,
+        "Foundation runtime corpus unexpectedly shrank"
+    );
 }
 
 #[test]
@@ -119,14 +248,14 @@ fn supported_forms_match_the_existing_evaluator() {
         "(try (throw :failed) (catch error error))",
         "(try (throw 7) (catch e (+ e 1)))",
         "(try (throw 41) (catch Exception a 41) (catch Exception b 42))",
-        "(try (throw 41) (catch Problem error 0) (catch Exception error (+ error 1)))",
+        "(try (throw 41) (catch :problem/value error 0) (catch Exception error (+ error 1)))",
         "(try 7 (catch Exception e 0))",
         "(try (/ 1 0) (catch Exception error error))",
         "(try 42 (finally 0))",
         "(try 42 43 (finally 0 1))",
         "(try (throw 41) (catch Exception error (+ error 1)) (finally 0))",
         "(try (try (throw :original) (finally 0)) (catch Exception e e))",
-        "(try (try (throw 41) (catch Problem error 0) (finally 0)) (catch Exception error (+ error 1)))",
+        "(try (try (throw 41) (catch :problem/value error 0) (finally 0)) (catch Exception error (+ error 1)))",
         "(try ((fn [] (throw 41))) (catch Exception e (+ e 1)))",
         "(try ((fn [] (/ 1 0))) (catch Exception e e))",
         "((fn [] (try (throw 1) (catch Exception e 42))))",
@@ -137,6 +266,30 @@ fn supported_forms_match_the_existing_evaluator() {
     for source in sources {
         differential(&mut runtime, source);
     }
+}
+
+#[test]
+fn structured_error_code_catches_match_in_evaluator_and_bytecode() {
+    let source =
+        "(try (throw (std.foundation/ex :file/not-found {:ex/message \"missing\"})) \
+           (catch :socket/closed error :wrong) \
+           (catch [:file/not-found :file/permission-denied] error :file-error))";
+    let mut runtime = Runtime::new();
+    assert_eq!(runtime.eval_native(source).unwrap(), ":file-error");
+
+    let registry = crate::embedding_namespace_registry();
+    let foundation = registry.find_or_create("std.foundation");
+    for (name, value) in crate::core::exception_function_values() {
+        foundation.intern(name, value);
+    }
+    registry.current().alias("std.foundation", foundation.clone());
+    let program = compile_source_with(source, &registry).unwrap();
+    assert_eq!(
+        execute_program_with_globals(Rc::new(program), &registry)
+            .unwrap()
+            .display(),
+        ":file-error"
+    );
 }
 
 #[test]
@@ -174,8 +327,8 @@ fn supported_form_errors_match_the_existing_evaluator() {
         "(do (defn f [x y] (+ x y)) (f 1))",
         // Exceptions (issue #203).
         "(throw :failed)",
-        "(try (throw 41) (catch Problem error 0))",
-        "(try (try (throw 41) (catch Problem error 0)) (catch Problem error 0))",
+        "(try (throw 41) (catch :problem/value error 0))",
+        "(try (try (throw 41) (catch :problem/value error 0)) (catch :problem/value error 0))",
         "(try 1 (finally (throw 2)))",
         "(try (throw 1) (finally (throw 2)))",
         "(throw)",

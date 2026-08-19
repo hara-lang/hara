@@ -356,39 +356,39 @@ fn marker_key(value: &Value, operation: &str) -> Result<String, String> {
     }
 }
 
-fn native_mutable_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_mutable_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let (type_name, method) = operation
         .strip_prefix("std.native.")
         .and_then(|name| name.split_once('/'))
         .ok_or_else(|| format!("invalid native mutable operation: {operation}"))?;
     if method == "new" {
-        let constructor = if type_name == "Arr" {
-            "array"
+        return if type_name == "Arr" {
+            Ok(Value::Array(Rc::new(RefCell::new(values))))
         } else {
-            "object"
+            if values.len() % 2 != 0 {
+                return Err("object expects key/value pairs".into());
+            }
+            let pairs = values
+                .chunks(2)
+                .map(|pair| Ok((marker_key(&pair[0], "object")?, pair[1].clone())))
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(Value::Object(Rc::new(RefCell::new(pairs))))
         };
-        let mut call = vec![Form::Symbol(constructor.into())];
-        call.extend_from_slice(forms);
-        return eval(&Form::List(call), env);
     }
     if method == "instance?" {
-        if forms.len() != 1 {
+        if values.len() != 1 {
             return Err(format!(
                 "std.native.{type_name}/instance? expects one value"
             ));
         }
-        let value = eval(&forms[0], env)?;
+        let value = &values[0];
         return Ok(Value::Bool(match type_name {
             "Arr" => matches!(value, Value::Array(_)),
             "Obj" => matches!(value, Value::Object(_)),
             _ => false,
         }));
     }
-    if forms.is_empty() {
+    if values.is_empty() {
         return Err(format!(
             "std.native.{type_name}/{method} expects a receiver"
         ));
@@ -400,13 +400,8 @@ fn native_mutable_operation(
     if !supported {
         return Err(format!("unknown std.native.{type_name} method: {method}"));
     }
-    let receiver = eval(&forms[0], env)?;
-    let mut call = vec![Form::Symbol(method.into())];
-    call.extend_from_slice(&forms[1..]);
-    let args = call[1..]
-        .iter()
-        .map(|form| eval(form, env))
-        .collect::<Result<Vec<_>, _>>()?;
+    let receiver = values[0].clone();
+    let args = values[1..].to_vec();
     marker_call_values(receiver, method, args)
 }
 
@@ -1038,7 +1033,7 @@ fn iterator_prepend(head: Value, source: Value) -> Result<Value, String> {
         Value::Iterator(iterator) => Value::Iterator(iterator),
         value => make_iterator(value)?,
     };
-    let mut state = IteratorState::generated(IteratorGenerator::Prepend(Some(head), source));
+    let state = IteratorState::generated(IteratorGenerator::Prepend(Some(head), source));
     Ok(Value::Iterator(Rc::new(RefCell::new(state))))
 }
 fn iterator_repeated(function: Value) -> Value {

@@ -1,10 +1,10 @@
 package hara.truffle;
 
-/** Eager optimized implementation of the canonical Hara core namespace. */
+/** Eager native substrate used by the source-owned Foundation root. */
 public final class FoundationLibraryProvider implements HaraLibraryProvider {
   @Override
   public String namespace() {
-    return "std.foundation";
+    return "std.native";
   }
 
   @Override
@@ -19,9 +19,8 @@ public final class FoundationLibraryProvider implements HaraLibraryProvider {
 
   @Override
   public void install(HaraContext context) {
-    context.collectBuiltins(namespace(), () -> {
-      HaraStaticLibrary.install(context, namespace(), StdFoundationSequence.class);
-      HaraStaticLibrary.install(context, namespace(), StdFoundationCollection.class);
+    context.collectBuiltins("std.foundation", () -> {
+      HaraStaticLibrary.install(context, "std.foundation", StdFoundationCollection.class);
     });
   }
 }

@@ -1,15 +1,15 @@
 package hara.truffle;
 
-/** Lazy Java implementation of {@code std.foundation.bytes}. */
+/** Native Bytes substrate used by the source-owned Foundation bytes library. */
 public final class BytesLibraryProvider implements HaraLibraryProvider {
   @Override
-  public String namespace() { return "std.foundation.bytes"; }
+  public String namespace() { return "std.native.Bytes"; }
 
   @Override
   public int order() { return 20; }
 
   @Override
   public void install(HaraContext context) {
-    context.collectBuiltins(namespace(), context::installBytesLibrary);
+    context.collectBuiltins("std.foundation.bytes", context::installBytesLibrary);
   }
 }

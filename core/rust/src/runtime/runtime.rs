@@ -27,24 +27,20 @@ impl Runtime {
         }
         let native = namespace_registry.find_or_create("std.native");
         for (name, descriptor) in core::native_type_values() {
-            let canonical_name = format!("std.native.{name}");
-            let var = foundation.intern(&canonical_name, descriptor);
+            // The descriptor's canonical Var is std.native/<Type>. Foundation
+            // only refers that Var; it must not manufacture a differently
+            // qualified cell whose spelling happens to contain std.native.
+            let var = native.intern(&name, descriptor);
             foundation.map_var(crate::lang::data::Symbol::parse(&name), var.clone());
-            native.map_var(crate::lang::data::Symbol::parse(&name), var);
-            namespace_registry.find_or_create(canonical_name);
+            namespace_registry.find_or_create(format!("std.native.{name}"));
         }
         for (native_type, methods) in core::NATIVE_TYPES {
             let namespace_name = format!("std.native.{native_type}");
             let namespace = namespace_registry.find_or_create(&namespace_name);
             for method in *methods {
-                let dispatch_name = match *native_type {
-                    "Iter" => (*method).to_owned(),
-                    "String" => format!("str/{method}"),
-                    _ => format!("{namespace_name}/{method}"),
-                };
                 namespace.intern_with_origin(
                     *method,
-                    core::structural_function_value(dispatch_name),
+                    core::native_type_function_value(native_type, method),
                     kernel::VarOrigin::RuntimePrimitive,
                 );
             }
@@ -292,31 +288,6 @@ impl Runtime {
             self.install_structural_primitives();
             self.loaded_resources.insert("std.foundation".into());
         }
-        let json = self.namespace_registry.find_or_create("std.native.Json");
-        json.intern(
-            "read",
-            core::native_function("std.native.Json/read", 1, |arguments| {
-                match arguments.as_slice() {
-                    [core::Value::String(source)] => json::read(source),
-                    _ => Err("json/read expects a string".into()),
-                }
-            }),
-        );
-        json.intern(
-            "write",
-            core::native_function("std.native.Json/write", 1, |arguments| {
-                json::write(&arguments[0]).map(core::Value::String)
-            }),
-        );
-        json.intern(
-            "pretty",
-            core::native_function("std.native.Json/pretty", 2, |arguments| {
-                if core::map_entries(&arguments[1]).is_none() {
-                    return Err("json/pretty expects an options map".into());
-                }
-                json::write_pretty(&arguments[0]).map(core::Value::String)
-            }),
-        );
         #[cfg(not(feature = "bytecode-vm"))]
         for &name in EAGER_HAL_RESOURCES {
             let source = self
@@ -342,8 +313,17 @@ impl Runtime {
 
     fn eval_value_mode(&mut self, source: &str, traced: bool) -> Result<core::Value, String> {
         self.refresh_qualified_bindings();
-        let forms = kernel::parse_forms(source)?;
-        let result = self.eval_forms(forms, traced)?;
+        let forms = kernel::read_forms(source).map_err(|error| error.to_string())?;
+        let mut result = core::Value::Nil;
+        for form in forms {
+            let site = core::ExceptionSite {
+                namespace: Some(self.namespace_registry.current().name().as_str().to_owned()),
+                resource: None,
+                line: form.span.start.line,
+                column: form.span.start.column,
+            };
+            result = core::with_exception_site(site, || self.eval_forms(vec![form.form], traced))?;
+        }
         self.save_namespace();
         self.refresh_qualified_bindings();
         Ok(result)

@@ -27,13 +27,18 @@ public class HaraL0ConformanceTest {
   @SuppressWarnings({"rawtypes", "unchecked"})
   @Test
   public void executesEveryJvmL0CorpusCase() throws Exception {
-    String source = Files.readString(Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/l0.edn"));
+    String registry = System.getenv().getOrDefault("HARA_SPECS_REGISTRY", "../hara-specs-registry");
+    String source =
+        Files.readString(
+            Path.of(registry, "00-unsorted/platform-language/draft/conformance/l0.edn"));
     IMapType manifest = (IMapType) Parser.LispReader.readString(source, null);
     ILinearType<?> cases = (ILinearType<?>) manifest.lookup(key("cases"));
     assertTrue(cases.count() > 0);
+    String casePrefix = System.getenv("HARA_L0_CASE_PREFIX");
     for (Object item : cases) {
       IMapType testCase = (IMapType) item;
       String id = ((Keyword) testCase.lookup(key("id"))).getName();
+      if (casePrefix != null && !id.startsWith(casePrefix)) continue;
       String className = ((Keyword) testCase.lookup(key("class"))).getName();
       String form = (String) testCase.lookup(key("source"));
       IMapType expected = (IMapType) testCase.lookup(key("expect"));

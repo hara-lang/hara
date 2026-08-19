@@ -55,7 +55,11 @@ fn compile(source_path: &PathBuf, output_path: &PathBuf) -> Result<(), String> {
     }
     fs::write(output_path, &artifact)
         .map_err(|error| format!("cannot write {}: {error}", output_path.display()))?;
-    println!("wrote {} bytes to {}", artifact.len(), output_path.display());
+    println!(
+        "wrote {} bytes to {}",
+        artifact.len(),
+        output_path.display()
+    );
     Ok(())
 }
 

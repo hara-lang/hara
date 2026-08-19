@@ -24,7 +24,8 @@ import org.junit.Test;
 /** Keeps the closed std.native inventory and its direct method surface aligned with the spec. */
 public class NativeMethodParityTest {
   private static final Path CONTRACT =
-      Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/native.edn");
+      specsRegistry()
+          .resolve("00-unsorted/platform-language/draft/conformance/native.edn");
   private static final Path FIXTURE =
       Path.of("lib/test-fixtures/std/foundation/native_method_conformance.hal");
 
@@ -75,6 +76,73 @@ public class NativeMethodParityTest {
         }
       }
     }
+  }
+
+  @Test
+  public void languageBuiltinAccountingMatchesTheSharedContract() throws Exception {
+    IMapType builtins = map(readMap(CONTRACT), "language-builtins");
+    Field field = HaraContext.class.getDeclaredField("LANGUAGE_BUILTINS");
+    field.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    Map<String, List<String>> runtime = (Map<String, List<String>>) field.get(null);
+    Map<String, List<String>> specified = new LinkedHashMap<>();
+    for (String category : List.of("evaluation", "definitions", "namespaces", "interop")) {
+      specified.put(category, symbols(builtins.lookup(keyword(category)), category));
+    }
+    assertEquals("Truffle builtin accounting differs from native.edn", specified, runtime);
+    assertTrue("Builtins must not be a native type", !types(readMap(CONTRACT)).containsKey("Builtins"));
+  }
+
+  @Test
+  public void removedFoundationPathwaysCannotBeReintroducedSilently() throws Exception {
+    Path javaRoot = Files.isDirectory(Path.of("java/src/main")) ? Path.of("java") : Path.of(".");
+    Path sourceRoot = javaRoot.resolve("src/main/java/hara/truffle");
+    String context = Files.readString(sourceRoot.resolve("HaraContext.java"));
+    String collection =
+        Files.readString(sourceRoot.resolve("StdFoundationCollection.java"));
+    for (String removed :
+        List.of(
+            "std.native.Base/pair?",
+            "Base/unreduced",
+            "std.native.Builtins",
+            "reduceKeyValues(",
+            "mergeMaps(",
+            "selectKeys(",
+            "reduceIterator(")) {
+      assertTrue("Removed Foundation pathway returned: " + removed,
+          !context.contains(removed) && !collection.contains(removed));
+    }
+    assertTrue(
+        "Source-owned sequence library must not be restored",
+        !Files.exists(sourceRoot.resolve("StdFoundationSequence.java")));
+    for (String sourceOwned : List.of("reduce", "reduce-kv", "merge", "select-keys")) {
+      assertTrue(
+          "HAL-owned function was restored as a Java export: " + sourceOwned,
+          !collection.contains("name = \"" + sourceOwned + "\""));
+    }
+    Path foundationRoot = Path.of("lib/src/std/foundation.hal");
+    List<Path> foundationSources = new ArrayList<>(List.of(foundationRoot));
+    try (var paths = Files.walk(Path.of("lib/src/std/foundation"))) {
+      paths.filter(path -> path.toString().endsWith(".hal")).forEach(foundationSources::add);
+    }
+    for (Path sourcePath : foundationSources) {
+      String source = Files.readString(sourcePath);
+      assertTrue(
+          "Foundation source must use has?, never contains?: " + sourcePath,
+          !source.contains("contains?"));
+      assertTrue(
+          "decimal? is not part of the language contract: " + sourcePath,
+          !source.contains("decimal?"));
+    }
+    assertTrue(
+        "Base must not export the non-spec decimal? predicate",
+        !context.contains("\"decimal?\""));
+    assertTrue(
+        "vec identity fast path must return the original value",
+        context.contains("instanceof hara.lang.data.Vector<?>") && context.contains("return value;"));
+    assertTrue(
+        "set identity fast path must recognize every persistent set",
+        context.contains("instanceof hara.lang.data.types.ISetType<?>"));
   }
 
   @Test
@@ -192,6 +260,13 @@ public class NativeMethodParityTest {
 
   private static Keyword keyword(String name) {
     return Keyword.create(name);
+  }
+
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 
   private record NativeTypeSpec(

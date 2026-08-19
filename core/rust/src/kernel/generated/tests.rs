@@ -178,6 +178,30 @@ fn native_aliases_are_universal_and_cannot_be_rebound() {
             .to_string(),
         "std.native.Iter/iter-map"
     );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("String/encode-utf8").unwrap().remove(0))
+            .to_string(),
+        "std.native.String/encode-utf8"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("str/encode-utf8").unwrap().remove(0))
+            .to_string(),
+        "str/encode-utf8"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("Bytes/slice").unwrap().remove(0))
+            .to_string(),
+        "std.native.Bytes/slice"
+    );
+    assert_eq!(
+        config
+            .rewrite(parse_forms("bytes/slice").unwrap().remove(0))
+            .to_string(),
+        "bytes/slice"
+    );
     assert!(GeneratedNamespaceConfig::configure(
         &parse_forms("(:require [std.native.Maths :as Iter])").unwrap()
     )

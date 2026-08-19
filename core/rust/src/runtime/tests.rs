@@ -2,6 +2,68 @@
 mod tests {
     use super::*;
 
+    fn conformance_entry<'a>(entries: &'a [(Form, Form)], key: &str) -> &'a Form {
+        entries
+            .iter()
+            .find_map(|(candidate, value)| {
+                matches!(candidate, Form::Keyword(name) if name == key).then_some(value)
+            })
+            .unwrap_or_else(|| panic!("missing conformance key :{key}"))
+    }
+
+    fn protocol_method_surface(source: &str) -> std::collections::BTreeSet<(String, String)> {
+        let Form::Map(root) = kernel::parse_forms(source).unwrap().remove(0) else {
+            panic!("protocol contract must be a map")
+        };
+        let Form::Vector(protocols) = conformance_entry(&root, "protocols") else {
+            panic!(":protocols must be a vector")
+        };
+        protocols
+            .iter()
+            .flat_map(|protocol| {
+                let Form::Map(protocol) = protocol else {
+                    panic!("protocol entries must be maps")
+                };
+                let Form::Symbol(name) = conformance_entry(protocol, "name") else {
+                    panic!("protocol :name must be a symbol")
+                };
+                let Form::Map(methods) = conformance_entry(protocol, "methods") else {
+                    panic!("protocol :methods must be a map")
+                };
+                methods.iter().map(move |(method, _)| {
+                    let Form::Symbol(method) = method else {
+                        panic!("protocol method names must be symbols")
+                    };
+                    (name.clone(), method.clone())
+                })
+            })
+            .collect()
+    }
+
+    fn protocol_case_surface(source: &str) -> std::collections::BTreeSet<(String, String)> {
+        let Form::Map(root) = kernel::parse_forms(source).unwrap().remove(0) else {
+            panic!("protocol case catalog must be a map")
+        };
+        let Form::Vector(cases) = conformance_entry(&root, "cases") else {
+            panic!(":cases must be a vector")
+        };
+        cases
+            .iter()
+            .map(|case| {
+                let Form::Map(case) = case else {
+                    panic!("protocol cases must be maps")
+                };
+                let Form::Symbol(protocol) = conformance_entry(case, "protocol") else {
+                    panic!("case :protocol must be a symbol")
+                };
+                let Form::Symbol(method) = conformance_entry(case, "method") else {
+                    panic!("case :method must be a symbol")
+                };
+                (protocol.clone(), method.clone())
+            })
+            .collect()
+    }
+
     fn sandbox_eval(
         kernel: &mut SessionKernel,
         sandbox: SandboxId,
@@ -393,6 +455,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn catch_selectors_match_structured_error_codes() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(try (throw (ex :file/not-found {})) \
+                       (catch :socket/closed error :wrong) \
+                       (catch :file/not-found error (:ex/code (ex-data error))))",
+                )
+                .unwrap(),
+            ":file/not-found"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(try (throw (ex :file/not-found {:ex/message \"missing\"})) \
+                       (catch [:file/not-found :file/permission-denied] error :file-error))",
+                )
+                .unwrap(),
+            ":file-error"
+        );
+        assert_eq!(runtime.eval_text("(ex-message (ex :failure/code {}))").unwrap(), "\":failure/code\"");
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(let [exception (ex :test/provenance {})] \
+                       (try (throw exception) \
+                         (catch caught \
+                           (let [provenance (ex-provenance caught)] \
+                             [(:line (:ex/created-at provenance)) \
+                              (:column (:ex/created-at provenance)) \
+                              (count (:ex/throws provenance))]))))",
+                )
+                .unwrap(),
+            "[1 1 1]"
+        );
+    }
+
     #[cfg(feature = "bytecode-vm")]
     #[test]
     fn embedding_registry_exposes_the_foundation_json_shortcut() {
@@ -401,12 +502,16 @@ mod tests {
     }
 
     fn repo_text(relative: &str) -> Option<String> {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .join("..")
-            .join("hara-specs-registry")
-            .join(relative);
+        let registry = std::env::var_os("HARA_SPECS_REGISTRY")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("..")
+                    .join("..")
+                    .join("..")
+                    .join("hara-specs-registry")
+            });
+        let path = registry.join(relative);
         match std::fs::read_to_string(&path) {
             Ok(content) => Some(content),
             Err(_) => {
@@ -2024,6 +2129,14 @@ mod tests {
         else {
             return;
         };
+        let protocols =
+            repo_text("00-unsorted/platform-language/draft/conformance/protocols.edn")
+                .expect("protocol contract must accompany its case catalog");
+        assert_eq!(
+            protocol_case_surface(&catalog),
+            protocol_method_surface(&protocols),
+            "behavioral protocol cases must exactly close the authoritative method surface"
+        );
         let expected_cases = catalog
             .lines()
             .filter(|line| {
@@ -2031,6 +2144,7 @@ mod tests {
                 line.starts_with("{:protocol ") || line.starts_with("[{:protocol ")
             })
             .count();
+        let expected_failures = catalog.matches(":case :unsupported-receiver").count();
         assert!(expected_cases > 0, "protocol method catalog is empty");
         let mut runtime = Runtime::new();
         let result = runtime.eval_text(source).unwrap();
@@ -2089,7 +2203,7 @@ mod tests {
                 None
             })
             .collect::<Vec<_>>();
-        assert_eq!(failure_forms.len(), expected_cases);
+        assert_eq!(failure_forms.len(), expected_failures);
         for failure_form in failure_forms {
             let call = failure_form.replacen("unsupported", "(UnsupportedUseCase)", 1);
             let error = runtime.eval_text(&call).unwrap_err();
@@ -2545,6 +2659,28 @@ mod tests {
         let Form::Map(inventory) = entry(&contract, "inventory") else {
             panic!(":inventory must be a map")
         };
+        let Form::Map(language_builtins) = entry(&contract, "language-builtins") else {
+            panic!(":language-builtins must be a map")
+        };
+        let specified_builtins = ["evaluation", "definitions", "namespaces", "interop"]
+            .into_iter()
+            .map(|category| {
+                (
+                    category,
+                    symbols(entry(language_builtins, category), category),
+                )
+            })
+            .collect::<Vec<_>>();
+        let runtime_builtins = core::LANGUAGE_BUILTINS
+            .iter()
+            .map(|(category, names)| {
+                (
+                    *category,
+                    names.iter().map(|name| (*name).to_owned()).collect(),
+                )
+            })
+            .collect::<Vec<(&str, Vec<String>)>>();
+        assert_eq!(specified_builtins, runtime_builtins);
         assert!(matches!(entry(inventory, "closed"), Form::Bool(true)));
         let Form::Vector(types) = entry(&contract, "types") else {
             panic!(":types must be a vector")
@@ -2665,7 +2801,8 @@ mod tests {
                 let symbol = format!("{name}/{method}");
                 type_cases.push(format!(
                     "(native-method-result '{symbol} \
-                     (fn [] ({symbol} nil nil nil nil nil nil nil nil nil)))"
+                     (fn [] (let [native-method {symbol}] \
+                       (native-method nil nil nil nil nil nil nil nil nil))))"
                 ));
             }
             direct_cases.push((name.clone(), type_cases));
@@ -2699,6 +2836,10 @@ mod tests {
             );
         }
         assert_eq!(specified, runtime_inventory);
+        assert!(
+            !specified.iter().any(|(name, _)| name == "Builtins"),
+            "Builtins is accounting only and must not be a native type"
+        );
         let Form::Map(startup_visibility) = entry(&contract, "startup-visibility") else {
             panic!(":startup-visibility must be a map")
         };
@@ -2756,12 +2897,18 @@ mod tests {
         );
         let mut runtime = Runtime::new();
         for (native_type, _) in &specified {
+            let identity_probe = runtime
+                .eval_text(&format!(
+                    "[{native_type} std.native.{native_type} \
+                       (type {native_type}) (type std.native.{native_type})]"
+                ))
+                .unwrap();
             assert_eq!(
                 runtime
                     .eval_text(&format!("(= {native_type} std.native.{native_type})"))
                     .unwrap(),
                 "true",
-                "global native type object differs for {native_type}"
+                "global native type object differs for {native_type}: {identity_probe}"
             );
         }
         assert_eq!(
@@ -2775,6 +2922,123 @@ mod tests {
                 )
                 .unwrap(),
             "[\"native failure\" true 42]"
+        );
+    }
+
+    #[test]
+    fn removed_foundation_pathways_cannot_be_reintroduced_silently() {
+        let evaluator = include_str!("../core/evaluator.rs");
+        let fiber = include_str!("../fiber.rs");
+        let runtime = include_str!("runtime.rs");
+        let generated = include_str!("../kernel/generated.rs");
+        assert!(
+            !evaluator.contains("std.native."),
+            "native type dispatch must not return to evaluator spelling branches"
+        );
+        assert!(
+            !runtime.contains("json.intern("),
+            "native methods must be installed only by the closed inventory"
+        );
+        for forbidden in [
+            "(\"std.native.File\", method) => format!(\"file/{method}\")",
+            "(\"std.native.Socket\", method) => format!(\"socket/{method}\")",
+            "(\"std.native.Promise\", method) => format!(\"promise/{method}\")",
+        ] {
+            assert!(
+                !generated.contains(forbidden),
+                "native alias restored a HAL facade rewrite: {forbidden}"
+            );
+        }
+        for source_owned in ["reduce", "reduce-kv", "merge", "select-keys"] {
+            assert!(
+                !evaluator.contains(&format!("n == \"{source_owned}\"")),
+                "HAL-owned function restored in evaluator: {source_owned}"
+            );
+            assert!(
+                !fiber.contains(&format!("    \"{source_owned}\",")),
+                "HAL-owned function restored in CORE_SPECIAL_FORMS: {source_owned}"
+            );
+        }
+        for (name, source) in [
+            (
+                "std.foundation",
+                include_str!("../../../lib/src/std/foundation.hal"),
+            ),
+            (
+                "std.foundation.bytes",
+                include_str!("../../../lib/src/std/foundation/bytes.hal"),
+            ),
+            (
+                "std.foundation.coroutine",
+                include_str!("../../../lib/src/std/foundation/coroutine.hal"),
+            ),
+            (
+                "std.foundation.pretty",
+                include_str!("../../../lib/src/std/foundation/pretty.hal"),
+            ),
+            (
+                "std.foundation.promise",
+                include_str!("../../../lib/src/std/foundation/promise.hal"),
+            ),
+            (
+                "std.foundation.string",
+                include_str!("../../../lib/src/std/foundation/string.hal"),
+            ),
+        ] {
+            assert!(
+                !source.contains("contains?"),
+                "{name} must use has?, never contains?"
+            );
+            assert!(
+                !source.contains("decimal?"),
+                "decimal? is not part of the language contract: {name}"
+            );
+        }
+        for removed in [
+            "std.native.Base/schema",
+            "std.native.Base/schema-of",
+            "std.native.Builtins",
+            "dispatch_name",
+        ] {
+            assert!(
+                !evaluator.contains(removed) && !runtime.contains(removed),
+                "removed native/evaluator pathway returned: {removed}"
+            );
+        }
+        let base = core::NATIVE_TYPES
+            .iter()
+            .find_map(|(name, methods)| (*name == "Base").then_some(*methods))
+            .expect("Base native type");
+        for removed in [
+            "pair",
+            "pair?",
+            "unreduced",
+            "not-nil?",
+            "false?",
+            "true?",
+            "fn?",
+            "map-entry?",
+            "schema",
+            "schema-of",
+            "reduce",
+            "reduce-kv",
+            "merge",
+            "select-keys",
+            "decimal?",
+        ] {
+            assert!(
+                !base.contains(&removed),
+                "removed Base method returned: {removed}"
+            );
+        }
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(nil? (resolve 'contains?)) (nil? (resolve 'decimal?)) (function? has?)]"
+                )
+                .unwrap(),
+            "[true true true]"
         );
     }
 
@@ -2877,7 +3141,7 @@ mod tests {
             runtime
                 .eval_text(
                     "(ns startup.defaults) \
-                     [(edn/write {:a 1}) \
+                     [(Edn/write {:a 1}) \
                       (= Maths std.native.Maths std.foundation/Maths) \
                       (= Edn std.native.Edn std.foundation/Edn) \
                       (= Json std.native.Json std.foundation/Json) \
@@ -2906,7 +3170,7 @@ mod tests {
             "[true 1]"
         );
         let symbols = runtime.visible_symbols();
-        assert!(symbols.iter().any(|symbol| symbol == "edn/pretty"));
+        assert!(symbols.iter().any(|symbol| symbol == "Edn/pretty"));
         for native_type in [
             "Maths",
             "Num",
@@ -4397,6 +4661,20 @@ mod tests {
             "{:b 2}"
         );
         assert_eq!(
+            runtime.eval_text("(merge {:a 1 :b 2} {:b 3})").unwrap(),
+            "{:a 1 :b 3}"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "[(meta (Base/vec (with-meta (vector 1) {:tag :vector}))) \
+                      (meta (vec (with-meta (vector 1) {:tag :vector}))) \
+                      (meta (set (with-meta #{1} {:tag :set})))]"
+                )
+                .unwrap(),
+            "[{:tag :vector} {:tag :vector} {:tag :set}]"
+        );
+        assert_eq!(
             runtime.eval_text("(fn? (deref (resolve 'inc)))").unwrap(),
             "true"
         );
@@ -5376,38 +5654,38 @@ mod tests {
                      (def snapshot-description [:int]) \
                      (defn ^{:schema #'snapshot-description} snapshot-name [customer] (:name customer)) \
                      (def snapshot-description [:string]) \
-                     (let [from-var (std.native.Base/schema #'description) \
-                           from-value (std.native.Base/schema description) \
-                           direct (std.native.Base/schema [:int])] \
+                     (let [from-var (std.native.Schema/compile #'description) \
+                           from-value (std.native.Schema/compile description) \
+                           direct (std.native.Schema/compile [:int])] \
                        [(type direct) (= from-var from-value direct) \
                         (std.native.Schema/instance? direct) (std.native.Schema/kind direct) \
                         (= #'description (std.native.Schema/origin from-var)) \
-                        (= from-var (std.native.Base/schema-of #'customer-name)) \
-                        (= direct (std.native.Base/schema-of #'snapshot-name)) \
-                        (= direct (std.native.Base/schema {:kind :primitive :children [:int]})) \
+                        (= from-var (std.native.Schema/of #'customer-name)) \
+                        (= direct (std.native.Schema/of #'snapshot-name)) \
+                        (= direct (std.native.Schema/compile {:kind :primitive :children [:int]})) \
                         (= [:int] (std.native.Schema/form direct)) \
                         (map? (std.native.Schema/ast direct)) \
-                        (= direct (std.native.Base/schema direct)) \
-                        (= direct (std.native.Base/schema :int)) \
-                        (nil? (std.native.Base/schema-of #'description))])",
+                        (= direct (std.native.Schema/compile direct)) \
+                        (= direct (std.native.Schema/compile :int)) \
+                        (nil? (std.native.Schema/of #'description))])",
                 )
                 .unwrap(),
             "[:std.native.SchemaType true true :primitive true true true true true true true true true]"
         );
         assert!(runtime
-            .eval_text("(std.native.Base/schema #'customer-name)")
+            .eval_text("(std.native.Schema/compile #'customer-name)")
             .is_err());
         assert!(runtime
-            .eval_text("(std.native.Base/schema customer-name)")
+            .eval_text("(std.native.Schema/compile customer-name)")
             .is_err());
         assert!(runtime
-            .eval_text("(std.native.Base/schema-of customer-name)")
+            .eval_text("(std.native.Schema/of customer-name)")
             .is_err());
         assert_eq!(
             runtime
                 .eval_bytecode_native(
-                    "[(type (std.native.Base/schema [:int])) \
-                      (std.native.Schema/kind (std.native.Base/schema [:int]))]",
+                    "[(type (std.native.Schema/compile [:int])) \
+                      (std.native.Schema/kind (std.native.Schema/compile [:int]))]",
                 )
                 .unwrap(),
             "[:std.native.SchemaType :primitive]"
@@ -5419,9 +5697,9 @@ mod tests {
                      (defn ^{:schema #'description} customer-name [customer] (:name customer)) \
                      (def description [:string]) \
                      [(std.native.Schema/kind \
-                        (std.native.Base/schema-of #'customer-name)) \
-                      (= (std.native.Base/schema-of #'customer-name) \
-                         (std.native.Base/schema [:int]))]",
+                        (std.native.Schema/of #'customer-name)) \
+                      (= (std.native.Schema/of #'customer-name) \
+                         (std.native.Schema/compile [:int]))]",
                 )
                 .unwrap(),
             "[:primitive true]"
@@ -5594,6 +5872,13 @@ mod tests {
             "runtime/recur-arity",
             "error/catch-guest-value",
             "error/catch-order",
+            "error/catch-code",
+            "error/catch-code-vector",
+            "error/exception-message-fallback",
+            "error/exception-provenance-line",
+            "error/exception-provenance-throw-count",
+            "error/exception-reject-arbitrary-throw",
+            "error/exception-reject-reserved-code",
             "error/unmatched-catch",
             "error/finally-normal",
             "error/finally-unwind",
@@ -6907,7 +7192,7 @@ mod tests {
                       (watchable? (atom 1))
                       (pair? (first {:value 1}))
                       (persistent? [])
-                      (mutable? (to-mutable (vec [])))]",
+                      (mutable? (to-mutable (Base/vec [])))]",
                 )
                 .unwrap(),
             "[true true true true true true true true true true true true true true true true]"
@@ -7068,6 +7353,23 @@ mod tests {
     }
 
     #[test]
+    fn native_string_calls_terminate_without_reentering_the_hal_facade() {
+        let mut runtime = development_runtime();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns native-string-dispatch-probe\n\
+                       (:require [std.foundation.string :as str]))\n\
+                     [(str/blank? nil)\n\
+                      (String/encode-utf8 \"f\")\n\
+                      (str/encode-utf8 \"f\")]",
+                )
+                .unwrap(),
+            "[true (bytes 102) (bytes 102)]"
+        );
+    }
+
+    #[test]
     fn qualified_hal_facades_do_not_override_native_type_aliases() {
         let mut runtime = development_runtime();
         assert_eq!(
@@ -7220,7 +7522,7 @@ mod tests {
                 .eval_text(
                     "(let [m (IToMutable/to-mutable {:a 1})
                            s (IToMutable/to-mutable #{:a})
-                           v (IToMutable/to-mutable (vec [10 20]))]
+                           v (IToMutable/to-mutable (Base/vec [10 20]))]
                        [(satisfies? IFind m) (findable? m) (IFind/find m :a)
                         (IFind/find m :missing)
                         (satisfies? IFind s) (IFind/find s :a)
@@ -7239,7 +7541,7 @@ mod tests {
                 .eval_text(
                     "(let [q (std.native.Algo/queue 1 2)
                            mq (IToMutable/to-mutable q)
-                           v (vec [1 2])]
+                           v (Base/vec [1 2])]
                        [(satisfies? IPushFirst q)
                         (IPushFirst/push-first q 0)
                         (satisfies? IPushFirst mq)
@@ -8606,4 +8908,22 @@ mod tests {
                     .is_some_and(|value| value.display == "5")
         }));
     }
+}
+
+#[test]
+fn native_bytes_calls_terminate_without_reentering_the_hal_facade() {
+    let mut runtime = Runtime::new();
+    assert_eq!(
+        runtime
+            .eval(
+                "(let [native (Bytes/new 1 -1)]\n\
+                 [(Bytes/count native)\n\
+                  (Bytes/get native 1)\n\
+                  (bytes/count native)\n\
+                  (bytes/u8 -1)])"
+            )
+            .unwrap()
+            .to_string(),
+        "[2 255 2 255]"
+    );
 }

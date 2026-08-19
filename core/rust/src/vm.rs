@@ -94,6 +94,7 @@ pub(crate) fn error_category(message: &str) -> &'static str {
         (&["function expects"], "function arity"),
         (&["value is not callable"], "not callable"),
         (&["function parameters must be a vector"], "fn params shape"),
+        (&["conj expects a collection"], "conj receiver"),
         (&["throw expects one value"], "throw arity"),
         (&["thrown: "], "thrown"),
         // "unbound var" is checked first: its message contains "unbound

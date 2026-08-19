@@ -147,20 +147,17 @@ fn external_crate_can_construct_only_the_restricted_runtime_profile() {
 
 #[test]
 fn external_crate_can_inject_only_one_fully_qualified_host_call() {
-    let mut runtime = restricted_sandbox_runtime_with_host(Rc::new(
-        |service, method, arguments| {
+    let mut runtime =
+        restricted_sandbox_runtime_with_host(Rc::new(|service, method, arguments| {
             if service == "hoplite.console" && method == "status" && arguments.is_empty() {
                 Ok(Value::Number(42))
             } else {
                 Err("sandbox host service denied".into())
             }
-        },
-    ));
+        }));
     assert_eq!(
         runtime
-            .eval_native_value(
-                "(deref (std.native.Host/call \"hoplite.console\" \"status\" []))",
-            )
+            .eval_native_value("(deref (std.native.Host/call \"hoplite.console\" \"status\" []))",)
             .unwrap(),
         Value::Number(42)
     );

@@ -336,6 +336,7 @@ fn result_error(code: &str, message: &str, milliseconds: u64) -> Value {
             ),
         ]))),
         cause: None,
+        provenance: Rc::new(RefCell::new(Default::default())),
     }))
 }
 
@@ -394,6 +395,7 @@ fn normalize_error(value: Value) -> Rc<ExceptionInfo> {
                     value,
                 )]))),
                 cause: None,
+                provenance: Rc::new(RefCell::new(Default::default())),
             })
         }
     }
@@ -559,6 +561,7 @@ mod tests {
             message: "rejected".into(),
             data: Box::new(context("code", Value::Keyword(Keyword::from("rejected")))),
             cause: None,
+            provenance: Rc::new(RefCell::new(Default::default())),
         });
         let rejected = super::super::Promise::new();
         rejected.reject_value(Value::ExceptionInfo(error.clone()));
@@ -621,6 +624,7 @@ mod tests {
             message: "boom".into(),
             data: Box::new(context("code", Value::Keyword(Keyword::from("boom")))),
             cause: None,
+            provenance: Rc::new(RefCell::new(Default::default())),
         });
         let result =
             ResultValue::error(Value::ExceptionInfo(error.clone()), Value::Map(PMap::new()))

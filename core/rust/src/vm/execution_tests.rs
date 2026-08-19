@@ -791,7 +791,7 @@ fn throw_and_catch_basics() {
     );
     // A non-matching class falls through to the next clause.
     assert_eq!(
-        eval("(try (throw 41) (catch Problem error 0) (catch Exception error (+ error 1)))"),
+        eval("(try (throw 41) (catch :problem/value error 0) (catch Exception error (+ error 1)))"),
         "42"
     );
     // A body value passes through an unmatched-catch try unchanged.
@@ -816,9 +816,9 @@ fn catch_binds_runtime_error_messages() {
 #[test]
 fn uncaught_throws_propagate() {
     assert_eval_error("(throw :failed)", "thrown: :failed");
-    assert_eval_error("(try (throw 41) (catch Problem error 0))", "thrown: 41");
+    assert_eval_error("(try (throw 41) (catch :problem/value error 0))", "thrown: 41");
     assert_eval_error(
-        "(try (try (throw 41) (catch Problem error 0)) (catch Problem error 0))",
+        "(try (try (throw 41) (catch :problem/value error 0)) (catch :problem/value error 0))",
         "thrown: 41",
     );
 }
@@ -1039,6 +1039,22 @@ fn variadic_and_multi_arity_issue_223() {
     assert_eq!(eval("((fn [left & more] left) 42 1 2)"), "42");
     assert_eq!(eval("((fn [left & more] more) 42 1 2)"), "(1 2)");
     assert_eq!(eval("((fn [left & more] more) 42)"), "()");
+    assert_eq!(
+        eval("((fn ([value] value) ([left right] (+ left right))) 19 23)"),
+        "42"
+    );
+    assert_eq!(
+        eval("(let [offset 2 choose (fn ([value] (+ offset value)) ([left right] (+ offset left right)))] [(choose 40) (choose 19 21)])"),
+        "[42 42]"
+    );
+    assert_eq!(
+        eval("((fn ([value] value) ([left right & more] more)) 1 2 3 4)"),
+        "(3 4)"
+    );
+    assert_eq!(
+        eval("(let [aliases (atom {}) build (fn [function] (fn ([type arguments] (let [alias (get (deref aliases) type)] (let [key arguments] (apply function type key arguments)))) ([type input arguments] (apply function type input arguments))))] ((build (fn [type key & arguments] [type key arguments])) :demo [1 2]))"),
+        "[:demo [1 2] (1 2)]"
+    );
     assert_eval_error(
         "((fn [l r & more] l) 1)",
         "function expects at least 2 arguments",
@@ -1055,6 +1071,16 @@ fn variadic_and_multi_arity_issue_223() {
         eval("(do (defn rest-args [f & r] r) (rest-args 42 1 2))"),
         "(1 2)"
     );
+}
+
+#[test]
+fn defonce_is_predeclared_like_every_other_top_level_definition() {
+    let registry = crate::embedding_namespace_registry();
+    compile_source_with(
+        "(defonce bytecode-defonce-registry (atom {}))\n(defn bytecode-defonce-value [] bytecode-defonce-registry)\n(= bytecode-defonce-registry (bytecode-defonce-value))",
+        &registry,
+    )
+    .expect("defonce is visible to later definitions during compilation");
 }
 
 #[test]

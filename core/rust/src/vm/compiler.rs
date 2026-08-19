@@ -299,6 +299,7 @@ impl Compiler {
             if !matches!(
                 operator.as_str(),
                 "def"
+                    | "defonce"
                     | "defn"
                     | "defn-"
                     | "defmacro"

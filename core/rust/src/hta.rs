@@ -581,6 +581,7 @@ impl Reader<'_> {
                         message,
                         data: Box::new(data),
                         cause,
+                        provenance: std::rc::Rc::new(std::cell::RefCell::new(Default::default())),
                     },
                 )))
             }

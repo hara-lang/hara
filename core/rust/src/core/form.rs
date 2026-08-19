@@ -316,6 +316,10 @@ fn eval_collection_constructor(
         .iter()
         .map(|form| eval(form, env))
         .collect::<Result<Vec<_>, _>>()?;
+    collection_constructor_values(name, values)
+}
+
+fn collection_constructor_values(name: &str, values: Vec<Value>) -> Result<Value, String> {
     match name {
         "hash-map" | "ordered-map" | "priority-map" | "sorted-map" | "trie" => {
             if values.len() % 2 != 0 {
@@ -809,7 +813,8 @@ fn deref_value(value: Value) -> Value {
 fn deref_binding_value(name: &str, value: Value) -> Value {
     match value {
         Value::Var(var)
-            if var.symbol().get_name() == Symbol::parse(name).get_name() =>
+            if name.starts_with("std.native.")
+                || var.symbol().get_name() == Symbol::parse(name).get_name() =>
         {
             var.deref_value()
         }

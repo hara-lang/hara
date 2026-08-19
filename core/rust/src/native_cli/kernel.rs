@@ -638,6 +638,7 @@ fn sandbox_error_value(error: &str) -> Value {
                 .collect(),
         )),
         cause: None,
+        provenance: Rc::new(RefCell::new(Default::default())),
     }))
 }
 

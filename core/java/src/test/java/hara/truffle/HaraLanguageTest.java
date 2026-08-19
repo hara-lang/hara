@@ -978,24 +978,25 @@ public class HaraLanguageTest {
   }
 
   @Test
-  public void supportsOrderedTypedGuestCatchClauses() {
+  public void supportsOrderedGuestErrorCodeCatchClauses() {
     try (Context context = context()) {
       assertEquals(
           7,
           context
               .eval(
                   HaraLanguage.ID,
-                  "(defstruct Problem [value]) "
-                      + "(try (throw (Problem 7)) "
-                      + "(catch Other error 0) "
-                      + "(catch Problem error (:value error)))")
+                  "(try (throw (ex :problem/value {:ex/message \"problem\" :value 7})) "
+                      + "(catch :problem/other error 0) "
+                      + "(catch :problem/value error (:value (ex-data error))))")
               .asLong());
       PolyglotException unmatched =
           assertThrows(
               PolyglotException.class,
               () ->
                   context.eval(
-                      HaraLanguage.ID, "(try (throw (Problem 9)) (catch Other error error))"));
+                      HaraLanguage.ID,
+                      "(try (throw (ex :problem/value {:ex/message \"problem\"})) "
+                          + "(catch :problem/other error error))"));
       assertTrue(unmatched.isGuestException());
     }
   }
@@ -1773,7 +1774,9 @@ public class HaraLanguageTest {
   @Test
   public void exposesTheSharedProtocolInventoryFromFoundation() throws Exception {
     String contract =
-        Files.readString(Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocols.edn"));
+        Files.readString(
+            specsRegistry()
+                .resolve("00-unsorted/platform-language/draft/conformance/protocols.edn"));
     Matcher names = Pattern.compile(":name\\s+(I[A-Za-z]+)").matcher(contract);
     Set<String> protocols = new LinkedHashSet<>();
     while (names.find()) {
@@ -1896,8 +1899,37 @@ public class HaraLanguageTest {
             Path.of("lib/test-fixtures/std/foundation/protocol_functionality.hal"));
     String catalog =
         Files.readString(
-            Path.of("../hara-specs-registry/00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn"));
-    assertEquals(90, catalog.split("\\{:protocol ", -1).length - 1);
+            specsRegistry()
+                .resolve(
+                    "00-unsorted/platform-language/draft/conformance/protocol-method-cases.edn"));
+    String protocols =
+        Files.readString(
+            specsRegistry()
+                .resolve("00-unsorted/platform-language/draft/conformance/protocols.edn"));
+    Set<String> specifiedMethods = new LinkedHashSet<>();
+    Matcher protocolEntries =
+        Pattern.compile(
+                "\\{:name\\s+(I[A-Za-z]+).*?:methods\\s+\\{([^}]*)\\}", Pattern.DOTALL)
+            .matcher(protocols);
+    while (protocolEntries.find()) {
+      String protocol = protocolEntries.group(1);
+      Matcher methods = Pattern.compile("([a-z][a-z?\\-]*)\\s+-?\\d+").matcher(protocolEntries.group(2));
+      while (methods.find()) specifiedMethods.add(protocol + "/" + methods.group(1));
+    }
+    Set<String> catalogMethods = new LinkedHashSet<>();
+    Matcher catalogEntries =
+        Pattern.compile("\\{:protocol\\s+(I[A-Za-z]+)\\s+:method\\s+([^\\s]+)")
+            .matcher(catalog);
+    while (catalogEntries.find()) {
+      catalogMethods.add(catalogEntries.group(1) + "/" + catalogEntries.group(2));
+    }
+    assertEquals(
+        "Behavioral protocol cases must exactly close the authoritative method surface",
+        specifiedMethods,
+        catalogMethods);
+    assertEquals(105, catalog.split("\\{:protocol ", -1).length - 1);
+    int expectedFailureCount =
+        catalog.split(":case :unsupported-receiver", -1).length - 1;
     Matcher methodVars =
         Pattern.compile(
                 "(?m)^\\s*\\[?\\(protocol-case\\s+:[^\\s]+\\s+:[^\\s]+\\s+"
@@ -1907,7 +1939,7 @@ public class HaraLanguageTest {
     try (Context context = context()) {
       String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
-      assertEquals(89, result.split(":pass true", -1).length - 1);
+      assertEquals(105, result.split(":pass true", -1).length - 1);
 
       int methodCount = 0;
       while (methodVars.find()) {
@@ -1922,7 +1954,7 @@ public class HaraLanguageTest {
             methodVar + " returned an uncategorized arity error: " + error.getMessage(),
             error.getMessage().contains("protocol/arity"));
       }
-      assertEquals(89, methodCount);
+      assertEquals(105, methodCount);
 
       int failureCount = 0;
       for (String line : source.split("\\R")) {
@@ -1971,7 +2003,7 @@ public class HaraLanguageTest {
                 + uncategorizedError,
             categorizedCall != null);
       }
-      assertEquals(89, failureCount);
+      assertEquals(expectedFailureCount, failureCount);
       assertTrue(
           context
               .eval(
@@ -2544,7 +2576,55 @@ public class HaraLanguageTest {
     }
   }
 
+  @Test
+  public void catchSelectorsMatchStructuredErrorCodes() {
+    try (Context context = context()) {
+      assertEquals(
+          ":file/not-found",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(try (throw (ex :file/not-found {})) "
+                      + "(catch :socket/closed e :wrong) "
+                      + "(catch :file/not-found e (:ex/code (ex-data e))))")
+              .toString());
+      assertEquals(
+          ":file-error",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(try (throw (ex :file/not-found {:ex/message \"missing\"})) "
+                      + "(catch [:file/not-found :file/permission-denied] e :file-error))")
+              .toString());
+      assertEquals(
+          "42",
+          context.eval(HaraLanguage.ID, "(try (throw (ex :test/x {:ex/message \"x\"})) (catch e 42))").toString());
+      assertEquals(
+          ":failure/code",
+          context.eval(HaraLanguage.ID, "(ex-message (ex :failure/code {}))").asString());
+      assertEquals(
+          "[1 1]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(let [exception (ex :test/provenance {})] "
+                      + "(try (throw exception) "
+                      + "(catch caught "
+                      + "(let [provenance (ex-provenance caught)] "
+                      + "[(:line (:ex/created-at provenance)) "
+                      + "(count (:ex/throws provenance))]))))")
+              .toString());
+    }
+  }
+
   private static Context context() {
     return Context.newBuilder(HaraLanguage.ID).allowIO(IOAccess.ALL).build();
+  }
+
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 }

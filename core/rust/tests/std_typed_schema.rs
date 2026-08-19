@@ -93,7 +93,7 @@ fn registry_runtime() -> Runtime {
                (registry/local \
                 (quote cycle) \
                 {(quote A) (quote B) \
-                 (quote B) (quote A)}))"
+                 (quote B) (quote A)}))",
         )
         .unwrap();
     runtime

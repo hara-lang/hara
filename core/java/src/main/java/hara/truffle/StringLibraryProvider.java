@@ -1,9 +1,9 @@
 package hara.truffle;
 
-/** Lazy Java implementation of {@code std.foundation.string}. */
+/** Native String substrate used by the source-owned Foundation string library. */
 public final class StringLibraryProvider implements HaraLibraryProvider {
   @Override
-  public String namespace() { return "std.foundation.string"; }
+  public String namespace() { return "std.native.String"; }
 
   @Override
   public int order() { return 20; }
@@ -13,7 +13,6 @@ public final class StringLibraryProvider implements HaraLibraryProvider {
 
   @Override
   public void install(HaraContext context) {
-    context.collectBuiltins(namespace(), context::installStringLibrary);
-    context.installStringLikeFacade();
+    context.collectBuiltins("std.foundation.string", context::installStringLibrary);
   }
 }

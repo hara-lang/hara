@@ -577,6 +577,19 @@ fn bit_operation(
         .iter()
         .map(|form| eval(form, env))
         .collect::<Result<Vec<_>, _>>()?;
+    bit_values(op, &values)
+}
+
+fn bit_values(op: &str, values: &[Value]) -> Result<Value, String> {
+    let op = match op.strip_prefix("std.native.Bits/").unwrap_or(op) {
+        "and" => "bit-and",
+        "or" => "bit-or",
+        "xor" => "bit-xor",
+        "not" => "bit-not",
+        "shift-left" => "bit-shift-left",
+        "shift-right" => "bit-shift-right",
+        operation => operation,
+    };
     match op {
         "bit-not" => {
             if values.len() != 1 {
@@ -606,18 +619,10 @@ fn bit_operation(
     }
 }
 
-fn number_conversion(
-    operation: &str,
-    args: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn number_conversion_value(operation: &str, value: Value) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.Num/")
         .unwrap_or(operation);
-    if args.len() != 1 {
-        return Err(format!("{operation} expects one value"));
-    }
-    let value = eval(&args[0], env)?;
     match operation {
         "long" => Ok(Value::Number(
             numeric::to_i64_exact(&value).map_err(|error| format!("long: {error}"))?,
@@ -693,11 +698,7 @@ fn numeric_abs(value: Value) -> Result<Value, String> {
     numeric::numeric_abs(&value).map_err(|_| "abs expects a numeric value".to_string())
 }
 
-fn math_operation(
-    operation: &str,
-    args: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn math_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.Maths/")
         .unwrap_or(operation);
@@ -706,17 +707,13 @@ fn math_operation(
     } else {
         1
     };
-    if args.len() != expected {
+    if values.len() != expected {
         return Err(format!(
             "{operation} expects {} numeric {}",
             if expected == 1 { "one" } else { "two" },
             if expected == 1 { "value" } else { "values" }
         ));
     }
-    let values = args
-        .iter()
-        .map(|form| eval(form, env))
-        .collect::<Result<Vec<_>, _>>()?;
     if operation == "abs" {
         return numeric_abs(values.into_iter().next().unwrap());
     }
@@ -1144,24 +1141,20 @@ fn result_synchronize_options(options: Option<Value>) -> Result<(Option<u64>, Va
     Ok((timeout, context))
 }
 
-fn native_result_operation(
-    operation: &str,
-    forms: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_result_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.Result/")
         .unwrap_or(operation);
     match operation {
         "create" => {
-            if !(2..=3).contains(&forms.len()) {
+            if !(2..=3).contains(&values.len()) {
                 return Err(
                     "std.native.Result/create expects status, value, and optional context".into(),
                 );
             }
-            let status = eval(&forms[0], env)?;
-            let value = eval(&forms[1], env)?;
-            let context = result_context(forms.get(2).map(|form| eval(form, env)).transpose()?)?;
+            let status = values[0].clone();
+            let value = values[1].clone();
+            let context = result_context(values.get(2).cloned())?;
             match status {
                 Value::Keyword(status) if status.as_str() == "success" => Ok(Value::Result(
                     Rc::new(ResultValue::success(value, context)?),
@@ -1173,21 +1166,21 @@ fn native_result_operation(
             }
         }
         "synchronize" => {
-            if !(1..=2).contains(&forms.len()) {
+            if !(1..=2).contains(&values.len()) {
                 return Err(
                     "std.native.Result/synchronize expects a value and optional options map".into(),
                 );
             }
-            let value = eval(&forms[0], env)?;
-            let options = forms.get(1).map(|form| eval(form, env)).transpose()?;
+            let value = values[0].clone();
+            let options = values.get(1).cloned();
             let (timeout, context) = result_synchronize_options(options)?;
             native_result::synchronize_value(value, timeout, context)
         }
         "instance?" | "success?" | "error?" | "status" | "data" | "error-value" | "context" => {
-            if forms.len() != 1 {
+            if values.len() != 1 {
                 return Err(format!("std.native.Result/{operation} expects one value"));
             }
-            let value = eval(&forms[0], env)?;
+            let value = values[0].clone();
             if operation == "instance?" {
                 return Ok(Value::Bool(matches!(value, Value::Result(_))));
             }
@@ -1214,39 +1207,31 @@ fn native_result_operation(
             })
         }
         "with-context" => {
-            if forms.len() != 2 {
+            if values.len() != 2 {
                 return Err("std.native.Result/with-context expects a Result and context".into());
             }
-            let value = eval(&forms[0], env)?;
+            let value = values[0].clone();
             let Value::Result(result) = value else {
                 return Err("std.native.Result/with-context expects a Result".into());
             };
-            let context = eval(&forms[1], env)?;
+            let context = values[1].clone();
             Ok(Value::Result(Rc::new(result.with_context(context)?)))
         }
         _ => Err(format!("unknown std.native.Result operation: {operation}")),
     }
 }
 
-fn native_error_operation(
-    operation: &str,
-    args: &[Form],
-    env: &mut HashMap<String, Value>,
-) -> Result<Value, String> {
+fn native_error_values(operation: &str, values: Vec<Value>) -> Result<Value, String> {
     let operation = operation
         .strip_prefix("std.native.Error/")
         .unwrap_or(operation);
     match operation {
         "new" => {
-            if !(2..=3).contains(&args.len()) {
+            if !(2..=3).contains(&values.len()) {
                 return Err(
                     "std.native.Error/new expects a message, data map, and optional cause".into(),
                 );
             }
-            let values = args
-                .iter()
-                .map(|form| eval(form, env))
-                .collect::<Result<Vec<_>, _>>()?;
             let Value::String(message) = &values[0] else {
                 return Err("std.native.Error/new expects a string message".into());
             };
@@ -1257,24 +1242,24 @@ fn native_error_operation(
                 message: message.clone(),
                 data: Box::new(values[1].clone()),
                 cause: values.get(2).cloned().map(Box::new),
+                provenance: Rc::new(RefCell::new(Default::default())),
             })))
         }
         "message" => {
-            if args.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Error/message expects one value".into());
             }
-            Ok(match eval(&args[0], env)? {
+            Ok(match &values[0] {
                 Value::ExceptionInfo(value) => Value::String(value.message.clone()),
-                Value::String(value) => Value::String(value),
+                Value::String(value) => Value::String(value.clone()),
                 value => Value::String(value.display()),
             })
         }
         "class" => {
-            if args.len() != 1 {
+            if values.len() != 1 {
                 return Err("std.native.Error/class expects one value".into());
             }
-            let value = eval(&args[0], env)?;
-            Ok(Value::String(portable_type_name(&value).into()))
+            Ok(Value::String(portable_type_name(&values[0]).into()))
         }
         _ => Err(format!("unknown native error operation: {operation}")),
     }

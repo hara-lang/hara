@@ -456,6 +456,17 @@ public final class HaraJavaAdapters {
           }
           return bytes[(int) index];
         });
+    protocol.extend(
+        Iterable.class,
+        "nth",
+        (receiver, arguments) -> {
+          long index = HaraNumericConversions.toLong(arguments[0], "INth/nth");
+          try {
+            return hara.lang.base.Iter.nth(((Iterable<?>) receiver).iterator(), index);
+          } catch (IndexOutOfBoundsException | java.util.NoSuchElementException error) {
+            throw new HaraException("nth index out of bounds: " + index);
+          }
+        });
     // Compact vectors implement INth directly, but use a more specific non-intrinsic adapter so
     // the specialized collection node preserves the shared bounds diagnostic.
     protocol.extend(Tuple.Tup0.class, "nth", HaraJavaAdapters::nthTuple);

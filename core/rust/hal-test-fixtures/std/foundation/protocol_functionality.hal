@@ -46,9 +46,9 @@
    :success success
    :limit limit
    :limit-category :protocol/arity
-   :failure :host-checked
+   :failure (if (nil? failure-form) :not-applicable :host-checked)
    :failure-form failure-form
-   :failure-category :protocol/unsupported-receiver
+   :failure-category (if (nil? failure-form) nil :protocol/unsupported-receiver)
    :pass (if success limit false)})
 
 (defn protocol-case [protocol method method-var success unsupported-form]
@@ -77,9 +77,6 @@
 (extend-type ProtocolUseCase std.protocol.iclose/IClose
   (close [fixture] (do (state-put fixture :closed true) nil)))
 
-(extend-type ProtocolUseCase std.protocol.istream/IStream
-  (next [fixture] (first (state-get fixture :sequence))))
-
 (extend-type ProtocolUseCase std.protocol.icomponent/IComponent
   (props [fixture] {:name :component})
   (status [fixture] (state-get fixture :component-status))
@@ -102,6 +99,9 @@
 (extend-type ProtocolUseCase std.protocol.icoroutine/ICoroutine
   (status [fixture] (state-get fixture :component-status))
   (resume [fixture arg] [arg]))
+
+(extend-type ProtocolUseCase std.protocol.istream/IStream
+  (next [fixture] (state-get fixture :value)))
 
 (extend-type ProtocolUseCase std.protocol.icontextlifecycle/IContextLifeCycle
   (has-module? [fixture module] (not (nil? (get (state-get fixture :contexts) module))))
@@ -142,6 +142,27 @@
 
 (extend-type ProtocolUseCase std.protocol.iempty/IEmpty
   (empty [fixture] []))
+
+(extend-type ProtocolUseCase std.protocol.iencodable/IEncodable
+  (encode-with [fixture visitor] :encoded-with))
+
+(extend-type ProtocolUseCase std.protocol.iencode/IEncode
+  (encode [fixture options] :encoded))
+
+(extend-type ProtocolUseCase std.protocol.iencodevisitor/IEncodeVisitor
+  (visit-nil [fixture] :nil)
+  (visit-boolean [fixture value] value)
+  (visit-number [fixture value] value)
+  (visit-character [fixture value] value)
+  (visit-string [fixture value] value)
+  (visit-keyword [fixture value] value)
+  (visit-symbol [fixture value] value)
+  (visit-seq [fixture value] value)
+  (visit-vector [fixture value] value)
+  (visit-map [fixture value] value)
+  (visit-set [fixture value] value)
+  (visit-tagged [fixture tag value] [tag value])
+  (visit-unknown [fixture value] value))
 
 (extend-type ProtocolUseCase std.protocol.iequality/IEquality
   (equality [fixture other] (= (state-get fixture :value) other)))
@@ -320,10 +341,6 @@
           (state-get fixture :closed)))
      '(std.protocol.iclose/close unsupported))
 
-   (protocol-case :IStream :next std.protocol.istream/next
-     (= 1 (std.protocol.istream/next (use-case)))
-     '(std.protocol.istream/next unsupported))
-
    (protocol-case :IComponent :props std.protocol.icomponent/props
      (= {:name :component} (std.protocol.icomponent/props (use-case)))
      '(std.protocol.icomponent/props unsupported))
@@ -380,6 +397,10 @@
    (protocol-case :ICoroutine :resume std.protocol.icoroutine/resume
      (= [:input] (std.protocol.icoroutine/resume (use-case) :input))
      '(std.protocol.icoroutine/resume unsupported :input))
+
+   (protocol-case :IStream :next std.protocol.istream/next
+     (= 42 (std.protocol.istream/next (use-case)))
+     '(std.protocol.istream/next unsupported))
 
    (protocol-case :IContextLifeCycle :has-module? std.protocol.icontextlifecycle/has-module?
      (= false (std.protocol.icontextlifecycle/has-module? (use-case) :demo))
@@ -449,6 +470,54 @@
    (protocol-case :IEmpty :empty std.protocol.iempty/empty
      (= [] (std.protocol.iempty/empty (use-case)))
      '(std.protocol.iempty/empty unsupported))
+
+   (protocol-case :IEncodable :encode-with std.protocol.iencodable/encode-with
+     (= :encoded-with (std.protocol.iencodable/encode-with (use-case) (use-case)))
+     nil)
+
+   (protocol-case :IEncode :encode std.protocol.iencode/encode
+     (= :encoded (std.protocol.iencode/encode (use-case) {}))
+     '(std.protocol.iencode/encode unsupported {}))
+
+   (protocol-case :IEncodeVisitor :visit-nil std.protocol.iencodevisitor/visit-nil
+     (= :nil (std.protocol.iencodevisitor/visit-nil (use-case)))
+     '(std.protocol.iencodevisitor/visit-nil unsupported))
+   (protocol-case :IEncodeVisitor :visit-boolean std.protocol.iencodevisitor/visit-boolean
+     (= true (std.protocol.iencodevisitor/visit-boolean (use-case) true))
+     '(std.protocol.iencodevisitor/visit-boolean unsupported true))
+   (protocol-case :IEncodeVisitor :visit-number std.protocol.iencodevisitor/visit-number
+     (= 42 (std.protocol.iencodevisitor/visit-number (use-case) 42))
+     '(std.protocol.iencodevisitor/visit-number unsupported 42))
+   (protocol-case :IEncodeVisitor :visit-character std.protocol.iencodevisitor/visit-character
+     (= "c" (std.protocol.iencodevisitor/visit-character (use-case) "c"))
+     '(std.protocol.iencodevisitor/visit-character unsupported "c"))
+   (protocol-case :IEncodeVisitor :visit-string std.protocol.iencodevisitor/visit-string
+     (= "text" (std.protocol.iencodevisitor/visit-string (use-case) "text"))
+     '(std.protocol.iencodevisitor/visit-string unsupported "text"))
+   (protocol-case :IEncodeVisitor :visit-keyword std.protocol.iencodevisitor/visit-keyword
+     (= :demo (std.protocol.iencodevisitor/visit-keyword (use-case) :demo))
+     '(std.protocol.iencodevisitor/visit-keyword unsupported :demo))
+   (protocol-case :IEncodeVisitor :visit-symbol std.protocol.iencodevisitor/visit-symbol
+     (= 'demo (std.protocol.iencodevisitor/visit-symbol (use-case) 'demo))
+     '(std.protocol.iencodevisitor/visit-symbol unsupported 'demo))
+   (protocol-case :IEncodeVisitor :visit-seq std.protocol.iencodevisitor/visit-seq
+     (= '(1 2) (std.protocol.iencodevisitor/visit-seq (use-case) '(1 2)))
+     '(std.protocol.iencodevisitor/visit-seq unsupported '(1 2)))
+   (protocol-case :IEncodeVisitor :visit-vector std.protocol.iencodevisitor/visit-vector
+     (= [1 2] (std.protocol.iencodevisitor/visit-vector (use-case) [1 2]))
+     '(std.protocol.iencodevisitor/visit-vector unsupported [1 2]))
+   (protocol-case :IEncodeVisitor :visit-map std.protocol.iencodevisitor/visit-map
+     (= {:a 1} (std.protocol.iencodevisitor/visit-map (use-case) {:a 1}))
+     '(std.protocol.iencodevisitor/visit-map unsupported {:a 1}))
+   (protocol-case :IEncodeVisitor :visit-set std.protocol.iencodevisitor/visit-set
+     (= #{1 2} (std.protocol.iencodevisitor/visit-set (use-case) #{1 2}))
+     '(std.protocol.iencodevisitor/visit-set unsupported #{1 2}))
+   (protocol-case :IEncodeVisitor :visit-tagged std.protocol.iencodevisitor/visit-tagged
+     (= [:demo 42] (std.protocol.iencodevisitor/visit-tagged (use-case) :demo 42))
+     '(std.protocol.iencodevisitor/visit-tagged unsupported :demo 42))
+   (protocol-case :IEncodeVisitor :visit-unknown std.protocol.iencodevisitor/visit-unknown
+     (= :unknown (std.protocol.iencodevisitor/visit-unknown (use-case) :unknown))
+     '(std.protocol.iencodevisitor/visit-unknown unsupported :unknown))
 
    (protocol-case :IEquality :equality std.protocol.iequality/equality
      (= true (std.protocol.iequality/equality (use-case) 42))

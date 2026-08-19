@@ -121,7 +121,6 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "current-namespace",
     "cycle",
     "dec",
-    "decimal?",
     "declare",
     "def",
     "defmacro",
@@ -221,7 +220,6 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "map",
     "map?",
     "mapcat",
-    "merge",
     "neg?",
     "name",
     "namespace",
@@ -263,8 +261,6 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "read-forms",
     "read-string",
     "recur",
-    "reduce",
-    "reduce-kv",
     "repeat",
     "repeatedly",
     "require",
@@ -274,10 +270,8 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "rest",
     "reverse",
     "second",
-    "select-keys",
     "seq",
     "seq?",
-    "set",
     "set!",
     "set?",
     "string?",
@@ -333,7 +327,6 @@ pub(crate) const CORE_SPECIAL_FORMS: &[&str] = &[
     "var",
     "var-sym",
     "var/set",
-    "vec",
     "vector",
     "vector?",
     "fn?",
@@ -749,7 +742,8 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
                 v[1].clone(),
                 env,
                 Box::new(move |r| match r {
-                    Ok(x) => k(Err(thrown_error(x))),
+                    Ok(x @ Value::ExceptionInfo(_)) => k(Err(thrown_error(x))),
+                    Ok(_) => k(Err("throw expects an Exception value created by ex".into())),
                     Err(x) => k(Err(x)),
                 }),
             )
@@ -1193,26 +1187,30 @@ fn finish_try(
 ) -> Step {
     match r {
         Err(x) => {
-            let Some(p) = catches.into_iter().find(|parts| match parts.as_slice() {
-                [_, Form::Symbol(_), _] => crate::core::catch_matches(&x, "Exception"),
-                [_, Form::Symbol(class), Form::Symbol(_), ..] => {
-                    crate::core::catch_matches(&x, class)
+            let mut selected = None;
+            let mut saw_unconditional = false;
+            for parts in catches {
+                if saw_unconditional {
+                    return k(Err("unconditional catch must be the last catch clause".into()));
                 }
-                _ => false,
-            }) else {
+                let parsed = match parse_catch_clause(&parts) {
+                    Ok(parsed) => parsed,
+                    Err(error) => return k(Err(error)),
+                };
+                saw_unconditional = parsed.0.is_none();
+                if parsed
+                    .0
+                    .as_deref()
+                    .is_none_or(|selector| crate::core::catch_matches(&x, selector))
+                {
+                    selected = Some((parts, parsed.1, parsed.2));
+                    break;
+                }
+            }
+            let Some((p, binding_index, body_index)) = selected else {
                 return finally(Err(x), finals, env, k);
             };
             let catch_form = Form::List(p.clone());
-            let (binding_index, body_index) = match p.len() {
-                3 => (1, 2),
-                length if length >= 4 => {
-                    if !matches!(&p[1], Form::Symbol(_)) {
-                        return k(Err("catch class must be symbol".into()));
-                    }
-                    (2, 3)
-                }
-                _ => return k(Err("catch expects class, name, and body".into())),
-            };
             let n = match &p[binding_index] {
                 Form::Symbol(n) => n.clone(),
                 _ => return k(Err("catch name must be symbol".into())),
@@ -1238,6 +1236,39 @@ fn finish_try(
             )
         }
         result => finally(result, finals, env, k),
+    }
+}
+
+fn parse_catch_clause(parts: &[Form]) -> Result<(Option<String>, usize, usize), String> {
+    match parts {
+        [_, Form::Symbol(name), _, ..] if name != "Exception" && name != "Throwable" => {
+            Ok((None, 1, 2))
+        }
+        [_, Form::Symbol(class), Form::Symbol(_), _, ..]
+            if class == "Exception" || class == "Throwable" =>
+        {
+            Ok((Some(class.clone()), 2, 3))
+        }
+        [_, Form::Keyword(code), Form::Symbol(_), _, ..] if code.contains('/') => {
+            Ok((Some(format!(":{code}")), 2, 3))
+        }
+        [_, Form::Vector(codes), Form::Symbol(_), _, ..]
+            if !codes.is_empty()
+                && codes
+                    .iter()
+                    .all(|code| matches!(code, Form::Keyword(name) if name.contains('/'))) =>
+        {
+            let selectors = codes
+                .iter()
+                .map(|code| match code {
+                    Form::Keyword(name) => format!(":{name}"),
+                    _ => unreachable!(),
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            Ok((Some(format!("[{selectors}]")), 2, 3))
+        }
+        _ => Err("catch selector must be a namespaced keyword, a non-empty vector of namespaced keywords, or omitted".into()),
     }
 }
 fn finally(
@@ -1283,10 +1314,7 @@ fn application(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) 
     if let Some(name) = head_symbol {
         let native_alias = binding_var(&mut env.borrow_mut(), name)
             .is_some_and(|var| binding_is_native_alias(name, &var));
-        if CORE_SPECIAL_FORMS.contains(&name)
-            || name.starts_with("std.native.")
-            || native_alias
-        {
+        if CORE_SPECIAL_FORMS.contains(&name) || name.starts_with("std.native.") || native_alias {
             return eval_special_form(v, env, k);
         }
     }
@@ -1743,12 +1771,11 @@ mod tests {
         let cases = [
             ("(long? 42)", Value::Bool(true)),
             ("(long? 42.5)", Value::Bool(false)),
-            ("(double? (double 42.5))", Value::Bool(true)),
+            ("(double? ##Inf)", Value::Bool(true)),
             ("(double? 42.5)", Value::Bool(false)),
             ("(integer? 42)", Value::Bool(true)),
             ("(integer? 9223372036854775808)", Value::Bool(true)),
             ("(integer? 42.5)", Value::Bool(false)),
-            ("(decimal? 42.5)", Value::Bool(true)),
             ("(number? 42.5)", Value::Bool(true)),
             ("(boolean? false)", Value::Bool(true)),
             ("(boolean? nil)", Value::Bool(false)),

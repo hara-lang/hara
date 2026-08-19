@@ -80,6 +80,31 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void foundationMembershipAndNumericPredicatesStayCanonical() {
+    try (Context context = context()) {
+      assertTrue(context.eval(HaraLanguage.ID, "(nil? (resolve 'contains?))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(nil? (resolve 'decimal?))").asBoolean());
+      assertTrue(context.eval(HaraLanguage.ID, "(function? has?)").asBoolean());
+    }
+  }
+
+  @Test
+  public void foundationDerivedFunctionsAndNativeConversionFastPathsAgree() {
+    try (Context context = context()) {
+      assertEquals(
+          "[true true true {:tag :vector}]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "[(= {:a 2 :b 3} (reduce-kv (fn [out key value] (assoc out key (+ value 1))) {} {:a 1 :b 2})) "
+                      + " (= {:b 2} (select-keys {:a 1 :b 2} [:b :missing])) "
+                      + " (= {:a 1 :b 3} (merge {:a 1 :b 2} {:b 3})) "
+                      + " (meta (vec (with-meta (vector 1) {:tag :vector})))]")
+              .toString());
+    }
+  }
+
+  @Test
   public void protocolPredicatesAndMapEntriesUseCanonicalCapabilities() {
     try (Context context = context()) {
       assertEquals(

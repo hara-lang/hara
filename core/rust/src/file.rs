@@ -276,6 +276,7 @@ pub fn file_error_value(
             .collect(),
         )),
         cause: None,
+        provenance: Rc::new(RefCell::new(Default::default())),
     }))
 }
 
