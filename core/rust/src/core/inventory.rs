@@ -539,6 +539,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "symbol",
             "keyword",
             "reduced",
+            "unreduced",
             "apply",
             "not",
             "boolean",

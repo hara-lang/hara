@@ -166,6 +166,18 @@ impl Runtime {
                 );
             }
         }
+        for name in core::bytecode_compiler_callable_names() {
+            let symbol = crate::lang::data::Symbol::parse(name);
+            if foundation.resolve(&symbol).is_none() {
+                if let Some(value) = core::direct_protocol_predicate_function_value(name) {
+                    foundation.intern_with_origin(
+                        name,
+                        value,
+                        kernel::VarOrigin::RuntimePrimitive,
+                    );
+                }
+            }
+        }
     }
 
     #[cfg(not(feature = "bytecode-vm"))]

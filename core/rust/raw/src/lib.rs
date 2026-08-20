@@ -2598,13 +2598,13 @@ mod tests {
     #[test]
     fn portable_type_descriptors_are_available_in_raw_wasm() {
         for source in [
-            "(if (= (type nil) :hara/Nil) 42 0)",
-            "(if (= (type :key) :hara/Keyword) 42 0)",
-            "(if (= (type (symbol \"hara/name\")) :hara/Symbol) 42 0)",
-            "(if (= (type []) :hara/Vector) 42 0)",
-            "(if (= (type (vector)) :hara/Vector) 42 0)",
-            "(if (= (type {}) :hara/HashMap) 42 0)",
-            "(if (= (type (ns:create (quote example))) :hara/Namespace) 42 0)",
+            "(if (= (type nil) :std.native.Nil) 42 0)",
+            "(if (= (type :key) :std.native.Keyword) 42 0)",
+            "(if (= (type (symbol \"hara/name\")) :std.native.Symbol) 42 0)",
+            "(if (= (type []) :std.native.Tuple) 42 0)",
+            "(if (= (type (vector)) :std.native.Vector) 42 0)",
+            "(if (= (type {}) :std.native.HashMap) 42 0)",
+            "(if (= (type (ns:create (quote example))) :std.native.Namespace) 42 0)",
             "(if (= [(tuple? []) (tuple? [1 2 3 4 5 6 7 8 9])] [true false]) 42 0)",
         ] {
             assert_eq!(evaluate(source), Ok(42), "{source}");

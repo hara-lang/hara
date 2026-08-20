@@ -985,6 +985,10 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [value] => Ok(reduced_value(value.clone())),
             _ => Err("Base/reduced expects one value".into()),
         },
+        "unreduced" => match values {
+            [value] => Ok(unreduced_value(value.clone())),
+            _ => Err("Base/unreduced expects one value".into()),
+        },
         "apply" => {
             if values.len() < 2 {
                 return Err("Base/apply expects a function and a final sequential value".into());
@@ -1031,9 +1035,7 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
             [Value::NativeType(native), value]
                 if native.methods.iter().any(|method| method == "instance?") =>
             {
-                Ok(Value::Bool(
-                    portable_type_keyword(value)?.as_str() == native.name,
-                ))
+                Ok(Value::Bool(native_type_instance(native, value)?))
             }
             [Value::NativeType(_), _] => {
                 Err("Base/instance? descriptor does not define instance?".into())
@@ -2139,6 +2141,17 @@ fn named_protocol_satisfies(name: &str, value: &Value) -> bool {
         },
         value,
     )
+}
+
+pub(crate) fn direct_protocol_predicate_function_value(name: &str) -> Option<Value> {
+    named_predicate_protocol(name)?;
+    let operation = name.to_owned();
+    Some(native_function(name, 1, move |arguments| {
+        Ok(Value::Bool(named_protocol_satisfies(
+            &operation,
+            &arguments[0],
+        )))
+    }))
 }
 
 fn promise_value(value: &Value, operation: &str) -> Result<Promise, String> {
