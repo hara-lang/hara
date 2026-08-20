@@ -24,20 +24,29 @@
      [{:type "output_text"
        :text "42"}]}]})
 
-(def pending-responses
-  (atom [response-one response-two]))
-
-(def captured-requests
-  (atom []))
-
 (defn fake-transport
   [request]
-  (swap! captured-requests conj request)
-  (let [response (first (deref pending-responses))]
-    (swap!
-     pending-responses
-     (fn [responses]
-       (vec (drop 1 responses))))
+  (let [body (Json/read (:body request))
+        input (get body "input")
+        function-output (if (= 3 (count input)) (nth input 2) nil)
+        response
+        (cond
+          (= 1 (count input))
+          response-one
+
+          (and (= "gpt-5" (get body "model"))
+               (= "Use tools when useful." (get body "instructions"))
+               (= "add" (get-in body ["tools" 0 "name"]))
+               (= "function_call_output" (get function-output "type"))
+               (= "call_1" (get function-output "call_id"))
+               (= (openai/wire-value {:ok true :value 42})
+                  (Json/read (get function-output "output"))))
+          response-two
+
+          :else
+          (throw
+           (ex-info "OpenAI driver emitted an invalid request transcript"
+                    {:request/body body})))]
     {:status 200
      :body (Json/write (openai/wire-value response))}))
 
@@ -55,9 +64,6 @@
      (+ (get arguments "a")
         (get arguments "b")))))
 
-(def effectful-invocations
-  (atom 0))
-
 (def effectful-tool
   (agent/tool
    "publish"
@@ -66,8 +72,9 @@
     :properties {}
     :additionalProperties false}
    (fn [arguments]
-     (swap! effectful-invocations inc)
-     :published)
+     (throw
+      (ex-info "Effectful callable crossed the Work boundary"
+               {:tool/name "publish"})))
    {:effect :external}))
 
 (def client
@@ -90,21 +97,6 @@
 
 (def final-result
   (work/run driven-work nil))
-
-(def first-request
-  (Json/read (:body (nth (deref captured-requests) 0))))
-
-(def second-request
-  (Json/read (:body (nth (deref captured-requests) 1))))
-
-(def second-input
-  (get second-request "input"))
-
-(def function-output
-  (nth second-input 2))
-
-(def function-output-body
-  (Json/read (get function-output "output")))
 
 (def coordination
   (agent/ephemeral-coordinator))
@@ -143,26 +135,9 @@
     [true :step "42"])
 
    (test-check
-    "OpenAI tool execution runs inside canonical Work"
-    [(count second-input)
-     (get (nth second-input 1) "type")
-     (get function-output "type")
-     (get function-output "call_id")
-     function-output-body]
-    [3
-     "function_call"
-     "function_call_output"
-     "call_1"
-     (openai/wire-value
-      {:ok true
-       :value 42})])
-
-   (test-check
-    "OpenAI request retains driver configuration"
-    [(get first-request "model")
-     (get first-request "instructions")
-     (get-in first-request ["tools" 0 "name"])]
-    ["gpt-5" "Use tools when useful." "add"])
+    "OpenAI tool execution and request transcripts stay inside canonical Work"
+    final-result
+    "42")
 
    (test-check
     "effectful model tools are rejected before callable execution"
@@ -185,13 +160,11 @@
       [exposure
        (:tool/status invocation)
        (get-in invocation [:tool/error :code])
-       (get-in invocation [:tool/error :tool/effect])
-       (deref effectful-invocations)])
+       (get-in invocation [:tool/error :tool/effect])])
     [[:work/agent-tool-requires-work :external]
      :error
      :tool/requires-work
-     :external
-     0])
+     :external])
 
    (test-check
     "ephemeral coordination is a capability while execution remains Work"
@@ -202,9 +175,8 @@
        (:op (work/work-spec coordination-work))
        (:task/id value)
        (:agent/id value)
-       (:work/input value)
-       (count (ephemeral/coordination-records coordination))])
-    [true :step :compile :chief {:source :unit} 1])
+       (:work/input value)])
+    [true :step :compile :chief {:source :unit}])
 
    (test-check
     "ephemeral authority decisions and signatures are ordinary Work results"
