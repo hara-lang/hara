@@ -169,3 +169,19 @@ for each package to appear in the crates.io index and uploads the resulting
 - Website deployment is owned by `../../website/hara-www/.github/workflows/`.
 - IDE state (`.idea/`, `.settings/`, `.classpath`, `.project`) is user-local
   and untracked.
+
+## Connector-first delivery
+
+GitHub issues, pull requests, native relationships, checks, and repository
+documents are authoritative. GitHub Projects are visual projections of that
+state, not a separate source of truth.
+
+Use the organisation workflow in
+[hara-lang/.github](https://github.com/hara-lang/.github/blob/main/docs/connector-first-delivery.md).
+Before implementing an issue, read its relationships and linked pull requests,
+then follow this repository's local documentation and validation instructions.
+
+Every executable issue must define Outcome, Scope, Acceptance criteria,
+Validation, Relationships, Readiness, and Delivery. Keep durable decisions and
+progress in the issue or pull request so that they remain visible through the
+GitHub connector; do not rely on chat history as the only record.
