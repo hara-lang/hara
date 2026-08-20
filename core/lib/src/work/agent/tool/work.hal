@@ -1,0 +1,95 @@
+(ns work.agent.tool.work
+  (:config {:role :internal})
+  (:require [work.base :as work]
+            [work.agent.tool :as tool]))
+
+(defn call-id
+  [call suffix]
+  [:agent/tool (:call/id call) suffix])
+
+(defn successful-result
+  [call output]
+  {:call/id (:call/id call)
+   :tool/name (:tool/name call)
+   :tool/status :ok
+   :tool/value output})
+
+(defn unknown-call-work
+  [call]
+  (work/pure
+   {:id (call-id call :unknown)}
+   (fn [input context]
+     (tool/invoke {} call))))
+
+(defn pure-call-work
+  [value call]
+  (work/pure
+   {:id (call-id call :pure)}
+   (fn [input context]
+     (tool/invoke {(:tool/name value) value} call))))
+
+(defn effect-work
+  [value call]
+  (let [produced ((:tool/invoke value) (:call/arguments call))]
+    (if (not (satisfies? IWork produced))
+      (throw
+       (ex :state
+           {:work/error :work/agent-tool-not-work
+            :tool/name (:tool/name value)
+            :tool/effect (:tool/effect value)
+            :call/id (:call/id call)}
+           :ex/message "Effectful agent tool factory must return Work")))
+    (let [spec (work/work-spec produced)]
+      (if (nil? (:id spec))
+        (throw
+         (ex :dependency
+             {:work/error :work/agent-tool-unstable-work
+              :tool/name (:tool/name value)
+              :tool/effect (:tool/effect value)
+              :call/id (:call/id call)
+              :produced/op (:op spec)}
+             :ex/message "Effectful agent tool Work requires a stable :id"))))
+    produced))
+
+(defn effect-call-work
+  [value call]
+  (let [produced (effect-work value call)]
+    (work/chain
+     {:id (call-id call :effect)}
+     [(work/pure
+       {:id (call-id call :arguments)}
+       (fn [input context]
+         (:call/arguments call)))
+      produced
+      (work/pure
+       {:id (call-id call :result)}
+       (fn [output context]
+         (successful-result call output)))])))
+
+(defn call-work
+  "Lowers one model-selected tool call to ordinary Work.
+
+   Pure tools become pure Work. Non-pure tool functions are invoked only as
+   Work factories and their returned Work executes through the normal runtime.
+   Effectful Work receives the decoded call arguments as its canonical input.
+   The result is always a tool-result value suitable for provider translation."
+  [tool-index call]
+  (let [value (get tool-index (:tool/name call))]
+    (cond
+      (nil? value)
+      (unknown-call-work call)
+
+      (= :pure (:tool/effect value))
+      (pure-call-work value call)
+
+      :else
+      (effect-call-work value call))))
+
+(defn call-works
+  "Lowers model-selected tool calls to Work while preserving call order."
+  [tool-index calls]
+  (vec
+   (map
+    (fn [call]
+      (call-work tool-index call))
+    calls)))
