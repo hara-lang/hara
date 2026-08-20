@@ -13,7 +13,8 @@ interface SandboxProvider {
   record ResolvedSpec(
       SandboxModel.SandboxSpec spec,
       java.util.Map<String, byte[]> bundles,
-      HaraMountedFileSystem mountProvider) {}
+      HaraMountedFileSystem mountProvider,
+      FilesystemRuntimeBinding mountRuntime) {}
 
   SandboxInstance open(ResolvedSpec spec);
 

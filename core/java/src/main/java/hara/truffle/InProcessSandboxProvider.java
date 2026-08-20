@@ -29,7 +29,8 @@ final class InProcessSandboxProvider implements SandboxProvider {
     SandboxModel.SandboxSpec spec = resolved.spec();
     SessionKernel.Session session = SessionKernel.Session.privateSandbox(spec.entryNamespace());
     if (spec.mount() != null) {
-      session.attachSandboxFilesystem(spec.mount(), resolved.mountProvider());
+      session.attachSandboxFilesystem(
+          spec.mount(), resolved.mountProvider(), resolved.mountRuntime());
     }
     return new Instance(spec, session);
   }
