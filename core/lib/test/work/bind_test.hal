@@ -199,6 +199,35 @@
        (eval/run outer :input))))
   => :work/bind-depth-exceeded)
 
+(fact "cancellation after the source prevents continuation and produced Work"
+  (let [continuation-count (atom 0)
+        produced-count (atom 0)
+        runtime (work/durable-runtime)
+        computation
+        (work/bind
+         {:id :bind-cancel}
+         (work/step :cancel-source
+           (fn [input context]
+             (work/cancel runtime
+                          (:run/id context)
+                          {:reason :bind-test})
+             input))
+         (work/pure :cancel-continuation
+           (fn [value context]
+             (swap! continuation-count inc)
+             (work/step :cancel-produced
+               (fn [produced-input produced-context]
+                 (swap! produced-count inc)
+                 produced-input)))))
+        reference
+        (work/start runtime computation :input {:id "bind-cancel"})
+        history (work/history runtime reference)]
+    [(work/status runtime reference)
+     (deref continuation-count)
+     (deref produced-count)
+     (event-count history :work/run-cancel-requested)])
+  => [:cancelled 0 0 1])
+
 (fact "durable bind rejects anonymous produced Work before child execution"
   (let [executed (atom 0)
         runtime (work/durable-runtime)
