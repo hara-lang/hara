@@ -29,10 +29,10 @@ mod bytecode;
 #[cfg(feature = "bytecode-observation")]
 pub use bytecode::BytecodeLiveSession;
 
-#[cfg(feature = "bytecode-observation")]
+#[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
 #[path = "live_session/instrumented_hbc.rs"]
 mod instrumented_hbc;
-#[cfg(feature = "bytecode-observation")]
+#[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
 pub(crate) use instrumented_hbc::InstrumentedHbcLiveSession;
 
 #[cfg(test)]
