@@ -92,11 +92,19 @@ a direct value or Promise. The driver lowers the call to pure Work and keeps the
 existing structured tool-result behavior for success, unknown tools, and pure
 exceptions.
 
-A non-pure tool implementation is a Work factory. The model may select it, but
-direct invocation still returns `:tool/requires-work`. The Work-aware driver
-invokes the function only to construct an explicitly identified `IWork` value.
-That Work then executes through the canonical evaluator, executor/store, host,
+A non-pure tool implementation is a **pure Work factory**. The model may select
+it, but direct invocation still returns `:tool/requires-work`. The Work-aware
+driver invokes the function only to construct an explicitly identified `IWork`
+value. That Work receives the decoded argument map as its canonical input and
+then executes through the canonical evaluator, executor/store, host,
 checkpoint, cancellation, event, and receipt boundaries.
+
+Work factories are replayable construction functions. A durable resume may
+re-run the pure bind continuation and therefore invoke the factory again to
+reconstruct the same identified Work subtree. The factory must be deterministic
+for the same call and must not perform external effects, mutate authoritative
+state, or depend on transient provider handles. Effects belong only inside the
+returned Work.
 
 A non-pure tool factory that returns a non-Work value fails with
 `:work/agent-tool-not-work`. Effectful Work without an explicit stable `:id`
