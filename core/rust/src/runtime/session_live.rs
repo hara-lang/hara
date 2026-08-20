@@ -1,9 +1,9 @@
+#[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
+use crate::live_session::InstrumentedHbcLiveSession;
 use crate::live_session::{
     InstrumentedInterpreterLiveSession, LiveSession, LiveSessionCapabilities, LiveSessionCommand,
     LiveSessionError, LiveSessionReply, LiveSessionRequest, LiveSessionState, LiveSource,
 };
-#[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
-use crate::live_session::InstrumentedHbcLiveSession;
 
 #[derive(Default)]
 struct SessionLiveRegistry {
@@ -113,7 +113,10 @@ impl Session {
 
     /// Compatibility-only feature slice for builds that explicitly enable the
     /// old observation feature without the shared instrumentation probe.
-    #[cfg(all(feature = "bytecode-observation", not(feature = "bytecode-instrumentation")))]
+    #[cfg(all(
+        feature = "bytecode-observation",
+        not(feature = "bytecode-instrumentation")
+    ))]
     pub fn start_hbc_live_session(
         &mut self,
         live_session_id: impl Into<String>,

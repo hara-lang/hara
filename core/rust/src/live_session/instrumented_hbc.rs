@@ -6,10 +6,9 @@ use std::rc::Rc;
 use crate::core::Value;
 use crate::instrumentation::{
     hbc_capabilities, Capability, ControlLease, DeliveredEvent, EventDelivery, EventKind,
-    EventPhase, HbcTarget, InstrumentDirective, InstrumentFilter, InstrumentHandle,
-    InstrumentMode, InstrumentRegistration, InstrumentationError, InstrumentationHub,
-    ProjectionLimits, ProjectionRequest, RuntimeBackend, TargetDescriptor, TargetHandle,
-    TargetKind,
+    EventPhase, HbcTarget, InstrumentDirective, InstrumentFilter, InstrumentHandle, InstrumentMode,
+    InstrumentRegistration, InstrumentationError, InstrumentationHub, ProjectionLimits,
+    ProjectionRequest, RuntimeBackend, TargetDescriptor, TargetHandle, TargetKind,
 };
 use crate::task::{PromiseRejection, PromiseState};
 use crate::vm::{compile_source_with, Machine};
@@ -325,7 +324,10 @@ impl InstrumentedHbcLiveSession {
         Ok(JsonValue::Bool(pending.reject_value(json_to_value(error)?)))
     }
 
-    fn resume(&mut self, settlement: Option<LiveSettlement>) -> Result<JsonValue, LiveSessionError> {
+    fn resume(
+        &mut self,
+        settlement: Option<LiveSettlement>,
+    ) -> Result<JsonValue, LiveSessionError> {
         if self.target()?.pending().is_some() {
             if let Some(settlement) = settlement {
                 let pending = self.target()?.pending().ok_or_else(|| {
@@ -555,7 +557,7 @@ fn controller_registration(
             target_ids: BTreeSet::from([target_id.into()]),
             target_kinds: BTreeSet::from([TargetKind::Hbc]),
             backends: BTreeSet::from([
-                RuntimeBackend::new("rust").expect("Rust is a valid backend id"),
+                RuntimeBackend::new("rust").expect("Rust is a valid backend id")
             ]),
         },
         projection: ProjectionRequest {
@@ -587,9 +589,7 @@ fn json_to_value(value: JsonValue) -> Result<Value, LiveSessionError> {
 fn value_to_json(value: &Value) -> Result<JsonValue, LiveSessionError> {
     let encoded = crate::json::write(value);
     serde_json::from_str(&encoded).map_err(|error| {
-        LiveSessionError::backend(format!(
-            "HBC live-session value is not valid JSON: {error}"
-        ))
+        LiveSessionError::backend(format!("HBC live-session value is not valid JSON: {error}"))
     })
 }
 
