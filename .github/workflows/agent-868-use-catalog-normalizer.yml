@@ -1,0 +1,50 @@
+name: Use portable catalog normalizer
+
+on:
+  push:
+    branches:
+      - agent/868-schema-catalog-identity
+    paths:
+      - .github/workflows/agent-868-use-catalog-normalizer.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/868-schema-catalog-identity
+          fetch-depth: 0
+      - name: Route catalog entries through the portable normalizer
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/lib/src/std/typed/catalog/base.hal")
+          text = path.read_text()
+          before = '''(defn- normalize-schema
+            [schema-form registry-value]
+            (std.typed.schema/normalize-with
+             schema-form
+             (std.typed.registry/ensure registry-value)))'''
+          after = '''(defn- normalize-schema
+            [schema-form registry-value]
+            (std.typed.catalog.codec/normalize-content
+             schema-form
+             registry-value))'''
+          if text.count(before) != 1:
+              raise SystemExit("expected one catalog normalize helper")
+          path.write_text(text.replace(before, after, 1))
+          Path(".github/workflows/agent-868-use-catalog-normalizer.yml").unlink()
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- \
+            core/lib/src/std/typed/catalog/base.hal \
+            .github/workflows/agent-868-use-catalog-normalizer.yml
+          git diff --cached --check
+          git commit -m "Route catalog entries through portable normalization"
+          git push origin HEAD:agent/868-schema-catalog-identity
