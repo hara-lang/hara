@@ -341,12 +341,14 @@ pub(super) fn current_boundary(
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) -> Option<EvalSemanticBoundary> {
     let context = context_for(environment)?;
-    context.borrow().current.clone()
+    let boundary = context.borrow().current.clone();
+    boundary
 }
 
 pub(super) fn source_forms(
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) -> Option<Rc<Vec<SpannedForm>>> {
     let context = context_for(environment)?;
-    context.borrow().source_forms.clone()
+    let source_forms = context.borrow().source_forms.clone();
+    source_forms
 }
