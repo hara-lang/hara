@@ -1,0 +1,46 @@
+(ns work.agent-protocol-test
+  (:require [work.agent.protocol :as protocol]
+            [work.agent.ephemeral :as ephemeral]))
+
+(def agent-value
+  (ephemeral/agent {:agent/id :fixture}))
+
+(def driver-value
+  (ephemeral/driver
+   (fn [agent intent context]
+     {:not-work true})))
+
+(def coordinator-value
+  (ephemeral/coordinator))
+
+(def authority-value
+  (ephemeral/authority :fixture-authority))
+
+(def results
+  [(test-check
+    "ephemeral values satisfy the four work.agent protocol boundaries"
+    [(satisfies? protocol/IAgent agent-value)
+     (satisfies? protocol/IWorkAgentDriver driver-value)
+     (satisfies? protocol/IWorkAgentCoordinator coordinator-value)
+     (satisfies? protocol/IWorkAgentAuthority authority-value)]
+    [true true true true])
+
+   (test-check
+    "IAgent projects to ordinary Agent data"
+    (protocol/agent-spec agent-value)
+    {:agent/id :fixture})
+
+   (test-check
+    "coordinator and authority dispatch return ordinary immutable values"
+    [(protocol/agent-coordinate coordinator-value {:task/id :one})
+     (protocol/agent-authorize authority-value {:action :review})
+     (protocol/agent-sign authority-value {:action :review})]
+    [{:task/id :one :coordination/index 1}
+     {:authority/id :fixture-authority
+      :authorized? true
+      :request {:action :review}}
+     {:authority/id :fixture-authority
+      :signature [:fixture-authority {:action :review}]
+      :request {:action :review}}])])
+
+results
