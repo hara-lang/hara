@@ -139,3 +139,6 @@ pub fn restricted_sandbox_runtime_with_host(
 #[path = "runtime/filesystem_tests.rs"]
 mod filesystem_runtime_tests;
 include!("runtime/tests.rs");
+
+#[cfg(test)]
+mod native_behavioral_conformance_tests;
