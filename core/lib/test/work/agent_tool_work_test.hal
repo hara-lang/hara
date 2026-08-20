@@ -16,6 +16,32 @@
    (fn [arguments]
      arguments)))
 
+(def async-pure-tool
+  (agent/tool
+   "async-pure"
+   "Returns a Promise from a pure tool."
+   {:type "object"
+    :properties {:value {:type "integer"}}
+    :required ["value"]
+    :additionalProperties false}
+   (fn [arguments]
+     (promise
+      (fn []
+        (inc (get arguments "value")))))))
+
+(def failing-pure-tool
+  (agent/tool
+   "failing-pure"
+   "Throws from a pure tool."
+   {:type "object"
+    :properties {}
+    :additionalProperties false}
+   (fn [arguments]
+     (throw
+      (ex :host
+          {:reason :tool-test}
+          :ex/message "pure tool failed")))))
+
 (def effect-tool
   (agent/tool
    "echo-effect"
@@ -46,6 +72,38 @@
       [(:tool/status result)
        (:tool/value result)])
     [:ok {"value" 7}])
+
+   (test-check
+    "pure tool Promise results remain normalized through Work"
+    (let [call
+          {:call/id "async-1"
+           :tool/name "async-pure"
+           :call/arguments {"value" 9}}
+          result
+          (work/run
+           (tool-work/call-work
+            (agent-tool/index [async-pure-tool])
+            call)
+           :provider-response)]
+      [(:tool/status result)
+       (:tool/value result)])
+    [:ok 10])
+
+   (test-check
+    "pure tool exceptions remain structured results through Work"
+    (let [call
+          {:call/id "failed-1"
+           :tool/name "failing-pure"
+           :call/arguments {}}
+          result
+          (work/run
+           (tool-work/call-work
+            (agent-tool/index [failing-pure-tool])
+            call)
+           :provider-response)]
+      [(:tool/status result)
+       (get-in result [:tool/error :code])])
+    [:error :tool/failed])
 
    (test-check
     "effectful tool Work receives decoded call arguments as its canonical input"
