@@ -4,9 +4,9 @@ pub mod form;
 pub mod generated;
 #[path = "kernel/halc.rs"]
 pub mod halc;
-#[cfg(any(test, feature = "halc-encoder"))]
+#[cfg(all(any(test, feature = "halc-encoder"), not(feature = "raw-wasm")))]
 pub mod halc_bytecode_trace;
-#[cfg(any(test, feature = "halc-encoder"))]
+#[cfg(all(any(test, feature = "halc-encoder"), not(feature = "raw-wasm")))]
 pub mod halc_source_trace;
 #[path = "kernel/halc_trace.rs"]
 pub mod halc_trace;

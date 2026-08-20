@@ -11,33 +11,35 @@
      (throw (ex-info "boom" {:kind :test})))
    :never))
 
-(def config-result (test-config {:session-scope :fresh}))
+(def config-result (Test/config {:session-scope :fresh}))
 
 (def results
   [(test-check
     "test-check returns portable passing and failing maps"
-    [(:pass passing) (:status passing) (:pass failing) (:actual failing) (:expected failing)]
-    [true nil false 1 2])
+    [(Test/passed? passing) (Result/status passing)
+     (Test/passed? failing) (Test/actual failing) (Test/expected failing)]
+    [true :success false 1 2])
 
    (test-check
     "test-check captures thrown expressions and evaluates them once"
-    [(:pass thrown) (:status thrown) (:error thrown) (:error-data thrown)
-     (deref evaluations)]
+    (let [error (Result/error-value thrown)]
+      [(Test/passed? thrown) (Result/status thrown)
+       (ex-message error) (ex-data error) (deref evaluations)])
     [false :error "boom" {:kind :test} 1])
 
    (test-check
     "test-check compares nested collections"
-    (:pass passing)
+    (Test/passed? passing)
     true)
 
    (test-check
-    "test-passed? follows the portable result contract"
-    [(test-passed? passing) (test-passed? failing) (test-passed? thrown)]
+    "Test/passed? follows the native Result contract"
+    [(Test/passed? passing) (Test/passed? failing) (Test/passed? thrown)]
     [true false false])
 
    (test-check
-    "test-config validates options and remains evaluation-inert"
-    config-result
-    nil)])
+    "Test/config validates options without a Foundation forwarding method"
+    [(map? config-result) (:options config-result)]
+    [true {:session-scope :fresh}])])
 
 results

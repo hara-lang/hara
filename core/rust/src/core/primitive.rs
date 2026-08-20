@@ -656,7 +656,7 @@ fn number_conversion_value(operation: &str, value: Value) -> Result<Value, Strin
         .unwrap_or(operation);
     match operation {
         "long" => Ok(Value::Number(
-            numeric::to_i64_exact(&value).map_err(|error| format!("long: {error}"))?,
+            numeric::to_i64_truncating(&value).map_err(|error| format!("long: {error}"))?,
         )),
         "double" => Ok(Value::Float(
             numeric::to_f64_explicit(&value).map_err(|error| format!("double: {error}"))?,

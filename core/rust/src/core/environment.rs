@@ -1119,6 +1119,7 @@ pub(crate) fn named_instance_of(type_value: &Value, value: &Value) -> Result<Val
         Value::MutableType(ty) => {
             matches!(value, Value::Mutable(value) if Rc::ptr_eq(ty, &value.ty))
         }
+        Value::NativeType(native) => native_type_instance(native, value)?,
         _ => return Err("instance? expects a struct or mutable type".into()),
     };
     Ok(Value::Bool(matches))

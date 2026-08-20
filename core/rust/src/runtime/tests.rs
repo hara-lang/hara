@@ -524,6 +524,68 @@ mod tests {
         }
     }
 
+    fn foundation_behavior_sources() -> Option<(String, String)> {
+        let corpus = repo_text(
+            "01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal",
+        )?;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("lib")
+            .join("src")
+            .join("std")
+            .join("foundation");
+        let mut source = String::new();
+        for module in ["bytes.hal", "coroutine.hal", "pretty.hal", "promise.hal", "string.hal"] {
+            let path = root.join(module);
+            source.push_str(
+                &std::fs::read_to_string(&path)
+                    .unwrap_or_else(|error| panic!("read {}: {error}", path.display())),
+            );
+            source.push('\n');
+        }
+        Some((source, corpus))
+    }
+
+    fn foundation_surface() -> Option<(
+        std::collections::BTreeSet<String>,
+        std::collections::BTreeSet<String>,
+    )> {
+        let source = repo_text(
+            "01-lang/004-foundation/draft/conformance/foundation-surface.edn",
+        )?;
+        let forms = kernel::parse_forms(&source).expect("parse specs-owned Foundation surface");
+        let [Form::Map(root)] = forms.as_slice() else {
+            panic!("Foundation surface must contain one map");
+        };
+        let Form::Vector(namespaces) = conformance_entry(root, "namespaces") else {
+            panic!("Foundation surface must contain :namespaces");
+        };
+        let mut namespace_names = std::collections::BTreeSet::new();
+        let mut symbols = std::collections::BTreeSet::new();
+        for namespace in namespaces {
+            let Form::Map(namespace) = namespace else {
+                panic!("Foundation namespace entries must be maps");
+            };
+            let Form::Symbol(namespace_name) = conformance_entry(namespace, "namespace") else {
+                panic!("Foundation namespace entry must name a symbol");
+            };
+            assert!(namespace_names.insert(namespace_name.clone()));
+            let Form::Vector(vars) = conformance_entry(namespace, "vars") else {
+                panic!("Foundation namespace entry must contain :vars");
+            };
+            for var in vars {
+                let Form::Map(var) = var else {
+                    panic!("Foundation Var entries must be maps");
+                };
+                let Form::Symbol(name) = conformance_entry(var, "name") else {
+                    panic!("Foundation Var entry must name a symbol");
+                };
+                assert!(symbols.insert(format!("{namespace_name}/{name}")));
+            }
+        }
+        Some((namespace_names, symbols))
+    }
+
     fn register_lib_tree(runtime: &mut Runtime, root: &std::path::Path, dir: &std::path::Path) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -2121,6 +2183,114 @@ mod tests {
     }
 
     #[test]
+    fn specs_owned_foundation_behavioral_corpus_runs_in_the_native_runtime() {
+        let Some((modules, corpus)) = foundation_behavior_sources() else {
+            return;
+        };
+        let (surface_namespaces, surface_symbols) =
+            foundation_surface().expect("the specs-owned Foundation surface must be available");
+        let inventory = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bootstrap.namespaces"),
+        )
+        .expect("read Foundation bootstrap inventory");
+        let registered_namespaces = inventory
+            .lines()
+            .filter(|line| line.starts_with("std.foundation"))
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            surface_namespaces, registered_namespaces,
+            "registered Foundation namespaces must equal the specs-owned namespace surface"
+        );
+        let evaluator_source = modules.clone() + &corpus;
+        let expected_source_symbols = surface_symbols.clone();
+        let result = std::thread::Builder::new()
+            .name("foundation-conformance".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn(move || {
+                let mut runtime = Runtime::new();
+                let report = runtime.eval_text(&evaluator_source)?;
+                let failures = runtime.eval_text(
+                    "{:calibrations (vec (filter (fn [case] (not (:pass case))) (foundation-calibration-results)))
+                      :portable (vec (filter (fn [case] (not (:pass case))) (:results (foundation-profile-report))))}",
+                )?;
+                for qualified in expected_source_symbols {
+                    let (namespace, local) = qualified
+                        .rsplit_once('/')
+                        .unwrap_or_else(|| panic!("qualified Foundation Var: {qualified}"));
+                    let var = runtime
+                        .namespace_registry
+                        .find(namespace)
+                        .and_then(|namespace| {
+                            namespace.resolve(&lang::data::Symbol::parse(local))
+                        })
+                        .unwrap_or_else(|| panic!("missing live Foundation Var {qualified}"));
+                    assert!(
+                        matches!(
+                            var.origin(),
+                            kernel::VarOrigin::Source | kernel::VarOrigin::HalFallback
+                        ),
+                        "Foundation Var {qualified} is owned by {:?}, not canonical HAL/HALC/HBX",
+                        var.origin()
+                    );
+                }
+                Ok::<_, String>((report, failures))
+            })
+            .expect("spawn Foundation conformance evaluator")
+            .join()
+            .expect("Foundation conformance evaluator panicked")
+            .unwrap_or_else(|error| panic!("Foundation behavioral corpus: {error}"));
+        let (result, failures) = result;
+        assert!(result.contains(":corpus-valid true"), "{result}\n{failures}");
+        assert!(result.contains(":calibration-failed 0"), "{result}\n{failures}");
+        assert!(result.contains(":boundary-failed 0"), "{result}\n{failures}");
+        assert!(result.contains(":failed 0"), "{result}\n{failures}");
+
+        let forms = kernel::parse_forms(&result).expect("parse Foundation report");
+        let [Form::Map(report)] = forms.as_slice() else {
+            panic!("Foundation report must be one map: {result}");
+        };
+        assert_eq!(
+            conformance_entry(report, "surface"),
+            conformance_entry(report, "classified"),
+            "every specs-owned Foundation Var must have exactly one classification"
+        );
+
+        #[cfg(feature = "bytecode-vm")]
+        {
+            let bytecode = std::thread::Builder::new()
+                .name("foundation-bytecode-conformance".into())
+                .stack_size(32 * 1024 * 1024)
+                .spawn(move || {
+                    let mut bytecode_runtime = Runtime::new();
+                    bytecode_runtime.eval_text(&modules)?;
+                    bytecode_runtime.eval_text(&corpus)?;
+                    bytecode_runtime.eval_bytecode_native("(foundation-summary-report)")
+                })
+                .expect("spawn Foundation bytecode conformance")
+                .join()
+                .expect("Foundation bytecode conformance panicked")
+                .unwrap_or_else(|error| panic!("Foundation bytecode corpus: {error}"));
+            let bytecode_forms =
+                kernel::parse_forms(&bytecode).expect("parse bytecode Foundation report");
+            let [Form::Map(bytecode_report)] = bytecode_forms.as_slice() else {
+                panic!("bytecode Foundation report must be one map: {bytecode}");
+            };
+            assert_eq!(report.len(), bytecode_report.len(), "Foundation report shape");
+            for (key, value) in report {
+                let Form::Keyword(key) = key else {
+                    panic!("Foundation report keys must be keywords: {key:?}");
+                };
+                assert_eq!(
+                    value,
+                    conformance_entry(bytecode_report, key),
+                    "evaluator/bytecode Foundation report key :{key}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime() {
         let mut runtime = Runtime::new();
         let source = repo_text(
@@ -2684,37 +2854,6 @@ mod tests {
         for source in ["(sin)", "(pow 2)", "(sqrt \"9\")"] {
             assert!(runtime.eval_text(source).is_err(), "{source}");
         }
-    }
-
-    #[test]
-    fn foundation_bootstrap_inventory_is_the_six_namespace_family() {
-        let inventory = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bootstrap.namespaces"),
-        )
-        .unwrap();
-        let foundation = inventory
-            .lines()
-            .filter(|line| !line.is_empty())
-            .filter(|line| line.starts_with("std.foundation"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            foundation,
-            vec![
-                "std.foundation",
-                "std.foundation.bytes",
-                "std.foundation.coroutine",
-                "std.foundation.pretty",
-                "std.foundation.promise",
-                "std.foundation.string",
-            ],
-            "production Foundation bootstrap family must be exactly the six namespaces"
-        );
-        assert!(
-            !inventory
-                .lines()
-                .any(|line| line.trim() == "std.foundation.bootstrap"),
-            "std.foundation.bootstrap is development-only and must not be bootstrapped"
-        );
     }
 
     #[test]
@@ -3664,7 +3803,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_definitions_take_ownership_from_bootstrap_library_vars() {
+    fn fallback_definitions_replace_rust_library_placeholders_with_hal_ownership() {
         let mut runtime = Runtime::new();
         let foundation = runtime.namespace_registry.find_or_create("std.foundation");
         let native = foundation.intern_with_origin(
@@ -3688,6 +3827,7 @@ mod tests {
         assert_eq!(refreshed.origin(), kernel::VarOrigin::HalFallback);
         assert!(matches!(refreshed.deref_value(), core::Value::Function(_)));
         assert_eq!(runtime.eval_text("(optimized 1)").unwrap(), "9");
+        assert_eq!(refreshed.deref_value().display(), "<fn>");
         assert_eq!(
             refreshed
                 .hara_metadata()
