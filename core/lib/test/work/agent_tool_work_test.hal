@@ -1,0 +1,77 @@
+(ns work.agent-tool-work-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.agent :as agent]
+            [work.agent.tool :as agent-tool]))
+
+(def pure-tool
+  (agent/tool
+   "echo-pure"
+   "Returns decoded arguments."
+   {:type "object"
+    :properties {:value {:type "integer"}}
+    :required ["value"]
+    :additionalProperties false}
+   (fn [arguments]
+     arguments)))
+
+(def effect-tool
+  (agent/tool
+   "echo-effect"
+   "Executes decoded arguments through Work."
+   {:type "object"
+    :properties {:value {:type "integer"}}
+    :required ["value"]
+    :additionalProperties false}
+   (fn [arguments]
+     (work/step
+      {:id [:echo-effect (get arguments "value")]}
+      (fn [input context]
+        input)))
+   {:effect :external}))
+
+(def results
+  [(test-check
+    "pure tool Work uses decoded call arguments rather than ambient Work input"
+    (let [call
+          {:call/id "pure-1"
+           :tool/name "echo-pure"
+           :call/arguments {"value" 7}}
+          tool-index (agent-tool/index [pure-tool])
+          result
+          (work/run
+           (agent-tool/call-work tool-index call)
+           :provider-response)]
+      [(:tool/status result)
+       (:tool/value result)])
+    [:ok {"value" 7}])
+
+   (test-check
+    "effectful tool Work receives decoded call arguments as its canonical input"
+    (let [call
+          {:call/id "effect-1"
+           :tool/name "echo-effect"
+           :call/arguments {"value" 9}}
+          tool-index (agent-tool/index [effect-tool])
+          call-work (agent-tool/call-work tool-index call)
+          result (work/run call-work :provider-response)]
+      [(:op (work/work-spec call-work))
+       (:tool/status result)
+       (:tool/value result)])
+    [:chain :ok {"value" 9}])
+
+   (test-check
+    "unknown model-selected tools remain ordinary structured Work results"
+    (let [call
+          {:call/id "unknown-1"
+           :tool/name "missing"
+           :call/arguments {}}
+          result
+          (work/run
+           (agent-tool/call-work {} call)
+           :provider-response)]
+      [(:tool/status result)
+       (get-in result [:tool/error :code])])
+    [:error :tool/unknown])])
+
+(pr-str (run '[work.agent-tool-work-test]))
