@@ -25,6 +25,7 @@ fn run_hara(options: &Options, argv: &[String]) -> Result<(), String> {
         let current_project = project::discover(path)?;
         project::register_sources(&current_project, &mut runtime)?;
     }
+    cli_app::install_embedded_cli_sources(&mut runtime);
     let process_allowed = options.allow_process
         || argv
             .first()

@@ -30,3 +30,25 @@ fn project_build_extension_is_valid_and_idempotent() {
         merged_manifest_source()
     );
 }
+
+#[test]
+fn embedded_cli_inventory_contains_runtime_entrypoints() {
+    for namespace in ["tool.cli.main", "tool.cli.handlers", "tool.cli.model"] {
+        assert!(
+            crate::CLI_BOOTSTRAP_INVENTORY.contains(&namespace),
+            "missing CLI bootstrap entrypoint {namespace}"
+        );
+    }
+    let foundation = crate::FOUNDATION_BOOTSTRAP_INVENTORY
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let embedded = crate::EMBEDDED_CLI_RESOURCES
+        .iter()
+        .map(|(namespace, _, _)| *namespace)
+        .collect::<std::collections::HashSet<_>>();
+    assert!(embedded.is_disjoint(&foundation));
+    assert!(crate::CLI_BOOTSTRAP_INVENTORY
+        .iter()
+        .all(|namespace| foundation.contains(namespace) || embedded.contains(namespace)));
+}
