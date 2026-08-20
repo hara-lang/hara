@@ -322,6 +322,15 @@ impl ExactDecimal {
         remainder.is_zero().then_some(quotient)
     }
 
+    pub(crate) fn to_bigint_truncating(&self) -> Option<BigInt> {
+        if self.scale <= 0 {
+            let multiplier = pow10(self.scale.unsigned_abs()).ok()?;
+            return Some(&self.coefficient * multiplier);
+        }
+        let divisor = pow10(self.scale as u64).ok()?;
+        Some(&self.coefficient / divisor)
+    }
+
     pub(crate) fn to_i64_exact(&self) -> Option<i64> {
         self.to_bigint_exact()?.to_i64()
     }
@@ -708,6 +717,24 @@ fn boundary_integer(value: &Value) -> Result<BigInt, String> {
 
 pub(crate) fn to_i64_exact(value: &Value) -> Result<i64, String> {
     boundary_integer(value)?
+        .to_i64()
+        .ok_or_else(|| "integer is outside signed 64-bit range".to_string())
+}
+
+pub(crate) fn to_i64_truncating(value: &Value) -> Result<i64, String> {
+    let integer = match value {
+        Value::Number(value) => return Ok(*value),
+        Value::BigInteger(value) => parse_big_integer(value)?,
+        Value::Decimal(value) => ExactDecimal::parse(value)?
+            .to_bigint_truncating()
+            .ok_or_else(|| "decimal is outside signed 64-bit range".to_string())?,
+        Value::Float(value) if value.is_finite() => ExactDecimal::from_f64(*value)?
+            .to_bigint_truncating()
+            .ok_or_else(|| "floating-point value is outside signed 64-bit range".to_string())?,
+        Value::Float(_) => return Err("floating-point value is not finite".into()),
+        _ => return Err("expected a numeric value".into()),
+    };
+    integer
         .to_i64()
         .ok_or_else(|| "integer is outside signed 64-bit range".to_string())
 }

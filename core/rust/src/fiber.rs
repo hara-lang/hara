@@ -1091,16 +1091,6 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
                 let effect_target;
                 let mut env = e.borrow_mut();
                 let result = if op == "def" {
-                    if crate::core::protected_fallback_binding(&env, &name, metadata.clone())
-                        .is_some()
-                    {
-                        let Some(Value::Var(var)) = env.get(&name) else {
-                            unreachable!("protected fallback binding must be a Var")
-                        };
-                        let result = Value::Var(var.clone());
-                        drop(env);
-                        return k(Ok(result));
-                    }
                     let origin = crate::core::definition_origin();
                     let var = if let Some(Value::Var(var)) = env.get(&name) {
                         effect_before = Some(var.deref_value());

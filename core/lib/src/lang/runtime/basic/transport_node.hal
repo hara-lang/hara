@@ -89,6 +89,10 @@
   [node]
   (deref (get node :state)))
 
+(defn- process-options
+  [node]
+  (select-keys (or (get node :process-options) {}) [:cwd :env]))
+
 (defn started?
   [node]
   (= :started (get (state node) :status)))
@@ -96,7 +100,7 @@
 (defn- await-event
   [node]
   (evaluation/await
-   (socket/next (get (state node) :stream))
+   (Socket/next (get (state node) :stream))
    (get node :timeout)))
 
 (defn- await-open
@@ -119,9 +123,9 @@
         child (get current :process)
         connection (get current :connection)
         server (get current :server)]
-    (if connection (socket/close connection))
+    (if connection (Socket/close connection))
     (if child (Process/kill child))
-    (if server (socket/close server))
+    (if server (Socket/close server))
     (let [stderr
           (if child
             (try
@@ -149,9 +153,9 @@
   (if (started? node)
     node
     (try
-      (let [server (socket/listen "127.0.0.1" 0 {} (fn [event] nil))
-            stream (socket/events server {})
-            endpoint (socket/endpoint server)
+      (let [server (Socket/listen "127.0.0.1" 0 {} (fn [event] nil))
+            stream (Socket/events server {})
+            endpoint (Socket/endpoint server)
             source (transport-source (get node :lang)
                                      (get endpoint :port))]
         (reset! (get node :state)
@@ -159,7 +163,7 @@
                  :server server
                  :stream stream})
         (let [argv (conj (get node :exec) source)
-              child (sh/spawn argv (get node :process-options))]
+              child (sh/spawn argv (process-options node))]
           (swap! (get node :state) assoc :process child)
           (let [open (await-open node)
                 connection (get open :connection)
@@ -191,8 +195,8 @@
         server (get current :server)
         child (get current :process)]
     (if channel (relay/close channel))
-    (if (and connection (nil? channel)) (socket/close connection))
-    (if server (socket/close server))
+    (if (and connection (nil? channel)) (Socket/close connection))
+    (if server (Socket/close server))
     (if child (Process/kill child))
     (swap! (get node :state) assoc :status :stopped)
     node))

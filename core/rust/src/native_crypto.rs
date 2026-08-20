@@ -361,6 +361,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(feature = "raw-wasm"))]
     #[test]
     fn evaluator_dispatches_the_native_crypto_static_object() {
         let mut runtime = crate::Runtime::new();

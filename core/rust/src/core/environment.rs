@@ -885,23 +885,6 @@ pub(crate) fn local_var_name(name: &str) -> String {
     }
 }
 
-pub(crate) fn protected_fallback_binding(
-    env: &HashMap<String, Value>,
-    name: &str,
-    metadata: Option<Rc<Metadata>>,
-) -> Option<Value> {
-    if definition_origin() != VarOrigin::HalFallback {
-        return None;
-    }
-    match env.get(name) {
-        Some(Value::Var(var)) if matches!(var.origin(), VarOrigin::RustLibrary) => {
-            var.set_hara_metadata(merge_metadata(var.hara_metadata(), metadata));
-            Some(var.deref_value())
-        }
-        _ => None,
-    }
-}
-
 fn prepare_owned_definition(env: &mut HashMap<String, Value>, name: &str) -> Result<(), String> {
     if let Some(Value::Var(var)) = env.get(name) {
         if !binding_is_local(var) {
@@ -929,12 +912,6 @@ pub(crate) fn vm_def_global(
     let local = Symbol::create(None, name);
     if let Some(existing) = current.resolve(&local) {
         if binding_is_local(&existing) {
-            if definition_origin() == VarOrigin::HalFallback
-                && matches!(existing.origin(), VarOrigin::RustLibrary)
-            {
-                existing.set_hara_metadata(merge_metadata(existing.hara_metadata(), metadata));
-                return Ok(existing);
-            }
             existing.reset_value(value);
             if metadata.is_some() {
                 existing.set_hara_metadata(metadata);
@@ -1142,6 +1119,7 @@ pub(crate) fn named_instance_of(type_value: &Value, value: &Value) -> Result<Val
         Value::MutableType(ty) => {
             matches!(value, Value::Mutable(value) if Rc::ptr_eq(ty, &value.ty))
         }
+        Value::NativeType(native) => native_type_instance(native, value)?,
         _ => return Err("instance? expects a struct or mutable type".into()),
     };
     Ok(Value::Bool(matches))

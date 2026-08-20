@@ -56,6 +56,13 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
     Ok(Keyword::from(format!("std.native.{builtin}")))
 }
 
+fn native_type_instance(native: &NativeType, value: &Value) -> Result<bool, String> {
+    if !native.methods.iter().any(|method| method == "instance?") {
+        return Err("instance? descriptor does not define instance?".into());
+    }
+    Ok(portable_type_keyword(value)?.as_str() == native.name)
+}
+
 pub fn receiver_category(value: &Value) -> &'static str {
     match value {
         Value::Nil => "nil",

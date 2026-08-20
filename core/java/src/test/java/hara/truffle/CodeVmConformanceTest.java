@@ -58,7 +58,7 @@ public class CodeVmConformanceTest {
         java.util.List.of(
             "compile/recur-outside-loop",
             "compile/unbound-symbol",
-            "compile/unsupported-quote")) {
+            "compile/fn-multi-arity")) {
       CodeVmConformance.Observation observation = observation(id);
       assertFalse(observation.testCase().interpreterRequired());
       assertEquals("unsupported", observation.outcome().status());

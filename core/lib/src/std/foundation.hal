@@ -123,7 +123,7 @@
 (defn ^{:schema [:fn [:fn & :any] :any]}
   apply "Applies function to leading arguments and a final sequential value."
   [function & arguments]
-  (Base/apply Base/apply (cons function arguments)))
+  (Base/apply Base/apply (ICons/cons arguments function)))
 
 (defn ^{:inline true :schema [:fn [:any] :bool]}
   not "Returns true when value is false or nil." [value] (Base/not value))
@@ -139,7 +139,7 @@
 
 (defn ^{:schema [:fn [:any] :any]}
   unreduced "Returns the value carried by a reduced result, or value unchanged." [value]
-  (if (reduced? value) (deref value) value))
+  (Base/unreduced value))
 
 (defn ^{:inline true :schema [:fn [:any] :bool]}
   nil? "Returns true when value is nil." [value] (Base/nil? value))
@@ -811,12 +811,12 @@
 (defn ^{:schema [:fn [:any] :any]}
   keys
   "Returns a vector of the map's keys."
-  [value] (mapv key value))
+  [value] (vec (Iter/iter-map key value)))
 
 (defn ^{:schema [:fn [:any] :any]}
   vals
   "Returns a vector of the map's values."
-  [value] (mapv val value))
+  [value] (vec (Iter/iter-map val value)))
 
 ;; ---------------------------------------------------------------------------
 ;; Lazy producers and transformers
@@ -964,8 +964,12 @@
    (fn [value]
      (transform-like value (Iter/iter-map function value))))
   ([function value & rest]
-   (transform-like value
-                   (apply Iter/iter-map function (concat [value] rest)))))
+   (let [sources (concat [value] rest)
+         tuples (apply Iter/iter-zip sources)]
+     (transform-like value
+                     (Iter/iter-map
+                      (fn [arguments] (apply function arguments))
+                      tuples)))))
 
 (defn ^{:schema [:function [:fn [:fn] :fn]
                             [:fn [:fn :any] :any]]}
@@ -1070,6 +1074,23 @@
   "Unary form returns a reusable terminal; collection form tests any item."
   ([predicate] (partial Iter/iter-any? predicate))
   ([predicate value] (Iter/iter-any? predicate value)))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  some
+  "Returns the first truthy result of applying predicate to values, or nil."
+  [predicate values]
+  (let [it (iter values)]
+    (loop [remaining true]
+      (if (iter-next? it)
+        (let [result (predicate (iter-next it))]
+          (if result result (recur true)))
+        nil))))
+
+(defn ^{:schema [:fn [:fn :any & :any] :vector]}
+  mapv
+  "Returns a persistent vector of function results over one or more sources."
+  [function value & values]
+  (vec (apply map function value values)))
 
 ;; ---------------------------------------------------------------------------
 ;; Truth and fixed-point combinators retained from Foundation
@@ -1436,12 +1457,6 @@
             false
             (recur (assoc seen value true))))
         true))))
-
-(defn ^{:schema [:fn [:fn & :any] :vector]}
-  mapv
-  "Returns a vector containing function applied across one or more collections."
-  [function & collections]
-  (vec (apply Iter/iter-map (concat [function] collections))))
 
 (defn ^{:schema [:fn [:fn :any] :vector]}
   filterv
@@ -2662,44 +2677,24 @@
 
 
 ;; ---------------------------------------------------------------------------
-;; Test primitives
+;; Test assertion syntax
 ;; ---------------------------------------------------------------------------
 
-(defn ^{:schema [:fn [:map] :nil]}
-  test-config
-  "Validates test options against the runtime-owned Test configuration."
-  [options]
-  (do (Test/config options) nil))
-
-(defn ^{:schema [:function [:fn [:any :any :any] :any]
-                            [:fn [:any :any :any :any] :any]]}
-  test-result
-  "Constructs or enriches a portable native test Result."
-  ([name actual expected]
-   (Test/result name actual expected (Test/compare actual expected)))
-  ([name actual expected comparison]
-   (Test/result name actual expected comparison)))
-
 (defmacro test-check
-  "Evaluates one lightweight assertion and converts thrown errors into Results."
+  "Evaluates one lightweight assertion and converts thrown errors into native Test Results."
   [name actual expected]
   `(let [name# ~name
          expected# ~expected]
      (try
-       (std.foundation/test-result name# ~actual expected#)
+       (let [actual# ~actual]
+         (Test/result name# actual# expected# (Test/compare actual# expected#)))
        (catch Throwable error#
-         (std.foundation/test-result
+         (Test/result
           name# nil expected#
           (Result/create
            :error error#
            {:test {:actual nil :expected expected#}
             :failures []}))))))
-
-(defn ^{:schema [:fn [:any] :bool]}
-  test-passed?
-  "Returns true when a portable test Result passed."
-  [result]
-  (Test/passed? result))
 
 
 ;; ---------------------------------------------------------------------------

@@ -52,6 +52,31 @@ final class HaraNumericConversions {
     }
   }
 
+  /** Converts a numeric value to i64 by truncating its fractional part toward zero. */
+  @TruffleBoundary
+  static long toLongTruncating(Object input) {
+    Object value = numericValue(input);
+    try {
+      if (value instanceof BigInteger integer) return integer.longValueExact();
+      if (value instanceof BigDecimal decimal) return decimal.toBigInteger().longValueExact();
+      if (value instanceof Byte
+          || value instanceof Short
+          || value instanceof Integer
+          || value instanceof Long) {
+        return ((Number) value).longValue();
+      }
+      if (value instanceof Double || value instanceof Float) {
+        double floating = ((Number) value).doubleValue();
+        if (Double.isFinite(floating)) {
+          return BigDecimal.valueOf(floating).toBigInteger().longValueExact();
+        }
+      }
+    } catch (ArithmeticException error) {
+      throw cannotConvert("long", input);
+    }
+    throw cannotConvert("long", input);
+  }
+
   @TruffleBoundary
   static int toInt(Object input) {
     try {

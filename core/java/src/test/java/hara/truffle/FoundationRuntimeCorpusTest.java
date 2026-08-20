@@ -5,6 +5,7 @@ import static org.junit.Assert.assertTrue;
 
 import hara.kernel.base.Parser;
 import hara.lang.data.Keyword;
+import hara.lang.data.Symbol;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
 import java.nio.file.Files;
@@ -14,42 +15,111 @@ import java.util.Set;
 import org.graalvm.polyglot.Context;
 import org.junit.Test;
 
-/** Runs the canonical Foundation forms shared with the Rust evaluator and bytecode VM. */
+/** Executes the specs-owned Foundation surface and behavioral corpus. */
 public class FoundationRuntimeCorpusTest {
+  private static final Path REPOSITORY = repositoryRoot();
+  private static final Path FOUNDATION =
+      specsRegistry().resolve("01-lang/004-foundation/draft/conformance");
+  private static final Path SURFACE = FOUNDATION.resolve("foundation-surface.edn");
   private static final Path CORPUS =
-      specsRegistry()
-          .resolve(
-              "01-lang/001-language/draft/conformance/parity/foundation-runtime.edn");
+      FOUNDATION.resolve("fixtures/foundation_behavioral.hal");
+  private static final Path FOUNDATION_SOURCE =
+      REPOSITORY.resolve("core/lib/src/std/foundation");
 
   @Test
   @SuppressWarnings("rawtypes")
-  public void canonicalFoundationFormsMatchPinnedResults() throws Exception {
-    IMapType manifest =
-        (IMapType) Parser.LispReader.readString(Files.readString(CORPUS), null);
-    Object rawCases = manifest.lookup(Keyword.create("cases"));
-    assertTrue("Foundation runtime corpus must contain :cases", rawCases instanceof ILinearType);
-    ILinearType cases = (ILinearType) rawCases;
-    assertTrue("Foundation runtime corpus unexpectedly shrank", cases.count() >= 16);
-    Set<Object> ids = new HashSet<>();
+  public void specsOwnedFoundationCorpusClosesAndPassesOnTheJvm() throws Exception {
+    Set<String> specified = surfaceSymbols();
+    String source =
+        String.join(
+                "\n",
+                Files.readString(FOUNDATION_SOURCE.resolve("bytes.hal")),
+                Files.readString(FOUNDATION_SOURCE.resolve("coroutine.hal")),
+                Files.readString(FOUNDATION_SOURCE.resolve("pretty.hal")),
+                Files.readString(FOUNDATION_SOURCE.resolve("promise.hal")),
+                Files.readString(FOUNDATION_SOURCE.resolve("string.hal")),
+                Files.readString(CORPUS))
+            + """
+
+            (let [report (foundation-host-assertion-report)
+                  profile (:profile report)]
+              {:corpus-valid (:corpus-valid report)
+               :calibration-failed (:calibration-failed report)
+               :boundary-failed (:boundary-failed report)
+               :portable (:portable profile)
+               :capability-specific (:capability-specific profile)
+               :inventory-only (:inventory-only profile)
+               :passed (:passed profile)
+               :failed (:failed profile)
+               :skipped (:skipped profile)
+               :vars foundation-source-vars})
+            """;
+
+    IMapType report;
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      for (Object rawCase : cases) {
-        IMapType testCase = (IMapType) rawCase;
-        Object id = testCase.lookup(Keyword.create("id"));
-        String source = (String) testCase.lookup(Keyword.create("source"));
-        String expected = (String) testCase.lookup(Keyword.create("expect"));
-        assertTrue("Duplicate Foundation runtime case " + id, ids.add(id));
-        assertEquals(
-            "Foundation runtime case " + id,
-            expected,
-            context.eval(HaraLanguage.ID, source).toString());
+      report =
+          (IMapType)
+              Parser.LispReader.readString(
+                  context.eval(HaraLanguage.ID, source).toString(), null);
+    }
+
+    assertEquals(true, report.lookup(keyword("corpus-valid")));
+    assertEquals(0L, report.lookup(keyword("calibration-failed")));
+    assertEquals(0L, report.lookup(keyword("boundary-failed")));
+    assertEquals(0L, report.lookup(keyword("failed")));
+    long portable = ((Number) report.lookup(keyword("portable"))).longValue();
+    long capability = ((Number) report.lookup(keyword("capability-specific"))).longValue();
+    long inventory = ((Number) report.lookup(keyword("inventory-only"))).longValue();
+    assertEquals(specified.size(), portable + capability + inventory);
+    assertEquals(portable, ((Number) report.lookup(keyword("passed"))).longValue());
+    assertEquals(
+        capability + inventory,
+        ((Number) report.lookup(keyword("skipped"))).longValue());
+
+    Set<String> corpusSymbols = new HashSet<>();
+    for (Object symbol : (ILinearType) report.lookup(keyword("vars"))) {
+      String display = ((Symbol) symbol).display();
+      assertTrue("duplicate corpus symbol " + display, corpusSymbols.add(display));
+    }
+    assertEquals(specified, corpusSymbols);
+  }
+
+  @SuppressWarnings("rawtypes")
+  private static Set<String> surfaceSymbols() throws Exception {
+    IMapType surface =
+        (IMapType) Parser.LispReader.readString(Files.readString(SURFACE), null);
+    assertEquals(Keyword.create("specs-owned"), surface.lookup(keyword("authority")));
+    Set<String> symbols = new HashSet<>();
+    for (Object rawNamespace : (ILinearType) surface.lookup(keyword("namespaces"))) {
+      IMapType namespace = (IMapType) rawNamespace;
+      String namespaceName = ((Symbol) namespace.lookup(keyword("namespace"))).display();
+      for (Object rawVar : (ILinearType) namespace.lookup(keyword("vars"))) {
+        IMapType var = (IMapType) rawVar;
+        String symbol =
+            namespaceName + "/" + ((Symbol) var.lookup(keyword("name"))).display();
+        assertTrue("duplicate surface symbol " + symbol, symbols.add(symbol));
       }
     }
+    return symbols;
+  }
+
+  private static Keyword keyword(String name) {
+    return Keyword.create(name);
   }
 
   private static Path specsRegistry() {
     String override = System.getenv("HARA_SPECS_REGISTRY");
     return override == null || override.isBlank()
-        ? Path.of("../hara-specs-registry")
+        ? REPOSITORY.getParent().resolve("hara-specs-registry")
         : Path.of(override);
+  }
+
+  private static Path repositoryRoot() {
+    Path candidate = Path.of("").toAbsolutePath();
+    while (candidate != null) {
+      if (Files.isDirectory(candidate.resolve("core/lib/src/std"))) return candidate;
+      candidate = candidate.getParent();
+    }
+    throw new IllegalStateException("cannot locate the Hara repository root");
   }
 }

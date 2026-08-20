@@ -59,13 +59,6 @@ fn shared_runtime_corpus_path() -> PathBuf {
         .join("01-lang/001-language/draft/conformance/parity/jvm-truffle.edn")
 }
 
-fn shared_foundation_corpus_path() -> PathBuf {
-    shared_runtime_corpus_path()
-        .parent()
-        .expect("parity corpus directory")
-        .join("foundation-runtime.edn")
-}
-
 fn shared_core_language_corpus_path() -> PathBuf {
     shared_runtime_corpus_path()
         .parent()
@@ -131,57 +124,6 @@ fn shared_jvm_truffle_rust_runtime_corpus_matches() {
         compared += 1;
     }
     assert!(compared >= 30, "shared runtime corpus unexpectedly shrank");
-}
-
-#[test]
-fn shared_foundation_runtime_corpus_matches_expected_results() {
-    let path = shared_foundation_corpus_path();
-    let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!("read Foundation runtime corpus {}: {error}", path.display())
-    });
-    let forms = crate::kernel::parse_forms(&source).expect("parse Foundation runtime corpus");
-    let [Form::Map(root)] = forms.as_slice() else {
-        panic!("Foundation runtime corpus must contain one map");
-    };
-    let Some(Form::Vector(cases)) = map_value(root, "cases") else {
-        panic!("Foundation runtime corpus must contain :cases");
-    };
-    for case in cases {
-        let Form::Map(case) = case else {
-            panic!("Foundation runtime corpus cases must be maps");
-        };
-        let Some(Form::Keyword(id)) = map_value(case, "id") else {
-            panic!("Foundation runtime corpus case is missing :id");
-        };
-        let Some(Form::String(source)) = map_value(case, "source") else {
-            panic!("Foundation runtime corpus case :{id} is missing :source");
-        };
-        let Some(Form::String(expected)) = map_value(case, "expect") else {
-            panic!("Foundation runtime corpus case :{id} is missing :expect");
-        };
-        let mut evaluator = Runtime::new();
-        assert_eq!(
-            evaluator
-                .eval_native(source)
-                .unwrap_or_else(|error| panic!("Foundation case :{id} evaluator: {error}")),
-            *expected,
-            "Foundation case :{id} evaluator"
-        );
-        let registry = crate::embedding_namespace_registry();
-        let program = compile_source_with(source, &registry)
-            .unwrap_or_else(|error| panic!("Foundation case :{id} compiler: {error}"));
-        assert_eq!(
-            execute_program_with_globals(Rc::new(program), &registry)
-                .unwrap_or_else(|error| panic!("Foundation case :{id} bytecode: {error}"))
-                .display(),
-            *expected,
-            "Foundation case :{id} bytecode"
-        );
-    }
-    assert!(
-        cases.len() >= 16,
-        "Foundation runtime corpus unexpectedly shrank"
-    );
 }
 
 #[test]

@@ -225,7 +225,7 @@ public final class HaraContext {
               "Base",
               java.util.List.of(
                   "list", "vector", "vec", "set", "tuple", "hash-map", "hash-set", "atom",
-                  "pointer", "symbol", "keyword", "reduced", "apply", "not", "boolean", "compare",
+                  "pointer", "symbol", "keyword", "reduced", "unreduced", "apply", "not", "boolean", "compare",
                   "reduced?", "nil?", "boolean?", "string?", "char?", "number?", "integer?",
                   "long?", "double?", "keyword?", "symbol?", "pointer?",
                   "atom?", "function?", "bytes?", "array?", "object?", "list?", "cons?", "vector?",
@@ -2234,7 +2234,9 @@ public final class HaraContext {
     target.define(">", new VariadicBuiltin(">", values -> compare(">", values)));
     target.define(">=", new VariadicBuiltin(">=", values -> compare(">=", values)));
     HaraNamespace num = namespace("std.native.Num");
-    num.define("long", new UnaryBuiltin("std.native.Num/long", HaraNumericConversions::toLong));
+    num.define(
+        "long",
+        new UnaryBuiltin("std.native.Num/long", HaraNumericConversions::toLongTruncating));
     num.define("double", new UnaryBuiltin("std.native.Num/double", HaraNumericConversions::toDouble));
     num.define("parse-long", new UnaryBuiltin("std.native.Num/parse-long", this::parseLong));
     num.define("parse-double", new UnaryBuiltin("std.native.Num/parse-double", this::parseDouble));
@@ -2762,6 +2764,9 @@ public final class HaraContext {
     target.define(
         "reduced",
         new UnaryBuiltin("Base/reduced", value -> Reduced.mark(HaraBox.unwrap(value))));
+    target.define(
+        "unreduced",
+        new UnaryBuiltin("Base/unreduced", value -> Reduced.unreduced(HaraBox.unwrap(value))));
     target.define(
         "reduced?",
         new UnaryBuiltin("Base/reduced?", value -> Reduced.isReduced(HaraBox.unwrap(value))));
