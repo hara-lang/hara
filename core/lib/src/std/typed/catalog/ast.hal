@@ -1,0 +1,175 @@
+(ns std.typed.catalog.ast
+  (:require [std.typed.catalog.codec]
+            [std.typed.registry]))
+
+(defn- append-reference-name
+  [names schema-name]
+  (if (any? (fn [candidate] (= candidate schema-name)) names)
+    names
+    (conj names schema-name)))
+
+(declare reference-names)
+
+(defn- collect-reference-names
+  [schemas]
+  (loop [remaining schemas
+         output []]
+    (if (empty? remaining)
+      output
+      (let [nested (reference-names (first remaining))]
+        (recur
+         (rest remaining)
+         (loop [nested nested
+                output output]
+           (if (empty? nested)
+             output
+             (recur
+              (rest nested)
+              (append-reference-name output (first nested))))))))))
+
+(defn ^{:schema [:fn [:map] :vector]}
+  reference-names
+  "Returns references from an already-normalized schema AST."
+  [schema]
+  (let [kind (:kind schema)]
+    (cond
+      (= kind :reference)
+      [(:name schema)]
+
+      (= kind :union)
+      (collect-reference-names (:types schema))
+
+      (or (= kind :vector) (= kind :set))
+      (reference-names (:item schema))
+
+      (= kind :tuple)
+      (collect-reference-names (:items schema))
+
+      (= kind :map)
+      (collect-reference-names
+       (map (fn [field] (:type field)) (:fields schema)))
+
+      (= kind :fn)
+      (let [inputs (:inputs schema)
+            rest-schema (:rest inputs)
+            members
+            (vec
+             (concat (:fixed inputs)
+                     (if rest-schema [rest-schema] [])
+                     [(:output schema)]))]
+        (collect-reference-names members))
+
+      (= kind :function)
+      (collect-reference-names (:arities schema))
+
+      (= kind :result)
+      (reference-names (:data schema))
+
+      :else [])))
+
+(declare resolve-normal)
+
+(defn- resolve-many
+  [schemas registry-value visited]
+  (vec
+   (map (fn [schema]
+          (resolve-normal schema registry-value visited))
+        schemas)))
+
+(defn- resolve-reference
+  [schema registry-value visited]
+  (let [schema-name (:name schema)]
+    (if (has? visited schema-name)
+      schema
+      (let [found
+            (std.typed.registry/find-schema registry-value schema-name)]
+        (if found
+          (let [source-registry (:registry found)
+                target
+                (std.typed.catalog.codec/normalize-content
+                 (:schema found)
+                 source-registry)]
+            (resolve-normal target
+                            source-registry
+                            (conj visited schema-name)))
+          schema)))))
+
+(defn- resolve-fn
+  [schema registry-value visited]
+  (let [inputs (:inputs schema)
+        rest-schema (:rest inputs)]
+    (assoc schema
+           :inputs
+           {:fixed (resolve-many (:fixed inputs)
+                                 registry-value
+                                 visited)
+            :rest (if rest-schema
+                    (resolve-normal rest-schema
+                                    registry-value
+                                    visited)
+                    nil)}
+           :output (resolve-normal (:output schema)
+                                   registry-value
+                                   visited))))
+
+(defn- resolve-normal
+  [schema registry-value visited]
+  (let [kind (:kind schema)]
+    (cond
+      (= kind :reference)
+      (resolve-reference schema registry-value visited)
+
+      (= kind :union)
+      (assoc schema
+             :types
+             (resolve-many (:types schema) registry-value visited))
+
+      (or (= kind :vector) (= kind :set))
+      (assoc schema
+             :item
+             (resolve-normal (:item schema) registry-value visited))
+
+      (= kind :tuple)
+      (assoc schema
+             :items
+             (resolve-many (:items schema) registry-value visited))
+
+      (= kind :map)
+      (assoc schema
+             :fields
+             (vec
+              (map
+               (fn [field]
+                 (assoc field
+                        :type
+                        (resolve-normal (:type field)
+                                        registry-value
+                                        visited)))
+               (:fields schema))))
+
+      (= kind :fn)
+      (resolve-fn schema registry-value visited)
+
+      (= kind :function)
+      (assoc schema
+             :arities
+             (resolve-many (:arities schema)
+                           registry-value
+                           visited))
+
+      (= kind :result)
+      (assoc schema
+             :data
+             (resolve-normal (:data schema)
+                             registry-value
+                             visited))
+
+      :else schema)))
+
+(defn ^{:schema [:fn [:map :any] :map]}
+  resolve
+  "Resolves a normalized catalog AST; recursive edges remain references."
+  [schema registry-value]
+  (resolve-normal schema
+                  (std.typed.registry/ensure registry-value)
+                  #{}))
