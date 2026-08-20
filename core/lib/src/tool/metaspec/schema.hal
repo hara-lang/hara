@@ -140,20 +140,28 @@
 
         (= schema-type :map)
         (let [required (vec (or (:schema/required declaration) []))
+              properties-map (or (:schema/properties declaration) {})
+              property-keys (set (keys properties-map))
               root-properties
               (if (= true (:schema/closed declaration))
                 (assoc properties :closed true)
                 properties)
               fields
               (vec
-               (map
-                (fn [entry]
-                  (let [key (key entry)
-                        child (compile-declaration (val entry))]
-                    (if (member? key required)
-                      [key child]
-                      [key {:optional true} child])))
-                (or (:schema/properties declaration) {})))]
+               (concat
+                (map
+                 (fn [key] [key :any])
+                 (filter
+                  (fn [key] (not (has? property-keys key)))
+                  required))
+                (map
+                 (fn [entry]
+                   (let [key (key entry)
+                         child (compile-declaration (val entry))]
+                     (if (member? key required)
+                       [key child]
+                       [key {:optional true} child])))
+                 properties-map)))]
           (vec
            (concat [:map]
                    (if (empty? root-properties) [] [root-properties])
