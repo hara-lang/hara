@@ -1,4 +1,4 @@
-name: Agent 838 locked Cargo cache
+name: Agent 838 stable Rust cache
 
 on:
   push:
@@ -21,16 +21,28 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add .agent-838-cargo-run
-          git commit -m 'chore: publish locked Cargo cache run [skip ci]'
+          git commit -m 'chore: publish stable Rust cache run [skip ci]'
           git push
-      - name: Install the repository minimum Rust toolchain
-        run: rustup toolchain install 1.78.0 --profile minimal
-      - name: Fetch locked Rust dependencies
-        run: cargo +1.78.0 fetch --locked --manifest-path core/rust/Cargo.toml
-      - name: Archive the Cargo registry
+      - name: Record production stable toolchain
         run: |
+          rustc --version
+          cargo --version
+          rustup show active-toolchain
+      - name: Fetch locked Rust dependencies
+        run: cargo fetch --locked --manifest-path core/rust/Cargo.toml
+      - name: Archive stable toolchain and Cargo registry
+        run: |
+          active="$(rustup show active-toolchain | awk '{print $1}')"
+          cd "$HOME/.rustup/toolchains"
+          zip -qr "$GITHUB_WORKSPACE/rust-stable.zip" "$active"
           cd "$HOME/.cargo"
           zip -qr "$GITHUB_WORKSPACE/cargo-cache.zip" registry git || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rust-stable-x86_64-unknown-linux-gnu
+          path: rust-stable.zip
+          retention-days: 1
+          compression-level: 0
       - uses: actions/upload-artifact@v4
         with:
           name: cargo-cache-locked
