@@ -32,6 +32,8 @@ use super::program::{
 use super::source_map::SourceMap;
 use super::validate::{self, stack_heights};
 
+#[path = "compiler/bindings.rs"]
+mod bindings;
 #[path = "compiler/calls.rs"]
 mod calls;
 #[path = "compiler/coroutines.rs"]
