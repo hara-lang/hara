@@ -39,14 +39,15 @@ impl HbcRuntimeContext {
         }
     }
 
-    fn compile(&self, source: &str) -> Result<crate::vm::Program, LiveSessionError> {
+    fn machine(&self, source: &str) -> Result<Machine, LiveSessionError> {
         let registry = self.namespace_registry.clone();
         let protocols = self.protocols.clone();
         let macros = self.macros.clone();
         crate::core::with_macros(macros, move || {
             crate::core::with_namespace_registry(&registry, move || {
                 crate::core::with_protocols(&protocols, || {
-                    compile_source_with(source, &registry).map_err(backend_error)
+                    let program = compile_source_with(source, &registry).map_err(backend_error)?;
+                    Ok(Machine::entry(Rc::new(program)))
                 })
             })
         })
@@ -172,16 +173,10 @@ impl InstrumentedHbcLiveSession {
             .borrow_mut()
             .register_target(descriptor)
             .map_err(instrumentation_error)?;
-        let program = self.context.compile(self.source.source())?;
-        let machine = Machine::entry(Rc::new(program));
+        let machine = self.context.machine(self.source.source())?;
         let target = {
             let hub = self.hub.borrow();
-            HbcTarget::new(
-                &hub,
-                handle.clone(),
-                self.source.source_id(),
-                machine,
-            )
+            HbcTarget::new(&hub, handle.clone(), self.source.source_id(), machine)
         };
         let target = match target {
             Ok(target) => target,
@@ -414,7 +409,11 @@ impl InstrumentedHbcLiveSession {
         if self.sequence > 0 || self.status != LiveSessionStatus::Ready {
             self.sync_status();
         }
-        let result = self.target()?.result().map(|value| value_to_json(&value)).transpose()?;
+        let result = self
+            .target()?
+            .result()
+            .map(|value| value_to_json(&value))
+            .transpose()?;
         let error = self.target()?.error().map(str::to_owned);
         let instrument = self.instrument()?.clone();
         let batch = self
@@ -586,11 +585,7 @@ fn json_to_value(value: JsonValue) -> Result<Value, LiveSessionError> {
 }
 
 fn value_to_json(value: &Value) -> Result<JsonValue, LiveSessionError> {
-    let encoded = crate::json::write(value).map_err(|error| {
-        LiveSessionError::backend(format!(
-            "unable to encode HBC live-session value: {error}"
-        ))
-    })?;
+    let encoded = crate::json::write(value);
     serde_json::from_str(&encoded).map_err(|error| {
         LiveSessionError::backend(format!(
             "HBC live-session value is not valid JSON: {error}"
