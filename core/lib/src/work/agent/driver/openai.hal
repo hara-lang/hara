@@ -2,7 +2,6 @@
   (:require [work.base :as work]
             [work.agent.protocol :as protocol]
             [work.agent.openai :as openai]
-            [work.agent.result :as result]
             [work.agent.tool :as agent-tool]))
 
 (defstruct OpenAIDriver [options])
@@ -11,21 +10,49 @@
   [message data]
   (throw (ex :limit data :ex/message message)))
 
-(declare run-turn)
+(defn- turn-id
+  [agent-id turn suffix]
+  [:agent/openai agent-id :turn turn suffix])
 
-(defn- continue-after-tools
-  [configuration input response turn tool-count calls]
-  (result/then
-   (agent-tool/invoke-all (:tool-index configuration) calls)
-   (fn [values]
-     (let [outputs (openai/tool-output-items values)]
-       (run-turn configuration
-                 (into input (concat (:response/output response) outputs))
-                 turn
-                 tool-count)))))
+(declare turn-work)
 
-(defn- process-response
-  [configuration input response turn tool-count]
+(defn- next-turn-work
+  [configuration agent-id input response turn tool-count values]
+  (let [outputs (openai/tool-output-items values)
+        next-input
+        (into input
+              (concat (:response/output response)
+                      outputs))]
+    (turn-work configuration
+               agent-id
+               next-input
+               turn
+               tool-count)))
+
+(defn- tool-round-work
+  [configuration agent-id input response turn tool-count calls]
+  (let [call-works
+        (agent-tool/call-works (:tool-index configuration) calls)
+        tools
+        (work/all
+         {:id (turn-id agent-id turn :tools)}
+         call-works)]
+    (work/bind
+     {:id (turn-id agent-id turn :tool-round)}
+     tools
+     (work/pure
+      {:id (turn-id agent-id turn :after-tools)}
+      (fn [values context]
+        (next-turn-work configuration
+                        agent-id
+                        input
+                        response
+                        turn
+                        tool-count
+                        values))))))
+
+(defn- response-work
+  [configuration agent-id input response turn tool-count]
   (let [calls (:response/tool-calls response)
         next-turn (inc turn)
         next-tool-count (+ tool-count (count calls))
@@ -45,32 +72,51 @@
         :agent/max-tool-calls maximum-tool-calls})
 
       (empty? calls)
-      (:response/text response)
+      (work/pure
+       {:id (turn-id agent-id turn :result)}
+       (fn [response-value context]
+         (:response/text response-value)))
 
       :else
-      (continue-after-tools configuration
-                            input
-                            response
-                            next-turn
-                            next-tool-count
-                            calls))))
+      (tool-round-work configuration
+                       agent-id
+                       input
+                       response
+                       next-turn
+                       next-tool-count
+                       calls))))
 
-(defn- run-turn
-  [configuration input turn tool-count]
-  (if (>= turn (:max-turns configuration))
-    (failed-limit
-     "Agent turn limit reached"
-     {:agent/turn turn
-      :agent/max-turns (:max-turns configuration)}))
-  (result/then
-   (openai/complete
-    (:client configuration)
-    {:instructions (:instructions configuration)
-     :tools (:tools configuration)
-     :input input
-     :request (:request configuration)})
-   (fn [response]
-     (process-response configuration input response turn tool-count))))
+(defn- model-step
+  [configuration agent-id input turn]
+  (work/step
+   {:id (turn-id agent-id turn :model)}
+   (fn [ignored context]
+     (if (>= turn (:max-turns configuration))
+       (failed-limit
+        "Agent turn limit reached"
+        {:agent/turn turn
+         :agent/max-turns (:max-turns configuration)}))
+     (openai/complete
+      (:client configuration)
+      {:instructions (:instructions configuration)
+       :tools (:tools configuration)
+       :input input
+       :request (:request configuration)}))))
+
+(defn- turn-work
+  [configuration agent-id input turn tool-count]
+  (work/bind
+   {:id (turn-id agent-id turn :interaction)}
+   (model-step configuration agent-id input turn)
+   (work/pure
+    {:id (turn-id agent-id turn :response)}
+    (fn [response context]
+      (response-work configuration
+                     agent-id
+                     input
+                     response
+                     turn
+                     tool-count)))))
 
 (defn- configuration
   [driver agent]
@@ -93,13 +139,11 @@
 (extend-type OpenAIDriver protocol/IAgentDriver
   (agent-drive [driver agent intent context]
     (let [configuration (configuration driver agent)]
-      (work/step
-       {:id [:agent/openai (:agent/id agent)]}
-       (fn [input work-context]
-         (run-turn configuration
-                   [(openai/input-message intent)]
-                   0
-                   0))))))
+      (turn-work configuration
+                 (:agent/id agent)
+                 [(openai/input-message intent)]
+                 0
+                 0))))
 
 (defn driver
   ([]
