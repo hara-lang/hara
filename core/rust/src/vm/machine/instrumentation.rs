@@ -3,7 +3,8 @@
 //! Unlike `machine::observation`, this module does not project values, locals,
 //! handlers, or source strings on every instruction. It emits copy-only scalar
 //! events through a monomorphized probe and keeps the ordinary `Machine::run`
-//! path unchanged.
+//! path unchanged. The boundary API executes one real dispatch operation and
+//! leaves all expensive inspection to matching shared-hub subscriptions.
 
 use crate::vm::opcode::Instruction;
 
@@ -11,8 +12,11 @@ use crate::vm::opcode::Instruction;
 mod ring;
 #[path = "instrumentation/run.rs"]
 mod run;
+#[path = "instrumentation/step.rs"]
+mod step;
 
 pub use ring::{EventRing, SampledProbe, VmEvent};
+pub use step::{VmBoundary, VmBoundaryOutcome};
 
 pub const BYTECODE_METRICS_SCHEMA: &str = "hal.bytecode-metrics/0-alpha";
 pub const BYTECODE_EVENTS_SCHEMA: &str = "hal.bytecode-events/0-alpha";
