@@ -15,12 +15,7 @@ fn set<T: Ord>(values: impl IntoIterator<Item = T>) -> BTreeSet<T> {
     values.into_iter().collect()
 }
 
-fn service(
-    session_id: &str,
-) -> (
-    Rc<RefCell<InstrumentationHub>>,
-    NativeInstrumentation,
-) {
+fn service(session_id: &str) -> (Rc<RefCell<InstrumentationHub>>, NativeInstrumentation) {
     let hub = Rc::new(RefCell::new(InstrumentationHub::new()));
     let service = NativeInstrumentation::new(session_id, hub.clone());
     (hub, service)
@@ -104,8 +99,7 @@ fn trusted_native_passive_agent_attaches_drains_and_detaches() {
     hub.borrow_mut()
         .emit(
             &raw_target,
-            ProducerEvent::live(EventKind::CallEnter)
-                .with_data("function", "example/entry"),
+            ProducerEvent::live(EventKind::CallEnter).with_data("function", "example/entry"),
             &mut access,
         )
         .expect("event delivery");
@@ -145,9 +139,7 @@ fn trusted_native_controller_owns_one_lease_and_issues_safepoint_directives() {
         .expect("target registration");
     let target = service.bind_target(&raw_target).expect("bind target");
     service.attach(&first, &target).expect("first attachment");
-    service
-        .attach(&second, &target)
-        .expect("second attachment");
+    service.attach(&second, &target).expect("second attachment");
 
     let lease = service
         .acquire_control(&first, &target)
@@ -214,9 +206,7 @@ fn trusted_native_rejects_cross_runtime_and_cross_session_handles() {
         .expect("registration");
     assert!(matches!(
         service_b.detach(&instrument),
-        Err(NativeInstrumentationError::CrossRuntimeHandle {
-            kind: "instrument"
-        })
+        Err(NativeInstrumentationError::CrossRuntimeHandle { kind: "instrument" })
     ));
 
     let shared = Rc::new(RefCell::new(InstrumentationHub::new()));

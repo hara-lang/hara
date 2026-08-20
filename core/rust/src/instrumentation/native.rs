@@ -193,10 +193,7 @@ impl fmt::Debug for NativeAttachment {
 }
 
 impl NativeInstrumentation {
-    pub(crate) fn new(
-        session_id: impl Into<String>,
-        hub: Rc<RefCell<InstrumentationHub>>,
-    ) -> Self {
+    pub(crate) fn new(session_id: impl Into<String>, hub: Rc<RefCell<InstrumentationHub>>) -> Self {
         Self {
             session_id: session_id.into(),
             hub: Rc::downgrade(&hub),
@@ -293,15 +290,10 @@ impl NativeInstrumentation {
                 hub.instrument_registration(&instrument.handle)?
                     .capabilities
                     .clone(),
-                hub.target_descriptor(&target.handle)?
-                    .capabilities
-                    .clone(),
+                hub.target_descriptor(&target.handle)?.capabilities.clone(),
             )
         };
-        let attachment = match hub
-            .borrow_mut()
-            .attach(&instrument.handle, &target.handle)
-        {
+        let attachment = match hub.borrow_mut().attach(&instrument.handle, &target.handle) {
             Ok(attachment) => attachment,
             Err(InstrumentationError::UnsupportedCapabilities {
                 target_id,
@@ -408,16 +400,17 @@ impl NativeInstrumentation {
     ) -> Result<(), NativeInstrumentationError> {
         self.ensure_lease(lease)?;
         let hub = self.hub()?;
-        hub.borrow_mut().request_directive(&lease.lease, directive)?;
+        hub.borrow_mut()
+            .request_directive(&lease.lease, directive)?;
         Ok(())
     }
 
     fn hub(&self) -> Result<Rc<RefCell<InstrumentationHub>>, NativeInstrumentationError> {
-        self.hub.upgrade().ok_or_else(|| {
-            NativeInstrumentationError::RuntimeClosed {
+        self.hub
+            .upgrade()
+            .ok_or_else(|| NativeInstrumentationError::RuntimeClosed {
                 session_id: self.session_id.clone(),
-            }
-        })
+            })
     }
 
     fn ensure_instrument(
@@ -427,17 +420,11 @@ impl NativeInstrumentation {
         self.ensure_owner("instrument", &instrument.session_id, &instrument.hub)
     }
 
-    fn ensure_target(
-        &self,
-        target: &NativeTargetHandle,
-    ) -> Result<(), NativeInstrumentationError> {
+    fn ensure_target(&self, target: &NativeTargetHandle) -> Result<(), NativeInstrumentationError> {
         self.ensure_owner("target", &target.session_id, &target.hub)
     }
 
-    fn ensure_lease(
-        &self,
-        lease: &NativeControlLease,
-    ) -> Result<(), NativeInstrumentationError> {
+    fn ensure_lease(&self, lease: &NativeControlLease) -> Result<(), NativeInstrumentationError> {
         self.ensure_owner("control lease", &lease.session_id, &lease.hub)
     }
 
