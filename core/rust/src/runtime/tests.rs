@@ -5919,7 +5919,7 @@ mod tests {
             "iterator/empty-cycle-rejected",
             "runtime/recur-outside-target",
             "runtime/recur-arity",
-            "error/catch-guest-value",
+            "error/catch-exception-value",
             "error/catch-order",
             "error/catch-code",
             "error/catch-code-vector",
