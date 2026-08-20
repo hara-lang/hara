@@ -1,23 +1,84 @@
 (ns tool.sh.git-test
-  (:use code.test)
   (:require [tool.sh.git :as git]))
+
+(def calls (atom []))
 
 (defn fake-runner
   [argv options]
-  {:command argv :stdout "abc123" :stderr "" :exit 0})
+  (swap! calls conj [argv options])
+  {:command argv
+   :stdout " value\n"
+   :stderr ""
+   :exit 0})
+
+(defn failing-runner
+  [argv options]
+  {:command argv :stdout "out\n" :stderr "err\n" :exit 7})
 
 (def results
-  [(fact "Git roots use -C inside the argv vector"
-     (git/command ["status" "--short"] {:root "/repo"})
-     => ["git" "-C" "/repo" "status" "--short"])
+  [(test-check
+    "legacy :root is normalized to cwd rather than git -C"
+    (do
+      (reset! calls [])
+      (git/git-result ["status"]
+                      {:root "/repo"
+                       :env {"A" "1"}
+                       :tool.sh/runner fake-runner
+                       :force true})
+      (deref calls))
+    [[["git" "status"]
+      {:cwd "/repo" :env {"A" "1"}}]])
 
-   (fact "Git operations return the standard command result"
-     (git/git ["rev-parse" "HEAD"] {:tool.sh/runner fake-runner})
-     => {:command ["git" "rev-parse" "HEAD"]
-         :stdout "abc123" :stderr "" :exit 0})
+   (test-check
+    "Git results use standard keys and preserve exact Git output"
+    (git/git-result ["rev-parse" "HEAD"]
+                    {:tool.sh/runner fake-runner})
+    {:command ["git" "rev-parse" "HEAD"]
+     :stdout " value\n"
+     :stderr ""
+     :exit 0})
 
-   (fact "rev-parse extracts canonical stdout"
-     (git/rev-parse "HEAD" {:tool.sh/runner fake-runner})
-     => "abc123")])
+   (test-check
+    "legacy helper arities retain their argv"
+    (do
+      (reset! calls [])
+      (git/init {:tool.sh/runner fake-runner})
+      (git/clone "repo" {:dir "target" :tool.sh/runner fake-runner})
+      (git/add {:all true :tool.sh/runner fake-runner})
+      (git/commit {:message "message"
+                   :amend true
+                   :tool.sh/runner fake-runner})
+      (git/checkout "feature" {:create true
+                               :force true
+                               :tool.sh/runner fake-runner})
+      (git/submodule :update {:tool.sh/runner fake-runner})
+      (mapv first (deref calls)))
+    [["git" "init"]
+     ["git" "clone" "repo" "target"]
+     ["git" "add" "--all"]
+     ["git" "commit" "-m" "message" "--amend"]
+     ["git" "checkout" "-b" "-f" "feature"]
+     ["git" "submodule" "update" "--init" "--recursive"]])
 
-(pr-str (run '[tool.sh.git-test]))
+   (test-check
+    "non-zero Git results remain data unless ignore-errors is false"
+    [(git/git-run ["status"] {:tool.sh/runner failing-runner})
+     (try
+       (git/git-run ["status"]
+                    {:tool.sh/runner failing-runner
+                     :ignore-errors false})
+       nil
+       (catch Throwable error
+         [(select-keys (ex-data error) [:command :stdout :stderr :exit])
+          (:ex/code (ex-data error))]))]
+    [{:command ["git" "status"]
+      :stdout "out\n"
+      :stderr "err\n"
+      :exit 7}
+     [{:command ["git" "status"]
+       :stdout "out\n"
+       :stderr "err\n"
+       :exit 7}
+      :hara/host]])])
+
+results

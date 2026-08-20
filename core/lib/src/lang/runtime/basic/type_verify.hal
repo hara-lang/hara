@@ -2,39 +2,30 @@
   (:require [tool.sh :as sh]))
 
 (defn- process-options
-  [runtime]
-  (let [cwd (get-in runtime [:process :cwd])
-        env (get-in runtime [:process :env])
-        selected (if cwd {:cwd cwd} {})]
-    (if env
-      (assoc selected :env env)
-      selected)))
-
-(defn- start-checker
-  [runtime]
-  (let [argv (get runtime :exec)
-        selected (process-options runtime)]
-    (if (empty? selected)
-      (sh/spawn argv)
-      (sh/spawn argv selected))))
-
-(defn- kill-quietly
-  [process]
-  (try
-    (Process/kill process)
-    (catch Throwable _ nil)))
+  [runtime source]
+  (assoc
+   (select-keys (or (:process runtime) {}) [:cwd :env])
+   :stdin source))
 
 (defn checker-result
-  "Builds the structured result returned by a syntax checker."
-  [runtime values]
-  {:phase :verify
-   :lang (get runtime :lang)
-   :runtime (get runtime :runtime)
-   :program (get runtime :program)
-   :command (get runtime :exec)
-   :exit (nth values 2)
-   :stdout (str/decode-utf8 (nth values 0))
-   :stderr (str/decode-utf8 (nth values 1))})
+  "Builds the structured result returned by a syntax checker.
+
+   The vector form is retained for existing pure callers; process execution
+   now supplies the canonical tool.sh result map directly."
+  [runtime value]
+  (let [result
+        (if (vector? value)
+          {:command (get runtime :exec)
+           :exit (nth value 2)
+           :stdout (str/decode-utf8 (nth value 0))
+           :stderr (str/decode-utf8 (nth value 1))}
+          value)]
+    (merge
+     {:phase :verify
+      :lang (get runtime :lang)
+      :runtime (get runtime :runtime)
+      :program (get runtime :program)}
+     result)))
 
 (defn verify-result
   "Returns source after a successful check or throws a structured verify error."
@@ -48,31 +39,20 @@
              :grammar-version (get runtime :grammar-version)) :ex/message "Target source verification failed"))))
 
 (defn verify-execute
-  "Checks source through the runtime's stdin-based verifier.
-
-   This is the portable Hara replacement for Foundation's temporary-file
-   verifier. It needs only the :process capability and cannot leave source
-   files behind after a failed check."
+  "Checks source through the runtime's stdin-based verifier."
   [runtime source]
-  (let [process (start-checker runtime)]
+  (let [argv (get runtime :exec)]
     (try
-      (Process/write process (str/encode-utf8 source))
-      (Process/close-input process)
-      (let [values
-            (deref
-             (promise/all
-              [(Process/stdout process)
-               (Process/stderr process)
-               (Process/wait process)]))]
-        (checker-result runtime values))
+      (checker-result
+       runtime
+       (sh/run argv (process-options runtime source)))
       (catch Throwable error
-        (kill-quietly process)
         (throw
          (ex :host {:phase :verify
            :lang (get runtime :lang)
            :runtime (get runtime :runtime)
            :program (get runtime :program)
-           :command (get runtime :exec)
+           :command argv
            :generated-fragment source
            :cause-data (ex-data error)} :ex/message "Target source verifier could not complete" :ex/cause error))))))
 
