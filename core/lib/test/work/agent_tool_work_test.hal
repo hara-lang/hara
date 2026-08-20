@@ -120,6 +120,38 @@
     [:chain :ok {"value" 9}])
 
    (test-check
+    "mixed model-selected tool Work preserves provider call order"
+    (let [calls
+          [{:call/id "first"
+            :tool/name "echo-pure"
+            :call/arguments {"value" 1}}
+           {:call/id "second"
+            :tool/name "echo-effect"
+            :call/arguments {"value" 2}}
+           {:call/id "third"
+            :tool/name "missing"
+            :call/arguments {}}]
+          tool-index (agent-tool/index [pure-tool effect-tool])
+          results
+          (work/run
+           (work/all
+            {:id :ordered-tool-round}
+            (tool-work/call-works tool-index calls))
+           :provider-response)]
+      (vec
+       (map
+        (fn [result]
+          [(:call/id result)
+           (:tool/status result)
+           (if (= :ok (:tool/status result))
+             (:tool/value result)
+             (get-in result [:tool/error :code]))])
+        results)))
+    [["first" :ok {"value" 1}]
+     ["second" :ok {"value" 2}]
+     ["third" :error :tool/unknown]])
+
+   (test-check
     "unknown model-selected tools remain ordinary structured Work results"
     (let [call
           {:call/id "unknown-1"
