@@ -4,6 +4,6 @@ package hara.truffle;
 public final class ToolPackageLibraryProvider implements HaraLibraryProvider {
   @Override public String namespace() { return "tool.package.provider"; }
   @Override public void install(HaraContext context) {
-    HaraStaticLibrary.install(context, namespace(), ToolPackageLibrary.class);
+    ToolPackageLibrary.install(context, namespace());
   }
 }

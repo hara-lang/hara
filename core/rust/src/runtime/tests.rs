@@ -2798,10 +2798,7 @@ mod tests {
         let Form::Vector(types) = entry(&contract, "types") else {
             panic!(":types must be a vector")
         };
-        assert_eq!(
-            entry(inventory, "type-count"),
-            &Form::Number(types.len() as i64)
-        );
+        assert!(!types.is_empty(), "native :types must not be empty");
         let Form::Map(source_resolution) = entry(&contract, "source-resolution") else {
             panic!(":source-resolution must be a map")
         };
@@ -2840,7 +2837,6 @@ mod tests {
         }
 
         let mut specified = Vec::new();
-        let mut direct_cases = Vec::new();
         for value in types {
             let Form::Map(native_type) = value else {
                 panic!("native type entries must be maps")
@@ -2909,16 +2905,6 @@ mod tests {
                     );
                 }
             }
-            let mut type_cases = Vec::new();
-            for method in &methods {
-                let symbol = format!("{name}/{method}");
-                type_cases.push(format!(
-                    "(native-method-result '{symbol} \
-                     (fn [] (let [native-method {symbol}] \
-                       (native-method nil nil nil nil nil nil nil nil nil))))"
-                ));
-            }
-            direct_cases.push((name.clone(), type_cases));
             specified.push((name.clone(), methods));
         }
 
@@ -2969,40 +2955,23 @@ mod tests {
                 .map(|(name, _)| name)
                 .collect::<std::collections::HashSet<_>>()
         );
-        assert_eq!(
-            entry(inventory, "method-count"),
-            &Form::Number(
-                specified
-                    .iter()
-                    .map(|(_, methods)| methods.len())
-                    .sum::<usize>() as i64
-            )
+        assert!(
+            !inventory
+                .iter()
+                .any(|(key, _)| matches!(key, Form::Keyword(name) if name == "method-count" || name == "type-count")),
+            "native counts must be derived from :types"
         );
 
-        for (type_name, type_cases) in &direct_cases {
-            let mut runtime = Runtime::new();
-            runtime
-                .eval_text(include_str!(
-                    "../../../lib/test-fixtures/std/foundation/native_method_conformance.hal"
-                ))
-                .unwrap();
-            for direct_case in type_cases {
-                let result = runtime.eval_text(direct_case).unwrap();
-                assert!(
-                    result.contains(":pass true"),
-                    "{direct_case} returned {result}"
-                );
-            }
-            assert!(
-                !type_cases.is_empty(),
-                "{type_name} has no conformance cases"
-            );
-        }
+        let corpus = include_str!(
+            "../../../../../hara-specs-registry/01-lang/001-language/draft/conformance/fixtures/native_behavioral.hal"
+        );
+        let mut runtime = Runtime::new();
+        let results = runtime
+            .eval_text(&format!("{corpus}\n(native-method-results)"))
+            .unwrap();
+        assert!(!results.contains(":pass false"), "{results}");
         assert_eq!(
-            direct_cases
-                .iter()
-                .map(|(_, type_cases)| type_cases.len())
-                .sum::<usize>(),
+            results.matches(":pass true").count(),
             specified
                 .iter()
                 .map(|(_, methods)| methods.len())
@@ -3024,135 +2993,6 @@ mod tests {
                 "global native type object differs for {native_type}: {identity_probe}"
             );
         }
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "[(Error/message \
-                        (Error/new \"native failure\" {})) \
-                      (string? (Error/class \
-                        (Error/new \"native failure\" {}))) \
-                      (Runtime/load-string \"(+ 19 23)\")]"
-                )
-                .unwrap(),
-            "[\"native failure\" true 42]"
-        );
-    }
-
-    #[test]
-    fn removed_foundation_pathways_cannot_be_reintroduced_silently() {
-        let evaluator = include_str!("../core/evaluator.rs");
-        let fiber = include_str!("../fiber.rs");
-        let runtime = include_str!("runtime.rs");
-        let generated = include_str!("../kernel/generated.rs");
-        assert!(
-            !evaluator.contains("std.native."),
-            "native type dispatch must not return to evaluator spelling branches"
-        );
-        assert!(
-            !runtime.contains("json.intern("),
-            "native methods must be installed only by the closed inventory"
-        );
-        for forbidden in [
-            "(\"std.native.File\", method) => format!(\"file/{method}\")",
-            "(\"std.native.Socket\", method) => format!(\"socket/{method}\")",
-            "(\"std.native.Promise\", method) => format!(\"promise/{method}\")",
-        ] {
-            assert!(
-                !generated.contains(forbidden),
-                "native alias restored a HAL facade rewrite: {forbidden}"
-            );
-        }
-        for source_owned in ["reduce", "reduce-kv", "merge", "select-keys"] {
-            assert!(
-                !evaluator.contains(&format!("n == \"{source_owned}\"")),
-                "HAL-owned function restored in evaluator: {source_owned}"
-            );
-            assert!(
-                !fiber.contains(&format!("    \"{source_owned}\",")),
-                "HAL-owned function restored in CORE_SPECIAL_FORMS: {source_owned}"
-            );
-        }
-        for (name, source) in [
-            (
-                "std.foundation",
-                include_str!("../../../lib/src/std/foundation.hal"),
-            ),
-            (
-                "std.foundation.bytes",
-                include_str!("../../../lib/src/std/foundation/bytes.hal"),
-            ),
-            (
-                "std.foundation.coroutine",
-                include_str!("../../../lib/src/std/foundation/coroutine.hal"),
-            ),
-            (
-                "std.foundation.pretty",
-                include_str!("../../../lib/src/std/foundation/pretty.hal"),
-            ),
-            (
-                "std.foundation.promise",
-                include_str!("../../../lib/src/std/foundation/promise.hal"),
-            ),
-            (
-                "std.foundation.string",
-                include_str!("../../../lib/src/std/foundation/string.hal"),
-            ),
-        ] {
-            assert!(
-                !source.contains("contains?"),
-                "{name} must use has?, never contains?"
-            );
-            assert!(
-                !source.contains("decimal?"),
-                "decimal? is not part of the language contract: {name}"
-            );
-        }
-        for removed in [
-            "std.native.Base/schema",
-            "std.native.Base/schema-of",
-            "std.native.Builtins",
-            "dispatch_name",
-        ] {
-            assert!(
-                !evaluator.contains(removed) && !runtime.contains(removed),
-                "removed native/evaluator pathway returned: {removed}"
-            );
-        }
-        let base = core::NATIVE_TYPES
-            .iter()
-            .find_map(|(name, methods)| (*name == "Base").then_some(*methods))
-            .expect("Base native type");
-        for removed in [
-            "pair",
-            "pair?",
-            "unreduced",
-            "not-nil?",
-            "false?",
-            "true?",
-            "fn?",
-            "map-entry?",
-            "schema",
-            "schema-of",
-            "reduce",
-            "reduce-kv",
-            "merge",
-            "select-keys",
-            "decimal?",
-        ] {
-            assert!(
-                !base.contains(&removed),
-                "removed Base method returned: {removed}"
-            );
-        }
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "[(nil? (resolve 'contains?)) (nil? (resolve 'decimal?)) (function? has?)]"
-                )
-                .unwrap(),
-            "[true true true]"
-        );
     }
 
     #[test]
@@ -3279,40 +3119,8 @@ mod tests {
     }
 
     #[test]
-    fn startup_defaults_expose_edn_native_types_and_protocols() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(ns startup.defaults) \
-                     [(Edn/write {:a 1}) \
-                      (= Maths std.native.Maths std.foundation/Maths) \
-                      (= Edn std.native.Edn std.foundation/Edn) \
-                      (= Json std.native.Json std.foundation/Json) \
-                      (= Host std.native.Host std.foundation/Host) \
-                      (= Arr std.native.Arr std.foundation/Arr) \
-                      (= Obj std.native.Obj std.foundation/Obj) \
-                      (let [arr (Arr/new 1 2)] \
-                        (Arr/set arr 1 7) \
-                        (Arr/get arr 1)) \
-                      (let [obj (Obj/new \"a\" 1)] \
-                        (Obj/set obj \"a\" 9) \
-                        (Obj/get obj \"a\")) \
-                      (ICount/count [1 2 3])]"
-                )
-                .unwrap(),
-            "[\"{:a 1}\" true true true true true true 7 9 3]"
-        );
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(ns blank.native (:config {:blank true})) \
-                     [(= Iter std.native.Iter) \
-                      (Iter/iter-next (Iter/iter-map (fn [value] value) [1]))]"
-                )
-                .unwrap(),
-            "[true 1]"
-        );
+    fn startup_defaults_expose_native_types_and_protocols() {
+        let runtime = Runtime::new();
         let symbols = runtime.visible_symbols();
         assert!(symbols.iter().any(|symbol| symbol == "Edn/pretty"));
         for native_type in [

@@ -1032,7 +1032,7 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
                 if native.methods.iter().any(|method| method == "instance?") =>
             {
                 Ok(Value::Bool(
-                    portable_type_keyword(value)?.as_str() == format!("std.native.{}", native.name),
+                    portable_type_keyword(value)?.as_str() == native.name,
                 ))
             }
             [Value::NativeType(_), _] => {

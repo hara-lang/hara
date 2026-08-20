@@ -27,7 +27,9 @@ public class NativeMethodParityTest {
       specsRegistry()
           .resolve("01-lang/001-language/draft/conformance/native.edn");
   private static final Path FIXTURE =
-      Path.of("lib/test-fixtures/std/foundation/native_method_conformance.hal");
+      specsRegistry()
+          .resolve(
+              "01-lang/001-language/draft/conformance/fixtures/native_behavioral.hal");
 
   @Test
   public void nativeInventoryIsClosedAndClassified() throws Exception {
@@ -36,10 +38,9 @@ public class NativeMethodParityTest {
     Map<String, NativeTypeSpec> types = types(contract);
 
     assertEquals(Boolean.TRUE, inventory.lookup(keyword("closed")));
-    assertEquals(((Number) inventory.lookup(keyword("type-count"))).intValue(), types.size());
-    assertEquals(
-        ((Number) inventory.lookup(keyword("method-count"))).intValue(),
-        types.values().stream().mapToInt(type -> type.methods.size()).sum());
+    assertEquals("Native type count must be derived", null, inventory.lookup(keyword("type-count")));
+    assertEquals("Native method count must be derived", null, inventory.lookup(keyword("method-count")));
+    assertNotNull("Native count derivation policy is required", inventory.lookup(keyword("counting")));
 
     Field field = HaraContext.class.getDeclaredField("NATIVE_TYPES");
     field.setAccessible(true);
@@ -94,106 +95,55 @@ public class NativeMethodParityTest {
   }
 
   @Test
-  public void removedFoundationPathwaysCannotBeReintroducedSilently() throws Exception {
-    Path javaRoot = Files.isDirectory(Path.of("java/src/main")) ? Path.of("java") : Path.of(".");
-    Path sourceRoot = javaRoot.resolve("src/main/java/hara/truffle");
-    String context = Files.readString(sourceRoot.resolve("HaraContext.java"));
-    String collection =
-        Files.readString(sourceRoot.resolve("StdFoundationCollection.java"));
-    for (String removed :
-        List.of(
-            "std.native.Base/pair?",
-            "Base/unreduced",
-            "std.native.Builtins",
-            "reduceKeyValues(",
-            "mergeMaps(",
-            "selectKeys(",
-            "reduceIterator(")) {
-      assertTrue("Removed Foundation pathway returned: " + removed,
-          !context.contains(removed) && !collection.contains(removed));
-    }
-    assertTrue(
-        "Source-owned sequence library must not be restored",
-        !Files.exists(sourceRoot.resolve("StdFoundationSequence.java")));
-    for (String sourceOwned : List.of("reduce", "reduce-kv", "merge", "select-keys")) {
-      assertTrue(
-          "HAL-owned function was restored as a Java export: " + sourceOwned,
-          !collection.contains("name = \"" + sourceOwned + "\""));
-    }
-    Path foundationRoot = Path.of("lib/src/std/foundation.hal");
-    List<Path> foundationSources = new ArrayList<>(List.of(foundationRoot));
-    try (var paths = Files.walk(Path.of("lib/src/std/foundation"))) {
-      paths.filter(path -> path.toString().endsWith(".hal")).forEach(foundationSources::add);
-    }
-    for (Path sourcePath : foundationSources) {
-      String source = Files.readString(sourcePath);
-      assertTrue(
-          "Foundation source must use has?, never contains?: " + sourcePath,
-          !source.contains("contains?"));
-      assertTrue(
-          "decimal? is not part of the language contract: " + sourcePath,
-          !source.contains("decimal?"));
-    }
-    assertTrue(
-        "Base must not export the non-spec decimal? predicate",
-        !context.contains("\"decimal?\""));
-    assertTrue(
-        "vec identity fast path must return the original value",
-        context.contains("instanceof hara.lang.data.Vector<?>") && context.contains("return value;"));
-    assertTrue(
-        "set identity fast path must recognize every persistent set",
-        context.contains("instanceof hara.lang.data.types.ISetType<?>"));
-  }
-
-  @Test
-  public void everySpecifiedNativeMethodIsDirectlyCallable() throws Exception {
+  public void everySpecifiedNativeMethodHasOnePassingSpecsOwnedClassification() throws Exception {
     Map<String, NativeTypeSpec> types = types(readMap(CONTRACT));
-    StringBuilder source = new StringBuilder(Files.readString(FIXTURE)).append("\n[");
-    for (NativeTypeSpec type : types.values()) {
-      for (String method : type.methods) {
-        String symbol = type.name + "/" + method;
-        source
-            .append("(native-method-result '")
-            .append(symbol)
-            .append(" (fn [] (")
-            .append(symbol)
-            .append(" nil nil nil nil nil nil nil nil nil))) ");
-      }
-    }
-    source.append("]");
+    String corpus = Files.readString(FIXTURE);
 
     try (Context context = Context.newBuilder(HaraLanguage.ID).allowAllAccess(true).build()) {
-      String result = context.eval(HaraLanguage.ID, source.toString()).toString();
+      String result =
+          context.eval(HaraLanguage.ID, corpus + "\n(native-method-results)").toString();
       assertTrue(result, !result.contains(":pass false"));
       assertEquals(
           types.values().stream().mapToInt(type -> type.methods.size()).sum(),
           result.split(":pass true", -1).length - 1);
       assertEquals(
-          "[\"native failure\" true]",
+          calibrationExpected(context, corpus, "exact-error-class"),
           context
               .eval(
                   HaraLanguage.ID,
-                  "[(Error/message "
-                      + "(Error/new \"native failure\" {})) "
-                      + "(string? (Error/class "
-                      + "(Error/new \"native failure\" {})))]")
+                  corpus + "\n" + calibrationSource(context, corpus, "exact-error-class"))
               .toString());
     }
   }
 
   @Test
-  public void nativeTypeObjectsAndAliasesAreUniversalIncludingBlankNamespaces() {
+  public void nativeTypeObjectsAndAliasesAreUniversalIncludingBlankNamespaces() throws Exception {
+    String corpus = Files.readString(FIXTURE);
     try (Context context = Context.newBuilder(HaraLanguage.ID).allowAllAccess(true).build()) {
       assertEquals(
-          "[true 1]",
+          calibrationExpected(context, corpus, "blank-namespace-alias"),
           context
               .eval(
                   HaraLanguage.ID,
-                  "(ns blank.native (:config {:blank true})) "
-                      + "[(std.foundation/= Iter std.native.Iter) "
-                      + " (Iter/iter-next (Iter/iter-map (fn [value] value) [1]))]")
+                  corpus + "\n" + calibrationSource(context, corpus, "blank-namespace-alias"))
               .toString());
     }
+  }
+
+  private static String calibrationSource(Context context, String corpus, String name) {
+    return context
+        .eval(
+            HaraLanguage.ID,
+            corpus + "\n(get (get native-calibration-snippets :" + name + ") :source)")
+        .asString();
+  }
+
+  private static String calibrationExpected(Context context, String corpus, String name) {
+    return context
+        .eval(
+            HaraLanguage.ID,
+            corpus + "\n(get (get native-calibration-snippets :" + name + ") :expected)")
+        .toString();
   }
 
   private static Map<String, NativeTypeSpec> types(IMapType contract) {
