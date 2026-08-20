@@ -2,7 +2,8 @@
   (:require [work.base :as work]
             [work.agent :as agent]
             [work.agent.ephemeral :as ephemeral]
-            [work.agent.openai :as openai]))
+            [work.agent.openai :as openai]
+            [work.agent.tool :as agent-tool]))
 
 (def response-one
   {:id "resp_1"
@@ -53,6 +54,21 @@
    (fn [arguments]
      (+ (get arguments "a")
         (get arguments "b")))))
+
+(def effectful-invocations
+  (atom 0))
+
+(def effectful-tool
+  (agent/tool
+   "publish"
+   "Publishes an external action."
+   {:type "object"
+    :properties {}
+    :additionalProperties false}
+   (fn [arguments]
+     (swap! effectful-invocations inc)
+     :published)
+   {:effect :external}))
 
 (def client
   (agent/openai-client
@@ -147,6 +163,35 @@
      (get first-request "instructions")
      (get-in first-request ["tools" 0 "name"])]
     ["gpt-5" "Use tools when useful." "add"])
+
+   (test-check
+    "effectful model tools are rejected before callable execution"
+    (let [exposure
+          (try
+            (openai/request-body
+             client
+             {:input []
+              :tools [effectful-tool]})
+            :not-rejected
+            (catch Throwable error
+              [(:work/error (ex-data error))
+               (:tool/effect (ex-data error))]))
+          invocation
+          (agent-tool/invoke
+           (agent-tool/index [effectful-tool])
+           {:call/id "effect-1"
+            :tool/name "publish"
+            :call/arguments {}})]
+      [exposure
+       (:tool/status invocation)
+       (get-in invocation [:tool/error :code])
+       (get-in invocation [:tool/error :tool/effect])
+       (deref effectful-invocations)])
+    [[:work/agent-tool-requires-work :external]
+     :error
+     :tool/requires-work
+     :external
+     0])
 
    (test-check
     "ephemeral coordination is a capability while execution remains Work"
