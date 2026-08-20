@@ -33,6 +33,37 @@ pub enum Primitive {
 }
 
 impl Primitive {
+    #[cfg(test)]
+    pub(crate) const ALL: &[Primitive] = &[
+        Primitive::Add,
+        Primitive::Subtract,
+        Primitive::Multiply,
+        Primitive::Divide,
+        Primitive::Remainder,
+        Primitive::Equal,
+        Primitive::Less,
+        Primitive::LessOrEqual,
+        Primitive::Greater,
+        Primitive::GreaterOrEqual,
+        Primitive::Count,
+        Primitive::Get,
+        Primitive::Meta,
+        Primitive::Nth,
+        Primitive::Assoc,
+        Primitive::First,
+        Primitive::Rest,
+        Primitive::Second,
+        Primitive::ToMutable,
+        Primitive::ToPersistent,
+        Primitive::NumberPredicate,
+        Primitive::ArrayNew,
+        Primitive::ArrayGet,
+        Primitive::ArraySet,
+        Primitive::ObjectNew,
+        Primitive::ObjectGet,
+        Primitive::ObjectSet,
+    ];
+
     pub fn from_symbol(symbol: &str) -> Option<Primitive> {
         Some(match symbol {
             "+" => Primitive::Add,

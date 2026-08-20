@@ -1,5 +1,17 @@
 thread_local! {
     static PRINTER_CAPTURES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    #[cfg(test)]
+    static EVALUATOR_INVOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_evaluator_invocation_count<R>(operation: impl FnOnce() -> R) -> (R, usize) {
+    EVALUATOR_INVOCATIONS.with(|count| {
+        let previous = count.replace(0);
+        let result = operation();
+        let invocations = count.replace(previous);
+        (result, invocations)
+    })
 }
 
 fn printer_write(text: &str) -> Result<(), String> {
@@ -20,6 +32,8 @@ fn printer_write(text: &str) -> Result<(), String> {
 }
 
 pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, String> {
+    #[cfg(test)]
+    EVALUATOR_INVOCATIONS.with(|count| count.set(count.get() + 1));
     check_evaluation_interrupt()?;
     match form {
         Form::Number(v) => Ok(Value::Number(*v)),
@@ -877,12 +891,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         return Err("def expects a name and value".into());
                     }
                     let (name, metadata) = binding_symbol(&fs[1], "def name")?;
-                    if protected_fallback_binding(env, &name, metadata.clone()).is_some() {
-                        let Some(Value::Var(var)) = env.get(&name) else {
-                            unreachable!("protected fallback binding must be a Var")
-                        };
-                        return Ok(Value::Var(var.clone()));
-                    }
                     prepare_owned_definition(env, &name)?;
                     let value = eval(&fs[2], env)?;
                     let var = if namespace_registry().is_ok() {
@@ -1350,9 +1358,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     }
                     let (name, metadata) = binding_symbol(&fs[1], "defmacro name")?;
                     let (metadata, rest) = definition_metadata(metadata, &fs[2..], false, true)?;
-                    if let Some(value) = protected_fallback_binding(env, &name, metadata.clone()) {
-                        return Ok(value);
-                    }
                     if let Some(Value::Var(var)) = env.get(&name) {
                         if var.symbol().get_namespace() == Some("std.foundation") {
                             namespace_registry()?
@@ -1430,9 +1435,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                         if binding_var(env, schema.as_str()).is_none() {
                             return Err(format!("schema Var does not exist: {schema}"));
                         }
-                    }
-                    if let Some(value) = protected_fallback_binding(env, &name, metadata.clone()) {
-                        return Ok(value);
                     }
                     prepare_owned_definition(env, &name)?;
                     let cell = match env.get(&name) {

@@ -834,81 +834,60 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub(crate) fn basic_function_values() -> Vec<(&'static str, Value)> {
-    let mut functions = vec![
-        (
-            "compare",
-            native_function("compare", 2, |arguments| {
-                Ok(Value::Number(match arguments[0].cmp(&arguments[1]) {
-                    std::cmp::Ordering::Less => -1,
-                    std::cmp::Ordering::Equal => 0,
-                    std::cmp::Ordering::Greater => 1,
-                }))
-            }),
-        ),
-        (
-            "boolean",
-            native_function("boolean", 1, |arguments| {
-                Ok(Value::Bool(arguments[0].truthy()))
-            }),
-        ),
-        (
-            "not=",
-            native_variadic_function("not=", |arguments| {
-                match apply_primitive(Primitive::Equal, &arguments)? {
-                    Value::Bool(equal) => Ok(Value::Bool(!equal)),
-                    _ => unreachable!("equality primitive must return a boolean"),
-                }
-            }),
-        ),
-        (
-            "integer?",
-            native_function("integer?", 1, |arguments| {
-                Ok(Value::Bool(numeric::is_integer_value(&arguments[0])))
-            }),
-        ),
-        (
-            "quot",
-            native_function("quot", 2, |arguments| {
-                numeric::numeric_quotient(&arguments[0], &arguments[1])
-            }),
-        ),
-        (
-            "rem",
-            native_function("rem", 2, |arguments| {
-                apply_binary_primitive(Primitive::Remainder, &arguments[0], &arguments[1])
-            }),
-        ),
-        (
-            "mod",
-            native_function("mod", 2, |arguments| {
-                numeric::numeric_binary(ArithmeticOp::Modulo, &arguments[0], &arguments[1])
-            }),
-        ),
-    ];
-    for (name, primitive) in [
-        ("+", Primitive::Add),
-        ("-", Primitive::Subtract),
-        ("*", Primitive::Multiply),
-        ("/", Primitive::Divide),
-        ("%", Primitive::Remainder),
-        ("=", Primitive::Equal),
-        ("<", Primitive::Less),
-        ("<=", Primitive::LessOrEqual),
-        (">", Primitive::Greater),
-        (">=", Primitive::GreaterOrEqual),
-        ("count", Primitive::Count),
-        ("get", Primitive::Get),
-        ("meta", Primitive::Meta),
-    ] {
-        functions.push((
-            name,
+pub(crate) const BASIC_FUNCTION_NAMES: &[&str] = &[
+    "compare", "boolean", "not=", "integer?", "quot", "rem", "mod", "+", "-", "*", "/",
+    "%", "=", "<", "<=", ">", ">=", "count", "get", "meta",
+];
+
+fn direct_function_value(name: &str) -> Option<Value> {
+    match name {
+        "compare" => Some(native_function("compare", 2, |arguments| {
+            Ok(Value::Number(match arguments[0].cmp(&arguments[1]) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            }))
+        })),
+        "boolean" => Some(native_function("boolean", 1, |arguments| {
+            Ok(Value::Bool(arguments[0].truthy()))
+        })),
+        "not=" => Some(native_variadic_function("not=", |arguments| {
+            match apply_primitive(Primitive::Equal, &arguments)? {
+                Value::Bool(equal) => Ok(Value::Bool(!equal)),
+                _ => unreachable!("equality primitive must return a boolean"),
+            }
+        })),
+        "integer?" => Some(native_function("integer?", 1, |arguments| {
+            Ok(Value::Bool(numeric::is_integer_value(&arguments[0])))
+        })),
+        "quot" => Some(native_function("quot", 2, |arguments| {
+            numeric::numeric_quotient(&arguments[0], &arguments[1])
+        })),
+        "rem" => Some(native_function("rem", 2, |arguments| {
+            apply_binary_primitive(Primitive::Remainder, &arguments[0], &arguments[1])
+        })),
+        "mod" => Some(native_function("mod", 2, |arguments| {
+            numeric::numeric_binary(ArithmeticOp::Modulo, &arguments[0], &arguments[1])
+        })),
+        _ => Primitive::from_symbol(name).map(|primitive| {
             native_variadic_function(name, move |arguments| {
                 apply_primitive(primitive, &arguments)
-            }),
-        ));
+            })
+        }),
     }
-    functions
+}
+
+pub(crate) fn basic_function_values() -> Vec<(&'static str, Value)> {
+    BASIC_FUNCTION_NAMES
+        .iter()
+        .map(|name| {
+            (
+                *name,
+                direct_function_value(name)
+                    .expect("basic function must have a direct implementation"),
+            )
+        })
+        .collect()
 }
 
 thread_local! {
@@ -926,6 +905,9 @@ fn structural_native_dispatch_active(name: &str) -> bool {
 
 pub(crate) fn structural_function_value(name: impl Into<String>) -> Value {
     let name = name.into();
+    if let Some(callable) = direct_function_value(&name) {
+        return callable;
+    }
     let display_name = name.clone();
     let call_name = if name == "disj" {
         "dissoc".to_owned()

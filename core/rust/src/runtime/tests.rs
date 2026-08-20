@@ -3664,7 +3664,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_definitions_never_replace_rust_library_vars() {
+    fn fallback_definitions_take_ownership_from_bootstrap_library_vars() {
         let mut runtime = Runtime::new();
         let foundation = runtime.namespace_registry.find_or_create("std.foundation");
         let native = foundation.intern_with_origin(
@@ -3685,8 +3685,9 @@ mod tests {
             .resolve(&crate::lang::data::Symbol::parse("optimized"))
             .unwrap();
         assert_eq!(refreshed.identity_address(), identity);
-        assert_eq!(refreshed.origin(), kernel::VarOrigin::RustLibrary);
-        assert_eq!(refreshed.deref_value().display(), "7");
+        assert_eq!(refreshed.origin(), kernel::VarOrigin::HalFallback);
+        assert!(matches!(refreshed.deref_value(), core::Value::Function(_)));
+        assert_eq!(runtime.eval_text("(optimized 1)").unwrap(), "9");
         assert_eq!(
             refreshed
                 .hara_metadata()
@@ -3716,6 +3717,82 @@ mod tests {
                 crate::lang::data::MetadataValue::Keyword(crate::lang::data::Keyword::from("int"))
             ]))
         );
+    }
+
+    #[test]
+    fn vm_def_global_takes_ownership_from_a_bootstrap_library_var() {
+        let registry = kernel::NamespaceRegistry::new("std.foundation");
+        core::with_namespace_registry(&registry, || {
+            let seed = registry.current().intern_with_origin(
+                "optimized",
+                core::Value::Number(7),
+                kernel::VarOrigin::RustLibrary,
+            );
+            let refreshed = core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
+                core::vm_def_global("optimized", core::Value::Number(9), None)
+            })
+            .unwrap();
+            assert!(seed.same_identity(&refreshed));
+            assert_eq!(refreshed.origin(), kernel::VarOrigin::HalFallback);
+            assert_eq!(refreshed.deref_value(), core::Value::Number(9));
+        });
+    }
+
+    #[test]
+    fn base_backed_foundation_facades_are_source_owned() {
+        let runtime = Runtime::new();
+        let foundation = runtime.namespace_registry.find("std.foundation").unwrap();
+        for name in ["list", "boolean", "compare", "integer?"] {
+            let var = foundation
+                .resolve(&crate::lang::data::Symbol::parse(name))
+                .unwrap_or_else(|| panic!("missing std.foundation/{name}"));
+            assert_eq!(
+                var.origin(),
+                kernel::VarOrigin::HalFallback,
+                "std.foundation/{name} must be owned by canonical HAL"
+            );
+        }
+
+        let base = runtime.namespace_registry.find("std.native.Base").unwrap();
+        for name in ["list", "boolean", "compare", "integer?"] {
+            let var = base
+                .resolve(&crate::lang::data::Symbol::parse(name))
+                .unwrap_or_else(|| panic!("missing std.native.Base/{name}"));
+            assert_eq!(
+                var.origin(),
+                kernel::VarOrigin::RuntimePrimitive,
+                "std.native.Base/{name} must remain runtime-owned"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_runtime_callables_do_not_reenter_the_evaluator() {
+        for name in core::BASIC_FUNCTION_NAMES
+            .iter()
+            .copied()
+            .chain(core::Primitive::ALL.iter().map(|primitive| primitive.operator()))
+        {
+            let (_, evaluator_invocations) = core::with_evaluator_invocation_count(|| {
+                core::call_value(core::structural_function_value(name), Vec::new())
+            });
+            assert_eq!(
+                evaluator_invocations, 0,
+                "{name} must dispatch directly at the value boundary"
+            );
+        }
+
+        let callable = core::structural_function_value("count");
+        let (result, evaluator_invocations) = core::with_evaluator_invocation_count(|| {
+            core::call_value(
+                callable,
+                vec![core::Value::Vector(
+                    vec![core::Value::Number(1), core::Value::Number(2)].into(),
+                )],
+            )
+        });
+        assert_eq!(result.unwrap(), core::Value::Number(2));
+        assert_eq!(evaluator_invocations, 0);
     }
 
     #[test]
