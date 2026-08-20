@@ -86,16 +86,16 @@ final class FilesystemMountTable implements AutoCloseable {
 
   private static final class Mount {
     final IFilesystem filesystem;
-    final IFilesystem.Descriptor descriptor;
+    final IFilesystem.Descriptor admittedDescriptor;
     final HaraMountedFileSystem graalFilesystem;
     int attachments;
 
     Mount(
         IFilesystem filesystem,
-        IFilesystem.Descriptor descriptor,
+        IFilesystem.Descriptor admittedDescriptor,
         HaraMountedFileSystem graalFilesystem) {
       this.filesystem = filesystem;
-      this.descriptor = descriptor;
+      this.admittedDescriptor = admittedDescriptor;
       this.graalFilesystem = graalFilesystem;
     }
   }
@@ -219,7 +219,11 @@ final class FilesystemMountTable implements AutoCloseable {
 
   synchronized Info info(SessionModel.SessionMountId id) {
     Mount mount = requireMount(id);
-    return new Info(id, mount.descriptor, mount.attachments, mount.graalFilesystem != null);
+    return new Info(
+        id,
+        currentDescriptor(mount),
+        mount.attachments,
+        mount.graalFilesystem != null);
   }
 
   synchronized SessionModel.SessionMountId attachment(AttachmentKey key) {
@@ -335,7 +339,24 @@ final class FilesystemMountTable implements AutoCloseable {
   }
 
   private static OpenedMount opened(SessionModel.SessionMountId id, Mount mount) {
-    return new OpenedMount(id, mount.filesystem, mount.descriptor, mount.graalFilesystem);
+    return new OpenedMount(
+        id,
+        mount.filesystem,
+        currentDescriptor(mount),
+        mount.graalFilesystem);
+  }
+
+  private static IFilesystem.Descriptor currentDescriptor(Mount mount) {
+    IFilesystem.Descriptor current =
+        Objects.requireNonNull(mount.filesystem.descriptor(), "filesystem descriptor");
+    IFilesystem.Descriptor admitted = mount.admittedDescriptor;
+    if (!admitted.kind().equals(current.kind())
+        || admitted.readOnly() != current.readOnly()
+        || !admitted.capabilities().equals(current.capabilities())) {
+      throw new IllegalStateException(
+          "FILESYSTEM_DESCRIPTOR_AUTHORITY_CHANGED " + admitted.kind());
+    }
+    return current;
   }
 
   private synchronized Mount requireMount(SessionModel.SessionMountId id) {

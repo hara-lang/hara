@@ -1,5 +1,6 @@
 package hara.truffle;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -57,7 +58,7 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
   }
 
   private final IFilesystem filesystem;
-  private final IFilesystem.Descriptor descriptor;
+  private final IFilesystem.Descriptor admittedDescriptor;
   private final Set<ActiveCall> active = ConcurrentHashMap.newKeySet();
   private final AtomicBoolean closed = new AtomicBoolean();
   private final AtomicLong sequence = new AtomicLong(1);
@@ -65,12 +66,14 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
 
   FilesystemRuntimeBinding(IFilesystem filesystem) {
     this.filesystem = Objects.requireNonNull(filesystem, "filesystem");
-    this.descriptor =
+    this.admittedDescriptor =
         Objects.requireNonNull(filesystem.descriptor(), "filesystem descriptor");
   }
 
   IFilesystem.Descriptor descriptor() {
-    return descriptor;
+    synchronized (lifecycle) {
+      return currentDescriptor();
+    }
   }
 
   IFilesystem filesystem() {
@@ -91,7 +94,7 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
         "stat",
         logical,
         null,
-        IFilesystem.Capability.READ,
+        List.of(IFilesystem.Capability.READ),
         context -> filesystem.stat(context, logical));
   }
 
@@ -101,7 +104,7 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
         "read",
         logical,
         null,
-        IFilesystem.Capability.READ,
+        List.of(IFilesystem.Capability.READ),
         context -> filesystem.read(context, logical));
   }
 
@@ -115,25 +118,27 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
     IFilesystem.WriteOptions validated = Objects.requireNonNull(options, "write options");
     IFilesystem.MutationContext expected =
         mutation == null ? IFilesystem.MutationContext.none() : mutation;
-    IFilesystem.Capability capability =
-        validated.mode() == IFilesystem.WriteMode.APPEND
-            ? IFilesystem.Capability.APPEND
-            : IFilesystem.Capability.WRITE;
+    ArrayList<IFilesystem.Capability> required =
+        new ArrayList<>(List.of(IFilesystem.Capability.WRITE));
+    if (validated.mode() == IFilesystem.WriteMode.APPEND) {
+      required.add(IFilesystem.Capability.APPEND);
+    }
+    requireRevisionCapability(required, expected);
     return submit(
         "write",
         logical,
         null,
-        capability,
+        required,
         context -> filesystem.write(context, logical, frozen, validated, expected));
   }
 
   Pending<Boolean> exists(String path) {
     String logical = HaraLogicalPath.normalise(path);
     return submit(
-        "stat",
+        "exists?",
         logical,
         null,
-        IFilesystem.Capability.READ,
+        List.of(IFilesystem.Capability.READ),
         context -> FilesystemEffects.exists(filesystem, context, logical));
   }
 
@@ -143,17 +148,17 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
         "entries",
         logical,
         null,
-        IFilesystem.Capability.ENTRIES,
+        List.of(IFilesystem.Capability.ENTRIES),
         context -> FilesystemEffects.entries(filesystem, context, logical));
   }
 
   Pending<List<String>> list(String path) {
     String logical = HaraLogicalPath.normalise(path);
     return submit(
-        "entries",
+        "list",
         logical,
         null,
-        IFilesystem.Capability.ENTRIES,
+        List.of(IFilesystem.Capability.ENTRIES),
         context -> FilesystemEffects.list(filesystem, context, logical));
   }
 
@@ -163,7 +168,7 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
         "walk",
         logical,
         null,
-        IFilesystem.Capability.ENTRIES,
+        List.of(IFilesystem.Capability.READ, IFilesystem.Capability.ENTRIES),
         context -> FilesystemEffects.walk(filesystem, context, logical));
   }
 
@@ -175,11 +180,14 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
     IFilesystem.MkdirOptions validated = Objects.requireNonNull(options, "mkdir options");
     IFilesystem.MutationContext expected =
         mutation == null ? IFilesystem.MutationContext.none() : mutation;
+    ArrayList<IFilesystem.Capability> required =
+        new ArrayList<>(List.of(IFilesystem.Capability.MKDIR));
+    requireRevisionCapability(required, expected);
     return submit(
         "mkdir",
         logical,
         null,
-        IFilesystem.Capability.MKDIR,
+        required,
         context -> filesystem.mkdir(context, logical, validated, expected));
   }
 
@@ -191,11 +199,14 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
     IFilesystem.DeleteOptions validated = Objects.requireNonNull(options, "delete options");
     IFilesystem.MutationContext expected =
         mutation == null ? IFilesystem.MutationContext.none() : mutation;
+    ArrayList<IFilesystem.Capability> required =
+        new ArrayList<>(List.of(IFilesystem.Capability.DELETE));
+    requireRevisionCapability(required, expected);
     return submit(
         "delete",
         logical,
         null,
-        IFilesystem.Capability.DELETE,
+        required,
         context -> filesystem.delete(context, logical, validated, expected));
   }
 
@@ -209,20 +220,17 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
     IFilesystem.CopyOptions validated = Objects.requireNonNull(options, "copy options");
     IFilesystem.MutationContext expected =
         mutation == null ? IFilesystem.MutationContext.none() : mutation;
+    ArrayList<IFilesystem.Capability> required =
+        new ArrayList<>(List.of(IFilesystem.Capability.COPY));
     if (validated.preserveModified()) {
-      Pending<IFilesystem.Mutation> unsupported =
-          rejectedCapability(
-              IFilesystem.Capability.PRESERVE_MODIFIED,
-              "copy",
-              logicalSource,
-              logicalTarget);
-      if (unsupported != null) return unsupported;
+      required.add(IFilesystem.Capability.PRESERVE_MODIFIED);
     }
+    requireRevisionCapability(required, expected);
     return submit(
         "copy",
         logicalSource,
         logicalTarget,
-        IFilesystem.Capability.COPY,
+        required,
         context ->
             filesystem.copy(
                 context,
@@ -242,20 +250,15 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
     IFilesystem.MoveOptions validated = Objects.requireNonNull(options, "move options");
     IFilesystem.MutationContext expected =
         mutation == null ? IFilesystem.MutationContext.none() : mutation;
-    if (validated.atomic()) {
-      Pending<IFilesystem.Mutation> unsupported =
-          rejectedCapability(
-              IFilesystem.Capability.ATOMIC_MOVE,
-              "move",
-              logicalSource,
-              logicalTarget);
-      if (unsupported != null) return unsupported;
-    }
+    ArrayList<IFilesystem.Capability> required =
+        new ArrayList<>(List.of(IFilesystem.Capability.MOVE));
+    if (validated.atomic()) required.add(IFilesystem.Capability.ATOMIC_MOVE);
+    requireRevisionCapability(required, expected);
     return submit(
         "move",
         logicalSource,
         logicalTarget,
-        IFilesystem.Capability.MOVE,
+        required,
         context ->
             filesystem.move(
                 context,
@@ -271,7 +274,7 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
         "temp-file",
         logical,
         null,
-        IFilesystem.Capability.WRITE,
+        List.of(IFilesystem.Capability.READ, IFilesystem.Capability.WRITE),
         context ->
             FilesystemEffects.tempFile(filesystem, context, logical, prefix, suffix));
   }
@@ -282,7 +285,7 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
         "temp-directory",
         logical,
         null,
-        IFilesystem.Capability.MKDIR,
+        List.of(IFilesystem.Capability.READ, IFilesystem.Capability.MKDIR),
         context ->
             FilesystemEffects.tempDirectory(filesystem, context, logical, prefix));
   }
@@ -291,114 +294,132 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
       String operation,
       String path,
       String target,
-      IFilesystem.Capability capability,
+      List<IFilesystem.Capability> capabilities,
       Invocation<T> invocation) {
+    Objects.requireNonNull(capabilities, "filesystem required capabilities");
     Objects.requireNonNull(invocation, "filesystem invocation");
     CompletableFuture<T> result = new CompletableFuture<>();
-    try {
-      requireCapability(capability, operation, path, target);
-    } catch (Throwable error) {
-      result.completeExceptionally(error);
-      return new Pending<>(result, () -> false);
-    }
-
     IFilesystem.CallContext context =
         IFilesystem.CallContext.create()
             .withTraceId(
                 "filesystem/"
-                    + descriptor.kind()
+                    + admittedDescriptor.kind()
                     + "/"
                     + operation
                     + "/"
                     + sequence.getAndIncrement());
     ActiveCall call = new ActiveCall(context, result, operation, path, target);
+    CompletionStage<T> stage;
+
     synchronized (lifecycle) {
       if (closed.get()) {
         result.completeExceptionally(closedFailure(operation, path, target));
         return new Pending<>(result, () -> false);
       }
-      active.add(call);
+      try {
+        requireCapabilities(capabilities, operation, path, target);
+        active.add(call);
+        result.whenComplete((value, error) -> active.remove(call));
+        stage =
+            Objects.requireNonNull(
+                invocation.invoke(context), "filesystem operation stage");
+      } catch (Throwable error) {
+        result.completeExceptionally(mapFailure(error, operation, path, target));
+        return new Pending<>(result, () -> false);
+      }
     }
-    result.whenComplete((value, error) -> active.remove(call));
 
-    try {
-      CompletionStage<T> stage =
-          Objects.requireNonNull(invocation.invoke(context), "filesystem operation stage");
-      stage.whenComplete(
-          (value, error) -> {
-            if (error == null) {
+    stage.whenComplete(
+        (value, error) -> {
+          synchronized (lifecycle) {
+            if (result.isDone()) return;
+            if (closed.get()) {
+              result.completeExceptionally(closedFailure(operation, path, target));
+            } else if (error == null) {
               result.complete(value);
             } else {
               result.completeExceptionally(mapFailure(error, operation, path, target));
             }
-          });
-    } catch (Throwable error) {
-      result.completeExceptionally(mapFailure(error, operation, path, target));
-    }
+          }
+        });
     return new Pending<>(result, () -> cancel(call));
   }
 
-  private <T> Pending<T> rejectedCapability(
-      IFilesystem.Capability capability,
-      String operation,
-      String path,
-      String target) {
-    try {
-      requireCapability(capability, operation, path, target);
-      return null;
-    } catch (Throwable error) {
-      CompletableFuture<T> rejected = new CompletableFuture<>();
-      rejected.completeExceptionally(error);
-      return new Pending<>(rejected, () -> false);
-    }
-  }
-
   private boolean cancel(ActiveCall call) {
-    if (call.result.isDone()) return false;
-    boolean requested = call.context.cancel();
-    boolean settled =
-        call.result.completeExceptionally(
-            FilesystemException.cancelled(
-                descriptor.kind(), call.operation, call.path, call.target));
-    return requested || settled;
+    synchronized (lifecycle) {
+      if (call.result.isDone()) return false;
+      boolean requested = call.context.cancel();
+      boolean settled =
+          call.result.completeExceptionally(
+              FilesystemException.cancelled(
+                  admittedDescriptor.kind(), call.operation, call.path, call.target));
+      return requested || settled;
+    }
   }
 
   @Override
   public void close() {
-    List<ActiveCall> calls;
     synchronized (lifecycle) {
       if (!closed.compareAndSet(false, true)) return;
-      calls = List.copyOf(active);
+      for (ActiveCall call : List.copyOf(active)) {
+        call.context.cancel();
+        call.result.completeExceptionally(
+            closedFailure(call.operation, call.path, call.target));
+      }
       active.clear();
-    }
-    for (ActiveCall call : calls) {
-      call.context.cancel();
-      call.result.completeExceptionally(
-          closedFailure(call.operation, call.path, call.target));
     }
   }
 
-  private void requireCapability(
-      IFilesystem.Capability capability,
+  private void requireCapabilities(
+      List<IFilesystem.Capability> required,
       String operation,
       String path,
       String target) {
-    if (closed.get()) throw closedFailure(operation, path, target);
-    if (capability == null || descriptor.capabilities().contains(capability)) return;
-    throw new FilesystemException(
-        "unsupported",
-        "filesystem provider does not advertise " + capability.keyword(),
-        descriptor.kind(),
-        operation,
-        path,
-        target,
-        "capability-unavailable:" + capability.keyword(),
-        false,
-        null);
+    IFilesystem.Descriptor current = currentDescriptor();
+    for (IFilesystem.Capability capability : required) {
+      if (current.capabilities().contains(capability)) continue;
+      throw new FilesystemException(
+          "unsupported",
+          "filesystem provider does not advertise " + capability.keyword(),
+          admittedDescriptor.kind(),
+          operation,
+          path,
+          target,
+          "capability-unavailable:" + capability.keyword(),
+          false,
+          null);
+    }
+  }
+
+  private IFilesystem.Descriptor currentDescriptor() {
+    IFilesystem.Descriptor current =
+        Objects.requireNonNull(filesystem.descriptor(), "filesystem descriptor");
+    if (!admittedDescriptor.kind().equals(current.kind())
+        || admittedDescriptor.readOnly() != current.readOnly()
+        || !admittedDescriptor.capabilities().equals(current.capabilities())) {
+      throw new FilesystemException(
+          "io",
+          "filesystem provider changed its authority descriptor",
+          admittedDescriptor.kind(),
+          "descriptor",
+          null,
+          null,
+          "descriptor-authority-changed",
+          false,
+          null);
+    }
+    return current;
+  }
+
+  private static void requireRevisionCapability(
+      List<IFilesystem.Capability> required,
+      IFilesystem.MutationContext mutation) {
+    if (mutation.required()) required.add(IFilesystem.Capability.REVISION_CHECK);
   }
 
   private FilesystemException closedFailure(String operation, String path, String target) {
-    return FilesystemException.providerClosed(descriptor.kind(), operation, path, target);
+    return FilesystemException.providerClosed(
+        admittedDescriptor.kind(), operation, path, target);
   }
 
   private FilesystemException mapFailure(
@@ -408,7 +429,7 @@ final class FilesystemRuntimeBinding implements AutoCloseable {
     return new FilesystemException(
         "io",
         "filesystem operation failed",
-        descriptor.kind(),
+        admittedDescriptor.kind(),
         operation,
         path,
         target,
