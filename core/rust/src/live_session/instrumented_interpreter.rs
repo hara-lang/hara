@@ -22,6 +22,7 @@ use super::{
 
 const EVENT_QUEUE_CAPACITY: usize = 1_024;
 
+#[derive(Clone)]
 struct InterpreterRuntimeContext {
     namespace_registry: crate::kernel::NamespaceRegistry<Value>,
     protocols: core::ProtocolRegistry,
@@ -254,7 +255,7 @@ impl InstrumentedInterpreterLiveSession {
     }
 
     fn step_target(&mut self) -> Result<(), LiveSessionError> {
-        let context = &self.context;
+        let context = self.context.clone();
         let hub = self.hub.clone();
         let target = self.target_mut()?;
         context
@@ -268,12 +269,12 @@ impl InstrumentedInterpreterLiveSession {
     fn run_target(&mut self, boundary_limit: usize) -> Result<usize, LiveSessionError> {
         if self.target()?.paused() {
             let lease = self.lease()?.clone();
-            let hub = self.hub.borrow();
+            let hub = self.hub.clone();
             self.target_mut()?
-                .continue_execution(&hub, &lease)
+                .continue_execution(&hub.borrow(), &lease)
                 .map_err(instrumentation_error)?;
         }
-        let context = &self.context;
+        let context = self.context.clone();
         let hub = self.hub.clone();
         let target = self.target_mut()?;
         let boundaries = context
@@ -286,7 +287,7 @@ impl InstrumentedInterpreterLiveSession {
 
     fn settle_target(&mut self, state: PromiseState) -> Result<(), LiveSessionError> {
         let lease = self.lease()?.clone();
-        let context = &self.context;
+        let context = self.context.clone();
         let hub = self.hub.clone();
         let target = self.target_mut()?;
         context
@@ -360,9 +361,9 @@ impl InstrumentedInterpreterLiveSession {
             self.settle_target(state)?;
         } else if self.target()?.paused() {
             let lease = self.lease()?.clone();
-            let hub = self.hub.borrow();
+            let hub = self.hub.clone();
             self.target_mut()?
-                .continue_execution(&hub, &lease)
+                .continue_execution(&hub.borrow(), &lease)
                 .map_err(instrumentation_error)?;
             self.sync_status();
         }
