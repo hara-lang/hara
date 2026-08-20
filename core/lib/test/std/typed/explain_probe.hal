@@ -1,5 +1,6 @@
 (ns std.typed.explain-probe
-  (:require [std.typed.explain :as explain]
+  (:require [std.typed.catalog :as catalog]
+            [std.typed.explain :as explain]
             [std.typed.registry :as registry]))
 
 (def nodes
@@ -7,18 +8,49 @@
    'demo
    {'Node '[:map [:value :int] [:next [:maybe Node]]]}))
 
-(pr-str
- (let [union (explain/explain [:or :int :str] :wrong)
+(def recursive-catalog
+  (catalog/catalog
+   [{:schema/id :probe/node
+     :schema/version 1
+     :schema/form
+     '[:map
+       [:value :int]
+       [:next [:maybe (var Node)]]]}]))
+
+(def recursive-coordinate
+  (catalog/coordinate recursive-catalog :probe/node 1))
+
+(let [union (explain/explain [:or :int :str] :wrong)
       recursive (explain/explain 'Node
                                  {:value 1
                                   :next {:value "two" :next nil}}
                                  nodes)
-      result (explain/check :int 42)]
-  [(nil? (explain/explain :int 42))
-   (:failure/code (first (:failures union)))
-   (count (:failure/children (first (:failures union))))
-   (every? explain/failure?
-           (:failure/children (first (:failures union))))
-   (:failure/path (first (:failures recursive)))
-   (Result/success? result)
-   (Result/data result)]))
+      result (explain/check :int 42)
+      components
+      (catalog/dependency-components
+       recursive-catalog
+       [recursive-coordinate])
+      component (first components)
+      checks
+      [(nil? (explain/explain :int 42))
+       (keyword? (:failure/code (first (:failures union))))
+       (= 2 (count (:failure/children (first (:failures union)))))
+       (every? explain/failure?
+               (:failure/children (first (:failures union))))
+       (vector? (:failure/path (first (:failures recursive))))
+       (Result/success? result)
+       (= true (Result/data result))
+       (= [recursive-coordinate] (:component/members component))
+       (= true (:component/recursive? component))
+       (= [] (:component/dependencies component))
+       (= [recursive-coordinate]
+          (catalog/dependency-order
+           recursive-catalog
+           [recursive-coordinate]))]]
+  (if (every? true? checks)
+    (pr-str checks)
+    (throw
+     (ex :state
+         {:checks checks
+          :components components}
+         :ex/message "std.typed Truffle probe failed"))))
