@@ -121,6 +121,9 @@ impl InterpreterTarget {
         hub: &mut InstrumentationHub,
     ) -> Result<InterpreterBoundary, InstrumentationError> {
         let directive = hub.take_directive(&self.target)?;
+        if self.paused && directive == InstrumentDirective::Continue {
+            return Ok(self.boundary(Vec::new()));
+        }
         let pause_after = directive == InstrumentDirective::StepNext;
         match directive {
             InstrumentDirective::Suspend => {
@@ -287,8 +290,8 @@ impl InterpreterTarget {
             EvalFiberState::Cancelled => "cancelled",
             EvalFiberState::Running | EvalFiberState::Suspended => return Ok(()),
         };
-        let mut event = ProducerEvent::live(EventKind::ExecutionTerminal)
-            .with_data("status", status);
+        let mut event =
+            ProducerEvent::live(EventKind::ExecutionTerminal).with_data("status", status);
         match state {
             EvalFiberState::Completed(value) => {
                 event = event.with_data("result/type", crate::core::portable_type_name(&value));
@@ -296,9 +299,7 @@ impl InterpreterTarget {
             EvalFiberState::Failed(error) => {
                 event = event.with_data("error", bounded_text(&error, 1_024));
             }
-            EvalFiberState::Cancelled
-            | EvalFiberState::Running
-            | EvalFiberState::Suspended => {}
+            EvalFiberState::Cancelled | EvalFiberState::Running | EvalFiberState::Suspended => {}
         }
         self.terminal_emitted = true;
         self.emit(hub, event, reports)

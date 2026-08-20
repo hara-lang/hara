@@ -180,6 +180,8 @@ fn single_step_directive_advances_one_machine_boundary_then_pauses() {
     let boundary = target.step(&mut hub).expect("one boundary");
 
     assert!(boundary.paused);
+    let retained = target.step(&mut hub).expect("paused direct step");
+    assert!(retained.paused);
     assert_eq!(target.status(), "running");
     assert_eq!(target.run(&mut hub, 32).expect("paused run").len(), 0);
 }

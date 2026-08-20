@@ -133,6 +133,9 @@ impl HbcTarget {
             return Ok(self.boundary(Vec::new()));
         }
         let directive = hub.take_directive(&self.target)?;
+        if self.paused && directive == InstrumentDirective::Continue {
+            return Ok(self.boundary(Vec::new()));
+        }
         let pause_after = directive == InstrumentDirective::StepNext;
         match directive {
             InstrumentDirective::Suspend => {
@@ -304,8 +307,8 @@ impl HbcTarget {
                 &self.source_id,
             )
         });
-        let mut event = ProducerEvent::live(EventKind::ExecutionTerminal)
-            .with_data("status", status);
+        let mut event =
+            ProducerEvent::live(EventKind::ExecutionTerminal).with_data("status", status);
         if let Some(terminal) = terminal {
             event = event
                 .with_data("stack/depth", terminal.stack_depth.to_string())

@@ -106,8 +106,14 @@ fn call_enter_and_return_events_come_from_the_real_cps_path_without_projection()
             .filter(|event| event.envelope.event == EventKind::CallReturn)
             .count()
     );
-    assert_eq!(call_events.first().unwrap().envelope.event, EventKind::CallEnter);
-    assert_eq!(call_events.last().unwrap().envelope.event, EventKind::CallReturn);
+    assert_eq!(
+        call_events.first().unwrap().envelope.event,
+        EventKind::CallEnter
+    );
+    assert_eq!(
+        call_events.last().unwrap().envelope.event,
+        EventKind::CallReturn
+    );
     assert!(events
         .iter()
         .all(|event| event.envelope.target_kind == TargetKind::Interpreter));
@@ -253,6 +259,8 @@ fn single_step_directive_pauses_after_one_authoritative_boundary() {
     let boundary = target.step(&mut hub).expect("one boundary");
 
     assert!(boundary.paused);
+    let retained = target.step(&mut hub).expect("paused direct step");
+    assert!(retained.paused);
     assert_eq!(target.run(&mut hub, 32).expect("paused run").len(), 0);
     assert!(matches!(target.state(), EvalFiberState::Running));
 }
