@@ -4,17 +4,27 @@
 (ns tool.sh.docker
   (:require [tool.sh :as sh]))
 
+(defn- execution-options
+  [value]
+  (select-keys (or value {}) [:cwd :env :stdin]))
+
+(defn- execution-runner
+  [value]
+  (or (:tool.sh/runner (or value {})) sh/run))
+
 (defn command-result
+  "Executes Docker argv through an optional final :tool.sh/runner."
   ([argv]
    (command-result argv {}))
-  ([argv options]
-   (sh/execute argv options)))
+  ([argv value]
+   ((execution-runner value) argv (execution-options value))))
 
 (defn command
+  "Executes Docker argv and rejects non-zero results."
   ([argv]
    (command argv {}))
-  ([argv options]
-   (sh/require-success "Docker command failed" (command-result argv options))))
+  ([argv value]
+   (sh/require-success "Docker command failed" (command-result argv value))))
 
 (defn- key-name
   [key]
@@ -27,7 +37,9 @@
   (str (key-name (or (:group container) "testing")) "_"
        (key-name
         (or (:id container)
-            (throw (ex-info "Docker container id is required" {:container container}))))))
+            (throw
+             (ex-info "Docker container id is required"
+                      {:container container}))))))
 
 (defn append-map
   [arguments flag values]
@@ -63,8 +75,10 @@
   ["docker" "inspect" (container-name container)])
 
 (defn container-running?
-  [container]
-  (= 0 (:exit (command-result (inspect-command container) container))))
+  ([container]
+   (container-running? container container))
+  ([container value]
+   (= 0 (:exit (command-result (inspect-command container) value)))))
 
 (defn container-ip-command
   [name]
@@ -75,8 +89,9 @@
 (defn container-ip
   ([name]
    (container-ip name {}))
-  ([name options]
-   (:stdout (command (container-ip-command name) options))))
+  ([name value]
+   (str/trim
+    (:stdout (command (container-ip-command name) value)))))
 
 (defn published-port-command
   [name port]
@@ -85,8 +100,9 @@
 (defn published-port
   ([name port]
    (published-port name port {}))
-  ([name port options]
-   (let [output (:stdout (command (published-port-command name port) options))
+  ([name port value]
+   (let [output (str/trim
+                 (:stdout (command (published-port-command name port) value)))
          parts (str/split output ":")]
      (read-string (last parts)))))
 
@@ -102,67 +118,90 @@
         arguments (append-map arguments "-l" (:labels container))
         arguments (append-map arguments "-e" (:environment container))
         arguments (append-expose arguments published)
-        arguments (if (false? (:detached container)) arguments (conj arguments "-d"))
-        arguments (if (false? (:remove container)) arguments (conj arguments "--rm"))
+        arguments (if (false? (:detached container))
+                    arguments
+                    (conj arguments "-d"))
+        arguments (if (false? (:remove container))
+                    arguments
+                    (conj arguments "--rm"))
         arguments (if (:no-host container)
                     arguments
-                    (conj arguments "--add-host=host.docker.internal:host-gateway"))
+                    (conj arguments
+                          "--add-host=host.docker.internal:host-gateway"))
         arguments (into arguments (or (:flags container) []))
         arguments (into arguments ["--name" name (:image container)])]
     (into arguments (or (:cmd container) []))))
 
 (defn start-container
-  "Starts or attaches to a named Docker container with an injectable runner."
-  [container]
-  (let [name (container-name container)
-        reused? (container-running? container)
-        published (if (empty? (:expose container))
-                    (map (fn [port] (str "127.0.0.1::" port))
-                         (:ports container))
-                    (:expose container))
-        started (if reused? nil (command (run-command container) container))
-        internal-port (or (first (:ports container)) 5432)
-        exposed? (not (empty? published))
-        host (if exposed? "127.0.0.1" (container-ip name container))
-        port (if exposed? (published-port name internal-port container) internal-port)]
-    (merge container
-           {:container-name name
-            :container-id (if started (:stdout started) name)
-            :container-ip host
-            :host host
-            :port port
-            :owned? (not reused?)
-            :secondary reused?})))
+  "Starts or attaches to a named Docker container."
+  ([container]
+   (start-container container container))
+  ([container value]
+   (let [name (container-name container)
+         reused? (container-running? container value)
+         published (if (empty? (:expose container))
+                     (map (fn [port] (str "127.0.0.1::" port))
+                          (:ports container))
+                     (:expose container))
+         started (if reused?
+                   nil
+                   (command (run-command container) value))
+         internal-port (or (first (:ports container)) 5432)
+         exposed? (not (empty? published))
+         host (if exposed?
+                "127.0.0.1"
+                (container-ip name value))
+         port (if exposed?
+                (published-port name internal-port value)
+                internal-port)]
+     (merge (dissoc container :tool.sh/runner :cwd :env :stdin)
+            {:container-name name
+             :container-id (if started
+                             (str/trim (:stdout started))
+                             name)
+             :container-ip host
+             :host host
+             :port port
+             :owned? (not reused?)
+             :secondary reused?}))))
 
 (defn kill-command
   [container]
   ["docker" "kill" (:container-name container)])
 
 (defn stop-container
-  [container]
-  (if (and container
-           (:owned? container)
-           (not (:secondary container))
-           (not (:permanent container)))
-    (command (kill-command container) container))
-  nil)
+  ([container]
+   (stop-container container container))
+  ([container value]
+   (if (and container
+            (:owned? container)
+            (not (:secondary container))
+            (not (:permanent container)))
+     (command (kill-command container) value))
+   nil))
 
 (defn start-runtime
   "Attaches a configured container to a runtime. Core HAL intentionally omits Ryuk."
-  [runtime container]
-  (let [id (or (:id container)
-               (str (name (or (:runtime runtime) :runtime)) "-"
-                    (name (or (:id runtime) :default))))
-        labels (merge {"rt/lang" (name (:lang runtime))
-                       "rt/module" (str (or (:module runtime) ""))}
-                      (:labels container))
-        started (start-container (assoc container :id id :labels labels))]
-    (assoc runtime
-           :host (:host started)
-           :port (:port started)
-           :container started)))
+  ([runtime container]
+   (start-runtime runtime container container))
+  ([runtime container value]
+   (let [id (or (:id container)
+                (str (name (or (:runtime runtime) :runtime)) "-"
+                     (name (or (:id runtime) :default))))
+         labels (merge {"rt/lang" (name (:lang runtime))
+                        "rt/module" (str (or (:module runtime) ""))}
+                       (:labels container))
+         started (start-container
+                  (assoc container :id id :labels labels)
+                  value)]
+     (assoc runtime
+            :host (:host started)
+            :port (:port started)
+            :container started))))
 
 (defn stop-runtime
-  [runtime container]
-  (stop-container container)
-  (assoc runtime :container nil))
+  ([runtime container]
+   (stop-runtime runtime container container))
+  ([runtime container value]
+   (stop-container container value)
+   (assoc runtime :container nil)))

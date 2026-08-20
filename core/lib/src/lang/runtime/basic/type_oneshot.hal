@@ -45,56 +45,36 @@
 
 (defn- process-options
   [runtime]
-  (let [cwd (get-in runtime [:process :cwd])
-        env (get-in runtime [:process :env])
-        selected (if cwd {:cwd cwd} {})]
-    (if env
-      (assoc selected :env env)
-      selected)))
-
-(defn- start-evaluator
-  [runtime source]
-  (let [argv (vec (concat (get runtime :exec) [source]))
-        selected (process-options runtime)
-        process (if (empty? selected)
-                  (sh/spawn argv)
-                  (sh/spawn argv selected))]
-    [argv process]))
-
-(defn- kill-quietly
-  [process]
-  (try
-    (Process/kill process)
-    (catch Throwable _ nil)))
+  (select-keys (or (:process runtime) {}) [:cwd :env :stdin]))
 
 (defn oneshot-result
   "Builds the structured result returned by a one-shot target process."
-  [runtime argv values]
-  {:phase :eval
-   :runtime/id (get runtime :id)
-   :runtime/language (get runtime :lang)
-   :lang (get runtime :lang)
-   :runtime (get runtime :runtime)
-   :program (get runtime :program)
-   :command argv
-   :exit (nth values 2)
-   :stdout (str/decode-utf8 (nth values 0))
-   :stderr (str/decode-utf8 (nth values 1))})
+  ([runtime result]
+   (merge
+    {:phase :eval
+     :runtime/id (get runtime :id)
+     :runtime/language (get runtime :lang)
+     :lang (get runtime :lang)
+     :runtime (get runtime :runtime)
+     :program (get runtime :program)}
+    result))
+  ([runtime argv values]
+   (oneshot-result
+    runtime
+    {:command argv
+     :exit (nth values 2)
+     :stdout (str/decode-utf8 (nth values 0))
+     :stderr (str/decode-utf8 (nth values 1))})))
 
 (defn execute-oneshot
-  "Executes emitted target source without depending on the tool.runtime layer."
+  "Executes emitted target source through the canonical one-shot boundary."
   [runtime source]
-  (let [[argv process] (start-evaluator runtime source)]
+  (let [argv (vec (concat (get runtime :exec) [source]))]
     (try
-      (let [values
-            (deref
-             (promise/all
-              [(Process/stdout process)
-               (Process/stderr process)
-               (Process/wait process)]))]
-        (oneshot-result runtime argv values))
+      (oneshot-result
+       runtime
+       (sh/run argv (process-options runtime)))
       (catch Throwable error
-        (kill-quietly process)
         (throw
          (ex-info
           "Target runtime process could not complete"

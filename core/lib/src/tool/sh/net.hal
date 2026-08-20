@@ -1,0 +1,72 @@
+;; ============================================================================
+;; tool.sh.net — explicit network command builders over tool.sh.
+;; ============================================================================
+(ns tool.sh.net
+  (:require [tool.sh :as sh]))
+
+(defn- execution-options
+  [value]
+  (select-keys (or value {}) [:cwd :env :stdin]))
+
+(defn- execution-runner
+  [value]
+  (or (:tool.sh/runner (or value {})) sh/run))
+
+(defn- execute
+  [argv value]
+  (sh/require-success
+   "Network command failed"
+   ((execution-runner value) argv (execution-options value))))
+
+(defn wget-command
+  "Builds one wget argv vector."
+  [root-url file output arguments]
+  (let [command ["wget" (str root-url file)]
+        command (if output
+                  (into command ["-O" output])
+                  command)]
+    (into command (or arguments []))))
+
+(defn- descriptor
+  [value]
+  (cond
+    (string? value)
+    [value nil]
+
+    (and (vector? value)
+         (= 2 (count value))
+         (string? (nth value 0))
+         (or (nil? (nth value 1))
+             (string? (nth value 1))))
+    value
+
+    :else
+    (throw
+     (ex-info "wget file descriptors must be strings or [source output]"
+              {:descriptor value}))))
+
+(defn download
+  ([url]
+   (download url {}))
+  ([url value]
+   (execute
+    (wget-command "" url (:output value) (:arguments value))
+    value)))
+
+(defn wget-bulk
+  "Downloads Foundation-style file descriptors with explicit cwd and argv."
+  ([root-url root-path files]
+   (wget-bulk root-url root-path files [] {}))
+  ([root-url root-path files arguments]
+   (wget-bulk root-url root-path files arguments {}))
+  ([root-url root-path files arguments value]
+   (let [value (assoc (or value {})
+                      :cwd (or (:cwd value)
+                               (str "resources/" root-path)))]
+     (mapv
+      (fn [file]
+        (let [[source output] (descriptor file)]
+          (execute
+           (wget-command root-url source output arguments)
+           value)))
+      files))))

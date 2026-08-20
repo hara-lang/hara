@@ -8,87 +8,163 @@
   [key]
   (str/upper (if (keyword? key) (name key) (str key))))
 
+(defn- execution-runner
+  [value]
+  (or (:tool.sh/runner (or value {})) sh/run))
+
+(defn- command-result
+  [argv value]
+  ((execution-runner value) argv {}))
+
+(defn- command-checked
+  [argv value]
+  (sh/require-success "tmux command failed" (command-result argv value)))
+
 (defn with-args
-  [command options]
-  (let [options (or options {})
-        command (if (:root options)
-                  (into command ["-c" (str (:root options))])
+  "Adds tmux start-directory and environment arguments deterministically."
+  [command value]
+  (let [value (or value {})
+        root (or (:cwd value) (:root value))
+        command (if root
+                  (into command ["-c" (str root)])
                   command)]
-    (reduce (fn [out key]
-              (into out ["-e" (str (env-name key) "=" (get (:env options) key))]))
-            command
-            (sort-by env-name (keys (or (:env options) {}))))))
+    (reduce
+     (fn [out key]
+       (into out
+             ["-e"
+              (str (env-name key) "=" (get (:env value) key))]))
+     command
+     (sort-by env-name (keys (or (:env value) {}))))))
 
 (def tmux-with-args with-args)
 
-(defn kill-server-command [] ["tmux" "kill-server"])
-(defn list-sessions-command [] ["tmux" "list-sessions" "-F" "#{session_name}"])
-(defn has-session-command [session] ["tmux" "has-session" "-t" (str session)])
+(defn- append-direct-command
+  [argv command]
+  (cond
+    (nil? command) argv
+    (vector? command) (into argv (into ["--"] command))
+    (string? command) (conj argv command)
+    :else
+    (throw
+     (ex-info "tmux command must be a string or argv vector"
+              {:command command}))))
+
+(defn kill-server-command
+  []
+  ["tmux" "kill-server"])
+
+(defn list-sessions-command
+  []
+  ["tmux" "list-sessions" "-F" "#{session_name}"])
+
+(defn has-session-command
+  [session]
+  ["tmux" "has-session" "-t" (str session)])
 
 (defn new-session-command
-  ([session] (new-session-command session {}))
-  ([session options]
-   (with-args ["tmux" "new-session" "-d" "-s" (str session) "-n" "CMD"] options)))
+  ([session]
+   (new-session-command session {}))
+  ([session value]
+   (append-direct-command
+    (with-args
+     ["tmux" "new-session" "-d" "-s" (str session) "-n" "CMD"]
+     value)
+    (:command value))))
 
-(defn kill-session-command [session] ["tmux" "kill-session" "-t" (str session)])
-(defn list-windows-command [session]
-  ["tmux" "list-windows" "-t" (str session) "-F" "#{window_name}"])
+(defn kill-session-command
+  [session]
+  ["tmux" "kill-session" "-t" (str session)])
+
+(defn list-windows-command
+  [session]
+  ["tmux" "list-windows" "-t" (str session)
+   "-F" "#{window_name}"])
 
 (defn send-keys-command
+  "Builds command dispatch without collapsing argv vectors into shell text.
+
+   String commands retain the historical send-keys behaviour. Vector commands
+   use respawn-pane, whose multiple command arguments are executed directly."
   [session key command]
-  ["tmux" "send-keys" "-t" (str session ":" key)
-   (if (string? command) command (str/join " " command))
-   "C-m"])
+  (let [target (str session ":" key)]
+    (cond
+      (vector? command)
+      (into ["tmux" "respawn-pane" "-k" "-t" target "--"]
+            command)
+
+      (string? command)
+      ["tmux" "send-keys" "-t" target command "C-m"]
+
+      :else
+      (throw
+       (ex-info "tmux command must be a string or argv vector"
+                {:command command})))))
 
 (defn new-window-command
-  ([session key] (new-window-command session key {}))
-  ([session key options]
-   (with-args ["tmux" "new-window" "-t" (str session) "-n" (str key)] options)))
+  ([session key]
+   (new-window-command session key {}))
+  ([session key value]
+   (append-direct-command
+    (with-args
+     ["tmux" "new-window" "-t" (str session) "-n" (str key)]
+     value)
+    (:command value))))
 
-(defn kill-window-command [session key]
+(defn kill-window-command
+  [session key]
   ["tmux" "kill-window" "-t" (str session ":" key)])
 
 (defn kill-server
   ([] (kill-server {}))
-  ([options] (sh/execute-checked (kill-server-command) options)))
+  ([value] (command-checked (kill-server-command) value)))
 
 (defn list-sessions
   ([] (list-sessions {}))
-  ([options] (str/split-lines (:stdout (sh/execute-checked (list-sessions-command) options)))))
+  ([value]
+   (str/split-lines
+    (:stdout (command-checked (list-sessions-command) value)))))
 
 (defn has-session?
   ([session] (has-session? session {}))
-  ([session options] (= 0 (:exit (sh/execute (has-session-command session) options)))))
+  ([session value]
+   (= 0 (:exit
+         (command-result (has-session-command session) value)))))
 
 (defn new-session
   ([session] (new-session session {}))
-  ([session options] (sh/execute-checked (new-session-command session options) options)))
+  ([session value]
+   (command-checked (new-session-command session value) value)))
 
 (defn kill-session
   ([session] (kill-session session {}))
-  ([session options] (sh/execute-checked (kill-session-command session) options)))
+  ([session value]
+   (command-checked (kill-session-command session) value)))
 
 (defn list-windows
   ([session] (list-windows session {}))
-  ([session options]
-   (str/split-lines (:stdout (sh/execute-checked (list-windows-command session) options)))))
+  ([session value]
+   (str/split-lines
+    (:stdout (command-checked (list-windows-command session) value)))))
 
 (defn has-window?
   ([session key] (has-window? session key {}))
-  ([session key options] (has? (set (list-windows session options)) (str key))))
+  ([session key value]
+   (has? (set (list-windows session value)) (str key))))
 
 (defn run-command
-  ([session key command] (run-command session key command {}))
-  ([session key command options]
-   (sh/execute-checked (send-keys-command session key command) options)))
+  ([session key command]
+   (run-command session key command {}))
+  ([session key command value]
+   (command-checked (send-keys-command session key command) value)))
 
 (defn new-window
   ([session key] (new-window session key {}))
-  ([session key options]
-   (if (has-window? session key options)
+  ([session key value]
+   (if (has-window? session key value)
      :window-already-present
-     (sh/execute-checked (new-window-command session key options) options))))
+     (command-checked (new-window-command session key value) value))))
 
 (defn kill-window
   ([session key] (kill-window session key {}))
-  ([session key options] (sh/execute-checked (kill-window-command session key) options)))
+  ([session key value]
+   (command-checked (kill-window-command session key) value)))

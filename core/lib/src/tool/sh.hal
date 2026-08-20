@@ -1,10 +1,12 @@
 ;; ============================================================================
 ;; tool.sh — canonical argv-only host command boundary.
 ;;
-;; No command string is interpreted implicitly. Callers must pass a non-empty
-;; vector of string arguments. Process lifecycle remains on std.native.Process.
+;; Command strings are never interpreted implicitly. Development hosts provide
+;; std.native.Process; browser/Wasm hosts fail through structured ex-info.
 ;; ============================================================================
 (ns tool.sh)
+
+(def +option-keys+ #{:cwd :env :stdin})
 
 (defn command
   "Validates and returns one argv vector."
@@ -15,84 +17,187 @@
     argv
     (throw
      (ex-info "tool.sh requires a non-empty argv vector of strings"
-              {:command argv}))))
+              {:tool.sh/error :invalid-command
+               :command argv}))))
+
+(defn- string-map?
+  [value]
+  (and (map? value)
+       (every? (fn [key]
+                 (and (string? key)
+                      (string? (get value key))))
+               (keys value))))
+
+(defn options
+  "Validates the closed process option map.
+
+   Supported keys are :cwd, :env, and :stdin. :stdin accepts a string or
+   Bytes; it is consumed only by execute/run/run-checked and never by spawn."
+  [value]
+  (let [value (or value {})]
+    (if (not (map? value))
+      (throw
+       (ex-info "tool.sh options must be a map"
+                {:tool.sh/error :invalid-options
+                 :options value})))
+    (let [unknown (vec (sort-by str
+                               (filter
+                                (fn [key]
+                                  (not (has? +option-keys+ key)))
+                                (keys value))))]
+      (if (not (empty? unknown))
+        (throw
+         (ex-info "tool.sh received unknown process options"
+                  {:tool.sh/error :unknown-options
+                   :options value
+                   :unknown unknown}))))
+    (if (and (has? value :cwd)
+             (not (string? (:cwd value))))
+      (throw
+       (ex-info "tool.sh :cwd must be a string"
+                {:tool.sh/error :invalid-cwd
+                 :options value})))
+    (if (and (has? value :env)
+             (not (string-map? (:env value))))
+      (throw
+       (ex-info "tool.sh :env must be a string-to-string map"
+                {:tool.sh/error :invalid-env
+                 :options value})))
+    (if (and (has? value :stdin)
+             (not (or (string? (:stdin value))
+                      (Bytes/instance? (:stdin value)))))
+      (throw
+       (ex-info "tool.sh :stdin must be a string or Bytes"
+                {:tool.sh/error :invalid-stdin
+                 :options value})))
+    value))
 
 (defn process-options
-  "Selects options understood by Process/spawn."
-  [options]
-  (let [options (or options {})
-        selected (if (:cwd options) {:cwd (:cwd options)} {})]
-    (if (:env options)
-      (assoc selected :env (:env options))
-      selected)))
+  "Selects the options understood by Process/spawn."
+  [value]
+  (select-keys (options value) [:cwd :env]))
+
+(defn- process-failure
+  [operation argv error]
+  (throw
+   (ex-info "tool.sh process access is unavailable or failed"
+            {:tool.sh/error :process-unavailable
+             :tool.sh/operation operation
+             :command argv
+             :cause/message (ex-message error)
+             :cause/data (ex-data error)}
+            error)))
 
 (defn spawn
-  "Starts one argv vector and returns the native process handle."
+  "Starts one argv vector and returns the native process without closing stdin."
   ([argv]
    (spawn argv {}))
-  ([argv options]
+  ([argv value]
    (let [argv (command argv)
-         selected (process-options options)]
-     (if (empty? selected)
-       (Process/spawn argv)
-       (Process/spawn argv selected)))))
+         selected (process-options value)]
+     (try
+       (if (empty? selected)
+         (Process/spawn argv)
+         (Process/spawn argv selected))
+       (catch Throwable error
+         (process-failure :spawn argv error))))))
 
-(defn- output-text
-  [value trim?]
-  (let [decoded (str/decode-utf8 value)]
-    (if trim? (str/trim decoded) decoded)))
+(defn stdout
+  "Returns the process stdout Promise."
+  [process]
+  (Process/stdout process))
+
+(defn stderr
+  "Returns the process stderr Promise."
+  [process]
+  (Process/stderr process))
+
+(defn wait
+  "Returns the process exit-status Promise."
+  [process]
+  (Process/wait process))
+
+(defn write
+  "Writes string or Bytes input to a process without closing stdin."
+  [process value]
+  (let [bytes (if (string? value)
+                (str/encode-utf8 value)
+                value)]
+    (if (Bytes/instance? bytes)
+      (Process/write process bytes)
+      (throw
+       (ex-info "tool.sh/write requires a string or Bytes"
+                {:tool.sh/error :invalid-stdin
+                 :stdin value})))))
+
+(defn close-input
+  "Closes process stdin."
+  [process]
+  (Process/close-input process))
+
+(defn alive?
+  "Returns true while the native process is alive."
+  [process]
+  (Process/alive? process))
+
+(defn kill
+  "Terminates the native process."
+  [process]
+  (Process/kill process))
+
+(defn- result
+  [argv values]
+  {:command argv
+   :exit (nth values 2)
+   :stdout (str/decode-utf8 (nth values 0))
+   :stderr (str/decode-utf8 (nth values 1))})
+
+(defn execute
+  "Runs argv asynchronously and returns a Promise of the complete result.
+
+   Optional stdin is written and closed before stdout, stderr, and exit status
+   are joined. Output is decoded as UTF-8 without trimming."
+  ([argv]
+   (execute argv {}))
+  ([argv value]
+   (let [argv (command argv)
+         value (options value)]
+     (try
+       (let [process (spawn argv value)]
+         (if (has? value :stdin)
+           (write process (:stdin value)))
+         (close-input process)
+         (-> (promise/all [(stdout process)
+                           (stderr process)
+                           (wait process)])
+             (promise/then (fn [values] (result argv values)))
+             (promise/catch
+              (fn [error]
+                (process-failure :execute argv error)))))
+       (catch Throwable error
+         (if (= :process-unavailable (:tool.sh/error (ex-data error)))
+           (throw error)
+           (process-failure :execute argv error)))))))
 
 (defn run
-  "Runs argv synchronously and returns command, stdout, stderr and exit status.
-
-   :cwd and :env are passed to the process builder. :trim defaults to true."
+  "Runs argv synchronously and returns the complete result."
   ([argv]
    (run argv {}))
-  ([argv options]
-   (let [argv (command argv)
-         options (or options {})
-         trim? (not (false? (:trim options)))
-         process (spawn argv options)
-         values (deref
-                 (promise/all
-                  [(Process/stdout process)
-                   (Process/stderr process)
-                   (Process/wait process)]))]
-     {:command argv
-      :stdout (output-text (nth values 0) trim?)
-      :stderr (output-text (nth values 1) trim?)
-      :exit (nth values 2)})))
+  ([argv value]
+   (deref (execute argv value))))
 
 (defn require-success
   "Returns a successful command result or throws ex-info containing it."
-  ([result]
-   (require-success "Command failed" result))
-  ([message result]
-   (if (= 0 (:exit result))
-     result
-     (throw (ex-info message result)))))
+  ([value]
+   (require-success "Command failed" value))
+  ([message value]
+   (if (= 0 (:exit value))
+     value
+     (throw (ex-info message value)))))
 
 (defn run-checked
   "Runs argv and throws a structured exception on non-zero exit."
   ([argv]
    (run-checked argv {}))
-  ([argv options]
-   (require-success (run argv options))))
-
-(defn execute
-  "Runs through :tool.sh/runner when supplied, otherwise through run.
-
-   Injectable runners receive argv and the remaining options map."
-  ([argv]
-   (execute argv {}))
-  ([argv options]
-   (let [options (or options {})
-         runner (or (:tool.sh/runner options) run)]
-     (runner (command argv) (dissoc options :tool.sh/runner)))))
-
-(defn execute-checked
-  "Injected-runner form of run-checked."
-  ([argv]
-   (execute-checked argv {}))
-  ([argv options]
-   (require-success (execute argv options))))
+  ([argv value]
+   (require-success (run argv value))))

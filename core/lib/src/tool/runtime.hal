@@ -60,33 +60,19 @@
 
 (defn- process-options
   [options]
-  (let [cwd (:cwd options)
-        env (:env options)
-        selected (if cwd {:cwd cwd} {})]
-    (if env
-      (assoc selected :env env)
-      selected)))
-
-(defn- start-process
-  [argv options]
-  (let [selected (process-options options)]
-    (if (empty? selected)
-      (sh/spawn argv)
-      (sh/spawn argv selected))))
+  (select-keys (or options {}) [:cwd :env :stdin]))
 
 (defn- decode-result
-  [descriptor argv values]
-  {:runtime/id (:runtime/id descriptor)
-   :runtime/language (:runtime/language descriptor)
-   :runtime/tag (:runtime/tag descriptor)
-   :runtime/name (:runtime/name descriptor)
-   :command argv
-   :exit (nth values 2)
-   :stdout (str/decode-utf8 (nth values 0))
-   :stderr (str/decode-utf8 (nth values 1))})
+  [descriptor result]
+  (merge
+   {:runtime/id (:runtime/id descriptor)
+    :runtime/language (:runtime/language descriptor)
+    :runtime/tag (:runtime/tag descriptor)
+    :runtime/name (:runtime/name descriptor)}
+   result))
 
 (defn execute
-  "Executes JavaScript, Python, or Lua source once and returns a promise of its result.
+  "Executes JavaScript, Python, or Lua source once and returns a promise.
 
    Runtime selection uses the Foundation language names :js, :python, and
    :lua. Their grammar tags are :js, :py, and :lua. Process launch requires
@@ -95,15 +81,11 @@
    (execute language source {}))
   ([language source options]
    (let [descriptor (runtime language)
-         argv (command language source options)
-         process (start-process argv options)
-         outputs [(Process/stdout process)
-                  (Process/stderr process)
-                  (Process/wait process)]]
+         argv (command language source options)]
      (promise/then
-      (promise/all outputs)
-      (fn [values]
-        (decode-result descriptor argv values))))))
+      (sh/execute argv (process-options options))
+      (fn [result]
+        (decode-result descriptor result))))))
 
 (defn run
   "Executes target source and rejects the returned promise on non-zero exit."
