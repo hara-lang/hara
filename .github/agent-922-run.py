@@ -69,10 +69,29 @@ def {helper.name}({path_name}, {old_name}, {new_name}):
 
 exec(compile(compatibility_helper + source, "apply-922.py", "exec"))
 
-proof = Path(
+proof_path = Path(
     "core/java/src/test/java/hara/truffle/GitHubFilesystemSessionKernelTest.java"
-).read_text().splitlines()
-print("--- generated GitHub filesystem dispatch proof ---")
-for line_number, line in enumerate(proof[:90], 1):
-    print(f"{line_number:04d}: {line}")
-print("--- end generated proof ---")
+)
+proof = proof_path.read_text()
+old_assertion = '''      assertEquals(
+          fixture.client.initialCommit(),
+          session
+              .eval(
+                  "(get (:extensions (deref (File/stat \\"/README.md\\")))"
+                      + " :file/revision)")
+              .asString());
+'''
+new_assertion = '''      String readmeRevision =
+          join(binding.stat("/README.md").future()).revision();
+      assertEquals(
+          readmeRevision,
+          session
+              .eval(
+                  "(get (:extensions (deref (File/stat \\"/README.md\\")))"
+                      + " :file/revision)")
+              .asString());
+'''
+if proof.count(old_assertion) != 1:
+    raise SystemExit("unable to locate the generated entry-revision assertion")
+proof_path.write_text(proof.replace(old_assertion, new_assertion, 1))
+print("Applied #922 provider-neutral HaraContext dispatch patch and entry-revision proof")
