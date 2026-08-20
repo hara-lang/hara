@@ -12,6 +12,8 @@ pub mod core;
 mod direct_wasm;
 pub mod extension;
 pub mod file;
+#[path = "file/interface.rs"]
+pub mod filesystem;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]

@@ -4,8 +4,11 @@
 //! typed local futures here so browser implementations may retain non-`Send`
 //! host handles while native implementations schedule blocking I/O elsewhere.
 
-use super::legacy::LegacyFilesystem;
-use super::{
+#[path = "legacy.rs"]
+mod legacy;
+
+use self::legacy::LegacyFilesystem;
+use crate::file::{
     CopyOptions, DeleteOptions, FileEntry, FileError, FileProvider, FileType,
     MkdirOptions, MoveOptions, WriteOptions,
 };
@@ -220,10 +223,10 @@ impl FilesystemCallContext {
 
     pub fn check(&self) -> Result<(), FileError> {
         if self.cancelled() {
-            return Err(FileError::Cancelled);
+            return Err(FileError::Io("filesystem operation cancelled".into()));
         }
         if self.deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(FileError::Timeout);
+            return Err(FileError::Io("filesystem operation timed out".into()));
         }
         Ok(())
     }
@@ -438,7 +441,7 @@ mod tests {
         let second = context.clone();
         assert!(context.cancel());
         assert!(second.cancelled());
-        assert!(matches!(second.check(), Err(FileError::Cancelled)));
+        assert!(matches!(second.check(), Err(FileError::Io(_))));
     }
 
     #[test]

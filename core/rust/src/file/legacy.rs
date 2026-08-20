@@ -4,13 +4,13 @@
 //! polled. Native disk migration must replace this with an I/O-scheduler-backed
 //! implementation before `FileProvider` is removed.
 
-use super::interface::{
+use super::{
     FilesystemCallContext, FilesystemDescriptor, FilesystemEntry,
     FilesystemEntryPage, FilesystemFuture, FilesystemMutation,
     FilesystemMutationContext, FilesystemPageRequest, IFilesystem,
     SynchronousFileProvider,
 };
-use super::{
+use crate::file::{
     CopyOptions, DeleteOptions, FileError, MkdirOptions,
     MoveOptions, WriteOptions,
 };
@@ -18,9 +18,9 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-impl SynchronousFileProvider for super::NativeFileProvider {}
-impl SynchronousFileProvider for super::MemoryFileProvider {}
-impl SynchronousFileProvider for super::UnsupportedFileProvider {}
+impl SynchronousFileProvider for crate::file::NativeFileProvider {}
+impl SynchronousFileProvider for crate::file::MemoryFileProvider {}
+impl SynchronousFileProvider for crate::file::UnsupportedFileProvider {}
 
 pub(super) struct LegacyFilesystem<P> {
     provider: P,
@@ -39,7 +39,7 @@ impl<P> LegacyFilesystem<P> {
 
     fn before_call(&self, context: &FilesystemCallContext) -> Result<(), FileError> {
         if self.closed.get() {
-            return Err(FileError::ProviderClosed);
+            return Err(FileError::Io("filesystem provider is closed".into()));
         }
         context.check()
     }
@@ -223,14 +223,14 @@ mod tests {
     #[test]
     fn close_marks_the_legacy_adapter_closed() {
         let filesystem = LegacyFilesystem::new(
-            super::super::MemoryFileProvider::new("/"),
+            crate::file::MemoryFileProvider::new("/"),
             FilesystemDescriptor::legacy("memory", "memory fixture"),
         );
         assert!(!filesystem.closed.get());
         filesystem.closed.set(true);
         assert!(matches!(
             filesystem.before_call(&FilesystemCallContext::default()),
-            Err(FileError::ProviderClosed)
+            Err(FileError::Io(_))
         ));
     }
 }
