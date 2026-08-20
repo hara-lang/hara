@@ -86,6 +86,40 @@
     (deref (eval/run computation 4)))
   => 15)
 
+(fact "bind rejects a non-Work source before evaluation"
+  (let [continuation-count (atom 0)
+        computation
+        (work/bind
+         {:id :bad-source}
+         {:not :work}
+         (work/pure :continuation
+           (fn [value context]
+             (swap! continuation-count inc)
+             (work/pure :produced
+               (fn [produced-input produced-context]
+                 produced-input)))))]
+    [(thrown-work-error
+      (fn []
+        (eval/run computation :input)))
+     (deref continuation-count)])
+  => [:work/bind-source-not-work 0])
+
+(fact "bind rejects a non-Work continuation before source evaluation"
+  (let [source-count (atom 0)
+        computation
+        (work/bind
+         {:id :bad-continuation}
+         (work/pure :source
+           (fn [input context]
+             (swap! source-count inc)
+             input))
+         {:not :work})]
+    [(thrown-work-error
+      (fn []
+        (eval/run computation :input)))
+     (deref source-count)])
+  => [:work/bind-continuation-not-work 0])
+
 (fact "bind rejects non-Work continuation results"
   (let [computation
         (work/bind
