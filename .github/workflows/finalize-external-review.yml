@@ -1,0 +1,81 @@
+name: Finalize #554 external review
+
+on:
+  push:
+    branches:
+      - agent/554-external-clojure-mappings
+    paths:
+      - '.github/workflows/finalize-external-review.yml'
+      - '.github/agent-patches/874-finalize.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    if: github.repository == 'hara-lang/hara'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/554-external-clojure-mappings
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Promote the reviewed external rule surface
+        run: |
+          set -euo pipefail
+          python3 .github/agent-patches/874-finalize.py
+          test ! -e .github/agent-patches/874-finalize.py
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/sync-rust-hal-src --check
+          (
+            cd core/spec/code-migrate
+            sha256sum --check external-baa75a.sha256
+          )
+
+      - name: Build a fresh JVM runtime
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Run focused external and migration-rule tests
+        run: |
+          set -euo pipefail
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/code/migrate_external_test.hal \
+            core/lib/test/code/migrate_rules_test.hal \
+            core/lib/test/code/migrate_clojure_test.hal
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/code/migrate_external_test.hal \
+            core/lib/test/code/migrate_rules_test.hal
+
+      - name: Commit the reviewed product changes and remove transport files
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/generate-external-review.yml \
+            .github/workflows/survey-external-routes.yml \
+            .github/workflows/finalize-external-review.yml
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- \
+            core/lib/src/code/migrate/external.hal \
+            core/lib/src/code/migrate/rule.hal \
+            core/lib/test/code/migrate_external_test.hal \
+            core/lib/test/code/migrate_rules_test.hal \
+            .github/agent-patches/874-finalize.py \
+            .github/workflows/generate-external-review.yml \
+            .github/workflows/survey-external-routes.yml \
+            .github/workflows/finalize-external-review.yml
+          git diff --cached --check
+          git commit -m 'feat(code.migrate): promote reviewed external string rules'
+          git fetch origin agent/554-external-clojure-mappings
+          git rebase origin/agent/554-external-clojure-mappings
+          git push origin HEAD:agent/554-external-clojure-mappings
