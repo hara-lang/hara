@@ -7,10 +7,10 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.source.SourceSection;
 import hara.kernel.builtin.BuiltinStruct;
+import hara.truffle.EvaluationJournal;
 import hara.truffle.HaraBox;
 import hara.truffle.HaraException;
 import hara.truffle.HaraLanguage;
-import hara.truffle.EvaluationJournal;
 
 public final class HaraRootNode extends RootNode {
   @Child private HaraExpressionNode body;
@@ -67,6 +67,7 @@ public final class HaraRootNode extends RootNode {
     this.variadic = variadic;
     this.sourceSection = sourceSection;
     this.exportResult = exportResult;
+    if (exportResult) body.markExecutionRoot(sourceSection);
   }
 
   @Override
