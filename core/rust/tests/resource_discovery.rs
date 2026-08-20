@@ -81,9 +81,9 @@ fn typed_bootstrap_is_extensible_and_inference_is_loadable() {
         runtime
             .eval_native(
                 "(require [std.typed.infer :as infer]) \
-                 [(deref (std.native.Base/schema :int)) \
-                  (deref (std.native.Base/schema [:map [:name :str]])) \
-                  (satisfies? IDeref (std.native.Base/schema :int)) \
+                 [(deref (schema :int)) \
+                  (deref (schema [:map [:name :str]])) \
+                  (satisfies? IDeref (schema :int)) \
                   (:schema (infer/literal-result 42))]"
             )
             .unwrap(),

@@ -15,7 +15,7 @@
     (location? input) (zip/right-element input)
     (block/block? input) input
     (and (map? input) (block/block? (:block input))) (:block input)
-    (string? input) (block/parse-string input)
+    (string? input) (block/parse-root input)
     :else (block/block input)))
 
 (defn location
@@ -64,20 +64,19 @@
     (if (empty? remaining)
       loc
       (if (not (block/container? (current loc)))
-        (throw (ex-info "Block location path descends through a token"
-                        {:path indexes
-                         :resolved (path loc)}))
+        (throw (ex :security {:path indexes
+                         :resolved (path loc)} :ex/message "Block location path descends through a token"))
         (let [inside (zip/step-inside loc)
               selected (step-right-n inside (first remaining))]
           (if (nil? (zip/right-element selected))
-            (throw (ex-info "Block location path is outside the source"
-                            {:path indexes
-                             :resolved (path selected)})))
+            (throw (ex :io {:path indexes
+                             :resolved (path selected)} :ex/message "Block location path is outside the source")))
           (recur selected (vec (rest remaining))))))))
 
 (defn location-range
   [input]
-  (let [info (block/info (current input))]
+  (let [value (current input)
+        info (merge (block/info value) (or (:props value) {}))]
     (select-keys info
                  [:file :start-offset :end-offset
                   :row :col :end-row :end-col])))
@@ -244,7 +243,10 @@
      (keep
       (fn [loc]
         (if (metadata-block? loc)
-          nil
+          (let [children (code-child-locations loc)]
+            (if (empty? children)
+              nil
+              (block/string (current (last children)))))
           (block/string (current loc))))
       (vec (drop 1 (code-child-locations input)))))
     nil))
@@ -291,19 +293,18 @@
     (location? input) (current input)
     (block/block? input) input
     (string? input)
-    (let [root (block/parse-string input)
+    (let [root (block/parse-root input)
           values (anchor-children root)]
       (if (= 1 (count values))
         (first values)
-        (throw (ex-info "Structural replacement requires exactly one source block"
-                        {:source input
-                         :forms (count values)}))))
+        (throw (ex :dependency {:source input
+                         :forms (count values)} :ex/message "Structural replacement requires exactly one source block"))))
     :else (block/block input)))
 
 (defn coerce-blocks
   [input]
   (if (string? input)
-    (vec (block/children (block/parse-string input)))
+    (vec (block/children (block/parse-root input)))
     [(coerce-block input)]))
 
 (defn insert-blocks-before
