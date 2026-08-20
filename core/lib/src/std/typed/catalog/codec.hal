@@ -139,11 +139,72 @@
      (canonical-value
       [+hash-algorithm+ identity version ast])))))
 
-(defn- normalize-schema
+(defn- var-reference?
+  [value]
+  (and (list? value)
+       (= 2 (count value))
+       (= 'var (first value))
+       (symbol? (second value))))
+
+(declare qualify-reference-forms)
+
+(defn- qualify-map-values
+  [value registry-value]
+  (reduce-kv
+   (fn [output key item]
+     (assoc output
+            key
+            (qualify-reference-forms item registry-value)))
+   {}
+   value))
+
+(defn- qualify-set-values
+  [value registry-value]
+  (reduce
+   (fn [output item]
+     (conj output
+           (qualify-reference-forms item registry-value)))
+   #{}
+   value))
+
+(defn- qualify-reference-forms
+  [value registry-value]
+  (cond
+    (var-reference? value)
+    (list 'var
+          (std.typed.registry/qualify
+           registry-value
+           (second value)))
+
+    (vector? value)
+    (vec
+     (map (fn [item]
+            (qualify-reference-forms item registry-value))
+          value))
+
+    (map? value)
+    (qualify-map-values value registry-value)
+
+    (set? value)
+    (qualify-set-values value registry-value)
+
+    :else value))
+
+(defn ^{:schema [:fn [:any :any] :map]}
+  normalize-content
+  "Qualifies portable reference forms, then uses canonical schema normalization."
   [schema-form registry-value]
-  (std.typed.schema/normalize-with
-   schema-form
-   (std.typed.registry/ensure registry-value)))
+  (let [registry-value
+        (std.typed.registry/ensure registry-value)
+        schema-form
+        (if (symbol? schema-form)
+          (list 'var
+                (std.typed.registry/qualify
+                 registry-value
+                 schema-form))
+          schema-form)]
+    (std.typed.schema/normalize
+     (qualify-reference-forms schema-form registry-value))))
 
 (defn ^{:schema [:function
                  [:fn [:keyword :int :any] :str]
@@ -159,4 +220,4 @@
    (hash-ast
     identity
     version
-    (normalize-schema schema-form registry-value))))
+    (normalize-content schema-form registry-value))))
