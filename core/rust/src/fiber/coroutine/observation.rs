@@ -9,7 +9,11 @@
 
 use super::super::*;
 use super::semantic;
+use crate::instrumentation::{
+    EventKind, EventLocation, PortableProjection, ProducerEvent, ProjectionLimits,
+};
 use crate::kernel::{read_forms, SpannedForm};
+use std::collections::BTreeMap;
 
 impl EvalFiber {
     /// Creates a live evaluator paused before the first production CPS step.
@@ -33,7 +37,9 @@ impl EvalFiber {
         env: HashMap<String, Value>,
     ) -> Result<Self, String> {
         let env = Rc::new(RefCell::new(env));
-        semantic::register_context(&env, source_forms);
+        // The compatibility observer retains its historical full projection.
+        // Shared instrumentation changes these flags before every safepoint.
+        semantic::register_context(&env, source_forms, true, true);
         let execution_env = env.clone();
         let forms = Rc::new(forms);
         let resume: Resume =
@@ -44,6 +50,213 @@ impl EvalFiber {
             resume: Some(resume),
             state: EvalFiberState::Running,
         })
+    }
+
+    /// Configures semantic capture for the next real CPS safepoint. Disabling
+    /// capture drops pending evidence but never changes the retained continuation.
+    pub(crate) fn configure_instrumentation_capture(
+        &self,
+        capture_events: bool,
+        capture_environment: bool,
+    ) {
+        semantic::configure_capture(&self.env, capture_events, capture_environment);
+    }
+
+    pub(crate) fn instrumentation_environment_clone_count(&self) -> u64 {
+        semantic::environment_clone_count(&self.env)
+    }
+
+    /// Returns the cheap identity/data for the currently published semantic
+    /// boundary without materializing source, frames, locals, or value displays.
+    pub(crate) fn instrumentation_event(&self) -> Option<(usize, ProducerEvent)> {
+        let boundary = semantic::current_boundary(&self.env)?;
+        let kind = match boundary.rule {
+            semantic::EvalSemanticRule::FormReturn | semantic::EvalSemanticRule::ValueReturn => {
+                EventKind::SemanticBoundary
+            }
+            semantic::EvalSemanticRule::CallEnter => EventKind::CallEnter,
+            semantic::EvalSemanticRule::CallReturn => EventKind::CallReturn,
+            semantic::EvalSemanticRule::VarDefine | semantic::EvalSemanticRule::VarSet => {
+                EventKind::VarSet
+            }
+            semantic::EvalSemanticRule::FieldSet => EventKind::FieldSet,
+            semantic::EvalSemanticRule::ErrorRaise | semantic::EvalSemanticRule::ErrorCatch => {
+                EventKind::ExceptionRaise
+            }
+        };
+        let mut event = ProducerEvent::live(kind).with_data("rule", boundary.rule.as_keyword());
+        match &boundary.payload {
+            semantic::EvalSemanticPayload::Result(value) => {
+                event = event.with_data("result/type", crate::core::portable_type_name(value));
+                if boundary.rule == semantic::EvalSemanticRule::CallReturn {
+                    if let Some(function) = &boundary.function {
+                        event = event.with_data("function", function);
+                    }
+                }
+            }
+            semantic::EvalSemanticPayload::Call { name, arguments } => {
+                event = event
+                    .with_data("function", name)
+                    .with_data("arguments/count", arguments.len().to_string());
+            }
+            semantic::EvalSemanticPayload::Effect {
+                target,
+                before,
+                after,
+            } => {
+                event = event
+                    .with_data("target", target)
+                    .with_data("before/present", before.is_some().to_string())
+                    .with_data("after/type", crate::core::portable_type_name(after));
+            }
+            semantic::EvalSemanticPayload::Error { message, caught } => {
+                event = event
+                    .with_data("caught", caught.to_string())
+                    .with_data("message", bounded_text(message, 1_024));
+            }
+        }
+        Some((boundary.sequence, event))
+    }
+
+    pub(crate) fn instrumentation_source_location(&self, source_id: &str) -> Option<EventLocation> {
+        let boundary = semantic::current_boundary(&self.env)?;
+        Some(EventLocation {
+            source_id: Some(source_id.into()),
+            function: boundary.function,
+            ..EventLocation::default()
+        })
+    }
+
+    pub(crate) fn instrumentation_current_frame(
+        &self,
+        limits: ProjectionLimits,
+    ) -> Option<PortableProjection> {
+        let boundary = semantic::current_boundary(&self.env)?;
+        Some(environment_projection(
+            "interpreter/current-frame",
+            &boundary.environment,
+            limits,
+        ))
+    }
+
+    pub(crate) fn instrumentation_frames(
+        &self,
+        limits: ProjectionLimits,
+    ) -> Option<PortableProjection> {
+        let boundary = semantic::current_boundary(&self.env)?;
+        let session = self.env.borrow();
+        let mut projection = PortableProjection::new("interpreter/frames")
+            .with_field("current/bindings", boundary.environment.len().to_string())
+            .with_field("session/bindings", session.len().to_string());
+        let current = environment_projection("current", &boundary.environment, limits);
+        let session = environment_projection("session", &session, limits);
+        for (name, value) in current.fields {
+            projection.fields.insert(format!("current/{name}"), value);
+        }
+        for (name, value) in session.fields {
+            projection.fields.insert(format!("session/{name}"), value);
+        }
+        Some(projection)
+    }
+
+    pub(crate) fn instrumentation_locals(
+        &self,
+        limits: ProjectionLimits,
+    ) -> Option<PortableProjection> {
+        let environment = self.env.borrow();
+        Some(environment_projection(
+            "interpreter/locals",
+            &environment,
+            limits,
+        ))
+    }
+
+    pub(crate) fn instrumentation_value_preview(
+        &self,
+        limits: ProjectionLimits,
+    ) -> Option<PortableProjection> {
+        let boundary = semantic::current_boundary(&self.env)?;
+        let display_chars = limits.max_bytes.min(16_384);
+        let projection = match &boundary.payload {
+            semantic::EvalSemanticPayload::Result(value) => {
+                let kind = if boundary.rule == semantic::EvalSemanticRule::CallReturn {
+                    "interpreter/call-return-preview"
+                } else {
+                    "interpreter/value-preview"
+                };
+                let mut projection = PortableProjection::new(kind)
+                    .with_field("kind", crate::core::portable_type_name(value))
+                    .with_field("display", bounded_text(&value.display(), display_chars));
+                if let Some(function) = &boundary.function {
+                    projection
+                        .fields
+                        .insert("function".into(), function.clone());
+                }
+                projection
+            }
+            semantic::EvalSemanticPayload::Call { name, arguments } => {
+                let mut projection = PortableProjection::new("interpreter/call-preview")
+                    .with_field("function", name)
+                    .with_field("arguments/count", arguments.len().to_string());
+                for (index, argument) in arguments.iter().take(limits.max_items).enumerate() {
+                    projection.fields.insert(
+                        format!("argument/{index}"),
+                        bounded_text(&argument.display(), display_chars),
+                    );
+                }
+                projection
+            }
+            semantic::EvalSemanticPayload::Effect {
+                target,
+                before,
+                after,
+            } => {
+                let mut projection = PortableProjection::new("interpreter/effect-preview")
+                    .with_field("target", target)
+                    .with_field("after", bounded_text(&after.display(), display_chars));
+                if let Some(before) = before {
+                    projection.fields.insert(
+                        "before".into(),
+                        bounded_text(&before.display(), display_chars),
+                    );
+                }
+                projection
+            }
+            semantic::EvalSemanticPayload::Error { message, caught } => {
+                PortableProjection::new("interpreter/error-preview")
+                    .with_field("caught", caught.to_string())
+                    .with_field("message", bounded_text(message, display_chars))
+            }
+        };
+        Some(projection)
+    }
+
+    pub(crate) fn instrumentation_snapshot(
+        &self,
+        limits: ProjectionLimits,
+    ) -> Option<PortableProjection> {
+        let mut projection = PortableProjection::new("interpreter/snapshot")
+            .with_field("state", instrumentation_state_keyword(&self.state))
+            .with_field(
+                "semantic/pending",
+                semantic::pending_count(&self.env).to_string(),
+            )
+            .with_field(
+                "environment/clones",
+                self.instrumentation_environment_clone_count().to_string(),
+            );
+        if let Some(promise) = &self.pending {
+            projection.fields.insert(
+                "promise/state".into(),
+                promise_state_keyword(&promise.state()).into(),
+            );
+        }
+        if let Some(locals) = self.instrumentation_locals(limits) {
+            for (name, value) in locals.fields {
+                projection.fields.insert(format!("locals/{name}"), value);
+            }
+        }
+        Some(projection)
     }
 
     /// Returns true while an observed fiber owns a retained CPS continuation.
@@ -144,6 +357,60 @@ impl Drop for EvalFiber {
     }
 }
 
+fn environment_projection(
+    kind: &str,
+    environment: &HashMap<String, Value>,
+    limits: ProjectionLimits,
+) -> PortableProjection {
+    let mut entries = environment.iter().collect::<Vec<_>>();
+    entries.sort_by(|left, right| left.0.cmp(right.0));
+    let retained = entries.len().min(limits.max_items);
+    let display_chars = limits.max_bytes.min(16_384);
+    let mut fields = BTreeMap::new();
+    for (name, value) in entries.into_iter().take(retained) {
+        fields.insert(
+            format!("binding/{name}"),
+            bounded_text(&value.display(), display_chars),
+        );
+    }
+    fields.insert("bindings/count".into(), environment.len().to_string());
+    fields.insert(
+        "bindings/omitted".into(),
+        environment.len().saturating_sub(retained).to_string(),
+    );
+    PortableProjection {
+        kind: kind.into(),
+        fields,
+    }
+}
+
+fn bounded_text(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.into();
+    }
+    let mut output = value.chars().take(limit).collect::<String>();
+    output.push('…');
+    output
+}
+
+fn instrumentation_state_keyword(state: &EvalFiberState) -> &'static str {
+    match state {
+        EvalFiberState::Running => "running",
+        EvalFiberState::Suspended => "suspended",
+        EvalFiberState::Completed(_) => "returned",
+        EvalFiberState::Failed(_) => "failed",
+        EvalFiberState::Cancelled => "cancelled",
+    }
+}
+
+fn promise_state_keyword(state: &PromiseState) -> &'static str {
+    match state {
+        PromiseState::Pending => "pending",
+        PromiseState::Fulfilled(_) => "fulfilled",
+        PromiseState::Rejected(_) => "rejected",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,6 +470,15 @@ mod tests {
     #[test]
     fn ordinary_eval_fiber_remains_full_speed() {
         let fiber = EvalFiber::start("(+ 19 23)", HashMap::new()).unwrap();
+        assert_eq!(fiber.state(), EvalFiberState::Completed(Value::Number(42)));
+    }
+
+    #[test]
+    fn disabled_instrumentation_capture_avoids_environment_clones() {
+        let mut fiber = EvalFiber::start_observed("(+ 19 23)", HashMap::new()).unwrap();
+        fiber.configure_instrumentation_capture(false, false);
+        fiber.run_observed(32);
+        assert_eq!(fiber.instrumentation_environment_clone_count(), 0);
         assert_eq!(fiber.state(), EvalFiberState::Completed(Value::Number(42)));
     }
 }

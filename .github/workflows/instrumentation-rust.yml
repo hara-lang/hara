@@ -1,0 +1,125 @@
+name: Rust instrumentation validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - testing
+      - 'instrumentation-*'
+    paths:
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/src/instrumentation.rs'
+      - 'core/rust/src/instrumentation/**'
+      - 'core/rust/src/fiber.rs'
+      - 'core/rust/src/fiber/**'
+      - 'core/rust/src/vm/machine.rs'
+      - 'core/rust/src/vm/machine/**'
+      - '.github/workflows/instrumentation-rust.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/src/instrumentation.rs'
+      - 'core/rust/src/instrumentation/**'
+      - 'core/rust/src/fiber.rs'
+      - 'core/rust/src/fiber/**'
+      - 'core/rust/src/vm/machine.rs'
+      - 'core/rust/src/vm/machine/**'
+      - '.github/workflows/instrumentation-rust.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-instrumentation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Check touched Rust formatting
+        run: |
+          rustfmt --edition 2021 --check \
+            core/rust/src/instrumentation.rs \
+            core/rust/src/instrumentation/hub.rs \
+            core/rust/src/instrumentation/hub/delivery.rs \
+            core/rust/src/instrumentation/interpreter.rs \
+            core/rust/src/instrumentation/interpreter/tests.rs \
+            core/rust/src/instrumentation/hbc.rs \
+            core/rust/src/instrumentation/hbc/tests.rs \
+            core/rust/src/instrumentation/delivery_tests.rs \
+            core/rust/src/fiber/coroutine/observation.rs \
+            core/rust/src/fiber/coroutine/semantic.rs \
+            core/rust/src/vm/machine/instrumentation.rs \
+            core/rust/src/vm/machine/instrumentation/step.rs
+
+      - name: Enforce bounded child modules
+        run: |
+          files=(
+            core/rust/src/instrumentation/hub.rs
+            core/rust/src/instrumentation/hub/delivery.rs
+            core/rust/src/instrumentation/interpreter.rs
+            core/rust/src/instrumentation/interpreter/tests.rs
+            core/rust/src/instrumentation/hbc.rs
+            core/rust/src/instrumentation/hbc/tests.rs
+            core/rust/src/instrumentation/delivery_tests.rs
+            core/rust/src/vm/machine/instrumentation/step.rs
+          )
+          for file in "${files[@]}"; do
+            lines=$(wc -l < "$file")
+            echo "$file: $lines"
+            test "$lines" -lt 700
+          done
+
+      - name: Test shared instrumentation hub and delivery
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --lib instrumentation
+
+      - name: Test authoritative interpreter probes
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --lib core::fiber::coroutine
+
+      - name: Test authoritative HBC probes
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --lib vm::machine::instrumentation
+
+      - name: Check feature-minimal library
+        run: |
+          cargo check --locked --manifest-path core/rust/Cargo.toml \
+            --no-default-features --lib
+
+      - name: Check isolated HBC instrumentation feature
+        run: |
+          cargo check --locked --manifest-path core/rust/Cargo.toml \
+            --no-default-features \
+            --features bytecode-vm,bytecode-instrumentation \
+            --lib
+
+      - name: Compile the instrumented library for browser Wasm
+        run: |
+          cargo check --locked --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib

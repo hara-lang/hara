@@ -1,3 +1,28 @@
+/// Cloneable private access to the one instrumentation hub owned by a Runtime.
+///
+/// Product-level controllers retain this handle while their owning Session is
+/// active. The wrapper is not a Hara value and is never installed into a
+/// namespace or Sandbox authority surface.
+#[derive(Clone, Default)]
+struct RuntimeInstrumentation {
+    hub: Rc<RefCell<instrumentation::InstrumentationHub>>,
+}
+
+impl RuntimeInstrumentation {
+    fn handle(&self) -> Rc<RefCell<instrumentation::InstrumentationHub>> {
+        self.hub.clone()
+    }
+
+    #[cfg(test)]
+    fn registration_count(&self) -> usize {
+        self.hub.borrow().registration_count()
+    }
+
+    fn clear(&self) {
+        self.hub.borrow_mut().clear();
+    }
+}
+
 /// Runtime-owned lexical evaluation and instrumentation state.
 ///
 /// Namespace, provider, package, Session, and Kernel state deliberately stay
@@ -7,7 +32,7 @@
 #[derive(Default)]
 struct Evaluator {
     environment: HashMap<String, core::Value>,
-    instrumentation: instrumentation::InstrumentationHub,
+    instrumentation: RuntimeInstrumentation,
 }
 
 impl Evaluator {
@@ -30,6 +55,10 @@ impl Evaluator {
 
     fn restore(&mut self, environment: HashMap<String, core::Value>) {
         self.environment = environment;
+    }
+
+    fn instrumentation_handle(&self) -> Rc<RefCell<instrumentation::InstrumentationHub>> {
+        self.instrumentation.handle()
     }
 
     fn eval_tree(&mut self, form: &Form) -> Result<core::Value, String> {
