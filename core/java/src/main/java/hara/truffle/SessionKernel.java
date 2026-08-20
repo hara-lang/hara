@@ -106,6 +106,7 @@ final class SessionKernel implements AutoCloseable {
   private final ExecutorService filesystemIo;
   private final ScheduledExecutorService filesystemScheduler;
   private final FilesystemMountTable filesystemMounts;
+  private final InstrumentationHub instrumentationHub = new InstrumentationHub();
 
   private static final class SessionRegistry {
     final ConcurrentHashMap<String, Session> entries = new ConcurrentHashMap<>();
@@ -195,6 +196,7 @@ final class SessionKernel implements AutoCloseable {
             new SessionModel.SessionSpec(ROOT_ID, rootAuthority),
             project,
             mount -> releaseMount(ROOT_ID, mount),
+            () -> instrumentationHub.cleanupSession(ROOT_ID.value()),
             false,
             embeddingToken));
   }
@@ -218,6 +220,15 @@ final class SessionKernel implements AutoCloseable {
     return session;
   }
 
+  NativeInstrumentation instrumentation(SessionModel.SessionId id) {
+    Session session = require(id);
+    return new NativeInstrumentation(this, session, instrumentationHub);
+  }
+
+  InstrumentationHub instrumentationHub() {
+    return instrumentationHub;
+  }
+
   synchronized Session create(SessionModel.SessionId id) {
     if (sessionRegistry.entries.containsKey(id.value()))
       throw new IllegalArgumentException("SESSION_EXISTS " + id);
@@ -226,6 +237,7 @@ final class SessionKernel implements AutoCloseable {
             SessionModel.SessionSpec.zeroAuthority(id),
             null,
             mount -> releaseMount(id, mount),
+            () -> instrumentationHub.cleanupSession(id.value()),
             false,
             embeddingToken);
     sessionRegistry.entries.put(id.value(), session);
@@ -584,6 +596,12 @@ final class SessionKernel implements AutoCloseable {
     }
     sessionRegistry.entries.clear();
     try {
+      instrumentationHub.close();
+    } catch (RuntimeException error) {
+      if (failure == null) failure = error;
+      else failure.addSuppressed(error);
+    }
+    try {
       filesystemMounts.close();
     } catch (RuntimeException error) {
       if (failure == null) failure = error;
@@ -616,6 +634,7 @@ final class SessionKernel implements AutoCloseable {
     private final SessionAuthorityPolicy authority;
     private final HaraProject project;
     private final Consumer<SessionModel.SessionMountId> mountRelease;
+    private final Runnable instrumentationCleanup;
     private final boolean sandboxRestricted;
     private final String kernelToken;
     private Context context;
@@ -633,12 +652,14 @@ final class SessionKernel implements AutoCloseable {
         SessionModel.SessionSpec spec,
         HaraProject project,
         Consumer<SessionModel.SessionMountId> mountRelease,
+        Runnable instrumentationCleanup,
         boolean sandboxRestricted,
         String kernelToken) {
       this.spec = spec;
       this.authority = spec.authority();
       this.project = project;
       this.mountRelease = mountRelease;
+      this.instrumentationCleanup = instrumentationCleanup;
       this.sandboxRestricted = sandboxRestricted;
       this.kernelToken = kernelToken;
       context = createContext(null);
@@ -651,6 +672,7 @@ final class SessionKernel implements AutoCloseable {
               SessionModel.SessionSpec.zeroAuthority(SessionModel.SessionId.parse("SANDBOX")),
               null,
               ignored -> {},
+              () -> {},
               true,
               null);
       if (!"user".equals(entryNamespace)) session.eval("(ns " + entryNamespace + ")");
@@ -1012,9 +1034,13 @@ final class SessionKernel implements AutoCloseable {
       try {
         if (ownedContext != null) ownedContext.close(true);
       } finally {
-        if (ownedFilesystem != null) {
-          ownedFilesystem.runtime().close();
-          mountRelease.accept(ownedFilesystem.id());
+        try {
+          if (ownedFilesystem != null) {
+            ownedFilesystem.runtime().close();
+            mountRelease.accept(ownedFilesystem.id());
+          }
+        } finally {
+          instrumentationCleanup.run();
         }
       }
     }
