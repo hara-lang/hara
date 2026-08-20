@@ -34,7 +34,7 @@ public class FilesystemEffectsTest {
             FilesystemEffects.entries(
                 filesystem, IFilesystem.CallContext.create(), "/", 1));
     assertEquals(List.of("/a", "/z"), entries.stream().map(IFilesystem.Entry::path).toList());
-    assertEquals(List.of(null, "opaque-next"), filesystem.pageRequests);
+    assertEquals(java.util.Arrays.asList(null, "opaque-next"), filesystem.pageRequests);
   }
 
   @Test
