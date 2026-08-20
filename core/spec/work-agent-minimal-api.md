@@ -81,6 +81,24 @@ IWorkRun
 IWorkRef
 ```
 
+## Tool effect boundary
+
+An agent driver may invoke a tool callable in-process only when the tool is
+explicitly `:tool/effect :pure`. Pure tools share the enclosing driver leaf and
+do not create another lifecycle.
+
+A non-pure tool must not be invoked directly inside the driver leaf. Doing so
+would hide an external side effect inside the enclosing step's retry and
+checkpoint boundary, allowing that effect to be repeated when the outer step
+is retried or resumed.
+
+Until #880 provides generic runtime-produced child Work, non-pure tools are
+rejected before model exposure and by the direct tool dispatcher. The rejected
+callable is never executed. #880 belongs to Work itself: it must allow a
+dynamically selected effect to lower to ordinary child `IWork` in the same run
+with normal checkpoint, cancellation, event, and receipt semantics. It must not
+add another agent protocol or an `:agent/*` evaluator operation.
+
 ## Ephemeral provider
 
 `work.agent.ephemeral` provides in-memory reference implementations of the
@@ -91,5 +109,6 @@ only; Work remains responsible for run lifecycle and durability.
 
 `work.agent.driver.openai` retains the provider-neutral OpenAI Responses and
 tool translation code but implements `IAgentDriver`. Driving an intent
-returns ordinary Work; model/tool effects execute only when that Work is run by
-the canonical Work runtime/host.
+returns ordinary Work; model interaction and pure tool calls execute only when
+that Work is run by the canonical Work runtime/host. Effectful tool calls remain
+explicit Work concerns under #880 rather than hidden driver side effects.
