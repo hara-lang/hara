@@ -170,6 +170,46 @@
      :chain])
 
    (test-check
+    "effectful tool factories must return stable identified Work"
+    (let [non-work-tool
+          (agent/tool
+           "bad-value"
+           "Returns a value instead of Work."
+           {:type "object"
+            :properties {}
+            :additionalProperties false}
+           (fn [arguments]
+             {:not :work})
+           {:effect :external})
+          anonymous-work-tool
+          (agent/tool
+           "anonymous-work"
+           "Returns anonymous Work."
+           {:type "object"
+            :properties {}
+            :additionalProperties false}
+           (fn [arguments]
+             (work/definition
+              {:op :pure
+               :fn (fn [input context] input)}))
+           {:effect :external})
+          error-code
+          (fn [tool name]
+            (try
+              (agent-tool/call-work
+               (agent-tool/index [tool])
+               {:call/id name
+                :tool/name name
+                :call/arguments {}})
+              :not-rejected
+              (catch Throwable error
+                (:work/error (ex-data error)))))]
+      [(error-code non-work-tool "bad-value")
+       (error-code anonymous-work-tool "anonymous-work")])
+    [:work/agent-tool-not-work
+     :work/agent-tool-unstable-work])
+
+   (test-check
     "durable OpenAI effectful tools resume without repeating completed model or tool Work"
     (let [transport-count (atom 0)
           prepare-count (atom 0)
