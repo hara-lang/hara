@@ -3,9 +3,9 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 
 use crate::instrumentation::{
-    Capability, EventDelivery, EventKind, InstrumentFilter, InstrumentMode,
-    InstrumentRegistration, InstrumentationError, InstrumentationHub, ProjectionRequest,
-    RuntimeBackend, TargetDescriptor, TargetKind,
+    Capability, EventDelivery, EventKind, InstrumentFilter, InstrumentMode, InstrumentRegistration,
+    InstrumentationError, InstrumentationHub, ProjectionRequest, RuntimeBackend, TargetDescriptor,
+    TargetKind,
 };
 use crate::live_session::{LiveSessionCommand, LiveSessionRequest, LiveSessionStatus, LiveSource};
 use crate::{SessionId, SessionKernel};
