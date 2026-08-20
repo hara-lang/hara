@@ -1,0 +1,205 @@
+(ns work.bind-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.eval :as eval]))
+
+(defn bind-work
+  [options source continuation]
+  (work/definition
+   (merge options
+          {:op :bind
+           :source source
+           :continuation continuation})))
+
+(defn thrown-work-error
+  [function]
+  (try
+    (do (function) nil)
+    (catch Throwable error
+      (:work/error (ex-data error)))))
+
+(defn event-count
+  [events event]
+  (count
+   (filter
+    (fn [record]
+      (= event (:event record)))
+    events)))
+
+(fact "bind executes runtime-produced Work with the source result"
+  (let [computation
+        (bind-work
+         {:id :dynamic-double}
+         (work/pure :source
+           (fn [input context]
+             (inc input)))
+         (work/pure :continuation
+           (fn [value context]
+             (work/pure :produced-double
+               (fn [produced-input produced-context]
+                 (* produced-input 2))))))]
+    [(eval/run computation 3)
+     (:op (work/work-spec computation))])
+  => [8 :bind])
+
+(fact "bind composes Promise-valued source and produced Work"
+  (let [computation
+        (bind-work
+         {:id :promise-bind}
+         (work/pure :promise-source
+           (fn [input context]
+             (promise
+              (fn []
+                (inc input)))))
+         (work/pure :promise-continuation
+           (fn [value context]
+             (work/pure :promise-produced
+               (fn [produced-input produced-context]
+                 (promise
+                  (fn []
+                    (+ produced-input 10))))))))]
+    (deref (eval/run computation 4)))
+  => 15)
+
+(fact "bind rejects non-Work continuation results"
+  (let [computation
+        (bind-work
+         {:id :bad-result}
+         (work/pure :source
+           (fn [input context] input))
+         (work/pure :continuation
+           (fn [value context] {:not :work})))]
+    (thrown-work-error
+     (fn []
+       (eval/run computation :input))))
+  => :work/bind-not-work)
+
+(fact "bind rejects an effectful continuation before source execution"
+  (let [source-count (atom 0)
+        computation
+        (bind-work
+         {:id :effectful-continuation}
+         (work/pure :source
+           (fn [input context]
+             (swap! source-count inc)
+             input))
+         (work/step :continuation
+           (fn [value context]
+             (work/pure :produced
+               (fn [produced-input produced-context]
+                 produced-input)))))]
+    [(thrown-work-error
+      (fn []
+        (eval/run computation :input)))
+     (deref source-count)])
+  => [:work/bind-continuation-not-pure 0])
+
+(fact "nested runtime-produced Work inherits the strictest bind depth"
+  (let [inner
+        (bind-work
+         {:id :inner}
+         (work/pure :inner-source
+           (fn [input context] input))
+         (work/pure :inner-continuation
+           (fn [value context]
+             (work/pure :inner-produced
+               (fn [produced-input produced-context]
+                 produced-input)))))
+        outer
+        (bind-work
+         {:id :outer
+          :maximum-depth 1}
+         (work/pure :outer-source
+           (fn [input context] input))
+         (work/pure :outer-continuation
+           (fn [value context]
+             inner)))]
+    (thrown-work-error
+     (fn []
+       (eval/run outer :input))))
+  => :work/bind-depth-exceeded)
+
+(fact "durable bind rejects anonymous produced Work before child execution"
+  (let [executed (atom 0)
+        runtime (work/durable-runtime)
+        computation
+        (bind-work
+         {:id :durable-identity}
+         (work/pure :source
+           (fn [input context] input))
+         (work/pure :continuation
+           (fn [value context]
+             (work/definition
+              {:op :pure
+               :fn
+               (fn [produced-input produced-context]
+                 (swap! executed inc)
+                 produced-input)}))))
+        reference
+        (work/start runtime computation :input {:id "bind-identity"})]
+    [(work/status runtime reference)
+     (deref executed)])
+  => [:failed 0])
+
+(fact "durable bind resumes produced Work without repeating completed effects"
+  (let [source-count (atom 0)
+        first-count (atom 0)
+        second-count (atom 0)
+        backend (work/memory-backend)
+        produced
+        (work/chain
+         {:id :produced-plan}
+         [(work/step :first
+            (fn [value context]
+              (swap! first-count inc)
+              (+ value 10)))
+          (work/step :second
+            (fn [value context]
+              (let [attempt (swap! second-count inc)]
+                (if (= attempt 1)
+                  (throw
+                   (ex :host {:attempt attempt}
+                       :ex/message "interrupt produced child"))
+                  (+ value 100)))))])
+        computation
+        (bind-work
+         {:id :bind-recovery
+          :version 1}
+         (work/step :source
+           (fn [input context]
+             (swap! source-count inc)
+             (inc input)))
+         (work/pure :continuation
+           (fn [value context]
+             produced)))
+        before (work/durable-runtime {:backend backend})
+        reference
+        (work/start before computation 1 {:id "bind-recovery"})
+        status-before (work/status before reference)
+        after (work/durable-runtime {:backend backend})
+        registration (work/register after computation)
+        resumed (work/resume after reference)
+        checkpoints (work/checkpoints after resumed)
+        history (work/history after resumed)]
+    [status-before
+     (work/status after resumed)
+     (work/result after resumed)
+     [(deref source-count)
+      (deref first-count)
+      (deref second-count)]
+     (vec
+      (map
+       (fn [checkpoint]
+         (:checkpoint/node-path checkpoint))
+       checkpoints))
+     (event-count history :work/step-replayed)])
+  => [:failed
+      :completed
+      112
+      [1 1 2]
+      [[:bind :source :source]
+       [:bind :produced :produced-plan :chain 0 :first]
+       [:bind :produced :produced-plan :chain 1 :second]]
+      2])
+
+(pr-str (run '[work.bind-test]))
