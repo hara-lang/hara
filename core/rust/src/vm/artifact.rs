@@ -16,10 +16,23 @@ use crate::lang::data::{Keyword, Metadata, MetadataValue, Symbol};
 
 const MAGIC: &[u8; 4] = b"HBC0";
 
+#[path = "artifact/catalog.rs"]
+mod catalog;
+pub use catalog::{DecodedArtifact, SchemaCatalogEntry, SchemaCoordinate};
+
 /// Encodes a program after validating it. Constants use the portable HTA
 /// value codec; unsupported runtime-only values are rejected explicitly.
 pub fn encode_program(program: &Program) -> Result<Vec<u8>, String> {
-    super::validate::validate(program).map_err(|error| error.to_string())?;
+    encode_program_with_catalog(program, &[])
+}
+
+/// Encodes a program with an optional exact-coordinate schema catalog.
+/// Empty catalogs preserve the legacy HBC payload byte for byte.
+pub fn encode_program_with_catalog(
+    program: &Program,
+    schema_catalog: &[SchemaCatalogEntry],
+) -> Result<Vec<u8>, String> {
+    super::validate::validate(program).map_err(|error| error.to_string())?
     let mut payload = Writer::default();
     payload.u16(program.entry);
     payload.option_string(program.namespace.as_deref())?;
@@ -38,6 +51,7 @@ pub fn encode_program(program: &Program) -> Result<Vec<u8>, String> {
     for function in &program.functions {
         write_function(&mut payload, function)?;
     }
+    catalog::write_section(&mut payload, schema_catalog)?;
     let digest = Sha256::digest(&payload.bytes);
     let mut output = MAGIC.to_vec();
     output.extend_from_slice(
@@ -52,6 +66,11 @@ pub fn encode_program(program: &Program) -> Result<Vec<u8>, String> {
 
 /// Decodes, authenticates, and validates a persistent VM program.
 pub fn decode_program(bytes: &[u8]) -> Result<Program, String> {
+    Ok(decode_program_with_catalog(bytes)?.program)
+}
+
+/// Decodes a program and its optional exact-coordinate schema catalog.
+pub fn decode_program_with_catalog(bytes: &[u8]) -> Result<DecodedArtifact, String> {
     if !bytes.starts_with(MAGIC) {
         return Err("bytecode artifact has invalid magic".into());
     }
@@ -78,6 +97,7 @@ pub fn decode_program(bytes: &[u8]) -> Result<Program, String> {
     let function_types = read_schema_map(&mut reader)?;
     let inferred_function_types = read_schema_map(&mut reader)?;
     let functions = reader.many(|reader| read_function(reader, 5))?;
+    let schema_catalog = catalog::read_section(&mut reader)?;
     reader.finish()?;
     let program = Program {
         namespace,
@@ -90,7 +110,10 @@ pub fn decode_program(bytes: &[u8]) -> Result<Program, String> {
         entry,
     };
     super::validate::validate(&program).map_err(|error| error.to_string())?;
-    Ok(program)
+    Ok(DecodedArtifact {
+        program,
+        schema_catalog,
+    })
 }
 
 fn write_function(out: &mut Writer, function: &FunctionPrototype) -> Result<(), String> {
