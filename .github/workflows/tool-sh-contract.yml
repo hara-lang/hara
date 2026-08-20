@@ -1,0 +1,158 @@
+name: tool.sh contract
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - core/lib/src/tool/sh.hal
+      - core/lib/src/tool/sh/**
+      - core/lib/src/tool/runtime.hal
+      - core/lib/src/tool/cli/identity.hal
+      - core/lib/src/tool/cli/extension.hal
+      - core/lib/src/code/deploy/runtime.hal
+      - core/lib/src/lang/runtime/basic/type_oneshot.hal
+      - core/lib/src/lang/runtime/basic/type_verify.hal
+      - core/lib/src/db/postgres.hal
+      - core/lib/test/tool/**
+      - core/lib/test/code/deploy/runtime_test.hal
+      - core/lib/test-lang/lang/runtime/basic/type_oneshot_test.hal
+      - core/lib/test-lang/lang/runtime/basic/type_verify_test.hal
+      - core/rust/standard-library.namespaces
+      - scripts/runtime/check-tool-sh-hard-cut.py
+      - scripts/runtime/run-tool-sh-oneshot-test
+      - scripts/runtime/sync-rust-hal-src
+      - .github/workflows/tool-sh-contract.yml
+  push:
+    branches: [main, testing]
+    paths:
+      - core/lib/src/tool/sh.hal
+      - core/lib/src/tool/sh/**
+      - core/lib/src/tool/runtime.hal
+      - core/lib/src/tool/cli/identity.hal
+      - core/lib/src/tool/cli/extension.hal
+      - core/lib/src/code/deploy/runtime.hal
+      - core/lib/src/lang/runtime/basic/type_oneshot.hal
+      - core/lib/src/lang/runtime/basic/type_verify.hal
+      - core/lib/src/db/postgres.hal
+      - core/lib/test/tool/**
+      - core/lib/test/code/deploy/runtime_test.hal
+      - core/lib/test-lang/lang/runtime/basic/type_oneshot_test.hal
+      - core/lib/test-lang/lang/runtime/basic/type_verify_test.hal
+      - core/rust/standard-library.namespaces
+      - scripts/runtime/check-tool-sh-hard-cut.py
+      - scripts/runtime/run-tool-sh-oneshot-test
+      - scripts/runtime/sync-rust-hal-src
+      - .github/workflows/tool-sh-contract.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specifications fixture
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Audit source ownership and materialize the Rust source snapshot
+        run: |
+          python3 scripts/runtime/sync-rust-hal-src
+          python3 scripts/runtime/check-tool-sh-hard-cut.py
+          python3 scripts/runtime/sync-rust-hal-src --check
+          git diff --check
+
+      - name: Build native runtimes
+        run: |
+          mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+          cargo build --manifest-path core/rust/Cargo.toml --bin hara
+
+      - name: Run focused HAL suites
+        run: |
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/tool/sh_test.hal \
+            core/lib/test/tool/sh \
+            core/lib/test/tool/runtime_test.hal \
+            core/lib/test/tool/cli/identity_test.hal \
+            core/lib/test/code/deploy/runtime_test.hal \
+            core/lib/test/db/postgres_test.hal \
+            core/lib/test-lang/lang/runtime/basic/type_verify_test.hal
+
+      - name: Validate one-shot runtime migration before #666
+        run: ./scripts/runtime/run-tool-sh-oneshot-test
+
+      - name: Probe exact process semantics on JVM and Rust
+        shell: bash
+        run: |
+          cat > /tmp/tool-sh-contract-probe.hal <<'HAL'
+          (ns tool-sh-contract-probe
+            (:require [tool.sh :as sh]))
+
+          (let [pending (sh/execute
+                         ["sh" "-c"
+                          "printf ' out\n'; printf ' err\n' >&2; exit 7"])
+                async-result (deref pending)
+                input-result (sh/run ["cat"] {:stdin "hello\n"})
+                cwd-result (sh/run ["pwd"] {:cwd "/tmp"})
+                env-result (sh/run ["printenv" "HARA_TOOL_SH_TEST"]
+                                   {:env {"HARA_TOOL_SH_TEST" "present"}})
+                failed (try
+                         (sh/run-checked
+                          ["sh" "-c" "printf out; printf err >&2; exit 9"])
+                         nil
+                         (catch Throwable error (ex-data error)))]
+            [(promise? pending)
+              [(:command async-result)
+               (:stdout async-result)
+               (:stderr async-result)
+               (:exit async-result)]
+              [(:command input-result)
+               (:stdout input-result)
+               (:stderr input-result)
+               (:exit input-result)]
+              [(:command cwd-result)
+               (:stdout cwd-result)
+               (:stderr cwd-result)
+               (:exit cwd-result)]
+              [(:command env-result)
+               (:stdout env-result)
+               (:stderr env-result)
+               (:exit env-result)]
+              [(:command failed)
+               (:stdout failed)
+               (:stderr failed)
+               (:exit failed)]])
+          HAL
+
+          expected='[true [["sh" "-c" "printf '\'' out\n'\''; printf '\'' err\n'\'' >&2; exit 7"] " out\n" " err\n" 7] [["cat"] "hello\n" "" 0] [["pwd"] "/tmp\n" "" 0] [["printenv" "HARA_TOOL_SH_TEST"] "present\n" "" 0] [["sh" "-c" "printf out; printf err >&2; exit 9"] "out" "err" 9]]'
+
+          actual="$(./core/hara --allow-process --project core --offline stdin < /tmp/tool-sh-contract-probe.hal)"
+          printf 'JVM tool.sh probe: %s\n' "$actual"
+          test "$actual" = "$expected"
+
+          actual="$(HARA_RUNTIME=rust \
+            HARA_NATIVE="$GITHUB_WORKSPACE/core/rust/target/debug/hara" \
+            ./core/hara --allow-process --project core --offline stdin < /tmp/tool-sh-contract-probe.hal)"
+          printf 'Rust tool.sh probe: %s\n' "$actual"
+          test "$actual" = "$expected"

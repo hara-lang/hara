@@ -1,0 +1,74 @@
+(ns tool.sh.desktop-test
+  (:require [tool.sh.desktop :as desktop]))
+
+(def calls (atom []))
+
+(defn fake-runner
+  [argv options]
+  (swap! calls conj [argv options])
+  {:command argv
+   :stdout (if (= argv ["pbpaste"]) "clipboard\n" "")
+   :stderr ""
+   :exit 0})
+
+(def results
+  [(test-check
+    "desktop builders preserve supported macOS and Linux commands"
+    [(desktop/say-command :macos "hello")
+     (desktop/say-command :linux "hello")
+     (desktop/notify-command :linux "Title" "Message")
+     (desktop/terminal-command :linux ["printf" "%s" "a b"])
+     (desktop/beep-command :macos)
+     (desktop/clipboard-write-command :linux)
+     (desktop/clipboard-read-command :macos)]
+    [["say" "hello"]
+     ["spd-say" "hello"]
+     ["notify-send" "Title" "Message"]
+     ["x-terminal-emulator" "-e" "printf" "%s" "a b"]
+     ["afplay" "/System/Library/Sounds/Funk.aiff"]
+     ["xclip" "-selection" "clipboard"]
+     ["pbpaste"]])
+
+   (test-check
+    "unsupported platforms fail with structured exceptions"
+    (try
+      (desktop/notify-command :unknown "Title" "Message")
+      nil
+      (catch Throwable error
+        (select-keys (ex-data error)
+                     [:tool.sh/error :tool.sh/operation :platform])))
+    {:tool.sh/error :unsupported-platform
+     :tool.sh/operation :notify
+     :platform :unknown})
+
+   (test-check
+    "clipboard operations use stdin and preserve exact returned text"
+    (do
+      (reset! calls [])
+      [(desktop/clip "copied\n"
+                     {:platform :macos
+                      :tool.sh/runner fake-runner})
+       (desktop/clip:nil "discard"
+                         {:platform :macos
+                          :tool.sh/runner fake-runner})
+       (desktop/paste {:platform :macos
+                       :tool.sh/runner fake-runner})
+       (deref calls)])
+    ["copied\n"
+     nil
+     "clipboard\n"
+     [[["pbcopy"] {:stdin "copied\n"}]
+      [["pbcopy"] {:stdin "discard"}]
+      [["pbpaste"] {}]]])
+
+   (test-check
+    "say accepts a final execution map without joining argv itself"
+    (do
+      (reset! calls [])
+      (desktop/say "hello" "there"
+                   {:platform :macos
+                    :tool.sh/runner fake-runner})
+      (deref calls))
+    [[["say" "hello there"] {}]])])
+
+results

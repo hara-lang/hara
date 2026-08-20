@@ -7754,7 +7754,7 @@ mod tests {
         for (namespace, _, source) in EMBEDDED_HAL_RESOURCES {
             runtime.register_resource(namespace, source);
         }
-        // code.translate.* and its std.block/std.lib.zip dependencies are not
+        // code.migrate.project.* and its std.block/std.lib.zip dependencies are not
         // embedded bootstrap namespaces; register them from repository sources.
         let lib_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -7775,7 +7775,7 @@ mod tests {
             .2;
         runtime.eval_text(foundation).unwrap();
         runtime.eval_text("(ns user)").unwrap();
-        runtime.eval_text("(require 'code.translate.rule)").unwrap();
+        runtime.eval_text("(require 'code.migrate.rule)").unwrap();
         assert_eq!(
             runtime
                 .eval_text(
@@ -7790,13 +7790,13 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    r#"(let [root (code.translate.navigation/block-input "[std.lib.foundation/T]")
+                    r#"(let [root (code.framework.navigation/block-input "[std.lib.foundation/T]")
                               rule {:rewrite {:op :replace-token-prefix :text "std.foundation"}}
                               match {:source "std.lib.foundation/T"
                                      :match/text "std.lib.foundation"
                                      :path [0 0]}]
-                          (code.translate.navigation/render
-                           (code.translate.rule/apply-match root rule match)))"#,
+                          (code.framework.navigation/render
+                           (code.migrate.rule/apply-match root rule match)))"#,
                 )
                 .unwrap(),
             r#""[std.foundation/T]""#
@@ -7805,7 +7805,7 @@ mod tests {
             runtime
                 .eval_text(
                     r#"(get
-                         (code.translate.rule/translate-source
+                         (code.migrate.rule/translate-source
                           "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] [std.native.Json :as json]))\n[c/map-keys walk/prewalk-replace json/read]"
                           {:mode :safe})
                          :output)"#,
@@ -7817,7 +7817,7 @@ mod tests {
             runtime
                 .eval_text(
                     r#"(get
-                         (code.translate.rule/translate-source
+                         (code.migrate.rule/translate-source
                           "(ns demo (:require [std.lib.foundation :as foundation]))\n[std.lib.foundation/T foundation/F]"
                           {:mode :review})
                          :output)"#,
@@ -7827,7 +7827,7 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text("(count code.translate.rule/+ruleset+)")
+                .eval_text("(count code.migrate.rule/+ruleset+)")
                 .unwrap(),
             "119"
         );
@@ -7835,7 +7835,7 @@ mod tests {
             let expression = format!(
                 r#"(let [output
                          (get
-                          (code.translate.rule/translate-source
+                          (code.migrate.rule/translate-source
                            "(ns demo (:require [std.native.{native_type} :as native]))\n[native/probe std.native.{native_type}/probe]"
                            {{:mode :safe}})
                           :output)]
@@ -7850,7 +7850,7 @@ mod tests {
             );
         }
 
-        // The code.translate native type list must equal the closed native.edn
+        // The code.migrate.project native type list must equal the closed native.edn
         // inventory (both spell the canonical RegExp).
         if let Some(contract_source) =
             repo_text("01-lang/001-language/draft/conformance/native.edn")
@@ -7894,10 +7894,10 @@ mod tests {
             );
             assert_eq!(
                 runtime
-                    .eval_text("(vec (sort code.translate.rules/+native-static-types+))",)
+                    .eval_text("(vec (sort code.migrate.rules/+native-static-types+))",)
                     .unwrap(),
                 expected,
-                "code.translate.rules/+native-static-types+ differs from native.edn"
+                "code.migrate.rules/+native-static-types+ differs from native.edn"
             );
         }
     }

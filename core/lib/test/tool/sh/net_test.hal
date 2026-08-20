@@ -1,0 +1,52 @@
+(ns tool.sh.net-test
+  (:require [tool.sh.net :as net]))
+
+(def calls (atom []))
+
+(defn fake-runner
+  [argv options]
+  (swap! calls conj [argv options])
+  {:command argv :stdout "" :stderr "" :exit 0})
+
+(def results
+  [(test-check
+    "wget argv keeps output and additional arguments explicit"
+    (net/wget-command
+     "https://example.test/"
+     "asset.bin"
+     "local.bin"
+     ["--quiet"])
+    ["wget" "https://example.test/asset.bin"
+     "-O" "local.bin"
+     "--quiet"])
+
+   (test-check
+    "wget-bulk preserves descriptors, cwd, and injected execution"
+    (do
+      (reset! calls [])
+      (net/wget-bulk
+       "https://example.test/"
+       "fixtures"
+       ["a.txt" ["b.txt" "renamed.txt"]]
+       ["--quiet"]
+       {:tool.sh/runner fake-runner})
+      (deref calls))
+    [[["wget" "https://example.test/a.txt" "--quiet"]
+      {:cwd "resources/fixtures"}]
+     [["wget" "https://example.test/b.txt"
+       "-O" "renamed.txt" "--quiet"]
+      {:cwd "resources/fixtures"}]])
+
+   (test-check
+    "malformed wget descriptors are rejected"
+    (try
+      (net/wget-bulk
+       "" "."
+       [[:not-a-string nil]]
+       []
+       {:tool.sh/runner fake-runner})
+      false
+      (catch Throwable error true))
+    true)])
+
+results

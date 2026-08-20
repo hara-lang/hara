@@ -1,0 +1,166 @@
+name: Foundation migration audit
+
+on:
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/lib/src/code/framework/**'
+      - 'core/lib/src/code/manage/**'
+      - 'core/lib/src/code/migrate/**'
+      - 'core/lib/test/code/framework*'
+      - 'core/lib/test/code/manage*'
+      - 'core/lib/test/code/migrate*'
+      - 'core/spec/code-migrate/**'
+      - 'core/rust/standard-library.namespaces'
+      - 'scripts/runtime/foundation_target_snapshot*'
+      - 'scripts/runtime/sync-rust-hal-src'
+      - '.github/workflows/foundation-migrate.yml'
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - 'core/lib/src/code/framework/**'
+      - 'core/lib/src/code/manage/**'
+      - 'core/lib/src/code/migrate/**'
+      - 'core/lib/test/code/framework*'
+      - 'core/lib/test/code/manage*'
+      - 'core/lib/test/code/migrate*'
+      - 'core/spec/code-migrate/**'
+      - 'core/rust/standard-library.namespaces'
+      - 'scripts/runtime/foundation_target_snapshot*'
+      - 'scripts/runtime/sync-rust-hal-src'
+      - '.github/workflows/foundation-migrate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: foundation-migrate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evidence:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Fetch the pinned Foundation object into a bare repository
+        run: |
+          set -euo pipefail
+          git init --bare .foundation.git
+          git --git-dir=.foundation.git remote add origin \
+            https://github.com/zcaudate-xyz/foundation-base.git
+          git --git-dir=.foundation.git fetch --depth=1 origin \
+            baa75aabd6a879753d7d5cb07271b1448271e7cb
+          test "$(git --git-dir=.foundation.git rev-parse \
+            'baa75aabd6a879753d7d5cb07271b1448271e7cb^{commit}')" = \
+            baa75aabd6a879753d7d5cb07271b1448271e7cb
+          test "$(git --git-dir=.foundation.git rev-parse \
+            'baa75aabd6a879753d7d5cb07271b1448271e7cb^{tree}')" = \
+            26d494f60c4970df56eba8ac40f92affeee4e159
+          git --git-dir=.foundation.git show-ref \
+            > target-foundation-before.refs || true
+          git --git-dir=.foundation.git count-objects -v \
+            > target-foundation-before.objects
+
+      - name: Enforce the hard cut and deterministic audit bytes
+        run: |
+          set -euo pipefail
+          retired_namespace='code\.trans''late'
+          retired_tree='code-trans''late'
+          retired_corpus='clj[-_]hal[-_]corpus'
+          retired_task='clojure-to''-hal'
+          retired_pattern="${retired_namespace}|${retired_tree}|${retired_corpus}|${retired_task}"
+          if grep -R -n -E "$retired_pattern" core scripts .github
+          then
+            echo 'Retired translator surface remains.' >&2
+            exit 1
+          fi
+          (
+            cd core/spec/code-migrate
+            sha256sum --check foundation-baa75a.sha256
+          )
+          test "$(grep -o ':foundation/revision \"[0-9a-f]*\"' \
+            core/spec/code-migrate/foundation-baa75a.edn | head -1)" = \
+            ':foundation/revision "baa75aabd6a879753d7d5cb07271b1448271e7cb"'
+          test "$(grep -o ':foundation/tree \"[0-9a-f]*\"' \
+            core/spec/code-migrate/foundation-baa75a.edn | head -1)" = \
+            ':foundation/tree "26d494f60c4970df56eba8ac40f92affeee4e159"'
+          test ! -e foundation-base/.git/index
+          test ! -d .foundation-reference
+
+      - name: Validate retained native target snapshots
+        run: |
+          set -euo pipefail
+          python3 scripts/runtime/foundation_target_snapshot_test.py
+          python3 scripts/runtime/foundation_target_snapshot.py
+
+      - name: Verify Foundation object status is unchanged
+        run: |
+          set -euo pipefail
+          git --git-dir=.foundation.git show-ref \
+            > target-foundation-after.refs || true
+          git --git-dir=.foundation.git count-objects -v \
+            > target-foundation-after.objects
+          cmp target-foundation-before.refs target-foundation-after.refs
+          cmp target-foundation-before.objects target-foundation-after.objects
+          test -z "$(git --git-dir=.foundation.git for-each-ref refs/heads)"
+          test ! -e .foundation.git/index
+
+  runtimes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Build a fresh JVM runtime
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Run focused framework, manage, and migrate tests
+        run: |
+          ./scripts/runtime/run-lib-tests \
+            core/lib/test/code/framework_source_test.hal \
+            core/lib/test/code/framework_test.hal \
+            core/lib/test/code/manage_transform_test.hal \
+            core/lib/test/code/manage_cli_test.hal \
+            core/lib/test/code/migrate_git_test.hal \
+            core/lib/test/code/migrate_corpus_test.hal \
+            core/lib/test/code/migrate_rules_test.hal \
+            core/lib/test/code/migrate_clojure_test.hal \
+            core/lib/test/code/migrate_project_test.hal \
+            core/lib/test/code/migrate_navigation_test.hal
+
+      - name: Run complete Hara library harness
+        run: ./scripts/runtime/run-lib-tests
+
+      - name: Materialize the canonical Rust HAL snapshot
+        run: |
+          set -euo pipefail
+          python3 scripts/runtime/sync-rust-hal-src
+          git diff --exit-code -- core/rust/standard-library.namespaces
+          python3 scripts/runtime/sync-rust-hal-src --check
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and test a fresh Rust runtime
+        run: |
+          cargo build --manifest-path core/rust/Cargo.toml --bin hara-test
+          cargo test --manifest-path core/rust/Cargo.toml
+          cargo test --manifest-path core/rust/raw/Cargo.toml
+
+      - name: Recheck canonical Rust source materialization
+        run: python3 scripts/runtime/sync-rust-hal-src --check
