@@ -14,6 +14,12 @@ pub mod extension;
 pub mod file;
 #[path = "file/interface.rs"]
 pub mod filesystem;
+#[path = "runtime/filesystem_bridge.rs"]
+mod filesystem_bridge;
+#[path = "runtime/filesystem_adapter.rs"]
+pub mod filesystem_runtime;
+#[path = "runtime/filesystem_mount.rs"]
+mod filesystem_mount;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]
@@ -126,4 +132,7 @@ pub fn restricted_sandbox_runtime_with_host(
     runtime
 }
 
+#[cfg(test)]
+#[path = "runtime/filesystem_tests.rs"]
+mod filesystem_runtime_tests;
 include!("runtime/tests.rs");
