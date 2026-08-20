@@ -15,6 +15,21 @@
      (fn [input context]
        (* input 2)))]))
 
+(def bind-receipt-work
+  (work/bind
+   {:id :bind-receipt-flow}
+   (work/step
+    :bind-increment
+    (fn [input context]
+      (inc input)))
+   (work/pure
+    :bind-select
+    (fn [value context]
+      (work/step
+       :bind-double
+       (fn [selected selected-context]
+         (* selected 2)))))))
+
 (defn receipt-by-kind
   [entries kind]
   (reduce
@@ -83,6 +98,15 @@
               {:id "disabled-receipts"}))
 (def disabled-receipts
   (work/receipts disabled-runtime disabled-reference))
+
+(def bind-receipt-runtime (work/durable-runtime))
+(def bind-receipt-reference
+  (work/start bind-receipt-runtime
+              bind-receipt-work
+              3
+              {:id "bind-receipts"}))
+(def bind-receipts
+  (work/receipts bind-receipt-runtime bind-receipt-reference))
 
 (def failed-runtime (work/durable-runtime))
 (def failed-reference
@@ -198,6 +222,19 @@
     [(work/result disabled-runtime disabled-reference)
      (vec (map (fn [entry] (:outbox/kind entry)) disabled-receipts))
      (work/receipt-status disabled-runtime disabled-reference)]
+    [8
+     [:work/run-created
+      :work/run-started
+      :work/checkpoint
+      :work/checkpoint
+      :work/run-completed]
+     :pending])
+
+   (test-check
+    "runtime-produced Work uses ordinary step and run receipt intents"
+    [(work/result bind-receipt-runtime bind-receipt-reference)
+     (vec (map (fn [entry] (:outbox/kind entry)) bind-receipts))
+     (work/receipt-status bind-receipt-runtime bind-receipt-reference)]
     [8
      [:work/run-created
       :work/run-started
