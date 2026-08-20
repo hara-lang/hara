@@ -11,13 +11,13 @@ Agent
 IAgent
   = projects a protocol-backed value to an Agent map
 
-IWorkAgentDriver
+IAgentDriver
   = turns intent into Work
 
-IWorkAgentCoordinator
+IAgentCoordinator
   = coordinates agents and tasks
 
-IWorkAgentAuthority
+IAgentAuthority
   = authorizes and signs actions
 
 Everything else
@@ -50,13 +50,13 @@ The public agent capability family is exactly:
 
 ```text
 IAgent
-IWorkAgentDriver
-IWorkAgentCoordinator
-IWorkAgentAuthority
+IAgentDriver
+IAgentCoordinator
+IAgentAuthority
 ```
 
 `IAgent/agent-spec` returns the canonical Agent map.
-`IWorkAgentDriver/agent-drive` returns an `IWork` value and never executes it.
+`IAgentDriver/agent-drive` returns an `IWork` value and never executes it.
 Coordinator and authority requests/results are ordinary immutable Hara values.
 
 There is no agent runtime, store, host, run, ref, observer, machine, or second
@@ -90,6 +90,6 @@ only; Work remains responsible for run lifecycle and durability.
 ## OpenAI driver
 
 `work.agent.driver.openai` retains the provider-neutral OpenAI Responses and
-tool translation code but implements `IWorkAgentDriver`. Driving an intent
+tool translation code but implements `IAgentDriver`. Driving an intent
 returns ordinary Work; model/tool effects execute only when that Work is run by
 the canonical Work runtime/host.
