@@ -82,6 +82,28 @@ IWorkRun
 IWorkRef
 ```
 
+## Internal implementation ownership
+
+Work construction for model-selected tools and provider-turn recursion is
+inspectable but unsupported implementation surface. It is owned by internal
+namespaces rather than being published from the supported tool/driver owners:
+
+```text
+work.agent.tool.work
+  model tool call -> ordinary Work
+
+work.agent.driver.openai.work
+  OpenAI response/tool/next-turn Work graph
+```
+
+Both namespaces use `{:role :internal}`. Same-project source and tests may use
+them directly; external consumers should depend on `work.agent`,
+`work.agent.tool`, and the four `IAgent*` capability boundaries instead.
+
+No compatibility aliases for `call-work`, `effect-work`, `turn-work`, or model
+step construction are published from the supported namespaces. This keeps Work
+lowering replaceable without expanding the agent protocol/API family.
+
 ## Tool effect boundary
 
 Pure and effectful tools share one model-visible schema but have different
