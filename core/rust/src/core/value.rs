@@ -1876,7 +1876,6 @@ pub(crate) fn eval_bytecode_declaration(
 pub(crate) fn bytecode_dynamic_bind(name: &str, value: Value) -> Result<(), String> {
     let registry = namespace_registry()?;
     let var = registry
-        .current()
         .resolve(&crate::lang::data::Symbol::parse(name))
         .ok_or_else(|| format!("binding expects a Var: {name}"))?;
     if !var.is_dynamic() {
@@ -1889,7 +1888,6 @@ pub(crate) fn bytecode_dynamic_bind(name: &str, value: Value) -> Result<(), Stri
 pub(crate) fn bytecode_dynamic_unbind(name: &str) -> Result<(), String> {
     let registry = namespace_registry()?;
     let var = registry
-        .current()
         .resolve(&crate::lang::data::Symbol::parse(name))
         .ok_or_else(|| format!("binding expects a Var: {name}"))?;
     var.unbind().map(|_| ())
