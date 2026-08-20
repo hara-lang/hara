@@ -72,15 +72,20 @@ fn instruction_and_call_events_are_emitted_from_real_dispatch_boundaries() {
         .expect("instrument");
     let handle = register_target(&mut hub);
     hub.attach(&instrument, &handle).expect("attachment");
+    // Immediate anonymous calls are intentionally inlined by the compiler and
+    // therefore have no machine call frame. A named function exercises the
+    // authoritative Dispatch::Call/Returned frame boundaries instead.
     let mut target = HbcTarget::new(
         &hub,
         handle,
         "editor/main",
-        machine("((fn [x] (+ x 1)) 41)"),
+        machine("(do (defn f [x] (+ x 1)) (f 41))"),
     )
     .expect("target");
 
-    target.run(&mut hub, 256).expect("run");
+    let registry = crate::embedding_namespace_registry();
+    crate::core::with_namespace_registry(&registry, || target.run(&mut hub, 256))
+        .expect("run");
     let batch = hub.drain_events(&instrument).expect("events");
     assert_eq!(batch.dropped, 0, "focused call trace must not overflow");
     let events = batch.events;
