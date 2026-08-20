@@ -19,10 +19,7 @@ on:
       - 'core/rust/standard-library.namespaces'
       - '.github/workflows/instrumentation-code-vm.yml'
   push:
-    branches:
-      - main
-      - testing
-      - instrumentation-live-code-vm-883
+    branches: [main, testing]
     paths:
       - 'core/lib/src/code/vm.hal'
       - 'core/lib/src/code/vm/instrument/**'
@@ -38,139 +35,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: code-vm-instrumentation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  format-hbc-branch:
-    if: github.event_name == 'push' && github.ref_name == 'instrumentation-live-code-vm-883'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: instrumentation-live-code-vm-883
-          fetch-depth: 0
-
-      - name: Checkout hara-specs-registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-
-      - name: Expose specs registry at the runtime fixture path
-        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Remove private Program annotation and use infallible JSON encoding
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('core/rust/src/live_session/instrumented_hbc.rs')
-          text = path.read_text()
-
-          old_compile = '''    fn compile(&self, source: &str) -> Result<crate::vm::Program, LiveSessionError> {
-              let registry = self.namespace_registry.clone();
-              let protocols = self.protocols.clone();
-              let macros = self.macros.clone();
-              crate::core::with_macros(macros, move || {
-                  crate::core::with_namespace_registry(&registry, move || {
-                      crate::core::with_protocols(&protocols, || {
-                          compile_source_with(source, &registry).map_err(backend_error)
-                      })
-                  })
-              })
-          }
-'''
-          new_compile = '''    fn machine(&self, source: &str) -> Result<Machine, LiveSessionError> {
-              let registry = self.namespace_registry.clone();
-              let protocols = self.protocols.clone();
-              let macros = self.macros.clone();
-              crate::core::with_macros(macros, move || {
-                  crate::core::with_namespace_registry(&registry, move || {
-                      crate::core::with_protocols(&protocols, || {
-                          let program = compile_source_with(source, &registry).map_err(backend_error)?;
-                          Ok(Machine::entry(Rc::new(program)))
-                      })
-                  })
-              })
-          }
-'''
-          if old_compile not in text and new_compile not in text:
-              raise SystemExit('HbcRuntimeContext compile helper not found')
-          text = text.replace(old_compile, new_compile, 1)
-
-          old_install = '''        let program = self.context.compile(self.source.source())?;
-          let machine = Machine::entry(Rc::new(program));
-'''
-          new_install = '''        let machine = self.context.machine(self.source.source())?;
-'''
-          if old_install not in text and new_install not in text:
-              raise SystemExit('HBC machine installation block not found')
-          text = text.replace(old_install, new_install, 1)
-
-          old_json = '''    let encoded = crate::json::write(value).map_err(|error| {
-              LiveSessionError::backend(format!(
-                  "unable to encode HBC live-session value: {error}"
-              ))
-          })?;
-'''
-          new_json = '''    let encoded = crate::json::write(value);
-'''
-          if old_json not in text and new_json not in text:
-              raise SystemExit('HBC JSON encoder block not found')
-          text = text.replace(old_json, new_json, 1)
-
-          path.write_text(text)
-          PY
-
-      - name: Format the HBC controller slice
-        run: |
-          rustfmt --edition 2021 \
-            core/rust/src/live_session.rs \
-            core/rust/src/live_session/instrumented_hbc.rs \
-            core/rust/src/runtime/session_live.rs
-
-      - name: Enforce bounded HBC controller
-        run: |
-          lines=$(wc -l < core/rust/src/live_session/instrumented_hbc.rs)
-          echo "instrumented_hbc.rs: $lines"
-          test "$lines" -lt 700
-
-      - name: Compile before publishing formatted sources
-        run: |
-          cargo test --locked --manifest-path core/rust/Cargo.toml \
-            --features bytecode-observation --lib --no-run
-
-      - name: Commit only compile-valid HBC repairs
-        run: |
-          if git diff --quiet -- \
-            core/rust/src/live_session.rs \
-            core/rust/src/live_session/instrumented_hbc.rs \
-            core/rust/src/runtime/session_live.rs; then
-            echo "HBC controller sources already repaired and formatted."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add \
-            core/rust/src/live_session.rs \
-            core/rust/src/live_session/instrumented_hbc.rs \
-            core/rust/src/runtime/session_live.rs
-          git commit -m "Repair and format instrumented HBC LiveSession sources"
-          git push origin HEAD:instrumentation-live-code-vm-883
-
   focused:
-    if: github.event_name != 'push' || github.ref_name != 'instrumentation-live-code-vm-883'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -193,16 +65,12 @@ jobs:
 
       - name: Check instrumented LiveSession formatting
         run: |
-          files=(
-            core/rust/src/runtime/evaluator.rs
-            core/rust/src/runtime/session_live.rs
-            core/rust/src/live_session.rs
-            core/rust/src/live_session/instrumented_interpreter.rs
-          )
-          if [[ -f core/rust/src/live_session/instrumented_hbc.rs ]]; then
-            files+=(core/rust/src/live_session/instrumented_hbc.rs)
-          fi
-          rustfmt --edition 2021 --check "${files[@]}"
+          rustfmt --edition 2021 --check \
+            core/rust/src/runtime/evaluator.rs \
+            core/rust/src/runtime/session_live.rs \
+            core/rust/src/live_session.rs \
+            core/rust/src/live_session/instrumented_interpreter.rs \
+            core/rust/src/live_session/instrumented_hbc.rs
 
       - name: Compile the Runtime-owned interpreter instrumentation path
         run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib --no-run
@@ -250,6 +118,4 @@ jobs:
         run: |
           test "$(wc -l < core/lib/src/code/vm/instrument/trace.hal)" -lt 700
           test "$(wc -l < core/rust/src/live_session/instrumented_interpreter.rs)" -lt 700
-          if [[ -f core/rust/src/live_session/instrumented_hbc.rs ]]; then
-            test "$(wc -l < core/rust/src/live_session/instrumented_hbc.rs)" -lt 700
-          fi
+          test "$(wc -l < core/rust/src/live_session/instrumented_hbc.rs)" -lt 700
