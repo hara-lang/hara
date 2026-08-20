@@ -1091,16 +1091,6 @@ fn bind_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) ->
                 let effect_target;
                 let mut env = e.borrow_mut();
                 let result = if op == "def" {
-                    if crate::core::protected_fallback_binding(&env, &name, metadata.clone())
-                        .is_some()
-                    {
-                        let Some(Value::Var(var)) = env.get(&name) else {
-                            unreachable!("protected fallback binding must be a Var")
-                        };
-                        let result = Value::Var(var.clone());
-                        drop(env);
-                        return k(Ok(result));
-                    }
                     let origin = crate::core::definition_origin();
                     let var = if let Some(Value::Var(var)) = env.get(&name) {
                         effect_before = Some(var.deref_value());
@@ -1563,6 +1553,34 @@ mod tests {
             };
             assert_eq!(var.display(), "#'user/player");
             assert_eq!(var.deref_value(), Value::Number(1));
+        });
+    }
+
+    #[test]
+    fn fallback_def_takes_ownership_from_a_bootstrap_library_var() {
+        let registry = crate::kernel::NamespaceRegistry::new("user");
+        crate::core::with_namespace_registry(&registry, || {
+            let seed = registry.current().intern_with_origin(
+                "optimized",
+                Value::Number(7),
+                crate::kernel::VarOrigin::RustLibrary,
+            );
+            let mut environment = HashMap::new();
+            environment.insert("optimized".into(), Value::Var(seed.clone()));
+
+            let result = crate::core::with_definition_origin(
+                crate::kernel::VarOrigin::HalFallback,
+                || {
+                    let mut fiber = EvalFiber::start("(def optimized 9)", environment).unwrap();
+                    fiber.drive_sync().unwrap()
+                },
+            );
+            let Value::Var(var) = result else {
+                panic!("def must return a Var")
+            };
+            assert!(seed.same_identity(&var));
+            assert_eq!(var.origin(), crate::kernel::VarOrigin::HalFallback);
+            assert_eq!(var.deref_value(), Value::Number(9));
         });
     }
 
