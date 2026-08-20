@@ -1,0 +1,54 @@
+(ns work.bind-ensure-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.eval :as eval]))
+
+(defn event-count
+  [events event]
+  (count
+   (filter
+    (fn [record]
+      (= event (:event record)))
+    events)))
+
+(fact "runtime-produced ensure Work runs cleanup after body failure"
+  (let [cleanup-count (atom 0)
+        observer (work/recording-observer)
+        workflow
+        (work/bind
+         {:id :bind-ensure}
+         (work/pure :source
+           (fn [input context]
+             input))
+         (work/pure :continuation
+           (fn [value context]
+             (work/ensure
+              {:id :produced-ensure}
+              (work/step :failing-body
+                (fn [body-input body-context]
+                  (throw
+                   (ex :host
+                       {:value body-input}
+                       :ex/message "produced body failed"))))
+              (work/step :cleanup
+                (fn [outcome cleanup-context]
+                  (swap! cleanup-count inc)
+                  (:work/body-status outcome)))))))
+        outcome
+        (try
+          (do
+            (eval/run nil
+                      workflow
+                      :payload
+                      {:work/hooks {:work/observer observer}})
+            :not-failed)
+          (catch Throwable error
+            (:value (ex-data error))))
+        events (work/observer-events observer)]
+    [outcome
+     (deref cleanup-count)
+     (event-count events :work/cleanup-started)
+     (event-count events :work/cleanup-completed)])
+  => [:payload 1 1 1])
+
+(pr-str (run '[work.bind-ensure-test]))
