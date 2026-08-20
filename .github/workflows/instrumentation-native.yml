@@ -1,0 +1,114 @@
+name: Trusted native instrumentation validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - testing
+      - 'instrumentation-*'
+    paths:
+      - 'core/rust/src/instrumentation.rs'
+      - 'core/rust/src/instrumentation/native.rs'
+      - 'core/rust/src/instrumentation/native/**'
+      - 'core/rust/src/runtime/session_instrumentation.rs'
+      - 'core/rust/src/lib.rs'
+      - '.github/workflows/instrumentation-native.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/src/instrumentation.rs'
+      - 'core/rust/src/instrumentation/native.rs'
+      - 'core/rust/src/instrumentation/native/**'
+      - 'core/rust/src/runtime/session_instrumentation.rs'
+      - 'core/rust/src/lib.rs'
+      - '.github/workflows/instrumentation-native.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trusted-native-instrumentation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check trusted native instrumentation formatting
+        run: |
+          rustfmt --edition 2021 --check \
+            core/rust/src/instrumentation.rs \
+            core/rust/src/instrumentation/native.rs \
+            core/rust/src/instrumentation/native/tests.rs \
+            core/rust/src/runtime/session_instrumentation.rs \
+            core/rust/src/lib.rs
+
+      - name: Test trusted native service with the production feature set
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --lib trusted_native_
+
+      - name: Test trusted native service without optional bytecode features
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --no-default-features --lib trusted_native_
+
+      - name: Preserve shared hub and private Session behavior
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --lib instrumentation::tests
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --test sandbox_private_live_session
+
+      - name: Reject ambient, guest, portable, and deferred authority
+        run: |
+          if grep -R -nE \
+            'Instrumentation/current|instrumentation_current|std\.native\.Instrumentation/current' \
+            core/rust/src core/lib/src; then
+            echo 'Instrumentation must not have an ambient current lookup' >&2
+            exit 1
+          fi
+          if grep -Fx 'std.native.Instrumentation' core/rust/standard-library.namespaces; then
+            echo 'Native Instrumentation must not enter the Hara library inventory' >&2
+            exit 1
+          fi
+          if grep -nE \
+            'core::Value|serde|wasm_bindgen|hta::|hbc::|json::' \
+            core/rust/src/instrumentation/native.rs \
+            core/rust/src/runtime/session_instrumentation.rs; then
+            echo 'Native Instrumentation must remain outside portable value/codec surfaces' >&2
+            exit 1
+          fi
+          if grep -nE 'TransformHalc|TransformHbc|RetransformHalc|RetransformHbc' \
+            core/rust/src/instrumentation/native.rs; then
+            echo 'Artifact transformation remains deferred to tranche 6' >&2
+            exit 1
+          fi
+
+      - name: Enforce bounded native surface modules
+        run: |
+          test "$(wc -l < core/rust/src/instrumentation/native.rs)" -lt 700
+          test "$(wc -l < core/rust/src/instrumentation/native/tests.rs)" -lt 700
+          test "$(wc -l < core/rust/src/runtime/session_instrumentation.rs)" -lt 200
+
+      - name: Check patch whitespace
+        run: git diff --check
