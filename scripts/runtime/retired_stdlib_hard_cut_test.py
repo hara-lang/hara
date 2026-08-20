@@ -50,7 +50,7 @@ class HalMigrationTest(unittest.TestCase):
         self.assertNotIn("print-results", migrated)
 
     def test_focused_fixture_preserves_quoted_legacy_input(self) -> None:
-        source = """(ns code.translate-rules-test
+        source = """(ns code.migrate-rules-test
   (:require [std.lib.test :as test]))
 (def legacy '(ns old (:require [std.lib.test :as test])))
 (def results [(test/check "fixture" true true)])
@@ -127,8 +127,8 @@ class HbxModuleTableTest(unittest.TestCase):
         data = self.bundle(
             [
                 (
-                    "code.translate.rules",
-                    "(ns code.translate.rules)",
+                    "code.migrate.rules",
+                    "(ns code.migrate.rules)",
                     (),
                     b"migration literal: std.lib.walk and std.lib.test",
                     False,
