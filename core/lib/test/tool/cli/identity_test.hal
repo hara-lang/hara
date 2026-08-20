@@ -20,4 +20,17 @@
   (test-check "identity routes resolve in Hara"
               (identity/operation-request
                {:request/route :tool.cli.route/id-status :request/arguments []})
-              {:operation :status :arguments []})]
+              {:operation :status :arguments []})
+  (test-check "identity one-shot input uses canonical stdin"
+              (identity/run-process ["cat"] "signed\n")
+              {:stdout "signed\n" :stderr "" :exit 0})
+  (test-check "identity failure preserves its public error shape"
+              (try
+                (identity/run-process
+                 ["sh" "-c" "printf 'bad\n' >&2; exit 12"] nil)
+                nil
+                (catch Throwable error
+                  [(ex-message error)
+                   (select-keys (ex-data error) [:stdout :stderr :exit])
+                   (:ex/code (ex-data error))]))
+              ["bad" {:stdout "" :stderr "bad\n" :exit 12} :hara/host])]

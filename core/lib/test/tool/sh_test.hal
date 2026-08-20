@@ -1,37 +1,135 @@
 (ns tool.sh-test
-  (:use code.test)
   (:require [tool.sh :as sh]))
 
-(defn fake-runner
-  [argv options]
-  {:command argv
-   :stdout (or (:stdout options) "ok")
-   :stderr (or (:stderr options) "")
-   :exit (or (:exit options) 0)})
-
 (def results
-  [(fact "tool.sh validates argv and delegates through an injectable runner"
-     (sh/execute ["printf" "ok"] {:tool.sh/runner fake-runner})
-     => {:command ["printf" "ok"] :stdout "ok" :stderr "" :exit 0})
+  [(test-check
+    "execute returns a Promise and preserves exact output"
+    (let [pending
+          (sh/execute
+           ["sh" "-c"
+            "printf ' out\n'; printf ' err\n' >&2; exit 7"])]
+      [(promise? pending) (deref pending)])
+    [true
+     {:command
+      ["sh" "-c"
+       "printf ' out\n'; printf ' err\n' >&2; exit 7"]
+      :stdout " out\n"
+      :stderr " err\n"
+      :exit 7}])
 
-   (fact "tool.sh run-checked keeps the structured failure in ex-data"
-     (try
-       (sh/execute-checked ["false"] {:tool.sh/runner fake-runner
-                                :stdout "out"
-                                :stderr "err"
-                                :exit 7})
+   (test-check
+    "stdin strings are UTF-8 encoded, written, and closed"
+    (sh/run ["cat"] {:stdin "hello\n"})
+    {:command ["cat"]
+     :stdout "hello\n"
+     :stderr ""
+     :exit 0})
+
+   (test-check
+    "cwd and string environment entries reach the process builder"
+    [(let [result (sh/run ["pwd"] {:cwd "/tmp"})]
+       (assoc result
+              :stdout
+              (str/ends-with? (:stdout result) "/tmp\n")))
+     (sh/run ["printenv" "HARA_TOOL_SH_TEST"]
+             {:env {"HARA_TOOL_SH_TEST" "present"}})]
+    [{:command ["pwd"]
+      :stdout true
+      :stderr ""
+      :exit 0}
+     {:command ["printenv" "HARA_TOOL_SH_TEST"]
+      :stdout "present\n"
+      :stderr ""
+      :exit 0}])
+
+   (test-check
+    "spawn leaves stdin open and lifecycle wrappers remain explicit"
+    (let [process (sh/spawn ["cat"])
+          written (sh/write process "stream")
+          alive (sh/alive? process)
+          _ (sh/close-input process)
+          values (deref
+                  (promise/all
+                   [(sh/stdout process)
+                    (sh/stderr process)
+                    (sh/wait process)]))]
+      [written alive
+       (str/decode-utf8 (nth values 0))
+       (str/decode-utf8 (nth values 1))
+       (nth values 2)])
+    [6 true "stream" "" 0])
+
+   (test-check
+    "run-checked preserves the failed result as ex-data"
+    (try
+      (sh/run-checked ["sh" "-c" "printf out; printf err >&2; exit 9"])
+      nil
+      (catch Throwable error
+        [(ex-message error)
+         (select-keys (ex-data error) [:command :stdout :stderr :exit])
+         (:ex/code (ex-data error))]))
+    ["Command failed"
+     {:command ["sh" "-c" "printf out; printf err >&2; exit 9"]
+      :stdout "out"
+      :stderr "err"
+      :exit 9}
+     :hara/dependency])
+
+   (test-check
+    "implicit command strings are rejected"
+    (try
+      (sh/command "echo unsafe")
+      false
+      (catch Throwable error
+        (= :invalid-command
+           (:tool.sh/error (ex-data error)))))
+    true)
+
+   (test-check
+    "the process option map is closed and typed"
+    [(try
+       (sh/options {:trim true})
        nil
        (catch Throwable error
-         [(ex-message error) (ex-data error)]))
-     => ["Command failed"
-         {:command ["false"] :stdout "out" :stderr "err" :exit 7}])
+         (:tool.sh/error (ex-data error))))
+     (try
+       (sh/options {:cwd :tmp})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))
+     (try
+       (sh/options {:env {:A "1"}})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))
+     (try
+       (sh/options {:stdin 42})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))]
+    [:unknown-options :invalid-cwd :invalid-env :invalid-stdin])
 
-   (fact "tool.sh rejects implicit command strings"
-     (try (sh/command "echo unsafe") false (catch Throwable error true))
-     => true)
+   (test-check
+    "Bytes stdin is preserved and core rejects a domain runner option"
+    [(sh/run ["cat"] {:stdin (str/encode-utf8 "bytes\n")})
+     (try
+       (sh/run ["true"]
+               {:tool.sh/runner
+                (fn [argv options]
+                  {:command argv :stdout "" :stderr "" :exit 0})})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))]
+    [{:command ["cat"] :stdout "bytes\n" :stderr "" :exit 0}
+     :unknown-options])
 
-   (fact "process options expose only cwd and env"
-     (sh/process-options {:cwd "/tmp" :env {"A" "1"} :trim false :other true})
-     => {:cwd "/tmp" :env {"A" "1"}})])
+   (test-check
+    "kill delegates to the native handle and wait still resolves"
+    (let [process (sh/spawn ["sh" "-c" "sleep 30"])
+          alive (sh/alive? process)
+          _ (sh/kill process)
+          exit (deref (sh/wait process))]
+      [alive (integer? exit)])
+    [true true])])
 
-(pr-str (run '[tool.sh-test]))
+results

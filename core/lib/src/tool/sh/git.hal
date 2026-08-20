@@ -8,23 +8,36 @@
   [value]
   (if (vector? value) value [value]))
 
+(defn- execution-options
+  [value]
+  (let [value (or value {})
+        cwd (or (:cwd value)
+                (if (:root value) (str (:root value)) nil))
+        selected (select-keys value [:env :stdin])]
+    (if cwd (assoc selected :cwd cwd) selected)))
+
+(defn- execution-runner
+  [value]
+  (or (:tool.sh/runner (or value {})) sh/run))
+
 (defn command
-  "Builds Git argv. :root is represented with git -C, never a shell cd."
+  "Builds Git argv. Legacy :root is normalized to process :cwd."
   ([args]
    (command args {}))
   ([args options]
-   (let [prefix (if (:root options)
-                  ["git" "-C" (str (:root options))]
-                  ["git"])]
-     (vec (concat prefix (arguments args))))))
+   (vec (concat ["git"] (arguments args)))))
 
 (defn git-result
+  "Runs Git and returns the exact standard tool.sh result."
   ([args]
    (git-result args {}))
   ([args options]
-   (sh/execute (command args options) options)))
+   ((execution-runner options)
+    (command args options)
+    (execution-options options))))
 
 (defn git-run
+  "Runs Git and optionally rejects non-zero results."
   ([args]
    (git-run args {}))
   ([args options]
@@ -62,7 +75,8 @@
 (defn status
   ([] (status {}))
   ([options]
-   (let [lines (str/split-lines (:stdout (git ["status" "--porcelain" "-b"] options)))]
+   (let [lines (str/split-lines
+                (:stdout (git ["status" "--porcelain" "-b"] options)))]
      (reduce
       (fn [output line]
         (let [code (str/slice line 0 2)
@@ -70,8 +84,12 @@
           (cond
             (= code "##")
             (let [branch-info value
-                  branch (if (str/starts-with? branch-info "No commits yet on ")
-                           (str/slice branch-info (str/length "No commits yet on "))
+                  branch (if (str/starts-with?
+                              branch-info
+                              "No commits yet on ")
+                           (str/slice
+                            branch-info
+                            (str/length "No commits yet on "))
                            (first (str/split branch-info "...")))]
               (assoc output :branch branch))
 
@@ -81,13 +99,20 @@
             :else
             (let [x (str/char-at code 0)
                   y (str/char-at code 1)
-                  output (if (staged-code? x) (update output :staged conj value) output)]
-              (if (staged-code? y) (update output :changed conj value) output)))))
+                  output (if (staged-code? x)
+                           (update output :staged conj value)
+                           output)]
+              (if (staged-code? y)
+                (update output :changed conj value)
+                output)))))
       {:branch "HEAD" :changed [] :staged [] :untracked []}
       lines))))
 
 (defn add
-  ([value] (add value {}))
+  ([value]
+   (if (map? value)
+     (add nil value)
+     (add value {})))
   ([value options]
    (let [args (cond (:all options) ["add" "--all"]
                     (vector? value) (into ["add"] value)
@@ -97,7 +122,9 @@
 
 (defn commit
   ([value]
-   (if (map? value) (commit nil value) (commit value {})))
+   (if (map? value)
+     (commit nil value)
+     (commit value {})))
   ([message options]
    (let [message (or message (:message options))
          args (if message ["commit" "-m" message] ["commit"])
@@ -118,7 +145,9 @@
                  {:hash (nth parts 0)
                   :author (nth parts 1)
                   :email (nth parts 2)
-                  :time (try (read-string (nth parts 3)) (catch Throwable error 0))
+                  :time (try
+                          (read-string (nth parts 3))
+                          (catch Throwable error 0))
                   :subject (str/join "|" (drop 4 parts))}
                  {:raw line})))
            lines))))
@@ -126,11 +155,14 @@
 (defn branch
   ([] (branch nil {}))
   ([value]
-   (if (map? value) (branch nil value) (branch value {})))
+   (if (map? value)
+     (branch nil value)
+     (branch value {})))
   ([name options]
    (cond
      (nil? name)
-     (mapv (fn [line] (str/trim (str/replace line "*" "")))
+     (mapv (fn [line]
+             (str/trim (str/replace line "*" "")))
            (str/split-lines (:stdout (git ["branch"] options))))
 
      (:delete options)
@@ -184,18 +216,22 @@
                     (= (:mode options) :hard) "--hard"
                     (= (:mode options) :mixed) "--mixed"
                     :else nil)
-         args (if mode ["reset" mode commit] ["reset" commit])]
+         args (if mode
+                ["reset" mode commit]
+                ["reset" commit])]
      (git args options))))
 
 (defn rev-parse
   ([reference] (rev-parse reference {}))
   ([reference options]
-   (:stdout (git ["rev-parse" reference] options))))
+   (str/trim (:stdout (git ["rev-parse" reference] options)))))
 
 (defn squash
   [options]
   (let [target (or (:base options)
-                   (if (:n options) (str "HEAD~" (:n options)) nil))]
+                   (if (:n options)
+                     (str "HEAD~" (:n options))
+                     nil))]
     (if (nil? target)
       (throw (ex :dependency {:options options} :ex/message "Git squash requires :n or :base")))
     (reset target (assoc options :mode :soft :ignore-errors false))
@@ -205,7 +241,8 @@
 (defn rebase
   ([upstream] (rebase upstream {}))
   ([upstream options]
-   (let [result (git-run ["rebase" upstream] (assoc options :ignore-errors true))]
+   (let [result (git-run ["rebase" upstream]
+                         (assoc options :ignore-errors true))]
      (if (= 0 (:exit result))
        result
        (do
@@ -215,9 +252,14 @@
 (defn submodule
   ([action] (submodule action {}))
   ([action options]
-   (let [args (cond (= action :update) ["submodule" "update" "--init" "--recursive"]
-                    (= action :init) ["submodule" "init"]
-                    (= action :sync) ["submodule" "sync"]
-                    (vector? action) (into ["submodule"] action)
-                    :else ["submodule" (name action)])]
+   (let [args (cond (= action :update)
+                    ["submodule" "update" "--init" "--recursive"]
+                    (= action :init)
+                    ["submodule" "init"]
+                    (= action :sync)
+                    ["submodule" "sync"]
+                    (vector? action)
+                    (into ["submodule"] action)
+                    :else
+                    ["submodule" (name action)])]
      (git args options))))

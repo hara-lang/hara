@@ -1,0 +1,158 @@
+;; ============================================================================
+;; tool.sh.desktop — explicit desktop command builders and operations.
+;; ============================================================================
+(ns tool.sh.desktop
+  (:require [tool.sh :as sh]))
+
+(defn- unsupported
+  [operation platform]
+  (throw
+   (ex :host
+       {:tool.sh/error :unsupported-platform
+        :tool.sh/operation operation
+        :platform platform}
+       :ex/message "Desktop operation is unsupported on this platform")))
+
+(defn- platform
+  [value]
+  (or (:platform (or value {})) (OS/platform)))
+
+(defn- execution-options
+  [value]
+  (select-keys (or value {}) [:cwd :env :stdin]))
+
+(defn- execution-runner
+  [value]
+  (or (:tool.sh/runner (or value {})) sh/run))
+
+(defn- execute
+  [argv value]
+  (sh/require-success
+   "Desktop command failed"
+   ((execution-runner value) argv (execution-options value))))
+
+(defn say-command
+  [platform phrase]
+  (cond
+    (= platform :macos) ["say" phrase]
+    (= platform :linux) ["spd-say" phrase]
+    :else (unsupported :say platform)))
+
+(defn notify-command
+  [platform title message]
+  (cond
+    (= platform :macos)
+    ["alerter" "-message" message "-title" title "-sound" "BELL"]
+
+    (= platform :linux)
+    ["notify-send" title message]
+
+    :else
+    (unsupported :notify platform)))
+
+(defn terminal-command
+  [platform command]
+  (if (not (vector? command))
+    (throw
+     (ex :dependency
+         {:command command}
+         :ex/message "Terminal commands must be argv vectors")))
+  (cond
+    (= platform :macos)
+    (into ["ttab"] command)
+
+    (= platform :linux)
+    (into ["x-terminal-emulator" "-e"] command)
+
+    :else
+    (unsupported :run-terminal platform)))
+
+(defn beep-command
+  [platform]
+  (cond
+    (= platform :macos)
+    ["afplay" "/System/Library/Sounds/Funk.aiff"]
+
+    (= platform :linux)
+    ["paplay" "/usr/share/sounds/freedesktop/stereo/bell.oga"]
+
+    :else
+    (unsupported :beep platform)))
+
+(defn clipboard-write-command
+  [platform]
+  (cond
+    (= platform :macos) ["pbcopy"]
+    (= platform :linux) ["xclip" "-selection" "clipboard"]
+    :else (unsupported :clip platform)))
+
+(defn clipboard-read-command
+  [platform]
+  (cond
+    (= platform :macos) ["pbpaste"]
+    (= platform :linux) ["xclip" "-selection" "clipboard" "-o"]
+    :else (unsupported :paste platform)))
+
+(defn say
+  "Speaks a phrase. A final map supplies :platform and :tool.sh/runner."
+  [& values]
+  (let [value (if (and (not (empty? values))
+                       (map? (last values)))
+                (last values)
+                {})
+        phrase (if (and (not (empty? values))
+                        (map? (last values)))
+                 (butlast values)
+                 values)]
+    (execute
+     (say-command (platform value)
+                  (str/join " " (map str phrase)))
+     value)))
+
+(defn notify
+  ([title message]
+   (notify title message {}))
+  ([title message value]
+   (execute
+    (notify-command (platform value) title message)
+    value)))
+
+(defn run-terminal
+  ([command]
+   (run-terminal command {}))
+  ([command value]
+   (execute
+    (terminal-command (platform value) command)
+    value)))
+
+(defn beep
+  ([] (beep {}))
+  ([value]
+   (execute (beep-command (platform value)) value)))
+
+(defn clip
+  "Writes a value to the desktop clipboard and returns its text."
+  ([value]
+   (clip value {}))
+  ([value options]
+   (let [text (if (string? value) value (pr-str value))
+         options (assoc (or options {}) :stdin text)]
+     (execute
+      (clipboard-write-command (platform options))
+      options)
+     text)))
+
+(defn clip:nil
+  "Writes a value to the desktop clipboard and returns nil."
+  ([value]
+   (clip:nil value {}))
+  ([value options]
+   (clip value options)
+   nil))
+
+(defn paste
+  "Reads exact text from the desktop clipboard."
+  ([] (paste {}))
+  ([value]
+   (:stdout
+    (execute (clipboard-read-command (platform value)) value))))
