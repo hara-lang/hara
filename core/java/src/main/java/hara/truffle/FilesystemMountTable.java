@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Kernel-ready ownership table for opened provider-neutral filesystem capabilities.
  *
- * <p>The table keeps provider construction, redacted descriptors, attachment accounting, and
+ * <p>The table keeps provider construction, redacted descriptors, attachment ownership, and
  * provider close in one place. A synchronous Graal filesystem is an optional local-only adapter;
  * remote providers never need to implement {@code java.nio.file.Path} or Graal's FileSystem API.
  */
@@ -24,6 +24,36 @@ final class FilesystemMountTable implements AutoCloseable {
   @FunctionalInterface
   interface GraalAdapterFactory {
     HaraMountedFileSystem create(Map<String, ?> configuration);
+  }
+
+  @FunctionalInterface
+  interface AttachmentInstaller {
+    void install(OpenedMount mount);
+  }
+
+  @FunctionalInterface
+  interface AttachmentRemover {
+    void remove(SessionModel.SessionMountId mountId);
+  }
+
+  record AttachmentKey(String kind, String id) {
+    AttachmentKey {
+      if (kind == null || !kind.matches("[a-z][a-z0-9-]*")) {
+        throw new IllegalArgumentException("invalid filesystem attachment kind");
+      }
+      if (id == null || id.isBlank()) {
+        throw new IllegalArgumentException("invalid filesystem attachment id");
+      }
+    }
+
+    static AttachmentKey session(SessionModel.SessionId id) {
+      return new AttachmentKey("session", Objects.requireNonNull(id, "session id").value());
+    }
+
+    static AttachmentKey sandbox(SandboxModel.SandboxId id) {
+      return new AttachmentKey(
+          "sandbox", Long.toString(Objects.requireNonNull(id, "sandbox id").value()));
+    }
   }
 
   record Info(
@@ -35,6 +65,22 @@ final class FilesystemMountTable implements AutoCloseable {
       Objects.requireNonNull(id, "filesystem mount id");
       Objects.requireNonNull(descriptor, "filesystem descriptor");
       if (attachments < 0) throw new IllegalArgumentException("negative filesystem attachments");
+    }
+  }
+
+  record OpenedMount(
+      SessionModel.SessionMountId id,
+      IFilesystem filesystem,
+      IFilesystem.Descriptor descriptor,
+      HaraMountedFileSystem graalFilesystem) {
+    OpenedMount {
+      Objects.requireNonNull(id, "filesystem mount id");
+      Objects.requireNonNull(filesystem, "opened filesystem");
+      Objects.requireNonNull(descriptor, "filesystem descriptor");
+    }
+
+    boolean sourceLoadable() {
+      return graalFilesystem != null;
     }
   }
 
@@ -57,6 +103,8 @@ final class FilesystemMountTable implements AutoCloseable {
   private final FilesystemProviderRegistry providers;
   private final IFilesystemFactory.OpenContext openContext;
   private final ConcurrentHashMap<Long, Mount> mounts = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<AttachmentKey, SessionModel.SessionMountId> attachments =
+      new ConcurrentHashMap<>();
   private final AtomicLong nextId = new AtomicLong(1);
   private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -73,7 +121,7 @@ final class FilesystemMountTable implements AutoCloseable {
     this.openContext = Objects.requireNonNull(openContext, "filesystem open context");
   }
 
-  FilesystemMountTable register(IFilesystemFactory factory) {
+  synchronized FilesystemMountTable register(IFilesystemFactory factory) {
     requireOpen();
     providers.register(factory);
     return this;
@@ -174,20 +222,67 @@ final class FilesystemMountTable implements AutoCloseable {
     return new Info(id, mount.descriptor, mount.attachments, mount.graalFilesystem != null);
   }
 
-  synchronized void retain(SessionModel.SessionMountId id) {
+  synchronized SessionModel.SessionMountId attachment(AttachmentKey key) {
+    Objects.requireNonNull(key, "filesystem attachment key");
+    return attachments.get(key);
+  }
+
+  /**
+   * Installs one exact opened capability for an owner and commits attachment accounting only after
+   * the owner successfully accepts it. Replacing an attachment releases the previous mount exactly
+   * once. A failed install leaves the previous attachment unchanged.
+   */
+  synchronized SessionModel.SessionMountId attach(
+      AttachmentKey key,
+      SessionModel.SessionMountId id,
+      AttachmentInstaller installer) {
+    requireOpen();
+    Objects.requireNonNull(key, "filesystem attachment key");
+    Objects.requireNonNull(installer, "filesystem attachment installer");
     Mount mount = requireMount(id);
-    if (mount.attachments == Integer.MAX_VALUE) {
-      throw new IllegalStateException("FILESYSTEM_ATTACHMENTS_EXHAUSTED " + id);
+    SessionModel.SessionMountId previousId = attachments.get(key);
+    if (id.equals(previousId)) return previousId;
+
+    increment(mount, id);
+    try {
+      installer.install(opened(id, mount));
+    } catch (Throwable error) {
+      decrement(mount, id);
+      throw error;
     }
-    mount.attachments++;
+
+    if (previousId != null) decrement(requireMount(previousId), previousId);
+    attachments.put(key, id);
+    return previousId;
+  }
+
+  /** Detaches an owner only after its runtime has accepted the removal. */
+  synchronized SessionModel.SessionMountId detach(
+      AttachmentKey key, AttachmentRemover remover) {
+    Objects.requireNonNull(key, "filesystem attachment key");
+    Objects.requireNonNull(remover, "filesystem attachment remover");
+    SessionModel.SessionMountId id = attachments.get(key);
+    if (id == null) return null;
+    remover.remove(id);
+    attachments.remove(key);
+    decrement(requireMount(id), id);
+    return id;
+  }
+
+  /** Releases accounting after an owner such as a closing Session has already detached itself. */
+  synchronized SessionModel.SessionMountId releaseAttachment(AttachmentKey key) {
+    Objects.requireNonNull(key, "filesystem attachment key");
+    SessionModel.SessionMountId id = attachments.remove(key);
+    if (id != null) decrement(requireMount(id), id);
+    return id;
+  }
+
+  synchronized void retain(SessionModel.SessionMountId id) {
+    increment(requireMount(id), id);
   }
 
   synchronized void release(SessionModel.SessionMountId id) {
-    Mount mount = requireMount(id);
-    if (mount.attachments == 0) {
-      throw new IllegalStateException("FILESYSTEM_ATTACHMENT_UNDERFLOW " + id);
-    }
-    mount.attachments--;
+    decrement(requireMount(id), id);
   }
 
   CompletionStage<Void> close(SessionModel.SessionMountId id) {
@@ -207,12 +302,17 @@ final class FilesystemMountTable implements AutoCloseable {
     return mounts.size();
   }
 
+  synchronized int attachmentCount() {
+    return attachments.size();
+  }
+
   CompletionStage<Void> closeAll() {
     List<Mount> owned;
     synchronized (this) {
       if (!closed.compareAndSet(false, true)) {
         return CompletableFuture.completedFuture(null);
       }
+      attachments.clear();
       owned = new ArrayList<>(mounts.values());
       mounts.clear();
     }
@@ -234,11 +334,29 @@ final class FilesystemMountTable implements AutoCloseable {
     }
   }
 
+  private static OpenedMount opened(SessionModel.SessionMountId id, Mount mount) {
+    return new OpenedMount(id, mount.filesystem, mount.descriptor, mount.graalFilesystem);
+  }
+
   private synchronized Mount requireMount(SessionModel.SessionMountId id) {
     Objects.requireNonNull(id, "filesystem mount id");
     Mount mount = mounts.get(id.value());
     if (mount == null) throw new IllegalArgumentException("NO_FILESYSTEM " + id);
     return mount;
+  }
+
+  private static void increment(Mount mount, SessionModel.SessionMountId id) {
+    if (mount.attachments == Integer.MAX_VALUE) {
+      throw new IllegalStateException("FILESYSTEM_ATTACHMENTS_EXHAUSTED " + id);
+    }
+    mount.attachments++;
+  }
+
+  private static void decrement(Mount mount, SessionModel.SessionMountId id) {
+    if (mount.attachments == 0) {
+      throw new IllegalStateException("FILESYSTEM_ATTACHMENT_UNDERFLOW " + id);
+    }
+    mount.attachments--;
   }
 
   private void requireOpen() {

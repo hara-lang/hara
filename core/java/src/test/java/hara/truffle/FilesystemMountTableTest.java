@@ -19,6 +19,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.Test;
 
 public class FilesystemMountTableTest {
@@ -53,6 +54,118 @@ public class FilesystemMountTableTest {
       assertEquals(1, filesystem.closeCalls.get());
       assertEquals(0, fixture.table.size());
       assertFailure("NO_FILESYSTEM", () -> fixture.table.filesystem(id));
+    }
+  }
+
+  @Test
+  public void ownerAttachmentReplacementIsAtomicAndPassesTheExactCapability() {
+    try (Fixture fixture = new Fixture()) {
+      TestFactory factory = new TestFactory("remote", "remote");
+      fixture.table.register(factory);
+      SessionModel.SessionMountId first = join(fixture.table.open("remote", Map.of()));
+      TestFilesystem firstFilesystem = factory.last();
+      SessionModel.SessionMountId second = join(fixture.table.open("remote", Map.of()));
+      TestFilesystem secondFilesystem = factory.last();
+      FilesystemMountTable.AttachmentKey owner =
+          FilesystemMountTable.AttachmentKey.session(SessionModel.SessionId.parse("UI"));
+      AtomicInteger installations = new AtomicInteger();
+      AtomicReference<FilesystemMountTable.OpenedMount> observed = new AtomicReference<>();
+
+      assertNull(
+          fixture.table.attach(
+              owner,
+              first,
+              mount -> {
+                installations.incrementAndGet();
+                observed.set(mount);
+              }));
+      assertSame(firstFilesystem, observed.get().filesystem());
+      assertNull(observed.get().graalFilesystem());
+      assertEquals(first, fixture.table.attachment(owner));
+      assertEquals(1, fixture.table.info(first).attachments());
+      assertEquals(1, fixture.table.attachmentCount());
+
+      assertEquals(
+          first,
+          fixture.table.attach(
+              owner,
+              first,
+              ignored -> {
+                throw new AssertionError("same-mount attachment was reinstalled");
+              }));
+      assertEquals(1, installations.get());
+      assertEquals(1, fixture.table.info(first).attachments());
+
+      assertFailure(
+          "installation rejected",
+          () ->
+              fixture.table.attach(
+                  owner,
+                  second,
+                  ignored -> {
+                    throw new IllegalStateException("installation rejected");
+                  }));
+      assertEquals(first, fixture.table.attachment(owner));
+      assertEquals(1, fixture.table.info(first).attachments());
+      assertEquals(0, fixture.table.info(second).attachments());
+
+      assertEquals(
+          first,
+          fixture.table.attach(
+              owner,
+              second,
+              mount -> {
+                installations.incrementAndGet();
+                observed.set(mount);
+              }));
+      assertSame(secondFilesystem, observed.get().filesystem());
+      assertEquals(second, fixture.table.attachment(owner));
+      assertEquals(0, fixture.table.info(first).attachments());
+      assertEquals(1, fixture.table.info(second).attachments());
+
+      assertFailure(
+          "removal rejected",
+          () ->
+              fixture.table.detach(
+                  owner,
+                  ignored -> {
+                    throw new IllegalStateException("removal rejected");
+                  }));
+      assertEquals(second, fixture.table.attachment(owner));
+      assertEquals(1, fixture.table.info(second).attachments());
+
+      assertEquals(
+          second,
+          fixture.table.detach(owner, mountId -> assertEquals(second, mountId)));
+      assertNull(fixture.table.attachment(owner));
+      assertEquals(0, fixture.table.info(second).attachments());
+      assertEquals(0, fixture.table.attachmentCount());
+      join(fixture.table.close(first));
+      join(fixture.table.close(second));
+    }
+  }
+
+  @Test
+  public void sessionAndSandboxAttachmentKeysCannotCollide() {
+    try (Fixture fixture = new Fixture()) {
+      TestFactory factory = new TestFactory("remote", "remote");
+      fixture.table.register(factory);
+      SessionModel.SessionMountId id = join(fixture.table.open("remote", Map.of()));
+      FilesystemMountTable.AttachmentKey session =
+          FilesystemMountTable.AttachmentKey.session(SessionModel.SessionId.parse("1"));
+      FilesystemMountTable.AttachmentKey sandbox =
+          FilesystemMountTable.AttachmentKey.sandbox(new SandboxModel.SandboxId(1));
+
+      fixture.table.attach(session, id, ignored -> {});
+      fixture.table.attach(sandbox, id, ignored -> {});
+      assertEquals(2, fixture.table.info(id).attachments());
+      assertEquals(2, fixture.table.attachmentCount());
+      assertEquals(id, fixture.table.releaseAttachment(session));
+      assertEquals(1, fixture.table.info(id).attachments());
+      assertEquals(id, fixture.table.releaseAttachment(sandbox));
+      assertEquals(0, fixture.table.info(id).attachments());
+      assertNull(fixture.table.releaseAttachment(session));
+      join(fixture.table.close(id));
     }
   }
 
@@ -95,11 +208,16 @@ public class FilesystemMountTableTest {
     Fixture fixture = new Fixture();
     TestFactory factory = new TestFactory("remote", "remote");
     fixture.table.register(factory);
-    join(fixture.table.open("remote", Map.of()));
+    SessionModel.SessionMountId id = join(fixture.table.open("remote", Map.of()));
+    fixture.table.attach(
+        FilesystemMountTable.AttachmentKey.session(SessionModel.SessionId.parse("UI")),
+        id,
+        ignored -> {});
     join(fixture.table.closeAll());
     join(fixture.table.closeAll());
     assertEquals(1, factory.last().closeCalls.get());
     assertEquals(0, fixture.table.size());
+    assertEquals(0, fixture.table.attachmentCount());
     assertFailure(
         "FILESYSTEM_TABLE_CLOSED",
         () -> join(fixture.table.open("remote", Map.of())));
