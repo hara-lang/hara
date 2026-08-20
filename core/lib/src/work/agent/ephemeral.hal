@@ -1,0 +1,74 @@
+(ns work.agent.ephemeral
+  (:require [work.base :as work]
+            [work.agent.protocol]))
+
+(defstruct EphemeralAgent [spec])
+(defstruct EphemeralDriver [lower])
+(defstruct EphemeralCoordinator [state])
+(defstruct EphemeralAuthority [id decisions])
+
+(extend-type EphemeralAgent IAgent
+  (agent-spec [agent]
+    (:spec agent)))
+
+(extend-type EphemeralDriver IWorkAgentDriver
+  (agent-drive [driver agent intent context]
+    ((:lower driver) agent intent context)))
+
+(extend-type EphemeralCoordinator IWorkAgentCoordinator
+  (agent-coordinate [coordinator request]
+    (let [record
+          (assoc request
+                 :coordination/index
+                 (inc (count (deref (:state coordinator)))))]
+      (swap! (:state coordinator) conj record)
+      record)))
+
+(extend-type EphemeralAuthority IWorkAgentAuthority
+  (agent-authorize [authority request]
+    (let [allowed?
+          (if (has? (:decisions authority) (:action request))
+            (get (:decisions authority) (:action request))
+            true)]
+      {:authority/id (:id authority)
+       :authorized? allowed?
+       :request request}))
+  (agent-sign [authority request]
+    {:authority/id (:id authority)
+     :signature [(:id authority) request]
+     :request request}))
+
+(defn agent
+  [spec]
+  (work.agent.ephemeral/EphemeralAgent spec))
+
+(defn driver
+  [lower]
+  (work.agent.ephemeral/EphemeralDriver lower))
+
+(defn work-driver
+  [id function]
+  (driver
+   (fn [agent intent context]
+     (work/step
+      id
+      (fn [input work-context]
+        (function agent intent context input work-context))))))
+
+(defn coordinator
+  ([]
+   (coordinator (atom [])))
+  ([state]
+   (work.agent.ephemeral/EphemeralCoordinator state)))
+
+(defn authority
+  ([]
+   (authority :ephemeral-authority {}))
+  ([id]
+   (authority id {}))
+  ([id decisions]
+   (work.agent.ephemeral/EphemeralAuthority id (or decisions {}))))
+
+(defn coordination-records
+  [coordinator]
+  (vec (deref (:state coordinator))))
