@@ -1880,18 +1880,20 @@ public class HaraLanguageTest {
   public void sharedFoundationProtocolConformanceFixtureRuns() throws Exception {
     String source =
         Files.readString(
-            Path.of("lib/test-fixtures/std/foundation/protocol_conformance.hal"));
+            specsRegistry()
+                .resolve(
+                    "01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal"));
     Matcher calls =
         Pattern.compile("\\(std\\.protocol\\.[a-z]+/[a-z?\\-]+\\s+fixture").matcher(source);
     int callCount = 0;
     while (calls.find()) callCount++;
-    assertEquals(104, callCount);
+    assertEquals(105, callCount);
     assertTrue(!source.contains("protocol-call"));
 
     try (Context context = context()) {
       String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
-      assertEquals(54, result.split(":pass true", -1).length - 1);
+      assertEquals(55, result.split(":pass true", -1).length - 1);
     }
   }
 
@@ -1899,7 +1901,9 @@ public class HaraLanguageTest {
   public void sharedFoundationProtocolFunctionalityFixtureRuns() throws Exception {
     String source =
         Files.readString(
-            Path.of("lib/test-fixtures/std/foundation/protocol_functionality.hal"));
+            specsRegistry()
+                .resolve(
+                    "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal"));
     String catalog =
         Files.readString(
             specsRegistry()
@@ -1977,34 +1981,14 @@ public class HaraLanguageTest {
         }
         assertTrue("unbalanced failure form: " + line, end > 0);
         String failureForm = quoted.substring(0, end);
-        String categorizedCall = null;
-        String uncategorizedError = null;
-        for (String receiver :
-            new String[] {
-              "(UnsupportedUseCase)",
-              "std.protocol.icount/ICount",
-              "nil",
-              "1",
-              ":unsupported",
-              "(fn [value] value)"
-            }) {
-          String call = failureForm.replaceFirst("unsupported", receiver);
-          try {
-            context.eval(HaraLanguage.ID, call);
-          } catch (PolyglotException error) {
-            if (error.getMessage().contains("protocol/unsupported-receiver")) {
-              categorizedCall = call;
-              break;
-            }
-            uncategorizedError = call + ": " + error.getMessage();
-          }
-        }
+        PolyglotException error =
+            assertThrows(
+                failureForm,
+                PolyglotException.class,
+                () -> context.eval(HaraLanguage.ID, failureForm));
         assertTrue(
-            "no receiver produced a categorized dispatch failure for "
-                + failureForm
-                + "; last error was "
-                + uncategorizedError,
-            categorizedCall != null);
+            failureForm + " returned an uncategorized dispatch error: " + error.getMessage(),
+            error.getMessage().contains("protocol/unsupported-receiver"));
       }
       assertEquals(expectedFailureCount, failureCount);
       assertTrue(

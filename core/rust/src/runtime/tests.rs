@@ -1922,18 +1922,10 @@ mod tests {
         else {
             return;
         };
-        let fixture =
-            include_str!("../../hal-test-fixtures/std/foundation/protocol_conformance.hal");
-        // 54 shared-contract protocols plus IMatch, which is runtime-internal
-        // and intentionally absent from the contract and its fixture.
-        assert_eq!(core::FOUNDATION_PROTOCOLS.len(), 55);
-        assert_eq!(
-            core::FOUNDATION_PROTOCOLS
-                .iter()
-                .map(|(_, methods)| methods.len())
-                .sum::<usize>(),
-            105
-        );
+        let fixture = repo_text(
+            "01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal",
+        )
+        .expect("the specs-owned protocol surface fixture must be available");
         let foundation = runtime
             .namespace_registry
             .find("std.foundation")
@@ -2116,24 +2108,34 @@ mod tests {
     #[test]
     fn shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime() {
         let mut runtime = Runtime::new();
+        let source = repo_text(
+            "01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal",
+        )
+        .expect("the specs-owned protocol surface fixture must be available");
         let result = runtime
-            .eval_text(include_str!(
-                "../../../lib/test-fixtures/std/foundation/protocol_conformance.hal"
-            ))
+            .eval_text(&source)
             .unwrap();
         assert!(!result.contains(":pass false"), "{result}");
-        assert_eq!(result.matches(":pass true").count(), 54, "{result}");
+        assert_eq!(result.matches(":pass true").count(), 55, "{result}");
+
+        #[cfg(feature = "bytecode-vm")]
+        {
+            let mut bytecode_runtime = Runtime::new();
+            let bytecode_result = bytecode_runtime.eval_bytecode_native(&source).unwrap();
+            assert!(!bytecode_result.contains(":pass false"), "{bytecode_result}");
+            assert_eq!(bytecode_result.matches(":pass true").count(), 55);
+        }
     }
 
     #[test]
     fn shared_foundation_protocol_functionality_fixture_runs_in_the_native_runtime() {
-        let source =
-            include_str!("../../hal-test-fixtures/std/foundation/protocol_functionality.hal");
-        let Some(catalog) =
+        let source = repo_text(
+            "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
+        )
+        .expect("the specs-owned behavioral protocol corpus must be available");
+        let catalog =
             repo_text("01-lang/001-language/draft/conformance/protocol-method-cases.edn")
-        else {
-            return;
-        };
+                .expect("the protocol case catalog must accompany its behavioral corpus");
         let protocols = repo_text("01-lang/001-language/draft/conformance/protocols.edn")
             .expect("protocol contract must accompany its case catalog");
         assert_eq!(
@@ -2151,13 +2153,30 @@ mod tests {
         let expected_failures = catalog.matches(":case :unsupported-receiver").count();
         assert!(expected_cases > 0, "protocol method catalog is empty");
         let mut runtime = Runtime::new();
-        let result = runtime.eval_text(source).unwrap();
+        let result = runtime.eval_text(&source).unwrap();
         assert!(!result.contains(":pass false"), "{result}");
         assert_eq!(
             result.matches(":pass true").count(),
             expected_cases,
             "{result}"
         );
+
+        #[cfg(feature = "bytecode-vm")]
+        let mut bytecode_runtime = Runtime::new();
+        #[cfg(feature = "bytecode-vm")]
+        let bytecode_result = bytecode_runtime.eval_bytecode_native(&source).unwrap();
+        #[cfg(feature = "bytecode-vm")]
+        {
+            assert!(
+                !bytecode_result.contains(":pass false"),
+                "compiled protocol corpus contains failures: {bytecode_result}"
+            );
+            assert_eq!(
+                bytecode_result.matches(":pass true").count(),
+                expected_cases,
+                "compiled protocol corpus did not close the authoritative method surface: {bytecode_result}"
+            );
+        }
 
         let method_vars = source
             .lines()
@@ -2183,6 +2202,16 @@ mod tests {
                 error.contains("protocol/arity"),
                 "{method_var} returned an uncategorized arity error: {error}"
             );
+            #[cfg(feature = "bytecode-vm")]
+            {
+                let bytecode_error = bytecode_runtime
+                    .eval_bytecode_native(&format!("({method_var})"))
+                    .unwrap_err();
+                assert!(
+                    bytecode_error.contains("protocol/arity"),
+                    "compiled {method_var} returned an uncategorized arity error: {bytecode_error}"
+                );
+            }
         }
 
         let failure_forms = source
@@ -2209,12 +2238,21 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(failure_forms.len(), expected_failures);
         for failure_form in failure_forms {
-            let call = failure_form.replacen("unsupported", "(UnsupportedUseCase)", 1);
-            let error = runtime.eval_text(&call).unwrap_err();
+            let error = runtime.eval_text(&failure_form).unwrap_err();
             assert!(
                 error.contains("protocol/unsupported-receiver"),
-                "{call} returned an uncategorized dispatch error: {error}"
+                "{failure_form} returned an uncategorized dispatch error: {error}"
             );
+            #[cfg(feature = "bytecode-vm")]
+            {
+                let bytecode_error = bytecode_runtime
+                    .eval_bytecode_native(&failure_form)
+                    .unwrap_err();
+                assert!(
+                    bytecode_error.contains("protocol/unsupported-receiver"),
+                    "compiled {failure_form} returned an uncategorized dispatch error: {bytecode_error}"
+                );
+            }
         }
 
         assert_eq!(
