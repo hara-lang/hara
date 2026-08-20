@@ -26,8 +26,11 @@ public final class HaraJavaAdapters {
   private HaraJavaAdapters() {}
 
   public static void install(HaraContext context) {
-    installIFn(context.ifnProtocol());
-    installLookup(context.defineProtocol("ILookup", Map.of("lookup", -1)));
+    installIFn(context, context.ifnProtocol());
+    HaraProtocol find = context.defineProtocol("IFind", Map.of("find", 2));
+    installFind(find);
+    installLookup(
+        context.defineProtocol("ILookup", Map.of("lookup", -1), java.util.List.of(find)));
     context.defineProtocol("IMatch", Map.of("match-value", 2));
     installStringLike(
         context.defineProtocol(
@@ -38,15 +41,21 @@ public final class HaraJavaAdapters {
         context.defineProtocol(
             "IDeps", Map.of("dep-get", 2, "dep-entries", 2, "dep-keys", 1)));
     installConj(context.defineProtocol("IConj", Map.of("conj", 2)));
-    installFind(context.defineProtocol("IFind", Map.of("find", 2)));
     installEquality(context.defineProtocol("IEquality", Map.of("equality", 2)));
-    installHash(context.defineProtocol("IHash", Map.of("hash", 1)));
-    installMetadata(context.defineProtocol("IObjType", metadataMethods()));
-    installDeref(context.defineProtocol("IDeref", Map.of("deref", 1)));
-    installDerefTimeout(context.defineProtocol("IDerefTimeout", Map.of("deref-timeout", 3)));
+    HaraProtocol hash = context.defineProtocol("IHash", Map.of("hash", 1));
+    installHash(hash);
+    HaraProtocol display = context.defineProtocol("IDisplay", Map.of("display", 1));
+    installDisplay(display);
+    installMetadata(
+        context.defineProtocol(
+            "IObjType", metadataMethods(), java.util.List.of(hash, display)));
+    HaraProtocol deref = context.defineProtocol("IDeref", Map.of("deref", 1));
+    installDeref(deref);
+    HaraProtocol derefTimeout =
+        context.defineProtocol("IDerefTimeout", Map.of("deref-timeout", 3));
+    installDerefTimeout(derefTimeout);
     installNth(context.defineProtocol("INth", Map.of("nth", 2)));
     installEmpty(context.defineProtocol("IEmpty", Map.of("empty", 1)));
-    installDisplay(context.defineProtocol("IDisplay", Map.of("display", 1)));
     installEncodable(context, context.defineProtocol("IEncodable", Map.of("encode-with", 2)));
     context.defineProtocol("IEncode", Map.of("encode", 2));
     context.defineProtocol(
@@ -78,9 +87,13 @@ public final class HaraJavaAdapters {
     installPushLast(context.defineProtocol("IPushLast", Map.of("push-last", 2)));
     installRealize(context.defineProtocol("IRealize", Map.of("realized?", 1, "realize", 1)));
     installReset(context.defineProtocol("IReset", Map.of("reset", 2)));
+    HaraProtocol mutable = context.defineProtocol("IMutable", Map.of());
+    HaraProtocol persistent = context.defineProtocol("IPersistent", Map.of());
     installConversion(
-        context.defineProtocol("IToMutable", Map.of("to-mutable", 1)),
-        context.defineProtocol("IToPersistent", Map.of("to-persistent", 1)));
+        context.defineProtocol(
+            "IToMutable", Map.of("to-mutable", 1), java.util.List.of(persistent)),
+        context.defineProtocol(
+            "IToPersistent", Map.of("to-persistent", 1), java.util.List.of(mutable)));
     installWatch(
         context.defineProtocol(
             "IWatch", Map.of("watch-add", 3, "watch-remove", 2, "watch-list", 1)));
@@ -122,14 +135,17 @@ public final class HaraJavaAdapters {
                 "teardown-pointer", 2)));
     installHashCached(
         context.defineProtocol(
-            "IHashCached", Map.of("hash-current", 1, "hash-put", 2)));
-    context.defineProtocol("IMutable", Map.of());
-    context.defineProtocol("IPersistent", Map.of());
-    context.defineProtocol("IOFn", Map.of());
-    installIter(context.defineProtocol("IIter", Map.of("iter", 1)));
+            "IHashCached",
+            Map.of("hash-current", 1, "hash-put", 2),
+            java.util.List.of(hash)));
+    context.defineProtocol("IOFn", Map.of(), java.util.List.of(context.ifnProtocol()));
+    HaraProtocol iter = context.defineProtocol("IIter", Map.of("iter", 1));
+    installIter(iter);
     installIterator(
         context.defineProtocol(
-            "IIterator", Map.of("iter-next?", 1, "iter-next", 1)));
+            "IIterator",
+            Map.of("iter-next?", 1, "iter-next", 1),
+            java.util.List.of(iter)));
     HaraProtocol close = context.defineProtocol("IClose", Map.of("close", 1));
     installClose(close);
     installCas(context.defineProtocol("ICas", Map.of("cas", 3)));
@@ -143,9 +159,11 @@ public final class HaraJavaAdapters {
                 "then", 2,
                 "catch", 2,
                 "finally", 2,
-                "cancel", 1)));
+                "cancel", 1),
+            java.util.List.of(deref, derefTimeout)));
     installCoroutine(
-        context.defineProtocol("ICoroutine", Map.of("status", 1, "resume", -1)));
+        context.defineProtocol(
+            "ICoroutine", Map.of("status", 1, "resume", -1), java.util.List.of(close)));
     HaraProtocol stream = context.defineProtocol("IStream", Map.of("next", 1), java.util.List.of(close));
     installStream(stream);
     HaraProtocol streamWrite = context.defineProtocol("IStreamWrite", Map.of("write", 2));
@@ -165,6 +183,24 @@ public final class HaraJavaAdapters {
 
   public static void installIFn(HaraProtocol protocol) {
     protocol.extend(IFn.class, "invoke", HaraJavaAdapters::invokeFunction);
+  }
+
+  public static void installIFn(HaraContext context, HaraProtocol protocol) {
+    installIFn(protocol);
+    HaraProtocolInvoker callable =
+        (receiver, arguments) ->
+            context.invokeCallable(
+                receiver,
+                Arrays.stream(arguments)
+                    .map(HaraJavaAdapters::unwrapArgument)
+                    .toArray(Object[]::new));
+    protocol.extend(HaraFunction.class, "invoke", callable);
+    protocol.extend(HaraMultiFunction.class, "invoke", callable);
+    protocol.extend(HaraType.class, "invoke", callable);
+    protocol.extend(hara.lang.data.Pointer.class, "invoke", callable);
+    protocol.extend(HbcMachine.HbcClosure.class, "invoke", callable);
+    protocol.extend(HbcMachine.HbcMultiArity.class, "invoke", callable);
+    protocol.extend(HbcMachine.HbcNativeCallable.class, "invoke", callable);
   }
 
   public static void installStringLike(HaraProtocol protocol) {

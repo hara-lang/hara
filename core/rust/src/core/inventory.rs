@@ -811,6 +811,28 @@ pub(crate) fn builtin_protocol_name(protocol: &str) -> String {
     format!("{}/{}", builtin_protocol_namespace(protocol), protocol)
 }
 
+pub(crate) fn builtin_protocol_parents(protocol: &str) -> Vec<String> {
+    let parents: &[&str] = match protocol {
+        "ICoroutine" | "IStream" => &["IClose"],
+        "IHashCached" => &["IHash"],
+        "IIterator" => &["IIter"],
+        "ILookup" => &["IFind"],
+        "IOFn" => &["IFn"],
+        "IObjType" => &["IHash", "IDisplay"],
+        "IPromise" => &["IDeref", "IDerefTimeout"],
+        "IToMutable" => &["IPersistent"],
+        "IToPersistent" => &["IMutable"],
+        "IStreamDuplex" => &["IStream", "IStreamWrite", "IAbort"],
+        "IWorkHost" => &["IComponent"],
+        "IWorkRun" => &["IWorkRef", "IClosed"],
+        _ => &[],
+    };
+    parents
+        .iter()
+        .map(|parent| builtin_protocol_name(parent))
+        .collect()
+}
+
 fn canonical_protocol_name(protocol: &str) -> String {
     let simple = protocol.strip_prefix("std.foundation/").unwrap_or(protocol);
     if FOUNDATION_PROTOCOLS
@@ -835,24 +857,7 @@ pub(crate) fn foundation_protocol_values() -> Vec<(String, Value)> {
                         .iter()
                         .map(|(method, arity)| ((*method).to_owned(), *arity))
                         .collect(),
-                    parents: if *name == "IStreamDuplex" {
-                        vec![
-                            builtin_protocol_name("IStream"),
-                            builtin_protocol_name("IStreamWrite"),
-                            builtin_protocol_name("IAbort"),
-                        ]
-                    } else if *name == "IStream" {
-                        vec![builtin_protocol_name("IClose")]
-                    } else if *name == "IWorkHost" {
-                        vec![builtin_protocol_name("IComponent")]
-                    } else if *name == "IWorkRun" {
-                        vec![
-                            builtin_protocol_name("IWorkRef"),
-                            builtin_protocol_name("IClosed"),
-                        ]
-                    } else {
-                        Vec::new()
-                    },
+                    parents: builtin_protocol_parents(name),
                 })),
             )
         })

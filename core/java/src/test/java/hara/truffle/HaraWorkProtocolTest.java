@@ -12,6 +12,8 @@ import hara.lang.protocol.IWorkHost;
 import hara.lang.protocol.IWorkRef;
 import hara.lang.protocol.IWorkRun;
 import hara.lang.protocol.IWorkStore;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import org.graalvm.polyglot.Context;
 import org.junit.Test;
@@ -80,71 +82,33 @@ public class HaraWorkProtocolTest {
   }
 
   @Test
-  public void guestTypesExtendNativeWorkProtocolsAndParents() {
+  public void guestTypesExtendNativeWorkProtocolsAndParents() throws Exception {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
-      assertEquals(
-          "[{:op :pure} \"run-1\" [:work :input {:priority :high}] \"run-1\" :completed true true [:executed {:leaf :compile}] [:query {:query/type :run}] [:transact {:transition/run-id \"run-1\"}] true true]",
-          context
-              .eval(
-                  HaraLanguage.ID,
-                  "(do "
-                      + "(defstruct NativeWorkFixture [spec]) "
-                      + "(extend-type NativeWorkFixture IWork "
-                      + "  (work-spec [work] (:spec work))) "
-                      + "(defstruct NativeExecutorFixture [value]) "
-                      + "(extend-type NativeExecutorFixture IWorkExecutor "
-                      + "  (work-execute [executor request] [:executed request])) "
-                      + "(defstruct NativeStoreFixture [value]) "
-                      + "(extend-type NativeStoreFixture IWorkStore "
-                      + "  (work-query [store query] [:query query]) "
-                      + "  (work-transact [store transition] [:transact transition])) "
-                      + "(defstruct NativeHostFixture [value]) "
-                      + "(extend-type NativeHostFixture IComponent "
-                      + "  (props [host] {}) "
-                      + "  (status [host] :started) "
-                      + "  (started? [host] true) "
-                      + "  (stopped? [host] false) "
-                      + "  (start [host] host) "
-                      + "  (stop [host] host) "
-                      + "  (kill [host] host) "
-                      + "  (remote? [host] false)) "
-                      + "(extend-type NativeHostFixture IWorkHost "
-                      + "  (work-submit [host work input options] [work input options]) "
-                      + "  (work-resolve [host reference] reference)) "
-                      + "(defstruct NativeRunFixture [id]) "
-                      + "(extend-type NativeRunFixture IWorkRef "
-                      + "  (work-id [run] (:id run))) "
-                      + "(extend-type NativeRunFixture IClosed "
-                      + "  (closed? [run] true)) "
-                      + "(extend-type NativeRunFixture IWorkRun "
-                      + "  (work-status [run] :completed) "
-                      + "  (work-result [run] nil) "
-                      + "  (work-events [run options] nil) "
-                      + "  (work-cancel [run reason] nil)) "
-                      + "(let [work (NativeWorkFixture {:op :pure}) "
-                      + "      executor (NativeExecutorFixture nil) "
-                      + "      store (NativeStoreFixture nil) "
-                      + "      host (NativeHostFixture nil) "
-                      + "      run (NativeRunFixture \"run-1\")] "
-                      + "  [(IWork/work-spec work) "
-                      + "   (IWorkRef/work-id run) "
-                      + "   (IWorkHost/work-submit host :work :input {:priority :high}) "
-                      + "   (IWorkHost/work-resolve host \"run-1\") "
-                      + "   (IWorkRun/work-status run) "
-                      + "   (satisfies? IWorkHost host) "
-                      + "   (satisfies? IWorkRun run) "
-                      + "   (IWorkExecutor/work-execute executor {:leaf :compile}) "
-                      + "   (IWorkStore/work-query store {:query/type :run}) "
-                      + "   (IWorkStore/work-transact store {:transition/run-id \"run-1\"}) "
-                      + "   (satisfies? IWorkExecutor executor) "
-                      + "   (satisfies? IWorkStore store)]))")
-              .toString());
+      String corpus =
+          Files.readString(
+              specsRegistry()
+                  .resolve(
+                      "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal"));
+      context.eval(HaraLanguage.ID, corpus);
+      String methods = context.eval(HaraLanguage.ID, "(capability-protocol-results)").toString();
+      String receivers =
+          context.eval(HaraLanguage.ID, "(protocol-capability-receiver-results)").toString();
+      assertFalse(methods, methods.contains(":pass false"));
+      assertEquals(20, methods.split(":pass true", -1).length - 1);
+      assertFalse(receivers, receivers.contains(":pass false"));
+      assertEquals(8, receivers.split(":pass true", -1).length - 1);
     }
   }
 
   @Test
-  public void legacyWorkValuesUseTypeQualifiedNativeProtocols() {
+  public void legacyWorkValuesUseUnqualifiedNativeProtocols() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
+      assertTrue(context.eval(HaraLanguage.ID, "IWork").toString().contains("/IWork"));
+      assertTrue(
+          context
+              .eval(HaraLanguage.ID, "(ns work.protocol.legacy) IWork")
+              .toString()
+              .contains("/IWork"));
       assertEquals(
           "[{:op :pure} \"run-legacy\"]",
           context
@@ -154,8 +118,16 @@ public class HaraWorkProtocolTest {
                       + "(:require [work.base.model :as base])) "
                       + "(let [work (base/work-value {:op :pure}) "
                       + "      reference (base/work-reference \"run-legacy\")] "
-                      + "  [(IWork/work-spec work) (IWorkRef/work-id reference)])")
+                      + "  [(IWork/work-spec work) "
+                      + "   (IWorkRef/work-id reference)])")
               .toString());
     }
+  }
+
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 }

@@ -1164,6 +1164,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                             let registry = registry
                                 .as_ref()
                                 .ok_or_else(|| "protocol registry is unavailable".to_string())?;
+                            registry.replace_guest_protocol(protocol_value.name.clone());
                             for method in protocol_value.methods.keys() {
                                 registry.declare_guest(protocol_value.name.clone(), method.clone());
                             }

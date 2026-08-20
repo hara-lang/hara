@@ -200,6 +200,16 @@ impl ProtocolRegistry {
             .insert((canonical_protocol_name(&protocol.into()), method.into()));
     }
 
+    pub fn replace_guest_protocol(&self, protocol: impl Into<String>) {
+        let protocol = canonical_protocol_name(&protocol.into());
+        self.guest_declarations
+            .borrow_mut()
+            .retain(|(candidate, _)| candidate != &protocol);
+        self.guest_methods
+            .borrow_mut()
+            .retain(|(candidate, _, _), _| candidate != &protocol);
+    }
+
     pub fn invoke(
         &self,
         protocol: &str,
@@ -245,7 +255,11 @@ impl ProtocolRegistry {
         let methods = self.methods.borrow();
         let receiver = arguments
             .first()
-            .ok_or_else(|| format!("missing protocol receiver: {protocol}/{method}"))?;
+            .ok_or_else(|| {
+                format!(
+                    "protocol/arity: {protocol}/{method} expects at least one argument, received 0"
+                )
+            })?;
         let last_error = format!(
             "protocol/unsupported-receiver: missing protocol implementation: {protocol}/{method}"
         );
@@ -292,11 +306,7 @@ impl ProtocolRegistry {
                                     .iter()
                                     .map(|(method, arity)| ((*method).to_owned(), *arity))
                                     .collect(),
-                                parents: if *name == "IStream" {
-                                    vec![builtin_protocol_name("IClose")]
-                                } else {
-                                    Vec::new()
-                                },
+                                parents: builtin_protocol_parents(name),
                             },
                             value,
                         )
@@ -315,11 +325,7 @@ impl ProtocolRegistry {
                                 .iter()
                                 .map(|(method, arity)| ((*method).to_owned(), *arity))
                                 .collect(),
-                            parents: if *name == "IStream" {
-                                vec![builtin_protocol_name("IClose")]
-                            } else {
-                                Vec::new()
-                            },
+                            parents: builtin_protocol_parents(name),
                         },
                         value,
                     )
@@ -329,16 +335,13 @@ impl ProtocolRegistry {
         }
         let protocol_name = canonical_protocol_name(&protocol.name);
         if protocol.methods.is_empty() {
+            if let Some(implementations) = self.markers.borrow().get(&protocol_name) {
+                return implementations.iter().rev().any(|supports| supports(value));
+            }
             if !protocol.parents.is_empty() {
                 return true;
             }
-            return self
-                .markers
-                .borrow()
-                .get(&protocol_name)
-                .is_some_and(|implementations| {
-                    implementations.iter().rev().any(|supports| supports(value))
-                });
+            return false;
         }
         if let Value::Extension(receiver) = value {
             return protocol.methods.keys().all(|method| {
@@ -394,6 +397,9 @@ impl ProtocolRegistry {
         registry.register_marker("std.protocol.ipersistent/IPersistent", |value| {
             native_protocol_supports("IPersistent", value)
         });
+        registry.register_marker("std.protocol.iofn/IOFn", |value| {
+            matches!(value, Value::Keyword(_))
+        });
         registry.register("std.protocol.icount/ICount", "count", protocol_count);
         registry.register("std.protocol.inth/INth", "nth", protocol_nth);
         registry.register("std.protocol.ilookup/ILookup", "lookup", protocol_lookup);
@@ -435,6 +441,16 @@ impl ProtocolRegistry {
             },
         );
         registry.register("std.protocol.ihash/IHash", "hash", protocol_hash);
+        registry.register(
+            "std.protocol.ihashcached/IHashCached",
+            "hash-current",
+            protocol_hash_current,
+        );
+        registry.register(
+            "std.protocol.ihashcached/IHashCached",
+            "hash-put",
+            protocol_hash_put,
+        );
         registry.register_when(
             "std.protocol.ifn/IFn",
             "invoke",

@@ -15,14 +15,14 @@ public final class HaraPlatformStringLikeProtocolTest {
               .eval(
                   HaraLanguage.ID,
                   "(defstruct WrappedName [value]) "
-                      + "(extend-type WrappedName std.protocol.istringlike/IStringLike "
+                      + "(extend-type WrappedName IStringLike "
                       + "  (to-string [wrapped] (:value wrapped)) "
                       + "  (from-string [wrapped text] (WrappedName text))) "
-                      + "[(satisfies? std.protocol.istringlike/IStringLike :hello) "
-                      + " (std.protocol.istringlike/to-string :hello/world) "
-                      + " (std.protocol.istringlike/from-string :sample \"hello/world\") "
-                      + " (std.protocol.istringlike/to-string (WrappedName \"custom\")) "
-                      + " (:value (std.protocol.istringlike/from-string "
+                      + "[(satisfies? IStringLike :hello) "
+                      + " (IStringLike/to-string :hello/world) "
+                      + " (IStringLike/from-string :sample \"hello/world\") "
+                      + " (IStringLike/to-string (WrappedName \"custom\")) "
+                      + " (:value (IStringLike/from-string "
                       + "          (WrappedName \"\") \"restored\"))]")
               .toString());
     }

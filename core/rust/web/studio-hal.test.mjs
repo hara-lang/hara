@@ -147,6 +147,10 @@ function mapGet(map, name) {
   return undefined;
 }
 
+function sequenceValues(value) {
+  return Array.isArray(value) ? value : value.values;
+}
+
 test("defaultBootstrap renders the shared bootstrap template", { skip: wasmBytes === null }, () => {
   assert.equal(
     defaultBootstrap("boot-space"),
@@ -375,9 +379,37 @@ test("Studio runs the specs-owned protocol behavioral corpus", { skip: wasmBytes
     ),
     "utf8"
   );
+  assert.doesNotMatch(protocolCorpus, /std\.protocol\.[^\s/]+\/I[A-Z]/);
   const results = await broker.eval("ROOT", protocolCorpus);
   assert.equal(results.length, 105);
   assert.equal(results.filter((result) => mapGet(result, "pass") === true).length, 105);
+  const capabilityResults = await broker.eval("ROOT", "(capability-protocol-results)");
+  assert.equal(capabilityResults.length, 20);
+  assert.equal(capabilityResults.filter((result) => mapGet(result, "pass") === true).length, 20);
+  const receiverMatrix = await broker.eval("ROOT", "(protocol-receiver-matrix-results)");
+  assert.equal(receiverMatrix.length, 10);
+  assert.equal(receiverMatrix.filter((result) => mapGet(result, "pass") === true).length, 10);
+  const crossCutting = await broker.eval("ROOT", "(protocol-cross-cutting-results)");
+  const crossCuttingValues = sequenceValues(crossCutting);
+  assert.equal(crossCuttingValues.length, 6);
+  assert.equal(crossCuttingValues.filter((result) => mapGet(result, "pass") === true).length, 6);
+  const capabilityReceivers = await broker.eval("ROOT", "(protocol-capability-receiver-results)");
+  const capabilityReceiverValues = sequenceValues(capabilityReceivers);
+  assert.equal(capabilityReceiverValues.length, 8);
+  assert.equal(
+    capabilityReceiverValues.filter((result) => mapGet(result, "pass") === true).length,
+    8
+  );
+  const nativeValues = sequenceValues(
+    await broker.eval("ROOT", "(protocol-native-value-results)")
+  );
+  assert.equal(nativeValues.length, 15);
+  assert.equal(nativeValues.filter((result) => mapGet(result, "pass") === true).length, 15);
+  const predicateValues = sequenceValues(
+    await broker.eval("ROOT", "(protocol-predicate-results)")
+  );
+  assert.equal(predicateValues.length, 7);
+  assert.equal(predicateValues.filter((result) => mapGet(result, "pass") === true).length, 7);
 });
 
 test("Studio runs the specs-owned protocol surface corpus", { skip: wasmBytes === null }, async () => {
@@ -389,6 +421,7 @@ test("Studio runs the specs-owned protocol surface corpus", { skip: wasmBytes ==
     ),
     "utf8"
   );
+  assert.doesNotMatch(protocolCorpus, /std\.protocol\.[^\s/]+\/I[A-Z]/);
   const results = await broker.eval("ROOT", protocolCorpus);
   assert.equal(results.length, 55);
   assert.equal(results.filter((result) => mapGet(result, "pass") === true).length, 55);

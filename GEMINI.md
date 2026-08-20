@@ -190,7 +190,7 @@
 * `hara.lib.block.Block` and `hara.lib.zip.Zipper` implement `hara.lang.base.I.ObjType` and return `CLASS` for their object type.
 * To run a Java class with a `main` method located in `src/test/java` using Maven, use `mvn test-compile exec:java -Dexec.mainClass="pkg.ClassName" -Dexec.classpathScope=test`.
 * The `List` data structure interface has a `conjAll(Iterator<E> it)` method for appending all elements from an iterator.
-* Clojure protocols, like `std.protocol.deps/IDeps`, are backed by Java interfaces defined in files such as `hara.lang.base.I.java`.
+* Protocol types, such as `IDeps`, resolve unqualified and are backed by Java interfaces defined in files such as `hara.lang.base.I.java`.
 * The `hara.kernel.base.Builtin.Basic.deref` static method is used to resolve `Future` objects, and `hara.kernel.base.Eval.eval` is used to evaluate forms.
 * The project uses the `googleformatter-maven-plugin` which automatically reformats source code in-place during the Maven build lifecycle. Running `mvn` commands (like `test` or `package`) locally will modify files and result in a dirty git working tree.
 * For building collections incrementally, use the `Mutable` version of a data structure (e.g., `Vector.Mutable`) and convert it to a persistent `Standard` version (e.g., using `toPersistent()`) when done.

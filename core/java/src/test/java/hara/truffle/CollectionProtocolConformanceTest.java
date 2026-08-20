@@ -31,13 +31,23 @@ public class CollectionProtocolConformanceTest {
   public void sharedNativeValueProtocolMatrixPasses() throws Exception {
     String source =
         Files.readString(
-            Path.of("lib/test-fixtures/std/foundation/native_value_protocol_matrix.hal"));
+            specsRegistry()
+                .resolve(
+                    "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal"));
     try (org.graalvm.polyglot.Context context =
         org.graalvm.polyglot.Context.newBuilder(HaraLanguage.ID).build()) {
-      assertEquals(
-          "[true true true true true true true true true true true true]",
-          context.eval(HaraLanguage.ID, source).toString());
+      context.eval(HaraLanguage.ID, source);
+      String result = context.eval(HaraLanguage.ID, "(protocol-native-value-results)").toString();
+      assertFalse(result, result.contains(":pass false"));
+      assertEquals(15, result.split(":pass true", -1).length - 1);
     }
+  }
+
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 
   @Test

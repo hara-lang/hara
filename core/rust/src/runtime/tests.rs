@@ -15,12 +15,12 @@ mod tests {
         let Form::Map(root) = kernel::parse_forms(source).unwrap().remove(0) else {
             panic!("protocol contract must be a map")
         };
-        let Form::Vector(protocols) = conformance_entry(&root, "protocols") else {
-            panic!(":protocols must be a vector")
-        };
-        protocols
-            .iter()
-            .flat_map(|protocol| {
+        let mut surface = std::collections::BTreeSet::new();
+        for key in ["protocols", "capability-protocols"] {
+            let Form::Vector(protocols) = conformance_entry(&root, key) else {
+                panic!(":{key} must be a vector")
+            };
+            for protocol in protocols {
                 let Form::Map(protocol) = protocol else {
                     panic!("protocol entries must be maps")
                 };
@@ -30,14 +30,15 @@ mod tests {
                 let Form::Map(methods) = conformance_entry(protocol, "methods") else {
                     panic!("protocol :methods must be a map")
                 };
-                methods.iter().map(move |(method, _)| {
+                for (method, _) in methods {
                     let Form::Symbol(method) = method else {
                         panic!("protocol method names must be symbols")
                     };
-                    (name.clone(), method.clone())
-                })
-            })
-            .collect()
+                    surface.insert((name.clone(), method.clone()));
+                }
+            }
+        }
+        surface
     }
 
     fn protocol_case_surface(source: &str) -> std::collections::BTreeSet<(String, String)> {
@@ -1930,13 +1931,22 @@ mod tests {
             .namespace_registry
             .find("std.foundation")
             .expect("std.foundation namespace");
+        let portable_contract = contract
+            .split(":capability-protocols")
+            .next()
+            .expect("portable protocol contract");
+        let mut portable_protocol_count = 0usize;
+        let mut portable_method_count = 0usize;
+        let mut capability_protocol_count = 0usize;
+        let mut capability_method_count = 0usize;
         for (name, methods) in core::FOUNDATION_PROTOCOLS {
-            let in_contract = *name != "IMatch";
+            let in_contract = portable_contract.contains(&format!(":name {name}"));
             if in_contract {
-                assert!(
-                    contract.contains(&format!(":name {name}")),
-                    "shared contract is missing {name}"
-                );
+                portable_protocol_count += 1;
+                portable_method_count += methods.len();
+            } else {
+                capability_protocol_count += 1;
+                capability_method_count += methods.len();
             }
             let namespace_name = core::builtin_protocol_namespace(name);
             let namespace = runtime
@@ -1981,6 +1991,12 @@ mod tests {
                 }
             }
         }
+        assert_eq!(portable_protocol_count, 55);
+        assert_eq!(portable_method_count, 105);
+        assert_eq!(capability_protocol_count, 15);
+        assert_eq!(capability_method_count, 20);
+        assert!(contract.contains(":capability-specific-protocol-count 15"));
+        assert!(contract.contains(":capability-specific 20"));
         for protocol in [
             "IColl",
             "IMetadata",
@@ -2096,9 +2112,8 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(ns native.protocol-consumer
-                       (:require [std.protocol.imatch :as match]))
-                     (= match/IMatch std.protocol.imatch/IMatch)",
+                    "(ns native.protocol-consumer)
+                     (boolean IMatch)",
                 )
                 .unwrap(),
             "true"
@@ -2112,6 +2127,10 @@ mod tests {
             "01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal",
         )
         .expect("the specs-owned protocol surface fixture must be available");
+        assert!(
+            !source.contains("/I"),
+            "protocol types must resolve unqualified in guest source"
+        );
         let result = runtime
             .eval_text(&source)
             .unwrap();
@@ -2133,6 +2152,10 @@ mod tests {
             "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
         )
         .expect("the specs-owned behavioral protocol corpus must be available");
+        assert!(
+            !source.contains("/I"),
+            "protocol types must resolve unqualified in guest source"
+        );
         let catalog =
             repo_text("01-lang/001-language/draft/conformance/protocol-method-cases.edn")
                 .expect("the protocol case catalog must accompany its behavioral corpus");
@@ -2143,6 +2166,8 @@ mod tests {
             protocol_method_surface(&protocols),
             "behavioral protocol cases must exactly close the authoritative method surface"
         );
+        assert_eq!(protocols.matches(" -1").count(), 6);
+        assert_eq!(catalog.matches(":case :declared-variadic").count(), 6);
         let expected_cases = catalog
             .lines()
             .filter(|line| {
@@ -2157,9 +2182,42 @@ mod tests {
         assert!(!result.contains(":pass false"), "{result}");
         assert_eq!(
             result.matches(":pass true").count(),
-            expected_cases,
+            105,
             "{result}"
         );
+        let capability_result = runtime
+            .eval_text("(capability-protocol-results)")
+            .unwrap();
+        assert!(!capability_result.contains(":pass false"), "{capability_result}");
+        assert_eq!(capability_result.matches(":pass true").count(), 20);
+        let receiver_matrix = runtime
+            .eval_text("(protocol-receiver-matrix-results)")
+            .unwrap();
+        assert!(!receiver_matrix.contains(":pass false"), "{receiver_matrix}");
+        assert_eq!(receiver_matrix.matches(":pass true").count(), 10);
+        let cross_cutting = runtime
+            .eval_text("(protocol-cross-cutting-results)")
+            .unwrap();
+        assert!(!cross_cutting.contains(":pass false"), "{cross_cutting}");
+        assert_eq!(cross_cutting.matches(":pass true").count(), 6);
+        let capability_receivers = runtime
+            .eval_text("(protocol-capability-receiver-results)")
+            .unwrap();
+        assert!(
+            !capability_receivers.contains(":pass false"),
+            "{capability_receivers}"
+        );
+        assert_eq!(capability_receivers.matches(":pass true").count(), 8);
+        let native_values = runtime
+            .eval_text("(protocol-native-value-results)")
+            .unwrap();
+        assert!(!native_values.contains(":pass false"), "{native_values}");
+        assert_eq!(native_values.matches(":pass true").count(), 15);
+        let predicates = runtime
+            .eval_text("(protocol-predicate-results)")
+            .unwrap();
+        assert!(!predicates.contains(":pass false"), "{predicates}");
+        assert_eq!(predicates.matches(":pass true").count(), 7);
 
         #[cfg(feature = "bytecode-vm")]
         let mut bytecode_runtime = Runtime::new();
@@ -2173,9 +2231,60 @@ mod tests {
             );
             assert_eq!(
                 bytecode_result.matches(":pass true").count(),
-                expected_cases,
+                105,
                 "compiled protocol corpus did not close the authoritative method surface: {bytecode_result}"
             );
+            let bytecode_capability_result = bytecode_runtime
+                .eval_bytecode_native("(capability-protocol-results)")
+                .unwrap();
+            assert!(
+                !bytecode_capability_result.contains(":pass false"),
+                "compiled capability protocol corpus contains failures: {bytecode_capability_result}"
+            );
+            assert_eq!(bytecode_capability_result.matches(":pass true").count(), 20);
+            let bytecode_receiver_matrix = bytecode_runtime
+                .eval_bytecode_native("(protocol-receiver-matrix-results)")
+                .unwrap();
+            assert!(
+                !bytecode_receiver_matrix.contains(":pass false"),
+                "compiled receiver matrix contains failures: {bytecode_receiver_matrix}"
+            );
+            assert_eq!(bytecode_receiver_matrix.matches(":pass true").count(), 10);
+            let bytecode_cross_cutting = bytecode_runtime
+                .eval_bytecode_native("(protocol-cross-cutting-results)")
+                .unwrap();
+            assert!(
+                !bytecode_cross_cutting.contains(":pass false"),
+                "compiled cross-cutting matrix contains failures: {bytecode_cross_cutting}"
+            );
+            assert_eq!(bytecode_cross_cutting.matches(":pass true").count(), 6);
+            let bytecode_capability_receivers = bytecode_runtime
+                .eval_bytecode_native("(protocol-capability-receiver-results)")
+                .unwrap();
+            assert!(
+                !bytecode_capability_receivers.contains(":pass false"),
+                "compiled capability receiver matrix contains failures: {bytecode_capability_receivers}"
+            );
+            assert_eq!(
+                bytecode_capability_receivers.matches(":pass true").count(),
+                8
+            );
+            let bytecode_native_values = bytecode_runtime
+                .eval_bytecode_native("(protocol-native-value-results)")
+                .unwrap();
+            assert!(
+                !bytecode_native_values.contains(":pass false"),
+                "compiled native-value matrix contains failures: {bytecode_native_values}"
+            );
+            assert_eq!(bytecode_native_values.matches(":pass true").count(), 15);
+            let bytecode_predicates = bytecode_runtime
+                .eval_bytecode_native("(protocol-predicate-results)")
+                .unwrap();
+            assert!(
+                !bytecode_predicates.contains(":pass false"),
+                "compiled protocol predicate matrix contains failures: {bytecode_predicates}"
+            );
+            assert_eq!(bytecode_predicates.matches(":pass true").count(), 7);
         }
 
         let method_vars = source
@@ -2263,43 +2372,6 @@ mod tests {
                 )
                 .unwrap(),
             "true"
-        );
-    }
-
-    #[test]
-    fn foundation_iterator_protocols_traverse_and_close_native_iterators() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(let [it (IIter/iter [1 2])] \
-                       [(IIterator/iter-next? it) \
-                        (IIterator/iter-next it) \
-                        (IIterator/iter-next it) \
-                        (IIterator/iter-next? it) \
-                        (IClose/close it)])"
-                )
-                .unwrap(),
-            "[true 1 2 false nil]"
-        );
-    }
-
-    #[test]
-    fn foundation_state_protocols_dispatch_and_watch_keys_come_first() {
-        let mut runtime = Runtime::new();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(let [a (atom 1) seen (atom nil)] \
-                       (IWatch/watch-add a :log \
-                         (fn [key ref old new] \
-                           (IReset/reset seen [key old new]))) \
-                       (IReset/reset a 2) \
-                       [(IDeref/deref a) \
-                        (IDeref/deref seen)])"
-                )
-                .unwrap(),
-            "[2 [:log 1 2]]"
         );
     }
 
@@ -7383,101 +7455,6 @@ mod tests {
     }
 
     #[test]
-    fn protocol_capability_predicates_cover_core_and_guest_values() {
-        let mut runtime = Runtime::core();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "[(coll? {})
-                      (iterable? \"value\")
-                      (iterator? (iter []))
-                      (counted? nil)
-                      (reducible? [])
-                      (indexed? [1])
-                      (associative? {})
-                      (findable? #{:value})
-                      (lookupable? {:value 1})
-                      (derefable? (atom 1))
-                      (resettable? (atom 1))
-                      (casable? (atom 1))
-                      (watchable? (atom 1))
-                      (pair? (first {:value 1}))
-                      (persistent? [])
-                      (mutable? (to-mutable (Base/vec [])))]",
-                )
-                .unwrap(),
-            "[true true true true true true true true true true true true true true true true]"
-        );
-        assert!(runtime.eval_text("(collection? [])").is_err());
-
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(do
-                       (defprotocol Ready (ready [self]))
-                       (defstruct Box [value])
-                       (def before (satisfies? Ready (Box 1)))
-                       (extend-type Box Ready (ready [self] (:value self)))
-                       [before (satisfies? Ready (Box 1))])",
-                )
-                .unwrap(),
-            "[false true]"
-        );
-    }
-
-    #[test]
-    fn function_predicates_distinguish_ifn_from_function_values() {
-        let mut runtime = Runtime::core();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(do
-                       (defstruct Invokable [value])
-                       (defstruct Plain [value])
-                       (defmutable MutableInvokable [value])
-                       (defmutable MutablePlain [value])
-                       (extend-type Invokable std.protocol.ifn/IFn
-                         (invoke [self] (:value self)))
-                       (extend-type MutableInvokable std.protocol.ifn/IFn
-                         (invoke [self] (:value self)))
-                       (let [function (fn [value] value)
-                             pointer (pointer {:context :kernel :id \"ROOT\"})]
-                         [[(fn? function) (function? function)]
-                          [(fn? inc) (function? inc)]
-                          [(fn? :key) (function? :key)]
-                          [(fn? {:key 1}) (function? {:key 1})]
-                          [(fn? #{:key}) (function? #{:key})]
-                          [(fn? Invokable) (function? Invokable)]
-                          [(fn? pointer) (function? pointer)]
-                          [(fn? (Invokable 1))
-                           (function? (Invokable 1))
-                           (satisfies? std.protocol.ifn/IFn (Invokable 1))
-                           ((Invokable 1))]
-                          [(fn? (MutableInvokable 2))
-                           (function? (MutableInvokable 2))
-                           (satisfies? std.protocol.ifn/IFn (MutableInvokable 2))
-                           ((MutableInvokable 2))]
-                          [(fn? (Plain 1))
-                           (satisfies? std.protocol.ifn/IFn (Plain 1))]
-                          [(fn? (MutablePlain 2))
-                           (satisfies? std.protocol.ifn/IFn (MutablePlain 2))]
-                          [(fn? 42) (function? 42)]
-                          (nil? (resolve 'callable?))]))",
-                )
-                .unwrap(),
-            "[[true true] [true true] [true false] [true false] [true false] [true false] [true false] [true false true 1] [true false true 2] [false false] [false false] [false false] true]"
-        );
-        assert!(runtime
-            .eval_text("((Plain 1))")
-            .unwrap_err()
-            .contains("missing protocol implementation"));
-        assert!(runtime
-            .eval_text("((MutablePlain 2))")
-            .unwrap_err()
-            .contains("missing protocol implementation"));
-    }
-
-    #[test]
     fn tool_cli_handlers_treat_default_host_as_a_value() {
         let cli_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../lib/src/tool/cli");
         for file in [
@@ -7504,7 +7481,7 @@ mod tests {
     #[cfg(feature = "bytecode-vm")]
     #[test]
     fn bytecode_vm_ifn_applicability_matches_interpreter_and_predicates() {
-        let mut runtime = Runtime::core();
+        let mut runtime = Runtime::new();
         assert_eq!(
             runtime
                 .eval_bytecode_native(
@@ -7513,34 +7490,34 @@ mod tests {
                        (defstruct VmPlain [value])
                        (defmutable VmMutableInvokable [value])
                        (defmutable VmMutablePlain [value])
-                       (extend-type VmInvokable std.protocol.ifn/IFn
+                       (extend-type VmInvokable IFn
                          (invoke [self] (:value self)))
-                       (extend-type VmMutableInvokable std.protocol.ifn/IFn
+                       (extend-type VmMutableInvokable IFn
                          (invoke [self] (:value self)))
                        (let [function (fn [value] value)
                              pointer (pointer {:context :kernel :id \"ROOT\"})
                              invokable (VmInvokable 7)
                              mutable-invokable (VmMutableInvokable 8)]
-                         [[(fn? function) (satisfies? std.protocol.ifn/IFn function)
+                         [[(fn? function) (satisfies? IFn function)
                            (function 1)]
-                          [(fn? :key) (satisfies? std.protocol.ifn/IFn :key)
+                          [(fn? :key) (satisfies? IFn :key)
                            (:key {:key 2})]
-                          [(fn? {:key 3}) (satisfies? std.protocol.ifn/IFn {:key 3})
+                          [(fn? {:key 3}) (satisfies? IFn {:key 3})
                            ({:key 3} :key)]
-                          [(fn? #{:key}) (satisfies? std.protocol.ifn/IFn #{:key})
+                          [(fn? #{:key}) (satisfies? IFn #{:key})
                            (#{:key} :key)]
-                          [(fn? VmInvokable) (satisfies? std.protocol.ifn/IFn VmInvokable)]
-                          [(fn? pointer) (satisfies? std.protocol.ifn/IFn pointer)]
-                          [(fn? invokable) (satisfies? std.protocol.ifn/IFn invokable)
+                          [(fn? VmInvokable) (satisfies? IFn VmInvokable)]
+                          [(fn? pointer) (satisfies? IFn pointer)]
+                          [(fn? invokable) (satisfies? IFn invokable)
                            (invokable)]
                           [(fn? mutable-invokable)
-                           (satisfies? std.protocol.ifn/IFn mutable-invokable)
+                           (satisfies? IFn mutable-invokable)
                            (mutable-invokable)]
                           [(fn? (VmPlain 1))
-                           (satisfies? std.protocol.ifn/IFn (VmPlain 1))]
+                           (satisfies? IFn (VmPlain 1))]
                           [(fn? (VmMutablePlain 1))
-                           (satisfies? std.protocol.ifn/IFn (VmMutablePlain 1))]
-                          [(fn? 42) (satisfies? std.protocol.ifn/IFn 42)]]))",
+                           (satisfies? IFn (VmMutablePlain 1))]
+                          [(fn? 42) (satisfies? IFn 42)]]))",
                 )
                 .unwrap(),
             "[[true true 1] [true true 2] [true true 3] [true true :key] \
@@ -7623,65 +7600,20 @@ mod tests {
 
     #[test]
     fn guest_types_satisfy_and_dispatch_native_work_protocols() {
-        let mut runtime = Runtime::core();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(do
-                       (defstruct TestWork [spec])
-                       (defstruct TestWorkRef [id])
-                       (defstruct TestWorkHost [value])
-                       (defstruct TestWorkRun [id])
-
-                       (extend-type TestWork IWork
-                         (work-spec [work] (:spec work)))
-
-                       (extend-type TestWorkRef IWorkRef
-                         (work-id [reference] (:id reference)))
-
-                       (extend-type TestWorkHost IComponent
-                         (props [host] {})
-                         (status [host] :started)
-                         (started? [host] true)
-                         (stopped? [host] false)
-                         (start [host] host)
-                         (stop [host] host)
-                         (kill [host] host)
-                         (remote? [host] false))
-                       (extend-type TestWorkHost IWorkHost
-                         (work-submit [host work input options]
-                           [work input options])
-                         (work-resolve [host reference] reference))
-
-                       (extend-type TestWorkRun IWorkRef
-                         (work-id [run] (:id run)))
-                       (extend-type TestWorkRun IClosed
-                         (closed? [run] true))
-                       (extend-type TestWorkRun IWorkRun
-                         (work-status [run] :completed)
-                         (work-result [run] nil)
-                         (work-events [run options] nil)
-                         (work-cancel [run reason] nil))
-
-                       (let [work (TestWork {:op :pure})
-                             reference (TestWorkRef \"run-ref\")
-                             host (TestWorkHost nil)
-                             run (TestWorkRun \"run-live\")]
-                         [(satisfies? IWork work)
-                          (IWork/work-spec work)
-                          (satisfies? IWorkRef reference)
-                          (IWorkRef/work-id reference)
-                          (satisfies? IWorkHost host)
-                          (IWorkHost/work-submit host :work :input {:priority :high})
-                          (IWorkHost/work-resolve host \"run-live\")
-                          (satisfies? IWorkRun run)
-                          (IWorkRun/work-status run)
-                          (IWorkRef/work-id run)
-                          (IClosed/closed? run)]))",
-                )
-                .unwrap(),
-            "[true {:op :pure} true \"run-ref\" true [:work :input {:priority :high}] \"run-live\" true :completed \"run-live\" true]"
-        );
+        let mut runtime = Runtime::new();
+        let source = repo_text(
+            "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
+        )
+        .expect("the specs-owned behavioral protocol corpus must be available");
+        runtime.eval_text(&source).unwrap();
+        let methods = runtime.eval_text("(capability-protocol-results)").unwrap();
+        let receivers = runtime
+            .eval_text("(protocol-capability-receiver-results)")
+            .unwrap();
+        assert!(!methods.contains(":pass false"), "{methods}");
+        assert_eq!(methods.matches(":pass true").count(), 20);
+        assert!(!receivers.contains(":pass false"), "{receivers}");
+        assert_eq!(receivers.matches(":pass true").count(), 8);
     }
 
     #[test]
@@ -7750,60 +7682,18 @@ mod tests {
     }
 
     #[test]
-    fn mutable_collections_preserve_ifind_dispatch_and_satisfaction() {
-        let mut runtime = Runtime::core();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(let [m (IToMutable/to-mutable {:a 1})
-                           s (IToMutable/to-mutable #{:a})
-                           v (IToMutable/to-mutable (Base/vec [10 20]))]
-                       [(satisfies? IFind m) (findable? m) (IFind/find m :a)
-                        (IFind/find m :missing)
-                        (satisfies? IFind s) (IFind/find s :a)
-                        (satisfies? IFind v) (IFind/find v 1)])",
-                )
-                .unwrap(),
-            "[true true [:a 1] nil true :a true [1 20]]"
-        );
-    }
-
-    #[test]
-    fn linear_protocol_satisfaction_matches_dispatch() {
-        let mut runtime = Runtime::core();
-        assert_eq!(
-            runtime
-                .eval_text(
-                    "(let [q (std.native.Algo/queue 1 2)
-                           mq (IToMutable/to-mutable q)
-                           v (Base/vec [1 2])]
-                       [(satisfies? IPushFirst q)
-                        (IPushFirst/push-first q 0)
-                        (satisfies? IPushFirst mq)
-                        (IPushFirst/push-first mq 0)
-                        (satisfies? IPopFirst mq)
-                        (IPopFirst/pop-first mq)
-                        (satisfies? IPushFirst v)
-                        (satisfies? IPopFirst v)
-                        (satisfies? IPushLast v)
-                        (satisfies? IPopLast v)])",
-                )
-                .unwrap(),
-            "[true #queue[0 1 2] true #<mutable-queue> true #<mutable-queue> false false true true]"
-        );
-    }
-
-    #[test]
     fn shared_native_value_protocol_matrix_passes() {
-        let mut runtime = Runtime::core();
-        assert_eq!(
-            runtime
-                .eval_text(include_str!(
-                    "../../../lib/test-fixtures/std/foundation/native_value_protocol_matrix.hal"
-                ))
-                .unwrap(),
-            "[true true true true true true true true true true true true]"
-        );
+        let mut runtime = Runtime::new();
+        let source = repo_text(
+            "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
+        )
+        .expect("the specs-owned behavioral protocol corpus must be available");
+        runtime.eval_text(&source).unwrap();
+        let result = runtime
+            .eval_text("(protocol-native-value-results)")
+            .unwrap();
+        assert!(!result.contains(":pass false"), "{result}");
+        assert_eq!(result.matches(":pass true").count(), 15);
     }
 
     #[test]

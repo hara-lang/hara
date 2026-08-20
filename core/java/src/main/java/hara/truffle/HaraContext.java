@@ -337,7 +337,7 @@ public final class HaraContext {
     installProjectMacro();
     installNativeLibraries();
     installEnvironmentLibraries();
-    collectBuiltins(FOUNDATION_NAMESPACE, () -> libraryLoader.installEagerJava(this));
+    libraryLoader.installEagerJava(this);
     hideIteratorImplementationBindings();
     namespaceStates.put(FOUNDATION_NAMESPACE, NamespaceLoadState.UNLOADED);
     for (String namespace : GENERATED_LIBRARIES.values()) {
@@ -2317,7 +2317,7 @@ public final class HaraContext {
     target.define("bytes?", new UnaryBuiltin("bytes?", value ->
         HaraBox.unwrap(value) instanceof byte[]));
     target.define("atom?", new UnaryBuiltin("atom?", value ->
-        HaraBox.unwrap(value) instanceof hara.lang.data.Atom<?>));
+        HaraBox.unwrap(value) instanceof hara.lang.data.Atom.Struct<?, ?>));
     target.define("promise?", new UnaryBuiltin("promise?", value ->
         HaraBox.unwrap(value) instanceof HaraPromise));
     target.define("coroutine?", new UnaryBuiltin("coroutine?", value ->

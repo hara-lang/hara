@@ -138,6 +138,7 @@ public final class HaraProtocol implements TruffleObject {
       if (!parent.satisfies(receiver)) return false;
     }
     if (methods.isEmpty()) {
+      if (name.endsWith("/IOFn")) return receiver instanceof hara.lang.protocol.IOFn;
       if (!parents.isEmpty()) return true;
       if (name.endsWith("/IMutable")) return receiver instanceof hara.lang.protocol.IMutable;
       if (name.endsWith("/IPersistent")) return receiver instanceof hara.lang.protocol.IPersistent;

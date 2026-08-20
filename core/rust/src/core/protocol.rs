@@ -1271,6 +1271,21 @@ fn protocol_hash(arguments: &[Value]) -> Result<Value, String> {
     }
 }
 
+fn protocol_hash_current(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [value] => Ok(Value::Number(value.stable_hash() as i64)),
+        _ => Err("IHashCached/hash-current expects one value".into()),
+    }
+}
+
+fn protocol_hash_put(arguments: &[Value]) -> Result<Value, String> {
+    match arguments {
+        [value, Value::Number(_)] => Ok(value.clone()),
+        [_, _] => Err("IHashCached/hash-put expects a numeric hash".into()),
+        _ => Err("IHashCached/hash-put expects two values".into()),
+    }
+}
+
 fn protocol_invoke(arguments: &[Value]) -> Result<Value, String> {
     match arguments {
         [callable, rest @ ..] => callable.invoke(rest.to_vec()),
@@ -1970,11 +1985,11 @@ impl Value {
     fn supports_native_ipersistent(value: &Self) -> bool {
         Self::supports_native_icoll(value) || matches!(value, Self::Struct(_))
     }
-    fn supports_native_iequality(_: &Self) -> bool {
-        true
+    fn supports_native_iequality(value: &Self) -> bool {
+        !matches!(value, Self::Protocol(_))
     }
-    fn supports_native_idisplay(_: &Self) -> bool {
-        true
+    fn supports_native_idisplay(value: &Self) -> bool {
+        !matches!(value, Self::Protocol(_))
     }
     fn supports_native_iencodable(_: &Self) -> bool {
         true
@@ -1982,8 +1997,12 @@ impl Value {
     fn supports_native_iexinfo(value: &Self) -> bool {
         matches!(value, Self::ExceptionInfo(_))
     }
-    fn supports_native_ihash(_: &Self) -> bool {
-        true
+    fn supports_native_ihash(value: &Self) -> bool {
+        Self::supports_native_iobjtype(value)
+            || matches!(value, Self::Bytes(_) | Self::MutableCollection(_))
+    }
+    fn supports_native_ihashcached(value: &Self) -> bool {
+        Self::supports_native_icoll(value) || matches!(value, Self::Symbol(_) | Self::Struct(_))
     }
     fn supports_native_ipromise(value: &Self) -> bool {
         matches!(value, Self::Promise(_))
@@ -2046,6 +2065,7 @@ fn native_protocol_supports(protocol: &str, value: &Value) -> bool {
         "IEncodable" => Value::supports_native_iencodable(value),
         "IExInfo" => Value::supports_native_iexinfo(value),
         "IHash" => Value::supports_native_ihash(value),
+        "IHashCached" => Value::supports_native_ihashcached(value),
         "IPromise" => Value::supports_native_ipromise(value),
         "ICoroutine" => Value::supports_native_icoroutine(value),
         "IStream" => Value::supports_native_istream(value),
