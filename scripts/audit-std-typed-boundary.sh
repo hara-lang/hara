@@ -8,6 +8,7 @@ lint_analyzer='core/lib/src/tool/lint/analyze.hal'
 required_paths=(
   'core/lib/src/std/typed.hal'
   'core/lib/src/std/typed/catalog.hal'
+  'core/lib/src/std/typed/catalog/ast.hal'
   'core/lib/src/std/typed/catalog/base.hal'
   'core/lib/src/std/typed/catalog/codec.hal'
   'core/lib/src/std/typed/catalog/graph.hal'
@@ -42,6 +43,7 @@ fi
 
 catalog_modules=(
   'core/lib/src/std/typed/catalog.hal'
+  'core/lib/src/std/typed/catalog/ast.hal'
   'core/lib/src/std/typed/catalog/base.hal'
   'core/lib/src/std/typed/catalog/codec.hal'
   'core/lib/src/std/typed/catalog/graph.hal'
@@ -112,6 +114,7 @@ fi
 standard_namespaces=(
   std.typed
   std.typed.catalog
+  std.typed.catalog.ast
   std.typed.catalog.base
   std.typed.catalog.codec
   std.typed.catalog.graph
@@ -131,6 +134,7 @@ bootstrap_namespaces=(
   std.typed.registry
   std.typed.schema
   std.typed.catalog.codec
+  std.typed.catalog.ast
   std.typed.catalog.base
   std.typed.catalog.graph
   std.typed.catalog
@@ -151,6 +155,7 @@ inventory_line() {
 registry_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.registry)
 schema_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.schema)
 codec_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.codec)
+ast_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.ast)
 base_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.base)
 graph_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.graph)
 catalog_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog)
@@ -164,8 +169,12 @@ if [[ -n "$schema_line" && -n "$codec_line" && "$schema_line" -ge "$codec_line" 
   echo 'std.typed.schema must bootstrap before std.typed.catalog.codec.' >&2
   failed=1
 fi
-if [[ -n "$codec_line" && -n "$base_line" && "$codec_line" -ge "$base_line" ]]; then
-  echo 'std.typed.catalog.codec must bootstrap before std.typed.catalog.base.' >&2
+if [[ -n "$codec_line" && -n "$ast_line" && "$codec_line" -ge "$ast_line" ]]; then
+  echo 'std.typed.catalog.codec must bootstrap before std.typed.catalog.ast.' >&2
+  failed=1
+fi
+if [[ -n "$ast_line" && -n "$base_line" && "$ast_line" -ge "$base_line" ]]; then
+  echo 'std.typed.catalog.ast must bootstrap before std.typed.catalog.base.' >&2
   failed=1
 fi
 if [[ -n "$base_line" && -n "$graph_line" && "$base_line" -ge "$graph_line" ]]; then
