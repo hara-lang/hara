@@ -231,11 +231,7 @@ fn enqueue(
     });
 }
 
-fn complete_call(
-    form: &Form,
-    result: &Value,
-    environment: &Rc<RefCell<HashMap<String, Value>>>,
-) {
+fn complete_call(form: &Form, result: &Value, environment: &Rc<RefCell<HashMap<String, Value>>>) {
     let Some(context) = active_context() else {
         return;
     };
