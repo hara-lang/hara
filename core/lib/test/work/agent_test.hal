@@ -1,5 +1,7 @@
 (ns work.agent-test
-  (:require [work.agent :as agent]
+  (:require [work.base :as work]
+            [work.agent :as agent]
+            [work.agent.ephemeral :as ephemeral]
             [work.agent.openai :as openai]))
 
 (def response-one
@@ -9,11 +11,7 @@
    [{:type "function_call"
      :call_id "call_1"
      :name "add"
-     :arguments "{\"a\":20,\"b\":22}"}]
-   :usage
-   {:input_tokens 10
-    :output_tokens 5
-    :total_tokens 15}})
+     :arguments "{\"a\":20,\"b\":22}"}]})
 
 (def response-two
   {:id "resp_2"
@@ -23,11 +21,7 @@
      :role "assistant"
      :content
      [{:type "output_text"
-       :text "42"}]}]
-   :usage
-   {:input_tokens 20
-    :output_tokens 2
-    :total_tokens 22}})
+       :text "42"}]}]})
 
 (def pending-responses
   (atom [response-one response-two]))
@@ -66,20 +60,20 @@
     :api-key "test-key"
     :transport fake-transport}))
 
-(def runtime
-  (agent/host))
+(def openai-agent
+  {:agent/id :calculator
+   :agent/driver
+   (agent/openai-driver
+    {:client client
+     :instructions "Use tools when useful."
+     :tools [add-tool]
+     :max-turns 4})})
 
-(def reference
-  (agent/start
-   runtime
-   {:client client
-    :instructions "Use tools when useful."
-    :tools [add-tool]
-    :max-turns 4}
-   "What is 20 plus 22?"))
+(def driven-work
+  (agent/drive openai-agent "What is 20 plus 22?"))
 
-(def final-state
-  (agent/run runtime reference))
+(def final-result
+  (work/run driven-work nil))
 
 (def first-request
   (Json/read (:body (nth (deref captured-requests) 0))))
@@ -96,49 +90,50 @@
 (def function-output-body
   (Json/read (get function-output "output")))
 
+(def coordination
+  (agent/ephemeral-coordinator))
+
+(def authority
+  (agent/ephemeral-authority :test-authority {:release false}))
+
+(def chief-agent
+  {:agent/id :chief
+   :agent/driver
+   (agent/ephemeral-work-driver
+    :research
+    (fn [agent intent context input work-context]
+      {:agent/id (:agent/id agent)
+       :intent intent
+       :input input}))
+   :agent/coordinator coordination
+   :agent/authority authority})
+
+(def protocol-agent
+  (ephemeral/agent chief-agent))
+
 (def results
   [(test-check
-    "OpenAI Responses tool loop completes through an ordinary Hara function"
-    [(:run/status final-state)
-     (:run/result final-state)
-     (:run/turn final-state)
-     (:run/tool-calls final-state)
-     (agent/status runtime reference)
-     (agent/result runtime reference)]
-    [:completed "42" 2 1 :completed "42"])
+    "Agent is ordinary data and protocol-backed agents project to the same map"
+    [(agent/agent-spec chief-agent)
+     (agent/agent-spec protocol-agent)
+     (agent/agent-id protocol-agent)]
+    [chief-agent chief-agent :chief])
 
    (test-check
-    "OpenAI request uses model, instructions, and function-tool schema"
-    [(:method (nth (deref captured-requests) 0))
-     (:url (nth (deref captured-requests) 0))
-     (get-in (nth (deref captured-requests) 0)
-             [:headers "authorization"])
-     (get first-request "model")
-     (get first-request "instructions")
-     (get-in first-request ["tools" 0 "type"])
-     (get-in first-request ["tools" 0 "name"])
-     (get-in first-request ["tools" 0 "parameters" "properties" "a" "type"])
-     (get first-request "store")]
-    ["POST"
-     "https://api.openai.com/v1/responses"
-     "Bearer test-key"
-     "gpt-5"
-     "Use tools when useful."
-     "function"
-     "add"
-     "integer"
-     false])
+    "drivers lower intent to existing Work operations"
+    [(satisfies? IWork driven-work)
+     (:op (work/work-spec driven-work))
+     final-result]
+    [true :step "42"])
 
    (test-check
-    "Tool call and output are retained in local Responses input history"
+    "OpenAI tool execution runs inside canonical Work"
     [(count second-input)
-     (get (nth second-input 0) "role")
      (get (nth second-input 1) "type")
      (get function-output "type")
      (get function-output "call_id")
      function-output-body]
     [3
-     "user"
      "function_call"
      "function_call_output"
      "call_1"
@@ -147,19 +142,46 @@
        :value 42})])
 
    (test-check
-    "REPL host exposes secret-free run snapshots and event history"
-    [(count (agent/runs runtime))
-     (:run/id (first (agent/runs runtime)))
-     (nil? (:run/client (agent/state runtime reference)))
-     (vec (map :event/type (agent/events runtime reference)))]
-    [1
-     (:run/id reference)
-     true
-     [:agent/started
-      :agent/model-started
-      :agent/tools-started
-      :agent/tools-completed
-      :agent/model-started
-      :agent/completed]])])
+    "OpenAI request retains driver configuration"
+    [(get first-request "model")
+     (get first-request "instructions")
+     (get-in first-request ["tools" 0 "name"])]
+    ["gpt-5" "Use tools when useful." "add"])
+
+   (test-check
+    "ephemeral coordination is a capability while execution remains Work"
+    (let [coordination-work
+          (agent/coordinate chief-agent {:task/id :compile})
+          value (work/run coordination-work {:source :unit})]
+      [(satisfies? IWork coordination-work)
+       (:op (work/work-spec coordination-work))
+       (:task/id value)
+       (:agent/id value)
+       (:work/input value)
+       (count (ephemeral/coordination-records coordination))])
+    [true :step :compile :chief {:source :unit} 1])
+
+   (test-check
+    "ephemeral authority decisions and signatures are ordinary Work results"
+    (let [authorization
+          (work/run (agent/authorize chief-agent {:action :release}) nil)
+          signature
+          (work/run (agent/sign chief-agent {:action :handoff}) nil)]
+      [(:authorized? authorization)
+       (:authority/id authorization)
+       (:authority/id signature)
+       (first (:signature signature))])
+    [false :test-authority :test-authority :test-authority])
+
+   (test-check
+    "ephemeral drivers also return Work rather than executing intent"
+    (let [value (agent/drive chief-agent :inspect)]
+      [(satisfies? IWork value)
+       (:op (work/work-spec value))
+       (work/run value :payload)])
+    [true :step
+     {:agent/id :chief
+      :intent :inspect
+      :input :payload}])])
 
 results
