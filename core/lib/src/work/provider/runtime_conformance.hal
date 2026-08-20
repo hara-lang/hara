@@ -115,3 +115,100 @@
                            (nth forked 1)
                            (nth forked 2)
                            (nth forked 3))))))))))))))))))
+
+(defn bind-corpus-result
+  [status-before
+   resumed-status
+   resumed-result
+   source-count
+   first-count
+   second-count
+   checkpoints
+   history]
+  (let [paths
+        (vec
+         (map
+          (fn [checkpoint]
+            (:checkpoint/node-path checkpoint))
+          checkpoints))]
+    {:bind-resume-after-replacement
+     (and (= :failed status-before)
+          (= :completed resumed-status)
+          (= 112 resumed-result)
+          (= 1 source-count)
+          (= 1 first-count)
+          (= 2 second-count)
+          (= 2 (event-count history :work/step-replayed)))
+     :bind-checkpoint-lineage
+     (= [[:bind :source :source]
+         [:bind :produced :produced-plan :chain 0 :first]
+         [:bind :produced :produced-plan :chain 1 :second]]
+        paths)}))
+
+(defn run-bind-corpus
+  "Runs the runtime-produced Work recovery scenario against one shared store
+   provider. The returned value is immediate for direct stores and a Promise
+   for async stores."
+  [factory]
+  (let [provider (factory)
+        source-count (atom 0)
+        first-count (atom 0)
+        second-count (atom 0)
+        produced
+        (work/chain
+         {:id :produced-plan}
+         [(work/step :first
+            (fn [value context]
+              (swap! first-count inc)
+              (+ value 10)))
+          (work/step :second
+            (fn [value context]
+              (let [attempt (swap! second-count inc)]
+                (if (= attempt 1)
+                  (throw
+                   (ex :host
+                       {:attempt attempt}
+                       :ex/message "interrupted produced Work"))
+                  (+ value 100)))))])
+        workflow
+        (work/bind
+         {:id :conformance/bind-recovery
+          :version 1}
+         (work/step :source
+           (fn [value context]
+             (swap! source-count inc)
+             (inc value)))
+         (work/pure :continuation
+           (fn [value context]
+             produced)))
+        runtime-before (work/durable-runtime {:store provider})]
+    (result/then
+     (work/start runtime-before
+                 workflow
+                 1
+                 {:id "bind-runtime-conformance"})
+     (fn [reference]
+       (result/then
+        (work/status runtime-before reference)
+        (fn [status-before]
+          (let [runtime-after (work/durable-runtime {:store provider})
+                registration (work/register runtime-after workflow)]
+            (result/then
+             (work/resume runtime-after reference)
+             (fn [resumed-reference]
+               (result/then
+                (result/all
+                 [(work/status runtime-after resumed-reference)
+                  (work/result runtime-after resumed-reference)
+                  (work/checkpoints runtime-after resumed-reference)
+                  (work/history runtime-after resumed-reference)])
+                (fn [resumed]
+                  (bind-corpus-result
+                   status-before
+                   (nth resumed 0)
+                   (nth resumed 1)
+                   (deref source-count)
+                   (deref first-count)
+                   (deref second-count)
+                   (nth resumed 2)
+                   (nth resumed 3)))))))))))))
