@@ -67,6 +67,7 @@ pub struct GeneratedNamespaceConfig {
     exposed_foundation: Option<HashSet<String>>,
     native_flavor: String,
     native_imports: Vec<(String, String)>,
+    role: String,
     blank: bool,
 }
 
@@ -91,6 +92,7 @@ impl GeneratedNamespaceConfig {
             exposed_foundation: None,
             native_flavor: "wasm".into(),
             native_imports: Vec::new(),
+            role: "standard".into(),
             blank: false,
         }
     }
@@ -114,6 +116,7 @@ impl GeneratedNamespaceConfig {
         let mut config_seen = false;
         let mut native_flavor = None;
         let mut native_imports = Vec::new();
+        let mut role = "standard".to_owned();
 
         for clause in clauses {
             let values = list(clause, "ns clauses must be non-empty lists")?;
@@ -136,6 +139,7 @@ impl GeneratedNamespaceConfig {
                         &mut override_seen,
                         &mut excluded,
                         &mut overrides,
+                        &mut role,
                     )?;
                 }
                 "intrinsics" => {
@@ -177,6 +181,7 @@ impl GeneratedNamespaceConfig {
         config.exposed_foundation = exposed_foundation;
         config.native_flavor = native_flavor.unwrap_or_else(|| "wasm".into());
         config.native_imports = native_imports;
+        config.role = role;
         config.blank = blank;
         for native_type in NATIVE_TYPES {
             config.put_alias(native_type, &format!("std.native.{native_type}"))?;
@@ -235,6 +240,10 @@ impl GeneratedNamespaceConfig {
 
     pub fn native_imports(&self) -> &[(String, String)] {
         &self.native_imports
+    }
+
+    pub fn role(&self) -> &str {
+        &self.role
     }
 
     pub fn aliases(&self) -> Vec<(String, String)> {
@@ -483,6 +492,7 @@ fn parse_config(
     override_seen: &mut bool,
     excluded: &mut HashSet<String>,
     overrides: &mut HashMap<String, String>,
+    role: &mut String,
 ) -> Result<(), String> {
     let options = match form {
         Form::Map(options) => options,
@@ -539,6 +549,16 @@ fn parse_config(
             }
             "intrinsics" => {
                 parse_intrinsics(value, excluded, overrides)?;
+            }
+            "role" => {
+                let value = keyword(
+                    value,
+                    ":config :role expects :standard, :internal, or :facade",
+                )?;
+                if !matches!(value, "standard" | "internal" | "facade") {
+                    return Err(":config :role expects :standard, :internal, or :facade".into());
+                }
+                *role = value.to_owned();
             }
             other => return Err(format!("Unsupported :config option: :{other}")),
         }

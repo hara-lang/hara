@@ -5,9 +5,9 @@
   "Creates one callable agent tool.
 
    Names use the OpenAI function-name form. Parameters are a JSON Schema map.
-   The implementation receives the decoded JSON argument map. In-process tool
-   invocation is reserved for `:pure` tools; effectful actions must lower to
-   explicit Work boundaries."
+   Pure tool implementations receive decoded arguments and return a value.
+   Non-pure implementations are replay-safe Work factories consumed by the
+   internal Work-lowering layer."
   ([name description parameters invoke]
    (tool name description parameters invoke {}))
   ([name description parameters invoke options]
@@ -62,23 +62,13 @@
    {}
    tools))
 
-(defn- assert-pure
-  [value]
-  (if (not= :pure (:tool/effect value))
-    (throw
-     (ex :state {:work/error :work/agent-tool-requires-work
-                 :tool/name (:tool/name value)
-                 :tool/effect (:tool/effect value)}
-         :ex/message "Effectful agent tools must lower to Work")))
-  value)
-
 (defn openai-spec
-  "Converts one pure tool to the OpenAI Responses function-tool shape.
+  "Converts one tool to the OpenAI Responses function-tool shape.
 
-   Effectful tools are rejected before model exposure; they must be represented
-   by explicit Work rather than invoked inside the enclosing agent step."
+   Effect metadata controls execution after model selection; both pure and
+   effectful tools remain model-visible."
   [value]
-  (let [value (assert-pure (normalize value))]
+  (let [value (normalize value)]
     {:type "function"
      :name (:tool/name value)
      :description (:tool/description value)
@@ -86,7 +76,7 @@
      :strict (:tool/strict value)}))
 
 (defn openai-specs
-  "Converts pure tools to OpenAI Responses function-tool definitions."
+  "Converts tools to OpenAI Responses function-tool definitions."
   [tools]
   (vec (map openai-spec tools)))
 
@@ -129,7 +119,8 @@
   "Invokes one normalized pure model tool call.
 
    Unknown tools and pure-tool exceptions become structured results returned to
-   the model. Effectful tools are not invoked and return `:tool/requires-work`."
+   the model. Effectful tools are never invoked directly and return
+   `:tool/requires-work`."
   [tool-index call]
   (let [value (get tool-index (:tool/name call))]
     (if (nil? value)

@@ -33,6 +33,7 @@ pub struct Namespace<V> {
     lazy_aliases: Rc<RefCell<HashMap<Symbol, Symbol>>>,
     imports: Rc<RefCell<HashMap<Symbol, String>>>,
     native_flavor: Rc<RefCell<Option<String>>>,
+    role: Rc<RefCell<String>>,
 }
 impl<V> Namespace<V> {
     pub fn new(name: impl AsRef<str>) -> Self {
@@ -43,6 +44,7 @@ impl<V> Namespace<V> {
             lazy_aliases: Rc::new(RefCell::new(HashMap::new())),
             imports: Rc::new(RefCell::new(HashMap::new())),
             native_flavor: Rc::new(RefCell::new(None)),
+            role: Rc::new(RefCell::new("standard".into())),
         }
     }
     pub fn name(&self) -> &Symbol {
@@ -173,6 +175,12 @@ impl<V> Namespace<V> {
     pub fn native_flavor(&self) -> Option<String> {
         self.native_flavor.borrow().clone()
     }
+    pub fn set_role(&self, role: impl Into<String>) {
+        *self.role.borrow_mut() = role.into();
+    }
+    pub fn role(&self) -> String {
+        self.role.borrow().clone()
+    }
     pub fn mappings(&self) -> Vec<(Symbol, Var<V>)>
     where
         V: Clone,
@@ -238,6 +246,7 @@ struct NamespaceSnapshot<V> {
     lazy_aliases: HashMap<Symbol, Symbol>,
     imports: HashMap<Symbol, String>,
     native_flavor: Option<String>,
+    role: String,
 }
 impl<V: Clone> Default for NamespaceRegistry<V> {
     fn default() -> Self {
@@ -267,6 +276,7 @@ impl<V: Clone> NamespaceRegistry<V> {
             lazy_aliases: namespace.lazy_aliases.borrow().clone(),
             imports: namespace.imports.borrow().clone(),
             native_flavor: namespace.native_flavor.borrow().clone(),
+            role: namespace.role.borrow().clone(),
         }
     }
 
@@ -465,6 +475,7 @@ impl<V: Clone> NamespaceRegistry<V> {
             *namespace.lazy_aliases.borrow_mut() = saved.lazy_aliases;
             *namespace.imports.borrow_mut() = saved.imports;
             *namespace.native_flavor.borrow_mut() = saved.native_flavor;
+            *namespace.role.borrow_mut() = saved.role;
             namespaces.insert(name, namespace);
         }
         *self.namespaces.borrow_mut() = namespaces;
@@ -494,6 +505,7 @@ impl<V: Clone> NamespaceRegistry<V> {
             *namespace.lazy_aliases.borrow_mut() = saved.lazy_aliases;
             *namespace.imports.borrow_mut() = saved.imports;
             *namespace.native_flavor.borrow_mut() = saved.native_flavor;
+            *namespace.role.borrow_mut() = saved.role;
             namespaces.insert(name, namespace);
         }
         drop(namespaces);

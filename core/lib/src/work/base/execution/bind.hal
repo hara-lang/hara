@@ -1,0 +1,146 @@
+(ns work.base.execution.bind
+  (:config {:role :internal})
+  (:require [work.base.model :as base]
+            [work.base.frame :as frame]
+            [work.base.result :as result]))
+
+(def default-maximum-depth 64)
+
+(defn work-value?
+  [value]
+  (satisfies? IWork value))
+
+(defn assert-work
+  [value code message path]
+  (if (not (work-value? value))
+    (throw
+     (ex :state
+         {:work/error code
+          :node/path path}
+         :ex/message message)))
+  value)
+
+(defn assert-continuation
+  [continuation path]
+  (let [continuation
+        (assert-work
+         continuation
+         :work/bind-continuation-not-work
+         "Work bind continuation must be Work"
+         path)
+        spec (base/work-spec-map continuation)]
+    (if (not= :pure (:op spec))
+      (throw
+       (ex :argument
+           {:work/error :work/bind-continuation-not-pure
+            :node/path path
+            :continuation/op (:op spec)
+            :continuation/id (:id spec)}
+           :ex/message "Work bind continuation must be pure Work")))
+    [continuation spec]))
+
+(defn local-maximum
+  [spec frame]
+  (let [configured (or (:maximum-depth spec)
+                       default-maximum-depth)
+        inherited (:work/bind-maximum-depth frame)]
+    (if (or (not (integer? configured))
+            (<= configured 0))
+      (throw
+       (ex :argument
+           {:work/error :work/bind-invalid-depth
+            :node/path (:node/path frame)
+            :maximum-depth configured}
+           :ex/message "Work bind maximum depth must be a positive integer")))
+    (if (and inherited (< inherited configured))
+      inherited
+      configured)))
+
+(defn produced-frame
+  [frame produced-spec maximum]
+  (let [depth (or (:work/bind-depth frame) 0)
+        next-depth (inc depth)]
+    (if (> next-depth maximum)
+      (throw
+       (ex :limit
+           {:work/error :work/bind-depth-exceeded
+            :node/path (:node/path frame)
+            :bind/depth next-depth
+            :bind/maximum-depth maximum}
+           :ex/message "Work bind dynamic depth exceeded")))
+    (assoc
+     (frame/child-frame frame :bind :produced produced-spec)
+     :work/bind-depth next-depth
+     :work/bind-maximum-depth maximum)))
+
+(defn assert-produced
+  [runtime frame maximum value]
+  (let [value
+        (assert-work
+         value
+         :work/bind-not-work
+         "Work bind continuation must return Work"
+         (:node/path frame))
+        spec (base/work-spec-map value)]
+    (if (and (base/durable? runtime)
+             (nil? (:id spec)))
+      (throw
+       (ex :dependency
+           {:work/error :work/bind-unstable-produced
+            :node/path (:node/path frame)
+            :produced/op (:op spec)}
+           :ex/message "Durable runtime-produced Work requires a stable :id")))
+    [value spec (produced-frame frame spec maximum)]))
+
+(defn run-produced
+  [execute runtime frame maximum source-value produced]
+  (let [validated (assert-produced runtime frame maximum produced)
+        work (nth validated 0)
+        produced-frame (nth validated 2)]
+    (execute runtime produced-frame work source-value)))
+
+(defn run-continuation
+  [execute runtime frame continuation continuation-spec maximum source-value]
+  (result/then
+   (execute runtime
+            (frame/child-frame frame
+                               :bind
+                               :continuation
+                               continuation-spec)
+            continuation
+            source-value)
+   (fn [produced]
+     (run-produced execute
+                   runtime
+                   frame
+                   maximum
+                   source-value
+                   produced))))
+
+(defn run-bind
+  [execute runtime frame spec input]
+  (let [source
+        (assert-work
+         (:source spec)
+         :work/bind-source-not-work
+         "Work bind source must be Work"
+         (:node/path frame))
+        source-spec (base/work-spec-map source)
+        continuation-value (assert-continuation (:continuation spec)
+                                                (:node/path frame))
+        continuation (nth continuation-value 0)
+        continuation-spec (nth continuation-value 1)
+        maximum (local-maximum spec frame)]
+    (result/then
+     (execute runtime
+              (frame/child-frame frame :bind :source source-spec)
+              source
+              input)
+     (fn [source-value]
+       (run-continuation execute
+                         runtime
+                         frame
+                         continuation
+                         continuation-spec
+                         maximum
+                         source-value)))))

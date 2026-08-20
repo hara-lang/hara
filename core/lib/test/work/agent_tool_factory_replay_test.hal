@@ -1,0 +1,85 @@
+(ns work.agent-tool-factory-replay-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.agent :as agent]
+            [work.agent.tool :as agent-tool]
+            [work.agent.tool.work :as tool-work]))
+
+(fact "effectful tool factories may be recomputed while completed Work effects replay"
+  (let [source-count (atom 0)
+        factory-count (atom 0)
+        prepare-count (atom 0)
+        commit-count (atom 0)
+        tool
+        (agent/tool
+         "publish"
+         "Builds identified publication Work."
+         {:type "object"
+          :properties {:value {:type "integer"}}
+          :required ["value"]
+          :additionalProperties false}
+         (fn [arguments]
+           (swap! factory-count inc)
+           (work/chain
+            {:id [:publish (get arguments "value")]}
+            [(work/step :prepare
+               (fn [input context]
+                 (swap! prepare-count inc)
+                 (get input "value")))
+             (work/step :commit
+               (fn [value context]
+                 (let [attempt (swap! commit-count inc)]
+                   (if (= attempt 1)
+                     (throw
+                      (ex :host
+                          {:attempt attempt}
+                          :ex/message "commit interrupted"))
+                     {:published value}))))]))
+         {:effect :external})
+        tool-index (agent-tool/index [tool])
+        workflow
+        (work/bind
+         {:id :agent-tool-replay
+          :version 1}
+         (work/step :select-call
+           (fn [input context]
+             (swap! source-count inc)
+             {:call/id "publish-1"
+              :tool/name "publish"
+              :call/arguments {"value" 7}}))
+         (work/pure :lower-call
+           (fn [call context]
+             (tool-work/call-work tool-index call))))
+        backend (work/memory-backend)
+        before (work/durable-runtime {:backend backend})
+        reference
+        (work/start before workflow nil {:id "agent-tool-replay"})
+        status-before (work/status before reference)
+        after (work/durable-runtime {:backend backend})
+        registration (work/register after workflow)
+        resumed (work/resume after reference)
+        history (work/history after resumed)
+        replay-count
+        (count
+         (filter
+          (fn [event]
+            (= :work/step-replayed (:event event)))
+          history))]
+    [status-before
+     (work/status after resumed)
+     (work/result after resumed)
+     [(deref source-count)
+      (deref factory-count)
+      (deref prepare-count)
+      (deref commit-count)]
+     replay-count])
+  => [:failed
+      :completed
+      {:call/id "publish-1"
+       :tool/name "publish"
+       :tool/status :ok
+       :tool/value {:published 7}}
+      [1 2 1 2]
+      2])
+
+(pr-str (run '[work.agent-tool-factory-replay-test]))

@@ -3138,6 +3138,37 @@ mod tests {
     }
 
     #[test]
+    fn namespace_roles_are_parsed_retained_and_redeclared() {
+        let mut runtime = Runtime::new();
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns role.standard) \
+                     (ns role.internal (:config {:role :internal})) \
+                     (ns role.facade (:config {:role :facade})) \
+                     [(get (Runtime/namespace 'role.standard) :namespace/role) \
+                      (get (Runtime/namespace 'role.internal) :namespace/role) \
+                      (get (Runtime/namespace 'role.facade) :namespace/role)]",
+                )
+                .unwrap(),
+            "[:standard :internal :facade]"
+        );
+        assert_eq!(
+            runtime
+                .eval_text(
+                    "(ns role.internal) \
+                     (get (Runtime/namespace 'role.internal) :namespace/role)",
+                )
+                .unwrap(),
+            ":standard"
+        );
+        assert!(runtime
+            .eval_text("(ns role.invalid (:config {:role :unsupported}))")
+            .unwrap_err()
+            .contains(":config :role expects :standard, :internal, or :facade"));
+    }
+
+    #[test]
     fn startup_defaults_expose_edn_native_types_and_protocols() {
         let mut runtime = Runtime::new();
         assert_eq!(

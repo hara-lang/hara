@@ -1,76 +1,10 @@
 (ns work.agent.driver.openai
-  (:require [work.base :as work]
-            [work.agent.protocol :as protocol]
+  (:require [work.agent.protocol :as protocol]
             [work.agent.openai :as openai]
-            [work.agent.result :as result]
-            [work.agent.tool :as agent-tool]))
+            [work.agent.tool :as agent-tool]
+            [work.agent.driver.openai.work :as openai-work]))
 
 (defstruct OpenAIDriver [options])
-
-(defn- failed-limit
-  [message data]
-  (throw (ex :limit data :ex/message message)))
-
-(declare run-turn)
-
-(defn- continue-after-tools
-  [configuration input response turn tool-count calls]
-  (result/then
-   (agent-tool/invoke-all (:tool-index configuration) calls)
-   (fn [values]
-     (let [outputs (openai/tool-output-items values)]
-       (run-turn configuration
-                 (into input (concat (:response/output response) outputs))
-                 turn
-                 tool-count)))))
-
-(defn- process-response
-  [configuration input response turn tool-count]
-  (let [calls (:response/tool-calls response)
-        next-turn (inc turn)
-        next-tool-count (+ tool-count (count calls))
-        maximum-turns (:max-turns configuration)
-        maximum-tool-calls (:max-tool-calls configuration)]
-    (cond
-      (> next-turn maximum-turns)
-      (failed-limit
-       "Agent turn limit reached"
-       {:agent/turn next-turn
-        :agent/max-turns maximum-turns})
-
-      (> next-tool-count maximum-tool-calls)
-      (failed-limit
-       "Agent tool-call limit reached"
-       {:agent/tool-calls next-tool-count
-        :agent/max-tool-calls maximum-tool-calls})
-
-      (empty? calls)
-      (:response/text response)
-
-      :else
-      (continue-after-tools configuration
-                            input
-                            response
-                            next-turn
-                            next-tool-count
-                            calls))))
-
-(defn- run-turn
-  [configuration input turn tool-count]
-  (if (>= turn (:max-turns configuration))
-    (failed-limit
-     "Agent turn limit reached"
-     {:agent/turn turn
-      :agent/max-turns (:max-turns configuration)}))
-  (result/then
-   (openai/complete
-    (:client configuration)
-    {:instructions (:instructions configuration)
-     :tools (:tools configuration)
-     :input input
-     :request (:request configuration)})
-   (fn [response]
-     (process-response configuration input response turn tool-count))))
 
 (defn- configuration
   [driver agent]
@@ -93,13 +27,12 @@
 (extend-type OpenAIDriver protocol/IAgentDriver
   (agent-drive [driver agent intent context]
     (let [configuration (configuration driver agent)]
-      (work/step
-       {:id [:agent/openai (:agent/id agent)]}
-       (fn [input work-context]
-         (run-turn configuration
-                   [(openai/input-message intent)]
-                   0
-                   0))))))
+      (openai-work/turn-work
+       configuration
+       (:agent/id agent)
+       [(openai/input-message intent)]
+       0
+       0))))
 
 (defn driver
   ([]

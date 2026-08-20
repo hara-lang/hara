@@ -498,6 +498,36 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
+  public void namespaceRolesAreParsedRetainedAndRedeclared() {
+    try (Context context = context()) {
+      assertEquals(
+          "[:standard :internal :facade]",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns role.standard) "
+                      + "(ns role.internal (:config {:role :internal})) "
+                      + "(ns role.facade (:config {:role :facade})) "
+                      + "[(get (Runtime/namespace 'role.standard) :namespace/role) "
+                      + " (get (Runtime/namespace 'role.internal) :namespace/role) "
+                      + " (get (Runtime/namespace 'role.facade) :namespace/role)]")
+              .toString());
+      assertEquals(
+          ":standard",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ns role.internal) "
+                      + "(get (Runtime/namespace 'role.internal) :namespace/role)")
+              .toString());
+      assertErrorContains(
+          context,
+          "(ns role.invalid (:config {:role :unsupported}))",
+          ":config :role expects :standard, :internal, or :facade");
+    }
+  }
+
+  @Test
   public void requireExclusionsSurviveLoadingLaterSourceNamespaces() {
     try (Context context =
         Context.newBuilder(HaraLanguage.ID).allowIO(IOAccess.ALL).build()) {

@@ -1,0 +1,117 @@
+(ns work.agent.driver.openai.work
+  (:config {:role :internal})
+  (:require [work.base :as work]
+            [work.agent.openai :as openai]
+            [work.agent.tool.work :as tool-work]))
+
+(defn failed-limit
+  [message data]
+  (throw (ex :limit data :ex/message message)))
+
+(defn turn-id
+  [agent-id turn suffix]
+  [:agent/openai agent-id :turn turn suffix])
+
+(declare turn-work)
+
+(defn next-turn-work
+  [configuration agent-id input response turn tool-count values]
+  (let [outputs (openai/tool-output-items values)
+        next-input
+        (into input
+              (concat (:response/output response)
+                      outputs))]
+    (turn-work configuration
+               agent-id
+               next-input
+               turn
+               tool-count)))
+
+(defn tool-round-work
+  [configuration agent-id input response turn tool-count calls]
+  (let [call-works
+        (tool-work/call-works (:tool-index configuration) calls)
+        tools
+        (work/all
+         {:id (turn-id agent-id turn :tools)}
+         call-works)]
+    (work/bind
+     {:id (turn-id agent-id turn :tool-round)}
+     tools
+     (work/pure
+      {:id (turn-id agent-id turn :after-tools)}
+      (fn [values context]
+        (next-turn-work configuration
+                        agent-id
+                        input
+                        response
+                        turn
+                        tool-count
+                        values))))))
+
+(defn response-work
+  [configuration agent-id input response turn tool-count]
+  (let [calls (:response/tool-calls response)
+        next-turn (inc turn)
+        next-tool-count (+ tool-count (count calls))
+        maximum-turns (:max-turns configuration)
+        maximum-tool-calls (:max-tool-calls configuration)]
+    (cond
+      (> next-turn maximum-turns)
+      (failed-limit
+       "Agent turn limit reached"
+       {:agent/turn next-turn
+        :agent/max-turns maximum-turns})
+
+      (> next-tool-count maximum-tool-calls)
+      (failed-limit
+       "Agent tool-call limit reached"
+       {:agent/tool-calls next-tool-count
+        :agent/max-tool-calls maximum-tool-calls})
+
+      (empty? calls)
+      (work/pure
+       {:id (turn-id agent-id turn :result)}
+       (fn [response-value context]
+         (:response/text response-value)))
+
+      :else
+      (tool-round-work configuration
+                       agent-id
+                       input
+                       response
+                       next-turn
+                       next-tool-count
+                       calls))))
+
+(defn model-step
+  [configuration agent-id input turn]
+  (work/step
+   {:id (turn-id agent-id turn :model)}
+   (fn [ignored context]
+     (if (>= turn (:max-turns configuration))
+       (failed-limit
+        "Agent turn limit reached"
+        {:agent/turn turn
+         :agent/max-turns (:max-turns configuration)}))
+     (openai/complete
+      (:client configuration)
+      {:instructions (:instructions configuration)
+       :tools (:tools configuration)
+       :input input
+       :request (:request configuration)}))))
+
+(defn turn-work
+  [configuration agent-id input turn tool-count]
+  (work/bind
+   {:id (turn-id agent-id turn :interaction)}
+   (model-step configuration agent-id input turn)
+   (work/pure
+    {:id (turn-id agent-id turn :response)}
+    (fn [response context]
+      (response-work configuration
+                     agent-id
+                     input
+                     response
+                     turn
+                     tool-count)))))
