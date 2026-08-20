@@ -23,11 +23,7 @@ impl PortableProjection {
         }
     }
 
-    pub fn with_field(
-        mut self,
-        name: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
+    pub fn with_field(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.fields.insert(name.into(), value.into());
         self
     }
@@ -59,11 +55,7 @@ impl ProducerEvent {
         }
     }
 
-    pub fn with_data(
-        mut self,
-        name: impl Into<String>,
-        value: impl Into<String>,
-    ) -> Self {
+    pub fn with_data(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.data.insert(name.into(), value.into());
         self
     }

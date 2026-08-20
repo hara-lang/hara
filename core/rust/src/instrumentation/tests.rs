@@ -37,10 +37,7 @@ fn control_registration(id: &str, session_id: &str) -> InstrumentRegistration {
         instrument_id: id.into(),
         session_id: session_id.into(),
         mode: InstrumentMode::Control,
-        capabilities: set([
-            Capability::EventLifecycle,
-            Capability::ControlSingleStep,
-        ]),
+        capabilities: set([Capability::EventLifecycle, Capability::ControlSingleStep]),
         events: set([EventKind::ExecutionTerminal]),
         filter: InstrumentFilter::default(),
         projection: ProjectionRequest::default(),
@@ -148,12 +145,10 @@ fn unsupported_capabilities_report_target_and_backend() {
 
 #[test]
 fn projection_requests_require_explicit_inspection_capabilities() {
-    let mut registration = passive_registration(
-        "trace",
-        "session",
-        [EventKind::CallEnter],
-    );
-    registration.capabilities.remove(&Capability::InspectSnapshot);
+    let mut registration = passive_registration("trace", "session", [EventKind::CallEnter]);
+    registration
+        .capabilities
+        .remove(&Capability::InspectSnapshot);
 
     assert_eq!(
         registration.validate(),
@@ -207,10 +202,7 @@ fn only_one_controller_can_hold_a_target_lease() {
             "execution",
             "session",
             TargetKind::Interpreter,
-            [
-                Capability::EventLifecycle,
-                Capability::ControlSingleStep,
-            ],
+            [Capability::EventLifecycle, Capability::ControlSingleStep],
         ))
         .expect("target registration");
     hub.attach(&first, &target).expect("first attachment");
@@ -273,10 +265,7 @@ fn session_cleanup_removes_instruments_targets_attachments_and_leases() {
             "execution",
             "session",
             TargetKind::Hbc,
-            [
-                Capability::EventLifecycle,
-                Capability::ControlSingleStep,
-            ],
+            [Capability::EventLifecycle, Capability::ControlSingleStep],
         ))
         .expect("target registration");
     hub.attach(&instrument, &target).expect("attachment");

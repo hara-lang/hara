@@ -216,9 +216,7 @@ impl HbcTarget {
         }
         self.paused = false;
         let mut probe = NoProbe;
-        let boundary = self
-            .machine
-            .resume_instrumented_boundary(state, &mut probe);
+        let boundary = self.machine.resume_instrumented_boundary(state, &mut probe);
         let mut reports = Vec::new();
         self.emit_boundary(hub, &boundary, &mut reports)?;
         self.apply_outcome(boundary.outcome);

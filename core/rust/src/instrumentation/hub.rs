@@ -3,15 +3,15 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    Capability, EventKind, EventMask, InstrumentHandle, InstrumentMode,
-    InstrumentRegistration, RuntimeBackend, TargetDescriptor, TargetHandle,
+    Capability, EventKind, EventMask, InstrumentHandle, InstrumentMode, InstrumentRegistration,
+    RuntimeBackend, TargetDescriptor, TargetHandle,
 };
 
 #[path = "hub/delivery.rs"]
 mod delivery;
 pub use delivery::{
-    DeliveredEvent, DispatchReport, EventAccess, EventBatch, EventProjection,
-    PortableProjection, ProducerEvent,
+    DeliveredEvent, DispatchReport, EventAccess, EventBatch, EventProjection, PortableProjection,
+    ProducerEvent,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -301,9 +301,7 @@ impl InstrumentationHub {
             .validate()
             .map_err(|message| InstrumentationError::InvalidTarget(message.into()))?;
         if self.targets.contains_key(&descriptor.target_id) {
-            return Err(InstrumentationError::DuplicateTarget(
-                descriptor.target_id,
-            ));
+            return Err(InstrumentationError::DuplicateTarget(descriptor.target_id));
         }
         let generation = next_generation(&mut self.target_generations, &descriptor.target_id);
         let handle = TargetHandle::new(descriptor.target_id.clone(), generation);
@@ -453,10 +451,7 @@ impl InstrumentationHub {
         })
     }
 
-    pub fn release_control(
-        &mut self,
-        lease: &ControlLease,
-    ) -> Result<(), InstrumentationError> {
+    pub fn release_control(&mut self, lease: &ControlLease) -> Result<(), InstrumentationError> {
         self.resolve_instrument(&lease.instrument)?;
         self.resolve_target(&lease.target)?;
         match self.control_leases.get(&lease.target) {
@@ -472,10 +467,7 @@ impl InstrumentationHub {
         }
     }
 
-    pub fn detach(
-        &mut self,
-        instrument: &InstrumentHandle,
-    ) -> Result<(), InstrumentationError> {
+    pub fn detach(&mut self, instrument: &InstrumentHandle) -> Result<(), InstrumentationError> {
         let order = self.resolve_instrument(instrument)?.order;
         self.registrations.remove(&order);
         self.instrument_orders.remove(instrument.instrument_id());
@@ -487,8 +479,7 @@ impl InstrumentationHub {
             .filter(|(_, holder)| *holder == instrument)
             .map(|(target, _)| (*target).clone())
             .collect::<Vec<_>>();
-        self.control_leases
-            .retain(|_, holder| holder != instrument);
+        self.control_leases.retain(|_, holder| holder != instrument);
         for target in &controlled_targets {
             self.delivery.remove_directive(target);
         }
@@ -497,10 +488,7 @@ impl InstrumentationHub {
         Ok(())
     }
 
-    pub fn remove_target(
-        &mut self,
-        target: &TargetHandle,
-    ) -> Result<(), InstrumentationError> {
+    pub fn remove_target(&mut self, target: &TargetHandle) -> Result<(), InstrumentationError> {
         self.resolve_target(target)?;
         self.targets.remove(target.target_id());
         self.attachments
@@ -581,10 +569,7 @@ impl InstrumentationHub {
         }
     }
 
-    fn resolve_target(
-        &self,
-        handle: &TargetHandle,
-    ) -> Result<&TargetRecord, InstrumentationError> {
+    fn resolve_target(&self, handle: &TargetHandle) -> Result<&TargetRecord, InstrumentationError> {
         let Some(record) = self.targets.get(handle.target_id()) else {
             return if self.target_generations.contains_key(handle.target_id()) {
                 Err(InstrumentationError::StaleTargetHandle {

@@ -3,8 +3,8 @@ use std::rc::Rc;
 
 use super::*;
 use crate::instrumentation::{
-    EventDelivery, InstrumentFilter, InstrumentMode, InstrumentRegistration,
-    ProjectionRequest, RuntimeBackend, TargetDescriptor,
+    EventDelivery, InstrumentFilter, InstrumentMode, InstrumentRegistration, ProjectionRequest,
+    RuntimeBackend, TargetDescriptor,
 };
 use crate::vm::{compile_source, Machine};
 
@@ -31,13 +31,8 @@ fn machine(source: &str) -> Machine {
 fn no_instruments_execute_the_actual_machine_without_retained_events() {
     let mut hub = InstrumentationHub::new();
     let handle = register_target(&mut hub);
-    let mut target = HbcTarget::new(
-        &hub,
-        handle,
-        "editor/main",
-        machine("(+ 19 23)"),
-    )
-    .expect("target");
+    let mut target =
+        HbcTarget::new(&hub, handle, "editor/main", machine("(+ 19 23)")).expect("target");
 
     target.run(&mut hub, 128).expect("run");
 
@@ -112,10 +107,7 @@ fn stack_projection_is_absent_until_requested() {
             instrument_id: "trace".into(),
             session_id: "session".into(),
             mode: InstrumentMode::Passive,
-            capabilities: set([
-                Capability::EventInstruction,
-                Capability::InspectStack,
-            ]),
+            capabilities: set([Capability::EventInstruction, Capability::InspectStack]),
             events: set([EventKind::InstructionExecute]),
             filter: InstrumentFilter::default(),
             projection: ProjectionRequest {
@@ -127,13 +119,8 @@ fn stack_projection_is_absent_until_requested() {
         .expect("instrument");
     let handle = register_target(&mut hub);
     hub.attach(&instrument, &handle).expect("attachment");
-    let mut target = HbcTarget::new(
-        &hub,
-        handle,
-        "editor/main",
-        machine("(+ 19 23)"),
-    )
-    .expect("target");
+    let mut target =
+        HbcTarget::new(&hub, handle, "editor/main", machine("(+ 19 23)")).expect("target");
 
     target.run(&mut hub, 128).expect("run");
     let events = hub.drain_events(&instrument).expect("events").events;
@@ -152,10 +139,7 @@ fn single_step_directive_advances_one_machine_boundary_then_pauses() {
             instrument_id: "debugger".into(),
             session_id: "session".into(),
             mode: InstrumentMode::Control,
-            capabilities: set([
-                Capability::EventLifecycle,
-                Capability::ControlSingleStep,
-            ]),
+            capabilities: set([Capability::EventLifecycle, Capability::ControlSingleStep]),
             events: set([EventKind::ExecutionTerminal]),
             filter: InstrumentFilter::default(),
             projection: ProjectionRequest::default(),
@@ -167,13 +151,8 @@ fn single_step_directive_advances_one_machine_boundary_then_pauses() {
     let lease = hub
         .acquire_control(&controller, &handle)
         .expect("control lease");
-    let mut target = HbcTarget::new(
-        &hub,
-        handle,
-        "editor/main",
-        machine("(+ 19 23)"),
-    )
-    .expect("target");
+    let mut target =
+        HbcTarget::new(&hub, handle, "editor/main", machine("(+ 19 23)")).expect("target");
 
     hub.request_directive(&lease, InstrumentDirective::StepNext)
         .expect("step request");

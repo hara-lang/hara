@@ -84,10 +84,7 @@ impl Capability {
     pub const fn is_transform(self) -> bool {
         matches!(
             self,
-            Self::TransformHalc
-                | Self::TransformHbc
-                | Self::RetransformHalc
-                | Self::RetransformHbc
+            Self::TransformHalc | Self::TransformHbc | Self::RetransformHalc | Self::RetransformHbc
         )
     }
 }
@@ -343,7 +340,11 @@ impl InstrumentRegistration {
             return Err("instrument filters cannot contain empty ids");
         }
         if self.mode != InstrumentMode::Control
-            && self.capabilities.iter().copied().any(Capability::is_control)
+            && self
+                .capabilities
+                .iter()
+                .copied()
+                .any(Capability::is_control)
         {
             return Err("only control instruments can request control capabilities");
         }
@@ -491,8 +492,7 @@ impl<D> EventEnvelope<D> {
             return Err("event kind is not supported by target kind");
         }
         if let Some(location) = &self.location {
-            if self.target_kind == TargetKind::Interpreter
-                && location.instruction_pointer.is_some()
+            if self.target_kind == TargetKind::Interpreter && location.instruction_pointer.is_some()
             {
                 return Err("interpreter events cannot claim an instruction pointer");
             }

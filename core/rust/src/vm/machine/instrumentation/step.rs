@@ -5,9 +5,7 @@ use super::{
     InstructionEvent, Opcode, TerminalEvent, TerminalKind, TransitionEvent, TransitionKind, VmProbe,
 };
 use crate::core::{Promise, PromiseState, Value};
-use crate::instrumentation::{
-    EventLocation, PortableProjection, ProjectionLimits, SourceSpan,
-};
+use crate::instrumentation::{EventLocation, PortableProjection, ProjectionLimits, SourceSpan};
 use crate::vm::error::VmError;
 use crate::vm::opcode::Instruction;
 
@@ -97,9 +95,7 @@ impl Machine {
                                 VmBoundaryOutcome::Continue,
                             )
                         }
-                        Err(error) => {
-                            self.failed_boundary(probe, Some(instruction_event), error)
-                        }
+                        Err(error) => self.failed_boundary(probe, Some(instruction_event), error),
                     }
                 } else {
                     self.transition_boundary(
@@ -184,9 +180,7 @@ impl Machine {
                 from_ip,
                 VmBoundaryOutcome::Yielded(value),
             ),
-            Dispatch::Failed(error) => {
-                self.failed_boundary(probe, Some(instruction_event), error)
-            }
+            Dispatch::Failed(error) => self.failed_boundary(probe, Some(instruction_event), error),
         }
     }
 
@@ -291,7 +285,9 @@ impl Machine {
             .get(self.function)
             .and_then(|function| function.name.as_ref())
         {
-            projection.fields.insert("function/name".into(), name.clone());
+            projection
+                .fields
+                .insert("function/name".into(), name.clone());
         }
         append_slots(
             &mut projection.fields,
@@ -303,10 +299,7 @@ impl Machine {
         projection
     }
 
-    pub(crate) fn instrumentation_frames(
-        &self,
-        limits: ProjectionLimits,
-    ) -> PortableProjection {
+    pub(crate) fn instrumentation_frames(&self, limits: ProjectionLimits) -> PortableProjection {
         let mut projection = PortableProjection::new("hbc/frames")
             .with_field("count", (self.calls.len() + 1).to_string());
         let start = self.calls.len().saturating_sub(limits.max_items);
@@ -315,10 +308,9 @@ impl Machine {
                 format!("frame/{index}/function"),
                 frame.function.to_string(),
             );
-            projection.fields.insert(
-                format!("frame/{index}/call-ip"),
-                frame.call_ip.to_string(),
-            );
+            projection
+                .fields
+                .insert(format!("frame/{index}/call-ip"), frame.call_ip.to_string());
             if let Some(name) = self
                 .program
                 .functions
@@ -330,17 +322,13 @@ impl Machine {
                     .insert(format!("frame/{index}/name"), name.clone());
             }
         }
-        projection.fields.insert(
-            "omitted".into(),
-            start.to_string(),
-        );
+        projection
+            .fields
+            .insert("omitted".into(), start.to_string());
         projection
     }
 
-    pub(crate) fn instrumentation_locals(
-        &self,
-        limits: ProjectionLimits,
-    ) -> PortableProjection {
+    pub(crate) fn instrumentation_locals(&self, limits: ProjectionLimits) -> PortableProjection {
         let mut projection = PortableProjection::new("hbc/locals");
         append_slots(
             &mut projection.fields,
@@ -352,18 +340,9 @@ impl Machine {
         projection
     }
 
-    pub(crate) fn instrumentation_stack(
-        &self,
-        limits: ProjectionLimits,
-    ) -> PortableProjection {
+    pub(crate) fn instrumentation_stack(&self, limits: ProjectionLimits) -> PortableProjection {
         let mut projection = PortableProjection::new("hbc/stack");
-        append_slots(
-            &mut projection.fields,
-            "stack",
-            &self.stack,
-            limits,
-            true,
-        );
+        append_slots(&mut projection.fields, "stack", &self.stack, limits, true);
         projection
     }
 
@@ -378,26 +357,23 @@ impl Machine {
         )
     }
 
-    pub(crate) fn instrumentation_snapshot(
-        &self,
-        limits: ProjectionLimits,
-    ) -> PortableProjection {
+    pub(crate) fn instrumentation_snapshot(&self, limits: ProjectionLimits) -> PortableProjection {
         let mut projection = PortableProjection::new("hbc/snapshot")
             .with_field("program/entry", self.program.entry.to_string())
-            .with_field("program/functions", self.program.functions.len().to_string())
-            .with_field("program/constants", self.program.constants.len().to_string())
+            .with_field(
+                "program/functions",
+                self.program.functions.len().to_string(),
+            )
+            .with_field(
+                "program/constants",
+                self.program.constants.len().to_string(),
+            )
             .with_field("function", self.function.to_string())
             .with_field("ip", self.ip.to_string())
             .with_field("calls", self.calls.len().to_string())
             .with_field("stack/depth", self.stack.len().to_string())
             .with_field("locals/count", self.frame.locals().len().to_string());
-        append_slots(
-            &mut projection.fields,
-            "stack",
-            &self.stack,
-            limits,
-            true,
-        );
+        append_slots(&mut projection.fields, "stack", &self.stack, limits, true);
         projection
     }
 
@@ -538,7 +514,10 @@ fn slot_display(slot: &VmSlot, limit: usize) -> String {
         VmSlot::Bool(value) => value.to_string(),
         VmSlot::Nil => "nil".into(),
         VmSlot::Value(value) => value.display(),
-        VmSlot::InlineClosure { prototype, identity } => {
+        VmSlot::InlineClosure {
+            prototype,
+            identity,
+        } => {
             format!("#<hbc-closure {prototype}@{identity}>")
         }
         VmSlot::Closure(closure) => format!("#<hbc-closure {}>", closure.prototype),

@@ -241,10 +241,7 @@ impl InterpreterTarget {
         Ok(self.boundary(reports))
     }
 
-    fn refresh_capture(
-        &self,
-        hub: &InstrumentationHub,
-    ) -> Result<(), InstrumentationError> {
+    fn refresh_capture(&self, hub: &InstrumentationHub) -> Result<(), InstrumentationError> {
         let mut capture_events = false;
         let mut capture_environment = false;
         for event in SEMANTIC_EVENTS {
@@ -342,8 +339,7 @@ struct InterpreterAccess<'a> {
 
 impl EventAccess for InterpreterAccess<'_> {
     fn source_location(&mut self) -> Option<EventLocation> {
-        self.fiber
-            .instrumentation_source_location(self.source_id)
+        self.fiber.instrumentation_source_location(self.source_id)
     }
 
     fn current_frame(&mut self, limits: ProjectionLimits) -> Option<PortableProjection> {

@@ -14,19 +14,16 @@ mod model;
 #[cfg(all(feature = "bytecode-vm", feature = "bytecode-instrumentation"))]
 pub use hbc::{hbc_capabilities, HbcBoundary, HbcTarget};
 pub use hub::{
-    ControlLease, DeliveredEvent, DispatchReport, EventAccess, EventBatch,
-    EventProjection, InstrumentationAttachment, InstrumentationError,
-    InstrumentationHub, PortableProjection, ProducerEvent, SessionCleanup,
+    ControlLease, DeliveredEvent, DispatchReport, EventAccess, EventBatch, EventProjection,
+    InstrumentationAttachment, InstrumentationError, InstrumentationHub, PortableProjection,
+    ProducerEvent, SessionCleanup,
 };
-pub use interpreter::{
-    interpreter_capabilities, InterpreterBoundary, InterpreterTarget,
-};
+pub use interpreter::{interpreter_capabilities, InterpreterBoundary, InterpreterTarget};
 pub use model::{
-    Capability, EventDelivery, EventEnvelope, EventKind, EventLocation,
-    EventMask, EventPhase, InstrumentDirective, InstrumentFilter,
-    InstrumentHandle, InstrumentMode, InstrumentRegistration, ProjectionLimits,
-    ProjectionRequest, RuntimeBackend, SourceSpan, TargetDescriptor,
-    TargetHandle, TargetKind, INSTRUMENTATION_EVENT_SCHEMA,
+    Capability, EventDelivery, EventEnvelope, EventKind, EventLocation, EventMask, EventPhase,
+    InstrumentDirective, InstrumentFilter, InstrumentHandle, InstrumentMode,
+    InstrumentRegistration, ProjectionLimits, ProjectionRequest, RuntimeBackend, SourceSpan,
+    TargetDescriptor, TargetHandle, TargetKind, INSTRUMENTATION_EVENT_SCHEMA,
     INSTRUMENTATION_PROTOCOL,
 };
 

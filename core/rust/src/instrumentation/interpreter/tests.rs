@@ -4,8 +4,8 @@ use crate::core::{Promise, Value};
 
 use super::*;
 use crate::instrumentation::{
-    EventDelivery, InstrumentFilter, InstrumentMode, InstrumentRegistration,
-    ProjectionRequest, RuntimeBackend, TargetDescriptor,
+    EventDelivery, InstrumentFilter, InstrumentMode, InstrumentRegistration, ProjectionRequest,
+    RuntimeBackend, TargetDescriptor,
 };
 
 fn set<T: Ord>(values: impl IntoIterator<Item = T>) -> BTreeSet<T> {
@@ -42,21 +42,13 @@ fn passive_call_registration(projection: ProjectionRequest) -> InstrumentRegistr
 fn no_instruments_execute_the_real_fiber_without_semantic_environment_clones() {
     let mut hub = InstrumentationHub::new();
     let handle = register_target(&mut hub);
-    let mut target = InterpreterTarget::start(
-        &hub,
-        handle,
-        "editor/main",
-        "(+ 19 23)",
-        HashMap::new(),
-    )
-    .expect("target start");
+    let mut target =
+        InterpreterTarget::start(&hub, handle, "editor/main", "(+ 19 23)", HashMap::new())
+            .expect("target start");
 
     target.run(&mut hub, 128).expect("target run");
 
-    assert_eq!(
-        target.state(),
-        EvalFiberState::Completed(Value::Number(42))
-    );
+    assert_eq!(target.state(), EvalFiberState::Completed(Value::Number(42)));
     assert_eq!(target.environment_clone_count(), 0);
     assert!(hub.enabled_events().is_empty());
 }
@@ -81,10 +73,7 @@ fn call_enter_and_return_events_come_from_the_real_cps_path_without_projection()
     target.run(&mut hub, 128).expect("target run");
     let events = hub.drain_events(&instrument).expect("events").events;
 
-    assert_eq!(
-        target.state(),
-        EvalFiberState::Completed(Value::Number(42))
-    );
+    assert_eq!(target.state(), EvalFiberState::Completed(Value::Number(42)));
     assert_eq!(target.environment_clone_count(), 0);
     let call_events = events
         .iter()
@@ -139,14 +128,9 @@ fn frame_projection_enables_environment_capture_only_for_matching_events() {
     hub.attach(&instrument, &handle).expect("attachment");
     let mut environment = HashMap::new();
     environment.insert("answer".into(), Value::Number(42));
-    let mut target = InterpreterTarget::start(
-        &hub,
-        handle,
-        "editor/main",
-        "(+ answer 0)",
-        environment,
-    )
-    .expect("target start");
+    let mut target =
+        InterpreterTarget::start(&hub, handle, "editor/main", "(+ answer 0)", environment)
+            .expect("target start");
 
     target.run(&mut hub, 128).expect("target run");
     let events = hub.drain_events(&instrument).expect("events").events;
@@ -169,10 +153,7 @@ fn promise_settlement_resumes_the_exact_retained_promise_and_continuation() {
             instrument_id: "debugger".into(),
             session_id: "session".into(),
             mode: InstrumentMode::Control,
-            capabilities: set([
-                Capability::EventSuspension,
-                Capability::ControlSettle,
-            ]),
+            capabilities: set([Capability::EventSuspension, Capability::ControlSettle]),
             events: set([EventKind::PromiseSuspend, EventKind::PromiseResume]),
             filter: InstrumentFilter::default(),
             projection: ProjectionRequest::default(),
@@ -209,10 +190,7 @@ fn promise_settlement_resumes_the_exact_retained_promise_and_continuation() {
         .expect("settlement");
     target.run(&mut hub, 128).expect("run to completion");
 
-    assert_eq!(
-        target.state(),
-        EvalFiberState::Completed(Value::Number(42))
-    );
+    assert_eq!(target.state(), EvalFiberState::Completed(Value::Number(42)));
     let events = hub.drain_events(&controller).expect("events").events;
     assert!(events
         .iter()
@@ -230,10 +208,7 @@ fn single_step_directive_pauses_after_one_authoritative_boundary() {
             instrument_id: "debugger".into(),
             session_id: "session".into(),
             mode: InstrumentMode::Control,
-            capabilities: set([
-                Capability::EventLifecycle,
-                Capability::ControlSingleStep,
-            ]),
+            capabilities: set([Capability::EventLifecycle, Capability::ControlSingleStep]),
             events: set([EventKind::ExecutionTerminal]),
             filter: InstrumentFilter::default(),
             projection: ProjectionRequest::default(),
@@ -245,14 +220,9 @@ fn single_step_directive_pauses_after_one_authoritative_boundary() {
     let lease = hub
         .acquire_control(&controller, &handle)
         .expect("control lease");
-    let mut target = InterpreterTarget::start(
-        &hub,
-        handle,
-        "editor/main",
-        "(do 1 2 3)",
-        HashMap::new(),
-    )
-    .expect("target start");
+    let mut target =
+        InterpreterTarget::start(&hub, handle, "editor/main", "(do 1 2 3)", HashMap::new())
+            .expect("target start");
 
     hub.request_directive(&lease, InstrumentDirective::StepNext)
         .expect("step request");

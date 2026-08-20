@@ -93,11 +93,7 @@ fn matching_projection_is_materialized_only_after_attachment() {
         ..ProjectionRequest::default()
     };
     let instrument = hub
-        .register(passive(
-            "trace",
-            EventDelivery::Callback,
-            projection,
-        ))
+        .register(passive("trace", EventDelivery::Callback, projection))
         .expect("registration");
     let target = hub
         .register_target(target([
@@ -112,8 +108,7 @@ fn matching_projection_is_materialized_only_after_attachment() {
     let report = hub
         .emit(
             &target,
-            ProducerEvent::live(EventKind::CallEnter)
-                .with_data("function", "calculate"),
+            ProducerEvent::live(EventKind::CallEnter).with_data("function", "calculate"),
             &mut access,
         )
         .expect("delivery");
@@ -124,7 +119,11 @@ fn matching_projection_is_materialized_only_after_attachment() {
     let event = &report.callbacks[0];
     assert_eq!(event.envelope.sequence, 1);
     assert_eq!(
-        event.envelope.location.as_ref().and_then(|location| location.source_id.as_deref()),
+        event
+            .envelope
+            .location
+            .as_ref()
+            .and_then(|location| location.source_id.as_deref()),
         Some("editor/main")
     );
     assert_eq!(
@@ -190,10 +189,7 @@ fn control_directives_are_capability_checked_and_consumed_once() {
             instrument_id: "debugger".into(),
             session_id: "session".into(),
             mode: InstrumentMode::Control,
-            capabilities: set([
-                Capability::EventLifecycle,
-                Capability::ControlSingleStep,
-            ]),
+            capabilities: set([Capability::EventLifecycle, Capability::ControlSingleStep]),
             events: set([EventKind::ExecutionTerminal]),
             filter: InstrumentFilter::default(),
             projection: ProjectionRequest::default(),
