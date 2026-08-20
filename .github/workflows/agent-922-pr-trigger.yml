@@ -1,0 +1,100 @@
+name: Agent 922 PR implementation trigger
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-922-pr-trigger-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  implement-and-validate:
+    if: github.head_ref == 'agent/922-haracontext-ifilesystem-dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out implementation branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/922-haracontext-ifilesystem-dispatch
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Extract and apply the bounded product patch
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          workflow = Path(
+              ".github/workflows/agent-922-haracontext-ifilesystem-dispatch.yml"
+          ).read_text()
+          start_marker = "          from pathlib import Path\n"
+          end_marker = "          PY\n          python /tmp/apply-922.py\n"
+          start = workflow.index(start_marker)
+          end = workflow.index(end_marker, start)
+          lines = workflow[start:end].splitlines()
+          source = "\n".join(
+              line[10:] if line.startswith("          ") else line for line in lines
+          ) + "\n"
+          Path("/tmp/apply-922.py").write_text(source)
+          PY
+          python /tmp/apply-922.py
+
+      - name: Check patch scope and whitespace
+        shell: bash
+        run: |
+          git diff --check
+          test -f core/java/src/main/java/hara/truffle/FilesystemContextBindings.java
+          test -f core/java/src/main/java/hara/truffle/FilesystemHaraValues.java
+          ! grep -q 'private volatile HaraFileProvider fileProvider' core/java/src/main/java/hara/truffle/HaraContext.java
+          ! grep -q 'effect.invoke(fileProvider())' core/java/src/main/java/hara/truffle/HaraContext.java
+          git status --short
+
+      - name: Run focused provider-neutral and public filesystem conformance
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -Dtest=FilesystemDescriptorAuthorityTest,FilesystemMountTableTest,FilesystemEffectsTest,FilesystemRuntimeBindingTest,FilesystemPromiseBridgeTest,GitHubFilesystemSessionKernelTest,SessionKernelFilesystemMountTest,SessionKernelTest,StdLibFsTest test
+
+      - name: Compile the Truffle runtime
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Publish validated product commit
+        shell: bash
+        run: |
+          rm .github/workflows/agent-922-haracontext-ifilesystem-dispatch.yml
+          rm .github/workflows/agent-922-pr-trigger.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            .github/workflows/java-ifilesystem-kernel.yml \
+            core/java/src/main/java/hara/truffle/FilesystemContextBindings.java \
+            core/java/src/main/java/hara/truffle/FilesystemHaraValues.java \
+            core/java/src/main/java/hara/truffle/FilesystemPromiseBridge.java \
+            core/java/src/main/java/hara/truffle/HaraContext.java \
+            core/java/src/main/java/hara/truffle/HaraLanguage.java \
+            core/java/src/main/java/hara/truffle/SessionKernel.java \
+            core/java/src/test/java/hara/truffle/GitHubFilesystemSessionKernelTest.java \
+            .github/workflows/agent-922-haracontext-ifilesystem-dispatch.yml \
+            .github/workflows/agent-922-pr-trigger.yml
+          git commit -m "Route JVM File effects through attached IFilesystem"
+          git push origin HEAD:agent/922-haracontext-ifilesystem-dispatch
