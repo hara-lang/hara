@@ -40,12 +40,14 @@ impl HbcRuntimeContext {
 
     fn machine(&self, source: &str) -> Result<Machine, LiveSessionError> {
         let registry = self.namespace_registry.clone();
+        let compiler_registry = registry.clone();
         let protocols = self.protocols.clone();
         let macros = self.macros.clone();
         crate::core::with_macros(macros, move || {
             crate::core::with_namespace_registry(&registry, move || {
                 crate::core::with_protocols(&protocols, || {
-                    let program = compile_source_with(source, &registry).map_err(backend_error)?;
+                    let program =
+                        compile_source_with(source, &compiler_registry).map_err(backend_error)?;
                     Ok(Machine::entry(Rc::new(program)))
                 })
             })
@@ -587,9 +589,15 @@ fn json_to_value(value: JsonValue) -> Result<Value, LiveSessionError> {
 }
 
 fn value_to_json(value: &Value) -> Result<JsonValue, LiveSessionError> {
-    let encoded = crate::json::write(value);
+    let encoded = crate::json::write(value).map_err(|error| {
+        LiveSessionError::backend(format!(
+            "unable to encode HBC live-session payload: {error}"
+        ))
+    })?;
     serde_json::from_str(&encoded).map_err(|error| {
-        LiveSessionError::backend(format!("HBC live-session value is not valid JSON: {error}"))
+        LiveSessionError::backend(format!(
+            "HBC live-session payload is not valid JSON: {error}"
+        ))
     })
 }
 
