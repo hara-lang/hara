@@ -14,9 +14,7 @@
       root
       (if (base/durable? runtime)
         (throw
-         (ex-info
-          "Durable work requires :work-root or a root :id"
-          {:operation (:op spec)}))
+         (ex :dependency {:operation (:op spec)} :ex/message "Durable work requires :work-root or a root :id"))
         :anonymous))))
 
 (defn definition-version
@@ -132,7 +130,7 @@
   (if (has? options :id)
     (let [id (:id options)]
       (if (nil? id)
-        (throw (ex-info "Work run identity cannot be nil" {})))
+        (throw (ex :io {} :ex/message "Work run identity cannot be nil")))
       id)
     (str "run-" (time-ms) "-" (swap! run-counter inc))))
 
@@ -165,8 +163,7 @@
          (if (base/compatible-run? existing proposed)
            (base/work-reference id)
            (throw
-            (ex-info "Work run identity conflicts with existing input"
-                     {:run/id id})))
+            (ex :conflict {:run/id id} :ex/message "Work run identity conflicts with existing input")))
          (result/then
           (store/create-run (base/runtime-store runtime) proposed)
           (fn [committed]
@@ -225,8 +222,7 @@
            (= query :run) run
            :else
            (throw
-            (ex-info "Work runtime query is not supported"
-                     {:query query}))))))))
+            (ex :host {:query query} :ex/message "Work runtime query is not supported"))))))))
 
 (defn resume-run
   [runtime reference options]
@@ -236,7 +232,7 @@
                   {:work/query :run/load :run/id id})
      (fn [run]
        (if (nil? run)
-         (throw (ex-info "Work run does not exist" {:run/id id}))
+         (throw (ex :not-found {:run/id id} :ex/message "Work run does not exist"))
          (if (or (= :completed (:run/status run))
                  (= :cancelled (:run/status run)))
            (base/work-reference id)
@@ -246,9 +242,8 @@
                                           (:run/work-version run))]
              (if (nil? work)
                (throw
-                (ex-info "Pinned work definition is not available"
-                         {:work/root (:run/work-root run)
-                          :work/version (:run/work-version run)}))
+                (ex :generic {:work/root (:run/work-root run)
+                          :work/version (:run/work-version run)} :ex/message "Pinned work definition is not available"))
                (execute-run runtime
                              run
                              work
@@ -266,7 +261,7 @@
                   {:work/query :run/load :run/id id})
      (fn [current]
        (if (nil? current)
-         (throw (ex-info "Work run does not exist" {:run/id id}))
+         (throw (ex :not-found {:run/id id} :ex/message "Work run does not exist"))
          (if (terminal-status? (:run/status current))
            (base/work-reference id)
            (let [frame
@@ -308,8 +303,7 @@
           (if (checkpoint-selected? checkpoint selected)
             (if match
               (throw
-               (ex-info "Fork checkpoint selector is ambiguous"
-                        {:checkpoint selected}))
+               (ex :generic {:checkpoint selected} :ex/message "Fork checkpoint selector is ambiguous"))
               (recur (inc index) checkpoint))
             (recur (inc index) match)))))))
 
@@ -343,9 +337,8 @@
              0)]
        (if (and selected (nil? selected-record))
          (throw
-          (ex-info "Fork checkpoint does not exist"
-                   {:run/id source-id
-                    :checkpoint selected})))
+          (ex :not-found {:run/id source-id
+                    :checkpoint selected} :ex/message "Fork checkpoint does not exist")))
        (let [clones (checkpoint-clones checkpoints target-id before)]
          (if (empty? clones)
            0
@@ -390,10 +383,9 @@
                      (:run/fork-checkpoint existing)))
            (base/work-reference id)
            (throw
-            (ex-info "Fork run identity conflicts with existing fork"
-                     {:run/id id
+            (ex :conflict {:run/id id
                       :source source-id
-                      :checkpoint (:checkpoint options)})))
+                      :checkpoint (:checkpoint options)} :ex/message "Fork run identity conflicts with existing fork")))
          (result/then
           (store/create-run (base/runtime-store runtime) proposed)
           (fn [committed]
@@ -420,9 +412,8 @@
                 :work-version (:run/work-version source)})]
     (if (nil? work)
       (throw
-       (ex-info "Pinned work definition is not available"
-                {:work/root (:run/work-root source)
-                 :work/version (:run/work-version source)})))
+       (ex :generic {:work/root (:run/work-root source)
+                 :work/version (:run/work-version source)} :ex/message "Pinned work definition is not available")))
     (result/then
      (requested-run-id runtime options)
      (fn [id]
@@ -443,7 +434,7 @@
                   {:work/query :run/load :run/id source-id})
      (fn [source]
        (if (nil? source)
-         (throw (ex-info "Work run does not exist" {:run/id source-id}))
+         (throw (ex :not-found {:run/id source-id} :ex/message "Work run does not exist"))
          (fork-source-run runtime source source-id options))))))
 
 (defn command-run
@@ -454,5 +445,4 @@
     (= command :fork) (fork-run runtime reference options)
     :else
     (throw
-     (ex-info "Work runtime command is not supported"
-              {:command command}))))
+     (ex :host {:command command} :ex/message "Work runtime command is not supported"))))

@@ -43,6 +43,32 @@ fn portable_host_error(message: String) -> Value {
     }))
 }
 
+fn default_exception_class(code: &Keyword) -> Option<Keyword> {
+    if code.get_namespace() != Some("hara") {
+        return None;
+    }
+    let class = match code.get_name() {
+        "security" | "timeout" | "not-found" | "conflict" | "limit" | "syntax"
+        | "io" | "database" | "dependency" | "serialization" | "argument"
+        | "state" | "host" => code.get_name(),
+        "generic" => "internal",
+        _ => return None,
+    };
+    Keyword::parse(&format!("ex.class/{class}")).ok()
+}
+
+fn normalize_exception_code(code: &Keyword) -> Result<Keyword, String> {
+    if code.get_namespace().is_some() {
+        return Ok(code.clone());
+    }
+    let canonical = Keyword::parse(&format!("hara/{}", code.get_name()))?;
+    if default_exception_class(&canonical).is_some() {
+        Ok(canonical)
+    } else {
+        Err("ex expects a registered standard keyword or namespaced keyword code".into())
+    }
+}
+
 pub(crate) fn record_exception_throw(value: &Value, site: Option<ExceptionSite>) {
     let (Value::ExceptionInfo(exception), Some(site)) = (value, site) else {
         return;
@@ -643,12 +669,10 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                 if arguments.len() < 2 || arguments.len() % 2 != 0 {
                     return Err("ex expects a code, attributes map, and key/value pairs".into());
                 }
-                let Value::Keyword(code) = &arguments[0] else {
-                    return Err("ex expects a namespaced keyword code".into());
+                let Value::Keyword(input_code) = &arguments[0] else {
+                    return Err("ex expects a registered standard keyword or namespaced keyword code".into());
                 };
-                if !code.as_str().contains('/') {
-                    return Err("ex expects a namespaced keyword code".into());
-                }
+                let code = normalize_exception_code(input_code)?;
                 let mut attributes = arguments[1].clone();
                 for pair in arguments[2..].chunks_exact(2) {
                     attributes = map_assoc_value(&attributes, pair[0].clone(), pair[1].clone())?;
@@ -672,7 +696,13 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                 }
                 if let Some(class) = lookup("ex/class") {
                     match class {
-                        Value::Keyword(class) if class.get_namespace().is_some() => {}
+                        Value::Keyword(class) if class.get_namespace().is_some() => {
+                            if let Some(expected) = default_exception_class(&code) {
+                                if class != &expected {
+                                    return Err(":ex/class conflicts with the registered class for :ex/code".into());
+                                }
+                            }
+                        }
                         _ => return Err(":ex/class must be a namespaced keyword".into()),
                     }
                 }
@@ -692,6 +722,15 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                     Value::Keyword("ex/code".into()),
                     Value::Keyword(code.clone()),
                 )?;
+                if lookup("ex/class").is_none() {
+                    if let Some(class) = default_exception_class(&code) {
+                        data = map_assoc_value(
+                            &data,
+                            Value::Keyword("ex/class".into()),
+                            Value::Keyword(class),
+                        )?;
+                    }
+                }
                 if let Some(cause) = &cause {
                     data = map_assoc_value(
                         &data,

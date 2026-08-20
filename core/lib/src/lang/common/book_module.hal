@@ -32,9 +32,9 @@
   "Creates one immutable language module."
   [value]
   (if (nil? (:lang value))
-    (throw (ex-info "Book module requires :lang" {:module value})))
+    (throw (ex :dependency {:module value} :ex/message "Book module requires :lang")))
   (if (nil? (:id value))
-    (throw (ex-info "Book module requires :id" {:module value})))
+    (throw (ex :dependency {:module value} :ex/message "Book module requires :id")))
   (map->BookModule
    (merge {:alias {}
            :link {}
@@ -88,13 +88,11 @@
         link-target (get (:link module) alias)
         alias-target (get (:alias module) alias)]
     (if (and link-target (not= link-target dependency))
-      (throw (ex-info "Derived polyfill alias conflicts with existing link"
-                      {:module (:id module) :alias alias
-                       :current link-target :polyfill dependency})))
+      (throw (ex :conflict {:module (:id module) :alias alias
+                       :current link-target :polyfill dependency} :ex/message "Derived polyfill alias conflicts with existing link")))
     (if (and alias-target (not= alias-target dependency))
-      (throw (ex-info "Derived polyfill alias conflicts with existing alias"
-                      {:module (:id module) :alias alias
-                       :current alias-target :polyfill dependency})))
+      (throw (ex :conflict {:module (:id module) :alias alias
+                       :current alias-target :polyfill dependency} :ex/message "Derived polyfill alias conflicts with existing alias")))
     (assoc module
            :link (assoc (or (:link module) {}) alias dependency)
            :internal (assoc (or (:internal module) {}) dependency alias)
@@ -119,10 +117,9 @@
               (cond (= dependency (:id current)) current
                     (has? (or (:internal current) {}) dependency) current
                     (nil? (get-in book [:modules dependency]))
-                    (throw (ex-info "Derived polyfill module not found"
-                                    {:module (:id current)
+                    (throw (ex :not-found {:module (:id current)
                                      :polyfill dependency
-                                     :available (keys (:modules book))}))
+                                     :available (keys (:modules book))} :ex/message "Derived polyfill module not found"))
                     :else (add-polyfill-link current dependency))]
           (recur (vec (rest remaining)) updated))))))
 

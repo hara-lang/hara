@@ -14,9 +14,9 @@
 (defn book
   [value]
   (if (nil? (:lang value))
-    (throw (ex-info "Book requires :lang" {:book value})))
+    (throw (ex :dependency {:book value} :ex/message "Book requires :lang")))
   (if (nil? (:grammar value))
-    (throw (ex-info "Book requires :grammar" {:book value})))
+    (throw (ex :dependency {:book value} :ex/message "Book requires :grammar")))
   (map->Book
    (merge {:id :default
            :version 1
@@ -55,10 +55,9 @@
                   (get-base-entry book module-id entry-id :header))]
     (if value
       value
-      (throw (ex-info "Book code entry not found"
-                      {:book (book-coordinate book)
+      (throw (ex :not-found {:book (book-coordinate book)
                        :module module-id
-                       :entry entry-id})))))
+                       :entry entry-id} :ex/message "Book code entry not found")))))
 
 (defn get-fragment-entry
   [book id]
@@ -68,10 +67,9 @@
         value (get-base-entry book module-id entry-id :fragment)]
     (if value
       value
-      (throw (ex-info "Book fragment entry not found"
-                      {:book (book-coordinate book)
+      (throw (ex :not-found {:book (book-coordinate book)
                        :module module-id
-                       :entry entry-id})))))
+                       :entry entry-id} :ex/message "Book fragment entry not found")))))
 
 (defn get-module
   [book id]
@@ -161,19 +159,17 @@
 (defn assert-compatible-lang
   [book lang]
   (if (not (compatible-lang? book lang))
-    (throw (ex-info "Book language is not compatible"
-                    {:book (book-coordinate book)
+    (throw (ex :generic {:book (book-coordinate book)
                      :language lang
-                     :merged (:merged book)})))
+                     :merged (:merged book)} :ex/message "Book language is not compatible")))
   book)
 
 (defn assert-module
   [book module-id]
   (if (nil? (get-module book module-id))
-    (throw (ex-info "Book module not found"
-                    {:book (book-coordinate book)
+    (throw (ex :not-found {:book (book-coordinate book)
                      :module module-id
-                     :available (set (keys (:modules book)))})))
+                     :available (set (keys (:modules book)))} :ex/message "Book module not found")))
   book)
 
 (defn next-revision
@@ -270,11 +266,10 @@
 (defn assert-entry
   [book module-id section entry-id]
   (if (not (has-entry? book module-id section entry-id))
-    (throw (ex-info "Book entry not found"
-                    {:module module-id
+    (throw (ex :not-found {:module module-id
                      :section section
                      :entry entry-id
-                     :available (keys (or (get-in book [:modules module-id section]) {}))})))
+                     :available (keys (or (get-in book [:modules module-id section]) {}))} :ex/message "Book entry not found")))
   book)
 
 (defn module-create-filename
@@ -291,7 +286,7 @@
                                (not (has? available dependency)))
                              (vals link)))]
     (if (not (empty? missing))
-      (throw (ex-info "Missing namespaces" {:ns missing :link link})))
+      (throw (ex :not-found {:ns missing :link link} :ex/message "Missing namespaces")))
     true))
 
 (defn module-create-requires
@@ -430,9 +425,9 @@
   "Creates one provider-independent immutable module from portable options."
   [book module-id options]
   (if (nil? book)
-    (throw (ex-info "Book is required" {:module module-id})))
+    (throw (ex :dependency {:module module-id} :ex/message "Book is required")))
   (if (nil? module-id)
-    (throw (ex-info "Module id is required" {:book (book-coordinate book)})))
+    (throw (ex :dependency {:book (book-coordinate book)} :ex/message "Module id is required")))
   (let [requires (module-create-requires (:require options))
         link
         (reduce-kv
@@ -485,8 +480,7 @@
   ([book source-id target-id options]
    (let [source (get-module book source-id)]
      (if (nil? source)
-       (throw (ex-info "Source module not found"
-                       {:source source-id :available (keys (:modules book))})))
+       (throw (ex :not-found {:source source-id :available (keys (:modules book))} :ex/message "Source module not found")))
      (let [bindings (module-specialize-bindings source (:bindings options))
            requires
            (vec
@@ -523,9 +517,8 @@
 (defn book-merge
   [book parent]
   (if (not= (:parent book) (:lang parent))
-    (throw (ex-info "Books are not mergeable"
-                    {:book (book-coordinate book)
-                     :parent (book-coordinate parent)})))
+    (throw (ex :generic {:book (book-coordinate book)
+                     :parent (book-coordinate parent)} :ex/message "Books are not mergeable")))
   (let [modules
         (reduce-kv
          (fn [output module-id parent-module]

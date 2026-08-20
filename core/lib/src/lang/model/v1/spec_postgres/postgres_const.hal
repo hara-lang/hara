@@ -25,14 +25,12 @@
         symbol (second normalized)
         body (vec (drop 2 normalized))
         _ (if (not (= 2 (count body)))
-            (throw (ex-info "PostgreSQL defconst requires one table binding and one data value"
-                            {:form form :body body})))
+            (throw (ex :syntax {:form form :body body} :ex/message "PostgreSQL defconst requires one table binding and one data value")))
         binding-form (first body)
         data (second body)
         _ (if (or (not (vector? binding-form))
                   (not (= 1 (count binding-form))))
-            (throw (ex-info "PostgreSQL defconst requires exactly one table binding"
-                            {:form form :binding binding-form})))
+            (throw (ex :syntax {:form form :binding binding-form} :ex/message "PostgreSQL defconst requires exactly one table binding")))
         metadata (const-metadata symbol definition-metadata)
         next-symbol (IObjType/with-meta symbol metadata)]
     [metadata
@@ -44,8 +42,7 @@
         entry (if link (table/linked-entry context link) nil)
         form (if entry (table/linked-entry-form entry) nil)]
     (if (or (nil? entry) (nil? form) (not (= 'deftype (first form))))
-      (throw (ex-info "Portable PostgreSQL defconst table is unresolved"
-                      {:target target :link link}))
+      (throw (ex :database {:target target :link link} :ex/message "Portable PostgreSQL defconst table is unresolved"))
       (let [formatted (deftype/pg-deftype-format form)
             hydrated (deftype/pg-deftype-hydrate
                       (second formatted) grammar context)
@@ -101,9 +98,8 @@
   (reduce
    (fn [_ field]
      (if (nil? (get table-schema field))
-       (throw (ex-info "PostgreSQL tracker field is missing from the target table"
-                       {:field field
-                        :available (keys table-schema)}))
+       (throw (ex :not-found {:field field
+                        :available (keys table-schema)} :ex/message "PostgreSQL tracker field is missing from the target table"))
        nil))
    nil
    (concat (keys (:create fields))
@@ -121,8 +117,7 @@
                         (:eval-literal context))]
       (if evaluator
         (evaluator (second data))
-        (throw (ex-info "PostgreSQL defconst !:eval requires :lang/eval-literal"
-                        {:form data}))))
+        (throw (ex :database {:form data} :ex/message "PostgreSQL defconst !:eval requires :lang/eval-literal"))))
     data))
 
 (defn- symbolic-data
@@ -142,14 +137,12 @@
   (cond (map? data) data
         (symbol? data) (symbolic-data table-schema data)
         :else
-        (throw (ex-info "Portable PostgreSQL defconst requires map or symbol data"
-                        {:data data}))))
+        (throw (ex :database {:data data} :ex/message "Portable PostgreSQL defconst requires map or symbol data"))))
 
 (defn- tracked-data
   [data fields]
   (if (not (map? data))
-    (throw (ex-info "Tracked PostgreSQL constants require map data"
-                    {:data data}))
+    (throw (ex :database {:data data} :ex/message "Tracked PostgreSQL constants require map data"))
     (reduce
      (fn [output pair]
        (assoc output (first pair) (tracker-value (second pair))))
@@ -169,8 +162,7 @@
   [target grammar context]
   (let [resolved (const-entry target context)]
     (if (nil? resolved)
-      (throw (ex-info "Linked PostgreSQL tracker constant is unresolved"
-                      {:target target}))
+      (throw (ex :database {:target target} :ex/message "Linked PostgreSQL tracker constant is unresolved"))
       (let [form (:form resolved)
             formatted (pg-const-format form)
             normalized (second formatted)
@@ -248,8 +240,7 @@
   (let [insert-keys (ordered-keys table-schema data)
         primary (primary-keys table-schema)
         _ (if (= 0 (count primary))
-            (throw (ex-info "PostgreSQL defconst target requires a primary key"
-                            {:table coordinate})))
+            (throw (ex :database {:table coordinate} :ex/message "PostgreSQL defconst target requires a primary key")))
         update-keys
         (vec
          (filter
@@ -300,15 +291,13 @@
         data (:data resolved)
         primary (primary-keys table-schema)
         _ (if (not (map? data))
-            (throw (ex-info "Linked tracker constants require map data"
-                            {:target target :data data})))
+            (throw (ex :database {:target target :data data} :ex/message "Linked tracker constants require map data")))
         _ (if (reduce (fn [missing key]
                         (or missing (not (has? data key))))
                       false primary)
-            (throw (ex-info "Linked tracker constant lacks a primary value"
-                            {:target target
+            (throw (ex :database {:target target
                              :primary primary
-                             :data data})))
+                             :data data} :ex/message "Linked tracker constant lacks a primary value")))
         predicates
         (map (fn [key]
                (str "t." (column-name table-schema key)
@@ -359,9 +348,8 @@
         table-schema (:schema table-result)
         tracker (tracker-config (:metadata table-result))
         _ (if (and tracker (nil? track))
-            (throw (ex-info "PostgreSQL defconst target requires :track metadata"
-                            {:symbol symbol
-                             :table (:coordinate table-result)})))
+            (throw (ex :database {:symbol symbol
+                             :table (:coordinate table-result)} :ex/message "PostgreSQL defconst target requires :track metadata")))
         fields (if tracker
                  (ensure-tracker-columns table-schema (tracker-fields tracker))
                  {:create {} :modify {}})
@@ -391,8 +379,7 @@
                       (const-entry track context)
                       nil)
         _ (if (and (symbol? track) (nil? track-entry))
-            (throw (ex-info "Linked PostgreSQL tracker constant is unresolved"
-                            {:track track :symbol symbol})))
+            (throw (ex :database {:track track :symbol symbol} :ex/message "Linked PostgreSQL tracker constant is unresolved")))
         metadata (if track-entry
                    (assoc metadata :static/track
                           (assoc (select-keys (:entry track-entry)

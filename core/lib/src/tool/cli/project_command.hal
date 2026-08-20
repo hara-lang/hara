@@ -39,7 +39,7 @@
                     :else (str "hara:" value))
         coordinate-parts (str/split qualified ":")]
     (if (not= 2 (count coordinate-parts))
-      (throw (ex-info (str "invalid package coordinate: " value) {}))
+      (throw (ex :dependency {} :ex/message (str "invalid package coordinate: " value)))
       (let [tap (nth coordinate-parts 0)
             package-parts (str/split (nth coordinate-parts 1) "/")]
         (if (and (= 2 (count package-parts))
@@ -47,7 +47,7 @@
                  (valid-coordinate-component? (nth package-parts 0))
                  (valid-coordinate-component? (nth package-parts 1)))
           qualified
-          (throw (ex-info (str "invalid package coordinate: " value) {})))))))
+          (throw (ex :dependency {} :ex/message (str "invalid package coordinate: " value))))))))
 
 (defn start [request]
   (or (:project (:request/options request))
@@ -58,8 +58,7 @@
 (defn one-argument [arguments label]
   (if (= 1 (count arguments))
     (first arguments)
-    (throw (ex-info (str label " accepts exactly one argument")
-                    {:arguments arguments}))))
+    (throw (ex :host {:arguments arguments} :ex/message (str label " accepts exactly one argument")))))
 
 (defn write-text [path source]
   (deref (file/write path (str/encode-utf8 source)))
@@ -70,13 +69,10 @@
         cwd (or (:request/cwd request) (os/cwd))
         destination (if (str/starts-with? name "/") name (file/join cwd name))]
     (if (not (valid-name? name))
-      (throw (ex-info
-              "project name must contain only lowercase letters, numbers, and hyphens"
-              {:name name}))
+      (throw (ex :host {:name name} :ex/message "project name must contain only lowercase letters, numbers, and hyphens"))
       nil)
     (if (deref (file/exists? destination))
-      (throw (ex-info (str "destination already exists: " destination)
-                      {:path destination}))
+      (throw (ex :conflict {:path destination} :ex/message (str "destination already exists: " destination)))
       nil)
     (let [namespace (str/replace name "-" "_")
           source-root (file/join (file/join destination "src") namespace)
@@ -109,7 +105,7 @@
 (defn check [request]
   (let [arguments (:request/arguments request)]
     (if (> (count arguments) 1)
-      (throw (ex-info "check accepts at most one path" {}))
+      (throw (ex :io {} :ex/message "check accepts at most one path"))
       (let [current-project (project/discover
                              (if (empty? arguments) (start request) (first arguments)))]
         (model/success
@@ -138,7 +134,7 @@
         argument (one-argument (:request/arguments request) label)
         pair (if add (split-coordinate argument) [argument nil])]
     (if (and add (or (nil? pair) (str/blank? (second pair))))
-      (throw (ex-info "add requires COORDINATE@RANGE" {:coordinate argument}))
+      (throw (ex :dependency {:coordinate argument} :ex/message "add requires COORDINATE@RANGE"))
       (let [coordinate (normalize-coordinate (first pair))
             version (second pair)
             current-project (project/discover (start request))
@@ -160,8 +156,7 @@
       (= arguments ["--locked"]) :locked
       (= arguments ["--frozen"]) :frozen
       :else
-      (throw (ex-info
-              "sync accepts at most one of --offline, --locked, or --frozen" {})))))
+      (throw (ex :host {} :ex/message "sync accepts at most one of --offline, --locked, or --frozen")))))
 
 (defn valid-empty-lock? [path]
   (let [document (edn/read (project/read-text path))]
@@ -174,17 +169,15 @@
         mode (sync-mode request)
         lock (file/join (:project/root current-project) "project.lock.edn")]
     (if (not (empty? dependencies))
-      (throw (ex-info
-              (str "project sync requires the reviewed registry client to resolve "
-                   (count dependencies) " declared dependencies")
-              {:dependencies dependencies}))
+      (throw (ex :dependency {:dependencies dependencies} :ex/message (str "project sync requires the reviewed registry client to resolve "
+                   (count dependencies) " declared dependencies")))
       nil)
     (if (or (= mode :locked) (= mode :frozen))
       (if (not (deref (file/exists? lock)))
-        (throw (ex-info (str "--" (name mode)
-                             " requires an existing project.lock.edn") {}))
+        (throw (ex :dependency {} :ex/message (str "--" (name mode)
+                             " requires an existing project.lock.edn")))
         (if (not (valid-empty-lock? lock))
-          (throw (ex-info (str lock " is not a lockfile written by this CLI") {}))
+          (throw (ex :io {} :ex/message (str lock " is not a lockfile written by this CLI")))
           nil))
       (write-text lock "{:lock/format \"0.0.0-alpha\" :packages {}}\n"))
     (model/success {:project/lock lock :project/mode mode}
@@ -198,15 +191,14 @@
 (defn build [request]
   (let [arguments (:request/arguments request)]
     (if (not (empty? arguments))
-      (throw (ex-info "project build accepts no positional arguments"
-                      {:arguments arguments}))
+      (throw (ex :host {:arguments arguments} :ex/message "project build accepts no positional arguments"))
       (let [current-project (project/discover (start request))
             profile (:profile (:request/options request))
             plan (production/build-plan current-project profile)]
         (build-analysis-result plan)))))
 
 (defn update [request]
-  (throw (ex-info "project update requires the reviewed registry client" {})))
+  (throw (ex :dependency {} :ex/message "project update requires the reviewed registry client")))
 
 (defn execute [request]
   (let [route (:request/route request)]
@@ -218,7 +210,7 @@
       (= route :tool.cli.route/project-remove) (edit-dependency request false)
       (= route :tool.cli.route/project-sync) (sync request)
       (= route :tool.cli.route/project-update) (update request)
-      :else (throw (ex-info (str "unsupported project route " route) {})))))
+      :else (throw (ex :host {} :ex/message (str "unsupported project route " route))))))
 
 (def +command-work+
   (work/step {:id 'tool.cli/project :version 3}

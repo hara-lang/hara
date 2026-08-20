@@ -41,8 +41,7 @@
     (let [coordinate (grammar/source-coordinate source)]
       (if (get (:sources registry) coordinate)
         (throw
-         (ex-info "Grammar source coordinate already installed"
-                  {:coordinate coordinate}))
+         (ex :generic {:coordinate coordinate} :ex/message "Grammar source coordinate already installed"))
         (lang.common.registry/GrammarRegistry
          (assoc (:sources registry) coordinate source)))))
 
@@ -52,16 +51,14 @@
         (lang.common.registry/GrammarRegistry
          (assoc (:sources registry) coordinate source))
         (throw
-         (ex-info "Cannot replace missing grammar source"
-                  {:coordinate coordinate})))))
+         (ex :not-found {:coordinate coordinate} :ex/message "Cannot replace missing grammar source")))))
 
   (remove-source [registry coordinate]
     (if (get (:sources registry) coordinate)
       (lang.common.registry/GrammarRegistry
        (dissoc (:sources registry) coordinate))
       (throw
-       (ex-info "Cannot remove missing grammar source"
-                {:coordinate coordinate})))))
+       (ex :not-found {:coordinate coordinate} :ex/message "Cannot remove missing grammar source")))))
 
 (extend-type GrammarRegistry protocol/IGrammarResolver
   (resolve-grammar [registry request]
@@ -70,17 +67,14 @@
       (if (or (nil? grammar-id)
               (nil? version))
         (throw
-         (ex-info
-          "Grammar resolution requires an explicit id and version"
-          {:request request}))
+         (ex :io {:request request} :ex/message "Grammar resolution requires an explicit id and version"))
         (let [source
               (protocol/find-source registry
                              [:grammar grammar-id version])]
           (if source
             (grammar/materialize registry source request)
             (throw
-             (ex-info "Grammar definition not found"
-                      {:request request}))))))))
+             (ex :not-found {:request request} :ex/message "Grammar definition not found"))))))))
 
 (defn install
   [registry source]

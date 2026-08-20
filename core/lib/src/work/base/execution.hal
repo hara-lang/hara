@@ -25,16 +25,14 @@
                  (:work compatibility)
                  (:work/input request))
         (throw
-         (ex-info "Legacy Work executor is missing :execute"
-                  {:provider/id (:provider/id provider)}))))))
+         (ex :not-found {:provider/id (:provider/id provider)} :ex/message "Legacy Work executor is missing :execute"))))))
 
 (defn assert-role
   [provider]
   (if (not= :work/executor (:provider/role provider))
     (throw
-     (ex-info "Work provider does not have the executor role"
-              {:provider/role (:provider/role provider)
-               :provider/id (:provider/id provider)})))
+     (ex :generic {:provider/role (:provider/role provider)
+               :provider/id (:provider/id provider)} :ex/message "Work provider does not have the executor role")))
   provider)
 
 (defn validate-provider
@@ -43,8 +41,7 @@
         execute (get (provider-operations provider) :execute)]
     (if (nil? execute)
       (throw
-       (ex-info "Work executor provider is missing :execute"
-                {:provider/id (:provider/id provider)})))
+       (ex :not-found {:provider/id (:provider/id provider)} :ex/message "Work executor provider is missing :execute")))
     (if (:provider/handlers provider)
       provider
       (assoc provider :provider/handlers {}))))
@@ -62,7 +59,7 @@
   [provider]
   (cond
     (nil? provider)
-    (throw (ex-info "Work runtime requires an executor provider" {}))
+    (throw (ex :dependency {} :ex/message "Work runtime requires an executor provider"))
 
     (satisfies? IWorkExecutor provider)
     provider
@@ -82,8 +79,7 @@
 
     :else
     (throw
-     (ex-info "Work executor must implement IWorkExecutor or be a legacy provider"
-              {:provider provider}))))
+     (ex :generic {:provider provider} :ex/message "Work executor must implement IWorkExecutor or be a legacy provider"))))
 
 (defn executor-descriptor
   [executor]
@@ -103,9 +99,8 @@
     (if function
       (apply function arguments)
       (throw
-       (ex-info "Work executor operation is not installed"
-                {:provider/id (:provider/id provider)
-                 :operation operation})))))
+       (ex :generic {:provider/id (:provider/id provider)
+                 :operation operation} :ex/message "Work executor operation is not installed")))))
 
 (declare execute-node)
 
@@ -163,9 +158,8 @@
            handler (get (evaluator-handlers runtime) operation)]
        (if (nil? handler)
          (throw
-          (ex-info "Work operation is not installed"
-                   {:operation operation
-                    :node/path (:node/path frame)}))
+          (ex :io {:operation operation
+                    :node/path (:node/path frame)} :ex/message "Work operation is not installed"))
          (result/then
           (frame/emit runtime frame :work/node-started
                        {:operation operation

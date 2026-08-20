@@ -6,8 +6,22 @@
   (let [source "(defn demo [value]\n  (throw (ex-info \"bad\" {:value value})))\n"]
     [(transform/migrate-ex-info source :demo/invalid-value)
      (transform/migrate-ex-info source {"demo" :demo/mapped})])
-  => ["(defn demo [value]\n  (throw (ex :demo/invalid-value (assoc {:value value} :ex/message \"bad\"))))\n"
-      "(defn demo [value]\n  (throw (ex :demo/mapped (assoc {:value value} :ex/message \"bad\"))))\n"])
+  => ["(defn demo [value]\n  (throw (ex :demo/invalid-value {:value value} :ex/message \"bad\")))\n"
+      "(defn demo [value]\n  (throw (ex :demo/mapped {:value value} :ex/message \"bad\")))\n"])
+
+(fact "ex-info migration accepts reviewed code and class contracts"
+  (transform/migrate-ex-info
+   "(defn demo [value]\n  (throw (ex-info \"bad\" {:value value})))\n"
+   (fn [_]
+     {:ex/code :greenways.ex/argument
+      :ex/class :greenways.class/argument}))
+  => "(defn demo [value]\n  (throw (ex :greenways.ex/argument {:value value} :ex/message \"bad\" :ex/class :greenways.class/argument)))\n")
+
+(fact "registered Hara codes emit their standard shorthand without a redundant class"
+  (transform/migrate-ex-info
+   "(defn demo [] (ex-info \"missing\" {}))"
+   (fn [_] {:ex/code :hara/not-found :ex/class :ex.class/not-found}))
+  => "(defn demo [] (ex :not-found {} :ex/message \"missing\"))")
 
 (fact "ex-info migration rewrites nested causes from the leaves upward"
   (transform/migrate-ex-info
@@ -16,7 +30,7 @@
      (if (= "\"inner\"" (:message context))
        :demo/inner
        :demo/outer)))
-  => "(defn demo [value]\n  (ex :demo/outer (assoc {:value value} :ex/message \"outer\" :ex/cause (ex :demo/inner (assoc {} :ex/message \"inner\")))))\n")
+  => "(defn demo [value]\n  (ex :demo/outer {:value value} :ex/message \"outer\" :ex/cause (ex :demo/inner {} :ex/message \"inner\")))\n")
 
 (fact "the lib-core defaults cover every canonical Foundation migration"
   (set (keys transform/+lib-core-ex-info-codes+))
@@ -52,6 +66,10 @@
       'demo.core/demo
       true])
 
+(fact "vendored public runtime sources are generated output"
+  (transform/source-role "public/hara-runtime/std/substrate/json.hal")
+  => :generated)
+
 (fact "Foundation catalog records are pre-approved with semantic classes"
   (let [record (first
                 (transform/catalog-ex-info-source
@@ -70,7 +88,7 @@
 (fact "Foundation rewrites add the reviewed semantic class"
   (transform/migrate-ex-info
    "(defn subvec [] (ex-info \"bad\" {}))")
-  => "(defn subvec [] (ex :foundation/invalid-subvec-bounds (assoc {} :ex/message \"bad\" :ex/class :ex.class/argument)))")
+  => "(defn subvec [] (ex :foundation/invalid-subvec-bounds {} :ex/message \"bad\" :ex/class :ex.class/argument))")
 
 (fact "large sources are transformed one top-level form at a time"
   (let [source (str/join

@@ -153,7 +153,8 @@
   [path]
   (cond
     (or (str/includes? path "/target/")
-        (str/includes? path "/rust/hal-src/")) :generated
+        (str/includes? path "/rust/hal-src/")
+        (str/starts-with? path "public/hara-runtime/")) :generated
     (or (str/includes? path "/fixture")
         (str/includes? path "/test-fixtures/")
         (str/includes? path "/spec/code-migrate/recipes/")) :fixture
@@ -244,25 +245,30 @@
        {:ordinals {} :records []}
        records)))))
 
-(defn resolve-code
-  [value definition code-or-resolver]
+(defn resolve-contract
+  [value definition contract-or-resolver]
   (let [context (migration-context value definition)
-        code
+        contract
         (cond
-          (function? code-or-resolver)
-          (code-or-resolver context)
+          (function? contract-or-resolver)
+          (contract-or-resolver context)
 
-          (map? code-or-resolver)
-          (get code-or-resolver (:definition context))
+          (map? contract-or-resolver)
+          (get contract-or-resolver (:definition context))
 
           :else
-          code-or-resolver)]
-    (if (and (keyword? code) (namespace code))
-      code
+          contract-or-resolver)
+        normalized (if (keyword? contract) {:ex/code contract} contract)
+        code (:ex/code normalized)
+        class (:ex/class normalized)]
+    (if (and (map? normalized)
+             (keyword? code) (namespace code)
+             (or (nil? class) (and (keyword? class) (namespace class))))
+      normalized
       (throw
        (ex :code.migrate/invalid-ex-info-code
-           {:ex/message "ex-info migration requires a qualified keyword code"
-            :code code
+           {:ex/message "ex-info migration requires a qualified code and optional qualified class"
+            :contract contract
             :context context})))))
 
 (declare rewrite-block)
@@ -290,10 +296,15 @@
   (let [children (code-children value)
         arguments (vec (rest children))
         amount (count arguments)
-        code (resolve-code value definition code-or-resolver)
-        class (if (map? code-or-resolver)
-                (get +lib-core-ex-info-classes+ definition)
-                nil)]
+        contract (resolve-contract value definition code-or-resolver)
+        code (:ex/code contract)
+        output-code (if (= "hara" (namespace code))
+                      (keyword (name code))
+                      code)
+        class (or (:ex/class contract)
+                  (if (map? code-or-resolver)
+                    (get +lib-core-ex-info-classes+ definition)
+                    nil))]
     (if (or (< amount 2) (< 3 amount))
       (throw
        (ex :code.migrate/invalid-ex-info-form
@@ -305,15 +316,17 @@
               (fn [argument]
                 (rewrite-block argument definition code-or-resolver))
               arguments))]
-        (str "(ex " code " (assoc "
+        (str "(ex " output-code " "
              (second rewritten)
              " :ex/message "
              (first rewritten)
-             (if class (str " :ex/class " class) "")
+             (if (and class (not= "hara" (namespace code)))
+               (str " :ex/class " class)
+               "")
              (if (= amount 3)
                (str " :ex/cause " (nth rewritten 2))
                "")
-             "))")))))
+             ")")))))
 
 (defn rewrite-block
   [value definition code-or-resolver]

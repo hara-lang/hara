@@ -25,9 +25,8 @@
   [operation]
   (or (get +operations+ operation)
       (throw
-       (ex-info "Unsupported Hara package operation"
-                {:operation operation
-                 :supported (vec (sort (keys +operations+)))}))))
+       (ex :dependency {:operation operation
+                 :supported (vec (sort (keys +operations+)))} :ex/message "Unsupported Hara package operation"))))
 
 (defn package-root
   "Returns a package root from a catalog entry. Catalog values may be a path
@@ -40,8 +39,7 @@
     (if (and (string? root) (not (empty? root)))
       root
       (throw
-       (ex-info "Deploy package requires a path"
-                {:package entry})))))
+       (ex :io {:package entry} :ex/message "Deploy package requires a path")))))
 
 (defn- option-string
   [value]
@@ -115,8 +113,7 @@
   (let [missing (undeclared-dependencies packages)]
     (if (seq missing)
       (throw
-       (ex-info "Deploy package dependency is not declared"
-                (first missing)))
+       (ex :not-found (first missing) :ex/message "Deploy package dependency is not declared"))
       (loop [remaining (vec (sort (keys packages)))
              completed []]
         (if (empty? remaining)
@@ -129,8 +126,7 @@
                         remaining))]
             (if (nil? ready)
               (throw
-               (ex-info "Deploy package dependency cycle"
-                        {:packages remaining}))
+               (ex :dependency {:packages remaining} :ex/message "Deploy package dependency cycle"))
               (recur
                (vec (filter (fn [package] (not (= package ready)))
                             remaining))
@@ -166,8 +162,7 @@
 
     :else
     (throw
-     (ex-info "Deploy selector is not valid"
-              {:selector selector}))))
+     (ex :argument {:selector selector} :ex/message "Deploy selector is not valid"))))
 
 (defn prepare-input
   "Normalises serializable deployment input before package graph execution."
@@ -176,14 +171,12 @@
         _ (if (map? input)
             nil
             (throw
-             (ex-info "Deploy work input must be a map"
-                      {:input input})))
+             (ex :argument {:input input} :ex/message "Deploy work input must be a map")))
         packages (or (:packages input) {})
         _ (if (map? packages)
             nil
             (throw
-             (ex-info "Deploy :packages must be a map"
-                      {:packages packages})))
+             (ex :dependency {:packages packages} :ex/message "Deploy :packages must be a map")))
         selector (if (has? input :selector)
                    (:selector input)
                    :all)]

@@ -4710,6 +4710,22 @@ mod tests {
             runtime.eval_text("(ex-class (ex :file/read {}))").unwrap(),
             "nil"
         );
+        assert_eq!(
+            runtime.eval_text("(ex-class (ex :not-found {}))").unwrap(),
+            ":ex.class/not-found"
+        );
+        assert_eq!(
+            runtime.eval_text("(ex-class (ex :generic {}))").unwrap(),
+            ":ex.class/internal"
+        );
+        assert_eq!(
+            runtime.eval_text("(:ex/code (ex-data (ex :not-found {})))").unwrap(),
+            ":hara/not-found"
+        );
+        assert!(runtime
+            .eval_text("(ex :not-found {:ex/class :ex.class/io})")
+            .is_err());
+        assert!(runtime.eval_text("(ex :unknown {})").is_err());
         assert!(runtime.eval_text("(ex :file/read {:ex/class :io})").is_err());
         assert!(runtime.eval_text("(ex-native-type 42)").is_err());
     }

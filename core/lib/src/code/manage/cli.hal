@@ -23,7 +23,7 @@
 
 (defn required [remaining option]
   (if (empty? remaining)
-    (throw (ex-info (str option " requires a value") {:option option}))
+    (throw (ex :dependency {:option option} :ex/message (str option " requires a value")))
     (first remaining)))
 
 (defn validate-parsed
@@ -34,16 +34,13 @@
         options (dissoc raw-options :format)]
     (cond
       (not (has? +formats+ format))
-      (throw (ex-info (str "unsupported manage format " format)
-                      {:format format}))
+      (throw (ex :syntax {:format format} :ex/message (str "unsupported manage format " format)))
 
       (and (= operation :import) (:form options))
-      (throw (ex-info "import --form is obsolete; import reads matching fact titles"
-                      {:operation operation :option "--form"}))
+      (throw (ex :syntax {:operation operation :option "--form"} :ex/message "import --form is obsolete; import reads matching fact titles"))
 
       (and (= operation :purge) (:patterns options))
-      (throw (ex-info "purge --pattern is obsolete; purge removes docstrings and :added metadata"
-                      {:operation operation :option "--pattern"}))
+      (throw (ex :syntax {:operation operation :option "--pattern"} :ex/message "purge --pattern is obsolete; purge removes docstrings and :added metadata"))
 
       :else
       (assoc (assoc parsed :format format) :options options))))
@@ -51,8 +48,7 @@
 (defn parse-arguments [arguments]
   (let [operation (keyword (or (first arguments) "analyse"))]
     (if (nil? (get manage/parity-inventory operation))
-      (throw (ex-info (str "unsupported manage operation " operation)
-                      {:operation operation}))
+      (throw (ex :syntax {:operation operation} :ex/message (str "unsupported manage operation " operation)))
       (loop [remaining (tail arguments)
              write false
              namespaces []
@@ -93,8 +89,7 @@
                    :options (assoc options option-key (required more argument))}
 
                   (str/starts-with? argument "-")
-                  (throw (ex-info (str "unknown manage option " argument)
-                                  {:option argument}))
+                  (throw (ex :syntax {:option argument} :ex/message (str "unknown manage option " argument)))
 
                   :else
                   {:remaining more
@@ -217,15 +212,13 @@
     (cond
       (deref (File/exists? direct)) {:project/root target-root}
       (deref (File/exists? nested)) {:project/root nested-root}
-      :else (throw (ex-info "clojure-to-hal --to must name a Hara repository or project"
-                            {:target/root target-root})))))
+      :else (throw (ex :generic {:target/root target-root} :ex/message "clojure-to-hal --to must name a Hara repository or project")))))
 
 (defn translation-read-text [path]
   (try
     (project/read-text path)
     (catch Throwable error
-      (throw (ex-info (str "Cannot read translation input " path)
-                      {:path path :cause (ex-message error)})))))
+      (throw (ex :io {:path path :cause (ex-message error)} :ex/message (str "Cannot read translation input " path))))))
 
 (defn translation-target-path [target-root entry source-root source-path]
   (let [targets (translation-field entry :targets "targets")
@@ -332,9 +325,9 @@
 (defn translation-units-for [current-project parsed]
   (let [options (:options parsed)
         source-root (or (:from options)
-                        (throw (ex-info "clojure-to-hal requires --from" {})))
+                        (throw (ex :dependency {} :ex/message "clojure-to-hal requires --from")))
         target-root (or (:to options)
-                        (throw (ex-info "clojure-to-hal requires --to" {})))
+                        (throw (ex :dependency {} :ex/message "clojure-to-hal requires --to")))
         corpus-path (or (:corpus options)
                         (translation-project-path
                          (:project/root current-project)
@@ -481,9 +474,7 @@
     (if (path-under-root? resolved-root resolved-path)
       resolved-path
       (throw
-       (ex-info
-        (str "code.manage edit escapes project root: " path)
-        {:root resolved-root :path path :resolved resolved-path})))))
+       (ex :io {:root resolved-root :path path :resolved resolved-path} :ex/message (str "code.manage edit escapes project root: " path))))))
 
 (defn validate-edit
   [root edit]
@@ -491,8 +482,7 @@
         current (current-source path)]
     (if (= (:before edit) current)
       (assoc edit :resolved-path path)
-      (throw (ex-info (str "code.manage stale edit: " path)
-                      {:path path})))))
+      (throw (ex :conflict {:path path} :ex/message (str "code.manage stale edit: " path))))))
 
 (defn preflight
   [root edits]

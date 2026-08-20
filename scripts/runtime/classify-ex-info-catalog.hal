@@ -76,29 +76,29 @@
 
 (def +application-namespaces+
   {"greenways-ai/greenways-os" {:application :greenways-os
-                                :code/namespace "ex.greenways-os"
-                                :class/namespace "greenways-os.ex"}
+                                :code/namespace "greenways.ex"
+                                :class/namespace "greenways.class"}
    "greenways-ai/hestia" {:application :hestia
-                           :code/namespace "ex.hestia"
-                           :class/namespace "hestia.ex"}
+                           :code/namespace "hestia.ex"
+                           :class/namespace "hestia.class"}
    "greenways-ai/historia" {:application :historia
-                             :code/namespace "ex.historia"
-                             :class/namespace "historia.ex"}
+                             :code/namespace "historia.ex"
+                             :class/namespace "historia.class"}
    "greenways-ai/hoplite" {:application :hoplite
-                            :code/namespace "ex.hoplite"
-                            :class/namespace "hoplite.ex"}
+                            :code/namespace "hoplite.ex"
+                            :class/namespace "hoplite.class"}
    "greenways-ai/ignatius" {:application :ignatius
-                             :code/namespace "ex.ignatius"
-                             :class/namespace "ignatius.ex"}
+                             :code/namespace "ignatius.ex"
+                             :class/namespace "ignatius.class"}
    "greenways-ai/www" {:application :greenways-www
-                        :code/namespace "ex.greenways-www"
-                        :class/namespace "greenways.ex"}
+                        :code/namespace "greenways.ex"
+                        :class/namespace "greenways.class"}
    "hara-lang/tahto" {:application :tahto
-                       :code/namespace "ex.tahto"
-                       :class/namespace "tahto.ex"}
+                       :code/namespace "tahto.ex"
+                       :class/namespace "tahto.class"}
    "hara-lang/hodos" {:application :hodos
-                       :code/namespace "ex.hodos"
-                       :class/namespace "hodos.ex"}})
+                       :code/namespace "hodos.ex"
+                       :class/namespace "hodos.class"}})
 
 (defn host-read [file]
   (let [result (sh/run ["/bin/cat" file] {:trim false})]
@@ -158,24 +158,29 @@
       +classification-rules+))))
 
 (defn application-ownership [site]
-  (get +application-namespaces+ (:source/repository site)))
+  (if (= :generated (:source/role site))
+    nil
+    (get +application-namespaces+ (:source/repository site))))
 
-(defn site-leaf [site]
-  (let [definition (get-in site [:context/definition :name])
-        ordinal (last (:site/id site))
-        base (if definition
-               (name definition)
-               (str "site-" (get-in site [:source/range :line])))]
-    (str base "-" (inc ordinal))))
+(defn classification-leaf [base-class]
+  (if (= :ex.class/internal base-class)
+    "generic"
+    (name base-class)))
 
-(defn application-code [site ownership]
-  (if ownership
-    (keyword (:code/namespace ownership) (site-leaf site))
+(defn application-code [site base-class ownership]
+  (cond
+    (and ownership (= :ex.class/internal base-class))
+    (keyword (:code/namespace ownership) (classification-leaf base-class))
+
+    (or ownership (= "hara-lang/hara" (:source/repository site)))
+    (keyword "hara" (classification-leaf base-class))
+
+    :else
     (:ex/code site)))
 
 (defn application-class [base-class ownership]
-  (if ownership
-    (keyword (:class/namespace ownership) (name base-class))
+  (if (and ownership (= :ex.class/internal base-class))
+    (keyword (:class/namespace ownership) (classification-leaf base-class))
     base-class))
 
 (defn classify-site [site]
@@ -192,7 +197,7 @@
           ownership (application-ownership site)
           class (application-class base-class ownership)]
       (assoc site
-             :ex/code (application-code site ownership)
+             :ex/code (application-code site base-class ownership)
              :ex/class class
              :review/status :inferred
              :classification/type class

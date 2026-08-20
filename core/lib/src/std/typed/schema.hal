@@ -108,9 +108,7 @@
   (if (map? properties)
     properties
     (throw
-     (ex-info
-      (str kind " schema properties must be a map")
-      {:kind kind :properties properties}))))
+     (ex :serialization {:kind kind :properties properties} :ex/message (str kind " schema properties must be a map")))))
 
 (defn- assoc-properties
   [schema properties]
@@ -146,9 +144,7 @@
 
     :else
     (throw
-     (ex-info
-      "map schema entries must be [key schema] or [key properties schema]"
-      {:entry field}))))
+     (ex :serialization {:entry field} :ex/message "map schema entries must be [key schema] or [key properties schema]"))))
 
 (defn- properties-normal?
   [schema]
@@ -430,9 +426,7 @@
       (second schema)
       #{:min-count :max-count :pattern :qualified :distinct}))
     (throw
-     (ex-info
-      "primitive schema properties require one property map"
-      {:schema schema}))))
+     (ex :dependency {:schema schema} :ex/message "primitive schema properties require one property map"))))
 
 (defmethod normalize :str [schema] (normalize-primitive-properties schema))
 (defmethod normalize :string [schema] (normalize-primitive-properties schema))
@@ -480,20 +474,16 @@
                              (keys properties)))]
     (cond
       (not (empty? unknown))
-      (throw (ex-info "unsupported :result schema property"
-                      {:properties unknown}))
+      (throw (ex :serialization {:properties unknown} :ex/message "unsupported :result schema property"))
 
       (and status (not (has? #{:success :error} status)))
-      (throw (ex-info ":result :status must be :success or :error"
-                      {:status status}))
+      (throw (ex :serialization {:status status} :ex/message ":result :status must be :success or :error"))
 
       (and error-code (not (keyword? error-code)))
-      (throw (ex-info ":result :error-code must be a keyword"
-                      {:error-code error-code}))
+      (throw (ex :serialization {:error-code error-code} :ex/message ":result :error-code must be a keyword"))
 
       (and error-code (= :success status))
-      (throw (ex-info ":result :error-code conflicts with success status"
-                      properties))
+      (throw (ex :conflict properties :ex/message ":result :error-code conflicts with success status"))
 
       error-code
       (assoc (if status {:status status} {})
@@ -517,8 +507,7 @@
        :data (normalize (second arguments))}
 
       :else
-      (throw (ex-info ":result expects a data schema and optional properties"
-                      {:schema schema})))))
+      (throw (ex :serialization {:schema schema} :ex/message ":result expects a data schema and optional properties")))))
 
 (defmethod normalize :default [schema]
   {:kind :extension

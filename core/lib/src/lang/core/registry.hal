@@ -118,11 +118,10 @@
         (if (and (ns-loaded? namespace-symbol) init-var)
           namespace-symbol
           (throw
-           (ex-info "Registered runtime loader did not provide its exact namespace"
-                    {:lang language
+           (ex :dependency {:lang language
                      :runtime runtime
                      :namespace namespace-symbol
-                     :export init-symbol}))))
+                     :export init-symbol} :ex/message "Registered runtime loader did not provide its exact namespace"))))
       nil)))
 
 (defn registry-book-list
@@ -195,11 +194,10 @@
                   :version selected-version
                   :default-version (get entry :default-version))
            (throw
-            (ex-info "Book version is not registered"
-                     {:language language
+            (ex :generic {:language language
                       :key key
                       :version selected-version
-                      :available (registry-book-versions language key)}))))))))
+                      :available (registry-book-versions language key)} :ex/message "Book version is not registered"))))))))
 
 (defn registry-book-add
   "Adds one immutable version beneath a stable [language key] coordinate."
@@ -212,11 +210,10 @@
            (nil? (get info :ns))
            (not (fn? (get info :load))))
      (throw
-      (ex-info "Invalid versioned book registration"
-               {:language language
+      (ex :argument {:language language
                 :key key
                 :version version
-                :info info}))
+                :info info} :ex/message "Invalid versioned book registration"))
      (let [coordinate [language key]]
        (swap!
         +book-registry+
@@ -226,10 +223,9 @@
                            :versions {}})]
             (if (get-in entry [:versions version])
               (throw
-               (ex-info "Book version is already registered"
-                        {:language language
+               (ex :conflict {:language language
                          :key key
-                         :version version}))
+                         :version version} :ex/message "Book version is already registered"))
               (let [with-version
                     (assoc-in entry [:versions version] info)
                     complete
@@ -248,16 +244,14 @@
      (cond
        (nil? entry)
        (throw
-        (ex-info "Book coordinate is not registered"
-                 {:language language :key key}))
+        (ex :generic {:language language :key key} :ex/message "Book coordinate is not registered"))
 
        (nil? (get-in entry [:versions version]))
        (throw
-        (ex-info "Cannot select an unregistered book version"
-                 {:language language
+        (ex :generic {:language language
                   :key key
                   :version version
-                  :available (registry-book-versions language key)}))
+                  :available (registry-book-versions language key)} :ex/message "Cannot select an unregistered book version"))
 
        :else
        (do
@@ -277,11 +271,10 @@
          removed (get-in entry [:versions version])]
      (if (nil? removed)
        (throw
-        (ex-info "Cannot remove an unregistered book version"
-                 {:language language
+        (ex :generic {:language language
                   :key key
                   :version version
-                  :available (registry-book-versions language key)}))
+                  :available (registry-book-versions language key)} :ex/message "Cannot remove an unregistered book version"))
        (do
          (swap!
           +book-registry+
@@ -329,18 +322,16 @@
              actual-version (get value :version)]
          (if (not (ns-loaded? ns))
            (throw
-            (ex-info "Registered book loader did not provide its exact namespace"
-                     {:language language
+            (ex :dependency {:language language
                       :key key
                       :version version
-                      :namespace ns}))
+                      :namespace ns} :ex/message "Registered book loader did not provide its exact namespace"))
            (if (and actual-version
                     (not= actual-version version))
              (throw
-              (ex-info "Registered book version does not match loaded book"
-                       {:language language
+              (ex :io {:language language
                         :key key
                         :requested version
                         :loaded actual-version
-                        :namespace ns}))
+                        :namespace ns} :ex/message "Registered book version does not match loaded book"))
              value)))))))

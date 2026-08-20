@@ -9,8 +9,7 @@
   [value]
   (if (Bytes/instance? value)
     value
-    (throw (ex-info "Base64 encode expects Bytes"
-                    {:value value}))))
+    (throw (ex :serialization {:value value} :ex/message "Base64 encode expects Bytes"))))
 
 (defn encode
   [value]
@@ -45,18 +44,16 @@
   [character index]
   (let [value (str/index-of +alphabet+ character)]
     (if (neg? value)
-      (throw (ex-info "Invalid Base64 character"
-                      {:character character :index index}))
+      (throw (ex :serialization {:character character :index index} :ex/message "Invalid Base64 character"))
       value)))
 
 (defn decode
   [source]
   (if (not (string? source))
-    (throw (ex-info "Base64 decode expects a string" {:value source})))
+    (throw (ex :serialization {:value source} :ex/message "Base64 decode expects a string")))
   (let [length (str/length source)]
     (if (not= 0 (mod length 4))
-      (throw (ex-info "Base64 length must be a multiple of four"
-                      {:value source :length length})))
+      (throw (ex :serialization {:value source :length length} :ex/message "Base64 length must be a multiple of four")))
     (loop [index 0 output []]
       (if (= index length)
         (apply bytes output)
@@ -69,26 +66,22 @@
                   (= cb "=")
                   (and (not last?)
                        (or (= cc "=") (= cd "="))))
-            (throw (ex-info "Base64 padding is only valid in the final quartet"
-                            {:value source :index index})))
+            (throw (ex :serialization {:value source :index index} :ex/message "Base64 padding is only valid in the final quartet")))
           (let [a (value-of ca index)
                 b (value-of cb (inc index))
                 c-padding (= cc "=")
                 d-padding (= cd "=")]
             (if (and c-padding (not d-padding))
-              (throw (ex-info "Invalid Base64 padding"
-                              {:value source :index index})))
+              (throw (ex :serialization {:value source :index index} :ex/message "Invalid Base64 padding")))
             (let [c (if c-padding 0 (value-of cc (+ index 2)))
                   d (if d-padding 0 (value-of cd (+ index 3)))]
               (if (and c-padding
                        (not= 0 (Bits/and b 15)))
-                (throw (ex-info "Non-canonical Base64 trailing bits"
-                                {:value source :index index})))
+                (throw (ex :serialization {:value source :index index} :ex/message "Non-canonical Base64 trailing bits")))
               (if (and d-padding
                        (not c-padding)
                        (not= 0 (Bits/and c 3)))
-                (throw (ex-info "Non-canonical Base64 trailing bits"
-                                {:value source :index index})))
+                (throw (ex :serialization {:value source :index index} :ex/message "Non-canonical Base64 trailing bits")))
               (let [packed (+ (Bits/shift-left a 18)
                               (Bits/shift-left b 12)
                               (Bits/shift-left c 6)

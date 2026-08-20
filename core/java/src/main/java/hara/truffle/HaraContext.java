@@ -2455,9 +2455,11 @@ public final class HaraContext {
               }
               Object rawCode = HaraBox.unwrap(codeValue);
               Object rawAttributes = HaraBox.unwrap(attributesValue);
-              if (!(rawCode instanceof Keyword code) || code.getNamespace() == null) {
-                throw new HaraException("ex expects a namespaced keyword code");
+              if (!(rawCode instanceof Keyword inputCode)) {
+                throw new HaraException(
+                    "ex expects a registered standard keyword or namespaced keyword code");
               }
+              Keyword code = normalizeExceptionCode(inputCode);
               if (!(rawAttributes instanceof IMapType attributes)) {
                 throw new HaraException("ex expects an attributes map");
               }
@@ -2474,6 +2476,13 @@ public final class HaraContext {
                   && (!(classValue instanceof Keyword exceptionClass)
                       || exceptionClass.getNamespace() == null)) {
                 throw new HaraException(":ex/class must be a namespaced keyword");
+              }
+              Keyword registeredClass = defaultExceptionClass(code);
+              if (classValue != null
+                  && registeredClass != null
+                  && !registeredClass.equals(classValue)) {
+                throw new HaraException(
+                    ":ex/class conflicts with the registered class for :ex/code");
               }
               Object causeValue = attributes.lookup(Keyword.create("ex", "cause"));
               if (causeValue != null && !(causeValue instanceof Throwable)) {
@@ -2500,6 +2509,11 @@ public final class HaraContext {
               }
               IMetadata data =
                   (IMetadata) attributes.assoc(Keyword.create("ex", "code"), code);
+              if (classValue == null && registeredClass != null) {
+                data =
+                    (IMetadata)
+                        ((IMapType) data).assoc(Keyword.create("ex", "class"), registeredClass);
+              }
               return new hara.lang.base.Ex.Info(
                   message instanceof String ? (String) message : code.display(), data, cause);
             }));
@@ -3019,6 +3033,36 @@ public final class HaraContext {
         Keyword.create("resource"), site.resource(),
         Keyword.create("line"), site.line(),
         Keyword.create("column"), site.column());
+  }
+
+  private static Keyword defaultExceptionClass(Keyword code) {
+    if (!"hara".equals(code.getNamespace())) return null;
+    String name = code.getName();
+    return switch (name) {
+      case "security",
+          "timeout",
+          "not-found",
+          "conflict",
+          "limit",
+          "syntax",
+          "io",
+          "database",
+          "dependency",
+          "serialization",
+          "argument",
+          "state",
+          "host" -> Keyword.create("ex.class", name);
+      case "generic" -> Keyword.create("ex.class", "internal");
+      default -> null;
+    };
+  }
+
+  private static Keyword normalizeExceptionCode(Keyword code) {
+    if (code.getNamespace() != null) return code;
+    Keyword canonical = Keyword.create("hara", code.getName());
+    if (defaultExceptionClass(canonical) != null) return canonical;
+    throw new HaraException(
+        "ex expects a registered standard keyword or namespaced keyword code");
   }
 
   private void installCoreBuiltins(HaraNamespace target) {

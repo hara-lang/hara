@@ -21,9 +21,7 @@
   (if (= :tool.cli.route/package (:request/route request))
     (let [arguments (:request/arguments request)]
       (if (empty? arguments)
-        (throw (ex-info
-                "package requires check, build, inspect, install, publish, registry, status, search, info, yank, or harp"
-                {}))
+        (throw (ex :io {} :ex/message "package requires check, build, inspect, install, publish, registry, status, search, info, yank, or harp"))
         {:operation (keyword (first arguments))
          :arguments (vec (rest arguments))}))
     {:operation (get +route-operations+ (:request/route request))
@@ -31,8 +29,7 @@
 
 (defn selected-path [request arguments operation]
   (if (> (count arguments) 1)
-    (throw (ex-info (str "package " (name operation) " accepts at most one path")
-                    {:arguments arguments}))
+    (throw (ex :io {:arguments arguments} :ex/message (str "package " (name operation) " accepts at most one path")))
     (or (first arguments)
         (:project (:request/options request))
         (:request/project request)
@@ -56,8 +53,7 @@
 (defn one-path [arguments operation]
   (if (= 1 (count arguments))
     (first arguments)
-    (throw (ex-info (str "package " (name operation) " requires one path")
-                    {:arguments arguments}))))
+    (throw (ex :io {:arguments arguments} :ex/message (str "package " (name operation) " requires one path")))))
 
 (defn inspect-command [arguments]
   (let [path (one-path arguments :inspect)
@@ -80,7 +76,7 @@
                    (vec (filter (fn [value] (not= value "--dry-run")) arguments))
                    (vec arguments))]
     (if (and dry-run (not allow-dry-run))
-      (throw (ex-info "--dry-run is only valid for package publish" {}))
+      (throw (ex :syntax {} :ex/message "--dry-run is only valid for package publish"))
       nil)
     {:dry-run dry-run :parsed (tap/parse-arguments filtered)}))
 
@@ -89,7 +85,7 @@
         parsed (:parsed values)
         positionals (:positionals parsed)]
     (if (> (count positionals) 1)
-      (throw (ex-info "package publish accepts at most one path" {}))
+      (throw (ex :io {} :ex/message "package publish accepts at most one path"))
       nil)
     (let [path (or (first positionals)
                    (:project (:request/options request))
@@ -106,9 +102,7 @@
         parsed (:parsed values)
         positionals (:positionals parsed)]
     (if (not= positionals ["verify-request"])
-      (throw (ex-info
-              "package registry requires verify-request --request PATH --identity PATH"
-              {}))
+      (throw (ex :io {} :ex/message "package registry requires verify-request --request PATH --identity PATH"))
       nil)
     (let [request-path (tap/require-option parsed :request)
           identity-path (first (tap/require-option parsed :identity))
@@ -118,10 +112,8 @@
                      [(model/message (str output "\n"))]))))
 
 (defn unavailable [operation]
-  (throw (ex-info
-          (str "unavailable: hara package " (name operation)
-               " requires the reviewed registry and identity client")
-          {:operation operation})))
+  (throw (ex :dependency {:operation operation} :ex/message (str "unavailable: hara package " (name operation)
+               " requires the reviewed registry and identity client"))))
 
 (defn execute [request]
   (let [resolved (operation-request request)

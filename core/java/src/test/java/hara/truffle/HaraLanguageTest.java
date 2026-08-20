@@ -2628,6 +2628,15 @@ public class HaraLanguageTest {
           context.eval(HaraLanguage.ID, "(ex-class (ex :file/read {:ex/class :ex.class/io}))").toString());
       assertTrue(context.eval(HaraLanguage.ID, "(nil? (ex-class (ex :file/read {})))").asBoolean());
       assertEquals(
+          ":ex.class/not-found",
+          context.eval(HaraLanguage.ID, "(ex-class (ex :not-found {}))").toString());
+      assertEquals(
+          ":ex.class/internal",
+          context.eval(HaraLanguage.ID, "(ex-class (ex :generic {}))").toString());
+      assertEquals(
+          ":hara/not-found",
+          context.eval(HaraLanguage.ID, "(:ex/code (ex-data (ex :not-found {})))").toString());
+      assertEquals(
           "hara.lang.base.Ex$Info",
           context.eval(HaraLanguage.ID, "(ex-native-type (ex :file/read {}))").asString());
       assertEquals(
