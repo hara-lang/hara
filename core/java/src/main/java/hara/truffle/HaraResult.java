@@ -360,8 +360,9 @@ public final class HaraResult implements IDeref<Object>, IDisplay, IEquality, IH
               errorMessage(throwable)),
           throwable.getCause());
     }
+    String message = raw instanceof String text ? text : G.display(raw);
     return new Ex.Info(
-        G.display(raw),
+        message,
         hara.lang.data.Map.Standard.from(
             null, Keyword.create("error", "value"), raw));
   }
