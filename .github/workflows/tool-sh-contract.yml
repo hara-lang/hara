@@ -123,22 +123,37 @@ jobs:
                          nil
                          (catch Throwable error (ex-data error)))]
             (pr-str
-             {:promise? (promise? pending)
-              :async-result async-result
-              :input-result input-result
-              :cwd-result cwd-result
-              :env-result env-result
-              :failed failed}))
+             [(promise? pending)
+              [(:command async-result)
+               (:stdout async-result)
+               (:stderr async-result)
+               (:exit async-result)]
+              [(:command input-result)
+               (:stdout input-result)
+               (:stderr input-result)
+               (:exit input-result)]
+              [(:command cwd-result)
+               (:stdout cwd-result)
+               (:stderr cwd-result)
+               (:exit cwd-result)]
+              [(:command env-result)
+               (:stdout env-result)
+               (:stderr env-result)
+               (:exit env-result)]
+              [(:command failed)
+               (:stdout failed)
+               (:stderr failed)
+               (:exit failed)]]))
           HAL
 
-          expected='{:promise? true, :async-result {:command ["sh" "-c" "printf '\'' out\n'\''; printf '\'' err\n'\'' >&2; exit 7"], :stdout " out\n", :stderr " err\n", :exit 7}, :input-result {:command ["cat"], :stdout "hello\n", :stderr "", :exit 0}, :cwd-result {:command ["pwd"], :stdout "/tmp\n", :stderr "", :exit 0}, :env-result {:command ["printenv" "HARA_TOOL_SH_TEST"], :stdout "present\n", :stderr "", :exit 0}, :failed {:command ["sh" "-c" "printf out; printf err >&2; exit 9"], :stdout "out", :stderr "err", :exit 9}}'
+          expected='[true [["sh" "-c" "printf '\'' out\n'\''; printf '\'' err\n'\'' >&2; exit 7"] " out\n" " err\n" 7] [["cat"] "hello\n" "" 0] [["pwd"] "/tmp\n" "" 0] [["printenv" "HARA_TOOL_SH_TEST"] "present\n" "" 0] [["sh" "-c" "printf out; printf err >&2; exit 9"] "out" "err" 9]]'
 
-          actual="$(./core/hara --project core --offline run /tmp/tool-sh-contract-probe.hal)"
+          actual="$(./core/hara --allow-process --project core --offline stdin < /tmp/tool-sh-contract-probe.hal)"
           printf 'JVM tool.sh probe: %s\n' "$actual"
           test "$actual" = "$expected"
 
           actual="$(HARA_RUNTIME=rust \
             HARA_NATIVE="$GITHUB_WORKSPACE/core/rust/target/debug/hara" \
-            ./core/hara --project core --offline run /tmp/tool-sh-contract-probe.hal)"
+            ./core/hara --allow-process --project core --offline stdin < /tmp/tool-sh-contract-probe.hal)"
           printf 'Rust tool.sh probe: %s\n' "$actual"
           test "$actual" = "$expected"
