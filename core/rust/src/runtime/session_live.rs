@@ -1,5 +1,5 @@
 use crate::live_session::{
-    InterpreterLiveSession, LiveSession, LiveSessionCapabilities, LiveSessionCommand,
+    InstrumentedInterpreterLiveSession, LiveSession, LiveSessionCapabilities, LiveSessionCommand,
     LiveSessionError, LiveSessionReply, LiveSessionRequest, LiveSessionState, LiveSource,
 };
 
@@ -29,6 +29,17 @@ impl Session {
             .map_err(|message| LiveSessionError::new("live-session/owner-closed", message))
     }
 
+    fn ensure_live_session_identity_available(
+        &self,
+        live_session_id: &str,
+    ) -> Result<(), LiveSessionError> {
+        if self.live_sessions.entries.contains_key(live_session_id) {
+            Err(live_session_already_exists(live_session_id))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Transfers one backend-neutral live session into this Session's private
     /// lifecycle. Live-session identities cannot be reused, including after a
     /// nested session has been cancelled or disposed.
@@ -47,13 +58,7 @@ impl Session {
         }
         if self.live_sessions.entries.contains_key(&state.session_id) {
             let _ = live_session.dispatch_command(LiveSessionCommand::Dispose);
-            return Err(LiveSessionError::new(
-                "live-session/already-exists",
-                format!(
-                    "live session identity cannot be reused: {}",
-                    state.session_id
-                ),
-            ));
+            return Err(live_session_already_exists(&state.session_id));
         }
         self.live_sessions
             .entries
@@ -61,14 +66,24 @@ impl Session {
         Ok(state)
     }
 
-    /// Starts an authoritative interpreter live session owned by this Session.
+    /// Starts the authoritative interpreter target as a built-in controlling
+    /// instrument over this Session's Runtime-owned instrumentation hub.
     pub fn start_interpreter_live_session(
         &mut self,
         live_session_id: impl Into<String>,
         source: LiveSource,
     ) -> Result<LiveSessionState, LiveSessionError> {
         self.ensure_live_owner_active()?;
-        let live_session = InterpreterLiveSession::start(live_session_id, source)?;
+        let live_session_id = live_session_id.into();
+        self.ensure_live_session_identity_available(&live_session_id)?;
+        let owner_session_id = self.name().to_owned();
+        let live_session = InstrumentedInterpreterLiveSession::start(
+            self.runtime()
+                .map_err(|message| LiveSessionError::new("live-session/owner-closed", message))?,
+            owner_session_id,
+            live_session_id,
+            source,
+        )?;
         self.register_live_session(Box::new(live_session))
     }
 
@@ -80,6 +95,8 @@ impl Session {
         source: LiveSource,
     ) -> Result<LiveSessionState, LiveSessionError> {
         self.ensure_live_owner_active()?;
+        let live_session_id = live_session_id.into();
+        self.ensure_live_session_identity_available(&live_session_id)?;
         let live_session =
             crate::live_session::BytecodeLiveSession::compile(live_session_id, source)?;
         self.register_live_session(Box::new(live_session))
@@ -139,6 +156,13 @@ impl Session {
             .ok_or_else(|| live_session_not_found(&live_session_id))?
             .dispatch(request)
     }
+}
+
+fn live_session_already_exists(live_session_id: &str) -> LiveSessionError {
+    LiveSessionError::new(
+        "live-session/already-exists",
+        format!("live session identity cannot be reused: {live_session_id}"),
+    )
 }
 
 fn live_session_not_found(live_session_id: &str) -> LiveSessionError {
