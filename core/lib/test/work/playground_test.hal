@@ -1,0 +1,54 @@
+(ns work.playground-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work-playground :as playground]))
+
+(defn run-in-native-work
+  [definition input]
+  (work/run
+   (work/step
+    :playground-test
+    (fn [value context]
+      (playground/execute-pure definition value)))
+   input))
+
+(fact "the pure Work playground follows runtime-produced bind values"
+  (let [definition
+        (work/bind
+         {:id :playground-bind}
+         (work/pure :source
+           (fn [input context]
+             (inc input)))
+         (work/pure :continuation
+           (fn [value context]
+             (work/chain
+              {:id :pure-produced}
+              [(work/pure :double
+                 (fn [produced produced-context]
+                   (* produced 2)))]))))]
+    (run-in-native-work definition 4))
+  => 10)
+
+(fact "the pure Work playground still rejects effectful produced Work"
+  (let [definition
+        (work/bind
+         {:id :playground-effect-bind}
+         (work/pure :source
+           (fn [input context]
+             input))
+         (work/pure :continuation
+           (fn [value context]
+             (work/step :effect
+               (fn [produced produced-context]
+                 produced)))))
+        operation
+        (try
+          (do
+            (run-in-native-work definition 4)
+            :not-rejected)
+          (catch Throwable error
+            (:operation (ex-data error))))]
+    operation)
+  => :step)
+
+(pr-str (run '[work.playground-test]))
