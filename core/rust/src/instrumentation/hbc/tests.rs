@@ -64,7 +64,10 @@ fn instruction_and_call_events_are_emitted_from_real_dispatch_boundaries() {
                 source_location: true,
                 ..ProjectionRequest::default()
             },
-            delivery: EventDelivery::Queue { capacity: 128 },
+            // Instruction events are deliberately retained alongside calls in
+            // this test. Keep the queue above the bounded 256-step run so the
+            // early call-enter boundary cannot be discarded before read-back.
+            delivery: EventDelivery::Queue { capacity: 512 },
         })
         .expect("instrument");
     let handle = register_target(&mut hub);
@@ -78,7 +81,9 @@ fn instruction_and_call_events_are_emitted_from_real_dispatch_boundaries() {
     .expect("target");
 
     target.run(&mut hub, 256).expect("run");
-    let events = hub.drain_events(&instrument).expect("events").events;
+    let batch = hub.drain_events(&instrument).expect("events");
+    assert_eq!(batch.dropped, 0, "focused call trace must not overflow");
+    let events = batch.events;
 
     assert_eq!(target.result(), Some(Value::Number(42)));
     assert!(events
