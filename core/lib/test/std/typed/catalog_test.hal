@@ -139,6 +139,152 @@
      (registry/lookup (catalog/schema-registry value) 'demo/UserProfile)])
   => [true '[:map [:id (var Identifier)]]])
 
+(def +recursive-catalog+
+  (catalog/catalog
+   [{:schema/id :tree/id
+     :schema/version 1
+     :schema/form :int}
+    {:schema/id :tree/node
+     :schema/version 1
+     :schema/form
+     '[:map
+       [:id (var Id)]
+       [:next [:maybe (var Node)]]
+       [:children [:vector (var Node)]]
+       [:peers [:set (var Node)]]
+       [:pair [:tuple :int (var Node)]]
+       [:outcome [:result (var Node)]]]}]))
+
+(def +recursive-id-coordinate+
+  (catalog/coordinate +recursive-catalog+ :tree/id 1))
+
+(def +recursive-coordinate+
+  (catalog/coordinate +recursive-catalog+ :tree/node 1))
+
+(def +mutual-entries+
+  [{:schema/id :graph/a
+    :schema/version 1
+    :schema/form
+    '[:map [:next [:maybe (var B)]]]}
+   {:schema/id :graph/b
+    :schema/version 1
+    :schema/form
+    '[:map [:previous [:maybe (var A)]]]}])
+
+(def +mutual-catalog+ (catalog/catalog +mutual-entries+))
+(def +mutual-a-coordinate+
+  (catalog/coordinate +mutual-catalog+ :graph/a 1))
+(def +mutual-b-coordinate+
+  (catalog/coordinate +mutual-catalog+ :graph/b 1))
+
+^{:refer 'std.typed.catalog/dependency-closure
+  :id 'exact-transitive-dependency-closure}
+(fact "dependency closure and order remain exact and dependency-first"
+  [(catalog/dependency-closure +catalog+ +account-coordinate+)
+   (catalog/dependency-order +catalog+ [+account-coordinate+])]
+  => [[+id-coordinate+ +profile-v2-coordinate+]
+      [+id-coordinate+ +profile-v2-coordinate+ +account-coordinate+]])
+
+^{:refer 'std.typed.catalog/dependency-components
+  :id 'self-recursive-schema-component}
+(fact "self recursion is represented as an explicit dependency-first component"
+  (let [components
+        (catalog/dependency-components
+         +recursive-catalog+
+         [+recursive-coordinate+])
+        id-component (first components)
+        node-component (second components)]
+    [(:component/members id-component)
+     (:component/recursive? id-component)
+     (:component/members node-component)
+     (:component/recursive? node-component)
+     (= [(:component/id id-component)]
+        (:component/dependencies node-component))
+     (catalog/dependency-order
+      +recursive-catalog+
+      [+recursive-coordinate+])])
+  => [[+recursive-id-coordinate+]
+      false
+      [+recursive-coordinate+]
+      true
+      true
+      [+recursive-id-coordinate+ +recursive-coordinate+]])
+
+^{:refer 'std.typed.catalog/dependency-components
+  :id 'mutually-recursive-schema-component}
+(fact "mutual structural recursion is deterministic under entry reordering"
+  (let [reordered (catalog/catalog (vec (reverse +mutual-entries+)))
+        reordered-a (catalog/coordinate reordered :graph/a 1)
+        reordered-b (catalog/coordinate reordered :graph/b 1)
+        components
+        (catalog/dependency-components
+         +mutual-catalog+
+         [+mutual-a-coordinate+])
+        reordered-components
+        (catalog/dependency-components reordered [reordered-a])]
+    [[(:component/members (first components))
+      (:component/recursive? (first components))
+      (:component/dependencies (first components))]
+     (= components reordered-components)
+     (catalog/dependency-closure
+      +mutual-catalog+
+      +mutual-a-coordinate+)
+     (catalog/dependency-order
+      reordered
+      [reordered-a])])
+  => [[[+mutual-a-coordinate+ +mutual-b-coordinate+]
+       true
+       []]
+      true
+      [+mutual-b-coordinate+]
+      [+mutual-a-coordinate+ +mutual-b-coordinate+]])
+
+^{:refer 'std.typed.catalog/catalog
+  :id 'reject-reference-only-cycle}
+(fact "reference-only cycles retain a structured cyclic-reference diagnostic"
+  (try
+    (catalog/catalog
+     [{:schema/id :alias/a
+       :schema/version 1
+       :schema/form 'B}
+      {:schema/id :alias/b
+       :schema/version 1
+       :schema/form 'A}])
+    nil
+    (catch Throwable error
+      (let [data (ex-data error)]
+        [(:type data)
+         (:cycle/type data)
+         (:finding/type data)
+         (count (:schema/coordinates data))])))
+  => [:std.typed.catalog/invalid-catalog
+      :std.typed.catalog/reference-only-cycle
+      :std.typed.schema/cyclic-reference
+      2])
+
+^{:refer 'std.typed.catalog/dependency-components
+  :id 'exact-version-pinning-in-components}
+(fact "component analysis retains the exact version selected at construction"
+  (let [value
+        (catalog/catalog
+         [{:schema/id :version/item
+           :schema/version 1
+           :schema/form :int}
+          {:schema/id :version/item
+           :schema/version 2
+           :schema/form :str}
+          {:schema/id :version/container
+           :schema/version 1
+           :schema/form
+           '[:map [:item (var Item)]]}])
+        item-v1 (catalog/coordinate value :version/item 1)
+        item-v2 (catalog/coordinate value :version/item 2)
+        container (catalog/coordinate value :version/container 1)]
+    [(catalog/dependency-closure value container)
+     (has? (set (catalog/dependency-order value)) item-v1)
+     (has? (set (catalog/dependency-order value)) item-v2)])
+  => [[item-v2] true true])
+
 (let [result (run '[std.typed.catalog-test])]
   (if (= :passed (:status result))
     (pr-str result)

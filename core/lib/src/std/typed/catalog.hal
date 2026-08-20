@@ -313,6 +313,8 @@
    {}
    grouped))
 
+(declare dependency-components)
+
 (defn ^{:schema [:function
                  [:fn [:vector] :any]
                  [:fn [:vector :map] :any]]}
@@ -340,8 +342,11 @@
           (vec
            (concat [base]
                    (get options :parents []))))]
-     (std.typed.catalog/SchemaCatalog
-      grouped visible-registry dependencies options))))
+     (let [catalog-value
+           (std.typed.catalog/SchemaCatalog
+            grouped visible-registry dependencies options)]
+       (dependency-components catalog-value)
+       catalog-value))))
 
 (defn ^{:schema [:function
                  [:fn [:any :any] :any]
@@ -405,6 +410,290 @@
    (sort-by
     (fn [coordinate-value] (pr-str coordinate-value))
     (get (:dependencies catalog-value) schema-coordinate #{}))))
+
+(defn- sort-portable
+  [values]
+  (vec (sort-by (fn [value] (pr-str value)) values)))
+
+(defn- require-catalog-value
+  [catalog-value operation]
+  (if (catalog? catalog-value)
+    catalog-value
+    (catalog-error (str operation " expects a schema catalog")
+                   {:catalog catalog-value
+                    :operation operation})))
+
+(defn- require-coordinate-vector
+  [catalog-value schema-coordinates operation]
+  (if (not (vector? schema-coordinates))
+    (catalog-error (str operation " expects a vector of exact schema coordinates")
+                   {:schema/coordinates schema-coordinates
+                    :operation operation}))
+  (doseq [schema-coordinate schema-coordinates]
+    (resolve catalog-value schema-coordinate))
+  schema-coordinates)
+
+(defn- dependency-graph
+  [catalog-value schema-coordinates]
+  (let [resolved (deps-resolve catalog-value schema-coordinates)]
+    (reduce
+     (fn [output schema-coordinate]
+       (assoc output
+              schema-coordinate
+              (set (get (:graph resolved) schema-coordinate #{}))))
+     {}
+     (sort-portable (:all resolved)))))
+
+(defn- strongly-connected-components
+  [graph]
+  (let [next-index (atom 0)
+        indexes (atom {})
+        lows (atom {})
+        stack (atom [])
+        active (atom #{})
+        output (atom [])]
+    (letfn
+     [(visit
+       [node]
+       (let [index (deref next-index)]
+         (swap! next-index inc)
+         (swap! indexes assoc node index)
+         (swap! lows assoc node index)
+         (swap! stack conj node)
+         (swap! active conj node))
+       (doseq [dependency (sort-portable (get graph node #{}))]
+         (if (not (has? (deref indexes) dependency))
+           (do
+             (visit dependency)
+             (swap!
+              lows
+              assoc
+              node
+              (min (get (deref lows) node)
+                   (get (deref lows) dependency))))
+           (if (has? (deref active) dependency)
+             (swap!
+              lows
+              assoc
+              node
+              (min (get (deref lows) node)
+                   (get (deref indexes) dependency))))))
+       (if (= (get (deref lows) node)
+              (get (deref indexes) node))
+         (loop [members []]
+           (let [current-stack (deref stack)
+                 member (last current-stack)
+                 remaining (vec (butlast current-stack))]
+             (reset! stack remaining)
+             (swap!
+              active
+              (fn [values]
+                (dissoc values member)))
+             (let [members (conj members member)]
+               (if (= member node)
+                 (swap! output conj (sort-portable members))
+                 (recur members)))))))]
+     (doseq [node (sort-portable (keys graph))]
+       (if (not (has? (deref indexes) node))
+         (visit node))))
+    (vec
+     (sort-by
+      (fn [members] (pr-str members))
+      (deref output)))))
+
+(defn- component-id
+  [members]
+  (str
+   "sha256:"
+   (Crypto/sha256
+    (str/encode-utf8
+     (pr-str
+      [:std.typed.catalog/component-v1 members])))))
+
+(defn- component-owners
+  [component-members]
+  (reduce
+   (fn [output members]
+     (let [id (component-id members)]
+       (reduce
+        (fn [owners schema-coordinate]
+          (assoc owners schema-coordinate id))
+        output
+        members)))
+   {}
+   component-members))
+
+(defn- recursive-component?
+  [graph members]
+  (or
+   (> (count members) 1)
+   (and
+    (= 1 (count members))
+    (has? (get graph (first members) #{})
+          (first members)))))
+
+(defn- reference-only-cycle?
+  [catalog-value graph members]
+  (and
+   (recursive-component? graph members)
+   (every?
+    (fn [schema-coordinate]
+      (= :reference
+         (:kind
+          (:schema/normal
+           (resolve catalog-value schema-coordinate)))))
+    members)))
+
+(defn- component-dependency-ids
+  [graph owners id members]
+  (sort-portable
+   (reduce
+    (fn [output schema-coordinate]
+      (reduce
+       (fn [dependencies dependency]
+         (let [dependency-id (get owners dependency)]
+           (if (= id dependency-id)
+             dependencies
+             (conj dependencies dependency-id))))
+       output
+       (get graph schema-coordinate #{})))
+    #{}
+    members)))
+
+(defn- component-record
+  [catalog-value graph owners members]
+  (let [id (get owners (first members))
+        recursive? (recursive-component? graph members)]
+    (if (reference-only-cycle? catalog-value graph members)
+      (catalog-error
+       "schema catalog contains a reference-only cycle"
+       {:finding/type :std.typed.schema/cyclic-reference
+        :cycle/type :std.typed.catalog/reference-only-cycle
+        :schema/coordinates members}))
+    {:component/id id
+     :component/members members
+     :component/recursive? recursive?
+     :component/dependencies
+     (component-dependency-ids graph owners id members)}))
+
+(defn- component-graph
+  [components]
+  (reduce
+   (fn [output component]
+     (assoc output
+            (:component/id component)
+            (set (:component/dependencies component))))
+   {}
+   components))
+
+(defn- dependency-first-component-order
+  [graph]
+  (loop [remaining graph
+         ordered []]
+    (if (empty? remaining)
+      ordered
+      (let [ready
+            (sort-portable
+             (filter
+              (fn [component]
+                (empty? (get remaining component #{})))
+              (keys remaining)))]
+        (if (empty? ready)
+          (catalog-error
+           "schema catalog component graph contains a cycle"
+           {:component/graph remaining
+            :component/order ordered}))
+        (let [ready-set (set ready)
+              next-remaining
+              (reduce-kv
+               (fn [output component dependencies]
+                 (if (has? ready-set component)
+                   output
+                   (assoc output
+                          component
+                          (difference dependencies ready-set))))
+               {}
+               remaining)]
+          (recur next-remaining
+                 (vec (concat ordered ready))))))))
+
+(defn ^{:schema [:function
+                 [:fn [:any] :vector]
+                 [:fn [:any :vector] :vector]]}
+  dependency-components
+  "Returns deterministic dependency-first strongly connected components.
+
+   Structural recursion is represented as a recursive component. A cycle made
+   only of reference aliases is rejected as an invalid registry-style cycle."
+  ([catalog-value]
+   (let [catalog-value
+         (require-catalog-value catalog-value "dependency-components")]
+     (dependency-components catalog-value (dep-keys catalog-value))))
+  ([catalog-value schema-coordinates]
+   (let [catalog-value
+         (require-catalog-value catalog-value "dependency-components")
+         schema-coordinates
+         (require-coordinate-vector
+          catalog-value
+          schema-coordinates
+          "dependency-components")
+         graph (dependency-graph catalog-value schema-coordinates)
+         members (strongly-connected-components graph)
+         owners (component-owners members)
+         components
+         (vec
+          (map
+           (fn [component-members]
+             (component-record
+              catalog-value graph owners component-members))
+           members))
+         by-id
+         (reduce
+          (fn [output component]
+            (assoc output (:component/id component) component))
+          {}
+          components)
+         order
+         (dependency-first-component-order
+          (component-graph components))]
+     (vec
+      (map
+       (fn [id] (get by-id id))
+       order)))))
+
+(defn ^{:schema [:function
+                 [:fn [:any] :vector]
+                 [:fn [:any :vector] :vector]]}
+  dependency-order
+  "Returns exact schema coordinates in dependency-first component order.
+
+   Members of one recursive component use deterministic coordinate ordering."
+  ([catalog-value]
+   (let [catalog-value
+         (require-catalog-value catalog-value "dependency-order")]
+     (dependency-order catalog-value (dep-keys catalog-value))))
+  ([catalog-value schema-coordinates]
+   (reduce
+    (fn [output component]
+      (into output (:component/members component)))
+    []
+    (dependency-components catalog-value schema-coordinates))))
+
+(defn ^{:schema [:fn [:any :vector] :vector]}
+  dependency-closure
+  "Returns every exact transitive dependency of one schema coordinate.
+
+   The selected coordinate itself is excluded; mutually recursive peers remain
+   present because they are separate exact entries in the same component."
+  [catalog-value schema-coordinate]
+  (let [catalog-value
+        (require-catalog-value catalog-value "dependency-closure")
+        _ (resolve catalog-value schema-coordinate)]
+    (vec
+     (filter
+      (fn [candidate]
+        (not= candidate schema-coordinate))
+      (dependency-order catalog-value [schema-coordinate])))))
 
 (extend-type SchemaCatalog IDeps
   (dep-get [catalog-value schema-coordinate]
