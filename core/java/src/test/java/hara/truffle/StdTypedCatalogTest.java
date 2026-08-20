@@ -65,20 +65,27 @@ public class StdTypedCatalogTest {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       installCatalogFixtures(context);
       assertEquals(
-          "[diagnostic]",
+          "[true true 2 1 :model/id [:model/id :model/status] [:tree/node] :map true]",
           context
               .eval(
                   HaraLanguage.ID,
-                  "[(codec/content-hash :demo/value 1 :int) "
-                      + " (codec/content-hash :demo/value 1 [:int]) "
-                      + " (codec/normalize-content :int (catalog/schema-registry base)) "
-                      + " (codec/normalize-content [:int] (catalog/schema-registry base)) "
-                      + " (:schema/ast (catalog/lookup application :app/user 2)) "
-                      + " (std.typed.catalog.ast/reference-names "
-                      + "  (:schema/ast (catalog/lookup application :app/user 2))) "
-                      + " (:schema/ast (catalog/lookup recursive :tree/node)) "
-                      + " (std.typed.catalog.ast/reference-names "
-                      + "  (:schema/ast (catalog/lookup recursive :tree/node)))]")
+                  "[(= (codec/content-hash :demo/value 1 :int) \""
+                      + GOLDEN_VALUE_HASH
+                      + "\") "
+                      + " (= (codec/content-hash :demo/value 1 :int) "
+                      + "    (codec/content-hash :demo/value 1 [:int])) "
+                      + " (:schema/version (catalog/lookup application :app/user)) "
+                      + " (:schema/version (catalog/lookup application :app/user 1)) "
+                      + " (:schema/id (catalog/lookup application :model/id)) "
+                      + " (vec (map (fn [coordinate] (:schema/id coordinate)) "
+                      + "           (:dependencies/direct "
+                      + "            (catalog/dependencies application :app/user 2)))) "
+                      + " (vec (map (fn [coordinate] (:schema/id coordinate)) "
+                      + "           (:dependencies/recursive "
+                      + "            (catalog/dependencies recursive :tree/node)))) "
+                      + " (:kind (:schema/resolved "
+                      + "         (catalog/resolve application :app/user 2))) "
+                      + " (:valid (catalog/verify application))]")
               .toString());
     }
   }
