@@ -19,11 +19,21 @@ pub use model::{
 mod interpreter;
 pub use interpreter::InterpreterLiveSession;
 
+#[path = "live_session/instrumented_interpreter.rs"]
+mod instrumented_interpreter;
+pub(crate) use instrumented_interpreter::InstrumentedInterpreterLiveSession;
+
 #[cfg(feature = "bytecode-observation")]
 #[path = "live_session/bytecode.rs"]
 mod bytecode;
 #[cfg(feature = "bytecode-observation")]
 pub use bytecode::BytecodeLiveSession;
+
+#[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
+#[path = "live_session/instrumented_hbc.rs"]
+mod instrumented_hbc;
+#[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
+pub(crate) use instrumented_hbc::InstrumentedHbcLiveSession;
 
 #[cfg(test)]
 #[path = "live_session/tests.rs"]
