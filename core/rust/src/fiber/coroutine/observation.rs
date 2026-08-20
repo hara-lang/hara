@@ -88,16 +88,16 @@ impl EvalFiber {
         match &boundary.payload {
             semantic::EvalSemanticPayload::Result(value) => {
                 event = event.with_data("result/type", crate::core::portable_type_name(value));
+                if boundary.rule == semantic::EvalSemanticRule::CallReturn {
+                    if let Some(function) = &boundary.function {
+                        event = event.with_data("function", function);
+                    }
+                }
             }
             semantic::EvalSemanticPayload::Call { name, arguments } => {
                 event = event
                     .with_data("function", name)
                     .with_data("arguments/count", arguments.len().to_string());
-            }
-            semantic::EvalSemanticPayload::CallReturn { name, result } => {
-                event = event
-                    .with_data("function", name)
-                    .with_data("result/type", crate::core::portable_type_name(result));
             }
             semantic::EvalSemanticPayload::Effect {
                 target,
@@ -120,14 +120,9 @@ impl EvalFiber {
 
     pub(crate) fn instrumentation_source_location(&self, source_id: &str) -> Option<EventLocation> {
         let boundary = semantic::current_boundary(&self.env)?;
-        let function = match &boundary.payload {
-            semantic::EvalSemanticPayload::Call { name, .. }
-            | semantic::EvalSemanticPayload::CallReturn { name, .. } => Some(name.clone()),
-            _ => None,
-        };
         Some(EventLocation {
             source_id: Some(source_id.into()),
-            function,
+            function: boundary.function,
             ..EventLocation::default()
         })
     }
@@ -184,9 +179,20 @@ impl EvalFiber {
         let display_chars = limits.max_bytes.min(16_384);
         let projection = match &boundary.payload {
             semantic::EvalSemanticPayload::Result(value) => {
-                PortableProjection::new("interpreter/value-preview")
+                let kind = if boundary.rule == semantic::EvalSemanticRule::CallReturn {
+                    "interpreter/call-return-preview"
+                } else {
+                    "interpreter/value-preview"
+                };
+                let mut projection = PortableProjection::new(kind)
                     .with_field("kind", crate::core::portable_type_name(value))
-                    .with_field("display", bounded_text(&value.display(), display_chars))
+                    .with_field("display", bounded_text(&value.display(), display_chars));
+                if let Some(function) = &boundary.function {
+                    projection
+                        .fields
+                        .insert("function".into(), function.clone());
+                }
+                projection
             }
             semantic::EvalSemanticPayload::Call { name, arguments } => {
                 let mut projection = PortableProjection::new("interpreter/call-preview")
@@ -199,12 +205,6 @@ impl EvalFiber {
                     );
                 }
                 projection
-            }
-            semantic::EvalSemanticPayload::CallReturn { name, result } => {
-                PortableProjection::new("interpreter/call-return-preview")
-                    .with_field("function", name)
-                    .with_field("kind", crate::core::portable_type_name(result))
-                    .with_field("display", bounded_text(&result.display(), display_chars))
             }
             semantic::EvalSemanticPayload::Effect {
                 target,

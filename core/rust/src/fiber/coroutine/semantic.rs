@@ -50,10 +50,6 @@ pub(in crate::core::fiber) enum EvalSemanticPayload {
         name: String,
         arguments: Vec<Value>,
     },
-    CallReturn {
-        name: String,
-        result: Value,
-    },
     Effect {
         target: String,
         before: Option<Value>,
@@ -70,6 +66,7 @@ pub(super) struct EvalSemanticBoundary {
     pub(super) sequence: usize,
     pub(super) rule: EvalSemanticRule,
     pub(super) form: Form,
+    pub(super) function: Option<String>,
     pub(super) payload: EvalSemanticPayload,
     pub(super) environment: HashMap<String, Value>,
 }
@@ -200,6 +197,20 @@ fn enqueue(
     payload: EvalSemanticPayload,
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) {
+    let function = match &payload {
+        EvalSemanticPayload::Call { name, .. } => Some(name.clone()),
+        _ => None,
+    };
+    enqueue_named(rule, form, function, payload, environment);
+}
+
+fn enqueue_named(
+    rule: EvalSemanticRule,
+    form: &Form,
+    function: Option<String>,
+    payload: EvalSemanticPayload,
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) {
     let Some(context) = active_context() else {
         return;
     };
@@ -226,6 +237,7 @@ fn enqueue(
         sequence,
         rule,
         form: form.clone(),
+        function,
         payload,
         environment: captured_environment,
     });
@@ -248,13 +260,11 @@ fn complete_call(form: &Form, result: &Value, environment: &Rc<RefCell<HashMap<S
         }
     };
     if let Some(completed) = completed {
-        enqueue(
+        enqueue_named(
             EvalSemanticRule::CallReturn,
             form,
-            EvalSemanticPayload::CallReturn {
-                name: completed.name,
-                result: result.clone(),
-            },
+            Some(completed.name),
+            EvalSemanticPayload::Result(result.clone()),
             environment,
         );
     }
