@@ -112,8 +112,8 @@ test("filesystem calls retain per-session capability gating", async () => {
       provider: "indexeddb",
       namespace: "workspace"
     });
-    await assert.rejects(
-      services["file/read"].call(invocation, "/missing"),
+    assert.throws(
+      () => services["file/read"].call(invocation, "/missing"),
       /host\/capability-denied:filesystem/
     );
   } finally {
