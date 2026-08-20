@@ -14,13 +14,12 @@ public final class HaraPlatformMatcherProtocolTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(require [std.protocol.imatch :as match]) "
-                      + "(defstruct PlatformMatcher [expected]) "
-                      + "(extend-type PlatformMatcher match/IMatch "
+                  "(defstruct PlatformMatcher [expected]) "
+                      + "(extend-type PlatformMatcher IMatch "
                       + "  (match-value [matcher actual] "
                       + "    (= (:expected matcher) actual))) "
-                      + "[(= match/IMatch std.protocol.imatch/IMatch) "
-                      + " (match/match-value (PlatformMatcher 42) 42)]")
+                      + "[(boolean IMatch) "
+                      + " (IMatch/match-value (PlatformMatcher 42) 42)]")
               .toString());
     }
   }

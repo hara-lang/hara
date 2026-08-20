@@ -149,9 +149,9 @@ pub use fiber::{EvalFiber, EvalFiberState, Step};
 include!("core/inventory.rs");
 include!("core/value.rs");
 include!("core/vm_tool.rs");
-#[cfg(feature = "bytecode-vm")]
+#[cfg(all(feature = "bytecode-vm", not(feature = "raw-wasm")))]
 include!("core/package_tool.rs");
-#[cfg(not(feature = "bytecode-vm"))]
+#[cfg(any(not(feature = "bytecode-vm"), feature = "raw-wasm"))]
 pub(crate) fn package_tool_provider_values() -> Vec<(&'static str, Value)> {
     Vec::new()
 }

@@ -211,7 +211,14 @@ impl Session {
                 .intern(name, protocol);
         }
         for (namespace, name, method) in core::builtin_protocol_method_values() {
-            namespaces.find_or_create(namespace).intern(name, method);
+            let var = namespaces.find_or_create(&namespace).intern(&name, method);
+            if matches!(
+                (namespace.as_str(), name.as_str()),
+                ("std.protocol.itomutable", "to-mutable")
+                    | ("std.protocol.itopersistent", "to-persistent")
+            ) {
+                foundation_namespace.map_var(lang::data::Symbol::parse(&name), var);
+            }
         }
         for (name, descriptor) in core::native_type_values() {
             let canonical_name = format!("std.native.{name}");
@@ -223,12 +230,13 @@ impl Session {
             let namespace_name = format!("std.native.{native_type}");
             let namespace = namespaces.find_or_create(&namespace_name);
             for method in *methods {
-                let dispatch_name = match *native_type {
-                    "Iter" => (*method).to_owned(),
-                    "String" => format!("str/{method}"),
-                    _ => format!("{namespace_name}/{method}"),
-                };
-                namespace.intern(*method, core::structural_function_value(dispatch_name));
+                let var = namespace.intern(
+                    *method,
+                    core::native_type_function_value(native_type, method),
+                );
+                if *native_type == "Base" {
+                    foundation_namespace.map_var(lang::data::Symbol::parse(method), var);
+                }
             }
         }
         let native_string = namespaces.find_or_create("std.native.String");

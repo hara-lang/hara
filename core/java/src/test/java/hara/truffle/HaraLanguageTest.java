@@ -1785,7 +1785,9 @@ public class HaraLanguageTest {
     while (names.find()) {
       protocols.add(names.group(1));
     }
-    assertEquals(55, protocols.size());
+    assertTrue(contract, contract.contains(":protocol-count 55"));
+    assertTrue(contract, contract.contains(":capability-specific-protocol-count 15"));
+    assertEquals(70, protocols.size());
     Set<String> unavailableProtocols =
         Set.of(
             "IColl",
@@ -1889,6 +1891,9 @@ public class HaraLanguageTest {
     while (calls.find()) callCount++;
     assertEquals(105, callCount);
     assertTrue(!source.contains("protocol-call"));
+    assertTrue(
+        "protocol types must resolve unqualified in guest source",
+        !Pattern.compile("std\\.protocol\\.[^\\s/]+/I[A-Z]").matcher(source).find());
 
     try (Context context = context()) {
       String result = context.eval(HaraLanguage.ID, source).toString();
@@ -1913,6 +1918,9 @@ public class HaraLanguageTest {
         Files.readString(
             specsRegistry()
                 .resolve("01-lang/001-language/draft/conformance/protocols.edn"));
+    assertTrue(
+        "protocol types must resolve unqualified in guest source",
+        !Pattern.compile("std\\.protocol\\.[^\\s/]+/I[A-Z]").matcher(source).find());
     Set<String> specifiedMethods = new LinkedHashSet<>();
     Matcher protocolEntries =
         Pattern.compile(
@@ -1934,7 +1942,9 @@ public class HaraLanguageTest {
         "Behavioral protocol cases must exactly close the authoritative method surface",
         specifiedMethods,
         catalogMethods);
-    assertEquals(105, catalog.split("\\{:protocol ", -1).length - 1);
+    assertEquals(125, catalog.split("\\{:protocol ", -1).length - 1);
+    assertEquals(6, protocols.split(" -1", -1).length - 1);
+    assertEquals(6, catalog.split(":case :declared-variadic", -1).length - 1);
     int expectedFailureCount =
         catalog.split(":case :unsupported-receiver", -1).length - 1;
     Matcher methodVars =
@@ -1947,6 +1957,32 @@ public class HaraLanguageTest {
       String result = context.eval(HaraLanguage.ID, source).toString();
       assertTrue(result, !result.contains(":pass false"));
       assertEquals(105, result.split(":pass true", -1).length - 1);
+      String capabilityResult =
+          context.eval(HaraLanguage.ID, "(capability-protocol-results)").toString();
+      assertTrue(capabilityResult, !capabilityResult.contains(":pass false"));
+      assertEquals(20, capabilityResult.split(":pass true", -1).length - 1);
+      String receiverMatrix =
+          context.eval(HaraLanguage.ID, "(protocol-receiver-matrix-results)").toString();
+      assertTrue(receiverMatrix, !receiverMatrix.contains(":pass false"));
+      assertEquals(10, receiverMatrix.split(":pass true", -1).length - 1);
+      String crossCutting =
+          context.eval(HaraLanguage.ID, "(protocol-cross-cutting-results)").toString();
+      assertTrue(crossCutting, !crossCutting.contains(":pass false"));
+      assertEquals(6, crossCutting.split(":pass true", -1).length - 1);
+      String capabilityReceivers =
+          context
+              .eval(HaraLanguage.ID, "(protocol-capability-receiver-results)")
+              .toString();
+      assertTrue(capabilityReceivers, !capabilityReceivers.contains(":pass false"));
+      assertEquals(8, capabilityReceivers.split(":pass true", -1).length - 1);
+      String nativeValues =
+          context.eval(HaraLanguage.ID, "(protocol-native-value-results)").toString();
+      assertTrue(nativeValues, !nativeValues.contains(":pass false"));
+      assertEquals(15, nativeValues.split(":pass true", -1).length - 1);
+      String predicates =
+          context.eval(HaraLanguage.ID, "(protocol-predicate-results)").toString();
+      assertTrue(predicates, !predicates.contains(":pass false"));
+      assertEquals(7, predicates.split(":pass true", -1).length - 1);
 
       int methodCount = 0;
       while (methodVars.find()) {
@@ -1961,7 +1997,7 @@ public class HaraLanguageTest {
             methodVar + " returned an uncategorized arity error: " + error.getMessage(),
             error.getMessage().contains("protocol/arity"));
       }
-      assertEquals(105, methodCount);
+      assertEquals(125, methodCount);
 
       int failureCount = 0;
       for (String line : source.split("\\R")) {
@@ -1999,6 +2035,37 @@ public class HaraLanguageTest {
                       + "(catch Throwable error true))")
               .asBoolean());
     }
+  }
+
+  @Test
+  public void sharedFoundationProtocolCorpusRecordsJvmInterpreterCapabilityExclusion()
+      throws Exception {
+    String protocols =
+        Files.readString(
+            specsRegistry()
+                .resolve("01-lang/001-language/draft/conformance/protocols.edn"));
+    String corpus =
+        Files.readString(
+            specsRegistry()
+                .resolve(
+                    "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal"));
+    assertTrue(corpus.contains("protocol-cross-cutting-results"));
+    assertTrue(corpus.contains("capability-protocol-results"));
+    assertTrue(corpus.contains("protocol-capability-receiver-results"));
+    assertTrue(protocols.contains(":jvm-interpreter"));
+    assertTrue(
+        protocols.contains(
+            ":portable 105 :capability-specific 20 :passed 0 :failed 0 :skipped 125"));
+    assertTrue(
+        protocols.contains(":reason :jvm-interpreter-does-not-expose-std-protocol-guest-vars"));
+    assertEquals(4, protocols.split(":passed 125 :failed 0 :skipped 0", -1).length - 1);
+
+    RT.Instance<Object> interpreter = new RT.Instance<>(null, "protocol-conformance-profile");
+    assertThrows(
+        Throwable.class,
+        () ->
+            interpreter.eval(
+                interpreter.readString("std.protocol.icount/ICount")));
   }
 
   @Test
