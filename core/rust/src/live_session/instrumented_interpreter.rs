@@ -6,8 +6,8 @@ use std::rc::Rc;
 use crate::core::{self, EvalFiberState, PromiseState, Value};
 use crate::instrumentation::{
     interpreter_capabilities, Capability, ControlLease, DeliveredEvent, EventDelivery, EventKind,
-    EventPhase, InstrumentFilter, InstrumentHandle, InstrumentMode, InstrumentRegistration,
-    InstrumentDirective, InstrumentationError, InstrumentationHub, InterpreterTarget,
+    EventPhase, InstrumentDirective, InstrumentFilter, InstrumentHandle, InstrumentMode,
+    InstrumentRegistration, InstrumentationError, InstrumentationHub, InterpreterTarget,
     ProjectionLimits, ProjectionRequest, RuntimeBackend, TargetDescriptor, TargetHandle,
     TargetKind,
 };
@@ -83,11 +83,7 @@ impl InstrumentedInterpreterLiveSession {
         let hub = runtime.evaluator.instrumentation_handle();
         let target_id = target_id(&owner_session_id, &session_id);
         let instrument_id = instrument_id(&owner_session_id, &session_id);
-        let registration = controller_registration(
-            &owner_session_id,
-            &instrument_id,
-            &target_id,
-        );
+        let registration = controller_registration(&owner_session_id, &instrument_id, &target_id);
         let instrument = hub
             .borrow_mut()
             .register(registration)
@@ -326,7 +322,10 @@ impl InstrumentedInterpreterLiveSession {
             .map_err(instrumentation_error)
     }
 
-    fn resume(&mut self, settlement: Option<LiveSettlement>) -> Result<JsonValue, LiveSessionError> {
+    fn resume(
+        &mut self,
+        settlement: Option<LiveSettlement>,
+    ) -> Result<JsonValue, LiveSessionError> {
         if matches!(self.target()?.state(), EvalFiberState::Suspended) {
             if let Some(settlement) = settlement {
                 let pending = self.target()?.pending().ok_or_else(|| {
@@ -558,7 +557,7 @@ fn controller_registration(
             target_ids: BTreeSet::from([target_id.into()]),
             target_kinds: BTreeSet::from([TargetKind::Interpreter]),
             backends: BTreeSet::from([
-                RuntimeBackend::new("rust").expect("Rust is a valid backend id"),
+                RuntimeBackend::new("rust").expect("Rust is a valid backend id")
             ]),
         },
         projection,
