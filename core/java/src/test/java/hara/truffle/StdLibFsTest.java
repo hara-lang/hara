@@ -25,7 +25,7 @@ public class StdLibFsTest {
                   "(try (deref (File/read \"/missing\"))"
                       + "     :unexpected"
                       + "     (catch Throwable error"
-                      + "       (get (ex-data error) :error/code)))")
+                      + "       (get (ex-data error) :ex/code)))")
               .toString());
     }
   }
@@ -55,7 +55,7 @@ public class StdLibFsTest {
                   "(try (std.lib.fs/write-bytes \"/alpha.bin\" (bytes 9))"
                       + "     :unexpected"
                       + "     (catch Throwable error"
-                      + "       (get (ex-data error) :error/code)))")
+                      + "       (get (ex-data error) :ex/code)))")
               .toString());
 
       assertEquals(

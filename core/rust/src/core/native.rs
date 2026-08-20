@@ -2081,10 +2081,16 @@ fn host_error(code: &str, message: &str) -> Value {
     Value::ExceptionInfo(Rc::new(ExceptionInfo {
         message: message.into(),
         data: Box::new(Value::Map(
-            vec![(
-                Value::Keyword("error/code".into()),
-                Value::Keyword(code.into()),
-            )]
+            vec![
+                (
+                    Value::Keyword("ex/code".into()),
+                    Value::Keyword(code.into()),
+                ),
+                (
+                    Value::Keyword("ex/class".into()),
+                    Value::Keyword("ex.class/host".into()),
+                ),
+            ]
             .into_iter()
             .collect(),
         )),

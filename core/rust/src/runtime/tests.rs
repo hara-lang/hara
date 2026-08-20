@@ -1050,10 +1050,10 @@ mod tests {
                 .eval_text(
                     "(try
                        (deref (file/read \"/data.bin\"))
-                       (catch error (get (ex-data error) :error/code)))",
+                       (catch error (get (ex-data error) :ex/code)))",
                 )
                 .unwrap(),
-            ":file/unsupported"
+            ":file/denied"
         );
 
         runtime.install_memory_file_provider("/");
@@ -4719,14 +4719,18 @@ mod tests {
             ":ex.class/internal"
         );
         assert_eq!(
-            runtime.eval_text("(:ex/code (ex-data (ex :not-found {})))").unwrap(),
+            runtime
+                .eval_text("(:ex/code (ex-data (ex :not-found {})))")
+                .unwrap(),
             ":hara/not-found"
         );
         assert!(runtime
             .eval_text("(ex :not-found {:ex/class :ex.class/io})")
             .is_err());
         assert!(runtime.eval_text("(ex :unknown {})").is_err());
-        assert!(runtime.eval_text("(ex :file/read {:ex/class :io})").is_err());
+        assert!(runtime
+            .eval_text("(ex :file/read {:ex/class :io})")
+            .is_err());
         assert!(runtime.eval_text("(ex-native-type 42)").is_err());
     }
 
@@ -7010,7 +7014,7 @@ mod tests {
                        (deref (Host/call \"missing\" \"missing\" []))
                        (catch error
                          [(ex-message error)
-                          (get (ex-data error) :error/code)]))"
+                          (get (ex-data error) :ex/code)]))"
                 )
                 .unwrap(),
             "[\"Host capability provider is unavailable\" :host/unavailable]"
@@ -7022,7 +7026,7 @@ mod tests {
                        (promise/catch
                          (Host/call \"missing\" \"missing\" [])
                          (fn [error]
-                           (get (ex-data error) :error/code))))"
+                           (get (ex-data error) :ex/code))))"
                 )
                 .unwrap(),
             ":host/unavailable"
@@ -7034,7 +7038,7 @@ mod tests {
                     "(try
                        (deref (Host/call \"missing\" \"missing\" []))
                        (catch error
-                         (get (ex-data error) :error/code)))"
+                         (get (ex-data error) :ex/code)))"
                 )
                 .unwrap(),
             ":host/unavailable"

@@ -633,13 +633,36 @@ fn sandbox_error_value(error: &str) -> Value {
     Value::ExceptionInfo(Rc::new(ExceptionInfo {
         message: message.into(),
         data: Box::new(Value::Map(
-            [(keyword("error/code"), keyword(code))]
-                .into_iter()
-                .collect(),
+            [
+                (keyword("ex/code"), keyword(code)),
+                (keyword("ex/class"), keyword(sandbox_error_class(code))),
+            ]
+            .into_iter()
+            .collect(),
         )),
         cause: None,
         provenance: Rc::new(RefCell::new(Default::default())),
     }))
+}
+
+fn sandbox_error_class(code: &str) -> &'static str {
+    match code {
+        "sandbox/invalid-spec" => "ex.class/argument",
+        "sandbox/provider-not-found"
+        | "sandbox/bundle-not-found"
+        | "sandbox/mount-not-found"
+        | "sandbox/not-found" => "ex.class/not-found",
+        "sandbox/provider-unavailable" => "ex.class/dependency",
+        "sandbox/bundle-digest-mismatch" | "sandbox/result-not-transferable" => {
+            "ex.class/serialization"
+        }
+        "sandbox/busy" => "ex.class/conflict",
+        "sandbox/cancelled" | "sandbox/evaluation-failed" => "ex.class/state",
+        "sandbox/timeout" => "ex.class/timeout",
+        "sandbox/limit-exceeded" => "ex.class/limit",
+        "sandbox/transport-failed" => "ex.class/io",
+        _ => "ex.class/host",
+    }
 }
 
 fn sandbox_rejected_promise(error: &str) -> Promise {

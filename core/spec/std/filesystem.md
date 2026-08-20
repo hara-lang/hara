@@ -52,13 +52,13 @@ The result of `fs/read-bytes` is already a byte value, so `(deref (fs/read-bytes
 Provider failures contain stable data:
 
 ```clojure
-{:error/code     :file/not-found
+{:ex/code        :file/not-found
  :file/operation :read
  :file/path      "/missing"
  :file/target    nil}
 ```
 
-Portable code should branch on `:error/code`, not host error text. Stable codes include:
+Portable code should branch on `:ex/code`, not host error text. Stable codes include:
 
 - `:file/not-found`
 - `:file/already-exists`

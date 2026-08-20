@@ -259,8 +259,12 @@ pub fn file_error_value(
         data: Box::new(Value::Map(
             [
                 (
-                    Value::Keyword("error/code".into()),
+                    Value::Keyword("ex/code".into()),
                     Value::Keyword(format!("file/{}", error.code()).into()),
+                ),
+                (
+                    Value::Keyword("ex/class".into()),
+                    Value::Keyword(file_error_class(error).into()),
                 ),
                 (
                     Value::Keyword("file/operation".into()),
@@ -278,6 +282,21 @@ pub fn file_error_value(
         cause: None,
         provenance: Rc::new(RefCell::new(Default::default())),
     }))
+}
+
+fn file_error_class(error: &FileError) -> &'static str {
+    match error {
+        FileError::NotFound => "ex.class/not-found",
+        FileError::AlreadyExists | FileError::DirectoryNotEmpty => "ex.class/conflict",
+        FileError::InvalidPath(_) => "ex.class/argument",
+        FileError::OutsideRoot | FileError::Denied | FileError::PermissionDenied => {
+            "ex.class/security"
+        }
+        FileError::NotDirectory
+        | FileError::IsDirectory
+        | FileError::Unsupported
+        | FileError::Io(_) => "ex.class/io",
+    }
 }
 
 fn resolved(value: Value) -> Promise {
@@ -1473,7 +1492,7 @@ mod tests {
             panic!("filesystem rejection data was not a map");
         };
         assert_eq!(
-            data.get(&Value::Keyword("error/code".into())),
+            data.get(&Value::Keyword("ex/code".into())),
             Some(&Value::Keyword("file/not-found".into()))
         );
         assert_eq!(

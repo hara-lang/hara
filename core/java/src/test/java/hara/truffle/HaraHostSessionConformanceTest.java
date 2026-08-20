@@ -97,7 +97,7 @@ public class HaraHostSessionConformanceTest {
                 (deref (Host/call "missing" "missing" []))
                 (catch Throwable error
                   [(ex-message error)
-                   (name (get (ex-data error) :error/code))]))
+                   (name (get (ex-data error) :ex/code))]))
               """);
       assertEquals("Host method is unavailable: missing/missing", result.getArrayElement(0).asString());
       assertEquals("method-unavailable", result.getArrayElement(1).asString());
@@ -112,7 +112,7 @@ public class HaraHostSessionConformanceTest {
                     (promise/catch
                       (Host/call "missing" "missing" [])
                       (fn [error]
-                        (name (get (ex-data error) :error/code)))))
+                        (name (get (ex-data error) :ex/code)))))
                   """)
               .asString());
     }
@@ -128,7 +128,7 @@ public class HaraHostSessionConformanceTest {
                       (try
                         (deref (Host/call "missing" "missing" []))
                         (catch Throwable error
-                          (get (ex-data error) :error/code)))
+                          (get (ex-data error) :ex/code)))
                       """)));
     }
   }

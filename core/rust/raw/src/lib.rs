@@ -2974,10 +2974,16 @@ mod tests {
     fn structured_promise_rejections_survive_hta_settlement() {
         let events = Rc::new(RefCell::new(VecDeque::new()));
         let rejection = Value::Map(
-            vec![(
-                Value::Keyword("error/code".into()),
-                Value::Keyword("host/unavailable".into()),
-            )]
+            vec![
+                (
+                    Value::Keyword("ex/code".into()),
+                    Value::Keyword("host/unavailable".into()),
+                ),
+                (
+                    Value::Keyword("ex/class".into()),
+                    Value::Keyword("ex.class/host".into()),
+                ),
+            ]
             .into_iter()
             .collect(),
         );

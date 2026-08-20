@@ -62,7 +62,7 @@ public class SandboxSubstrateTest {
               .root()
               .eval(
                   "(try (deref (std.sandbox/open {:unknown true})) "
-                      + "(catch Throwable error (:error/code (ex-data error))))")
+                      + "(catch Throwable error (:ex/code (ex-data error))))")
               .toString());
     }
   }

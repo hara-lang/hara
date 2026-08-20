@@ -3613,8 +3613,10 @@ public final class HaraContext {
             message,
             hara.lang.data.Map.Standard.from(
                 null,
-                Keyword.create("error", "code"),
-                keyword(code))));
+                Keyword.create("ex", "code"),
+                keyword(code),
+                Keyword.create("ex", "class"),
+                Keyword.create("ex.class", "host"))));
     return new HaraPromise(future);
   }
 
@@ -4319,8 +4321,10 @@ public final class HaraContext {
     Object data =
         HaraPersistentValues.normalize(
             java.util.Map.of(
-                Keyword.create("error/code"),
-                Keyword.create(sandboxErrorCode(error.code()))));
+                Keyword.create("ex/code"),
+                Keyword.create(sandboxErrorCode(error.code())),
+                Keyword.create("ex/class"),
+                Keyword.create(sandboxErrorClass(error.code()))));
     return new hara.lang.base.Ex.Info(
         error.getMessage(), (hara.lang.protocol.IMetadata) data, error);
   }
@@ -4342,6 +4346,22 @@ public final class HaraContext {
       case RESULT_NOT_TRANSFERABLE -> "sandbox/result-not-transferable";
       case TRANSPORT_FAILED -> "sandbox/transport-failed";
       case PROVIDER_FAILED -> "sandbox/provider-failed";
+    };
+  }
+
+  private static String sandboxErrorClass(SandboxModel.ErrorCode code) {
+    return switch (code) {
+      case INVALID_SPEC -> "ex.class/argument";
+      case PROVIDER_NOT_FOUND, BUNDLE_NOT_FOUND, MOUNT_NOT_FOUND, NOT_FOUND, CLOSED ->
+          "ex.class/not-found";
+      case PROVIDER_UNAVAILABLE, UNSUPPORTED -> "ex.class/dependency";
+      case BUNDLE_DIGEST_MISMATCH, RESULT_NOT_TRANSFERABLE -> "ex.class/serialization";
+      case BUSY -> "ex.class/conflict";
+      case CANCELLED, EVALUATION_FAILED -> "ex.class/state";
+      case TIMEOUT -> "ex.class/timeout";
+      case LIMIT_EXCEEDED -> "ex.class/limit";
+      case TRANSPORT_FAILED -> "ex.class/io";
+      case PROVIDER_FAILED -> "ex.class/host";
     };
   }
 
@@ -6018,8 +6038,10 @@ public final class HaraContext {
     IMetadata data =
         hara.lang.data.Map.Standard.from(
             null,
-            Keyword.create("error", "code"),
+            Keyword.create("ex", "code"),
             Keyword.create("file", code),
+            Keyword.create("ex", "class"),
+            fileErrorClass(code),
             Keyword.create("file", "operation"),
             Keyword.create(operation),
             Keyword.create("file", "path"),
@@ -6030,6 +6052,17 @@ public final class HaraContext {
     if (message == null || message.isBlank()) message = cause.getClass().getSimpleName();
     return new hara.lang.base.Ex.Info(
         "file/" + operation + " failed: " + message, data, cause);
+  }
+
+  private static Keyword fileErrorClass(String code) {
+    return switch (code) {
+      case "not-found" -> Keyword.create("ex.class", "not-found");
+      case "already-exists", "directory-not-empty" -> Keyword.create("ex.class", "conflict");
+      case "denied", "permission-denied", "outside-root" ->
+          Keyword.create("ex.class", "security");
+      case "invalid-path" -> Keyword.create("ex.class", "argument");
+      default -> Keyword.create("ex.class", "io");
+    };
   }
 
   private static Object canonicalFilePath(String value) {
