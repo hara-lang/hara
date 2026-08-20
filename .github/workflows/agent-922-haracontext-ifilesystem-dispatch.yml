@@ -1,0 +1,987 @@
+name: Agent 922 HaraContext IFilesystem dispatch
+
+on:
+  push:
+    branches:
+      - agent/922-haracontext-ifilesystem-dispatch
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-922-haracontext-ifilesystem-dispatch
+  cancel-in-progress: true
+
+jobs:
+  implement-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/922-haracontext-ifilesystem-dispatch
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Apply bounded product patch
+        shell: bash
+        run: |
+          cat > /tmp/apply-922.py <<'PY'
+          from pathlib import Path
+          import re
+
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one exact match, found {count}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+
+          def sub_once(path: str, pattern: str, replacement: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S | re.M)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one regex match, found {count}: {pattern[:120]!r}")
+              p.write_text(updated)
+
+
+          # Add the opaque one-use Truffle-context binding registry and provider-neutral value projection.
+          Path("core/java/src/main/java/hara/truffle/FilesystemContextBindings.java").write_text(r'''package hara.truffle;
+
+          import java.nio.file.Path;
+          import java.util.Objects;
+          import java.util.UUID;
+          import java.util.concurrent.ConcurrentHashMap;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+          import java.util.concurrent.ScheduledExecutorService;
+          import java.util.concurrent.ThreadFactory;
+          import java.util.concurrent.atomic.AtomicLong;
+
+          /**
+           * One-use trusted handoff of an exact Session filesystem binding into a Truffle context.
+           *
+           * <p>The token is an embedding implementation detail. It is never a mount identifier, descriptor,
+           * provider credential, or guest value. A context claims the binding exactly once; an uninitialized
+           * context discards its token when the Session replaces or closes it.
+           */
+          final class FilesystemContextBindings {
+            private static final ConcurrentHashMap<String, FilesystemRuntimeBinding> PENDING =
+                new ConcurrentHashMap<>();
+            private static final ExecutorService FILESYSTEM_IO =
+                Executors.newCachedThreadPool(daemonThreadFactory("hara-context-filesystem-io-"));
+            private static final ScheduledExecutorService FILESYSTEM_SCHEDULER =
+                Executors.newSingleThreadScheduledExecutor(
+                    daemonThreadFactory("hara-context-filesystem-deadline-"));
+
+            private FilesystemContextBindings() {}
+
+            static String publish(FilesystemRuntimeBinding binding) {
+              Objects.requireNonNull(binding, "filesystem runtime binding");
+              while (true) {
+                String token = UUID.randomUUID().toString();
+                if (PENDING.putIfAbsent(token, binding) == null) return token;
+              }
+            }
+
+            static FilesystemRuntimeBinding claim(String token) {
+              if (token == null || token.isBlank()) return null;
+              FilesystemRuntimeBinding binding = PENDING.remove(token);
+              if (binding == null) {
+                throw new IllegalArgumentException("FILESYSTEM_CONTEXT_BINDING_UNAVAILABLE");
+              }
+              return binding;
+            }
+
+            static void discard(String token) {
+              if (token != null && !token.isBlank()) PENDING.remove(token);
+            }
+
+            static NativeFilesystem nativeFilesystem(Path root) {
+              return new NativeFilesystem(
+                  new HaraFileProvider(Objects.requireNonNull(root, "filesystem root")),
+                  "native context",
+                  FILESYSTEM_IO,
+                  FILESYSTEM_SCHEDULER);
+            }
+
+            static int pendingCount() {
+              return PENDING.size();
+            }
+
+            private static ThreadFactory daemonThreadFactory(String prefix) {
+              AtomicLong sequence = new AtomicLong(1);
+              return task -> {
+                Thread thread = new Thread(task, prefix + sequence.getAndIncrement());
+                thread.setDaemon(true);
+                return thread;
+              };
+            }
+          }
+          ''')
+
+          Path("core/java/src/main/java/hara/truffle/FilesystemHaraValues.java").write_text(r'''package hara.truffle;
+
+          import hara.lang.data.Keyword;
+          import java.util.ArrayList;
+          import java.util.Comparator;
+          import java.util.List;
+          import java.util.Map;
+
+          /** Projects provider-neutral filesystem values onto the existing public Hara data shape. */
+          final class FilesystemHaraValues {
+            private FilesystemHaraValues() {}
+
+            static Object entry(IFilesystem.Entry entry) {
+              ArrayList<Object> extensions = new ArrayList<>();
+              entry.extensions().entrySet().stream()
+                  .sorted(Map.Entry.comparingByKey())
+                  .forEach(
+                      value -> {
+                        extensions.add(keyword(value.getKey()));
+                        extensions.add(HaraPersistentValues.normalize(value.getValue()));
+                      });
+              if (entry.id() != null) {
+                extensions.add(Keyword.create("file", "id"));
+                extensions.add(entry.id());
+              }
+              if (entry.revision() != null) {
+                extensions.add(Keyword.create("file", "revision"));
+                extensions.add(entry.revision());
+              }
+              if (entry.capabilities() != null) {
+                Object[] capabilities =
+                    entry.capabilities().values().stream()
+                        .sorted(Comparator.comparing(IFilesystem.Capability::keyword))
+                        .map(capability -> Keyword.create(capability.keyword()))
+                        .toArray();
+                extensions.add(Keyword.create("provider", "capabilities"));
+                extensions.add(hara.lang.data.Set.Standard.from(null, capabilities));
+              }
+              return hara.lang.data.Map.Standard.from(
+                  null,
+                  Keyword.create("path"),
+                  entry.path(),
+                  Keyword.create("name"),
+                  entry.name(),
+                  Keyword.create("type"),
+                  Keyword.create(entry.type().keyword()),
+                  Keyword.create("size"),
+                  entry.size(),
+                  Keyword.create("modified-at"),
+                  entry.modifiedAt(),
+                  Keyword.create("extensions"),
+                  hara.lang.data.Map.Standard.from(null, extensions.toArray()));
+            }
+
+            static Object entries(List<IFilesystem.Entry> entries) {
+              return hara.lang.data.Vector.Standard.from(
+                  null, entries.stream().map(FilesystemHaraValues::entry).toArray());
+            }
+
+            static Object paths(List<String> paths) {
+              return hara.lang.data.Vector.Standard.from(null, paths.toArray());
+            }
+
+            private static Keyword keyword(String value) {
+              int separator = value.indexOf('/');
+              if (separator > 0 && separator < value.length() - 1) {
+                return Keyword.create(value.substring(0, separator), value.substring(separator + 1));
+              }
+              return Keyword.create(value);
+            }
+          }
+          ''')
+
+          # Register the binding as an internal Truffle option and close context-owned providers on teardown.
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraLanguage.java",
+              '''  static final OptionKey<String> KERNEL_TOKEN = new OptionKey<>("");
+
+            private static final ContextReference<HaraContext> CONTEXT_REFERENCE =''',
+              '''  static final OptionKey<String> KERNEL_TOKEN = new OptionKey<>("");
+
+            @Option(
+                name = "FilesystemBindingToken",
+                help = "Internal one-use token for an exact Session filesystem binding.",
+                category = OptionCategory.INTERNAL,
+                stability = OptionStability.STABLE)
+            static final OptionKey<String> FILESYSTEM_BINDING_TOKEN = new OptionKey<>("");
+
+            private static final ContextReference<HaraContext> CONTEXT_REFERENCE =''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraLanguage.java",
+              '''  protected void finalizeContext(HaraContext context) {
+              context.closeExtensions();
+            }''',
+              '''  protected void finalizeContext(HaraContext context) {
+              context.closeContext();
+            }''')
+
+          # Hand one exact per-Session binding into each context without using the shared Kernel token.
+          replace_once(
+              "core/java/src/main/java/hara/truffle/SessionKernel.java",
+              '''    private Context context;
+              private volatile AttachedFilesystem filesystem;''',
+              '''    private Context context;
+              private String contextFilesystemBindingToken;
+              private volatile AttachedFilesystem filesystem;''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/SessionKernel.java",
+              '''    private record AttachedFilesystem(
+                  SessionModel.SessionMountId id,
+                  FilesystemRuntimeBinding runtime,
+                  HaraMountedFileSystem sourceFilesystem) {}
+          ''',
+              '''    private record AttachedFilesystem(
+                  SessionModel.SessionMountId id,
+                  FilesystemRuntimeBinding runtime,
+                  HaraMountedFileSystem sourceFilesystem) {}
+
+              private record ContextLease(Context context, String filesystemBindingToken) {}
+          ''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/SessionKernel.java",
+              '''      this.kernelToken = kernelToken;
+              context = createContext(null);
+              activate();''',
+              '''      this.kernelToken = kernelToken;
+              ContextLease initial = createContext(null);
+              context = initial.context();
+              contextFilesystemBindingToken = initial.filesystemBindingToken();
+              activate();''')
+          sub_once(
+              "core/java/src/main/java/hara/truffle/SessionKernel.java",
+              r'''    private Context createContext\(AttachedFilesystem filesystem\) \{.*?^    \}\n\n    private void requireActive''',
+              r'''    private ContextLease createContext(AttachedFilesystem filesystem) {
+              IOAccess.Builder io = IOAccess.newBuilder().allowHostSocketAccess(authority.hostNetwork);
+              if (filesystem == null) {
+                io.allowHostFileAccess(authority.hostFilesystem);
+              } else if (filesystem.sourceFilesystem() == null) {
+                io.allowHostFileAccess(false);
+              } else {
+                io.allowHostFileAccess(false).fileSystem(filesystem.sourceFilesystem());
+              }
+              String filesystemBindingToken =
+                  filesystem == null ? null : FilesystemContextBindings.publish(filesystem.runtime());
+              try {
+                Context.Builder builder =
+                    Context.newBuilder(HaraLanguage.ID)
+                        .option("hara.SandboxRestricted", Boolean.toString(sandboxRestricted))
+                        .allowCreateProcess(authority.hostProcess)
+                        .allowIO(io.build());
+                if (kernelToken != null) builder.option("hara.KernelToken", kernelToken);
+                if (filesystemBindingToken != null) {
+                  builder.option("hara.FilesystemBindingToken", filesystemBindingToken);
+                }
+                if (authority.project && project != null && filesystem == null) {
+                  builder.currentWorkingDirectory(project.root());
+                }
+                if (authority.reflection && project != null) {
+                  builder.allowHostAccess(HostAccess.ALL).allowHostClassLookup(name -> true);
+                }
+                return new ContextLease(builder.build(), filesystemBindingToken);
+              } catch (Throwable error) {
+                FilesystemContextBindings.discard(filesystemBindingToken);
+                throw error;
+              }
+            }
+
+              private static void closeContext(ContextLease lease) {
+              closeContext(lease.context(), lease.filesystemBindingToken());
+            }
+
+              private static void closeContext(Context context, String filesystemBindingToken) {
+              try {
+                if (context != null) context.close(true);
+              } finally {
+                FilesystemContextBindings.discard(filesystemBindingToken);
+              }
+            }
+
+              private void requireActive''')
+          sub_once(
+              "core/java/src/main/java/hara/truffle/SessionKernel.java",
+              r'''    void attachFilesystem\(AttachedFilesystem attached\) \{.*?^    \}\n\n    SessionModel\.SessionMountId detachFilesystem\(\) \{.*?^    \}\n''',
+              r'''    void attachFilesystem(AttachedFilesystem attached) {
+              requireActive();
+              if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + id());
+              ContextLease replacement = createContext(attached);
+              AttachedFilesystem previousFilesystem;
+              synchronized (this) {
+                if (state.get() != SessionModel.SessionState.ACTIVE) {
+                  closeContext(replacement);
+                  requireActive();
+                }
+                if (activeEvaluations.get() != 0) {
+                  closeContext(replacement);
+                  throw new IllegalArgumentException("SESSION_BUSY " + id());
+                }
+                Context previous = context;
+                String previousToken = contextFilesystemBindingToken;
+                previousFilesystem = filesystem;
+                context = replacement.context();
+                contextFilesystemBindingToken = replacement.filesystemBindingToken();
+                filesystem = attached;
+                closeContext(previous, previousToken);
+              }
+              if (previousFilesystem != null) previousFilesystem.runtime().close();
+            }
+
+              SessionModel.SessionMountId detachFilesystem() {
+              requireActive();
+              if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + id());
+              ContextLease replacement = createContext(null);
+              AttachedFilesystem released;
+              synchronized (this) {
+                if (state.get() != SessionModel.SessionState.ACTIVE) {
+                  closeContext(replacement);
+                  requireActive();
+                }
+                if (activeEvaluations.get() != 0) {
+                  closeContext(replacement);
+                  throw new IllegalArgumentException("SESSION_BUSY " + id());
+                }
+                Context previous = context;
+                String previousToken = contextFilesystemBindingToken;
+                released = filesystem;
+                context = replacement.context();
+                contextFilesystemBindingToken = replacement.filesystemBindingToken();
+                filesystem = null;
+                closeContext(previous, previousToken);
+              }
+              if (released != null) released.runtime().close();
+              return released == null ? null : released.id();
+            }
+          ''')
+          sub_once(
+              "core/java/src/main/java/hara/truffle/SessionKernel.java",
+              r'''    @Override\n    public void close\(\) \{\n      if \(!state\.compareAndSet\(SessionModel\.SessionState\.ACTIVE, SessionModel\.SessionState\.CLOSED\)\)\n        return;\n      Context ownedContext;\n      AttachedFilesystem ownedFilesystem;\n      synchronized \(this\) \{\n        ownedContext = context;\n        ownedFilesystem = filesystem;\n        context = null;\n        filesystem = null;\n      \}\n      try \{\n        if \(ownedContext != null\) ownedContext\.close\(true\);\n      \} finally \{\n        if \(ownedFilesystem != null\) \{\n          ownedFilesystem\.runtime\(\)\.close\(\);\n          mountRelease\.accept\(ownedFilesystem\.id\(\)\);\n        \}\n      \}\n    \}\n''',
+              r'''    @Override
+              public void close() {
+              if (!state.compareAndSet(SessionModel.SessionState.ACTIVE, SessionModel.SessionState.CLOSED))
+                return;
+              Context ownedContext;
+              String ownedToken;
+              AttachedFilesystem ownedFilesystem;
+              synchronized (this) {
+                ownedContext = context;
+                ownedToken = contextFilesystemBindingToken;
+                ownedFilesystem = filesystem;
+                context = null;
+                contextFilesystemBindingToken = null;
+                filesystem = null;
+              }
+              try {
+                closeContext(ownedContext, ownedToken);
+              } finally {
+                if (ownedFilesystem != null) {
+                  ownedFilesystem.runtime().close();
+                  mountRelease.accept(ownedFilesystem.id());
+                }
+              }
+            }
+          ''')
+
+          # Resolve the exact attached binding when HaraContext is created. Explicit standalone host-file
+          # authority receives a context-owned NativeFilesystem rather than the former direct provider.
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              '''  private final boolean sandboxRestricted;
+            private final SessionKernel sessionKernel;
+            private final java.util.List<Object> nativeTestResults = new ArrayList<>();''',
+              '''  private final boolean sandboxRestricted;
+            private final SessionKernel sessionKernel;
+            private final FilesystemRuntimeBinding filesystemRuntime;
+            private final IFilesystem ownedFilesystem;
+            private final java.util.List<Object> nativeTestResults = new ArrayList<>();''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              '''  private volatile HaraProject project;
+            private volatile HaraFileProvider fileProvider;
+            private volatile boolean projectDiscovered;''',
+              '''  private volatile HaraProject project;
+            private volatile boolean projectDiscovered;''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              '''    this.sessionKernel =
+                  sandboxRestricted
+                      ? null
+                      : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
+              currentNamespace = namespace(INTRINSIC_NAMESPACE);''',
+              '''    this.sessionKernel =
+                  sandboxRestricted
+                      ? null
+                      : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
+              FilesystemRuntimeBinding attachedFilesystem =
+                  FilesystemContextBindings.claim(
+                      environment.getOptions().get(HaraLanguage.FILESYSTEM_BINDING_TOKEN));
+              if (attachedFilesystem != null) {
+                this.filesystemRuntime = attachedFilesystem;
+                this.ownedFilesystem = null;
+              } else if (environment.isFileIOAllowed()) {
+                String workingDirectory =
+                    environment.getPublicTruffleFile(".").getAbsoluteFile().normalize().getPath();
+                NativeFilesystem nativeFilesystem =
+                    FilesystemContextBindings.nativeFilesystem(Path.of(workingDirectory));
+                this.filesystemRuntime = new FilesystemRuntimeBinding(nativeFilesystem);
+                this.ownedFilesystem = nativeFilesystem;
+              } else {
+                this.filesystemRuntime = null;
+                this.ownedFilesystem = null;
+              }
+              currentNamespace = namespace(INTRINSIC_NAMESPACE);''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              '''  void closeExtensions() {
+              for (HaraExtensionRuntime extension : loadedExtensions.values()) {
+                extension.close();
+              }
+              loadedExtensions.clear();
+            }
+          ''',
+              '''  void closeExtensions() {
+              for (HaraExtensionRuntime extension : loadedExtensions.values()) {
+                extension.close();
+              }
+              loadedExtensions.clear();
+            }
+
+            void closeContext() {
+              closeExtensions();
+              if (ownedFilesystem == null) return;
+              filesystemRuntime.close();
+              try {
+                ownedFilesystem
+                    .close(IFilesystem.CallContext.create())
+                    .toCompletableFuture()
+                    .join();
+              } catch (RuntimeException ignored) {
+                // Context teardown is already terminal; provider failures cannot restore authority.
+              }
+            }
+          ''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              '''    if (environment.isFileIOAllowed()) capabilities.add("filesystem");''',
+              '''    if (filesystemRuntime != null) capabilities.add("filesystem");''')
+
+          # Replace every public std.native.File effect with the provider-neutral runtime binding.
+          sub_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              r'''  private Object fileRead\(Object value\) \{.*?^  @SuppressWarnings\("unchecked"\)\n  private static IMapType<\?, \?> emptyFileOptions''',
+              r'''  private Object fileRead(Object value) {
+              String path = stringValue(value, "file/read");
+              return fileEffect("read", path, null, binding -> binding.read(path), result -> result);
+            }
+
+            private Object fileWrite(Object[] values) {
+              if (values.length < 2 || values.length > 3) {
+                throw new HaraException("file/write expects a path, bytes, and optional options");
+              }
+              String path = stringValue(values[0], "file/write");
+              byte[] contents = bytesValue(values[1], "file/write").clone();
+              IMapType<?, ?> options =
+                  values.length == 3 ? fileOptions(values[2], "file/write") : emptyFileOptions();
+              IFilesystem.WriteMode mode =
+                  switch (fileKeywordOption(options, "mode", "create", "file/write")) {
+                    case "create" -> IFilesystem.WriteMode.CREATE;
+                    case "replace" -> IFilesystem.WriteMode.REPLACE;
+                    case "append" -> IFilesystem.WriteMode.APPEND;
+                    default ->
+                        throw new HaraException(
+                            "file/write :mode must be :create, :replace, or :append");
+                  };
+              IFilesystem.WriteOptions writeOptions =
+                  new IFilesystem.WriteOptions(
+                      mode, fileBooleanOption(options, "parents?", false, "file/write"));
+              IFilesystem.MutationContext mutation = fileMutationContext(options, "file/write");
+              return fileEffect(
+                  "write",
+                  path,
+                  null,
+                  binding -> binding.write(path, contents, writeOptions, mutation),
+                  IFilesystem.Mutation::path);
+            }
+
+            private Object fileExists(Object value) {
+              String path = stringValue(value, "file/exists?");
+              return fileEffect("exists?", path, null, binding -> binding.exists(path), result -> result);
+            }
+
+            private Object fileStat(Object value) {
+              String path = stringValue(value, "file/stat");
+              return fileEffect(
+                  "stat", path, null, binding -> binding.stat(path), FilesystemHaraValues::entry);
+            }
+
+            private Object fileEntries(Object value) {
+              String path = stringValue(value, "file/entries");
+              return fileEffect(
+                  "entries",
+                  path,
+                  null,
+                  binding -> binding.entries(path),
+                  FilesystemHaraValues::entries);
+            }
+
+            private Object fileList(Object value) {
+              String path = stringValue(value, "file/list");
+              return fileEffect(
+                  "list", path, null, binding -> binding.list(path), FilesystemHaraValues::paths);
+            }
+
+            private Object fileWalk(Object value) {
+              String path = stringValue(value, "file/walk");
+              return fileEffect(
+                  "walk", path, null, binding -> binding.walk(path), FilesystemHaraValues::paths);
+            }
+
+            private Object fileMkdir(Object[] values) {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException("file/mkdir expects a path and optional options");
+              }
+              String path = stringValue(values[0], "file/mkdir");
+              IMapType<?, ?> options =
+                  values.length == 2 ? fileOptions(values[1], "file/mkdir") : emptyFileOptions();
+              IFilesystem.MkdirOptions mkdirOptions =
+                  new IFilesystem.MkdirOptions(
+                      fileBooleanOption(options, "parents?", true, "file/mkdir"),
+                      fileBooleanOption(options, "exists-ok?", true, "file/mkdir"));
+              IFilesystem.MutationContext mutation = fileMutationContext(options, "file/mkdir");
+              return fileEffect(
+                  "mkdir",
+                  path,
+                  null,
+                  binding -> binding.mkdir(path, mkdirOptions, mutation),
+                  IFilesystem.Mutation::path);
+            }
+
+            private Object fileDelete(Object[] values) {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException("file/delete expects a path and optional options");
+              }
+              String path = stringValue(values[0], "file/delete");
+              IMapType<?, ?> options =
+                  values.length == 2 ? fileOptions(values[1], "file/delete") : emptyFileOptions();
+              IFilesystem.DeleteOptions deleteOptions =
+                  new IFilesystem.DeleteOptions(
+                      fileBooleanOption(options, "missing-ok?", false, "file/delete"));
+              IFilesystem.MutationContext mutation = fileMutationContext(options, "file/delete");
+              return fileEffect(
+                  "delete",
+                  path,
+                  null,
+                  binding -> binding.delete(path, deleteOptions, mutation),
+                  IFilesystem.Mutation::path);
+            }
+
+            private Object fileCopy(Object[] values) {
+              if (values.length < 2 || values.length > 3) {
+                throw new HaraException("file/copy expects source, target, and optional options");
+              }
+              String source = stringValue(values[0], "file/copy");
+              String target = stringValue(values[1], "file/copy");
+              IMapType<?, ?> options =
+                  values.length == 3 ? fileOptions(values[2], "file/copy") : emptyFileOptions();
+              IFilesystem.CopyOptions copyOptions =
+                  new IFilesystem.CopyOptions(
+                      fileBooleanOption(options, "replace?", false, "file/copy"),
+                      fileBooleanOption(options, "parents?", false, "file/copy"),
+                      fileBooleanOption(options, "preserve-modified?", false, "file/copy"));
+              IFilesystem.MutationContext mutation = fileMutationContext(options, "file/copy");
+              return fileEffect(
+                  "copy",
+                  source,
+                  target,
+                  binding -> binding.copy(source, target, copyOptions, mutation),
+                  IFilesystem.Mutation::path);
+            }
+
+            private Object fileMove(Object[] values) {
+              if (values.length < 2 || values.length > 3) {
+                throw new HaraException("file/move expects source, target, and optional options");
+              }
+              String source = stringValue(values[0], "file/move");
+              String target = stringValue(values[1], "file/move");
+              IMapType<?, ?> options =
+                  values.length == 3 ? fileOptions(values[2], "file/move") : emptyFileOptions();
+              IFilesystem.MoveOptions moveOptions =
+                  new IFilesystem.MoveOptions(
+                      fileBooleanOption(options, "replace?", false, "file/move"),
+                      fileBooleanOption(options, "parents?", false, "file/move"),
+                      fileBooleanOption(options, "atomic?", false, "file/move"));
+              IFilesystem.MutationContext mutation = fileMutationContext(options, "file/move");
+              return fileEffect(
+                  "move",
+                  source,
+                  target,
+                  binding -> binding.move(source, target, moveOptions, mutation),
+                  IFilesystem.Mutation::path);
+            }
+
+            private Object fileTempFile(Object[] values) {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException("file/temp-file expects a parent and optional options");
+              }
+              String parent = stringValue(values[0], "file/temp-file");
+              IMapType<?, ?> options =
+                  values.length == 2 ? fileOptions(values[1], "file/temp-file") : emptyFileOptions();
+              String prefix = fileStringOption(options, "prefix", "tmp", "file/temp-file");
+              String suffix = fileStringOption(options, "suffix", "", "file/temp-file");
+              return fileEffect(
+                  "temp-file",
+                  parent,
+                  null,
+                  binding -> binding.tempFile(parent, prefix, suffix),
+                  result -> result);
+            }
+
+            private Object fileTempDirectory(Object[] values) {
+              if (values.length < 1 || values.length > 2) {
+                throw new HaraException("file/temp-directory expects a parent and optional options");
+              }
+              String parent = stringValue(values[0], "file/temp-directory");
+              IMapType<?, ?> options =
+                  values.length == 2
+                      ? fileOptions(values[1], "file/temp-directory")
+                      : emptyFileOptions();
+              String prefix = fileStringOption(options, "prefix", "tmp", "file/temp-directory");
+              return fileEffect(
+                  "temp-directory",
+                  parent,
+                  null,
+                  binding -> binding.tempDirectory(parent, prefix),
+                  result -> result);
+            }
+
+            private <T> Object fileEffect(
+                String operation,
+                String path,
+                String target,
+                Function<FilesystemRuntimeBinding, FilesystemRuntimeBinding.Pending<T>> effect,
+                Function<? super T, ?> transform) {
+              if (filesystemRuntime == null) {
+                return rejectedFilePromise(
+                    operation,
+                    path,
+                    target,
+                    new FilesystemException(
+                        "denied",
+                        "filesystem capability is not attached",
+                        null,
+                        operation,
+                        path,
+                        target,
+                        "capability-unavailable",
+                        false,
+                        null));
+              }
+              try {
+                return FilesystemPromiseBridge.bind(
+                    this,
+                    effect.apply(filesystemRuntime),
+                    transform,
+                    operation,
+                    path,
+                    target);
+              } catch (Throwable error) {
+                return rejectedFilePromise(operation, path, target, error);
+              }
+            }
+
+            private Object rejectedFilePromise(
+                String operation, String path, String target, Throwable error) {
+              CompletableFuture<Object> future = new CompletableFuture<>();
+              future.completeExceptionally(fileFailure(operation, path, target, error));
+              return cancellablePromise(future, () -> {});
+            }
+
+            @SuppressWarnings("unchecked")
+            private static IMapType<?, ?> emptyFileOptions''')
+
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              '''  private static String fileKeywordOption(
+                IMapType<?, ?> options, String name, String defaultValue, String operation) {
+              Object value = fileOption(options, name, Keyword.create(defaultValue));
+              if (value instanceof Keyword keyword) return keyword.getName();
+              throw new HaraException(operation + " :" + name + " must be a keyword");
+            }
+
+            private static hara.lang.base.Ex.Info fileFailure(''',
+              '''  private static String fileKeywordOption(
+                IMapType<?, ?> options, String name, String defaultValue, String operation) {
+              Object value = fileOption(options, name, Keyword.create(defaultValue));
+              if (value instanceof Keyword keyword) return keyword.getName();
+              throw new HaraException(operation + " :" + name + " must be a keyword");
+            }
+
+            private static IFilesystem.MutationContext fileMutationContext(
+                IMapType<?, ?> options, String operation) {
+              return new IFilesystem.MutationContext(
+                  fileOptionalStringOption(options, "expected-revision", operation),
+                  fileOptionalStringOption(options, "expected-target-revision", operation));
+            }
+
+            private static String fileOptionalStringOption(
+                IMapType<?, ?> options, String name, String operation) {
+              Object value = fileOption(options, name, null);
+              if (value == null || value instanceof String) return (String) value;
+              throw new HaraException(operation + " :" + name + " must be a string");
+            }
+
+            static hara.lang.base.Ex.Info fileFailure(''')
+          sub_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              r'''  static hara\.lang\.base\.Ex\.Info fileFailure\(\n      String operation, String path, String target, Throwable error\) \{.*?^  \}\n\n  private static Keyword fileErrorClass''',
+              r'''  static hara.lang.base.Ex.Info fileFailure(
+              String operation, String path, String target, Throwable error) {
+              Throwable cause = HaraFileProvider.unwrap(error);
+              if (cause instanceof hara.lang.base.Ex.Info info) return info;
+              FilesystemException filesystem =
+                  cause instanceof FilesystemException failure ? failure : null;
+              String code = filesystem == null ? HaraFileProvider.code(cause) : filesystem.code();
+              String effectiveOperation =
+                  filesystem != null && filesystem.operation() != null
+                      ? filesystem.operation()
+                      : operation;
+              String effectivePath =
+                  filesystem != null && filesystem.path() != null ? filesystem.path() : path;
+              String effectiveTarget =
+                  filesystem != null && filesystem.target() != null ? filesystem.target() : target;
+              ArrayList<Object> fields = new ArrayList<>();
+              Collections.addAll(
+                  fields,
+                  Keyword.create("ex", "code"),
+                  Keyword.create("file", code),
+                  Keyword.create("ex", "class"),
+                  fileErrorClass(code),
+                  Keyword.create("file", "operation"),
+                  Keyword.create(effectiveOperation),
+                  Keyword.create("file", "path"),
+                  canonicalFilePath(effectivePath),
+                  Keyword.create("file", "target"),
+                  canonicalFilePath(effectiveTarget));
+              if (filesystem != null) {
+                Collections.addAll(
+                    fields,
+                    Keyword.create("file", "provider"),
+                    filesystem.provider(),
+                    Keyword.create("file", "provider-code"),
+                    filesystem.providerCode(),
+                    Keyword.create("file", "retryable?"),
+                    filesystem.retryable());
+              }
+              IMetadata data = hara.lang.data.Map.Standard.from(null, fields.toArray());
+              String message = cause.getMessage();
+              if (message == null || message.isBlank()) message = cause.getClass().getSimpleName();
+              return new hara.lang.base.Ex.Info(
+                  "file/" + effectiveOperation + " failed: " + message, data, cause);
+            }
+
+              private static Keyword fileErrorClass''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/HaraContext.java",
+              '''    return switch (code) {
+                case "not-found" -> Keyword.create("ex.class", "not-found");
+                case "already-exists", "directory-not-empty" -> Keyword.create("ex.class", "conflict");
+                case "denied", "permission-denied", "outside-root" ->
+                    Keyword.create("ex.class", "security");
+                case "invalid-path" -> Keyword.create("ex.class", "argument");
+                default -> Keyword.create("ex.class", "io");
+              };''',
+              '''    return switch (code) {
+                case "not-found" -> Keyword.create("ex.class", "not-found");
+                case "already-exists", "directory-not-empty", "conflict", "ambiguous-path" ->
+                    Keyword.create("ex.class", "conflict");
+                case "denied", "permission-denied", "outside-root", "auth-required",
+                    "authentication-failed" -> Keyword.create("ex.class", "security");
+                case "invalid-path" -> Keyword.create("ex.class", "argument");
+                case "timeout" -> Keyword.create("ex.class", "timeout");
+                default -> Keyword.create("ex.class", "io");
+              };''')
+
+          # Map provider-stage failures into the existing structured Hara exception contract.
+          replace_once(
+              "core/java/src/main/java/hara/truffle/FilesystemPromiseBridge.java",
+              '''import java.util.concurrent.CompletableFuture;
+          import java.util.function.Function;''',
+              '''import java.util.concurrent.CompletableFuture;
+          import java.util.concurrent.CompletionException;
+          import java.util.function.Function;''')
+          replace_once(
+              "core/java/src/main/java/hara/truffle/FilesystemPromiseBridge.java",
+              '''  static Object bind(
+                HaraContext context, FilesystemRuntimeBinding.Pending<?> pending) {
+              return bind(context, pending, value -> value);
+            }
+          }''',
+              '''  static <T> Object bind(
+                HaraContext context,
+                FilesystemRuntimeBinding.Pending<T> pending,
+                Function<? super T, ?> transform,
+                String operation,
+                String path,
+                String target) {
+              Objects.requireNonNull(context, "Hara context");
+              Objects.requireNonNull(pending, "filesystem pending call");
+              Objects.requireNonNull(transform, "filesystem result transform");
+              CompletableFuture<Object> future =
+                  pending
+                      .future()
+                      .handle(
+                          (value, error) -> {
+                            if (error != null) {
+                              throw new CompletionException(
+                                  HaraContext.fileFailure(operation, path, target, error));
+                            }
+                            return transform.apply(value);
+                          });
+              return context.cancellablePromise(future, () -> pending.cancel());
+            }
+
+            static Object bind(
+                HaraContext context, FilesystemRuntimeBinding.Pending<?> pending) {
+              return bind(context, pending, value -> value);
+            }
+          }''')
+
+          # Prove ordinary evaluated File calls consume the remote Session provider and expose its revision.
+          replace_once(
+              "core/java/src/test/java/hara/truffle/GitHubFilesystemSessionKernelTest.java",
+              '''      assertArrayEquals(
+                    "hello".getBytes(StandardCharsets.UTF_8),
+                    join(binding.read("/README.md").future()));
+
+                SessionKernel.FilesystemInfo info = kernel.filesystemInfo(mount);''',
+              '''      assertArrayEquals(
+                    "hello".getBytes(StandardCharsets.UTF_8),
+                    join(binding.read("/README.md").future()));
+                assertEquals(
+                    "hello",
+                    session
+                        .eval(
+                            "(std.foundation.string/decode-utf8"
+                                + " (deref (File/read \\\"/README.md\\\")))")
+                        .asString());
+                assertEquals(
+                    fixture.client.initialCommit(),
+                    session
+                        .eval(
+                            "(get (:extensions (deref (File/stat \\\"/README.md\\\")))"
+                                + " :file/revision)")
+                        .asString());
+
+                SessionKernel.FilesystemInfo info = kernel.filesystemInfo(mount);''')
+
+          # Keep the focused Kernel lane responsible for the public dispatch and local compatibility proof.
+          workflow = "core/java/src/main/java/hara/truffle/FilesystemContextBindings.java"
+          for anchor in [
+              '      - "core/java/src/main/java/hara/truffle/FilesystemEffects.java"\n',
+          ]:
+              pass
+          replace_once(
+              ".github/workflows/java-ifilesystem-kernel.yml",
+              '''      - "core/java/src/main/java/hara/truffle/FilesystemEffects.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemMountTable.java"''',
+              '''      - "core/java/src/main/java/hara/truffle/FilesystemContextBindings.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemEffects.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemHaraValues.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemMountTable.java"''')
+          # The same path block appears once under pull_request after the first replacement.
+          replace_once(
+              ".github/workflows/java-ifilesystem-kernel.yml",
+              '''      - "core/java/src/main/java/hara/truffle/FilesystemEffects.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemMountTable.java"''',
+              '''      - "core/java/src/main/java/hara/truffle/FilesystemContextBindings.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemEffects.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemHaraValues.java"
+                - "core/java/src/main/java/hara/truffle/FilesystemMountTable.java"''')
+          replace_once(
+              ".github/workflows/java-ifilesystem-kernel.yml",
+              '''      - "core/java/src/main/java/hara/truffle/HaraContext.java"
+                - "core/java/src/main/java/hara/truffle/HaraLogicalPath.java"''',
+              '''      - "core/java/src/main/java/hara/truffle/HaraContext.java"
+                - "core/java/src/main/java/hara/truffle/HaraLanguage.java"
+                - "core/java/src/main/java/hara/truffle/HaraLogicalPath.java"''')
+          replace_once(
+              ".github/workflows/java-ifilesystem-kernel.yml",
+              '''      - "core/java/src/main/java/hara/truffle/HaraContext.java"
+                - "core/java/src/main/java/hara/truffle/HaraLogicalPath.java"''',
+              '''      - "core/java/src/main/java/hara/truffle/HaraContext.java"
+                - "core/java/src/main/java/hara/truffle/HaraLanguage.java"
+                - "core/java/src/main/java/hara/truffle/HaraLogicalPath.java"''')
+          replace_once(
+              ".github/workflows/java-ifilesystem-kernel.yml",
+              '''      - "core/java/src/test/java/hara/truffle/FilesystemRuntimeBindingTest.java"
+                - "core/java/src/test/java/hara/truffle/SessionKernelFilesystemMountTest.java"''',
+              '''      - "core/java/src/test/java/hara/truffle/FilesystemRuntimeBindingTest.java"
+                - "core/java/src/test/java/hara/truffle/GitHubFilesystemSessionKernelTest.java"
+                - "core/java/src/test/java/hara/truffle/SessionKernelFilesystemMountTest.java"
+                - "core/java/src/test/java/hara/truffle/StdLibFsTest.java"''')
+          replace_once(
+              ".github/workflows/java-ifilesystem-kernel.yml",
+              '''      - "core/java/src/test/java/hara/truffle/FilesystemRuntimeBindingTest.java"
+                - "core/java/src/test/java/hara/truffle/SessionKernelFilesystemMountTest.java"''',
+              '''      - "core/java/src/test/java/hara/truffle/FilesystemRuntimeBindingTest.java"
+                - "core/java/src/test/java/hara/truffle/GitHubFilesystemSessionKernelTest.java"
+                - "core/java/src/test/java/hara/truffle/SessionKernelFilesystemMountTest.java"
+                - "core/java/src/test/java/hara/truffle/StdLibFsTest.java"''')
+          replace_once(
+              ".github/workflows/java-ifilesystem-kernel.yml",
+              '''          -Dtest=FilesystemDescriptorAuthorityTest,FilesystemMountTableTest,FilesystemEffectsTest,FilesystemRuntimeBindingTest,FilesystemPromiseBridgeTest,SessionKernelFilesystemMountTest,SessionKernelTest test''',
+              '''          -Dtest=FilesystemDescriptorAuthorityTest,FilesystemMountTableTest,FilesystemEffectsTest,FilesystemRuntimeBindingTest,FilesystemPromiseBridgeTest,GitHubFilesystemSessionKernelTest,SessionKernelFilesystemMountTest,SessionKernelTest,StdLibFsTest test''')
+
+          print("Applied #922 provider-neutral HaraContext dispatch patch")
+          PY
+          python /tmp/apply-922.py
+
+      - name: Check Java whitespace and patch scope
+        shell: bash
+        run: |
+          git diff --check
+          git status --short
+          test -f core/java/src/main/java/hara/truffle/FilesystemContextBindings.java
+          test -f core/java/src/main/java/hara/truffle/FilesystemHaraValues.java
+          ! grep -q 'private volatile HaraFileProvider fileProvider'             core/java/src/main/java/hara/truffle/HaraContext.java
+          ! grep -q 'effect.invoke(fileProvider())'             core/java/src/main/java/hara/truffle/HaraContext.java
+
+      - name: Run focused provider-neutral and public filesystem conformance
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -Dtest=FilesystemDescriptorAuthorityTest,FilesystemMountTableTest,FilesystemEffectsTest,FilesystemRuntimeBindingTest,FilesystemPromiseBridgeTest,GitHubFilesystemSessionKernelTest,SessionKernelFilesystemMountTest,SessionKernelTest,StdLibFsTest test
+
+      - name: Compile the Truffle runtime
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests package
+
+      - name: Publish validated product commit
+        shell: bash
+        run: |
+          rm .github/workflows/agent-922-haracontext-ifilesystem-dispatch.yml
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add --             .github/workflows/java-ifilesystem-kernel.yml             core/java/src/main/java/hara/truffle/FilesystemContextBindings.java             core/java/src/main/java/hara/truffle/FilesystemHaraValues.java             core/java/src/main/java/hara/truffle/FilesystemPromiseBridge.java             core/java/src/main/java/hara/truffle/HaraContext.java             core/java/src/main/java/hara/truffle/HaraLanguage.java             core/java/src/main/java/hara/truffle/SessionKernel.java             core/java/src/test/java/hara/truffle/GitHubFilesystemSessionKernelTest.java             .github/workflows/agent-922-haracontext-ifilesystem-dispatch.yml
+          git commit -m "Route JVM File effects through attached IFilesystem"
+          git push origin HEAD:agent/922-haracontext-ifilesystem-dispatch
