@@ -540,8 +540,12 @@ public final class HaraContext {
           NATIVE_TYPES.get("Error"),
           Map.of(
               "new", "ex-info",
-              "message", "ex-message",
-              "class", "ex-class"));
+              "message", "ex-message"));
+      namespace("std.native.Error")
+          .define(
+              "class",
+              new UnaryBuiltin(
+                  "std.native.Error/class", value -> portableType(value).getName()));
       installNativeExportGroup(
           "Base", exports, NATIVE_TYPES.get("Base"), Map.of("tuple", "tup"));
       installNativeExportGroup("Iter", exports, NATIVE_TYPES.get("Iter"), Map.of());
