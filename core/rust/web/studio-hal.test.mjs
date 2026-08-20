@@ -139,7 +139,8 @@ const evaluate = (broker, source) => broker.eval("ROOT", `(do ${REQUIRE_ALL} ${s
 
 // hta maps decode to JS Maps with HtaKeyword (or string) keys.
 function mapGet(map, name) {
-  for (const [key, value] of map) {
+  const entries = map instanceof Map ? map : map.entries;
+  for (const [key, value] of entries) {
     if (key instanceof HtaKeyword && key.name === name) return value;
     if (key === name) return value;
   }
@@ -363,6 +364,34 @@ test("Studio runs the shared substrate protocol fixture", { skip: wasmBytes === 
     "utf8"
   );
   assert.deepEqual((await broker.eval("ROOT", protocolFixture)).values, [40, 42]);
+});
+
+test("Studio runs the specs-owned protocol behavioral corpus", { skip: wasmBytes === null }, async () => {
+  const broker = makeBroker();
+  const protocolCorpus = await readFile(
+    new URL(
+      "../../../../hara-specs-registry/01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
+      import.meta.url
+    ),
+    "utf8"
+  );
+  const results = await broker.eval("ROOT", protocolCorpus);
+  assert.equal(results.length, 105);
+  assert.equal(results.filter((result) => mapGet(result, "pass") === true).length, 105);
+});
+
+test("Studio runs the specs-owned protocol surface corpus", { skip: wasmBytes === null }, async () => {
+  const broker = makeBroker();
+  const protocolCorpus = await readFile(
+    new URL(
+      "../../../../hara-specs-registry/01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal",
+      import.meta.url
+    ),
+    "utf8"
+  );
+  const results = await broker.eval("ROOT", protocolCorpus);
+  assert.equal(results.length, 55);
+  assert.equal(results.filter((result) => mapGet(result, "pass") === true).length, 55);
 });
 
 test("Studio runs the shared substrate frame fixture", { skip: wasmBytes === null }, async () => {
