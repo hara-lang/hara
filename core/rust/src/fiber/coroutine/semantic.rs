@@ -19,6 +19,7 @@ pub(in crate::core::fiber) enum EvalSemanticRule {
     FormReturn,
     ValueReturn,
     CallEnter,
+    CallReturn,
     VarDefine,
     VarSet,
     FieldSet,
@@ -32,6 +33,7 @@ impl EvalSemanticRule {
             Self::FormReturn => "form/return",
             Self::ValueReturn => "value/return",
             Self::CallEnter => "call/enter",
+            Self::CallReturn => "call/return",
             Self::VarDefine => "effect/var-define",
             Self::VarSet => "effect/var-set",
             Self::FieldSet => "effect/field-set",
@@ -47,6 +49,10 @@ pub(in crate::core::fiber) enum EvalSemanticPayload {
     Call {
         name: String,
         arguments: Vec<Value>,
+    },
+    CallReturn {
+        name: String,
+        result: Value,
     },
     Effect {
         target: String,
@@ -68,11 +74,17 @@ pub(super) struct EvalSemanticBoundary {
     pub(super) environment: HashMap<String, Value>,
 }
 
+struct EvalPendingCall {
+    form: Form,
+    name: String,
+}
+
 struct EvalObservationContext {
     source_forms: Option<Rc<Vec<SpannedForm>>>,
     sequence: usize,
     current: Option<EvalSemanticBoundary>,
     pending: VecDeque<EvalSemanticBoundary>,
+    calls: Vec<EvalPendingCall>,
     capture_events: bool,
     capture_environment: bool,
     environment_clones: u64,
@@ -100,6 +112,7 @@ pub(super) fn register_context(
         sequence: 0,
         current: None,
         pending: VecDeque::new(),
+        calls: Vec::new(),
         capture_events,
         capture_environment,
         environment_clones: 0,
@@ -123,6 +136,7 @@ pub(super) fn configure_capture(
         if !capture_events {
             context.current = None;
             context.pending.clear();
+            context.calls.clear();
         }
     }
 }
@@ -217,6 +231,53 @@ fn enqueue(
     });
 }
 
+fn complete_call(
+    form: &Form,
+    result: &Value,
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) {
+    let Some(context) = active_context() else {
+        return;
+    };
+    let completed = {
+        let mut context = context.borrow_mut();
+        if context
+            .calls
+            .last()
+            .is_some_and(|pending| &pending.form == form)
+        {
+            context.calls.pop()
+        } else {
+            None
+        }
+    };
+    if let Some(completed) = completed {
+        enqueue(
+            EvalSemanticRule::CallReturn,
+            form,
+            EvalSemanticPayload::CallReturn {
+                name: completed.name,
+                result: result.clone(),
+            },
+            environment,
+        );
+    }
+}
+
+fn abandon_call(form: &Form) {
+    let Some(context) = active_context() else {
+        return;
+    };
+    let mut context = context.borrow_mut();
+    if context
+        .calls
+        .last()
+        .is_some_and(|pending| &pending.form == form)
+    {
+        context.calls.pop();
+    }
+}
+
 pub(in crate::core::fiber) fn record_boundary(
     rule: EvalSemanticRule,
     form: &Form,
@@ -226,6 +287,7 @@ pub(in crate::core::fiber) fn record_boundary(
     if !capture_enabled() {
         return;
     }
+    complete_call(form, result, environment);
     enqueue(
         rule,
         form,
@@ -243,11 +305,18 @@ pub(in crate::core::fiber) fn record_call(
     if !capture_enabled() {
         return;
     }
+    let name = name.into();
+    if let Some(context) = active_context() {
+        context.borrow_mut().calls.push(EvalPendingCall {
+            form: form.clone(),
+            name: name.clone(),
+        });
+    }
     enqueue(
         EvalSemanticRule::CallEnter,
         form,
         EvalSemanticPayload::Call {
-            name: name.into(),
+            name,
             arguments: arguments.to_vec(),
         },
         environment,
@@ -291,6 +360,7 @@ pub(in crate::core::fiber) fn record_error(
     if !capture_enabled() {
         return;
     }
+    abandon_call(form);
     debug_assert!(matches!(
         rule,
         EvalSemanticRule::ErrorRaise | EvalSemanticRule::ErrorCatch

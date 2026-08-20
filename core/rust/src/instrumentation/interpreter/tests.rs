@@ -31,7 +31,7 @@ fn passive_call_registration(projection: ProjectionRequest) -> InstrumentRegistr
         session_id: "session".into(),
         mode: InstrumentMode::Passive,
         capabilities,
-        events: set([EventKind::CallEnter]),
+        events: set([EventKind::CallEnter, EventKind::CallReturn]),
         filter: InstrumentFilter::default(),
         projection,
         delivery: EventDelivery::Queue { capacity: 32 },
@@ -53,13 +53,16 @@ fn no_instruments_execute_the_real_fiber_without_semantic_environment_clones() {
 
     target.run(&mut hub, 128).expect("target run");
 
-    assert_eq!(target.state(), EvalFiberState::Completed(Value::Number(42)));
+    assert_eq!(
+        target.state(),
+        EvalFiberState::Completed(Value::Number(42))
+    );
     assert_eq!(target.environment_clone_count(), 0);
     assert!(hub.enabled_events().is_empty());
 }
 
 #[test]
-fn call_events_come_from_the_real_cps_path_without_unrequested_projection() {
+fn call_enter_and_return_events_come_from_the_real_cps_path_without_projection() {
     let mut hub = InstrumentationHub::new();
     let instrument = hub
         .register(passive_call_registration(ProjectionRequest::default()))
@@ -70,7 +73,7 @@ fn call_events_come_from_the_real_cps_path_without_unrequested_projection() {
         &hub,
         handle,
         "editor/main",
-        "(+ 19 23)",
+        "((fn [x] (+ x 1)) 41)",
         HashMap::new(),
     )
     .expect("target start");
@@ -78,12 +81,36 @@ fn call_events_come_from_the_real_cps_path_without_unrequested_projection() {
     target.run(&mut hub, 128).expect("target run");
     let events = hub.drain_events(&instrument).expect("events").events;
 
-    assert_eq!(target.state(), EvalFiberState::Completed(Value::Number(42)));
+    assert_eq!(
+        target.state(),
+        EvalFiberState::Completed(Value::Number(42))
+    );
     assert_eq!(target.environment_clone_count(), 0);
+    let call_events = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.envelope.event,
+                EventKind::CallEnter | EventKind::CallReturn
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(!call_events.is_empty());
+    assert_eq!(
+        call_events
+            .iter()
+            .filter(|event| event.envelope.event == EventKind::CallEnter)
+            .count(),
+        call_events
+            .iter()
+            .filter(|event| event.envelope.event == EventKind::CallReturn)
+            .count()
+    );
+    assert_eq!(call_events.first().unwrap().envelope.event, EventKind::CallEnter);
+    assert_eq!(call_events.last().unwrap().envelope.event, EventKind::CallReturn);
     assert!(events
         .iter()
-        .any(|event| event.envelope.event == EventKind::CallEnter));
-    assert!(events.iter().all(|event| event.envelope.target_kind == TargetKind::Interpreter));
+        .all(|event| event.envelope.target_kind == TargetKind::Interpreter));
     assert!(events.iter().all(|event| {
         event
             .envelope
@@ -176,7 +203,10 @@ fn promise_settlement_resumes_the_exact_retained_promise_and_continuation() {
         .expect("settlement");
     target.run(&mut hub, 128).expect("run to completion");
 
-    assert_eq!(target.state(), EvalFiberState::Completed(Value::Number(42)));
+    assert_eq!(
+        target.state(),
+        EvalFiberState::Completed(Value::Number(42))
+    );
     let events = hub.drain_events(&controller).expect("events").events;
     assert!(events
         .iter()

@@ -75,6 +75,7 @@ impl EvalFiber {
                 EventKind::SemanticBoundary
             }
             semantic::EvalSemanticRule::CallEnter => EventKind::CallEnter,
+            semantic::EvalSemanticRule::CallReturn => EventKind::CallReturn,
             semantic::EvalSemanticRule::VarDefine | semantic::EvalSemanticRule::VarSet => {
                 EventKind::VarSet
             }
@@ -92,6 +93,11 @@ impl EvalFiber {
                 event = event
                     .with_data("function", name)
                     .with_data("arguments/count", arguments.len().to_string());
+            }
+            semantic::EvalSemanticPayload::CallReturn { name, result } => {
+                event = event
+                    .with_data("function", name)
+                    .with_data("result/type", crate::core::portable_type_name(result));
             }
             semantic::EvalSemanticPayload::Effect {
                 target,
@@ -115,7 +121,8 @@ impl EvalFiber {
     pub(crate) fn instrumentation_source_location(&self, source_id: &str) -> Option<EventLocation> {
         let boundary = semantic::current_boundary(&self.env)?;
         let function = match &boundary.payload {
-            semantic::EvalSemanticPayload::Call { name, .. } => Some(name.clone()),
+            semantic::EvalSemanticPayload::Call { name, .. }
+            | semantic::EvalSemanticPayload::CallReturn { name, .. } => Some(name.clone()),
             _ => None,
         };
         Some(EventLocation {
@@ -192,6 +199,12 @@ impl EvalFiber {
                     );
                 }
                 projection
+            }
+            semantic::EvalSemanticPayload::CallReturn { name, result } => {
+                PortableProjection::new("interpreter/call-return-preview")
+                    .with_field("function", name)
+                    .with_field("kind", crate::core::portable_type_name(result))
+                    .with_field("display", bounded_text(&result.display(), display_chars))
             }
             semantic::EvalSemanticPayload::Effect {
                 target,
