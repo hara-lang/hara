@@ -74,6 +74,32 @@
     :cues ["failed" "unable" "unavailable" "closed" "stopped" "not active"
            "not initialized" "state" "lifecycle"]}])
 
+(def +application-namespaces+
+  {"greenways-ai/greenways-os" {:application :greenways-os
+                                :code/namespace "ex.greenways-os"
+                                :class/namespace "greenways-os.ex"}
+   "greenways-ai/hestia" {:application :hestia
+                           :code/namespace "ex.hestia"
+                           :class/namespace "hestia.ex"}
+   "greenways-ai/historia" {:application :historia
+                             :code/namespace "ex.historia"
+                             :class/namespace "historia.ex"}
+   "greenways-ai/hoplite" {:application :hoplite
+                            :code/namespace "ex.hoplite"
+                            :class/namespace "hoplite.ex"}
+   "greenways-ai/ignatius" {:application :ignatius
+                             :code/namespace "ex.ignatius"
+                             :class/namespace "ignatius.ex"}
+   "greenways-ai/www" {:application :greenways-www
+                        :code/namespace "ex.greenways-www"
+                        :class/namespace "greenways.ex"}
+   "hara-lang/tahto" {:application :tahto
+                       :code/namespace "ex.tahto"
+                       :class/namespace "tahto.ex"}
+   "hara-lang/hodos" {:application :hodos
+                       :code/namespace "ex.hodos"
+                       :class/namespace "hodos.ex"}})
+
 (defn host-read [file]
   (let [result (sh/run ["/bin/cat" file] {:trim false})]
     (if (= 0 (:exit result))
@@ -131,19 +157,47 @@
           (filter (fn [cue] (str/includes? text cue)) (:cues rule)))))
       +classification-rules+))))
 
+(defn application-ownership [site]
+  (get +application-namespaces+ (:source/repository site)))
+
+(defn site-leaf [site]
+  (let [definition (get-in site [:context/definition :name])
+        ordinal (last (:site/id site))
+        base (if definition
+               (name definition)
+               (str "site-" (get-in site [:source/range :line])))]
+    (str base "-" (inc ordinal))))
+
+(defn application-code [site ownership]
+  (if ownership
+    (keyword (:code/namespace ownership) (site-leaf site))
+    (:ex/code site)))
+
+(defn application-class [base-class ownership]
+  (if ownership
+    (keyword (:class/namespace ownership) (name base-class))
+    base-class))
+
 (defn classify-site [site]
   (if (= :approved (:review/status site))
     (assoc site
            :classification/type (:ex/class site)
+           :classification/base-type (:ex/class site)
+           :classification/application nil
            :classification/rule :reviewed
            :classification/confidence :reviewed
            :classification/evidence "Existing reviewed ledger assignment")
     (let [rule (matching-rule site)
-          class (if rule (:ex/class rule) :ex.class/internal)]
+          base-class (if rule (:ex/class rule) :ex.class/internal)
+          ownership (application-ownership site)
+          class (application-class base-class ownership)]
       (assoc site
+             :ex/code (application-code site ownership)
              :ex/class class
              :review/status :inferred
              :classification/type class
+             :classification/base-type base-class
+             :classification/application (if ownership (:application ownership) nil)
              :classification/rule (if rule (:rule rule) :fallback)
              :classification/confidence (if rule (:confidence rule) :low)
              :classification/evidence
@@ -165,6 +219,7 @@
            :catalog/version 2
            :classification/types +classification-types+
            :classification/rules +classification-rules+
+           :classification/application-namespaces +application-namespaces+
            :classification/summary
            {:reviewed (count (filter (fn [site]
                                        (= :reviewed (:classification/confidence site)))
