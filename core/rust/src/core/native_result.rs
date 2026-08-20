@@ -387,7 +387,10 @@ fn normalize_error(value: Value) -> Rc<ExceptionInfo> {
     match value {
         Value::ExceptionInfo(error) => error,
         value => {
-            let message = value.display();
+            let message = match &value {
+                Value::String(text) => text.clone(),
+                _ => value.display(),
+            };
             Rc::new(ExceptionInfo {
                 message,
                 data: Box::new(Value::Map(PMap::from_iter([(
@@ -638,5 +641,18 @@ mod tests {
         assert_eq!(preserved.data.display(), error.data.display());
         assert!(result.deref_value().is_err());
         assert!(result.display().contains("#hara/Result[:error"));
+    }
+
+    #[test]
+    fn native_result_string_errors_keep_unquoted_messages() {
+        let result = ResultValue::error(
+            Value::String("boom".into()),
+            Value::Map(PMap::new()),
+        )
+        .expect("error Result");
+        let Value::ExceptionInfo(error) = result.error_value() else {
+            panic!("expected native Error");
+        };
+        assert_eq!(error.message, "boom");
     }
 }
