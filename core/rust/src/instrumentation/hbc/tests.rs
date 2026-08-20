@@ -84,8 +84,7 @@ fn instruction_and_call_events_are_emitted_from_real_dispatch_boundaries() {
     .expect("target");
 
     let registry = crate::embedding_namespace_registry();
-    crate::core::with_namespace_registry(&registry, || target.run(&mut hub, 256))
-        .expect("run");
+    crate::core::with_namespace_registry(&registry, || target.run(&mut hub, 256)).expect("run");
     let batch = hub.drain_events(&instrument).expect("events");
     assert_eq!(batch.dropped, 0, "focused call trace must not overflow");
     let events = batch.events;
