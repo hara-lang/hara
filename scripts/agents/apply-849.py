@@ -10,7 +10,7 @@ encoded = "".join(
 )
 source = gzip.decompress(base64.b64decode(encoded)).decode()
 old = '"\\nfn native_test_events("'
-new = '"\\nfn os_operation("'
+new = '"\\n/// Installs the explicit host-call boundary"'
 if source.count(old) != 1:
     raise SystemExit(f"unexpected core/native.rs transform seam count: {source.count(old)}")
 source = source.replace(old, new, 1)
