@@ -595,6 +595,7 @@ pub(crate) const NATIVE_TYPES: &[(&str, &[&str])] = &[
             "map?",
             "set?",
             "sequential?",
+            "coll?",
             "satisfies?",
             "type",
             "instance?",
