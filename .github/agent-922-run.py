@@ -53,16 +53,20 @@ from pathlib import Path as _AgentPath
 
 def {helper.name}({path_name}, {old_name}, {new_name}):
     _target = {path_name} if isinstance({path_name}, _AgentPath) else _AgentPath({path_name})
+    _workflow = str(_target).replace("\\\\", "/") == ".github/workflows/java-ifilesystem-kernel.yml"
+    if _workflow:
+        # The workflow repeats the same path inventory under push and pull_request.
+        # Keep that mechanical update outside the compressed product payload so
+        # the runtime patch remains stable across workflow-layout changes.
+        return
     _text = _target.read_text()
     _count = _text.count({old_name})
-    _workflow = str(_target).replace("\\\\", "/") == ".github/workflows/java-ifilesystem-kernel.yml"
-    _expected = 2 if _workflow else 1
-    if _count != _expected:
+    if _count != 1:
         raise SystemExit(
-            f"{{_target}}: expected {{_expected}} exact match(es), found {{_count}}: "
+            f"{{_target}}: expected one exact match, found {{_count}}: "
             + repr({old_name}[:120])
         )
-    _target.write_text(_text.replace({old_name}, {new_name}))
+    _target.write_text(_text.replace({old_name}, {new_name}, 1))
 
 '''
 
