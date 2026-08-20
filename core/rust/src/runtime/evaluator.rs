@@ -1,10 +1,13 @@
-/// Runtime-owned lexical evaluation state.
+/// Runtime-owned lexical evaluation and instrumentation state.
 ///
 /// Namespace, provider, package, Session, and Kernel state deliberately stay
-/// outside this type. `Runtime` installs those capabilities around each call.
+/// outside this type. The instrumentation hub follows the Runtime lifecycle
+/// here while remaining separate from the lexical environment and execution
+/// targets.
 #[derive(Default)]
 struct Evaluator {
     environment: HashMap<String, core::Value>,
+    instrumentation: instrumentation::InstrumentationHub,
 }
 
 impl Evaluator {
@@ -43,5 +46,6 @@ impl Evaluator {
 
     fn clear(&mut self) {
         self.environment.clear();
+        self.instrumentation.clear();
     }
 }
