@@ -1,0 +1,480 @@
+(ns std.typed.catalog.base
+  (:require [std.typed.catalog.codec]
+            [std.typed.registry]
+            [std.typed.schema]))
+
+(def +catalog-type+ :std.typed.catalog/catalog)
+(def +entry-type+ :std.typed.catalog/entry)
+(def +option-keys+ #{:namespace :aliases :refers :parents})
+
+(defn catalog-error
+  [message data]
+  (throw
+   (ex-info message
+            (assoc data :type :std.typed.catalog/invalid-catalog))))
+
+(defn- qualified-keyword?
+  [value]
+  (and (keyword? value)
+       (not (nil? (namespace value)))))
+
+(defn- qualified-symbol?
+  [value]
+  (and (symbol? value)
+       (not (nil? (namespace value)))))
+
+(defn require-version
+  [version]
+  (if (and (long? version) (not (< version 0)))
+    version
+    (catalog-error "schema version must be a non-negative integer"
+                   {:schema/version version})))
+
+(defn- identity-name
+  [identity]
+  (if (qualified-keyword? identity)
+    (symbol (namespace identity) (name identity))
+    (catalog-error "schema identity must be a qualified keyword"
+                   {:schema/id identity})))
+
+(defn- name-identity
+  [schema-name]
+  (if (qualified-symbol? schema-name)
+    (keyword (namespace schema-name) (name schema-name))
+    (catalog-error "catalog schema names must be qualified symbols"
+                   {:schema/name schema-name})))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  entry?
+  [value]
+  (and (map? value)
+       (= +entry-type+ (:schema/entry-type value))
+       (qualified-keyword? (:schema/id value))
+       (long? (:schema/version value))
+       (not (< (:schema/version value) 0))
+       (qualified-symbol? (:schema/name value))
+       (map? (:schema/ast value))
+       (string? (:schema/hash value))
+       (re-matches "sha256:[0-9a-f]{64}" (:schema/hash value))
+       (vector? (:schema/dependencies value))))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  catalog?
+  [value]
+  (and (map? value)
+       (= +catalog-type+ (:catalog/type value))
+       (std.typed.registry/registry? (:catalog/registry value))
+       (map? (:catalog/entries value))
+       (map? (:catalog/latest value))
+       (vector? (:catalog/parents value))))
+
+(defn ^{:schema [:fn [:any] :map]}
+  ensure
+  [value]
+  (if (catalog? value)
+    value
+    (catalog-error "expected a schema catalog" {:catalog value})))
+
+(defn ^{:schema [:fn [:map] :map]}
+  coordinate
+  [entry]
+  (if (entry? entry)
+    {:schema/id (:schema/id entry)
+     :schema/version (:schema/version entry)
+     :schema/hash (:schema/hash entry)}
+    (catalog-error "coordinate expects a canonical schema entry"
+                   {:entry entry})))
+
+(defn coordinate-key
+  [value]
+  [(:schema/id value) (:schema/version value)])
+
+(defn- append-unique
+  [values value]
+  (if (any? (fn [candidate] (= candidate value)) values)
+    values
+    (conj values value)))
+
+(defn- append-values
+  [output values]
+  (loop [remaining values
+         output output]
+    (if (empty? remaining)
+      output
+      (recur (rest remaining)
+             (append-unique output (first remaining))))))
+
+(defn- require-entry-spec
+  [spec]
+  (if (not (map? spec))
+    (catalog-error "catalog entries must be maps" {:entry spec}))
+  (let [identity (:schema/id spec)
+        version (:schema/version spec)]
+    (if (not (qualified-keyword? identity))
+      (catalog-error "catalog entry :schema/id must be a qualified keyword"
+                     {:entry spec :schema/id identity}))
+    (require-version version)
+    (if (not (has? spec :schema/form))
+      (catalog-error "catalog entry requires :schema/form" {:entry spec}))
+    (assoc spec :schema/name (identity-name identity))))
+
+(defn- map-entry-specs
+  [entries]
+  (reduce-kv
+   (fn [output identity value]
+     (conj
+      output
+      (if (map? value)
+        (if (has? value :schema/id)
+          (if (= identity (:schema/id value))
+            value
+            (catalog-error "catalog map key conflicts with entry identity"
+                           {:map-key identity
+                            :schema/id (:schema/id value)}))
+          (assoc value :schema/id identity))
+        {:schema/id identity
+         :schema/version 1
+         :schema/form value})))
+   []
+   entries))
+
+(defn- entry-specs
+  [entries]
+  (let [values
+        (cond
+          (map? entries) (map-entry-specs entries)
+          (sequential? entries) entries
+          :else
+          (catalog-error "catalog entries must be a map or sequence"
+                         {:entries entries}))]
+    (vec (map require-entry-spec values))))
+
+(defn- unique-entry-specs
+  [entries]
+  (loop [remaining entries
+         seen #{}
+         output []]
+    (if (empty? remaining)
+      output
+      (let [entry (first remaining)
+            key (coordinate-key entry)]
+        (if (has? seen key)
+          (catalog-error "duplicate schema identity and version"
+                         {:schema/id (:schema/id entry)
+                          :schema/version (:schema/version entry)}))
+        (recur (rest remaining)
+               (conj seen key)
+               (conj output entry))))))
+
+(defn- latest-specs
+  [entries]
+  (reduce
+   (fn [output entry]
+     (let [identity (:schema/id entry)
+           current (get output identity nil)]
+       (if (or (nil? current)
+               (> (:schema/version entry)
+                  (:schema/version current)))
+         (assoc output identity entry)
+         output)))
+   {}
+   entries))
+
+(defn- registry-entry-map
+  [latest]
+  (reduce
+   (fn [output entry]
+     (assoc output (:schema/name entry) (:schema/form entry)))
+   {}
+   (vals latest)))
+
+(defn- require-options
+  [options]
+  (if (not (map? options))
+    (catalog-error "catalog options must be a map" {:options options}))
+  (let [unknown
+        (vec
+         (filter (fn [key] (not (has? +option-keys+ key)))
+                 (keys options)))]
+    (if (not (empty? unknown))
+      (catalog-error "unsupported catalog options" {:options unknown}))
+    options))
+
+(defn- require-parents
+  [parents]
+  (let [parents (vec parents)]
+    (if (every? catalog? parents)
+      parents
+      (catalog-error "catalog parents must be catalogs"
+                     {:parents parents}))))
+
+(defn- make-registry
+  [latest options parents]
+  (std.typed.registry/registry
+   (registry-entry-map latest)
+   {:namespace (get options :namespace nil)
+    :aliases (get options :aliases {})
+    :refers (get options :refers {})
+    :parents
+    (vec
+     (map (fn [parent] (:catalog/registry parent))
+          parents))}))
+
+(defn- canonical-entry
+  [entry registry-value]
+  (let [ast
+        (std.typed.schema/normalize-with
+         (:schema/form entry)
+         registry-value)
+        computed
+        (std.typed.catalog.codec/hash-ast
+         (:schema/id entry)
+         (:schema/version entry)
+         ast)
+        supplied (get entry :schema/hash nil)]
+    (if (and supplied (not= supplied computed))
+      (catalog-error "schema hash does not match canonical content"
+                     {:schema/id (:schema/id entry)
+                      :schema/version (:schema/version entry)
+                      :schema/hash supplied
+                      :schema/expected-hash computed}))
+    (assoc entry
+           :schema/entry-type +entry-type+
+           :schema/ast ast
+           :schema/hash computed
+           :schema/dependencies [])))
+
+(defn- exact-entry-map
+  [entries]
+  (reduce
+   (fn [output entry]
+     (assoc output (coordinate-key entry) entry))
+   {}
+   entries))
+
+(defn- local-latest-map
+  [entries]
+  (reduce
+   (fn [output entry]
+     (let [identity (:schema/id entry)
+           version (:schema/version entry)
+           current (get output identity nil)]
+       (if (or (nil? current) (> version current))
+         (assoc output identity version)
+         output)))
+   {}
+   entries))
+
+(defn- identity-for
+  [catalog target]
+  (cond
+    (qualified-keyword? target) target
+    (keyword? target)
+    (name-identity
+     (std.typed.registry/qualify
+      (:catalog/registry catalog)
+      (symbol (name target))))
+    (symbol? target)
+    (name-identity
+     (std.typed.registry/qualify
+      (:catalog/registry catalog)
+      target))
+    :else
+    (catalog-error "catalog lookup expects a schema keyword or symbol"
+                   {:target target})))
+
+(defn- local-exact
+  [catalog identity version]
+  (get (:catalog/entries catalog) [identity version] nil))
+
+(declare lookup)
+
+(defn- lookup-exact
+  [catalog identity version]
+  (or
+   (local-exact catalog identity version)
+   (loop [remaining (:catalog/parents catalog)]
+     (if (empty? remaining)
+       nil
+       (let [found (lookup (first remaining) identity version)]
+         (if found found (recur (rest remaining))))))))
+
+(defn- newer-entry
+  [current candidate]
+  (cond
+    (nil? candidate) current
+    (nil? current) candidate
+    (> (:schema/version candidate)
+       (:schema/version current)) candidate
+    :else current))
+
+(defn- lookup-latest
+  [catalog identity]
+  (let [version (get (:catalog/latest catalog) identity nil)
+        local (if version (local-exact catalog identity version) nil)]
+    (loop [remaining (:catalog/parents catalog)
+           output local]
+      (if (empty? remaining)
+        output
+        (recur (rest remaining)
+               (newer-entry output
+                            (lookup (first remaining) identity)))))))
+
+(defn- coordinate-target?
+  [target]
+  (and (map? target)
+       (qualified-keyword? (:schema/id target))
+       (long? (:schema/version target))))
+
+(defn- lookup-coordinate
+  [catalog target]
+  (let [entry
+        (lookup-exact catalog
+                      (:schema/id target)
+                      (require-version (:schema/version target)))
+        expected-hash (get target :schema/hash nil)]
+    (if (and entry
+             (or (nil? expected-hash)
+                 (= expected-hash (:schema/hash entry))))
+      entry
+      nil)))
+
+(defn ^{:schema [:function
+                 [:fn [:any :any] :any]
+                 [:fn [:any :any :int] :any]]}
+  lookup
+  ([catalog target]
+   (let [catalog (ensure catalog)]
+     (if (coordinate-target? target)
+       (lookup-coordinate catalog target)
+       (lookup-latest catalog (identity-for catalog target)))))
+  ([catalog target version]
+   (let [catalog (ensure catalog)]
+     (lookup-exact catalog
+                   (identity-for catalog target)
+                   (require-version version)))))
+
+(defn ^{:schema [:function
+                 [:fn [:any :any] :map]
+                 [:fn [:any :any :int] :map]]}
+  require-entry
+  ([catalog target]
+   (or (lookup catalog target)
+       (catalog-error "schema identity or coordinate is absent from catalog"
+                      {:target target})))
+  ([catalog target version]
+   (or (lookup catalog target version)
+       (catalog-error "schema coordinate is absent from catalog"
+                      {:schema/id target
+                       :schema/version version}))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  schema-registry
+  [catalog]
+  (:catalog/registry (ensure catalog)))
+
+(defn ^{:schema [:fn [:any] :vector]}
+  parents
+  [catalog]
+  (:catalog/parents (ensure catalog)))
+
+(defn- local-coordinates
+  [catalog]
+  (vec (sort-by str (keys (:catalog/entries catalog)))))
+
+(defn ^{:schema [:fn [:any] :vector]}
+  coordinates
+  [catalog]
+  (let [catalog (ensure catalog)]
+    (loop [remaining (:catalog/parents catalog)
+           output (local-coordinates catalog)]
+      (if (empty? remaining)
+        output
+        (recur (rest remaining)
+               (append-values output
+                              (coordinates (first remaining))))))))
+
+(defn ^{:schema [:fn [:any] :vector]}
+  entries
+  [catalog]
+  (let [catalog (ensure catalog)]
+    (vec
+     (keep (fn [key]
+             (lookup catalog (first key) (second key)))
+           (coordinates catalog)))))
+
+(defn- parent-conflict
+  [parents entry]
+  (loop [remaining parents]
+    (if (empty? remaining)
+      nil
+      (let [parent-entry
+            (lookup (first remaining)
+                    (:schema/id entry)
+                    (:schema/version entry))]
+        (cond
+          (nil? parent-entry) (recur (rest remaining))
+          (= (:schema/hash parent-entry)
+             (:schema/hash entry)) (recur (rest remaining))
+          :else parent-entry)))))
+
+(defn- assert-parent-compatibility
+  [parents local-entries]
+  (loop [remaining local-entries]
+    (if (empty? remaining)
+      nil
+      (let [entry (first remaining)
+            conflict (parent-conflict parents entry)]
+        (if conflict
+          (catalog-error "schema coordinate conflicts with a parent catalog"
+                         {:schema/id (:schema/id entry)
+                          :schema/version (:schema/version entry)
+                          :schema/hash (:schema/hash entry)
+                          :schema/parent-hash (:schema/hash conflict)}))
+        (recur (rest remaining))))))
+
+(defn ^{:schema [:function
+                 [:fn [:any] :map]
+                 [:fn [:any :map] :map]]}
+  catalog
+  "Builds the canonical catalog envelope before dependency linking."
+  ([entries] (catalog entries {}))
+  ([entries options]
+   (let [options (require-options options)
+         parents (require-parents (get options :parents []))
+         specs (unique-entry-specs (entry-specs entries))
+         latest (latest-specs specs)
+         registry-value (make-registry latest options parents)
+         canonical
+         (vec
+          (map (fn [entry]
+                 (canonical-entry entry registry-value))
+               specs))]
+     (assert-parent-compatibility parents canonical)
+     {:catalog/type +catalog-type+
+      :catalog/registry registry-value
+      :catalog/entries (exact-entry-map canonical)
+      :catalog/latest (local-latest-map canonical)
+      :catalog/parents parents})))
+
+(defn- resolved-entry
+  [catalog entry]
+  (if entry
+    (assoc
+     entry
+     :schema/resolved
+     (std.typed.schema/resolve-recursive
+      (:schema/ast entry)
+      (:catalog/registry catalog)))
+    nil))
+
+(defn ^{:schema [:function
+                 [:fn [:any :any] :any]
+                 [:fn [:any :any :int] :any]]}
+  resolve
+  ([catalog target]
+   (let [catalog (ensure catalog)]
+     (resolved-entry catalog (lookup catalog target))))
+  ([catalog target version]
+   (let [catalog (ensure catalog)]
+     (resolved-entry catalog (lookup catalog target version)))))
