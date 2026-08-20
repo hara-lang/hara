@@ -6,6 +6,7 @@ mod clock;
 pub mod file;
 #[path = "../../src/hta.rs"]
 mod hta;
+mod instrumentation;
 #[cfg(feature = "evaluation-journal")]
 #[path = "../../src/journal.rs"]
 mod journal;
