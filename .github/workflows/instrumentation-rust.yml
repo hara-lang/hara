@@ -16,7 +16,10 @@ on:
       - 'core/rust/src/vm/machine/**'
       - '.github/workflows/instrumentation-rust.yml'
   push:
-    branches: [main, testing]
+    branches:
+      - main
+      - testing
+      - instrumentation-rust-probes-882
     paths:
       - 'core/rust/Cargo.toml'
       - 'core/rust/src/instrumentation.rs'
@@ -29,14 +32,64 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: rust-instrumentation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  format-branch:
+    if: github.event_name == 'push' && github.ref_name == 'instrumentation-rust-probes-882'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: instrumentation-rust-probes-882
+          fetch-depth: 0
+
+      - name: Set up Rust formatter
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format touched instrumentation sources
+        run: |
+          rustfmt --edition 2021 \
+            core/rust/src/instrumentation.rs \
+            core/rust/src/instrumentation/hub.rs \
+            core/rust/src/instrumentation/hub/delivery.rs \
+            core/rust/src/instrumentation/interpreter.rs \
+            core/rust/src/instrumentation/interpreter/tests.rs \
+            core/rust/src/instrumentation/hbc.rs \
+            core/rust/src/instrumentation/hbc/tests.rs \
+            core/rust/src/instrumentation/delivery_tests.rs \
+            core/rust/src/fiber/coroutine/observation.rs \
+            core/rust/src/fiber/coroutine/semantic.rs \
+            core/rust/src/vm/machine/instrumentation.rs \
+            core/rust/src/vm/machine/instrumentation/step.rs
+
+      - name: Commit the deterministic formatter result
+        run: |
+          if git diff --quiet; then
+            echo "No formatting changes required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            core/rust/src/instrumentation.rs \
+            core/rust/src/instrumentation \
+            core/rust/src/fiber/coroutine/observation.rs \
+            core/rust/src/fiber/coroutine/semantic.rs \
+            core/rust/src/vm/machine/instrumentation.rs \
+            core/rust/src/vm/machine/instrumentation
+          git commit -m "Format Rust instrumentation sources"
+          git push origin HEAD:instrumentation-rust-probes-882
+
   focused:
+    if: github.event_name != 'push' || github.ref_name != 'instrumentation-rust-probes-882'
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
