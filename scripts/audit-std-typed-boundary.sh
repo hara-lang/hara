@@ -8,7 +8,9 @@ lint_analyzer='core/lib/src/tool/lint/analyze.hal'
 required_paths=(
   'core/lib/src/std/typed.hal'
   'core/lib/src/std/typed/catalog.hal'
+  'core/lib/src/std/typed/catalog/base.hal'
   'core/lib/src/std/typed/catalog/codec.hal'
+  'core/lib/src/std/typed/catalog/graph.hal'
   'core/lib/src/std/typed/explain.hal'
   'core/lib/src/std/typed/registry.hal'
   'core/lib/src/std/typed/schema.hal'
@@ -37,6 +39,22 @@ else
     fi
   done
 fi
+
+catalog_modules=(
+  'core/lib/src/std/typed/catalog.hal'
+  'core/lib/src/std/typed/catalog/base.hal'
+  'core/lib/src/std/typed/catalog/codec.hal'
+  'core/lib/src/std/typed/catalog/graph.hal'
+)
+for path in "${catalog_modules[@]}"; do
+  if [[ -f "$path" ]]; then
+    lines=$(wc -l < "$path")
+    if [[ "$lines" -gt 700 ]]; then
+      echo "Schema catalog module exceeds the 700-line portability boundary: $path ($lines lines)" >&2
+      failed=1
+    fi
+  fi
+done
 
 mapfile -t foundation_files < <(
   git ls-files | grep -E '^core/lib/src/std/foundation(\.hal|/)' || true
@@ -94,7 +112,9 @@ fi
 standard_namespaces=(
   std.typed
   std.typed.catalog
+  std.typed.catalog.base
   std.typed.catalog.codec
+  std.typed.catalog.graph
   std.typed.explain
   std.typed.infer
   std.typed.registry
@@ -111,6 +131,8 @@ bootstrap_namespaces=(
   std.typed.registry
   std.typed.schema
   std.typed.catalog.codec
+  std.typed.catalog.base
+  std.typed.catalog.graph
   std.typed.catalog
 )
 for namespace in "${bootstrap_namespaces[@]}"; do
@@ -129,6 +151,8 @@ inventory_line() {
 registry_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.registry)
 schema_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.schema)
 codec_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.codec)
+base_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.base)
+graph_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog.graph)
 catalog_line=$(inventory_line core/rust/bootstrap.namespaces std.typed.catalog)
 typed_line=$(inventory_line core/rust/bootstrap.namespaces std.typed)
 
@@ -140,8 +164,16 @@ if [[ -n "$schema_line" && -n "$codec_line" && "$schema_line" -ge "$codec_line" 
   echo 'std.typed.schema must bootstrap before std.typed.catalog.codec.' >&2
   failed=1
 fi
-if [[ -n "$codec_line" && -n "$catalog_line" && "$codec_line" -ge "$catalog_line" ]]; then
-  echo 'std.typed.catalog.codec must bootstrap before std.typed.catalog.' >&2
+if [[ -n "$codec_line" && -n "$base_line" && "$codec_line" -ge "$base_line" ]]; then
+  echo 'std.typed.catalog.codec must bootstrap before std.typed.catalog.base.' >&2
+  failed=1
+fi
+if [[ -n "$base_line" && -n "$graph_line" && "$base_line" -ge "$graph_line" ]]; then
+  echo 'std.typed.catalog.base must bootstrap before std.typed.catalog.graph.' >&2
+  failed=1
+fi
+if [[ -n "$graph_line" && -n "$catalog_line" && "$graph_line" -ge "$catalog_line" ]]; then
+  echo 'std.typed.catalog.graph must bootstrap before std.typed.catalog.' >&2
   failed=1
 fi
 if [[ -n "$catalog_line" && -n "$typed_line" && "$catalog_line" -ge "$typed_line" ]]; then
