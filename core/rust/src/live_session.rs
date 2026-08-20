@@ -29,6 +29,12 @@ mod bytecode;
 #[cfg(feature = "bytecode-observation")]
 pub use bytecode::BytecodeLiveSession;
 
+#[cfg(feature = "bytecode-observation")]
+#[path = "live_session/instrumented_hbc.rs"]
+mod instrumented_hbc;
+#[cfg(feature = "bytecode-observation")]
+pub(crate) use instrumented_hbc::InstrumentedHbcLiveSession;
+
 #[cfg(test)]
 #[path = "live_session/tests.rs"]
 mod tests;
