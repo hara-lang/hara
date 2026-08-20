@@ -124,3 +124,6 @@ pub fn restricted_sandbox_runtime_with_host(
 }
 
 include!("runtime/tests.rs");
+
+#[cfg(test)]
+mod native_behavioral_conformance_tests;
