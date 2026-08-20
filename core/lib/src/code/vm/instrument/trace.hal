@@ -1,0 +1,375 @@
+(ns code.vm.instrument.trace
+  (:require [code.vm.instrument :as instrument]
+            [code.vm.model :as model]))
+
+(defn- invalid
+  [message data]
+  (throw (ex :argument data :ex/message message)))
+
+(defn- map-value
+  [label value]
+  (if (map? value)
+    value
+    (invalid
+     (str "code.vm.instrument.trace " label " must be a map")
+     {:field label
+      :value value})))
+
+(defn- vector-value
+  [label value]
+  (if (vector? value)
+    value
+    (invalid
+     (str "code.vm.instrument.trace " label " must be a vector")
+     {:field label
+      :value value})))
+
+(defn- target-kind
+  [target]
+  (let [kind (:target-kind target)]
+    (cond
+      (= kind :interpreter) :interpreter
+      (= kind :hbc) :bytecode
+      :else
+      (invalid
+       "Unsupported live trace target kind"
+       {:target target
+        :target-kind kind}))))
+
+(defn live-machine?
+  [value]
+  (and (model/machine? value)
+       (instrument/target?
+        (get-in value [:vm/options :instrument/target]))
+       (= :live
+          (get-in value
+                  [:vm/options
+                   :instrument/provenance
+                   :vm/mode]))))
+
+(defn target
+  [machine]
+  (if (live-machine? machine)
+    (get-in machine [:vm/options :instrument/target])
+    (invalid
+     "code.vm.instrument.trace requires a live trace machine"
+     {:value machine})))
+
+(defn provenance
+  [machine]
+  (if (live-machine? machine)
+    (get-in machine [:vm/options :instrument/provenance])
+    (invalid
+     "code.vm.instrument.trace requires a live trace machine"
+     {:value machine})))
+
+(defn create
+  ([target]
+   (create target {}))
+  ([target options]
+   (if (not (instrument/target? target))
+     (invalid
+      "Live traces require an instrumentation target"
+      {:target target})
+     (let [options (map-value "options" (or options {}))
+           kind (target-kind target)
+           trace-provenance
+           (instrument/trace-provenance
+            :live
+            {:backend (:target-kind target)
+             :provider (:runtime target)
+             :target-id (:target-id target)})
+           adapter-options
+           (merge
+            (map-value "adapter options"
+                       (or (:options options) {}))
+            {:instrument/target target
+             :instrument/provenance trace-provenance})]
+       (model/machine
+        kind
+        target
+        {:id (or (:id options)
+                 (str "vm/live/" (:target-id target)))
+         :state
+         {:instrument/sequence -1
+          :instrument/id nil
+          :instrument/current nil
+          :instrument/event nil
+          :instrument/calls []
+          :source/current nil
+          :suspension/event nil
+          :result nil
+          :error nil
+          :provenance trace-provenance}
+         :options adapter-options
+         :limits (:limits options)})))))
+
+(defn- same-target?
+  [target event]
+  (and (= (:runtime target) (:runtime event))
+       (= (:session-id target) (:session-id event))
+       (= (:target-id target) (:target-id event))
+       (= (:target-kind target) (:target-kind event))
+       (= (:generation target) (:generation event))))
+
+(defn- validate-event
+  [machine event]
+  (if (not (live-machine? machine))
+    (invalid
+     "Live trace consumption requires a live trace machine"
+     {:machine machine})
+    nil)
+  (if (model/terminal? machine)
+    (invalid
+     "A terminal live trace cannot consume more events"
+     {:vm/id (:vm/id machine)
+      :status (:vm/status machine)})
+    nil)
+  (if (not (instrument/event? event))
+    (invalid
+     "Live trace consumption requires an instrumentation event"
+     {:event event})
+    nil)
+  (if (not= :live (:phase event))
+    (invalid
+     "Live trace consumption rejects replay events"
+     {:phase (:phase event)
+      :event event})
+    nil)
+  (if (not (same-target? (target machine) event))
+    (invalid
+     "Instrumentation event does not belong to the live trace target"
+     {:target (target machine)
+      :event event})
+    nil)
+  (let [previous
+        (get-in machine [:vm/state :instrument/sequence])
+        sequence (:sequence event)]
+    (if (> sequence previous)
+      nil
+      (invalid
+       "Instrumentation event sequence is not monotonic"
+       {:previous previous
+        :sequence sequence
+        :event event})))
+  (let [expected
+        (get-in machine [:vm/state :instrument/id])
+        actual (:instrument/id event)]
+    (if (or (nil? expected)
+            (= expected actual))
+      event
+      (invalid
+       "Live trace cannot mix instrument identities"
+       {:expected expected
+        :actual actual
+        :event event}))))
+
+(defn- event-stage-rule
+  [event]
+  (let [kind (:event event)]
+    (cond
+      (= kind :semantic/boundary)
+      [:evaluate :instrument/semantic-boundary]
+
+      (= kind :instruction/execute)
+      [:execute :instrument/instruction-execute]
+
+      (= kind :call/enter)
+      [:call :instrument/call-enter]
+
+      (= kind :call/return)
+      [:return :instrument/call-return]
+
+      (= kind :exception/raise)
+      [:error :instrument/exception-raise]
+
+      (= kind :exception/unwind)
+      [:error :instrument/exception-unwind]
+
+      (= kind :effect/var-set)
+      [:effect :instrument/var-set]
+
+      (= kind :effect/field-set)
+      [:effect :instrument/field-set]
+
+      (= kind :promise/suspend)
+      [:suspend :instrument/promise-suspend]
+
+      (= kind :promise/resume)
+      [:resume :instrument/promise-resume]
+
+      (= kind :machine/suspend)
+      [:suspend :instrument/machine-suspend]
+
+      (= kind :machine/resume)
+      [:resume :instrument/machine-resume]
+
+      (= kind :execution/terminal)
+      [:terminal :instrument/execution-terminal]
+
+      :else
+      (invalid
+       "Unsupported live instrumentation event"
+       {:event event
+        :event/kind kind}))))
+
+(defn- data-value
+  [event keyword-key string-key]
+  (let [data (:data event)
+        value (get data keyword-key)]
+    (if (nil? value)
+      (get data string-key)
+      value)))
+
+(defn- terminal-status
+  [event]
+  (let [status (data-value event :status "status")]
+    (cond
+      (or (= status :returned)
+          (= status "returned")) :returned
+      (or (= status :failed)
+          (= status "failed")) :failed
+      (or (= status :cancelled)
+          (= status "cancelled")) :cancelled
+      :else
+      (invalid
+       "Terminal instrumentation event has an unsupported status"
+       {:status status
+        :event event}))))
+
+(defn- event-status
+  [event]
+  (let [kind (:event event)]
+    (cond
+      (or (= kind :promise/suspend)
+          (= kind :machine/suspend)) :suspended
+      (= kind :execution/terminal) (terminal-status event)
+      :else :running)))
+
+(defn- without-last
+  [values]
+  (let [limit (dec (count values))]
+    (loop [index 0
+           output []]
+      (if (>= index limit)
+        output
+        (recur (inc index)
+               (conj output (nth values index)))))))
+
+(defn- event-function
+  [event]
+  (or (get-in event [:location :function])
+      (data-value event :function "function")))
+
+(defn- call-entry
+  [event]
+  {:instrument/id (:instrument/id event)
+   :target-id (:target-id event)
+   :generation (:generation event)
+   :sequence (:sequence event)
+   :function (event-function event)})
+
+(defn- next-calls
+  [state event]
+  (let [calls (:instrument/calls state)
+        kind (:event event)]
+    (cond
+      (= kind :call/enter)
+      (conj calls (call-entry event))
+
+      (or (= kind :call/return)
+          (= kind :exception/unwind))
+      (without-last calls)
+
+      (= kind :execution/terminal)
+      []
+
+      :else calls)))
+
+(defn- next-suspension
+  [state event]
+  (let [kind (:event event)]
+    (cond
+      (or (= kind :promise/suspend)
+          (= kind :machine/suspend)) event
+      (or (= kind :promise/resume)
+          (= kind :machine/resume)
+          (= kind :execution/terminal)) nil
+      :else (:suspension/event state))))
+
+(defn- event-state
+  [machine event]
+  (let [state (:vm/state machine)
+        status (event-status event)
+        terminal (= :execution/terminal (:event event))
+        result (if terminal
+                 (data-value event :result "result")
+                 (:result state))
+        error (if terminal
+                (data-value event :error "error")
+                (:error state))]
+    (assoc state
+           :instrument/sequence (:sequence event)
+           :instrument/id (:instrument/id event)
+           :instrument/current event
+           :instrument/event (:event event)
+           :instrument/calls (next-calls state event)
+           :source/current (:location event)
+           :suspension/event (next-suspension state event)
+           :result result
+           :error error
+           :status status)))
+
+(defn- event-source
+  [event]
+  (merge
+   {:instrument/id (:instrument/id event)
+    :runtime (:runtime event)
+    :session-id (:session-id event)
+    :target-id (:target-id event)
+    :target-kind (:target-kind event)
+    :generation (:generation event)
+    :sequence (:sequence event)
+    :event (:event event)}
+   (or (:location event) {})))
+
+(defn- event-transition
+  [machine event]
+  (let [[stage rule] (event-stage-rule event)
+        status (event-status event)
+        terminal (= :execution/terminal (:event event))]
+    (model/transition
+     machine
+     stage
+     rule
+     (event-state machine event)
+     {:source (event-source event)
+      :events [event]
+      :status status
+      :result (if terminal
+                (data-value event :result "result")
+                nil)
+      :error (if terminal
+               (data-value event :error "error")
+               nil)})))
+
+(defn consume
+  [machine event]
+  (let [event (validate-event machine event)]
+    (model/advance
+     machine
+     (event-transition machine event))))
+
+(defn consume-all
+  [machine events]
+  (reduce consume
+          machine
+          (vector-value "events" events)))
+
+(defn from-events
+  ([target events]
+   (from-events target events {}))
+  ([target events options]
+   (consume-all
+    (create target options)
+    events)))

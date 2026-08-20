@@ -1,0 +1,73 @@
+name: code.vm instrumentation trace validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - testing
+      - 'instrumentation-*'
+    paths:
+      - 'core/lib/src/code/vm.hal'
+      - 'core/lib/src/code/vm/instrument/**'
+      - 'core/lib/test/code/vm/instrument/**'
+      - 'core/rust/standard-library.namespaces'
+      - '.github/workflows/instrumentation-code-vm.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/lib/src/code/vm.hal'
+      - 'core/lib/src/code/vm/instrument/**'
+      - 'core/lib/test/code/vm/instrument/**'
+      - 'core/rust/standard-library.namespaces'
+      - '.github/workflows/instrumentation-code-vm.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-vm-instrumentation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Materialize generated HAL packaging inputs
+        run: |
+          bash scripts/runtime/sync-rust-hal-src
+          bash scripts/runtime/sync-rust-hal-src --check
+          grep -Fx 'code.vm.instrument.trace' core/rust/standard-library.namespaces
+
+      - name: Run portable instrumentation contract tests
+        run: ./scripts/runtime/run-lib-tests core/lib/test/code/vm/instrument_test.hal
+
+      - name: Run passive live trace conversion tests
+        run: ./scripts/runtime/run-lib-tests core/lib/test/code/vm/instrument/trace_test.hal
+
+      - name: Reject control or runtime ownership from pure trace namespace
+        run: |
+          file=core/lib/src/code/vm/instrument/trace.hal
+          if grep -nE 'InstrumentationHub|ControlLease|EvalFiber|Machine/|Promise|step_observed|run_observed|resume_observed' "$file"; then
+            echo "code.vm.instrument.trace must remain a pure event-to-transition consumer" >&2
+            exit 1
+          fi
+
+      - name: Enforce bounded trace adapter
+        run: test "$(wc -l < core/lib/src/code/vm/instrument/trace.hal)" -lt 700
