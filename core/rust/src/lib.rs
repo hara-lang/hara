@@ -94,6 +94,7 @@ include!("runtime/session_model.rs");
 include!("runtime/sandbox_model.rs");
 include!("runtime/session.rs");
 include!("runtime/session_live.rs");
+include!("runtime/session_instrumentation.rs");
 include!("runtime/sandbox.rs");
 include!("runtime/runtime.rs");
 include!("runtime/bytecode.rs");

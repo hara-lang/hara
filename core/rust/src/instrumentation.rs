@@ -10,6 +10,7 @@ mod hbc;
 mod hub;
 mod interpreter;
 mod model;
+mod native;
 
 #[cfg(all(feature = "bytecode-vm", feature = "bytecode-instrumentation"))]
 pub use hbc::{hbc_capabilities, HbcBoundary, HbcTarget};
@@ -25,6 +26,10 @@ pub use model::{
     InstrumentRegistration, ProjectionLimits, ProjectionRequest, RuntimeBackend, SourceSpan,
     TargetDescriptor, TargetHandle, TargetKind, INSTRUMENTATION_EVENT_SCHEMA,
     INSTRUMENTATION_PROTOCOL,
+};
+pub use native::{
+    NativeAttachment, NativeControlLease, NativeInstrumentHandle, NativeInstrumentation,
+    NativeInstrumentationError, NativeTargetHandle,
 };
 
 #[cfg(test)]
