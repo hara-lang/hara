@@ -66,9 +66,7 @@ interface GitHubObjectClient {
 
   record TreeEntry(String path, String mode, String type, String sha, Long size) {
     public TreeEntry {
-      if (path == null || path.isBlank() || path.startsWith("/") || path.contains("..")) {
-        throw new IllegalArgumentException("invalid Git tree path");
-      }
+      path = requireTreePath(path, "Git tree path");
       mode = requireText(mode, "Git tree mode");
       type = requireText(type, "Git tree type");
       sha = requireSha(sha, "Git object SHA");
@@ -86,9 +84,7 @@ interface GitHubObjectClient {
   /** A null SHA deletes the named path from the base tree. */
   record TreeChange(String path, String mode, String type, String sha) {
     public TreeChange {
-      if (path == null || path.isBlank() || path.startsWith("/") || path.contains("..")) {
-        throw new IllegalArgumentException("invalid Git tree change path");
-      }
+      path = requireTreePath(path, "Git tree change path");
       if (sha != null) {
         mode = requireText(mode, "Git tree mode");
         type = requireText(type, "Git tree type");
@@ -124,6 +120,20 @@ interface GitHubObjectClient {
       String reference,
       String expectedCommitSha,
       String newCommitSha);
+
+  private static String requireTreePath(String value, String label) {
+    String path = requireText(value, label);
+    if (path.startsWith("/") || path.endsWith("/") || path.indexOf('\0') >= 0
+        || path.indexOf('\\') >= 0) {
+      throw new IllegalArgumentException(label + " is malformed");
+    }
+    for (String segment : path.split("/", -1)) {
+      if (segment.isEmpty() || ".".equals(segment) || "..".equals(segment)) {
+        throw new IllegalArgumentException(label + " is malformed");
+      }
+    }
+    return path;
+  }
 
   private static String requireText(String value, String label) {
     if (value == null || value.isBlank()) throw new IllegalArgumentException(label + " is required");
