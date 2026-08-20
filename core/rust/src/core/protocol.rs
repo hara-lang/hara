@@ -1086,6 +1086,7 @@ fn native_base_values(operation: &str, values: &[Value]) -> Result<Value, String
                         | Value::Tuple(_)
                         | Value::Seq(_)
                 ),
+                "coll?" => named_protocol_satisfies("coll?", value),
                 _ => return Err(format!("unknown Base predicate: {predicate}")),
             })),
             _ => Err(format!("Base/{predicate} expects one value")),

@@ -229,7 +229,7 @@ public final class HaraContext {
                   "reduced?", "nil?", "boolean?", "string?", "char?", "number?", "integer?",
                   "long?", "double?", "keyword?", "symbol?", "pointer?",
                   "atom?", "function?", "bytes?", "array?", "object?", "list?", "cons?", "vector?",
-                  "tuple?", "map?", "set?", "sequential?", "satisfies?", "type", "instance?")),
+                  "tuple?", "map?", "set?", "sequential?", "coll?", "satisfies?", "type", "instance?")),
           Map.entry(
               "Algo",
               java.util.List.of(
