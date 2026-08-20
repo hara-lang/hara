@@ -1,0 +1,216 @@
+(ns std.typed.catalog.graph
+  (:require [std.typed.catalog.base]
+            [std.typed.catalog.codec]
+            [std.typed.schema]))
+
+(defn- append-unique
+  [values value]
+  (if (any? (fn [candidate] (= candidate value)) values)
+    values
+    (conj values value)))
+
+(defn- direct-dependencies
+  [catalog entry]
+  (loop [remaining
+         (std.typed.schema/reference-names (:schema/ast entry))
+         output []]
+    (if (empty? remaining)
+      output
+      (let [reference (first remaining)
+            target
+            (std.typed.catalog.base/lookup catalog reference)]
+        (if (nil? target)
+          (std.typed.catalog.base/catalog-error
+           "catalog schema reference is unresolved"
+           {:schema/id (:schema/id entry)
+            :schema/version (:schema/version entry)
+            :reference reference}))
+        (recur
+         (rest remaining)
+         (append-unique
+          output
+          (std.typed.catalog.base/coordinate target)))))))
+
+(defn- attach-dependencies
+  [catalog]
+  (assoc
+   catalog
+   :catalog/entries
+   (reduce
+    (fn [output entry]
+      (assoc
+       output
+       (std.typed.catalog.base/coordinate-key entry)
+       (assoc entry
+              :schema/dependencies
+              (direct-dependencies catalog entry))))
+    {}
+    (vals (:catalog/entries catalog)))))
+
+(defn- alias-cycle?
+  [catalog start]
+  (loop [entry start
+         visiting #{}]
+    (let [key (std.typed.catalog.base/coordinate-key entry)]
+      (cond
+        (has? visiting key) true
+        (not= :reference (:kind (:schema/ast entry))) false
+        :else
+        (let [dependency (first (:schema/dependencies entry))
+              next-entry
+              (if dependency
+                (std.typed.catalog.base/lookup catalog dependency)
+                nil)]
+          (if next-entry
+            (recur next-entry (conj visiting key))
+            false))))))
+
+(defn- assert-no-alias-cycles
+  [catalog]
+  (loop [remaining (vals (:catalog/entries catalog))]
+    (if (empty? remaining)
+      catalog
+      (let [entry (first remaining)]
+        (if (alias-cycle? catalog entry)
+          (std.typed.catalog.base/catalog-error
+           "schema catalog contains an alias-only cycle"
+           {:schema/id (:schema/id entry)
+            :schema/version (:schema/version entry)}))
+        (recur (rest remaining))))))
+
+(defn link
+  "Pins named references to exact visible coordinates and checks cycles."
+  [catalog]
+  (assert-no-alias-cycles
+   (attach-dependencies
+    (std.typed.catalog.base/ensure catalog))))
+
+(defn- walk-dependencies
+  [catalog entry state]
+  (let [key (std.typed.catalog.base/coordinate-key entry)
+        state
+        (assoc state
+               :visiting
+               (conj (:visiting state) key))]
+    (loop [remaining (:schema/dependencies entry)
+           state state]
+      (if (empty? remaining)
+        (assoc state
+               :visiting
+               (disj (:visiting state) key)
+               :visited
+               (conj (:visited state) key))
+        (let [dependency (first remaining)
+              dependency-key
+              (std.typed.catalog.base/coordinate-key dependency)
+              state
+              (assoc state
+                     :output
+                     (append-unique (:output state) dependency))
+              state
+              (cond
+                (has? (:visiting state) dependency-key)
+                (assoc state
+                       :recursive
+                       (append-unique
+                        (:recursive state)
+                        dependency))
+
+                (has? (:visited state) dependency-key)
+                state
+
+                :else
+                (let [next-entry
+                      (std.typed.catalog.base/lookup
+                       catalog
+                       dependency)]
+                  (if next-entry
+                    (walk-dependencies catalog next-entry state)
+                    state)))]
+          (recur (rest remaining) state))))))
+
+(defn- dependency-report
+  [catalog entry]
+  (let [state
+        (walk-dependencies
+         catalog
+         entry
+         {:visiting #{}
+          :visited #{}
+          :output []
+          :recursive []})]
+    {:schema/coordinate
+     (std.typed.catalog.base/coordinate entry)
+     :dependencies/direct (:schema/dependencies entry)
+     :dependencies/transitive (:output state)
+     :dependencies/recursive (:recursive state)}))
+
+(defn ^{:schema [:function
+                 [:fn [:any :any] :map]
+                 [:fn [:any :any :int] :map]]}
+  dependencies
+  "Returns deterministic direct, transitive, and recursive dependencies."
+  ([catalog target]
+   (let [catalog (std.typed.catalog.base/ensure catalog)]
+     (dependency-report
+      catalog
+      (std.typed.catalog.base/require-entry catalog target))))
+  ([catalog target version]
+   (let [catalog (std.typed.catalog.base/ensure catalog)]
+     (dependency-report
+      catalog
+      (std.typed.catalog.base/require-entry
+       catalog target version)))))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  verify-entry
+  "Recomputes and verifies one canonical entry hash."
+  [entry]
+  (and
+   (std.typed.catalog.base/entry? entry)
+   (= (:schema/hash entry)
+      (std.typed.catalog.codec/hash-ast
+       (:schema/id entry)
+       (:schema/version entry)
+       (:schema/ast entry)))))
+
+(defn- dependency-valid?
+  [catalog dependency]
+  (let [entry
+        (std.typed.catalog.base/lookup catalog dependency)]
+    (and entry
+         (= (:schema/hash dependency)
+            (:schema/hash entry)))))
+
+(defn- entry-findings
+  [catalog entry]
+  (vec
+   (concat
+    (if (verify-entry entry)
+      []
+      [{:finding/type :std.typed.catalog/hash-mismatch
+        :schema/coordinate
+        (std.typed.catalog.base/coordinate entry)}])
+    (map
+     (fn [dependency]
+       {:finding/type :std.typed.catalog/unresolved-dependency
+        :schema/coordinate
+        (std.typed.catalog.base/coordinate entry)
+        :schema/dependency dependency})
+     (filter
+      (fn [dependency]
+        (not (dependency-valid? catalog dependency)))
+      (:schema/dependencies entry))))))
+
+(defn ^{:schema [:fn [:any] :map]}
+  verify
+  "Verifies visible entry hashes and exact dependency coordinates."
+  [catalog]
+  (let [catalog (std.typed.catalog.base/ensure catalog)
+        failures
+        (vec
+         (mapcat
+          (fn [entry] (entry-findings catalog entry))
+          (std.typed.catalog.base/entries catalog)))]
+    {:valid (empty? failures)
+     :errors failures}))
