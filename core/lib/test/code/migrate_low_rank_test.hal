@@ -1,0 +1,176 @@
+(ns code.migrate-low-rank-test
+  (:use code.test)
+  (:require [code.migrate.low-rank :as low-rank]))
+
+(fact "the five-library audit separates terminal review from pending candidates"
+  [(low-rank/validate-catalog)
+   (low-rank/next-review)
+   (low-rank/next-unblocked-migration)]
+  => [{:valid? true
+       :libraries 5
+       :reviewed 3
+       :pending ["std.lib.foundation" "std.lib.collection"]
+       :errors []}
+      ["std.lib.foundation" "std.lib.collection"]
+      ["std.lib.walk" "std.lib.zip"]])
+
+(fact "std.lib.function is exhaustively classified as host-only or manual"
+  (let [library (low-rank/library-by-name "std.lib.function")
+        reviews (:symbol/reviews library)]
+    [(count (:public/symbols library))
+     (count reviews)
+     (frequencies (map :review/classification reviews))
+     (:review/disposition library)
+     (:dry-run/status library)
+     (low-rank/unreviewed-symbols library)])
+  => [15
+      15
+      {:host-only 10 :manual 5}
+      :manual-boundary
+      :manual
+      []])
+
+(fact "std.lib.walk is a complete two-owner consolidation"
+  (let [library (low-rank/library-by-name "std.lib.walk")
+        reviews (:symbol/reviews library)]
+    [(count reviews)
+     (frequencies (map :target/namespace reviews))
+     (map
+      (fn [symbol]
+        (select-keys
+         (get (low-rank/symbol-review-index library) symbol)
+         [:review/classification :review/disposition
+          :target/namespace :target/symbol]))
+      ["walk" "keywordize-keys" "walk:keep"])])
+  => [13
+      {"std.foundation" 6
+       "std.lib.collection" 7}
+      [{:review/classification :consolidated
+        :review/disposition :consolidated
+        :target/namespace "std.foundation"
+        :target/symbol "walk"}
+       {:review/classification :consolidated
+        :review/disposition :consolidated
+        :target/namespace "std.lib.collection"
+        :target/symbol "keywordize-keys"}
+       {:review/classification :consolidated
+        :review/disposition :consolidated
+        :target/namespace "std.lib.collection"
+        :target/symbol "walk:keep"}]])
+
+(fact "the zip result is complete, adapted, and explicitly handed to #556"
+  (let [library (low-rank/library-by-name "std.lib.zip")]
+    [(count (:public/symbols library))
+     (count (:symbol/reviews library))
+     (low-rank/unreviewed-symbols library)
+     (select-keys
+      library
+      [:review/status :review/disposition :review/shape
+       :review/owner :review/consumer :dry-run/status
+       :target/evidence])])
+  => [76
+      76
+      []
+      {:review/status :reviewed
+       :review/disposition :semantic-replacement
+       :review/shape :adapted
+       :review/owner :issue-555
+       :review/consumer :issue-556
+       :dry-run/status :ready
+       :target/evidence
+       {:target/path "core/lib/src/std/lib/zip.hal"
+        :target/blob "13d2300227c49fb370c096555cda348e6bc01367"
+        :target/test-path "core/lib/test/std/lib/zip_test.hal"
+        :target/test-blob "2fa4184a88ffb27a240cd2c0dc7d4cc9b44d3630"}}])
+
+(fact "pending candidate matches retain their old evidence revision and never count as reviewed"
+  (let [foundation (low-rank/library-by-name "std.lib.foundation")
+        collection (low-rank/library-by-name "std.lib.collection")]
+    [(count (:candidate/matches foundation))
+     (count (:candidate/matches collection))
+     (set (map :candidate/kind (:candidate/matches collection)))
+     (every?
+      (fn [candidate]
+        (and
+         (= :unreviewed (:candidate/status candidate))
+         (= low-rank/+candidate-evidence-revision+
+            (:candidate/evidence-revision candidate))))
+      (concat
+       (:candidate/matches foundation)
+       (:candidate/matches collection)))
+     (low-rank/reviewed? foundation)
+     (low-rank/reviewed? collection)])
+  => [16 14 #{:moved :similar} true false false])
+
+(fact "source and paired-test plans use canonical framework edit records"
+  (let [rename
+        (fn [source]
+          (str/replace source "std.lib.walk" "std.foundation"))
+        plans
+        (low-rank/plan-pair
+         "std.lib.walk"
+         {:source/path "src/std/lib/walk.clj"
+          :source/text "(ns std.lib.walk)"
+          :target/path "core/lib/src/std/foundation.hal"
+          :target/text "(ns std.lib.walk)"}
+         {:source/path "test/std/lib/walk_test.clj"
+          :source/text "(ns std.lib.walk-test)"
+          :target/path "core/lib/test/std/foundation_test.hal"
+          :target/text "(ns std.lib.walk-test)"}
+         rename)]
+    [(map
+      (fn [edit]
+        (select-keys
+         edit
+         [:source/path :target/path :after :changed :create :write
+          :rules :provenance]))
+      plans)
+     (map
+      (fn [edit]
+        (low-rank/unchanged-second-pass? edit rename))
+      plans)])
+  => [[{:source/path "src/std/lib/walk.clj"
+        :target/path "core/lib/src/std/foundation.hal"
+        :after "(ns std.foundation)"
+        :changed true
+        :create false
+        :write false
+        :rules [:foundation-low-rank/std.lib.walk]
+        :provenance
+        {:operation :code.framework/transform-code
+         :source/path "src/std/lib/walk.clj"
+         :target/path "core/lib/src/std/foundation.hal"
+         :profile/id :foundation-baa75a
+         :foundation/revision "baa75aabd6a879753d7d5cb07271b1448271e7cb"
+         :library/namespace "std.lib.walk"
+         :source/blob "8df4cf408983a5c8ad4bd8655997187082125e7e"
+         :test/blob "c0a3cb752e4d1e1a82d7c126a137f90b94e34d5c"}}
+       {:source/path "test/std/lib/walk_test.clj"
+        :target/path "core/lib/test/std/foundation_test.hal"
+        :after "(ns std.foundation-test)"
+        :changed true
+        :create false
+        :write false
+        :rules [:foundation-low-rank/std.lib.walk]
+        :provenance
+        {:operation :code.framework/transform-code
+         :source/path "test/std/lib/walk_test.clj"
+         :target/path "core/lib/test/std/foundation_test.hal"
+         :profile/id :foundation-baa75a
+         :foundation/revision "baa75aabd6a879753d7d5cb07271b1448271e7cb"
+         :library/namespace "std.lib.walk"
+         :source/blob "8df4cf408983a5c8ad4bd8655997187082125e7e"
+         :test/blob "c0a3cb752e4d1e1a82d7c126a137f90b94e34d5c"}}]
+      [true true]])
+
+(fact "catalog and report rendering are byte stable"
+  [(low-rank/catalog-source)
+   (low-rank/catalog-source)
+   (low-rank/report-source)
+   (low-rank/report-source)]
+  => (fn [values]
+       (and
+        (= (first values) (second values))
+        (= (nth values 2) (nth values 3)))))
+
+(pr-str (run {:namespace "code.migrate-low-rank-test"}))
