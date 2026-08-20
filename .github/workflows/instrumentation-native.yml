@@ -10,6 +10,8 @@ on:
       - 'core/rust/src/instrumentation.rs'
       - 'core/rust/src/instrumentation/native.rs'
       - 'core/rust/src/instrumentation/native/**'
+      - 'core/rust/src/instrumentation/native_identity.rs'
+      - 'core/rust/src/instrumentation/native_identity/**'
       - 'core/rust/src/runtime/session_instrumentation.rs'
       - 'core/rust/tests/native_instrumentation_minimal.rs'
       - 'core/rust/src/lib.rs'
@@ -20,6 +22,8 @@ on:
       - 'core/rust/src/instrumentation.rs'
       - 'core/rust/src/instrumentation/native.rs'
       - 'core/rust/src/instrumentation/native/**'
+      - 'core/rust/src/instrumentation/native_identity.rs'
+      - 'core/rust/src/instrumentation/native_identity/**'
       - 'core/rust/src/runtime/session_instrumentation.rs'
       - 'core/rust/tests/native_instrumentation_minimal.rs'
       - 'core/rust/src/lib.rs'
@@ -61,12 +65,20 @@ jobs:
             core/rust/src/instrumentation.rs \
             core/rust/src/instrumentation/native.rs \
             core/rust/src/instrumentation/native/tests.rs \
+            core/rust/src/instrumentation/native_identity.rs \
+            core/rust/src/instrumentation/native_identity/tests.rs \
             core/rust/src/runtime/session_instrumentation.rs
 
       - name: Test trusted native service with the production feature set
         run: |
           cargo test --locked --manifest-path core/rust/Cargo.toml \
             --lib trusted_native_
+
+      - name: Exercise trusted native attachment over instrumented HBC
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --features bytecode-observation --lib \
+            trusted_native_binds_and_observes_real_hbc_live_target
 
       - name: Test trusted native service without optional bytecode features
         run: |
@@ -84,9 +96,16 @@ jobs:
 
       - name: Reject ambient, guest, portable, and deferred authority
         run: |
-          if grep -R -nE \
-            'Instrumentation/current|instrumentation_current|std\.native\.Instrumentation/current' \
-            core/rust/src core/lib/src; then
+          ambient_pattern='Instrumentation/current|std\.native\.Instrumentation/current|(^|[^[:alnum:]_])instrumentation_current[[:space:]]*\('
+          if printf '%s\n' 'fn instrumentation_current_frame(' | grep -Eq "$ambient_pattern"; then
+            echo 'Ambient lookup guard rejects scoped frame helpers' >&2
+            exit 1
+          fi
+          if ! printf '%s\n' 'fn instrumentation_current(' | grep -Eq "$ambient_pattern"; then
+            echo 'Ambient lookup guard no longer rejects the forbidden API' >&2
+            exit 1
+          fi
+          if grep -R -nE "$ambient_pattern" core/rust/src core/lib/src; then
             echo 'Instrumentation must not have an ambient current lookup' >&2
             exit 1
           fi
@@ -97,12 +116,14 @@ jobs:
           if grep -nE \
             'core::Value|serde|wasm_bindgen|hta::|hbc::|json::' \
             core/rust/src/instrumentation/native.rs \
+            core/rust/src/instrumentation/native_identity.rs \
             core/rust/src/runtime/session_instrumentation.rs; then
             echo 'Native Instrumentation must remain outside portable value/codec surfaces' >&2
             exit 1
           fi
           if grep -nE 'TransformHalc|TransformHbc|RetransformHalc|RetransformHbc' \
-            core/rust/src/instrumentation/native.rs; then
+            core/rust/src/instrumentation/native.rs \
+            core/rust/src/instrumentation/native_identity.rs; then
             echo 'Artifact transformation remains deferred to tranche 6' >&2
             exit 1
           fi
@@ -111,6 +132,8 @@ jobs:
         run: |
           test "$(wc -l < core/rust/src/instrumentation/native.rs)" -lt 700
           test "$(wc -l < core/rust/src/instrumentation/native/tests.rs)" -lt 700
+          test "$(wc -l < core/rust/src/instrumentation/native_identity.rs)" -lt 100
+          test "$(wc -l < core/rust/src/instrumentation/native_identity/tests.rs)" -lt 350
           test "$(wc -l < core/rust/src/runtime/session_instrumentation.rs)" -lt 200
 
       - name: Check patch whitespace

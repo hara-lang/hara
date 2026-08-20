@@ -11,6 +11,7 @@ mod hub;
 mod interpreter;
 mod model;
 mod native;
+mod native_identity;
 
 #[cfg(all(feature = "bytecode-vm", feature = "bytecode-instrumentation"))]
 pub use hbc::{hbc_capabilities, HbcBoundary, HbcTarget};
