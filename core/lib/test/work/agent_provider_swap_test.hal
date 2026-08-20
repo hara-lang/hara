@@ -1,0 +1,32 @@
+(ns work.agent-provider-swap-test
+  (:require [work.base :as work]
+            [work.agent :as agent]))
+
+(defn coordinator-result
+  [id]
+  (let [coordinator (agent/ephemeral-coordinator)
+        value
+        {:agent/id :planner
+         :agent/driver
+         (agent/ephemeral-work-driver
+          :planner
+          (fn [agent intent context input work-context]
+            intent))
+         :agent/coordinator coordinator
+         :agent/authority (agent/ephemeral-authority id)}]
+    {:operation (:op (work/work-spec
+                      (agent/coordinate value {:task/id :compile})))
+     :authority (:authority/id
+                 (work/run
+                  (agent/sign value {:action :handoff})
+                  nil))}))
+
+(def results
+  [(test-check
+    "swapping authority providers does not change the Work algebra"
+    [(coordinator-result :authority-a)
+     (coordinator-result :authority-b)]
+    [{:operation :step :authority :authority-a}
+     {:operation :step :authority :authority-b}])])
+
+results
