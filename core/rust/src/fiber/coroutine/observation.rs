@@ -71,8 +71,9 @@ impl EvalFiber {
     pub(crate) fn instrumentation_event(&self) -> Option<(usize, ProducerEvent)> {
         let boundary = semantic::current_boundary(&self.env)?;
         let kind = match boundary.rule {
-            semantic::EvalSemanticRule::FormReturn
-            | semantic::EvalSemanticRule::ValueReturn => EventKind::SemanticBoundary,
+            semantic::EvalSemanticRule::FormReturn | semantic::EvalSemanticRule::ValueReturn => {
+                EventKind::SemanticBoundary
+            }
             semantic::EvalSemanticRule::CallEnter => EventKind::CallEnter,
             semantic::EvalSemanticRule::VarDefine | semantic::EvalSemanticRule::VarSet => {
                 EventKind::VarSet
@@ -111,10 +112,7 @@ impl EvalFiber {
         Some((boundary.sequence, event))
     }
 
-    pub(crate) fn instrumentation_source_location(
-        &self,
-        source_id: &str,
-    ) -> Option<EventLocation> {
+    pub(crate) fn instrumentation_source_location(&self, source_id: &str) -> Option<EventLocation> {
         let boundary = semantic::current_boundary(&self.env)?;
         let function = match &boundary.payload {
             semantic::EvalSemanticPayload::Call { name, .. } => Some(name.clone()),
@@ -226,12 +224,19 @@ impl EvalFiber {
     ) -> Option<PortableProjection> {
         let mut projection = PortableProjection::new("interpreter/snapshot")
             .with_field("state", instrumentation_state_keyword(&self.state))
-            .with_field("semantic/pending", semantic::pending_count(&self.env).to_string())
-            .with_field("environment/clones", self.instrumentation_environment_clone_count().to_string());
+            .with_field(
+                "semantic/pending",
+                semantic::pending_count(&self.env).to_string(),
+            )
+            .with_field(
+                "environment/clones",
+                self.instrumentation_environment_clone_count().to_string(),
+            );
         if let Some(promise) = &self.pending {
-            projection
-                .fields
-                .insert("promise/state".into(), promise_state_keyword(&promise.state()).into());
+            projection.fields.insert(
+                "promise/state".into(),
+                promise_state_keyword(&promise.state()).into(),
+            );
         }
         if let Some(locals) = self.instrumentation_locals(limits) {
             for (name, value) in locals.fields {

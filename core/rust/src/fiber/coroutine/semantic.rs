@@ -127,9 +127,7 @@ pub(super) fn configure_capture(
     }
 }
 
-pub(super) fn environment_clone_count(
-    environment: &Rc<RefCell<HashMap<String, Value>>>,
-) -> u64 {
+pub(super) fn environment_clone_count(environment: &Rc<RefCell<HashMap<String, Value>>>) -> u64 {
     context_for(environment)
         .map(|context| context.borrow().environment_clones)
         .unwrap_or(0)
