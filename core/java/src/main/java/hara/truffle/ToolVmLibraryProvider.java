@@ -9,6 +9,6 @@ public final class ToolVmLibraryProvider implements HaraLibraryProvider {
 
   @Override
   public void install(HaraContext context) {
-    HaraStaticLibrary.install(context, namespace(), ToolVmLibrary.class);
+    ToolVmLibrary.install(context, namespace());
   }
 }

@@ -516,7 +516,7 @@ public final class HaraContext {
       installNativeExportGroup(
           "Runtime",
           exports,
-          java.util.List.of("load-string", "macroexpand-1", "gensym", "var-sym"),
+          java.util.List.of("load-string", "macroexpand-1", "gensym"),
           Map.of());
       installNativeExportGroup(
           "Printer", exports, NATIVE_TYPES.get("Printer"), Map.of());
@@ -619,6 +619,17 @@ public final class HaraContext {
 
   private void installEnvironmentLibraries() {
     HaraNamespace runtime = namespace("std.native.Runtime");
+    runtime.define(
+        "var-sym",
+        new UnaryBuiltin(
+            "std.native.Runtime/var-sym",
+            value -> {
+              Object raw = HaraBox.unwrap(value);
+              if (!(raw instanceof HaraVar variable)) {
+                throw new HaraException("std.native.Runtime/var-sym expects a Var");
+              }
+              return Symbol.create(variable.namespaceName(), variable.symbolName());
+            }));
     runtime.define(
         "current",
         new VariadicBuiltin(
@@ -3980,13 +3991,13 @@ public final class HaraContext {
   }
 
   private void installNativeLibraries() {
-    HaraStaticLibrary.install(this, "std.native.Coroutine", StdFoundationCoroutine.class);
+    StdFoundationCoroutine.install(this, "std.native.Coroutine");
     namespace("std.native.Coroutine").define(
         "instance?",
         new UnaryBuiltin(
             "std.native.Coroutine/instance?",
             value -> HaraBox.unwrap(value) instanceof StdFoundationCoroutine.HaraCoroutine));
-    HaraStaticLibrary.install(this, "std.native.Crypto", NativeCrypto.class);
+    NativeCrypto.install(this, "std.native.Crypto");
     HaraNamespace document = namespace("std.native.Document");
     for (String method : NATIVE_TYPES.get("Document")) {
       document.define(
@@ -4012,7 +4023,7 @@ public final class HaraContext {
     test.define("failure", new VariadicBuiltin("std.native.Test/failure", this::nativeTestFailureAt));
     test.define("failure?", new VariadicBuiltin("std.native.Test/failure?", this::nativeTestFailurePredicate));
     HaraNamespace algo = namespace("std.native.Algo");
-    HaraStaticLibrary.install(this, "std.native.Algo", StdNativeAlgo.class);
+    StdNativeAlgo.install(this, "std.native.Algo");
     algo.define("deque?", typePredicate("std.native.Algo/deque?", hara.lang.data.Deque.class));
     algo.define("ordered-map?", typePredicate("std.native.Algo/ordered-map?", hara.lang.data.OrderedMap.class));
     algo.define("ordered-set?", typePredicate("std.native.Algo/ordered-set?", hara.lang.data.OrderedSet.class));
@@ -7141,9 +7152,31 @@ public final class HaraContext {
   Object iterValue(Object value) {
     Object target = HaraBox.unwrap(value);
     if (target == null || target == HaraNull.SINGLETON) return Iter.emptyIterator();
+    if (target instanceof Iterator<?>) return target;
     if (target instanceof String) return Iter.chars(((String) target).toCharArray());
     try {
-      return Iter.iter(target);
+      Iterator<?> source = Iter.iter(target);
+      return new CloseableIterator<Object>() {
+        private boolean closed;
+
+        @Override
+        public boolean hasNext() {
+          return !closed && source.hasNext();
+        }
+
+        @Override
+        public Object next() {
+          if (closed) throw new java.util.NoSuchElementException();
+          return source.next();
+        }
+
+        @Override
+        public void close() {
+          if (closed) return;
+          closed = true;
+          Iter.close(source);
+        }
+      };
     } catch (RuntimeException error) {
       throw new HaraException("iter does not support value: " + target);
     }

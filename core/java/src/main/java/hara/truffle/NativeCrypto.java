@@ -33,23 +33,39 @@ public final class NativeCrypto {
 
   private NativeCrypto() {}
 
-  @HaraExport(name = "sha512", arglists = {"[bytes]"})
+  static void install(HaraContext context, String namespace) {
+    HaraNativeLibrary.function(context, namespace, "sha512", NativeCrypto::sha512, "", "[bytes]");
+    HaraNativeLibrary.function(context, namespace, "hmac-sha256", NativeCrypto::hmacSha256, "", "[key bytes]");
+    HaraNativeLibrary.function(context, namespace, "hmac-sha512", NativeCrypto::hmacSha512, "", "[key bytes]");
+    HaraNativeLibrary.function(context, namespace, "random-bytes", NativeCrypto::randomBytes, "", "[size]");
+    HaraNativeLibrary.function(context, namespace, "secure-equal?", NativeCrypto::secureEqual, "", "[left right]");
+    HaraNativeLibrary.function(context, namespace, "ed25519-keypair", NativeCrypto::ed25519Keypair, "", "[]");
+    HaraNativeLibrary.function(context, namespace, "ed25519-public", NativeCrypto::ed25519Public, "", "[private-seed]");
+    HaraNativeLibrary.function(context, namespace, "ed25519-sign", NativeCrypto::ed25519Sign, "", "[private-seed message]");
+    HaraNativeLibrary.function(context, namespace, "ed25519-verify", NativeCrypto::ed25519Verify, "", "[public-key message signature]");
+    HaraNativeLibrary.function(context, namespace, "x25519-keypair", NativeCrypto::x25519Keypair, "", "[]");
+    HaraNativeLibrary.function(context, namespace, "x25519-public", NativeCrypto::x25519Public, "", "[private-key]");
+    HaraNativeLibrary.function(context, namespace, "x25519-shared", NativeCrypto::x25519Shared, "", "[private-key peer-public-key]");
+    HaraNativeLibrary.function(context, namespace, "p256-keypair", NativeCrypto::p256Keypair, "", "[]");
+    HaraNativeLibrary.function(context, namespace, "p256-public", NativeCrypto::p256Public, "", "[private-key]");
+    HaraNativeLibrary.function(context, namespace, "p256-sign", NativeCrypto::p256Sign, "", "[private-key message]");
+    HaraNativeLibrary.function(context, namespace, "p256-verify", NativeCrypto::p256Verify, "", "[public-key message signature]");
+    HaraNativeLibrary.function(context, namespace, "p256-shared", NativeCrypto::p256Shared, "", "[private-key peer-public-key]");
+  }
+
   public static Object sha512(HaraContext context, Object[] values) {
     requireArity("sha512", values, 1);
     return digestHex("SHA-512", bytes(values[0], "sha512"));
   }
 
-  @HaraExport(name = "hmac-sha256", arglists = {"[key bytes]"})
   public static Object hmacSha256(HaraContext context, Object[] values) {
     return hmac("hmac-sha256", "HmacSHA256", values);
   }
 
-  @HaraExport(name = "hmac-sha512", arglists = {"[key bytes]"})
   public static Object hmacSha512(HaraContext context, Object[] values) {
     return hmac("hmac-sha512", "HmacSHA512", values);
   }
 
-  @HaraExport(name = "random-bytes", arglists = {"[size]"})
   public static Object randomBytes(HaraContext context, Object[] values) {
     requireArity("random-bytes", values, 1);
     Object raw = HaraBox.unwrap(values[0]);
@@ -63,27 +79,23 @@ public final class NativeCrypto {
     return output;
   }
 
-  @HaraExport(name = "secure-equal?", arglists = {"[left right]"})
   public static Object secureEqual(HaraContext context, Object[] values) {
     requireArity("secure-equal?", values, 2);
     return MessageDigest.isEqual(
         bytes(values[0], "secure-equal?"), bytes(values[1], "secure-equal?"));
   }
 
-  @HaraExport(name = "ed25519-keypair", arglists = {"[]"})
   public static Object ed25519Keypair(HaraContext context, Object[] values) {
     requireArity("ed25519-keypair", values, 0);
     byte[] seed = random(Ed25519PrivateKeyParameters.KEY_SIZE);
     return keypair(seed, ed25519Public(seed));
   }
 
-  @HaraExport(name = "ed25519-public", arglists = {"[private-seed]"})
   public static Object ed25519Public(HaraContext context, Object[] values) {
     requireArity("ed25519-public", values, 1);
     return ed25519Public(fixedBytes(values[0], "ed25519-public", 32));
   }
 
-  @HaraExport(name = "ed25519-sign", arglists = {"[private-seed message]"})
   public static Object ed25519Sign(HaraContext context, Object[] values) {
     requireArity("ed25519-sign", values, 2);
     byte[] seed = fixedBytes(values[0], "ed25519-sign", 32);
@@ -94,7 +106,6 @@ public final class NativeCrypto {
     return signer.generateSignature();
   }
 
-  @HaraExport(name = "ed25519-verify", arglists = {"[public-key message signature]"})
   public static Object ed25519Verify(HaraContext context, Object[] values) {
     requireArity("ed25519-verify", values, 3);
     byte[] publicKey = fixedBytes(values[0], "ed25519-verify", 32);
@@ -111,20 +122,17 @@ public final class NativeCrypto {
     }
   }
 
-  @HaraExport(name = "x25519-keypair", arglists = {"[]"})
   public static Object x25519Keypair(HaraContext context, Object[] values) {
     requireArity("x25519-keypair", values, 0);
     byte[] privateKey = random(X25519PrivateKeyParameters.KEY_SIZE);
     return keypair(privateKey, x25519Public(privateKey));
   }
 
-  @HaraExport(name = "x25519-public", arglists = {"[private-key]"})
   public static Object x25519Public(HaraContext context, Object[] values) {
     requireArity("x25519-public", values, 1);
     return x25519Public(fixedBytes(values[0], "x25519-public", 32));
   }
 
-  @HaraExport(name = "x25519-shared", arglists = {"[private-key peer-public-key]"})
   public static Object x25519Shared(HaraContext context, Object[] values) {
     requireArity("x25519-shared", values, 2);
     X25519PrivateKeyParameters privateKey =
@@ -140,7 +148,6 @@ public final class NativeCrypto {
     return output;
   }
 
-  @HaraExport(name = "p256-keypair", arglists = {"[]"})
   public static Object p256Keypair(HaraContext context, Object[] values) {
     requireArity("p256-keypair", values, 0);
     byte[] privateKey;
@@ -150,13 +157,11 @@ public final class NativeCrypto {
     return keypair(privateKey, p256Public(privateKey));
   }
 
-  @HaraExport(name = "p256-public", arglists = {"[private-key]"})
   public static Object p256Public(HaraContext context, Object[] values) {
     requireArity("p256-public", values, 1);
     return p256Public(p256Private(values[0], "p256-public"));
   }
 
-  @HaraExport(name = "p256-sign", arglists = {"[private-key message]"})
   public static Object p256Sign(HaraContext context, Object[] values) {
     requireArity("p256-sign", values, 2);
     byte[] privateKey = p256Private(values[0], "p256-sign");
@@ -173,7 +178,6 @@ public final class NativeCrypto {
     return output;
   }
 
-  @HaraExport(name = "p256-verify", arglists = {"[public-key message signature]"})
   public static Object p256Verify(HaraContext context, Object[] values) {
     requireArity("p256-verify", values, 3);
     ECPublicKeyParameters publicKey = p256PublicParameter(values[0], "p256-verify");
@@ -189,7 +193,6 @@ public final class NativeCrypto {
     return verifier.verifySignature(digest, r, s);
   }
 
-  @HaraExport(name = "p256-shared", arglists = {"[private-key peer-public-key]"})
   public static Object p256Shared(HaraContext context, Object[] values) {
     requireArity("p256-shared", values, 2);
     ECPrivateKeyParameters privateKey =

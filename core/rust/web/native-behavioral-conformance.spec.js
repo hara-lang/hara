@@ -3,11 +3,11 @@ import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
 
 const corpusUrl = new URL(
-  "../../lib/test-fixtures/std/foundation/native_method_conformance.hal",
+  "../../../../hara-specs-registry/01-lang/001-language/draft/conformance/fixtures/native_behavioral.hal",
   import.meta.url
 );
 
-test("browser Wasm consumes the source-owned native behavioral corpus", async ({ page }) => {
+test("browser Wasm consumes the specs-owned native behavioral corpus", async ({ page }) => {
   const corpus = await readFile(fileURLToPath(corpusUrl), "utf8");
 
   await page.goto("/rust/web/index.html");
@@ -29,15 +29,32 @@ test("browser Wasm consumes the source-owned native behavioral corpus", async ({
     const keys = String(hara.eval(`${corpus}\n(native-method-keys)`));
     const methods =
       keys.match(/[A-Z][A-Za-z0-9]*\/[A-Za-z0-9?!+*._-]+/g) ?? [];
-    const cases = methods
-      .map((method) => `(native-method-result '${method} nil)`)
-      .join(" ");
-    const allResults = String(hara.eval(`${corpus}\n[${cases}]`));
-    const boundary = String(hara.eval(`${corpus}\n(native-boundary-report)`));
+    const allResults = String(hara.eval(`${corpus}\n(native-method-results)`));
+    const boundaryPass = String(
+      hara.eval(
+        `${corpus}\n(every? (fn [case] (= true (get case :pass))) (native-boundary-results))`
+      )
+    );
+    const profilePass = String(
+      hara.eval(
+        `${corpus}\n(let [report (native-profile-report)] (and (= 0 (get report :failed)) (= (+ (get report :passed) (get report :failed) (get report :skipped)) (+ (get report :portable) (get report :capability-specific) (get report :inventory-only)))))`
+      )
+    );
     const summary = String(
       hara.eval(`${corpus}\n(native-classification-summary)`)
     );
-    const probe = "[(Maths/abs -2) (Bits/and 6 3) (Num/long 4.0)]";
+    const probe = JSON.parse(
+      String(
+        hara.eval(
+          `${corpus}\n(get (get native-calibration-snippets :evaluator-compiler) :source)`
+        )
+      )
+    );
+    const probeExpected = String(
+      hara.eval(
+        `${corpus}\n(get (get native-calibration-snippets :evaluator-compiler) :expected)`
+      )
+    );
     const interpreted = String(hara.eval(probe));
     const artifact = hara.compileBytecode(probe);
     const compiled = String(hara.evalBytecode(artifact));
@@ -45,8 +62,10 @@ test("browser Wasm consumes the source-owned native behavioral corpus", async ({
       valid,
       methods,
       allResults,
-      boundary,
+      boundaryPass,
+      profilePass,
       summary,
+      probeExpected,
       interpreted,
       compiled
     };
@@ -59,11 +78,11 @@ test("browser Wasm consumes the source-owned native behavioral corpus", async ({
   expect(observed.allResults.match(/:pass true/g)?.length ?? 0).toBe(
     observed.methods.length
   );
-  expect(observed.boundary).toBe(
-    "[true true true true true true true true true true true true]"
-  );
+  expect(observed.boundaryPass).toBe("true");
+  expect(observed.profilePass).toBe("true");
   expect(observed.summary).toContain(":portable");
   expect(observed.summary).toContain(":capability-specific");
   expect(observed.summary).toContain(":inventory-only");
-  expect(observed.compiled).toBe(observed.interpreted);
+  expect(observed.interpreted).toBe(observed.probeExpected);
+  expect(observed.compiled).toBe(observed.probeExpected);
 });

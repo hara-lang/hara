@@ -8,7 +8,17 @@ import java.util.ArrayList;
 public final class ToolPackageLibrary {
   private ToolPackageLibrary() {}
 
-  @HaraExport(name = "provider", doc = "Returns exact HBX0 package capabilities.", arglists = {"[]"})
+  static void install(HaraContext context, String namespace) {
+    HaraNativeLibrary.function(context, namespace, "provider", ToolPackageLibrary::provider,
+        "Returns exact HBX0 package capabilities.", "[]");
+    HaraNativeLibrary.function(context, namespace, "validate", ToolPackageLibrary::validate,
+        "Authenticates and validates HBX0 and every nested HBC0 module.", "[bytes]");
+    HaraNativeLibrary.function(context, namespace, "inspect", ToolPackageLibrary::inspect,
+        "Returns portable HBX0 package metadata.", "[bytes]");
+    HaraNativeLibrary.function(context, namespace, "unpack", ToolPackageLibrary::unpack,
+        "Returns validated HBX0 module descriptors.", "[bytes]");
+  }
+
   public static Object provider(HaraContext context, Object[] arguments) {
     expectArity("provider", arguments, 0);
     return map("provider/id", keyword("truffle"),
@@ -16,14 +26,12 @@ public final class ToolPackageLibrary {
         "provider/formats", map("hbx", keywords("validate", "inspect", "unpack", "conform")));
   }
 
-  @HaraExport(name = "validate", doc = "Authenticates and validates HBX0 and every nested HBC0 module.", arglists = {"[bytes]"})
   public static Object validate(HaraContext context, Object[] arguments) {
     expectArity("validate", arguments, 1);
     HbxBundleCodec.decode(bytes(arguments[0], "validate"));
     return Boolean.TRUE;
   }
 
-  @HaraExport(name = "inspect", doc = "Returns portable HBX0 package metadata.", arglists = {"[bytes]"})
   public static Object inspect(HaraContext context, Object[] arguments) {
     expectArity("inspect", arguments, 1);
     var modules = HbxBundleCodec.decode(bytes(arguments[0], "inspect"));
@@ -33,7 +41,6 @@ public final class ToolPackageLibrary {
         "modules/count", (long) modules.size(), "modules/resources", vector(resources.toArray()));
   }
 
-  @HaraExport(name = "unpack", doc = "Returns validated HBX0 module descriptors.", arglists = {"[bytes]"})
   public static Object unpack(HaraContext context, Object[] arguments) {
     expectArity("unpack", arguments, 1);
     var modules = HbxBundleCodec.decode(bytes(arguments[0], "unpack"));

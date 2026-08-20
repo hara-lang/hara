@@ -209,10 +209,32 @@ public final class StdFoundationCoroutine {
     return hara.lang.data.Vector.Standard.from(null, values.clone());
   }
 
-  @HaraExport(
-      name = "create",
-      doc = "Creates a coroutine wrapping f. The body does not start until the first resume.",
-      arglists = {"[f]"})
+  static void install(HaraContext context, String namespace) {
+    HaraNativeLibrary.function(context, namespace, "create", StdFoundationCoroutine::create,
+        "Creates a coroutine wrapping f. The body does not start until the first resume.", "[f]");
+    HaraNativeLibrary.function(context, namespace, "coroutine?",
+        StdFoundationCoroutine::coroutinePredicate, "Returns true when value is a coroutine.",
+        "[value]");
+    HaraNativeLibrary.function(context, namespace, "status", StdFoundationCoroutine::status,
+        "Returns the coroutine status: :suspended, :running, or :dead.", "[co]");
+    HaraNativeLibrary.function(context, namespace, "close", StdFoundationCoroutine::close,
+        "Closes a suspended coroutine: marks it dead and unwinds it, running finally clauses."
+            + " No-op on a dead coroutine. Throws on a running coroutine.",
+        "[co]");
+    HaraNativeLibrary.function(context, namespace, "resume", StdFoundationCoroutine::resume,
+        "Starts or continues a coroutine. First resume passes args to the body; later resumes"
+            + " deliver args as the yield return. Returns the yielded or final value.",
+        "[co & args]");
+    HaraNativeLibrary.function(context, namespace, "yield", StdFoundationCoroutine::yield,
+        "Suspends the current coroutine and yields one value. The next resume's arguments"
+            + " become this expression's return. Throws outside a coroutine.",
+        "[value]");
+    HaraNativeLibrary.function(context, namespace, "await", StdFoundationCoroutine::await,
+        "Blocks the current (coroutine) thread until the promise settles and returns its"
+            + " value. Rethrows on rejection. Outside a coroutine, behaves as a plain deref.",
+        "[p]");
+  }
+
   public static Object create(HaraContext context, Object[] values) {
     requireArity("coroutine/create", values, 1);
     Object f = HaraBox.unwrap(values[0]);
@@ -226,41 +248,21 @@ public final class StdFoundationCoroutine {
     return new HaraCoroutine(context, f);
   }
 
-  @HaraExport(
-      name = "coroutine?",
-      doc = "Returns true when value is a coroutine.",
-      arglists = {"[value]"})
   public static Object coroutinePredicate(HaraContext context, Object[] values) {
     requireArity("coroutine/coroutine?", values, 1);
     return HaraBox.unwrap(values[0]) instanceof HaraCoroutine;
   }
 
-  @HaraExport(
-      name = "status",
-      doc = "Returns the coroutine status: :suspended, :running, or :dead.",
-      arglists = {"[co]"})
   public static Object status(HaraContext context, Object[] values) {
     requireArity("coroutine/status", values, 1);
     return requireCoroutine("coroutine/status", values[0]).status();
   }
 
-  @HaraExport(
-      name = "close",
-      doc =
-          "Closes a suspended coroutine: marks it dead and unwinds it, running finally clauses."
-              + " No-op on a dead coroutine. Throws on a running coroutine.",
-      arglists = {"[co]"})
   public static Object close(HaraContext context, Object[] values) {
     requireArity("coroutine/close", values, 1);
     return requireCoroutine("coroutine/close", values[0]).closeCoroutine();
   }
 
-  @HaraExport(
-      name = "resume",
-      doc =
-          "Starts or continues a coroutine. First resume passes args to the body; later resumes"
-              + " deliver args as the yield return. Returns the yielded or final value.",
-      arglists = {"[co & args]"})
   public static Object resume(HaraContext context, Object[] values) {
     if (values.length == 0) {
       throw new HaraException("coroutine/resume expects a coroutine");
@@ -271,12 +273,6 @@ public final class StdFoundationCoroutine {
     return coroutine.resume(args);
   }
 
-  @HaraExport(
-      name = "yield",
-      doc =
-          "Suspends the current coroutine and yields one value. The next resume's arguments"
-              + " become this expression's return. Throws outside a coroutine.",
-      arglists = {"[value]"})
   public static Object yield(HaraContext context, Object[] values) {
     requireArity("coroutine/yield", values, 1);
     HaraCoroutine coroutine = CURRENT.get();
@@ -286,12 +282,6 @@ public final class StdFoundationCoroutine {
     return coroutine.doYield(values[0]);
   }
 
-  @HaraExport(
-      name = "await",
-      doc =
-          "Blocks the current (coroutine) thread until the promise settles and returns its"
-              + " value. Rethrows on rejection. Outside a coroutine, behaves as a plain deref.",
-      arglists = {"[p]"})
   public static Object await(HaraContext context, Object[] values) {
     requireArity("coroutine/await", values, 1);
     Object value = HaraBox.unwrap(values[0]);

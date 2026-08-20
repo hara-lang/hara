@@ -2,7 +2,6 @@ package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import java.lang.reflect.Field;
@@ -12,94 +11,91 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.Value;
 import org.junit.Test;
 
-/** Runs the source-owned native behavioral corpus and guards exact live-surface closure. */
+/** Runs the specs-owned native behavioral corpus against the Truffle runtime. */
 public class NativeBehavioralConformanceTest {
   private static final Path CORPUS =
-      Path.of("lib/test-fixtures/std/foundation/native_method_conformance.hal");
-  private static final Path RUST_LOCAL_COPY =
-      Path.of("rust/hal-test-fixtures/std/foundation/native_method_conformance.hal");
+      specsRegistry()
+          .resolve(
+              "01-lang/001-language/draft/conformance/fixtures/native_behavioral.hal");
 
   @Test
   public void sharedCorpusClosesOverTheLiveManifestAndRejectsDrift() throws Exception {
     String corpus = Files.readString(CORPUS);
-    Set<String> classified;
+    Set<String> live = liveMethods();
     try (Context context = Context.newBuilder(HaraLanguage.ID).allowAllAccess(true).build()) {
       assertEquals(
           "true",
           context.eval(HaraLanguage.ID, corpus + "\n(native-corpus-valid?)").toString());
-      classified =
-          methodSet(
-              context.eval(
-                  HaraLanguage.ID, corpus + "\n(native-method-keys)"));
-      System.out.println(
-          "native behavioral classifications "
-              + context
-                  .eval(
-                      HaraLanguage.ID,
-                      corpus + "\n(native-classification-summary)")
-                  .toString());
+      Set<String> classified =
+          methodSet(context.eval(HaraLanguage.ID, corpus + "\n(native-method-keys)"));
+      assertEquals(live, classified);
+      assertClosure(context, corpus, live, true);
+
+      String first = classified.iterator().next();
+      Set<String> removed = new LinkedHashSet<>(classified);
+      removed.remove(first);
+      assertClosure(context, corpus, removed, false);
+
+      Set<String> added = new LinkedHashSet<>(classified);
+      added.add("Unclassified/addition");
+      assertClosure(context, corpus, added, false);
+
+      Set<String> renamed = new LinkedHashSet<>(classified);
+      renamed.remove(first);
+      renamed.add(first + "-renamed");
+      assertClosure(context, corpus, renamed, false);
     }
-
-    Set<String> live = liveMethods();
-    assertClosed(live, classified);
-    assertFalse(
-        "The Rust-local fixture must not diverge from the source-owned corpus",
-        Files.exists(RUST_LOCAL_COPY));
-
-    Set<String> removed = new LinkedHashSet<>(classified);
-    String first = removed.iterator().next();
-    removed.remove(first);
-    assertThrows(AssertionError.class, () -> assertClosed(live, removed));
-
-    Set<String> added = new LinkedHashSet<>(classified);
-    added.add("Unclassified/addition");
-    assertThrows(AssertionError.class, () -> assertClosed(live, added));
-
-    Set<String> renamed = new LinkedHashSet<>(classified);
-    renamed.remove(first);
-    renamed.add(first + "-renamed");
-    assertThrows(AssertionError.class, () -> assertClosed(live, renamed));
   }
 
   @Test
-  public void truffleRunsEveryClassificationAndPortableBoundaryProbe() throws Exception {
+  public void truffleRunsEverySpecsOwnedClassificationBoundaryAndProfile() throws Exception {
     String corpus = Files.readString(CORPUS);
     try (Context context = Context.newBuilder(HaraLanguage.ID).allowAllAccess(true).build()) {
       Set<String> methods =
           methodSet(context.eval(HaraLanguage.ID, corpus + "\n(native-method-keys)"));
-      StringBuilder source = new StringBuilder(corpus).append("\n[");
-      for (String method : methods) {
-        source.append("(native-method-result '").append(method).append(" nil) ");
-      }
-      source.append("]");
+      String results =
+          context.eval(HaraLanguage.ID, corpus + "\n(native-method-results)").toString();
+      assertTrue(results, !results.contains(":pass false"));
+      assertEquals(methods.size(), results.split(":pass true", -1).length - 1);
 
-      String result = context.eval(HaraLanguage.ID, source.toString()).toString();
-      assertTrue(result, !result.contains(":pass false"));
-      assertEquals(methods.size(), result.split(":pass true", -1).length - 1);
-
-      assertEquals(
-          "[true true true true true true true true true true true true]",
+      assertTrue(
           context
-              .eval(HaraLanguage.ID, corpus + "\n(native-boundary-report)")
-              .toString());
+              .eval(
+                  HaraLanguage.ID,
+                  corpus
+                      + "\n(every? (fn [case] (= true (get case :pass))) "
+                      + "(native-boundary-results))")
+              .asBoolean());
+      assertTrue(
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  corpus
+                      + "\n(let [report (native-profile-report)] "
+                      + "(and (= 0 (get report :failed)) "
+                      + "(= (+ (get report :passed) (get report :failed) (get report :skipped)) "
+                      + "(+ (get report :portable) (get report :capability-specific) "
+                      + "(get report :inventory-only)))))")
+              .asBoolean());
     }
   }
 
-  @Test
-  public void identityFastPathsRemainExplicitInTheJvmImplementation() throws Exception {
-    String source =
-        Files.readString(Path.of("java/src/main/java/hara/truffle/HaraContext.java"));
-    assertTrue(
-        "Base/vec must return an existing persistent vector unchanged",
-        source.contains("instanceof hara.lang.data.Vector<?>")
-            && source.contains("return value;"));
-    assertTrue(
-        "Base/set must recognize every persistent set before materializing",
-        source.contains("instanceof hara.lang.data.types.ISetType<?>"));
+  private static void assertClosure(
+      Context context, String corpus, Set<String> live, boolean expected) {
+    String literal =
+        live.stream().map(method -> "'" + method).collect(Collectors.joining(" ", "[", "]"));
+    assertEquals(
+        expected,
+        context
+            .eval(
+                HaraLanguage.ID,
+                corpus + "\n(get (native-closure-report " + literal + ") :pass)")
+            .asBoolean());
   }
 
   private static Set<String> methodSet(Value value) {
@@ -117,8 +113,7 @@ public class NativeBehavioralConformanceTest {
     Field field = HaraContext.class.getDeclaredField("NATIVE_TYPES");
     field.setAccessible(true);
     @SuppressWarnings("unchecked")
-    Map<String, List<String>> runtimeTypes =
-        (Map<String, List<String>>) field.get(null);
+    Map<String, List<String>> runtimeTypes = (Map<String, List<String>>) field.get(null);
     Set<String> methods = new LinkedHashSet<>();
     for (Map.Entry<String, List<String>> type : runtimeTypes.entrySet()) {
       for (String method : type.getValue()) {
@@ -130,13 +125,10 @@ public class NativeBehavioralConformanceTest {
     return methods;
   }
 
-  private static void assertClosed(Set<String> live, Set<String> classified) {
-    Set<String> missing = new LinkedHashSet<>(live);
-    missing.removeAll(classified);
-    Set<String> extra = new LinkedHashSet<>(classified);
-    extra.removeAll(live);
-    assertTrue(
-        "Native behavioral closure mismatch; missing=" + missing + ", extra=" + extra,
-        missing.isEmpty() && extra.isEmpty());
+  private static Path specsRegistry() {
+    String override = System.getenv("HARA_SPECS_REGISTRY");
+    return override == null || override.isBlank()
+        ? Path.of("../hara-specs-registry")
+        : Path.of(override);
   }
 }

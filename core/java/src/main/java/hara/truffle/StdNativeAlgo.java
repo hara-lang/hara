@@ -10,42 +10,53 @@ import java.util.Map.Entry;
 public final class StdNativeAlgo {
   private StdNativeAlgo() {}
 
-  @HaraExport(name = "deque", doc = "Creates a persistent finger-tree deque.", arglists = {"[& values]"})
+  static void install(HaraContext context, String namespace) {
+    HaraNativeLibrary.function(context, namespace, "deque", StdNativeAlgo::deque,
+        "Creates a persistent finger-tree deque.", "[& values]");
+    HaraNativeLibrary.function(context, namespace, "ordered-map", StdNativeAlgo::orderedMap,
+        "Creates an insertion-ordered persistent map.", "[& entries]");
+    HaraNativeLibrary.function(context, namespace, "ordered-set", StdNativeAlgo::orderedSet,
+        "Creates an insertion-ordered persistent set.", "[& values]");
+    HaraNativeLibrary.function(context, namespace, "priority-map", StdNativeAlgo::priorityMap,
+        "Creates a stable persistent priority map.", "[& entries]");
+    HaraNativeLibrary.function(context, namespace, "queue", StdNativeAlgo::queue,
+        "Creates a persistent queue.", "[& values]");
+    HaraNativeLibrary.function(context, namespace, "sorted-map", StdNativeAlgo::sortedMap,
+        "Creates a key-sorted persistent map.", "[& entries]");
+    HaraNativeLibrary.function(context, namespace, "sorted-set", StdNativeAlgo::sortedSet,
+        "Creates a value-sorted persistent set.", "[& values]");
+    HaraNativeLibrary.function(context, namespace, "trie", StdNativeAlgo::trie,
+        "Creates a persistent trie from string key/value entries.", "[& entries]");
+  }
+
   public static Object deque(HaraContext context, Object[] values) {
     return BuiltinStruct.deque(values);
   }
 
-  @HaraExport(name = "ordered-map", doc = "Creates an insertion-ordered persistent map.", arglists = {"[& entries]"})
   public static Object orderedMap(HaraContext context, Object[] values) {
     return BuiltinStruct.orderedMap(values);
   }
 
-  @HaraExport(name = "ordered-set", doc = "Creates an insertion-ordered persistent set.", arglists = {"[& values]"})
   public static Object orderedSet(HaraContext context, Object[] values) {
     return BuiltinStruct.orderedSet(values);
   }
 
-  @HaraExport(name = "priority-map", doc = "Creates a stable persistent priority map.", arglists = {"[& entries]"})
   public static Object priorityMap(HaraContext context, Object[] values) {
     return BuiltinStruct.priorityMap(values);
   }
 
-  @HaraExport(name = "queue", doc = "Creates a persistent queue.", arglists = {"[& values]"})
   public static Object queue(HaraContext context, Object[] values) {
     return BuiltinStruct.queue(values);
   }
 
-  @HaraExport(name = "sorted-map", doc = "Creates a key-sorted persistent map.", arglists = {"[& entries]"})
   public static Object sortedMap(HaraContext context, Object[] values) {
     return BuiltinStruct.sortedMap(values);
   }
 
-  @HaraExport(name = "sorted-set", doc = "Creates a value-sorted persistent set.", arglists = {"[& values]"})
   public static Object sortedSet(HaraContext context, Object[] values) {
     return BuiltinStruct.sortedSet(values);
   }
 
-  @HaraExport(name = "trie", doc = "Creates a persistent trie from string key/value entries.", arglists = {"[& entries]"})
   @SuppressWarnings({"rawtypes", "unchecked"})
   public static Object trie(HaraContext context, Object[] values) {
     Trie<Object> trie = new Trie.Standard<>();

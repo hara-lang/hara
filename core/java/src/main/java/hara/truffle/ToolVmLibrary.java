@@ -21,10 +21,24 @@ public final class ToolVmLibrary {
 
   private ToolVmLibrary() {}
 
-  @HaraExport(
-      name = "provider",
-      doc = "Returns the exact read-only VM tooling capabilities of the Truffle runtime.",
-      arglists = {"[]"})
+  static void install(HaraContext context, String namespace) {
+    HaraNativeLibrary.function(context, namespace, "provider", ToolVmLibrary::provider,
+        "Returns the exact read-only VM tooling capabilities of the Truffle runtime.", "[]");
+    HaraNativeLibrary.function(context, namespace, "validate", ToolVmLibrary::validate,
+        "Authenticates and validates canonical HALC or HBC bytes.", "[format bytes]");
+    HaraNativeLibrary.function(context, namespace, "inspect", ToolVmLibrary::inspect,
+        "Returns ordinary Hara metadata derived from a validated HALC or HBC artifact.",
+        "[format bytes]");
+    HaraNativeLibrary.function(context, namespace, "disassemble", ToolVmLibrary::disassemble,
+        "Returns deterministic HBC diagnostics; this is not source decompilation.", "[bytes]");
+    HaraNativeLibrary.function(context, namespace, "transform", ToolVmLibrary::transform,
+        "Transforms HAL source to canonical HALC bytes when that exact edge is supported.",
+        "[from to input options]");
+    HaraNativeLibrary.function(context, namespace, "execute", ToolVmLibrary::execute,
+        "Authenticates, validates, and transactionally executes HALC or HBC bytes.",
+        "[format bytes options]");
+  }
+
   public static Object provider(HaraContext context, Object[] arguments) {
     expectArity("provider", arguments, 0);
     return orderedMap(
@@ -40,10 +54,6 @@ public final class ToolVmLibrary {
             orderedMap("halc", keyword("ast-lowering"), "hbc", keyword("reference-vm")));
   }
 
-  @HaraExport(
-      name = "validate",
-      doc = "Authenticates and validates canonical HALC or HBC bytes.",
-      arglists = {"[format bytes]"})
   public static Object validate(HaraContext context, Object[] arguments) {
     expectArity("validate", arguments, 2);
     String format = format(arguments[0], "validate");
@@ -56,10 +66,6 @@ public final class ToolVmLibrary {
     return Boolean.TRUE;
   }
 
-  @HaraExport(
-      name = "inspect",
-      doc = "Returns ordinary Hara metadata derived from a validated HALC or HBC artifact.",
-      arglists = {"[format bytes]"})
   public static Object inspect(HaraContext context, Object[] arguments) {
     expectArity("inspect", arguments, 2);
     String format = format(arguments[0], "inspect");
@@ -71,20 +77,12 @@ public final class ToolVmLibrary {
     };
   }
 
-  @HaraExport(
-      name = "disassemble",
-      doc = "Returns deterministic HBC diagnostics; this is not source decompilation.",
-      arglists = {"[bytes]"})
   public static Object disassemble(HaraContext context, Object[] arguments) {
     expectArity("disassemble", arguments, 1);
     byte[] bytes = bytes(arguments[0], "disassemble");
     return HbcDisassembler.disassemble(HbcCodec.decode(bytes));
   }
 
-  @HaraExport(
-      name = "transform",
-      doc = "Transforms HAL source to canonical HALC bytes when that exact edge is supported.",
-      arglists = {"[from to input options]"})
   public static Object transform(HaraContext context, Object[] arguments) {
     expectArity("transform", arguments, 4);
     String from = transformFormat(arguments[0], "source format");
@@ -125,10 +123,6 @@ public final class ToolVmLibrary {
         namespace, resource, source.getBytes(StandardCharsets.UTF_8), forms);
   }
 
-  @HaraExport(
-      name = "execute",
-      doc = "Authenticates, validates, and transactionally executes HALC or HBC bytes.",
-      arglists = {"[format bytes options]"})
   public static Object execute(HaraContext context, Object[] arguments) {
     expectArity("execute", arguments, 3);
     String format = format(arguments[0], "execute");
