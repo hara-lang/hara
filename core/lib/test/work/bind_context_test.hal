@@ -1,0 +1,58 @@
+(ns work.bind-context-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.eval :as eval]))
+
+(defstruct RecordingExecutor [requests])
+
+(extend-type RecordingExecutor IWorkExecutor
+  (work-execute [executor request]
+    (swap! (:requests executor) conj request)
+    ((:target/fn (:work/target request))
+     (:work/input request)
+     (:work/context request))))
+
+(fact "runtime-produced steps inherit the canonical Work execution envelope"
+  (let [requests (atom [])
+        executor (work.bind-context-test/RecordingExecutor requests)
+        computation
+        (work/bind
+         {:id :context-bind}
+         (work/pure :source
+           (fn [input context]
+             (+ input 1)))
+         (work/pure :continuation
+           (fn [value context]
+             (work/step :produced-step
+               (fn [produced-input produced-context]
+                 {:value produced-input
+                  :trace-id (:trace-id produced-context)})))))
+        result
+        (eval/run
+         executor
+         computation
+         4
+         {:run/id "context-run"
+          :work/root :context-root
+          :work/version 3
+          :deadline 12345
+          :work/context {:trace-id :trace-7}})
+        request (first (deref requests))]
+    [result
+     (count (deref requests))
+     (:run/id request)
+     (:work/root request)
+     (:node/path request)
+     (:work/deadline request)
+     (get-in request [:work/context :trace-id])
+     (:work/input request)])
+  => [{:value 5 :trace-id :trace-7}
+      1
+      "context-run"
+      :context-root
+      [:bind :produced :produced-step]
+      12345
+      :trace-7
+      5])
+
+(pr-str (run '[work.bind-context-test]))
