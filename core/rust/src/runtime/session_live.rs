@@ -2,6 +2,8 @@ use crate::live_session::{
     InstrumentedInterpreterLiveSession, LiveSession, LiveSessionCapabilities, LiveSessionCommand,
     LiveSessionError, LiveSessionReply, LiveSessionRequest, LiveSessionState, LiveSource,
 };
+#[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
+use crate::live_session::InstrumentedHbcLiveSession;
 
 #[derive(Default)]
 struct SessionLiveRegistry {
@@ -87,8 +89,31 @@ impl Session {
         self.register_live_session(Box::new(live_session))
     }
 
-    /// Starts an observed HBC live session owned by this Session.
-    #[cfg(feature = "bytecode-observation")]
+    /// Starts the authoritative HBC Machine as a built-in controlling
+    /// instrument over this Session's Runtime-owned instrumentation hub.
+    #[cfg(all(feature = "bytecode-observation", feature = "bytecode-instrumentation"))]
+    pub fn start_hbc_live_session(
+        &mut self,
+        live_session_id: impl Into<String>,
+        source: LiveSource,
+    ) -> Result<LiveSessionState, LiveSessionError> {
+        self.ensure_live_owner_active()?;
+        let live_session_id = live_session_id.into();
+        self.ensure_live_session_identity_available(&live_session_id)?;
+        let owner_session_id = self.name().to_owned();
+        let live_session = InstrumentedHbcLiveSession::start(
+            self.runtime()
+                .map_err(|message| LiveSessionError::new("live-session/owner-closed", message))?,
+            owner_session_id,
+            live_session_id,
+            source,
+        )?;
+        self.register_live_session(Box::new(live_session))
+    }
+
+    /// Compatibility-only feature slice for builds that explicitly enable the
+    /// old observation feature without the shared instrumentation probe.
+    #[cfg(all(feature = "bytecode-observation", not(feature = "bytecode-instrumentation")))]
     pub fn start_hbc_live_session(
         &mut self,
         live_session_id: impl Into<String>,
