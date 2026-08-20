@@ -57,9 +57,7 @@ impl Evaluator {
         self.environment = environment;
     }
 
-    fn instrumentation_handle(
-        &self,
-    ) -> Rc<RefCell<instrumentation::InstrumentationHub>> {
+    fn instrumentation_handle(&self) -> Rc<RefCell<instrumentation::InstrumentationHub>> {
         self.instrumentation.handle()
     }
 
