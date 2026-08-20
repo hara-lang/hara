@@ -211,7 +211,7 @@ fn trusted_native_rejects_cross_runtime_and_cross_session_handles() {
 
     let shared = Rc::new(RefCell::new(InstrumentationHub::new()));
     let session_a = NativeInstrumentation::new("session-a", shared.clone());
-    let session_b = NativeInstrumentation::new("session-b", shared);
+    let session_b = NativeInstrumentation::new("session-b", shared.clone());
     let instrument = session_a
         .register(passive_registration("shared", "session-a"))
         .expect("registration");
