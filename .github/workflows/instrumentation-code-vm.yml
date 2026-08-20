@@ -14,14 +14,12 @@ on:
       - 'core/rust/src/runtime/session_live.rs'
       - 'core/rust/src/live_session.rs'
       - 'core/rust/src/live_session/instrumented_interpreter.rs'
+      - 'core/rust/src/live_session/instrumented_hbc.rs'
       - 'core/rust/tests/sandbox_private_live_session.rs'
       - 'core/rust/standard-library.namespaces'
       - '.github/workflows/instrumentation-code-vm.yml'
   push:
-    branches:
-      - main
-      - testing
-      - instrumentation-live-code-vm-883
+    branches: [main, testing]
     paths:
       - 'core/lib/src/code/vm.hal'
       - 'core/lib/src/code/vm/instrument/**'
@@ -30,90 +28,23 @@ on:
       - 'core/rust/src/runtime/session_live.rs'
       - 'core/rust/src/live_session.rs'
       - 'core/rust/src/live_session/instrumented_interpreter.rs'
+      - 'core/rust/src/live_session/instrumented_hbc.rs'
       - 'core/rust/tests/sandbox_private_live_session.rs'
       - 'core/rust/standard-library.namespaces'
       - '.github/workflows/instrumentation-code-vm.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: code-vm-instrumentation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  repair-branch:
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_name == 'instrumentation-live-code-vm-883')
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: instrumentation-live-code-vm-883
-          fetch-depth: 0
-
-      - name: Checkout hara-specs-registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-
-      - name: Expose specs registry at the runtime fixture path
-        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Split immutable context and hub handles from mutable target borrows
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('core/rust/src/live_session/instrumented_interpreter.rs')
-          text = path.read_text()
-
-          if '#[derive(Clone)]\nstruct InterpreterRuntimeContext {' not in text:
-              old = 'struct InterpreterRuntimeContext {'
-              if old not in text:
-                  raise SystemExit('InterpreterRuntimeContext declaration not found')
-              text = text.replace(old, '#[derive(Clone)]\n' + old, 1)
-
-          text = text.replace(
-              'let context = &self.context;',
-              'let context = self.context.clone();',
-          )
-          text = text.replace(
-              'let hub = self.hub.borrow();\n            self.target_mut()?\n                .continue_execution(&hub, &lease)',
-              'let hub = self.hub.clone();\n            self.target_mut()?\n                .continue_execution(&hub.borrow(), &lease)',
-          )
-          path.write_text(text)
-          PY
-
-          rustfmt --edition 2021 core/rust/src/live_session/instrumented_interpreter.rs
-
-      - name: Compile before publishing the repair
-        run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib --no-run
-
-      - name: Commit only a compile-valid repair
-        run: |
-          if git diff --quiet; then
-            echo "Borrow repair already applied."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add core/rust/src/live_session/instrumented_interpreter.rs
-          git commit -m "Separate LiveSession context from mutable target borrows"
-          git push origin HEAD:instrumentation-live-code-vm-883
-
   focused:
-    if: github.event_name != 'push' || github.ref_name != 'instrumentation-live-code-vm-883'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
@@ -134,11 +65,16 @@ jobs:
 
       - name: Check instrumented LiveSession formatting
         run: |
-          rustfmt --edition 2021 --check \
-            core/rust/src/runtime/evaluator.rs \
-            core/rust/src/runtime/session_live.rs \
-            core/rust/src/live_session.rs \
+          files=(
+            core/rust/src/runtime/evaluator.rs
+            core/rust/src/runtime/session_live.rs
+            core/rust/src/live_session.rs
             core/rust/src/live_session/instrumented_interpreter.rs
+          )
+          if [[ -f core/rust/src/live_session/instrumented_hbc.rs ]]; then
+            files+=(core/rust/src/live_session/instrumented_hbc.rs)
+          fi
+          rustfmt --edition 2021 --check "${files[@]}"
 
       - name: Compile the Runtime-owned instrumentation path
         run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib --no-run
@@ -173,3 +109,6 @@ jobs:
         run: |
           test "$(wc -l < core/lib/src/code/vm/instrument/trace.hal)" -lt 700
           test "$(wc -l < core/rust/src/live_session/instrumented_interpreter.rs)" -lt 700
+          if [[ -f core/rust/src/live_session/instrumented_hbc.rs ]]; then
+            test "$(wc -l < core/rust/src/live_session/instrumented_hbc.rs)" -lt 700
+          fi
