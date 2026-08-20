@@ -124,7 +124,7 @@
    'Result/error? [true (fn [] (Result/error? (Result/create :error "boom")))]
    'Result/status [:error (fn [] (Result/status (Result/create :error "boom")))]
    'Result/data [42 (fn [] (Result/data (Result/create :success 42)))]
-   'Result/error-value ["boom" (fn [] (Result/error-value (Result/create :error "boom")))]
+   'Result/error-value ["boom" (fn [] (Error/message (Result/error-value (Result/create :error "boom"))))]
    'Result/context [{:trace 7} (fn [] (Result/context (Result/create :success 42 {:trace 7})))]
    'Result/with-context [{:trace 8} (fn [] (Result/context (Result/with-context (Result/create :success 42) {:trace 8})))]
    'Schema/compile [true (fn [] (Schema/instance? (Schema/compile :int)))]
@@ -156,7 +156,7 @@
    'Base/number? [true (fn [] (Base/number? 1.5))]
    'Base/integer? [true (fn [] (Base/integer? 1))]
    'Base/long? [true (fn [] (Base/long? 1))]
-   'Base/double? [true (fn [] (Base/double? 1.5))]
+   'Base/double? [true (fn [] (Base/double? (Num/double 1.5)))]
    'Base/keyword? [true (fn [] (Base/keyword? :a))]
    'Base/symbol? [true (fn [] (Base/symbol? 'a))]
    'Base/pointer? [true (fn [] (Base/pointer? (Base/pointer {:context :base})))]
@@ -172,11 +172,11 @@
    'Base/map? [true (fn [] (Base/map? {:a 1}))]
    'Base/set? [true (fn [] (Base/set? #{1}))]
    'Base/sequential? [true (fn [] (Base/sequential? [1]))]
-   'Base/type [:std.native.Vector (fn [] (Base/type [1]))]
-   'Base/instance? [true (fn [] (Base/instance? Arr (Arr/new 1)))]
+   'Base/type [:std.native.Vector (fn [] (Base/type (Base/vector 1)))]
+   'Base/instance? [true (fn [] (Base/instance? RegExp (RegExp/compile "a")))]
    'Iter/iter [1 (fn [] (Iter/iter-next (Iter/iter [1 2])))]
    'Iter/iter? [true (fn [] (Iter/iter? (Iter/iter [1])))]
-   'Iter/iter-finite? [true (fn [] (Iter/iter-finite? (Iter/iter [1])))]
+   'Iter/iter-finite? [true (fn [] (Iter/iter-finite? [1]))]
    'Iter/iter-materialize [[1 2] (fn [] (Iter/iter-materialize (Iter/iter [1 2])))]
    'Iter/iter-next? [true (fn [] (Iter/iter-next? (Iter/iter [1])))]
    'Iter/iter-next [1 (fn [] (Iter/iter-next (Iter/iter [1])))]
@@ -191,7 +191,7 @@
    'Iter/iter-zip [3 (fn [] (nth (Iter/iter-next (Iter/iter-zip [1 2] [3 4])) 1))]
    'Iter/iter-cycle [1 (fn [] (let [value (Iter/iter-cycle [1 2])] (Iter/iter-next value) (Iter/iter-next value) (Iter/iter-next value)))]
    'Iter/iter-partition-pair [2 (fn [] (nth (Iter/iter-next (Iter/iter-partition-pair [1 2 3 4])) 1))]
-   'Iter/iter-range [[0 1 2] (fn [] (Iter/iter-materialize (Iter/iter-take 3 (Iter/iter-range 0 10 1))))]
+   'Iter/iter-range [[0 1 2] (fn [] (Iter/iter-materialize (Iter/iter-take 3 (Iter/iter-range 0 10))))]
    'Iter/iter-constantly [[7 7] (fn [] (Iter/iter-materialize (Iter/iter-take 2 (Iter/iter-constantly 7))))]
    'Iter/iter-iterate [[1 2 3] (fn [] (Iter/iter-materialize (Iter/iter-take 3 (Iter/iter-iterate inc 1))))]
   })
@@ -231,22 +231,20 @@
 (defn add-portable-methods
   [out fixtures]
   (reduce
-    (fn [out pair]
-      (let [method (first pair)
-            fixture (second pair)]
+    (fn [out method]
+      (let [fixture (get fixtures method)]
         (assoc out method
           {:classification :portable
            :reason :portable/deterministic
            :fixture fixture})))
     out
-    fixtures))
+    (keys fixtures)))
 
 (defn add-capability-methods
   [out groups]
   (reduce
-    (fn [out pair]
-      (let [capability (first pair)
-            methods (second pair)]
+    (fn [out capability]
+      (let [methods (get groups capability)]
         (reduce
           (fn [out method]
             (assoc out method
@@ -256,14 +254,13 @@
           out
           methods)))
     out
-    groups))
+    (keys groups)))
 
 (defn add-inventory-methods
   [out groups]
   (reduce
-    (fn [out pair]
-      (let [reason (first pair)
-            methods (second pair)]
+    (fn [out reason]
+      (let [methods (get groups reason)]
         (reduce
           (fn [out method]
             (assoc out method
@@ -272,13 +269,22 @@
           out
           methods)))
     out
-    groups))
+    (keys groups)))
+
+(defn append-group-methods
+  [out groups]
+  (reduce
+    (fn [out group]
+      (reduce conj out (get groups group)))
+    out
+    (keys groups)))
 
 (def declared-native-methods
-  (concat
-    (keys portable-fixtures)
-    (mapcat second capability-method-groups)
-    (mapcat second inventory-method-groups)))
+  (append-group-methods
+    (append-group-methods
+      (vec (keys portable-fixtures))
+      capability-method-groups)
+    inventory-method-groups))
 
 (def native-method-corpus
   (add-inventory-methods
@@ -293,8 +299,8 @@
     (= (count declared-native-methods) (count (set declared-native-methods)))
     (= (count declared-native-methods) (count native-method-corpus))
     (every?
-      (fn [pair]
-        (let [entry (second pair)
+      (fn [method]
+        (let [entry (get native-method-corpus method)
               classification (get entry :classification)
               reason (get native-classification-reasons (get entry :reason))]
           (and
@@ -309,7 +315,7 @@
             (if (= classification :capability-specific)
               (keyword? (get entry :capability))
               (nil? (get entry :capability))))))
-      native-method-corpus)))
+      (keys native-method-corpus))))
 
 (defn native-method-keys
   []
@@ -318,15 +324,15 @@
 (defn native-classification-summary
   []
   (reduce
-    (fn [summary pair]
-      (let [classification (get (second pair) :classification)]
+    (fn [summary method]
+      (let [classification (get (get native-method-corpus method) :classification)]
         (assoc summary classification
           (inc (get summary classification 0)))))
     {:total (count native-method-corpus)
      :portable 0
      :capability-specific 0
      :inventory-only 0}
-    native-method-corpus))
+    (keys native-method-corpus)))
 
 (defn normalized-error-class
   [error]
