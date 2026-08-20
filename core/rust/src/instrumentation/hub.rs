@@ -7,6 +7,13 @@ use super::{
     InstrumentRegistration, RuntimeBackend, TargetDescriptor, TargetHandle,
 };
 
+#[path = "hub/delivery.rs"]
+mod delivery;
+pub use delivery::{
+    DeliveredEvent, DispatchReport, EventAccess, EventBatch, EventProjection,
+    PortableProjection, ProducerEvent,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstrumentationAttachment {
     pub instrument: InstrumentHandle,
@@ -41,6 +48,7 @@ pub struct SessionCleanup {
 pub enum InstrumentationError {
     InvalidRegistration(String),
     InvalidTarget(String),
+    Execution(String),
     DuplicateInstrument(String),
     DuplicateTarget(String),
     DuplicateAttachment {
@@ -98,6 +106,9 @@ impl fmt::Display for InstrumentationError {
             }
             Self::InvalidTarget(message) => {
                 write!(formatter, "instrumentation/invalid-target: {message}")
+            }
+            Self::Execution(message) => {
+                write!(formatter, "instrumentation/execution: {message}")
             }
             Self::DuplicateInstrument(id) => {
                 write!(formatter, "instrumentation/duplicate-instrument: {id}")
@@ -215,6 +226,7 @@ pub struct InstrumentationHub {
     enabled_events: EventMask,
     control_leases: BTreeMap<TargetHandle, InstrumentHandle>,
     next_registration_order: u64,
+    delivery: delivery::DeliveryState,
 }
 
 impl InstrumentationHub {
@@ -450,6 +462,7 @@ impl InstrumentationHub {
         match self.control_leases.get(&lease.target) {
             Some(holder) if holder == &lease.instrument => {
                 self.control_leases.remove(&lease.target);
+                self.delivery.remove_directive(&lease.target);
                 Ok(())
             }
             _ => Err(InstrumentationError::InvalidControlLease {
@@ -468,8 +481,18 @@ impl InstrumentationHub {
         self.instrument_orders.remove(instrument.instrument_id());
         self.attachments
             .retain(|(candidate, _), _| candidate != instrument);
+        let controlled_targets = self
+            .control_leases
+            .iter()
+            .filter(|(_, holder)| *holder == instrument)
+            .map(|(target, _)| (*target).clone())
+            .collect::<Vec<_>>();
         self.control_leases
             .retain(|_, holder| holder != instrument);
+        for target in &controlled_targets {
+            self.delivery.remove_directive(target);
+        }
+        self.delivery.remove_instrument(instrument);
         self.recompute_event_mask();
         Ok(())
     }
@@ -483,6 +506,7 @@ impl InstrumentationHub {
         self.attachments
             .retain(|(_, candidate), _| candidate != target);
         self.control_leases.remove(target);
+        self.delivery.remove_target(target);
         self.recompute_event_mask();
         Ok(())
     }
@@ -521,6 +545,7 @@ impl InstrumentationHub {
         self.attachments.clear();
         self.control_leases.clear();
         self.enabled_events = EventMask::empty();
+        self.delivery.clear();
     }
 
     fn resolve_instrument(

@@ -4,6 +4,11 @@
 //! actively executing, authoritative CPS and mutation seams enqueue owned
 //! semantic evidence. The observed driver publishes at most one queued event
 //! per host step; it never replays source or predicts evaluation order.
+//!
+//! Instrumented targets can disable evidence and environment capture between
+//! safepoints. This keeps the compatibility observer unchanged while allowing
+//! the shared instrumentation hub to avoid environment clones unless a matching
+//! registration requested an environment-backed projection.
 
 use super::super::*;
 use crate::kernel::SpannedForm;
@@ -68,6 +73,9 @@ struct EvalObservationContext {
     sequence: usize,
     current: Option<EvalSemanticBoundary>,
     pending: VecDeque<EvalSemanticBoundary>,
+    capture_events: bool,
+    capture_environment: bool,
+    environment_clones: u64,
 }
 
 thread_local! {
@@ -84,18 +92,47 @@ fn environment_key(environment: &Rc<RefCell<HashMap<String, Value>>>) -> usize {
 pub(super) fn register_context(
     environment: &Rc<RefCell<HashMap<String, Value>>>,
     source_forms: Option<Rc<Vec<SpannedForm>>>,
+    capture_events: bool,
+    capture_environment: bool,
 ) {
     let context = Rc::new(RefCell::new(EvalObservationContext {
         source_forms,
         sequence: 0,
         current: None,
         pending: VecDeque::new(),
+        capture_events,
+        capture_environment,
+        environment_clones: 0,
     }));
     OBSERVED_CONTEXTS.with(|contexts| {
         contexts
             .borrow_mut()
             .insert(environment_key(environment), context);
     });
+}
+
+pub(super) fn configure_capture(
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+    capture_events: bool,
+    capture_environment: bool,
+) {
+    if let Some(context) = context_for(environment) {
+        let mut context = context.borrow_mut();
+        context.capture_events = capture_events;
+        context.capture_environment = capture_environment;
+        if !capture_events {
+            context.current = None;
+            context.pending.clear();
+        }
+    }
+}
+
+pub(super) fn environment_clone_count(
+    environment: &Rc<RefCell<HashMap<String, Value>>>,
+) -> u64 {
+    context_for(environment)
+        .map(|context| context.borrow().environment_clones)
+        .unwrap_or(0)
 }
 
 pub(super) fn remove_context(environment: &Rc<RefCell<HashMap<String, Value>>>) {
@@ -141,6 +178,10 @@ fn active_context() -> Option<Rc<RefCell<EvalObservationContext>>> {
     ACTIVE_CONTEXTS.with(|contexts| contexts.borrow().last().cloned())
 }
 
+fn capture_enabled() -> bool {
+    active_context().is_some_and(|context| context.borrow().capture_events)
+}
+
 fn enqueue(
     rule: EvalSemanticRule,
     form: &Form,
@@ -150,7 +191,22 @@ fn enqueue(
     let Some(context) = active_context() else {
         return;
     };
-    let environment = environment.borrow().clone();
+    let capture_environment = {
+        let context = context.borrow();
+        if !context.capture_events {
+            return;
+        }
+        context.capture_environment
+    };
+    let captured_environment = if capture_environment {
+        let environment = environment.borrow().clone();
+        let mut captured = context.borrow_mut();
+        captured.environment_clones = captured.environment_clones.saturating_add(1);
+        drop(captured);
+        environment
+    } else {
+        HashMap::new()
+    };
     let mut context = context.borrow_mut();
     context.sequence = context.sequence.saturating_add(1);
     let sequence = context.sequence;
@@ -159,7 +215,7 @@ fn enqueue(
         rule,
         form: form.clone(),
         payload,
-        environment,
+        environment: captured_environment,
     });
 }
 
@@ -169,6 +225,9 @@ pub(in crate::core::fiber) fn record_boundary(
     result: &Value,
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) {
+    if !capture_enabled() {
+        return;
+    }
     enqueue(
         rule,
         form,
@@ -183,6 +242,9 @@ pub(in crate::core::fiber) fn record_call(
     arguments: &[Value],
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) {
+    if !capture_enabled() {
+        return;
+    }
     enqueue(
         EvalSemanticRule::CallEnter,
         form,
@@ -202,6 +264,9 @@ pub(in crate::core::fiber) fn record_effect(
     after: Value,
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) {
+    if !capture_enabled() {
+        return;
+    }
     debug_assert!(matches!(
         rule,
         EvalSemanticRule::VarDefine | EvalSemanticRule::VarSet | EvalSemanticRule::FieldSet
@@ -225,6 +290,9 @@ pub(in crate::core::fiber) fn record_error(
     caught: bool,
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) {
+    if !capture_enabled() {
+        return;
+    }
     debug_assert!(matches!(
         rule,
         EvalSemanticRule::ErrorRaise | EvalSemanticRule::ErrorCatch
@@ -275,14 +343,12 @@ pub(super) fn current_boundary(
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) -> Option<EvalSemanticBoundary> {
     let context = context_for(environment)?;
-    let boundary = context.borrow().current.clone();
-    boundary
+    context.borrow().current.clone()
 }
 
 pub(super) fn source_forms(
     environment: &Rc<RefCell<HashMap<String, Value>>>,
 ) -> Option<Rc<Vec<SpannedForm>>> {
     let context = context_for(environment)?;
-    let source_forms = context.borrow().source_forms.clone();
-    source_forms
+    context.borrow().source_forms.clone()
 }
