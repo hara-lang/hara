@@ -1,10 +1,84 @@
+/// Marks every namespace already materialized by the runtime bootstrap as loaded.
+///
+/// Embedding hosts receive only the namespace and protocol registries, not the
+/// Runtime's source-provider state. A source fallback can therefore leave a
+/// materialized Foundation namespace recorded as `Unloaded` even though all of
+/// its Vars are present. Normalizing only materialized namespaces preserves
+/// lazy package discovery while making the exported registry self-contained.
+fn normalize_embedding_namespace_load_states(
+    namespaces: &kernel::NamespaceRegistry<core::Value>,
+) {
+    for namespace in namespaces.all() {
+        namespaces.set_load_state(
+            namespace.name().as_str(),
+            kernel::NamespaceLoadState::Loaded,
+        );
+    }
+}
+
 /// Builds the fully bootstrapped namespace registry used by native embedding hosts.
 ///
 /// Hosts receive the same Foundation Vars, primitive values and protocol wiring
 /// as a normal Hara runtime without depending on crate-private bootstrap helpers.
 pub fn embedding_namespace_registry() -> kernel::NamespaceRegistry<core::Value> {
-    Runtime::new().namespace_registry.clone()
+    let namespaces = Runtime::new().namespace_registry.clone();
+    normalize_embedding_namespace_load_states(&namespaces);
+    namespaces
 }
+
+#[cfg(test)]
+mod embedding_namespace_tests {
+    use super::*;
+
+    #[test]
+    fn normalization_marks_only_materialized_namespaces_loaded() {
+        let namespaces = kernel::NamespaceRegistry::<core::Value>::new("user");
+        namespaces.find_or_create("std.foundation");
+        namespaces.set_load_state(
+            "std.foundation",
+            kernel::NamespaceLoadState::Unloaded,
+        );
+        namespaces.set_load_state("example.lazy", kernel::NamespaceLoadState::Unloaded);
+
+        normalize_embedding_namespace_load_states(&namespaces);
+
+        assert_eq!(
+            namespaces.load_state("std.foundation"),
+            Some(kernel::NamespaceLoadState::Loaded)
+        );
+        assert_eq!(
+            namespaces.load_state("example.lazy"),
+            Some(kernel::NamespaceLoadState::Unloaded)
+        );
+    }
+
+    #[test]
+    fn exported_registry_satisfies_bootstrap_requires_without_source_provider() {
+        let namespaces = embedding_namespace_registry();
+        let form = kernel::parse_forms(
+            "(ns example.embedding (:require [std.foundation :refer :all] [std.foundation.coroutine :as coroutine]))",
+        )
+        .expect("parse embedding namespace declaration")
+        .into_iter()
+        .next()
+        .expect("embedding namespace declaration");
+        let mut environment = std::collections::HashMap::new();
+
+        core::with_namespace_registry(&namespaces, || core::eval(&form, &mut environment))
+            .expect("embedding registry must satisfy bootstrapped requires");
+
+        assert_eq!(
+            namespaces.load_state("std.foundation"),
+            Some(kernel::NamespaceLoadState::Loaded)
+        );
+        assert_eq!(
+            namespaces.load_state("std.foundation.coroutine"),
+            Some(kernel::NamespaceLoadState::Loaded)
+        );
+        assert!(namespaces.find("example.embedding").is_some());
+    }
+}
+
 use wasm_bindgen::prelude::*;
 
 include!(concat!(env!("OUT_DIR"), "/embedded_hal.rs"));
