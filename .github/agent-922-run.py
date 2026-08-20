@@ -55,9 +55,6 @@ def {helper.name}({path_name}, {old_name}, {new_name}):
     _target = {path_name} if isinstance({path_name}, _AgentPath) else _AgentPath({path_name})
     _workflow = str(_target).replace("\\\\", "/") == ".github/workflows/java-ifilesystem-kernel.yml"
     if _workflow:
-        # The workflow repeats the same path inventory under push and pull_request.
-        # Keep that mechanical update outside the compressed product payload so
-        # the runtime patch remains stable across workflow-layout changes.
         return
     _text = _target.read_text()
     _count = _text.count({old_name})
@@ -71,3 +68,11 @@ def {helper.name}({path_name}, {old_name}, {new_name}):
 '''
 
 exec(compile(compatibility_helper + source, "apply-922.py", "exec"))
+
+proof = Path(
+    "core/java/src/test/java/hara/truffle/GitHubFilesystemSessionKernelTest.java"
+).read_text().splitlines()
+print("--- generated GitHub filesystem dispatch proof ---")
+for line_number, line in enumerate(proof[:90], 1):
+    print(f"{line_number:04d}: {line}")
+print("--- end generated proof ---")
