@@ -2636,9 +2636,14 @@ public class HaraLanguageTest {
       assertEquals(
           ":hara/not-found",
           context.eval(HaraLanguage.ID, "(:ex/code (ex-data (ex :not-found {})))").toString());
-      assertEquals(
-          "hara.lang.base.Ex$Info",
-          context.eval(HaraLanguage.ID, "(ex-native-type (ex :file/read {}))").asString());
+      assertTrue(
+          context.eval(HaraLanguage.ID, "(nil? (ex-native-type (ex :file/read {})))").asBoolean());
+      assertTrue(
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(nil? (ex-native-type (ex-info \"legacy\" {:phase :test})))")
+              .asBoolean());
       assertEquals(
           "[:file/read \"missing\" :ex.class/io]",
           context
@@ -2657,6 +2662,22 @@ public class HaraLanguageTest {
               PolyglotException.class,
               () -> context.eval(HaraLanguage.ID, "(ex-native-type 42)"));
       assertTrue(ordinary.getMessage().contains("ex-native-type expects an Exception"));
+    }
+    try (Context context =
+        Context.newBuilder(HaraLanguage.ID)
+            .allowHostAccess(HostAccess.ALL)
+            .allowHostClassLookup(name -> true)
+            .build()) {
+      context.eval(
+          HaraLanguage.ID,
+          "(ns exception-native-type (:flavor :jvm) (:import [java.lang RuntimeException]))");
+      assertEquals(
+          "java.lang.RuntimeException",
+          context
+              .eval(
+                  HaraLanguage.ID,
+                  "(ex-native-type (new RuntimeException \"host\"))")
+              .asString());
     }
   }
 

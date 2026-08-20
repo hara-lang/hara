@@ -24,6 +24,8 @@ public class HalSpecificationContractTest {
       specsRegistry().resolve("01-lang/001-language/draft/hal-langspec.edn");
   private static final Path CORE_LANGUAGE_CORPUS =
       specsRegistry().resolve("01-lang/001-language/draft/conformance/core.edn");
+  private static final Path EXCEPTION_CORPUS =
+      specsRegistry().resolve("01-lang/001-language/draft/conformance/exceptions.edn");
   private static final Path READER_CORPUS =
       specsRegistry().resolve("01-lang/001-language/draft/conformance/reader.edn");
   private static final Path MODULE_CORPUS =
@@ -70,6 +72,7 @@ public class HalSpecificationContractTest {
         Map.of(
             Keyword.create("hal", "reader"), caseIds(READER_CORPUS),
             Keyword.create("hal", "core"), caseIds(CORE_LANGUAGE_CORPUS),
+            Keyword.create("hal", "exceptions"), caseIds(EXCEPTION_CORPUS),
             Keyword.create("hal", "modules"), caseIds(MODULE_CORPUS));
     Set<Object> requirementIds = new HashSet<>();
     collectRequirements(

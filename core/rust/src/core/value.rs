@@ -827,7 +827,7 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
         (
             "ex-native-type",
             native_function("ex-native-type", 1, |arguments| match &arguments[0] {
-                Value::ExceptionInfo(_) => Ok(Value::String("ExceptionInfo".into())),
+                Value::ExceptionInfo(_) => Ok(Value::Nil),
                 _ => Err("ex-native-type expects an Exception".into()),
             }),
         ),

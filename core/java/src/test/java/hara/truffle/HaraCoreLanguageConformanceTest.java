@@ -27,14 +27,23 @@ public class HaraCoreLanguageConformanceTest {
   @SuppressWarnings({"rawtypes", "unchecked"})
   @Test
   public void executesEveryJvmCoreLanguageCorpusCase() throws Exception {
+    executeCorpus("core.edn", System.getenv("HARA_CORE_CASE_PREFIX"));
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  @Test
+  public void executesEveryJvmPortableExceptionCorpusCase() throws Exception {
+    executeCorpus("exceptions.edn", null);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private void executeCorpus(String name, String casePrefix) throws Exception {
     String registry = System.getenv().getOrDefault("HARA_SPECS_REGISTRY", "../hara-specs-registry");
     String source =
-        Files.readString(
-            Path.of(registry, "01-lang/001-language/draft/conformance/core.edn"));
+        Files.readString(Path.of(registry, "01-lang/001-language/draft/conformance", name));
     IMapType manifest = (IMapType) Parser.LispReader.readString(source, null);
     ILinearType<?> cases = (ILinearType<?>) manifest.lookup(key("cases"));
     assertTrue(cases.count() > 0);
-    String casePrefix = System.getenv("HARA_CORE_CASE_PREFIX");
     for (Object item : cases) {
       IMapType testCase = (IMapType) item;
       Keyword idKeyword = (Keyword) testCase.lookup(key("id"));
@@ -43,7 +52,8 @@ public class HaraCoreLanguageConformanceTest {
               ? idKeyword.getName()
               : idKeyword.getNamespace() + "/" + idKeyword.getName();
       if (casePrefix != null && !id.startsWith(casePrefix)) continue;
-      String className = ((Keyword) testCase.lookup(key("class"))).getName();
+      Object classValue = testCase.lookup(key("class"));
+      String className = classValue == null ? "error" : ((Keyword) classValue).getName();
       String form = (String) testCase.lookup(key("source"));
       IMapType expected = (IMapType) testCase.lookup(key("expect"));
       if ("reader".equals(className)) {

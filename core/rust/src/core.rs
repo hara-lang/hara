@@ -47,11 +47,71 @@ pub(crate) fn current_exception_site() -> Option<ExceptionSite> {
 }
 
 pub(crate) fn exception_site_at(line: usize, column: usize) -> Option<ExceptionSite> {
-    current_exception_site().map(|mut site| {
-        site.line = line;
-        site.column = column;
-        site
-    })
+    Some(current_exception_site().map_or(
+        ExceptionSite {
+            namespace: None,
+            resource: None,
+            line,
+            column,
+        },
+        |mut site| {
+            site.line = line;
+            site.column = column;
+            site
+        },
+    ))
+}
+
+pub(crate) fn exception_located_form(node: &crate::kernel::SpannedForm) -> Form {
+    let rebuilt = match &node.form {
+        Form::List(values) if node.children.len() == values.len() => {
+            Form::List(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::List(values) if node.children.len() + 1 == values.len() => {
+            let mut rebuilt = vec![values[0].clone()];
+            rebuilt.extend(node.children.iter().map(exception_located_form));
+            Form::List(rebuilt)
+        }
+        Form::Vector(values) if node.children.len() == values.len() => {
+            Form::Vector(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::Set(values) if node.children.len() == values.len() => {
+            Form::Set(node.children.iter().map(exception_located_form).collect())
+        }
+        Form::Map(values) if node.children.len() == values.len() * 2 => Form::Map(
+            node.children
+                .chunks_exact(2)
+                .map(|pair| {
+                    (
+                        exception_located_form(&pair[0]),
+                        exception_located_form(&pair[1]),
+                    )
+                })
+                .collect(),
+        ),
+        Form::Tagged(tag, _) if node.children.len() == 1 => Form::Tagged(
+            tag.clone(),
+            Box::new(exception_located_form(&node.children[0])),
+        ),
+        Form::Metadata(metadata, _) if node.children.len() == 1 => Form::Metadata(
+            metadata.clone(),
+            Box::new(exception_located_form(&node.children[0])),
+        ),
+        form => form.clone(),
+    };
+    let Form::List(mut values) = rebuilt else {
+        return rebuilt;
+    };
+    let Some(Form::Symbol(operator)) = values.first() else {
+        return Form::List(values);
+    };
+    if operator != "throw" {
+        return Form::List(values);
+    }
+    values[0] = Form::Symbol("__throw-at".into());
+    values.insert(1, Form::Number(node.span.start.line as i64));
+    values.insert(2, Form::Number(node.span.start.column as i64));
+    Form::List(values)
 }
 
 pub(crate) fn with_evaluation_interrupt<R>(

@@ -2615,7 +2615,9 @@ public final class HaraContext {
               if (!(unwrapped instanceof Throwable throwable)) {
                 throw new HaraException("ex-native-type expects an Exception");
               }
-              return throwable.getClass().getName();
+              return throwable instanceof hara.lang.base.Ex.Info
+                  ? null
+                  : throwable.getClass().getName();
             }));
     target.define("load-string", new UnaryBuiltin("load-string", this::loadString));
     target.define("read-string", new UnaryBuiltin("read-string", this::readString));

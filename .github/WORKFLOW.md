@@ -20,10 +20,10 @@ workflow.
   retired standard-library namespaces, and the Foundation parity ledger.
 - `lang-runtime.yml` validates portable JavaScript, Python, and Lua emission
   plus the Foundation runtime smoke tests.
-- `clj-hal-corpus.yml` validates the pinned Clojure-to-HAL corpus and recorded
-  Foundation evidence.
-- `collection-protocol-slices.yml` runs focused Java/Truffle collection
-  protocol tests and publishes Surefire diagnostics.
+- `foundation-migrate.yml` validates the pinned Foundation migration audit and
+  recorded Foundation evidence.
+- `core-ci.yml` also owns collection protocol, live-session, tool-lint, and
+  bang-name policy coverage through the checked-in runtime and library suites.
 - `code-vm-conformance.yml` owns Code VM validation: Rust/Truffle report parity,
   live interpreter semantics, snapshots, and browser-Wasm compilation.
 - `whole-wasm-native-browser-parity.yml` compiles one whole-Wasm artifact,

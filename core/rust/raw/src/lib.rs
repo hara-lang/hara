@@ -656,7 +656,12 @@ impl Session {
         for (index, value) in bindings.into_iter().enumerate() {
             environment.insert(format!("__hta_arg_{index}"), value);
         }
-        let forms = self.prepare_forms(kernel::parse_forms(source)?)?;
+        let forms = kernel::read_forms(source)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .map(core::exception_located_form)
+            .collect::<Vec<_>>();
+        let forms = self.prepare_forms(forms)?;
         let fiber = core::with_capability_providers(file_provider, None, false, None, || {
             core::with_macros(macros, || {
                 core::with_namespace_registry(&namespaces, || {
@@ -2782,6 +2787,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(completion_value(&mut runtime, 1), Value::Number(42));
+    }
+
+    #[test]
+    fn raw_fibers_preserve_exception_provenance() {
+        let mut runtime = Session::new();
+        runtime
+            .start_fiber(
+                1,
+                "(let [error (ex :app/provenance {})] \
+                   (try (throw error) \
+                     (catch caught \
+                       (let [provenance (ex-provenance caught)] \
+                         (if (and (:ex/created-at provenance) \
+                                  (= 1 (count (:ex/throws provenance)))) \
+                           42 0)))))",
+            )
+            .unwrap();
+        assert_eq!(completion_value(&mut runtime, 1), Value::Number(42));
+
+        runtime
+            .start_fiber(
+                2,
+                "(let [error (ex :app/provenance {})] \
+                   (try (try (throw error) (catch caught (throw caught))) \
+                     (catch caught \
+                       (if (= 2 (count (:ex/throws (ex-provenance caught)))) 42 0))))",
+            )
+            .unwrap();
+        assert_eq!(completion_value(&mut runtime, 2), Value::Number(42));
     }
 
     #[test]

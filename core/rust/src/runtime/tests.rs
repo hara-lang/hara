@@ -4689,7 +4689,13 @@ mod tests {
             runtime
                 .eval_text("(ex-native-type (ex-info \"broken\" {:phase :test}))")
                 .unwrap(),
-            "\"ExceptionInfo\""
+            "nil"
+        );
+        assert_eq!(
+            runtime
+                .eval_text("(ex-native-type (ex :file/read {}))")
+                .unwrap(),
+            "nil"
         );
         assert_eq!(
             runtime
@@ -5991,6 +5997,66 @@ mod tests {
                     Form::Bool(value) => value.to_string(),
                     Form::Keyword(value) => format!(":{value}"),
                     Form::Nil => "nil".to_owned(),
+                    value => panic!(":{id} has unsupported expected value {value:?}"),
+                };
+                let actual = runtime
+                    .eval_text(source)
+                    .unwrap_or_else(|error| panic!(":{id} unexpectedly failed: {error}"));
+                assert_eq!(actual, expected, ":{id}");
+            }
+        }
+    }
+
+    #[test]
+    fn portable_exception_cases_run_from_the_shared_conformance_corpus() {
+        fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
+            entries.iter().find_map(|(candidate, value)| match candidate {
+                Form::Keyword(name) if name == key => Some(value),
+                _ => None,
+            })
+        }
+
+        let Some(corpus) =
+            repo_text("01-lang/001-language/draft/conformance/exceptions.edn")
+        else {
+            return;
+        };
+        let manifest = kernel::parse_forms(&corpus).unwrap().remove(0);
+        let Form::Map(manifest) = manifest else {
+            panic!("Exception conformance corpus must be a map")
+        };
+        let Some(Form::Vector(cases)) = entry(&manifest, "cases") else {
+            panic!("Exception conformance :cases must be a vector")
+        };
+
+        for case in cases {
+            let Form::Map(case) = case else {
+                panic!("Exception conformance cases must be maps")
+            };
+            let Some(Form::Keyword(id)) = entry(case, "id") else {
+                panic!("Exception conformance case is missing :id")
+            };
+            let Some(Form::String(source)) = entry(case, "source") else {
+                panic!(":{id} source must be a string")
+            };
+            let Some(Form::Map(expect)) = entry(case, "expect") else {
+                panic!(":{id} expect must be a map")
+            };
+            let mut runtime = Runtime::new();
+            if entry(expect, "error").is_some() {
+                let error = match runtime.eval_text(source) {
+                    Ok(value) => panic!(":{id} should fail, returned {value}"),
+                    Err(error) => error,
+                };
+                if let Some(Form::String(message)) = entry(expect, "message") {
+                    assert!(
+                        error.contains(message),
+                        ":{id} should contain {message:?}, actual: {error:?}"
+                    );
+                }
+            } else {
+                let expected = match entry(expect, "value") {
+                    Some(Form::Number(value)) => value.to_string(),
                     value => panic!(":{id} has unsupported expected value {value:?}"),
                 };
                 let actual = runtime
