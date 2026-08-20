@@ -3,17 +3,19 @@ package hara.truffle;
 import com.oracle.truffle.api.CallTarget;
 import com.oracle.truffle.api.Option;
 import com.oracle.truffle.api.TruffleLanguage;
+import com.oracle.truffle.api.instrumentation.ProvidedTags;
+import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
 import hara.kernel.base.Parser;
 import hara.kernel.base.Reader;
-import hara.truffle.bytecode.HbcBytecodeRootNode;
-import hara.truffle.bytecode.HbcCodec;
 import hara.lang.data.Keyword;
 import hara.lang.data.Map;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
+import hara.truffle.bytecode.HbcBytecodeRootNode;
+import hara.truffle.bytecode.HbcCodec;
 import java.util.ArrayList;
 import java.util.List;
 import org.graalvm.options.OptionCategory;
@@ -21,6 +23,10 @@ import org.graalvm.options.OptionDescriptors;
 import org.graalvm.options.OptionKey;
 import org.graalvm.options.OptionStability;
 
+@ProvidedTags({
+  StandardTags.ExpressionTag.class,
+  HaraInstrumentationTags.ExecutionRootTag.class
+})
 @TruffleLanguage.Registration(
     id = HaraLanguage.ID,
     name = "Hara",
@@ -54,6 +60,13 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
       category = OptionCategory.INTERNAL,
       stability = OptionStability.STABLE)
   static final OptionKey<String> KERNEL_TOKEN = new OptionKey<>("");
+
+  @Option(
+      name = "SessionId",
+      help = "Internal Session identity for Runtime-owned instrumentation.",
+      category = OptionCategory.INTERNAL,
+      stability = OptionStability.STABLE)
+  static final OptionKey<String> SESSION_ID = new OptionKey<>("");
 
   private static final ContextReference<HaraContext> CONTEXT_REFERENCE =
       ContextReference.create(HaraLanguage.class);
@@ -107,7 +120,8 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
       try {
         return HbcBytecodeRootNode.compile(this, HbcCodec.decode(source.getBytes().toByteArray()));
       } catch (RuntimeException error) {
-        throw new HaraException("Unable to read Hara bytecode " + source.getName() + ": " + error.getMessage());
+        throw new HaraException(
+            "Unable to read Hara bytecode " + source.getName() + ": " + error.getMessage());
       }
     }
     SourceSection sourceSection =
