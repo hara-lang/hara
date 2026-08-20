@@ -16,6 +16,19 @@
      (fn [value context]
        (* 2 value)))]))
 
+(def dynamic
+  (work/bind
+   {:id :dynamic
+    :maximum-depth 7}
+   increment
+   (work/pure
+    :select-dynamic
+    (fn [value context]
+      (work/pure
+       :times-ten
+       (fn [selected selected-context]
+         (* selected 10)))))))
+
 (def area-graph
   (work/graph
    {:width (work/input :width)
@@ -49,9 +62,24 @@
     [:increment :pure :pipeline :chain])
 
    (test-check
+    "work.bind exposes stable structure for tooling and compiler consumers"
+    (let [spec (work/work-spec dynamic)]
+      [(:id spec)
+       (:op spec)
+       (= increment (:source spec))
+       (:op (work/work-spec (:continuation spec)))
+       (:maximum-depth spec)])
+    [:dynamic :bind true :pure 7])
+
+   (test-check
     "work.base executes through the existing local runtime"
     (work/run (work/local-runtime) pipeline 4)
     10)
+
+   (test-check
+    "work.base executes runtime-produced Work through the same runtime"
+    (work/run (work/local-runtime) dynamic 4)
+    50)
 
    (test-check
     "work.base eagerly executes a named computation graph"
