@@ -1,0 +1,192 @@
+;; Call-site contract diagnostics over portable std.typed normal forms.
+;;
+;; This namespace deliberately depends on tool.lint.schema rather than
+;; std.typed directly. It uses analyzer-produced inference records and only
+;; traverses source blocks to identify call/argument spans.
+(ns tool.lint.schema.call
+  (:require [std.block :as block]
+            [tool.lint.model :as model]
+            [tool.lint.schema :as schema]))
+
+(defn code-children
+  [value]
+  (vec (filter block/code? (block/children value))))
+
+(defn inference-key
+  [value]
+  (let [span (model/span value)]
+    [(:start-offset span) (:end-offset span)]))
+
+(defn inference-index
+  [document]
+  (reduce
+   (fn [output record]
+     (assoc output
+            [(:start-offset record) (:end-offset record)]
+            (:analysis/schema record)))
+   {}
+   (:inferences document)))
+
+(defn inferred-schema
+  [inferences value]
+  (get inferences (inference-key value)))
+
+(defn known-schema?
+  [value]
+  (and value (not= :unknown (:kind value))))
+
+(defn qualify-call
+  [head context]
+  (let [prefix (namespace head)]
+    (if prefix
+      (let [prefix-symbol (symbol prefix)
+            target (or (get (:aliases context) prefix-symbol) prefix-symbol)]
+        (symbol (str target) (name head)))
+      (when (:namespace context)
+        (symbol (str (:namespace context)) (name head))))))
+
+(defn referred-call
+  [head functions context]
+  (if (not (has? (:refers context) head))
+    nil
+    (let [requires (into #{} (:requires context))
+          candidates
+          (vec
+           (filter
+            (fn [candidate]
+              (and (= (name candidate) (name head))
+                   (has? requires (symbol (namespace candidate)))))
+            (keys functions)))]
+      (if (= 1 (count candidates))
+        (first candidates)
+        nil))))
+
+(defn function-contract
+  [index head context]
+  (let [functions (:functions index)
+        qualified (qualify-call head context)
+        referred (when (nil? (get functions qualified))
+                   (referred-call head functions context))
+        target (cond
+                 (get functions qualified) qualified
+                 referred referred
+                 (get functions head) head
+                 :else nil)]
+    (when target
+      {:name target
+       :schema (get functions target)})))
+
+(defn expected-argument
+  [arity index]
+  (let [fixed (get-in arity [:inputs :fixed])
+        rest-schema (get-in arity [:inputs :rest])]
+    (if (< index (count fixed))
+      (nth fixed index)
+      rest-schema)))
+
+(defn call-findings
+  [value head arguments inferences schema-index context options]
+  (let [contract (function-contract schema-index head context)]
+    (if (nil? contract)
+      []
+      (let [arity (schema/matching-arity (:schema contract) (count arguments))]
+        (if (nil? arity)
+          (let [finding
+                (schema/schema-finding
+                 value
+                 :tool.lint/schema-arity-mismatch
+                 (str "schema arity mismatch for " head
+                      ": " (count arguments) " arguments")
+                 options
+                 :tool.source-analysis/schema-call-arity)]
+            (if finding [finding] []))
+          (loop [index 0
+                 findings []]
+            (if (= index (count arguments))
+              findings
+              (let [argument (nth arguments index)
+                    expected (expected-argument arity index)
+                    actual (inferred-schema inferences argument)
+                    finding
+                    (when (and expected
+                               (known-schema? actual)
+                               (not (schema/compatible? expected actual)))
+                      (schema/schema-finding
+                       argument
+                       :tool.lint/schema-argument-mismatch
+                       (str "schema argument " (inc index)
+                            " for " head
+                            " expects " expected
+                            ", inferred " actual)
+                       options
+                       :tool.source-analysis/schema-argument))]
+                (recur (inc index)
+                       (if finding (conj findings finding) findings))))))))))
+
+(defn block-findings
+  [value inferences schema-index context options]
+  (cond
+    (= :quote (block/tag value))
+    []
+
+    (= :list (block/tag value))
+    (let [children (code-children value)
+          head-block (first children)
+          head (when head-block (block/value head-block))
+          arguments (vec (rest children))
+          current
+          (if (symbol? head)
+            (call-findings value
+                           head
+                           arguments
+                           inferences
+                           schema-index
+                           context
+                           options)
+            [])
+          nested
+          (if (has? '#{quote var} head)
+            []
+            (mapcat (fn [child]
+                      (block-findings child
+                                      inferences
+                                      schema-index
+                                      context
+                                      options))
+                    arguments))]
+      (vec (concat current nested)))
+
+    :else
+    (vec
+     (mapcat (fn [child]
+               (block-findings child
+                               inferences
+                               schema-index
+                               context
+                               options))
+             (code-children value)))))
+
+(defn enrich-document
+  "Adds metadata-derived call-site findings using existing inference records."
+  [scan document schema-index options]
+  (let [namespace-info (:namespace scan)
+        context {:namespace (:name namespace-info)
+                 :aliases (:aliases namespace-info)
+                 :refers (:refers namespace-info)
+                 :requires (:requires namespace-info)}
+        inferences (inference-index document)
+        file (get-in scan [:document :file])
+        forms (schema/annotated-top-level-forms scan)
+        findings
+        (vec
+         (map
+          (fn [finding] (assoc finding :file file))
+          (mapcat
+           (fn [entry]
+             (block-findings (:form entry)
+                             inferences
+                             schema-index
+                             context
+                             options))
+           forms)))]
+    (assoc document :findings (vec (concat (:findings document) findings)))))

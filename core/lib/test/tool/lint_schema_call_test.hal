@@ -1,0 +1,84 @@
+(ns tool.lint-schema-call-test
+  (:use code.test)
+  (:require [tool.lint :as lint]
+            [tool.lint.analyze :as analyze]))
+
+(defn report-data
+  [outcome]
+  (Result/data outcome))
+
+(defn finding-types
+  [report]
+  (vec (map :type (:findings report))))
+
+^{:refer 'tool.lint.schema.call/enrich-document
+  :id 'local-call-contracts}
+(fact "checks annotated local calls with existing argument inference"
+  (let [source
+        (str "(ns demo)\n"
+             "(defn ^{:schema [:fn [:int] :str]} label [value] \"ok\")\n"
+             "(label \"bad\")\n"
+             "(label 1 2)")
+        report (report-data (lint/lint-source source))]
+    (finding-types report))
+  => [:tool.lint/schema-argument-mismatch
+      :tool.lint/schema-arity-mismatch])
+
+^{:refer 'tool.lint.schema.call/function-contract
+  :id 'alias-and-refer-contracts}
+(fact "resolves call contracts through project aliases and explicit refers"
+  (let [api
+        (analyze/scan-source
+         (str "(ns demo.api)\n"
+              "(defn ^{:schema [:fn [:int] :str]} label [value] \"ok\")")
+         {:file "api.hal"})
+        alias-user
+        (analyze/scan-source
+         (str "(ns demo.alias (:require [demo.api :as api]))\n"
+              "(api/label \"bad\")")
+         {:file "alias.hal"})
+        refer-user
+        (analyze/scan-source
+         (str "(ns demo.refer (:require [demo.api :refer [label]]))\n"
+              "(label \"bad\")")
+         {:file "refer.hal"})
+        report (report-data (lint/lint-scans [api alias-user refer-user]))]
+    (finding-types report))
+  => [:tool.lint/schema-argument-mismatch
+      :tool.lint/schema-argument-mismatch])
+
+^{:refer 'tool.lint.schema.call/call-findings
+  :id 'variadic-call-contracts}
+(fact "checks variadic rest arguments without rejecting a valid call"
+  (let [source
+        (str "(ns demo)\n"
+             "(defn ^{:schema [:fn [:str & :int] :str]} combine [head & tail] head)\n"
+             "(combine \"ok\" 1 2)\n"
+             "(combine \"bad\" 1 \"two\")")
+        report (report-data (lint/lint-source source))]
+    (finding-types report))
+  => [:tool.lint/schema-argument-mismatch])
+
+^{:refer 'tool.lint.schema.call/call-findings
+  :id 'unknown-inference-is-silent}
+(fact "does not turn unknown argument inference into a schema mismatch"
+  (let [source
+        (str "(ns demo)\n"
+             "(defn ^{:schema [:fn [:int] :str]} label [value] \"ok\")\n"
+             "(label missing)")
+        report (report-data (lint/lint-source source))]
+    (finding-types report))
+  => [:tool.lint/unresolved-symbol])
+
+^{:refer 'tool.lint.schema.call/call-findings
+  :id 'schema-mode-off}
+(fact "honours schema-mode off for call-site contract diagnostics"
+  (let [source
+        (str "(ns demo)\n"
+             "(defn ^{:schema [:fn [:int] :str]} label [value] \"ok\")\n"
+             "(label \"bad\")")
+        report (report-data (lint/lint-source source {:schema-mode :off}))]
+    (finding-types report))
+  => [])
+
+(pr-str (run '[tool.lint-schema-call-test]))
