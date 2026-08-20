@@ -1,0 +1,101 @@
+name: IndexedDB Filesystem CI
+
+on:
+  push:
+    paths:
+      - ".github/workflows/indexeddb-filesystem.yml"
+      - "core/rust/web/hara-web.js"
+      - "core/rust/web/host/indexeddb-filesystem*.js"
+      - "core/rust/web/host/provider-services.js"
+      - "core/rust/web/indexeddb-filesystem*.mjs"
+      - "core/rust/web/indexeddb-filesystem*.js"
+      - "core/rust/web/indexeddb-provider-services.test.mjs"
+      - "core/rust/web/package.json"
+      - "core/rust/web/package-lock.json"
+      - "core/rust/web/playwright.config.js"
+  pull_request:
+    paths:
+      - ".github/workflows/indexeddb-filesystem.yml"
+      - "core/rust/web/hara-web.js"
+      - "core/rust/web/host/indexeddb-filesystem*.js"
+      - "core/rust/web/host/provider-services.js"
+      - "core/rust/web/indexeddb-filesystem*.mjs"
+      - "core/rust/web/indexeddb-filesystem*.js"
+      - "core/rust/web/indexeddb-provider-services.test.mjs"
+      - "core/rust/web/package.json"
+      - "core/rust/web/package-lock.json"
+      - "core/rust/web/playwright.config.js"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: indexeddb-filesystem-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-conformance:
+    name: Node and fake IndexedDB
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: core/rust/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: core/rust/web/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Check provider source syntax
+        run: |
+          node --check host/indexeddb-filesystem.js
+          node --check host/indexeddb-filesystem-host.js
+          node --check host/provider-services.js
+          node --check indexeddb-filesystem.test.mjs
+          node --check indexeddb-filesystem-host.test.mjs
+          node --check indexeddb-provider-services.test.mjs
+          node --check indexeddb-filesystem-browser.spec.js
+          node --check hara-web.js
+
+      - name: Run focused provider conformance
+        run: >-
+          node --test
+          indexeddb-filesystem.test.mjs
+          indexeddb-filesystem-host.test.mjs
+          indexeddb-provider-services.test.mjs
+          hara-web.test.mjs
+
+  chromium-conformance:
+    name: Real Chromium IndexedDB
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: core/rust/web
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: core/rust/web/package-lock.json
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run real-browser provider conformance
+        run: npx playwright test indexeddb-filesystem-browser.spec.js

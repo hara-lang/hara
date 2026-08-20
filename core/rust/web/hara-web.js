@@ -6,7 +6,7 @@
  * browser runtime contract.
  */
 import { createBrowserBroker } from "./host/broker.js";
-import { createHostDescription, createHostServices } from "./host/services.js";
+import { createHostDescription, createHostServices } from "./host/provider-services.js";
 
 export function createHaraWebHost({
   workerUrl,
@@ -56,3 +56,10 @@ export function createHaraWebHost({
 }
 
 export { createHostDescription, createHostServices };
+export {
+  FilesystemProviderError,
+  createIndexedDbFilesystemFactory,
+  normalizeLogicalPath,
+  openIndexedDbFilesystem
+} from "./host/indexeddb-filesystem.js";
+export { createIndexedDbFilesystemHost } from "./host/indexeddb-filesystem-host.js";
