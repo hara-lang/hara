@@ -24,6 +24,7 @@ final class HaraNamespaceDeclaration {
   final Set<String> exposedFoundation;
   final Set<String> excludedIntrinsics;
   final Map<String, String> intrinsicAliases;
+  final String role;
   final Object[] structuralClauses;
 
   private HaraNamespaceDeclaration(
@@ -34,6 +35,7 @@ final class HaraNamespaceDeclaration {
       Set<String> exposedFoundation,
       Set<String> excludedIntrinsics,
       Map<String, String> intrinsicAliases,
+      String role,
       Object[] structuralClauses) {
     this.name = name;
     this.blank = blank;
@@ -42,6 +44,7 @@ final class HaraNamespaceDeclaration {
     this.exposedFoundation = Set.copyOf(exposedFoundation);
     this.excludedIntrinsics = Set.copyOf(excludedIntrinsics);
     this.intrinsicAliases = Map.copyOf(intrinsicAliases);
+    this.role = role;
     this.structuralClauses = structuralClauses.clone();
   }
 
@@ -54,6 +57,7 @@ final class HaraNamespaceDeclaration {
     boolean blank = false;
     boolean overrideSeen = false;
     boolean exposeSeen = false;
+    String role = "standard";
     LinkedHashSet<String> excludedFoundation = new LinkedHashSet<>();
     LinkedHashSet<String> exposedFoundation = new LinkedHashSet<>();
     LinkedHashSet<String> excluded = new LinkedHashSet<>();
@@ -81,7 +85,7 @@ final class HaraNamespaceDeclaration {
           if (!(entry.getKey() instanceof Keyword option) || option.getNamespace() != null) {
             throw new HaraException(":config keys must be unqualified keywords");
           }
-          if (!Set.of("blank", "intrinsics", "override", "expose")
+          if (!Set.of("blank", "intrinsics", "override", "expose", "role")
               .contains(option.getName())) {
             throw new HaraException("Unsupported :config option: :" + option.getName());
           }
@@ -105,6 +109,16 @@ final class HaraNamespaceDeclaration {
         }
         Object intrinsicValue = options.lookup(Keyword.create("intrinsics"));
         if (intrinsicValue != null) parseIntrinsics(intrinsicValue, excluded, aliases);
+        Object roleValue = options.lookup(Keyword.create("role"));
+        if (roleValue != null) {
+          if (!(roleValue instanceof Keyword roleKeyword)
+              || roleKeyword.getNamespace() != null
+              || !Set.of("standard", "internal", "facade").contains(roleKeyword.getName())) {
+            throw new HaraException(
+                ":config :role expects :standard, :internal, or :facade");
+          }
+          role = roleKeyword.getName();
+        }
       } else if ("require".equals(clauseName)
           || "use".equals(clauseName)
           || "flavor".equals(clauseName)
@@ -139,6 +153,7 @@ final class HaraNamespaceDeclaration {
         exposedFoundation,
         excluded,
         aliases,
+        role,
         structural.toArray());
   }
 

@@ -685,6 +685,8 @@ public final class HaraContext {
         null,
         Keyword.create("namespace/name"), Symbol.create(name),
         Keyword.create("namespace/state"), Keyword.create(state == null ? "unknown" : state.keyword),
+        Keyword.create("namespace/role"), Keyword.create(
+            namespaces.containsKey(name) ? namespaces.get(name).role : "standard"),
         Keyword.create("namespace/revision"), modules.values().stream()
             .filter(module -> name.equals(module.namespace))
             .mapToLong(module -> module.revision)
@@ -868,6 +870,7 @@ public final class HaraContext {
 
   private void applyNamespaceDeclaration(HaraNamespaceDeclaration declaration) {
     currentNamespace = namespace(declaration.name.getName());
+    currentNamespace.role = declaration.role;
     if (declaration.blank) {
       blankNamespaces.add(currentNamespace.name());
       currentNamespace.removeReferredVars();
@@ -7930,6 +7933,7 @@ public final class HaraContext {
     Map<String, Map<String, HaraVar>> bindings = new LinkedHashMap<>();
     Map<String, Map<String, IMetadata>> metadata = new LinkedHashMap<>();
     Map<String, Map<String, HaraVar.Origin>> origins = new LinkedHashMap<>();
+    Map<String, String> roles = new LinkedHashMap<>();
     for (Map.Entry<String, HaraNamespace> namespace : namespaces.entrySet()) {
       Map<String, Object> namespaceValues = new LinkedHashMap<>();
       Map<String, HaraVar> namespaceBindings = new LinkedHashMap<>();
@@ -7945,6 +7949,7 @@ public final class HaraContext {
       bindings.put(namespace.getKey(), namespaceBindings);
       metadata.put(namespace.getKey(), namespaceMetadata);
       origins.put(namespace.getKey(), namespaceOrigins);
+      roles.put(namespace.getKey(), namespace.getValue().role);
     }
     Map<String, Map<String, HaraMacro>> macroValues = new LinkedHashMap<>();
     for (Map.Entry<String, Map<String, HaraMacro>> entry : macros.entrySet()) {
@@ -7964,6 +7969,7 @@ public final class HaraContext {
         bindings,
         metadata,
         origins,
+        roles,
         macroValues,
         aliasValues,
         new LinkedHashMap<>(modules),
@@ -7977,6 +7983,7 @@ public final class HaraContext {
     namespaces.clear();
     for (Map.Entry<String, Map<String, Object>> entry : snapshot.values.entrySet()) {
       HaraNamespace namespace = namespace(entry.getKey());
+      namespace.role = snapshot.roles.getOrDefault(entry.getKey(), "standard");
       for (Map.Entry<String, Object> value : entry.getValue().entrySet()) {
         HaraVar binding = snapshot.bindings.get(entry.getKey()).get(value.getKey());
         if (binding == null) {
@@ -8038,6 +8045,7 @@ public final class HaraContext {
     private final Map<String, Map<String, HaraVar>> bindings;
     private final Map<String, Map<String, IMetadata>> metadata;
     private final Map<String, Map<String, HaraVar.Origin>> origins;
+    private final Map<String, String> roles;
     private final Map<String, Map<String, HaraMacro>> macros;
     private final Map<String, Map<String, String>> aliases;
     private final Map<String, ModuleRecord> modules;
@@ -8051,6 +8059,7 @@ public final class HaraContext {
         Map<String, Map<String, HaraVar>> bindings,
         Map<String, Map<String, IMetadata>> metadata,
         Map<String, Map<String, HaraVar.Origin>> origins,
+        Map<String, String> roles,
         Map<String, Map<String, HaraMacro>> macros,
         Map<String, Map<String, String>> aliases,
         Map<String, ModuleRecord> modules,
@@ -8062,6 +8071,7 @@ public final class HaraContext {
       this.bindings = bindings;
       this.metadata = metadata;
       this.origins = origins;
+      this.roles = roles;
       this.macros = macros;
       this.aliases = aliases;
       this.modules = modules;
@@ -8587,6 +8597,7 @@ public final class HaraContext {
   private final class HaraNamespace {
     private final String name;
     private final Map<String, HaraVar> vars = new ConcurrentHashMap<>();
+    private String role = "standard";
 
     private HaraNamespace(String name) {
       this.name = name;

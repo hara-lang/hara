@@ -1543,6 +1543,16 @@ fn namespace_descriptor(registry: &NamespaceRegistry<Value>, name: &str) -> Valu
             Value::Keyword(state.into()),
         ),
         (
+            Value::Keyword("namespace/role".into()),
+            Value::Keyword(
+                registry
+                    .find(name)
+                    .map(|namespace| namespace.role())
+                    .unwrap_or_else(|| "standard".into())
+                    .into(),
+            ),
+        ),
+        (
             Value::Keyword("namespace/revision".into()),
             Value::Number(registry.module_revision(name) as i64),
         ),

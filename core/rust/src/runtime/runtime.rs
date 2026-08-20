@@ -682,6 +682,9 @@ impl Runtime {
             .get(name)
             .cloned()
             .unwrap_or_else(kernel::GeneratedNamespaceConfig::defaults);
+        self.namespace_registry
+            .find_or_create(name)
+            .set_role(config.role());
         if config.blank() {
             let target = self.namespace_registry.find_or_create(name);
             for (local, var) in target.mappings() {

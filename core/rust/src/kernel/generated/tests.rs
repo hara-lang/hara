@@ -42,6 +42,28 @@ fn rejects_removed_builtins_config_option() {
 }
 
 #[test]
+fn config_role_defaults_validates_and_is_retained() {
+    assert_eq!(GeneratedNamespaceConfig::defaults().role(), "standard");
+    for role in ["standard", "internal", "facade"] {
+        let config = GeneratedNamespaceConfig::configure(
+            &parse_forms(&format!("(:config {{:role :{role}}})")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(config.role(), role);
+    }
+    assert!(GeneratedNamespaceConfig::configure(
+        &parse_forms("(:config {:role \"internal\"})").unwrap()
+    )
+    .unwrap_err()
+    .contains(":config :role expects :standard, :internal, or :facade"));
+    assert!(GeneratedNamespaceConfig::configure(
+        &parse_forms("(:config {:role :unsupported})").unwrap()
+    )
+    .unwrap_err()
+    .contains(":config :role expects :standard, :internal, or :facade"));
+}
+
+#[test]
 fn config_override_omits_selected_foundation_vars() {
     let config = GeneratedNamespaceConfig::configure(
         &parse_forms("(:config {:override [compile pointer]})").unwrap(),
