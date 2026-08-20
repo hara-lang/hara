@@ -1,0 +1,130 @@
+(ns std.typed.catalog-test
+  (:use code.test)
+  (:require [std.typed.catalog :as catalog]
+            [std.typed.registry :as registry]))
+
+(def +entries+
+  [{:schema/id :model/id
+    :schema/version 1
+    :schema/form :int
+    :source/file "model_v1.hal"}
+   {:schema/id :model/profile
+    :schema/version 1
+    :schema/form
+    '[:map
+      {:title "Profile documentation"}
+      [:id (var Id)]]}
+   {:schema/id :model/profile
+    :schema/version 2
+    :schema/form
+    '[:map
+      {:title "Profile documentation v2"}
+      [:id (var Id)]
+      [:nickname {:optional true :description "Display name"} :str]]}
+   {:schema/id :model/account
+    :schema/version 1
+    :schema/form
+    '[:map
+      [:profile (var Profile)]]}])
+
+(def +catalog+ (catalog/catalog +entries+))
+(def +id-coordinate+ (catalog/coordinate +catalog+ :model/id 1))
+(def +profile-v1-coordinate+ (catalog/coordinate +catalog+ :model/profile 1))
+(def +profile-v2-coordinate+ (catalog/coordinate +catalog+ :model/profile 2))
+(def +account-coordinate+ (catalog/coordinate +catalog+ :model/account 1))
+
+^{:refer 'std.typed.catalog/catalog
+  :id 'stable-schema-identity}
+(fact "catalog entries have canonical ids, versions, and reproducible hashes"
+  (let [profile-v1 (catalog/lookup +catalog+ :model/profile 1)
+        profile-latest (catalog/lookup +catalog+ 'model/profile)
+        reordered
+        (catalog/catalog
+         [{:schema/form
+           '[:map
+             {:owner :docs :title "Ignored documentation"}
+             [:id (var Id)]]
+           :schema/version 1
+           :schema/id :model/profile}
+          {:schema/form :int
+           :schema/id :model/id
+           :schema/version 1}])
+        semantic-change
+        (catalog/catalog
+         [{:schema/id :model/id :schema/version 1 :schema/form :int}
+          {:schema/id :model/profile
+           :schema/version 1
+           :schema/form
+           '[:map [:id (var Id)] [:name :str]]}])]
+    [(:schema/id profile-v1)
+     (:schema/version profile-v1)
+     (str/starts-with? (:schema/hash profile-v1) "sha256:")
+     (count (:schema/hash profile-v1))
+     (:schema/version profile-latest)
+     (= (:schema/hash profile-v1)
+        (:schema/hash (catalog/lookup reordered :model/profile 1)))
+     (not= (:schema/hash profile-v1)
+           (:schema/hash (catalog/lookup semantic-change :model/profile 1)))])
+  => [:model/profile 1 true 71 2 true true])
+
+^{:refer 'std.typed.catalog/catalog
+  :id 'schema-version-participates-in-hash}
+(fact "the same semantic form at a different version has a different hash"
+  (let [value
+        (catalog/catalog
+         [{:schema/id :demo/value :schema/version 1 :schema/form :str}
+          {:schema/id :demo/value :schema/version 2 :schema/form :str}])]
+    (not=
+     (:schema/hash (catalog/lookup value :demo/value 1))
+     (:schema/hash (catalog/lookup value :demo/value 2))))
+  => true)
+
+^{:refer 'std.typed.catalog/catalog
+  :id 'reject-mismatched-schema-hash}
+(fact "a supplied hash is an assertion, not mutable metadata"
+  (try
+    (catalog/catalog
+     [{:schema/id :demo/value
+       :schema/version 1
+       :schema/hash "sha256:deadbeef"
+       :schema/form :int}])
+    false
+    (catch Throwable error
+      (= :std.typed.catalog/invalid-catalog
+         (:type (ex-data error)))))
+  => true)
+
+^{:refer 'std.protocol.ideps/IDeps
+  :id 'schema-catalog-dependency-contract}
+(fact "catalogs expose exact pinned schema dependencies through IDeps"
+  [(= :model/account (:schema/id (dep-get +catalog+ +account-coordinate+)))
+   (dep-entries +catalog+ +account-coordinate+)
+   (dep-entries +catalog+ +profile-v2-coordinate+)
+   (set (dep-keys +catalog+))
+   (deps-ordered +catalog+ [+account-coordinate+])]
+  => [true
+      #{+profile-v2-coordinate+}
+      #{+id-coordinate+}
+      #{+id-coordinate+
+        +profile-v1-coordinate+
+        +profile-v2-coordinate+
+        +account-coordinate+}
+      [+id-coordinate+ +profile-v2-coordinate+ +account-coordinate+]])
+
+^{:refer 'std.typed.catalog/schema-registry
+  :id 'ordinary-symbol-registry-view}
+(fact "identified catalogs retain the ordinary symbol lookup surface"
+  [(registry/lookup (catalog/schema-registry +catalog+) 'model/Id)
+   (registry/lookup (catalog/schema-registry +catalog+) 'model/Profile)]
+  => [:int
+      '[:map
+        {:title "Profile documentation v2"}
+        [:id (var Id)]
+        [:nickname {:optional true :description "Display name"} :str]]])
+
+(let [result (run '[std.typed.catalog-test])]
+  (if (= :passed (:status result))
+    (pr-str result)
+    (throw
+     (ex-info "std.typed catalog facts failed"
+              {:result result}))))
