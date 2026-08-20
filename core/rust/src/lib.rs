@@ -12,6 +12,8 @@ pub mod core;
 mod direct_wasm;
 pub mod extension;
 pub mod file;
+#[path = "file/interface.rs"]
+pub mod filesystem;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]
@@ -20,6 +22,7 @@ pub mod invoke_hta;
 pub use invoke_hta::{InvokeHtaError, MAX_INVOKE_HTA_RESULT_BYTES};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod identity_tool;
+pub mod instrumentation;
 pub mod interpreter_observation;
 #[cfg(feature = "evaluation-journal")]
 pub mod journal;

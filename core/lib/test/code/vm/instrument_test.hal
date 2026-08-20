@@ -1,0 +1,198 @@
+(ns code.vm.instrument-test
+  (:require [code.vm.instrument :as instrument]))
+
+(defn fails?
+  [f]
+  (try
+    (do
+      (f)
+      false)
+    (catch Throwable error
+      true)))
+
+(def results
+  [(test-check
+    "registrations normalize capability, event, filter and projection data"
+    (let [registration
+          (instrument/registration
+           {:instrument/id :hodos/debugger
+            :session-id "debug-1"
+            :instrument/mode :control
+            :instrument/capabilities
+            #{:event/call
+              :inspect/source-location
+              :inspect/snapshot
+              :control/single-step}
+            :instrument/events #{:call/enter :call/return}
+            :instrument/filter
+            {:target-kinds [:interpreter]
+             :runtimes #{:rust}}
+            :instrument/projection
+            {:source-location true
+             :machine-snapshot {:items 8
+                                :depth 4
+                                :bytes 1024}}
+            :instrument/delivery :queue
+            :instrument/queue-capacity 16})]
+      [(:protocol registration)
+       (:instrument/id registration)
+       (:instrument/mode registration)
+       (:instrument/events registration)
+       (get-in registration
+               [:instrument/projection
+                :machine-snapshot
+                :bytes])
+       (:instrument/queue-capacity registration)
+       (instrument/registration? registration)])
+    ["hara.instrumentation/0-alpha"
+     :hodos/debugger
+     :control
+     #{:call/enter :call/return}
+     1024
+     16
+     true])
+
+   (test-check
+    "event subscriptions require explicit event capabilities"
+    (fails?
+     (fn []
+       (instrument/registration
+        {:instrument/id "trace"
+         :session-id "debug-1"
+         :instrument/events #{:call/enter}})))
+    true)
+
+   (test-check
+    "projection requests require explicit inspection capabilities"
+    (fails?
+     (fn []
+       (instrument/registration
+        {:instrument/id "trace"
+         :session-id "debug-1"
+         :instrument/capabilities #{:event/call}
+         :instrument/events #{:call/enter}
+         :instrument/projection
+         {:source-location true}})))
+    true)
+
+   (test-check
+    "targets and events share the portable envelope"
+    (let [registration
+          (instrument/registration
+           {:instrument/id "trace"
+            :session-id "debug-1"
+            :instrument/capabilities #{:event/call}
+            :instrument/events #{:call/enter}})
+          target
+          (instrument/target
+           {:target-id "execution-17"
+            :target-kind :interpreter
+            :runtime :rust
+            :session-id "debug-1"
+            :generation 3
+            :capabilities #{:event/call}})
+          event
+          (instrument/event
+           registration
+           target
+           12
+           :call/enter
+           {:location
+            {:source-id "editor/main"
+             :form/path [0 2]
+             :span {:start 5 :end 14}
+             :function "calculate"}
+            :data {:arguments/count 2}})]
+      [(:schema event)
+       (:protocol event)
+       (:instrument/id event)
+       (:target-id event)
+       (:target-kind event)
+       (:generation event)
+       (:sequence event)
+       (:event event)
+       (get-in event [:location :form/path])
+       (instrument/event? event)])
+    ["hara.instrumentation.event/0-alpha"
+     "hara.instrumentation/0-alpha"
+     "trace"
+     "execution-17"
+     :interpreter
+     3
+     12
+     :call/enter
+     [0 2]
+     true])
+
+   (test-check
+    "interpreter events cannot claim HBC instruction semantics"
+    (let [registration
+          (instrument/registration
+           {:instrument/id "trace"
+            :session-id "debug-1"
+            :instrument/capabilities #{:event/call}
+            :instrument/events #{:call/enter}})
+          target
+          (instrument/target
+           {:target-id "execution-17"
+            :target-kind :interpreter
+            :runtime :rust
+            :session-id "debug-1"
+            :capabilities #{:event/call}})]
+      [(fails?
+        (fn []
+          (instrument/event
+           registration target 1 :call/enter
+           {:location {:ip 7}})))
+       (fails?
+        (fn []
+          (instrument/event
+           registration target 1 :call/enter
+           {:data {:opcode :call}})))])
+    [true true])
+
+   (test-check
+    "HBC instructions cannot claim interpreter semantic forms"
+    (let [registration
+          (instrument/registration
+           {:instrument/id "trace"
+            :session-id "debug-1"
+            :instrument/capabilities #{:event/instruction}
+            :instrument/events #{:instruction/execute}})
+          target
+          (instrument/target
+           {:target-id "execution-17"
+            :target-kind :hbc
+            :runtime :rust
+            :session-id "debug-1"
+            :capabilities #{:event/instruction}})]
+      [(fails?
+        (fn []
+          (instrument/event
+           registration target 1 :instruction/execute
+           {:location {:form/path [0 2]}})))
+       (fails?
+        (fn []
+          (instrument/event
+           registration target 1 :instruction/execute
+           {:data {:semantic/form '(+ 1 2)}})))])
+    [true true])
+
+   (test-check
+    "live and replay traces have distinct provenance"
+    [(instrument/trace-provenance
+      :live
+      {:backend :hbc
+       :provider :rust
+       :target-id "execution-17"})
+     (instrument/trace-provenance
+      :replay
+      {:backend :interpreter})]
+    [{:vm/mode :live
+      :vm/backend :hbc
+      :vm/provider :rust
+      :vm/target-id "execution-17"}
+     {:vm/mode :replay
+      :vm/backend :interpreter}])])
+
+results
