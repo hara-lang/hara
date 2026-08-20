@@ -68,6 +68,9 @@ pub mod vm;
 #[cfg(feature = "bytecode-vm")]
 #[path = "vm/schema_links.rs"]
 pub mod hbc_schema_links;
+#[cfg(feature = "bytecode-vm")]
+#[path = "vm/schema_catalog.rs"]
+pub mod hbc_schema_catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wasmtime_provider;
 #[cfg(feature = "whole-wasm")]
