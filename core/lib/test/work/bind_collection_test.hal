@@ -1,0 +1,77 @@
+(ns work.bind-collection-test
+  (:use code.test)
+  (:require [work.base :as work]))
+
+(fact "runtime-produced each Work resumes by stable item identity"
+  (let [source-count (atom 0)
+        item-counts (atom {})
+        backend (work/memory-backend)
+        workflow
+        (work/bind
+         {:id :bind-each
+          :version 1}
+         (work/step :manifest
+           (fn [input context]
+             (swap! source-count inc)
+             [{:item/id :a :item/value 1}
+              {:item/id :b :item/value 2}]))
+         (work/pure :select-each
+           (fn [manifest context]
+             (work/each
+              {:id :dynamic-each}
+              (work/step
+               :process
+               (fn [value process-context]
+                 (let [item-id (:item/id process-context)
+                       attempt
+                       (get
+                        (swap! item-counts
+                               update
+                               item-id
+                               (fn [count]
+                                 (inc (or count 0))))
+                        item-id)]
+                   (if (and (= item-id :b)
+                            (= attempt 1))
+                     (throw
+                      (ex :host
+                          {:item/id item-id
+                           :attempt attempt}
+                          :ex/message "item interrupted"))
+                     (* value 10)))))))))
+        before (work/durable-runtime {:backend backend})
+        reference
+        (work/start before workflow nil {:id "bind-each"})
+        status-before (work/status before reference)
+        after (work/durable-runtime {:backend backend})
+        registration (work/register after workflow)
+        resumed (work/resume after reference)
+        checkpoints (work/checkpoints after resumed)
+        history (work/history after resumed)
+        replay-count
+        (count
+         (filter
+          (fn [event]
+            (= :work/step-replayed (:event event)))
+          history))]
+    [status-before
+     (work/status after resumed)
+     (work/result after resumed)
+     (deref source-count)
+     (deref item-counts)
+     (vec
+      (map
+       (fn [checkpoint]
+         (:checkpoint/item-id checkpoint))
+       checkpoints))
+     replay-count]
+  => [:failed
+      :completed
+      [{:item/id :a :item/value 10}
+       {:item/id :b :item/value 20}]
+      1
+      {:a 1 :b 2}
+      [nil :a :b]
+      2])
+
+(pr-str (run '[work.bind-collection-test]))
