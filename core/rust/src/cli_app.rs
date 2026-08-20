@@ -35,3 +35,12 @@ pub fn merged_manifest_source() -> &'static str {
         })
         .as_str()
 }
+
+/// Installs the immutable HAL namespace closure required by the native Hara
+/// command router. The launcher applies this catalog after project resources so
+/// an external project cannot replace the CLI that selected it.
+pub fn install_embedded_cli_sources(runtime: &mut crate::Runtime) {
+    for &(namespace, _, source) in crate::EMBEDDED_CLI_RESOURCES {
+        runtime.register_resource(namespace, source);
+    }
+}

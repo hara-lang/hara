@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -60,8 +61,10 @@ fn main() {
     // carry the same inventory beneath the crate-local hal-src.
     let source_roots = source_roots(&manifest);
     let inventory_path = manifest.join("bootstrap.namespaces");
+    let cli_inventory_path = manifest.join("cli-bootstrap.namespaces");
     let hta_path = manifest.join("src/hta.rs");
     println!("cargo:rerun-if-changed={}", inventory_path.display());
+    println!("cargo:rerun-if-changed={}", cli_inventory_path.display());
     println!("cargo:rerun-if-changed={}", hta_path.display());
 
     let inventory = fs::read_to_string(&inventory_path)
@@ -75,8 +78,26 @@ fn main() {
         "{} is empty",
         inventory_path.display()
     );
+    let cli_inventory = fs::read_to_string(&cli_inventory_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", cli_inventory_path.display()))
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert!(
+        !cli_inventory.is_empty(),
+        "{} is empty",
+        cli_inventory_path.display()
+    );
+    let foundation_names = inventory.iter().cloned().collect::<HashSet<_>>();
+    let cli_only_inventory = cli_inventory
+        .iter()
+        .filter(|namespace| !foundation_names.contains(*namespace))
+        .cloned()
+        .collect::<Vec<_>>();
 
-    let resources = inventory
+    let resolve_resources = |namespaces: &[String]| {
+        namespaces
         .iter()
         .map(|namespace| {
             let relative = namespace_path(namespace);
@@ -90,7 +111,7 @@ fn main() {
                 .collect::<Vec<_>>();
             let [(path, embedded)] = matches.as_slice() else {
                 panic!(
-                    "bootstrap namespace {namespace} must resolve to exactly one HAL source, found {}",
+                    "embedded namespace {namespace} must resolve to exactly one HAL source, found {}",
                     matches.len()
                 );
             };
@@ -100,12 +121,15 @@ fn main() {
             let declared = declared_namespace(&source, path);
             assert_eq!(
                 declared, *namespace,
-                "{} does not declare bootstrap namespace {namespace}",
+                "{} does not declare embedded namespace {namespace}",
                 path.display()
             );
             (namespace.clone(), path.clone(), embedded.clone())
         })
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>()
+    };
+    let resources = resolve_resources(&inventory);
+    let cli_resources = resolve_resources(&cli_only_inventory);
 
     // Snapshot and bytecode artifacts use the pure HTA value codec in browser
     // builds too. Native builds keep the ordinary crate-root module; the
@@ -129,10 +153,29 @@ fn main() {
             path = path.to_string_lossy()
         ));
     }
+    generated
+        .push_str("];\n\npub(crate) static EMBEDDED_CLI_RESOURCES: &[(&str, &str, &str)] = &[\n");
+    for (namespace, path, relative) in cli_resources {
+        let path = path
+            .canonicalize()
+            .unwrap_or_else(|error| panic!("cannot resolve {}: {error}", path.display()));
+        let relative = relative.to_string_lossy().replace('\\', "/");
+        generated.push_str(&format!(
+            "    ({namespace:?}, {relative:?}, include_str!({path:?})),\n",
+            namespace = namespace,
+            relative = relative,
+            path = path.to_string_lossy()
+        ));
+    }
     generated.push_str("];\n");
     generated
         .push_str("#[cfg(test)]\npub(crate) static FOUNDATION_BOOTSTRAP_INVENTORY: &[&str] = &[\n");
-    for namespace in inventory {
+    for namespace in &inventory {
+        generated.push_str(&format!("    {namespace:?},\n"));
+    }
+    generated.push_str("];\n");
+    generated.push_str("#[cfg(test)]\npub(crate) static CLI_BOOTSTRAP_INVENTORY: &[&str] = &[\n");
+    for namespace in &cli_inventory {
         generated.push_str(&format!("    {namespace:?},\n"));
     }
     generated.push_str("];\n");
