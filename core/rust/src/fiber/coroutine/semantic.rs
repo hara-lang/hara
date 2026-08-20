@@ -84,6 +84,7 @@ struct EvalObservationContext {
     calls: Vec<EvalPendingCall>,
     capture_events: bool,
     capture_environment: bool,
+    capture_call_returns: bool,
     environment_clones: u64,
 }
 
@@ -112,6 +113,7 @@ pub(super) fn register_context(
         calls: Vec::new(),
         capture_events,
         capture_environment,
+        capture_call_returns: false,
         environment_clones: 0,
     }));
     OBSERVED_CONTEXTS.with(|contexts| {
@@ -130,6 +132,10 @@ pub(super) fn configure_capture(
         let mut context = context.borrow_mut();
         context.capture_events = capture_events;
         context.capture_environment = capture_environment;
+        // Only shared-instrumentation targets call this configuration seam.
+        // Legacy observed fibers retain their historical boundary vocabulary,
+        // while instrumented fibers can pair real call-enter/call-return events.
+        context.capture_call_returns = capture_events;
         if !capture_events {
             context.current = None;
             context.pending.clear();
@@ -313,10 +319,13 @@ pub(in crate::core::fiber) fn record_call(
     }
     let name = name.into();
     if let Some(context) = active_context() {
-        context.borrow_mut().calls.push(EvalPendingCall {
-            form: form.clone(),
-            name: name.clone(),
-        });
+        let mut context = context.borrow_mut();
+        if context.capture_call_returns {
+            context.calls.push(EvalPendingCall {
+                form: form.clone(),
+                name: name.clone(),
+            });
+        }
     }
     enqueue(
         EvalSemanticRule::CallEnter,
