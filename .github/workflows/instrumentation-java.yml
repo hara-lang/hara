@@ -1,0 +1,121 @@
+name: Java instrumentation contracts validation
+
+on:
+  pull_request:
+    branches:
+      - main
+      - testing
+      - 'instrumentation-*'
+    paths:
+      - 'core/java/src/main/java/hara/truffle/InstrumentationException.java'
+      - 'core/java/src/main/java/hara/truffle/InstrumentationHub.java'
+      - 'core/java/src/main/java/hara/truffle/InstrumentationModel.java'
+      - 'core/java/src/main/java/hara/truffle/NativeInstrumentation.java'
+      - 'core/java/src/main/java/hara/truffle/SessionKernel.java'
+      - 'core/java/src/test/java/hara/truffle/InstrumentationHubTest.java'
+      - 'core/java/src/test/java/hara/truffle/InstrumentationModelTest.java'
+      - 'core/java/src/test/java/hara/truffle/SessionInstrumentationTest.java'
+      - 'core/java/src/test/java/hara/truffle/SessionKernelTest.java'
+      - '.github/workflows/instrumentation-java.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/java/src/main/java/hara/truffle/InstrumentationException.java'
+      - 'core/java/src/main/java/hara/truffle/InstrumentationHub.java'
+      - 'core/java/src/main/java/hara/truffle/InstrumentationModel.java'
+      - 'core/java/src/main/java/hara/truffle/NativeInstrumentation.java'
+      - 'core/java/src/main/java/hara/truffle/SessionKernel.java'
+      - 'core/java/src/test/java/hara/truffle/InstrumentationHubTest.java'
+      - 'core/java/src/test/java/hara/truffle/InstrumentationModelTest.java'
+      - 'core/java/src/test/java/hara/truffle/SessionInstrumentationTest.java'
+      - 'core/java/src/test/java/hara/truffle/SessionKernelTest.java'
+      - '.github/workflows/instrumentation-java.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: java-instrumentation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Test Java instrumentation contracts and lifecycle
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -Dtest=InstrumentationModelTest,InstrumentationHubTest,SessionInstrumentationTest
+          test
+
+      - name: Preserve ordinary SessionKernel behavior
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -Dtest=SessionKernelTest
+          test
+
+      - name: Reject execution binding and guest authority in tranche 5A
+        run: |
+          production=(
+            core/java/src/main/java/hara/truffle/InstrumentationException.java
+            core/java/src/main/java/hara/truffle/InstrumentationHub.java
+            core/java/src/main/java/hara/truffle/InstrumentationModel.java
+            core/java/src/main/java/hara/truffle/NativeInstrumentation.java
+          )
+          if grep -nE \
+            'com\.oracle\.truffle\.api\.instrumentation|ExecutionEvent(Node|Listener)|EventBinding|SourceSectionFilter|HbcMachine' \
+            "${production[@]}"; then
+            echo 'Java instrumentation contracts must not bind execution in tranche 5A' >&2
+            exit 1
+          fi
+          if grep -R -nE \
+            'Instrumentation/current|std\.native\.Instrumentation|instrumentationCurrent[[:space:]]*\(' \
+            core/java/src/main/java/hara/truffle; then
+            echo 'Java instrumentation must not expose ambient guest authority' >&2
+            exit 1
+          fi
+          if grep -nE \
+            'implements[[:space:]]+Serializable|Object(Output|Input)Stream|com\.fasterxml|gson' \
+            "${production[@]}"; then
+            echo 'Native instrumentation authority must remain outside portable serialization' >&2
+            exit 1
+          fi
+          if grep -nE 'NativeInstrumentation|InstrumentationHub' \
+            core/java/src/main/java/hara/truffle/Sandbox*.java \
+            core/java/src/main/java/hara/truffle/InProcessSandboxProvider.java; then
+            echo 'Sandbox providers must not acquire trusted instrumentation authority' >&2
+            exit 1
+          fi
+
+      - name: Enforce bounded Java instrumentation modules
+        run: |
+          test "$(wc -l < core/java/src/main/java/hara/truffle/InstrumentationException.java)" -lt 100
+          test "$(wc -l < core/java/src/main/java/hara/truffle/InstrumentationModel.java)" -lt 500
+          test "$(wc -l < core/java/src/main/java/hara/truffle/InstrumentationHub.java)" -lt 650
+          test "$(wc -l < core/java/src/main/java/hara/truffle/NativeInstrumentation.java)" -lt 300
+          test "$(wc -l < core/java/src/test/java/hara/truffle/InstrumentationModelTest.java)" -lt 180
+          test "$(wc -l < core/java/src/test/java/hara/truffle/InstrumentationHubTest.java)" -lt 350
+          test "$(wc -l < core/java/src/test/java/hara/truffle/SessionInstrumentationTest.java)" -lt 250
+
+      - name: Check patch whitespace
+        run: git diff --check
