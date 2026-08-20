@@ -9,4 +9,9 @@ encoded = "".join(
     for index in range(6)
 )
 source = gzip.decompress(base64.b64decode(encoded)).decode()
+old = '"\\nfn native_test_events("'
+new = '"\\nfn os_operation("'
+if source.count(old) != 1:
+    raise SystemExit(f"unexpected core/native.rs transform seam count: {source.count(old)}")
+source = source.replace(old, new, 1)
 exec(compile(source, "apply-849.materialized.py", "exec"))
