@@ -1,0 +1,112 @@
+name: Wire Rust HBC schema catalog
+
+on:
+  push:
+    branches:
+      - agent/868-schema-catalog-identity
+    paths:
+      - .github/workflows/agent-868-wire-rust-hbc-catalog.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/868-schema-catalog-identity
+          fetch-depth: 0
+      - name: Wire optional schema catalog section into HBC
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/rust/src/vm/artifact.rs")
+          text = path.read_text()
+
+          def replace_once(before: str, after: str):
+              global text
+              count = text.count(before)
+              if count != 1:
+                  raise SystemExit(f"expected one match, found {count}: {before[:100]!r}")
+              text = text.replace(before, after, 1)
+
+          replace_once(
+              'const MAGIC: &[u8; 4] = b"HBC0";\n',
+              'const MAGIC: &[u8; 4] = b"HBC0";\n\n'
+              '#[path = "artifact/catalog.rs"]\n'
+              'mod catalog;\n'
+              'pub use catalog::{DecodedArtifact, SchemaCatalogEntry, SchemaCoordinate};\n')
+
+          replace_once(
+              '''pub fn encode_program(program: &Program) -> Result<Vec<u8>, String> {
+              super::validate::validate(program).map_err(|error| error.to_string())?;''',
+              '''pub fn encode_program(program: &Program) -> Result<Vec<u8>, String> {
+              encode_program_with_catalog(program, &[])
+          }
+
+          /// Encodes a program with an optional exact-coordinate schema catalog.
+          /// Empty catalogs preserve the legacy HBC payload byte for byte.
+          pub fn encode_program_with_catalog(
+              program: &Program,
+              schema_catalog: &[SchemaCatalogEntry],
+          ) -> Result<Vec<u8>, String> {
+              super::validate::validate(program).map_err(|error| error.to_string())?''')
+
+          replace_once(
+              '''    for function in &program.functions {
+                  write_function(&mut payload, function)?;
+              }
+              let digest = Sha256::digest(&payload.bytes);''',
+              '''    for function in &program.functions {
+                  write_function(&mut payload, function)?;
+              }
+              catalog::write_section(&mut payload, schema_catalog)?;
+              let digest = Sha256::digest(&payload.bytes);''')
+
+          replace_once(
+              '''pub fn decode_program(bytes: &[u8]) -> Result<Program, String> {
+              if !bytes.starts_with(MAGIC) {''',
+              '''pub fn decode_program(bytes: &[u8]) -> Result<Program, String> {
+              Ok(decode_program_with_catalog(bytes)?.program)
+          }
+
+          /// Decodes a program and its optional exact-coordinate schema catalog.
+          pub fn decode_program_with_catalog(bytes: &[u8]) -> Result<DecodedArtifact, String> {
+              if !bytes.starts_with(MAGIC) {''')
+
+          replace_once(
+              '''    let inferred_function_types = read_schema_map(&mut reader)?;
+              let functions = reader.many(|reader| read_function(reader, 5))?;
+              reader.finish()?;
+              let program = Program {''',
+              '''    let inferred_function_types = read_schema_map(&mut reader)?;
+              let functions = reader.many(|reader| read_function(reader, 5))?;
+              let schema_catalog = catalog::read_section(&mut reader)?;
+              reader.finish()?;
+              let program = Program {''')
+
+          replace_once(
+              '''    super::validate::validate(&program).map_err(|error| error.to_string())?;
+              Ok(program)
+          }''',
+              '''    super::validate::validate(&program).map_err(|error| error.to_string())?;
+              Ok(DecodedArtifact {
+                  program,
+                  schema_catalog,
+              })
+          }''')
+
+          path.write_text(text)
+          Path(".github/workflows/agent-868-wire-rust-hbc-catalog.yml").unlink()
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- \
+            core/rust/src/vm/artifact.rs \
+            .github/workflows/agent-868-wire-rust-hbc-catalog.yml
+          git diff --cached --check
+          git commit -m "Wire exact schema catalogs into Rust HBC"
+          git push origin HEAD:agent/868-schema-catalog-identity
