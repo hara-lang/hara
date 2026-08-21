@@ -1,0 +1,181 @@
+(ns lang.common.provenance-test
+  (:use code.test)
+  (:require [lang.common.provenance :as provenance]))
+
+(def legacy-phase (keyword "tahto/phase"))
+(def legacy-module (keyword "tahto/module"))
+(def legacy-namespace (keyword "tahto/namespace"))
+(def legacy-entry (keyword "tahto/entry"))
+(def legacy-form (keyword "tahto/form"))
+(def legacy-hook (keyword "tahto/hook"))
+(def legacy-provenance (keyword "tahto/provenance"))
+(def legacy-source (keyword "tahto/source"))
+(def legacy-provenance-stack (keyword "tahto/provenance-stack"))
+
+^{:refer lang.common.provenance/module-id}
+(fact "gets module ids from descriptors and values"
+  [(provenance/module-id {:id 'demo})
+   (provenance/module-id 'demo)]
+  => ['demo 'demo])
+
+^{:refer lang.common.provenance/namespace-id}
+(fact "normalizes loaded and unresolved namespace symbols"
+  [(provenance/namespace-id 'lang.common.provenance-test)
+   (provenance/namespace-id 'demo.missing)]
+  => ['lang.common.provenance-test 'demo.missing])
+
+^{:refer lang.common.provenance/line-of}
+(fact "finds line coordinates through maps and metadata"
+  [(provenance/line-of nil)
+   (provenance/line-of {:line 4})
+   (provenance/line-of {:entry {:line 5}})
+   (provenance/line-of {:form {:line 6}})
+   (provenance/line-of (with-meta {} {:line 7}))
+   (provenance/line-of (with-meta 'value {:line 8}))]
+  => [nil 4 5 6 7 8])
+
+^{:refer lang.common.provenance/compact}
+(fact "removes nil metadata while retaining false values"
+  (provenance/compact {:keep 1 :drop nil :false false})
+  => {:keep 1 :false false})
+
+^{:refer lang.common.provenance/frame}
+(fact "canonicalizes and combines provenance frame fields"
+  (let [form (with-meta '(quote value) {:line 9})
+        input (assoc
+               (assoc
+                (assoc
+                 (assoc
+                  (assoc
+                   (assoc
+                    (assoc
+                     (assoc {} legacy-phase :parse)
+                     :lang/subsystem :reader)
+                    legacy-module {:id 'reader})
+                   legacy-namespace 'lang.common.reader)
+                  legacy-entry {:line 42})
+                 legacy-hook 'expand)
+                legacy-form form)
+               legacy-provenance
+               (assoc (assoc {} legacy-source "reader.hal")
+                      (keyword "tahto/line") 40))]
+    (provenance/frame input))
+  => {:lang/phase :parse
+      :lang/subsystem :reader
+      :lang/module 'reader
+      :lang/namespace 'lang.common.reader
+      :lang/entry {:line 42}
+      :lang/line 40
+      :lang/form (with-meta '(quote value) {:line 9})
+      :lang/hook 'expand
+      :lang/source "reader.hal"})
+
+^{:refer lang.common.provenance/provenance}
+(fact "merges non-empty canonical provenance frames"
+  (provenance/provenance
+   nil
+   {:lang/phase :parse :lang/line 10}
+   (assoc {} legacy-source "reader.hal")
+   {})
+  => {:lang/phase :parse
+      :lang/line 10
+      :lang/source "reader.hal"})
+
+^{:refer lang.common.provenance/provenance-stack}
+(fact "hydrates stacks, filters empty frames, and falls back to one frame"
+  (let [legacy-stack [{:lang/phase :parse :lang/line 10} {}]
+        with-stack (assoc {} legacy-provenance-stack legacy-stack)]
+    [(provenance/provenance-stack with-stack)
+     (provenance/provenance-stack {:lang/phase :emit :lang/line 20})
+     (provenance/provenance-stack nil)])
+  => [[{:lang/phase :parse :lang/line 10}]
+      [{:lang/phase :emit :lang/line 20}]
+      []])
+
+^{:refer lang.common.provenance/same-site?}
+(fact "compares only the stable site coordinates"
+  [(provenance/same-site?
+    {:lang/phase :parse :lang/line 10 :lang/source "one"}
+    {:lang/phase :parse :lang/line 10 :lang/source "two"})
+   (provenance/same-site?
+    {:lang/phase :parse :lang/line 10}
+    {:lang/phase :parse :lang/line 11})]
+  => [true false])
+
+^{:refer lang.common.provenance/append-frame}
+(fact "appends new sites and suppresses adjacent duplicates"
+  (let [first {:lang/phase :parse :lang/line 10}
+        second {:lang/phase :emit :lang/line 20}]
+    [(provenance/append-frame [] first)
+     (provenance/append-frame [first] first)
+     (provenance/append-frame [first] second)
+     (provenance/append-frame [first] {})])
+  => [[{:lang/phase :parse :lang/line 10}]
+      [{:lang/phase :parse :lang/line 10}]
+      [{:lang/phase :parse :lang/line 10}
+       {:lang/phase :emit :lang/line 20}]
+      [{:lang/phase :parse :lang/line 10}]])
+
+^{:refer lang.common.provenance/with-provenance}
+(fact "threads existing and new provenance into options"
+  (let [options (assoc {:enabled true}
+                       legacy-provenance
+                       {:lang/phase :outer :lang/line 1})
+        output (provenance/with-provenance
+                options
+                {:lang/phase :inner :lang/line 2})]
+    [(has? output legacy-provenance)
+     (:lang/provenance output)])
+  => [false {:lang/phase :inner :lang/line 2}])
+
+^{:refer lang.common.provenance/error-with-provenance}
+(fact "wraps causes with canonical provenance and preserves cause data"
+  (let [cause (ex :state {:probe true} :ex/message "inner")
+        error (provenance/error-with-provenance
+               "outer"
+               {:lang/phase :emit :lang/line 20 :value 1}
+               cause)
+        data (ex-data error)]
+    [(ex-message error)
+     (:lang/wrapped data)
+     (:lang/phase data)
+     (:lang/line data)
+     (:value data)
+     (= (:lang/cause-data data) (ex-data cause))
+     (:lang/cause-class data)
+     (:lang/cause-message data)
+     (:lang/provenance-stack data)
+     (has? data :ex/code)
+     (has? data :ex/class)
+     (has? data :ex/message)
+     (has? data :ex/cause)]
+    => ["outer: inner"
+        true
+        :emit
+        20
+        1
+        true
+        (ex-class cause)
+        "inner"
+        [{:lang/phase :emit :lang/line 20}]
+        false
+        false
+        false
+        false]))
+
+^{:refer lang.common.provenance/throw-with-provenance}
+(fact "throws the wrapped provenance error"
+  (try
+    (provenance/throw-with-provenance
+     "outer"
+     {:lang/phase :emit :lang/line 20}
+     (ex :state {} :ex/message "inner"))
+    nil
+    (catch Throwable error
+      [(ex-message error)
+       (:lang/wrapped (ex-data error))
+       (:lang/phase (ex-data error))
+       (:lang/line (ex-data error))]))
+  => ["outer: inner" true :emit 20])
+
+(run {:namespace "lang.common.provenance-test"})
