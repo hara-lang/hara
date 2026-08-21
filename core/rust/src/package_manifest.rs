@@ -11,8 +11,10 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
+mod archive;
 mod parse;
 #[cfg(test)]
 mod tests;
@@ -130,6 +132,14 @@ pub enum PackageSelection {
     Variant(PackageVariant),
 }
 
+/// A package archive whose complete declared file set has been digest-checked
+/// before exact-runtime preflight.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VerifiedPackageSelection {
+    pub manifest: PackageManifest,
+    pub selection: PackageSelection,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackageManifest {
     pub format: String,
@@ -150,6 +160,29 @@ impl PackageManifest {
             )
         })?;
         Self::parse(&source)
+    }
+
+    /// Opens a `.harp`, parses its data-only `package.edn`, rejects unsafe,
+    /// duplicate, or undeclared entries, and verifies every declared file
+    /// digest before returning the manifest.
+    pub fn read_archive(path: &Path) -> Result<Self, PackageManifestError> {
+        archive::read_archive(path)
+    }
+
+    /// Verifies the complete archive and then resolves only the requested
+    /// runtime. A loader must consume the installed content-addressed root or
+    /// reverify any artifact bytes it reads after this preflight.
+    pub fn select_archive(
+        path: &Path,
+        runtime: PackageRuntime,
+        requirements: &PackageRuntimeRequirements,
+    ) -> Result<VerifiedPackageSelection, PackageManifestError> {
+        let manifest = Self::read_archive(path)?;
+        let selection = manifest.select_variant(runtime, requirements)?;
+        Ok(VerifiedPackageSelection {
+            manifest,
+            selection,
+        })
     }
 
     pub fn parse(source: &str) -> Result<Self, PackageManifestError> {
@@ -234,16 +267,31 @@ impl PackageManifest {
                 "portable package selection has no runtime artifact",
             ));
         };
-        let file = self.files.get(&variant.artifact.path).ok_or_else(|| {
+        self.verify_file_bytes(&variant.artifact.path, bytes)
+    }
+
+    /// Verifies one declared archive-relative file without requiring the caller
+    /// to retain the full payload in memory.
+    pub fn verify_file_reader<R: Read>(
+        &self,
+        relative: &Path,
+        reader: &mut R,
+    ) -> Result<(), PackageManifestError> {
+        let expected = self.files.get(relative).ok_or_else(|| {
             PackageManifestError::new(
                 "package/missing-artifact",
-                format!(
-                    "selected artifact is not declared in :files: {}",
-                    variant.artifact.path.display()
-                ),
+                format!("file is not declared in :files: {}", relative.display()),
             )
         })?;
-        verify_bytes(&variant.artifact.path, file, bytes)
+        verify_reader(relative, expected, reader)
+    }
+
+    pub fn verify_file_bytes(
+        &self,
+        relative: &Path,
+        bytes: &[u8],
+    ) -> Result<(), PackageManifestError> {
+        self.verify_file_reader(relative, &mut std::io::Cursor::new(bytes))
     }
 
     pub fn verify_files_at(&self, root: &Path) -> Result<(), PackageManifestError> {
@@ -275,35 +323,68 @@ impl PackageManifest {
                     ),
                 ));
             }
-            let bytes = fs::read(&path).map_err(|error| {
+            let mut file = fs::File::open(&path).map_err(|error| {
                 PackageManifestError::new(
                     "package/missing-artifact",
                     format!("cannot read {}: {error}", relative.display()),
                 )
             })?;
-            verify_bytes(relative, expected, &bytes)?;
+            verify_reader(relative, expected, &mut file)?;
         }
         Ok(())
     }
+
+    /// Verifies an extracted package root and performs exact-runtime preflight.
+    /// This is the handoff used by runtime loaders after installation.
+    pub fn verify_selection_at(
+        &self,
+        root: &Path,
+        runtime: PackageRuntime,
+        requirements: &PackageRuntimeRequirements,
+    ) -> Result<PackageSelection, PackageManifestError> {
+        self.verify_files_at(root)?;
+        self.select_variant(runtime, requirements)
+    }
 }
 
-fn verify_bytes(
+fn verify_reader<R: Read>(
     relative: &Path,
     expected: &PackageFile,
-    bytes: &[u8],
+    reader: &mut R,
 ) -> Result<(), PackageManifestError> {
-    if bytes.len() as u64 != expected.size {
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer).map_err(|error| {
+            PackageManifestError::new(
+                "package/missing-artifact",
+                format!("cannot read {}: {error}", relative.display()),
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        size = size.checked_add(read as u64).ok_or_else(|| {
+            PackageManifestError::new(
+                "package/size-mismatch",
+                format!("{} is too large to verify", relative.display()),
+            )
+        })?;
+        hasher.update(&buffer[..read]);
+    }
+    if size != expected.size {
         return Err(PackageManifestError::new(
             "package/size-mismatch",
             format!(
                 "{} has {} bytes, expected {}",
                 relative.display(),
-                bytes.len(),
+                size,
                 expected.size
             ),
         ));
     }
-    let actual = sha256(bytes);
+    let actual = digest_string(&hasher.finalize());
     if actual != expected.sha256 {
         return Err(PackageManifestError::new(
             "package/digest-mismatch",
@@ -318,9 +399,8 @@ fn verify_bytes(
     Ok(())
 }
 
-fn sha256(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let hexadecimal = digest
+fn digest_string(bytes: &[u8]) -> String {
+    let hexadecimal = bytes
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();

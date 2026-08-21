@@ -1,11 +1,12 @@
 use crate::kernel::{parse_forms, Form};
+use crate::package_manifest::PackageManifest;
 use crate::project::Project;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{CompressionMethod, ZipWriter};
 
 pub(super) fn build_archive(project: &Project, output: &Path) -> Result<(), String> {
     let mut entries = Vec::new();
@@ -17,7 +18,7 @@ pub(super) fn build_archive(project: &Project, output: &Path) -> Result<(), Stri
         let base = project.root.join(artifact_path);
         collect_files(&base, &project.root, true, true, &mut entries)?;
     }
-    // A release archive must be self-describing.  These entries intentionally
+    // A release archive must be self-describing. These entries intentionally
     // stay at its root even when :project/archive-root relocates artifacts.
     entries.push(PathBuf::from("project.edn"));
     if let Some(recipe) = &project.recipe {
@@ -114,7 +115,11 @@ pub(super) fn build_archive(project: &Project, output: &Path) -> Result<(), Stri
         contents.push((PathBuf::from("bytecode/package.hbx"), bundle));
         contents.sort_by(|left, right| left.0.cmp(&right.0));
     }
-    let package_edn = package_manifest(project, &contents)?;
+    let generated_manifest = package_manifest(project, &contents)?;
+    let package_edn = PackageManifest::parse(&generated_manifest)
+        .map_err(|error| error.to_string())?
+        .canonical_edn()
+        .to_owned();
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)
             .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
@@ -142,15 +147,9 @@ pub(super) fn build_archive(project: &Project, output: &Path) -> Result<(), Stri
 }
 
 pub(super) fn inspect_archive(path: &Path) -> Result<String, String> {
-    let file =
-        File::open(path).map_err(|error| format!("cannot open {}: {error}", path.display()))?;
-    let mut archive = ZipArchive::new(file).map_err(zip_error)?;
-    let mut manifest = archive
-        .by_name("package.edn")
-        .map_err(|_| "archive is missing package.edn".to_owned())?;
-    let mut text = String::new();
-    manifest.read_to_string(&mut text).map_err(io_error)?;
-    Ok(text)
+    PackageManifest::read_archive(path)
+        .map(|manifest| manifest.canonical_edn().to_owned())
+        .map_err(|error| error.to_string())
 }
 
 pub(super) fn package_manifest(
@@ -213,9 +212,10 @@ pub(super) fn package_manifest(
             )
         })
         .unwrap_or_default();
+    let identity = crate::project::normalize_coordinate(&project.id)?;
     Ok(format!(
         "{{:harp/format \"0.0.0-alpha\"\n :package {{:identity {} :version {}}}\n :files {{\n{}}} :resources {{\n{}}} :extensions {}{}\n :integrity {{:tree-sha256 \"sha256:{}\"}}}}\n",
-        edn_string(&project.id),
+        edn_string(&identity),
         edn_string(&project.version.to_string()),
         files,
         resources,
