@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: wasm-binding-${{ github.event.pull_request.number || github.ref }}
@@ -41,6 +41,9 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
 
       - name: Check out hara-specs-registry
         uses: actions/checkout@v4
@@ -58,9 +61,9 @@ jobs:
           components: rustfmt
           targets: wasm32-unknown-unknown
 
-      - name: Check touched Rust formatting
+      - name: Format touched Rust
         run: |
-          rustfmt --edition 2021 --check \
+          rustfmt --edition 2021 \
             core/rust/src/direct_wasm.rs \
             core/rust/src/extension.rs \
             core/rust/src/wasmtime_provider.rs \
@@ -72,6 +75,17 @@ jobs:
             core/rust/src/wasm_binding/parser.rs \
             core/rust/src/wasm_binding/syntax.rs \
             core/rust/src/wasm_binding/tests.rs
+
+      - name: Commit exact rustfmt output
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        run: |
+          if ! git diff --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add core/rust/src/direct_wasm.rs core/rust/src/extension.rs core/rust/src/wasmtime_provider.rs core/rust/src/wasm_binding.rs core/rust/src/wasm_binding
+            git commit -m "Format direct Wasm bindgen"
+            git push origin HEAD:${{ github.head_ref }}
+          fi
 
       - name: Enforce bounded binding modules
         run: |
