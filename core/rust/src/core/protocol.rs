@@ -2105,6 +2105,7 @@ fn named_predicate_protocol(name: &str) -> Option<&'static str> {
         "watchable?" => Some("IWatch"),
         "fn?" => Some("IFn"),
         "applicable?" => Some("IApplicable"),
+        "pair?" => Some("IPair"),
         "mutable?" => Some("IMutable"),
         "persistent?" => Some("IPersistent"),
         _ => None,

@@ -193,6 +193,7 @@ pub(crate) const BYTECODE_PROTOCOL_PREDICATES: &[&str] = &[
     "watchable?",
     "fn?",
     "applicable?",
+    "pair?",
     "mutable?",
     "persistent?",
 ];

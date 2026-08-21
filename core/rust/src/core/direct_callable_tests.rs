@@ -138,6 +138,24 @@ fn specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_l
 }
 
 #[test]
+fn unqualified_native_type_methods_are_bytecode_callables() {
+    assert!(bytecode_callable_value("double").is_ok());
+    assert!(bytecode_callable_value("parse-double").is_ok());
+    assert!(bytecode_callable_value("long").is_ok());
+}
+
+#[test]
+fn protocol_predicate_names_resolve_in_the_bytecode_path() {
+    assert!(bytecode_callable_value("pair?").is_ok());
+    let callable = bytecode_callable_value("pair?").unwrap();
+    let pair = PTuple::from_values(vec![Value::Number(1), Value::Number(2)]).unwrap();
+    assert_eq!(
+        call_value(callable, vec![Value::Tuple(Box::new(pair))]).unwrap(),
+        Value::Bool(true)
+    );
+}
+
+#[test]
 fn every_native_inventory_entry_builds_a_direct_value() {
     for (native_type, methods) in NATIVE_TYPES {
         for method in *methods {

@@ -427,6 +427,14 @@ pub(crate) fn bytecode_callable_value(name: &str) -> Result<Value, String> {
             invoke_direct_callable(&specification, arguments)
         }));
     }
+    if let Some((native_type, method)) = NATIVE_TYPES.iter().find_map(|(native_type, methods)| {
+        methods
+            .iter()
+            .find(|&&method| method == name)
+            .map(|method| (*native_type, *method))
+    }) {
+        return native_type_function_value(native_type, method);
+    }
     if let Some((namespace, method)) = name.rsplit_once('/') {
         if let Some(native_type) = namespace.strip_prefix("std.native.") {
             return native_type_function_value(native_type, method);
