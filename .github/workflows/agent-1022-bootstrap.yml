@@ -24,6 +24,32 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Checkout hara-benchmarks
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+
+      - name: Expose benchmark corpus at the differential fixture path
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn \
+            "$GITHUB_WORKSPACE/hara-benchmarks" \
+            "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -174,8 +200,11 @@ jobs:
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git reset .github/workflows/agent-1022-bootstrap.yml
+          mapfile -t staged_paths < <(git diff --name-only)
+          if ((${#staged_paths[@]})); then
+            git add -- "${staged_paths[@]}"
+          fi
+          git reset -- .github/workflows/agent-1022-bootstrap.yml
           if git diff --cached --quiet; then
             exit 0
           fi
