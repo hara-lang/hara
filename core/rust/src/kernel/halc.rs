@@ -16,7 +16,6 @@ const TRUE: u8 = 2;
 const LONG: u8 = 3;
 const DOUBLE: u8 = 4;
 const BIG_INTEGER: u8 = 5;
-const BIG_DECIMAL: u8 = 6;
 const STRING: u8 = 7;
 const CHARACTER: u8 = 8;
 const SYMBOL: u8 = 9;
@@ -231,7 +230,6 @@ impl<'a> ByteReader<'a> {
             LONG => Ok(Form::Number(self.read_i64()?)),
             DOUBLE => Ok(Form::Float(self.read_f64()?)),
             BIG_INTEGER => Ok(Form::BigInteger(self.read_string()?)),
-            BIG_DECIMAL => Ok(Form::Decimal(self.read_string()?)),
             STRING => Ok(Form::String(self.read_string()?)),
             CHARACTER => Ok(Form::Character(
                 char::from_u32(self.read_u32()?).ok_or("invalid character code point")?,
@@ -371,10 +369,6 @@ fn write_value_with_metadata(output: &mut Vec<u8>, form: &Form, metadata: Option
         }
         Form::BigInteger(s) => {
             output.push(BIG_INTEGER);
-            write_string(output, s);
-        }
-        Form::Decimal(s) => {
-            output.push(BIG_DECIMAL);
             write_string(output, s);
         }
         Form::String(s) => {

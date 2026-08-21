@@ -16,7 +16,6 @@ import hara.lang.base.G;
 import hara.lang.data.Keyword;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -625,9 +624,6 @@ public final class Main {
     } else if (expected instanceof BigInteger) {
       if (!actual.as(BigInteger.class).equals(expected))
         throw new IllegalStateException(id + " bigint mismatch");
-    } else if (expected instanceof BigDecimal) {
-      if (!actual.as(BigDecimal.class).equals(expected))
-        throw new IllegalStateException(id + " bigdec mismatch");
     } else if (expected instanceof Keyword) {
       if (!actual.toString().equals(G.display(expected)))
         throw new IllegalStateException(id + " keyword mismatch");

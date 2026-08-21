@@ -5,7 +5,6 @@ fn metadata_value(form: &Form) -> Result<MetadataValue, String> {
         Form::Number(value) => Ok(MetadataValue::Number(*value)),
         Form::Float(value) => Ok(MetadataValue::Float(*value)),
         Form::BigInteger(value) => Ok(MetadataValue::BigInteger(value.clone())),
-        Form::Decimal(value) => Ok(MetadataValue::Decimal(value.clone())),
         Form::Character(value) => Ok(MetadataValue::Character(*value)),
         Form::Regex(value) => Ok(MetadataValue::Regex(value.clone())),
         Form::Tagged(tag, value) => Ok(MetadataValue::Tagged(
@@ -407,7 +406,6 @@ fn literal_value(form: &Form) -> Result<Value, String> {
         Form::Character(value) => Ok(Value::Character(*value)),
         Form::Float(value) => Ok(Value::Float(*value)),
         Form::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
-        Form::Decimal(value) => Ok(Value::Decimal(value.clone())),
         Form::Regex(value) => Ok(Value::Regex(value.clone())),
         Form::Tagged(tag, value) if tag == "ptr" => pointer_from_descriptor(literal_value(value)?),
         Form::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(
@@ -555,7 +553,6 @@ fn collect_capture_names(form: &Form, names: &mut std::collections::HashSet<Stri
         | Form::Number(_)
         | Form::Float(_)
         | Form::BigInteger(_)
-        | Form::Decimal(_)
         | Form::Character(_)
         | Form::Regex(_)
         | Form::String(_)

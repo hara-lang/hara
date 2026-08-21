@@ -13,7 +13,6 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -47,8 +46,7 @@ final class HalcArtifact {
   private static final int LONG = 3;
   private static final int DOUBLE = 4;
   private static final int BIG_INTEGER = 5;
-  private static final int BIG_DECIMAL = 6;
-  private static final int STRING = 7;
+  private static final int STRING = 6;
   private static final int CHARACTER = 8;
   private static final int SYMBOL = 9;
   private static final int KEYWORD = 10;
@@ -460,9 +458,6 @@ final class HalcArtifact {
     } else if (value instanceof BigInteger number) {
       output.writeByte(BIG_INTEGER);
       writeString(output, number.toString());
-    } else if (value instanceof BigDecimal number) {
-      output.writeByte(BIG_DECIMAL);
-      writeString(output, number.toString());
     } else if (value instanceof String string) {
       output.writeByte(STRING);
       writeString(output, string);
@@ -520,14 +515,14 @@ final class HalcArtifact {
   }
 
   private static Object readValue(DataInputStream input) throws IOException {
-    return switch (input.readUnsignedByte()) {
+    int opcode = input.readUnsignedByte();
+    return switch (opcode) {
       case NIL -> null;
       case FALSE -> Boolean.FALSE;
       case TRUE -> Boolean.TRUE;
       case LONG -> input.readLong();
       case DOUBLE -> input.readDouble();
       case BIG_INTEGER -> new BigInteger(readString(input));
-      case BIG_DECIMAL -> new BigDecimal(readString(input));
       case STRING -> readString(input);
       case CHARACTER -> (char) input.readInt();
       case SYMBOL ->

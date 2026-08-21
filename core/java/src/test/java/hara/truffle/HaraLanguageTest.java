@@ -112,7 +112,7 @@ public class HaraLanguageTest {
               .asDouble(),
           0.0);
       assertEquals(
-          "{:value [1 2.5]}",
+          "{:value [1 (double 2.5)]}",
           context
               .eval(HaraLanguage.ID, "(pr-str (read-string \"{:value [1 2.5]}\"))")
               .asString());
@@ -694,8 +694,8 @@ public class HaraLanguageTest {
       assertEquals(1, context.eval(HaraLanguage.ID, "(long 1.0)").asLong());
       assertEquals(-1, context.eval(HaraLanguage.ID, "(long -1.0)").asLong());
       assertEquals(2.0, context.eval(HaraLanguage.ID, "(double 2)").asDouble(), 0.0);
-      assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long 1.9)"));
-      assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long -1.9)"));
+      assertEquals(1, context.eval(HaraLanguage.ID, "(long 1.9)").asLong());
+      assertEquals(-1, context.eval(HaraLanguage.ID, "(long -1.9)").asLong());
       assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long ##NaN)"));
       assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "(long \"1\")"));
       assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "1N"));
@@ -969,8 +969,8 @@ public class HaraLanguageTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(try (throw 41) "
-                      + "(catch Exception error (+ error 1)) "
+                  "(try (throw (ex :test/value {:value 41})) "
+                      + "(catch Exception error (+ (:value (ex-data error)) 1)) "
                       + "(finally (def cleaned true)))")
               .asLong());
       assertTrue(context.eval(HaraLanguage.ID, "cleaned").asBoolean());

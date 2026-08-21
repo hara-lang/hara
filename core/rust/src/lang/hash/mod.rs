@@ -538,7 +538,7 @@ mod tests {
                 Form::Float(f) => hash_double(*f) as i64,
                 other => panic!("double input must be a float: {other}"),
             },
-            "bigint" | "decimal" => canonical_decimal_str_hash(str_of(input)) as i64,
+            "bigint" => canonical_decimal_str_hash(str_of(input)) as i64,
             "bool" => match input {
                 Form::Bool(b) => hash_bool(*b) as i64,
                 other => panic!("bool input must be a boolean: {other}"),

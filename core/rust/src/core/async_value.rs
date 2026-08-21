@@ -4,7 +4,6 @@ fn portable_type_keyword(value: &Value) -> Result<Keyword, String> {
         Value::Number(_) => "Integer",
         Value::Float(_) => "Float",
         Value::BigInteger(_) => "Integer",
-        Value::Decimal(_) => "Decimal",
         Value::Character(_) => "Character",
         Value::Regex(_) => "RegExp",
         Value::Tagged(_) => "TaggedLiteral",
@@ -66,7 +65,7 @@ fn native_type_instance(native: &NativeType, value: &Value) -> Result<bool, Stri
 pub fn receiver_category(value: &Value) -> &'static str {
     match value {
         Value::Nil => "nil",
-        Value::Number(_) | Value::Float(_) | Value::BigInteger(_) | Value::Decimal(_) => "number",
+        Value::Number(_) | Value::Float(_) | Value::BigInteger(_) => "number",
         Value::Character(_) => "character",
         Value::Regex(_) => "pattern",
         Value::Tagged(_) => "tagged",

@@ -13,7 +13,6 @@ import hara.lang.protocol.Constant;
 import hara.lang.protocol.IMetadata;
 import hara.lang.protocol.IObjType;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -372,7 +371,7 @@ public interface Parser {
       }
       m = floatPat.matcher(s);
       if (m.matches() && (s.indexOf('.') >= 0 || s.indexOf('e') >= 0 || s.indexOf('E') >= 0)) {
-        return Num.canonicalDecimal(new BigDecimal(s));
+        return Double.valueOf(s);
       }
       return null;
     }

@@ -15,7 +15,6 @@ import hara.truffle.bytecode.HbcProgram.Primitive;
 import hara.truffle.bytecode.HbcProgram.TaggedMetadata;
 import hara.truffle.bytecode.HbcProgram.TryEntry;
 import java.io.ByteArrayOutputStream;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -424,7 +423,7 @@ public final class HbcCodec {
           case NUMBER -> in.i64();
           case FLOAT -> Double.longBitsToDouble(in.u64());
           case BIG_INTEGER -> new BigInteger(in.string());
-          case DECIMAL -> new BigDecimal(in.string());
+          case RESERVED_DECIMAL -> throw malformed("bytecode artifact contains reserved decimal metadata");
           case CHARACTER -> requireUnicodeScalar(Math.toIntExact(in.u32()));
           case REGEX -> Pattern.compile(in.string());
           case TAGGED -> new TaggedMetadata(in.string(), readMetadataValue(in));
@@ -446,7 +445,8 @@ public final class HbcCodec {
       case BOOLEAN -> out.bool((Boolean) value);
       case NUMBER -> out.i64(((Number) value).longValue());
       case FLOAT -> out.u64(Double.doubleToRawLongBits(((Number) value).doubleValue()));
-      case BIG_INTEGER, DECIMAL -> out.string(value.toString());
+      case BIG_INTEGER -> out.string(value.toString());
+      case RESERVED_DECIMAL -> throw new AssertionError("reserved decimal metadata cannot be encoded");
       case CHARACTER -> out.u32(((Number) value).longValue());
       case REGEX -> out.string(((Pattern) value).pattern());
       case TAGGED -> {

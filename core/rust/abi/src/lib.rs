@@ -13,7 +13,6 @@ pub enum Value {
     Integer(i64),
     BigInteger(String),
     Float(f64),
-    Decimal(String),
     Bytes(Vec<u8>),
     Keyword(String),
     Vector(Vec<Value>),
@@ -35,7 +34,6 @@ pub enum ImmutableValue {
     Float(f64),
     Character(char),
     BigInteger(String),
-    Decimal(String),
     Regex(String),
     Bytes(Vec<u8>),
     Keyword(String),
@@ -193,7 +191,7 @@ mod tests {
                 "big".into(),
                 Value::BigInteger("9223372036854775808".into()),
             ),
-            ("numeric".into(), Value::Decimal("12.50".into())),
+            ("numeric".into(), Value::Float(12.50)),
         ]));
         assert!(matches!(value, Value::Record(_)));
     }
