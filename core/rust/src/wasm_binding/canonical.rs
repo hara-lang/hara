@@ -39,10 +39,9 @@ impl Lowering {
     fn canonical_form(self) -> Form {
         match self {
             Self::Direct => keyword_form("direct"),
-            Self::PointerLength => Form::Vector(vec![
-                keyword_form("pointer"),
-                keyword_form("length"),
-            ]),
+            Self::PointerLength => {
+                Form::Vector(vec![keyword_form("pointer"), keyword_form("length")])
+            }
         }
     }
 }
@@ -51,37 +50,23 @@ impl Lifting {
     fn canonical_form(self) -> Form {
         match self {
             Self::Direct => keyword_form("direct"),
-            Self::PointerLength => Form::Vector(vec![
-                keyword_form("pointer"),
-                keyword_form("length"),
-            ]),
+            Self::PointerLength => {
+                Form::Vector(vec![keyword_form("pointer"), keyword_form("length")])
+            }
             Self::PackedI64 => keyword_form("packed-i64"),
         }
     }
 }
 
 pub(super) fn source(interface: &WasmInterface) -> String {
-    Form::List(vec![
-        symbol_form("wasm/interface"),
-        payload_form(interface),
-    ])
-    .to_string()
+    Form::List(vec![symbol_form("wasm/interface"), payload_form(interface)]).to_string()
 }
 
 fn payload_form(interface: &WasmInterface) -> Form {
     let mut entries = vec![
-        (
-            keyword_form("schema"),
-            string_form(&interface.schema),
-        ),
-        (
-            keyword_form("namespace"),
-            symbol_form(&interface.namespace),
-        ),
-        (
-            keyword_form("module"),
-            string_form(&interface.module),
-        ),
+        (keyword_form("schema"), string_form(&interface.schema)),
+        (keyword_form("namespace"), symbol_form(&interface.namespace)),
+        (keyword_form("module"), string_form(&interface.module)),
     ];
     if let Some(memory) = interface.memory.as_ref() {
         entries.push((keyword_form("memory"), memory_form(memory)));
@@ -92,12 +77,7 @@ fn payload_form(interface: &WasmInterface) -> Form {
             interface
                 .exports
                 .iter()
-                .map(|export| {
-                    (
-                        symbol_form(&export.name),
-                        export_form(export),
-                    )
-                })
+                .map(|export| (symbol_form(&export.name), export_form(export)))
                 .collect(),
         ),
     ));
@@ -117,16 +97,9 @@ fn payload_form(interface: &WasmInterface) -> Form {
 }
 
 fn memory_form(memory: &MemoryContract) -> Form {
-    let mut entries = vec![(
-        keyword_form("export"),
-        string_form(&memory.export),
-    )];
+    let mut entries = vec![(keyword_form("export"), string_form(&memory.export))];
     push_optional_string(&mut entries, "allocate", memory.allocate.as_deref());
-    push_optional_string(
-        &mut entries,
-        "reallocate",
-        memory.reallocate.as_deref(),
-    );
+    push_optional_string(&mut entries, "reallocate", memory.reallocate.as_deref());
     push_optional_string(&mut entries, "release", memory.release.as_deref());
     Form::Map(entries)
 }
@@ -141,10 +114,7 @@ fn export_form(export: &BindingFunction) -> Form {
             keyword_form("arguments"),
             Form::Vector(export.arguments.iter().map(parameter_form).collect()),
         ),
-        (
-            keyword_form("returns"),
-            result_form(&export.returns),
-        ),
+        (keyword_form("returns"), result_form(&export.returns)),
     ];
     if export.asynchronous {
         entries.push((keyword_form("async"), Form::Bool(true)));
@@ -169,10 +139,7 @@ fn export_form(export: &BindingFunction) -> Form {
 
 fn parameter_form(parameter: &BindingParameter) -> Form {
     let mut entries = vec![
-        (
-            keyword_form("name"),
-            symbol_form(&parameter.name),
-        ),
+        (keyword_form("name"), symbol_form(&parameter.name)),
         (
             keyword_form("hara/type"),
             parameter.hara_type.canonical_form(),
@@ -183,10 +150,7 @@ fn parameter_form(parameter: &BindingParameter) -> Form {
         ),
     ];
     if let Some(lowering) = parameter.lowering {
-        entries.push((
-            keyword_form("lower"),
-            lowering.canonical_form(),
-        ));
+        entries.push((keyword_form("lower"), lowering.canonical_form()));
     }
     if let Some(ownership) = parameter.ownership {
         entries.push((
@@ -199,10 +163,7 @@ fn parameter_form(parameter: &BindingParameter) -> Form {
 
 fn result_form(result: &BindingResult) -> Form {
     let mut entries = vec![
-        (
-            keyword_form("hara/type"),
-            result.hara_type.canonical_form(),
-        ),
+        (keyword_form("hara/type"), result.hara_type.canonical_form()),
         (
             keyword_form("wasm/type"),
             keyword_form(result.wasm_type.as_keyword()),
@@ -222,19 +183,14 @@ fn result_form(result: &BindingResult) -> Form {
 
 fn error_form(errors: &ErrorContract) -> Form {
     Form::Map(vec![
-        (
-            keyword_form("convention"),
-            keyword_form(&errors.convention),
-        ),
+        (keyword_form("convention"), keyword_form(&errors.convention)),
         (
             keyword_form("codes"),
             Form::Map(
                 errors
                     .codes
                     .iter()
-                    .map(|(code, value)| {
-                        (Form::Number(*code), keyword_form(value))
-                    })
+                    .map(|(code, value)| (Form::Number(*code), keyword_form(value)))
                     .collect(),
             ),
         ),
@@ -245,11 +201,7 @@ fn named_type_form(kind: &str, name: &str) -> Form {
     Form::Vector(vec![keyword_form(kind), symbol_form(name)])
 }
 
-fn push_optional_string(
-    entries: &mut Vec<(Form, Form)>,
-    name: &str,
-    value: Option<&str>,
-) {
+fn push_optional_string(entries: &mut Vec<(Form, Form)>, name: &str, value: Option<&str>) {
     if let Some(value) = value {
         entries.push((keyword_form(name), string_form(value)));
     }

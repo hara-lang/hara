@@ -13,11 +13,7 @@ pub(super) fn map<'a>(
     }
 }
 
-pub(super) fn vector<'a>(
-    form: &'a Form,
-    origin: &str,
-    field: &str,
-) -> Result<&'a [Form], String> {
+pub(super) fn vector<'a>(form: &'a Form, origin: &str, field: &str) -> Result<&'a [Form], String> {
     match form {
         Form::Vector(values) => Ok(values),
         _ => Err(malformed(origin, format!("{field} must be a vector"))),
@@ -38,27 +34,16 @@ pub(super) fn non_empty_string<'a>(
     }
 }
 
-pub(super) fn named<'a>(
-    form: &'a Form,
-    origin: &str,
-    field: &str,
-) -> Result<&'a str, String> {
+pub(super) fn named<'a>(form: &'a Form, origin: &str, field: &str) -> Result<&'a str, String> {
     match form {
         Form::Symbol(value) | Form::Keyword(value) | Form::String(value) if !value.is_empty() => {
             Ok(value)
         }
-        _ => Err(malformed(
-            origin,
-            format!("{field} must be a named value"),
-        )),
+        _ => Err(malformed(origin, format!("{field} must be a named value"))),
     }
 }
 
-pub(super) fn keyword<'a>(
-    form: &'a Form,
-    origin: &str,
-    field: &str,
-) -> Result<&'a str, String> {
+pub(super) fn keyword<'a>(form: &'a Form, origin: &str, field: &str) -> Result<&'a str, String> {
     match form {
         Form::Keyword(value) => Ok(value),
         _ => Err(malformed(origin, format!("{field} must be a keyword"))),
@@ -134,10 +119,7 @@ pub(super) fn reject_unknown(
             return Err(malformed(origin, format!("{scope} keys must be named")));
         };
         if !allowed.contains(&name) {
-            return Err(malformed(
-                origin,
-                format!("unknown {scope} field: {name}"),
-            ));
+            return Err(malformed(origin, format!("unknown {scope} field: {name}")));
         }
         if !seen.insert(name) {
             return Err(malformed(

@@ -27,8 +27,7 @@ const EXPORT_FIELDS: &[&str] = &[
     "errors",
     "capabilities",
 ];
-const PARAMETER_FIELDS: &[&str] =
-    &["name", "hara/type", "wasm/type", "lower", "ownership"];
+const PARAMETER_FIELDS: &[&str] = &["name", "hara/type", "wasm/type", "lower", "ownership"];
 const RESULT_FIELDS: &[&str] = &["hara/type", "wasm/type", "lift", "ownership"];
 const ERROR_FIELDS: &[&str] = &["convention", "codes"];
 
@@ -156,8 +155,8 @@ impl Lifting {
 }
 
 pub(super) fn parse_interface(source: &str, origin: &str) -> Result<WasmInterface, String> {
-    let form =
-        parse(source).map_err(|error| malformed(origin, format!("cannot parse interface: {error}")))?;
+    let form = parse(source)
+        .map_err(|error| malformed(origin, format!("cannot parse interface: {error}")))?;
     let payload = interface_payload(&form, origin)?;
     let entries = map(payload, origin, "interface")?;
     reject_unknown(entries, INTERFACE_FIELDS, origin, "interface")?;
@@ -202,10 +201,10 @@ pub(super) fn parse_interface(source: &str, origin: &str) -> Result<WasmInterfac
         .map(|form| parse_memory(form, origin))
         .transpose()?;
     let exports = parse_exports(required(entries, "exports", origin)?, origin)?;
-    let capabilities = optional(entries, "capabilities")
-        .map_or_else(|| Ok(BTreeSet::new()), |form| {
-            keyword_set(form, origin, "interface capabilities")
-        })?;
+    let capabilities = optional(entries, "capabilities").map_or_else(
+        || Ok(BTreeSet::new()),
+        |form| keyword_set(form, origin, "interface capabilities"),
+    )?;
 
     let interface = WasmInterface {
         schema,
@@ -298,10 +297,10 @@ fn parse_export(name: &str, form: &Form, origin: &str) -> Result<BindingFunction
     let errors = optional(entries, "errors")
         .map(|form| parse_errors(form, origin, name))
         .transpose()?;
-    let capabilities = optional(entries, "capabilities")
-        .map_or_else(|| Ok(BTreeSet::new()), |form| {
-            keyword_set(form, origin, &format!("export {name} capabilities"))
-        })?;
+    let capabilities = optional(entries, "capabilities").map_or_else(
+        || Ok(BTreeSet::new()),
+        |form| keyword_set(form, origin, &format!("export {name} capabilities")),
+    )?;
 
     Ok(BindingFunction {
         name: name.to_owned(),
@@ -364,11 +363,7 @@ fn parse_parameters(
                 )?,
                 lowering: optional(entries, "lower")
                     .map(|form| {
-                        Lowering::parse(
-                            form,
-                            origin,
-                            &format!("export {export} argument lower"),
-                        )
+                        Lowering::parse(form, origin, &format!("export {export} argument lower"))
                     })
                     .transpose()?,
                 ownership: optional(entries, "ownership")
@@ -406,21 +401,11 @@ fn parse_result(form: &Form, origin: &str, export: &str) -> Result<BindingResult
             &format!("export {export} result wasm/type"),
         )?,
         lifting: optional(entries, "lift")
-            .map(|form| {
-                Lifting::parse(
-                    form,
-                    origin,
-                    &format!("export {export} result lift"),
-                )
-            })
+            .map(|form| Lifting::parse(form, origin, &format!("export {export} result lift")))
             .transpose()?,
         ownership: optional(entries, "ownership")
             .map(|form| {
-                Ownership::parse(
-                    form,
-                    origin,
-                    &format!("export {export} result ownership"),
-                )
+                Ownership::parse(form, origin, &format!("export {export} result ownership"))
             })
             .transpose()?,
     })
@@ -491,7 +476,10 @@ fn validate_parameter(
     if parameter.wasm_type == WasmValueType::Void {
         return Err(malformed(
             origin,
-            format!("export {export} argument {} cannot be :void", parameter.name),
+            format!(
+                "export {export} argument {} cannot be :void",
+                parameter.name
+            ),
         ));
     }
 

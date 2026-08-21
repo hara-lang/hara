@@ -74,10 +74,7 @@ fn canonicalizes_map_and_set_order() {
 fn rejects_executable_unknown_duplicate_and_unsafe_sources() {
     for source in [
         "(do (println \"not data\"))".to_owned(),
-        SCALAR_INTERFACE.replace(
-            ":module \"modules/math.wasm\"",
-            ":module \"../math.wasm\"",
-        ),
+        SCALAR_INTERFACE.replace(":module \"modules/math.wasm\"", ":module \"../math.wasm\""),
         SCALAR_INTERFACE.replace(
             ":schema \"hara.wasm-interface/0-alpha\"",
             ":schema \"hara.wasm-interface/9\"",
