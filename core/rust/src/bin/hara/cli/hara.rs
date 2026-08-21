@@ -5,9 +5,10 @@ use hara_wasm::native_cli::{install_native_kernel, RuntimeBroker};
 use hara_wasm::project;
 #[cfg(feature = "bytecode-vm")]
 use hara_wasm::task::production;
+use hara_wasm::wasm_binding;
 use hara_wasm::Runtime;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 pub(super) fn run(options: &Options, argv: &[String]) -> Result<(), String> {
     run_hara(options, argv)
@@ -203,6 +204,8 @@ fn execute_host_action(
                 .first()
                 .ok_or_else(|| "remote requires HOST:PORT".to_owned())?,
         ),
+        "extension-inspect" => execute_extension_inspect(options, arguments),
+        "extension-bind" => execute_extension_bind(options, arguments),
         "compile-halc" => {
             #[cfg(feature = "halc-encoder")]
             {
@@ -227,6 +230,65 @@ fn execute_host_action(
         }
         value => Err(format!("unknown Hara host action: {value}")),
     }
+}
+
+fn execute_extension_inspect(options: &Options, arguments: &[String]) -> Result<(), String> {
+    let (module, output, namespace) = match arguments {
+        [module, output] => (module.as_str(), output.as_str(), None),
+        [module, output, namespace] => {
+            (module.as_str(), output.as_str(), Some(namespace.as_str()))
+        }
+        _ => return Err("extension inspect host action requires MODULE OUTPUT [NAMESPACE]".into()),
+    };
+    let module = authoring_path(options, module, "module")?;
+    let output = authoring_path(options, output, "output")?;
+    let artifact = wasm_binding::write_interface_skeleton(&module, &output, namespace)?;
+    println!(
+        "Wrote unresolved interface for {} ({}) to {}",
+        artifact.namespace,
+        artifact.module,
+        output.display()
+    );
+    println!("{}", artifact.inspection_source);
+    Ok(())
+}
+
+fn execute_extension_bind(options: &Options, arguments: &[String]) -> Result<(), String> {
+    let [interface, module, output] = arguments else {
+        return Err("extension bind host action requires INTERFACE MODULE OUTPUT".into());
+    };
+    let interface = authoring_path(options, interface, "interface")?;
+    let module = authoring_path(options, module, "module")?;
+    let output = authoring_path(options, output, "output")?;
+    let package = wasm_binding::bind_package(&interface, &module, &output)?;
+    println!(
+        "Bound {} as a direct core.v1 extension at {}",
+        package.namespace,
+        package.root.display()
+    );
+    println!("module: {}", package.module_digest);
+    println!("interface: {}", package.interface_digest);
+    println!("bindings: {}", package.binding_digest);
+    Ok(())
+}
+
+fn authoring_path(options: &Options, value: &str, label: &str) -> Result<PathBuf, String> {
+    let relative = Path::new(value);
+    let unsafe_path = value.is_empty()
+        || value.contains('\\')
+        || value.contains(':')
+        || value.bytes().any(|byte| byte == 0)
+        || relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)));
+    if unsafe_path {
+        return Err(format!(
+            "extension {label} must be a safe relative path within the selected project root"
+        ));
+    }
+    let cwd = std::env::current_dir().map_err(|error| format!("cannot read cwd: {error}"))?;
+    Ok(capability_root(options, &cwd).join(relative))
 }
 
 #[cfg(feature = "bytecode-vm")]

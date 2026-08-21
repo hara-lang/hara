@@ -13,6 +13,10 @@ pub use outcome::CliOutcome;
 pub const BASE_MANIFEST_SOURCE: &str = include_str!("../resources/hara-cli.edn");
 pub const PROJECT_BUILD_MANIFEST_SOURCE: &str =
     include_str!("../resources/hara-cli-project-build.edn");
+pub const EXTENSION_INSPECT_MANIFEST_SOURCE: &str =
+    include_str!("../resources/hara-cli-extension-inspect.edn");
+pub const EXTENSION_BIND_MANIFEST_SOURCE: &str =
+    include_str!("../resources/hara-cli-extension-bind.edn");
 
 #[derive(Clone, Copy)]
 pub struct ManifestSource;
@@ -30,8 +34,18 @@ impl fmt::Debug for ManifestSource {
 pub fn merged_manifest_source() -> &'static str {
     MERGED_MANIFEST_SOURCE
         .get_or_init(|| {
-            manifest::merge_sources(BASE_MANIFEST_SOURCE, PROJECT_BUILD_MANIFEST_SOURCE)
-                .expect("embedded CLI manifest extensions must be valid")
+            let project = manifest::merge_sources(
+                BASE_MANIFEST_SOURCE,
+                PROJECT_BUILD_MANIFEST_SOURCE,
+            )
+            .expect("embedded project-build CLI manifest extension must be valid");
+            let inspect = manifest::merge_sources(
+                &project,
+                EXTENSION_INSPECT_MANIFEST_SOURCE,
+            )
+            .expect("embedded extension-inspect CLI manifest extension must be valid");
+            manifest::merge_sources(&inspect, EXTENSION_BIND_MANIFEST_SOURCE)
+                .expect("embedded extension-bind CLI manifest extension must be valid")
         })
         .as_str()
 }
