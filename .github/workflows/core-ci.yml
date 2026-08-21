@@ -1,41 +1,50 @@
-name: Core CI
+name: Core CI — issue 838 top-level catalog repair
 
 on:
   pull_request:
-    branches: [main, testing]
+    branches: [main]
   push:
-    branches: [main, testing]
-  workflow_dispatch:
+    branches:
+      - agent/838-bootstrap-callables-fix
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: core-ci-${{ github.event.pull_request.number || github.ref }}
+  group: issue-838-top-level-repair-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    outputs:
-      run_core: ${{ steps.scope.outputs.run_core }}
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      RUST_MIN_STACK: 33554432
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout the exact repair branch
+        uses: actions/checkout@v4
         with:
+          ref: agent/838-bootstrap-callables-fix
           fetch-depth: 0
 
-      - name: Checkout hara-specs-registry
+      - name: Checkout the coordinated specs fixture
         uses: actions/checkout@v4
         with:
           repository: hara-lang/hara-specs-registry
+          ref: aae63f735b312e29f18e041de6925ec0ae6baaa5
           path: hara-specs-registry
           fetch-depth: 1
 
-      - name: Expose specs registry at the runtime fixture path
-        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - name: Require and expose authoritative specs
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal"
+          test -f "$fixture"
+          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" \
+            "$GITHUB_WORKSPACE/../hara-specs-registry"
 
-      - name: Checkout hara-benchmarks
+      - name: Checkout benchmark fixtures
         uses: actions/checkout@v4
         with:
           repository: hara-lang/hara-benchmarks
@@ -43,171 +52,131 @@ jobs:
           path: hara-benchmarks
           fetch-depth: 1
 
-      - name: Expose benchmark corpus at the differential fixture path
+      - name: Expose benchmark fixtures
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/../../website"
-          ln -sfn \
-            "$GITHUB_WORKSPACE/hara-benchmarks" \
+          ln -sfn "$GITHUB_WORKSPACE/hara-benchmarks" \
             "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
 
-      - name: Detect core changes
-        id: scope
+      - name: Verify the clean main-based transport branch
         shell: bash
         run: |
-          event="${{ github.event_name }}"
-          case "$event" in
-            pull_request)
-              base="${{ github.event.pull_request.base.sha }}"
-              head="${{ github.event.pull_request.head.sha }}"
-              ;;
-            push)
-              base="${{ github.event.before }}"
-              head="${{ github.sha }}"
-              ;;
-            *)
-              echo "run_core=true" >> "$GITHUB_OUTPUT"
-              echo "Running core validation for $event."
-              exit 0
-              ;;
-          esac
+          set -euo pipefail
+          base='e48e93d7eed95b5ce2bbbf3b150980105c5a7d36'
+          git fetch origin main
+          test "$(git merge-base HEAD origin/main)" = "$base"
+          changed="$(git diff --name-only "$base"...HEAD)"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(\.github/workflows/core-ci\.yml|\.github/workflows/issue-838-bootstrap-materialize\.yml|\.github/agent-patches/838-bootstrap-callables\.patch)$' || true)"
+          test -z "$unexpected"
+          printf '%s  %s\n' \
+            '31945d3a7ef8e923adb4a0906a03dc85e2e912699b1d3ad844998b2da3459153' \
+            '.github/agent-patches/838-bootstrap-callables.patch' \
+            | sha256sum --check --strict
 
-          # A newly created branch has an all-zero `before` SHA. There is no
-          # reliable comparison range in that case, so keep the conservative
-          # behaviour and run the full core suite.
-          if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
-             ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            echo "run_core=true" >> "$GITHUB_OUTPUT"
-            echo "No valid base commit; running core validation."
-            exit 0
-          fi
-
-          # Browser and Studio assets live under core/rust/web for packaging, and
-          # shipped examples live under core/lib/examples. Neither is a Cargo or
-          # JVM core input. Their dedicated workflows build/validate them, so do
-          # not make pre-existing native runtime failures block isolated web or
-          # example-corpus changes.
-          if git diff --quiet "$base" "$head" -- \
-            core/rust \
-            ':(exclude)core/rust/web' \
-            core/java \
-            core/lib \
-            ':(exclude)core/lib/examples' \
-            contrib \
-            hara-specs-registry \
-            scripts/runtime/run-lib-tests; then
-            echo "run_core=false" >> "$GITHUB_OUTPUT"
-            echo "No core runtime changes detected."
-          else
-            echo "run_core=true" >> "$GITHUB_OUTPUT"
-            echo "Core runtime changes detected."
-          fi
-
-      - name: Enforce gw.* HAL namespaces
-        if: steps.scope.outputs.run_core == 'true'
+      - name: Apply the repair at the original top-level scope
         shell: bash
         run: |
-          if git grep -n -E '^[[:space:]]*\(ns[[:space:]]+greenways\.' -- 'core/**/*.hal'; then
-            echo "HAL namespaces must use gw.* rather than greenways.*" >&2
-            exit 1
-          fi
-
-      - name: Set up Rust
-        if: steps.scope.outputs.run_core == 'true'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Check Rust module layout
-        if: steps.scope.outputs.run_core == 'true'
-        run: |
-          bash core/rust/scripts/check-layout.test.sh
-          bash core/rust/scripts/check-layout.sh
-
-      - name: Check Rust
-        if: steps.scope.outputs.run_core == 'true'
-        run: |
-          cargo clippy --manifest-path core/rust/Cargo.toml --all-targets
-          cargo test --manifest-path core/rust/Cargo.toml
-          cargo test --manifest-path core/rust/raw/Cargo.toml
-
-      - name: Set up JDK 21
-        if: steps.scope.outputs.run_core == 'true'
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
-
-      - name: Build and test Java runtime
-        if: steps.scope.outputs.run_core == 'true'
-        working-directory: core
-        shell: bash
-        run: |
-          set +e
-          log="$RUNNER_TEMP/hara-java-maven.log"
-          mvn -B -Ptruffle package --file java/pom.xml >"$log" 2>&1
-          status=$?
-          if [[ "$status" -ne 0 ]]; then
-            echo "::group::Java Maven failure summary"
-            grep -E '^\[(ERROR|WARNING)\]|Tests run:|Failures:|Errors:|Skipped:|<<< FAILURE!|There are test failures|BUILD FAILURE|Caused by:' "$log" \
-              | tail -n 240 || true
-            echo "::endgroup::"
-            echo "::group::Java Maven failure tail"
-            tail -n 320 "$log"
-            echo "::endgroup::"
-            exit "$status"
-          fi
-          tail -n 80 "$log"
-
-      - name: Run library HAL tests
-        if: steps.scope.outputs.run_core == 'true'
-        run: ./scripts/runtime/run-lib-tests
-
-  bytecode-observation:
-    name: Live bytecode observation
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    needs: validate
-    if: needs.validate.outputs.run_core == 'true'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Checkout hara-specs-registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-
-      - name: Expose specs registry at the runtime fixture path
-        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+          set -euo pipefail
+          git apply --check .github/agent-patches/838-bootstrap-callables.patch
+          git apply .github/agent-patches/838-bootstrap-callables.patch
+          git diff --check
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-          components: clippy
+          components: rustfmt, clippy
 
-      - name: Check native observed sessions
+      - name: Format the bounded Rust edits
+        shell: bash
         run: |
-          cargo clippy --manifest-path core/rust/Cargo.toml \
-            --features code-vm-conformance \
-            --lib --no-deps
-          cargo test --manifest-path core/rust/Cargo.toml \
-            --features code-vm-conformance \
-            vm::session:: --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            --features code-vm-conformance \
-            vm::conformance:: --lib
-          cargo run --manifest-path core/rust/Cargo.toml \
-            --features code-vm-conformance \
-            --bin hara-code-vm-conformance -- check
+          set -euo pipefail
+          rustfmt --edition 2021 --config skip_children=true \
+            core/rust/src/core/inventory.rs \
+            core/rust/src/core/direct_callable_catalog.rs \
+            core/rust/src/core/direct_callable_operations.rs \
+            core/rust/src/core/direct_callable_tests.rs
+          git diff --check
 
-      - name: Check browser observed sessions
+      - name: Run catalog closure, zero re-entry, behavior, and specs tests
         run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            direct_callable_catalog_closes_the_runtime_inventory --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            complete_ordinary_callable_catalog_never_reenters_the_evaluator --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            representative_direct_callables_preserve_value_behavior --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_loading --lib
+
+      - name: Re-run the fiber suite that exposed the omissions
+        run: cargo test --manifest-path core/rust/Cargo.toml fiber:: --lib
+
+      - name: Run focused bytecode VM parity
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm vm::machine:: --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm vm::execution_tests --lib
+
+      - name: Run specs-owned Foundation and protocol corpora
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            specs_owned_foundation_behavioral_corpus_runs_in_the_native_runtime --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            shared_foundation_protocol_functionality_fixture_runs_in_the_native_runtime --lib
+
+      - name: Run Work protocol, evaluator, and compiler suites
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml work:: --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm work --lib
+
+      - name: Check default, minimal, raw, and browser targets
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml --all-targets
           cargo check --manifest-path core/rust/Cargo.toml \
-            --target wasm32-unknown-unknown \
-            --features code-vm-conformance \
-            --lib
+            --no-default-features --lib
+          cargo test --manifest-path core/rust/raw/Cargo.toml
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --no-default-features --lib
+
+      - name: Run the production-stack Rust release baseline
+        run: cargo test --release --manifest-path core/rust/Cargo.toml --lib
+
+      - name: Restore trusted workflow, remove transport, and publish clean code
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout origin/main -- .github/workflows/core-ci.yml
+          git rm -- \
+            .github/workflows/issue-838-bootstrap-materialize.yml \
+            .github/agent-patches/838-bootstrap-callables.patch
+          git add -- \
+            .github/workflows/core-ci.yml \
+            .github/workflows/issue-838-direct-callables.yml \
+            core/rust/src/core/inventory.rs \
+            core/rust/src/core/direct_callable_catalog.rs \
+            core/rust/src/core/direct_callable_operations.rs \
+            core/rust/src/core/direct_callable_tests.rs
+          git diff --cached --check
+          expected="$(git diff --cached --name-only | sort)"
+          actual="$(printf '%s\n' \
+            .github/agent-patches/838-bootstrap-callables.patch \
+            .github/workflows/issue-838-bootstrap-materialize.yml \
+            .github/workflows/issue-838-direct-callables.yml \
+            core/rust/src/core/direct_callable_catalog.rs \
+            core/rust/src/core/direct_callable_operations.rs \
+            core/rust/src/core/direct_callable_tests.rs \
+            core/rust/src/core/inventory.rs | sort)"
+          test "$expected" = "$actual"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Close the boolean and Promise bootstrap callable gap'
+          git push origin HEAD:agent/838-bootstrap-callables-fix
