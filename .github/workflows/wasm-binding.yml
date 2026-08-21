@@ -4,6 +4,13 @@ on:
   pull_request:
     branches: [main, testing]
     paths:
+      - 'core/java/pom.xml'
+      - 'core/java/src/main/java/hara/truffle/HaraExtensionManifest.java'
+      - 'core/java/src/main/java/hara/truffle/HaraExtensionPackage.java'
+      - 'core/java/src/main/java/hara/truffle/HaraWasmExtension.java'
+      - 'core/java/src/main/java/hara/truffle/HaraWasmMemory*.java'
+      - 'core/java/src/test/java/hara/truffle/HaraExtensionManifestTest.java'
+      - 'core/java/src/test/java/hara/truffle/HaraWasmMemoryBindingTest.java'
       - 'core/lib/src/tool/cli/extension.hal'
       - 'core/lib/src/tool/cli/handlers.hal'
       - 'core/lib/test/tool/cli/extension_test.hal'
@@ -20,10 +27,19 @@ on:
       - 'core/rust/src/wasmtime_provider.rs'
       - 'core/rust/src/wasm_binding.rs'
       - 'core/rust/src/wasm_binding/**'
+      - 'core/spec/wasm-memory-v1.md'
+      - 'scripts/runtime/check-wasm-binding'
       - '.github/workflows/wasm-binding.yml'
   push:
     branches: [main, testing]
     paths:
+      - 'core/java/pom.xml'
+      - 'core/java/src/main/java/hara/truffle/HaraExtensionManifest.java'
+      - 'core/java/src/main/java/hara/truffle/HaraExtensionPackage.java'
+      - 'core/java/src/main/java/hara/truffle/HaraWasmExtension.java'
+      - 'core/java/src/main/java/hara/truffle/HaraWasmMemory*.java'
+      - 'core/java/src/test/java/hara/truffle/HaraExtensionManifestTest.java'
+      - 'core/java/src/test/java/hara/truffle/HaraWasmMemoryBindingTest.java'
       - 'core/lib/src/tool/cli/extension.hal'
       - 'core/lib/src/tool/cli/handlers.hal'
       - 'core/lib/test/tool/cli/extension_test.hal'
@@ -40,6 +56,8 @@ on:
       - 'core/rust/src/wasmtime_provider.rs'
       - 'core/rust/src/wasm_binding.rs'
       - 'core/rust/src/wasm_binding/**'
+      - 'core/spec/wasm-memory-v1.md'
+      - 'scripts/runtime/check-wasm-binding'
       - '.github/workflows/wasm-binding.yml'
   workflow_dispatch:
 
@@ -53,13 +71,13 @@ concurrency:
 jobs:
   focused:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
-      - name: Check out source
+      - name: Check out exact source commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Check out hara-specs-registry
         uses: actions/checkout@v4
@@ -77,74 +95,40 @@ jobs:
           components: rustfmt
           targets: wasm32-unknown-unknown
 
-      - name: Check touched Rust formatting
-        run: |
-          rustfmt --edition 2021 --check \
-            core/rust/src/bin/hara/cli/hara.rs \
-            core/rust/src/cli_app.rs \
-            core/rust/src/cli_app/tests.rs \
-            core/rust/src/direct_wasm.rs \
-            core/rust/src/extension.rs \
-            core/rust/src/wasmtime_provider.rs \
-            core/rust/src/wasm_binding.rs \
-            core/rust/src/wasm_binding/canonical.rs \
-            core/rust/src/wasm_binding/direct.rs \
-            core/rust/src/wasm_binding/package.rs \
-            core/rust/src/wasm_binding/package/tests.rs \
-            core/rust/src/wasm_binding/parser.rs \
-            core/rust/src/wasm_binding/syntax.rs \
-            core/rust/src/wasm_binding/tests.rs
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
 
-      - name: Enforce bounded touched modules
-        run: |
-          files=(
-            core/rust/src/bin/hara/cli/hara.rs
-            core/rust/src/cli_app.rs
-            core/rust/src/cli_app/tests.rs
-            core/rust/src/direct_wasm.rs
-            core/rust/src/extension.rs
-            core/rust/src/wasmtime_provider.rs
-            core/rust/src/wasm_binding.rs
-            core/rust/src/wasm_binding/canonical.rs
-            core/rust/src/wasm_binding/direct.rs
-            core/rust/src/wasm_binding/package.rs
-            core/rust/src/wasm_binding/package/tests.rs
-            core/rust/src/wasm_binding/parser.rs
-            core/rust/src/wasm_binding/syntax.rs
-            core/rust/src/wasm_binding/tests.rs
-          )
-          for file in "${files[@]}"; do
-            lines=$(wc -l < "$file")
-            echo "$file: $lines"
-            test "$lines" -lt 700
-          done
+      - name: Check formatting and module bounds
+        run: ./scripts/runtime/check-wasm-binding format
 
-      - name: Test the restricted interface and package contract
-        run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasm_binding
-
-      - name: Preserve extension manifest compatibility
-        run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib extension::tests
-
-      - name: Exercise public-to-raw Wasm aliases
-        run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasmtime_provider::tests
+      - name: Test the restricted interface, package and memory executor
+        run: ./scripts/runtime/check-wasm-binding wasm-binding-tests
 
       - name: Preserve direct Wasm discovery
-        run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib direct_wasm
+        run: ./scripts/runtime/check-wasm-binding direct-tests
 
-      - name: Validate merged CLI routes
-        run: cargo test --locked --manifest-path core/rust/Cargo.toml --lib cli_app
+      - name: Preserve extension manifest compatibility
+        run: ./scripts/runtime/check-wasm-binding extension-tests
 
-      - name: Validate Hara extension commands
-        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/cli/extension_test.hal
+      - name: Preserve direct Wasmtime execution
+        run: ./scripts/runtime/check-wasm-binding wasmtime-tests
 
-      - name: Validate Hara handler registry
-        run: ./scripts/runtime/run-lib-tests core/lib/test/tool/cli/handlers_test.hal
+      - name: Validate merged CLI manifests
+        run: ./scripts/runtime/check-wasm-binding cli-app-tests
 
-      - name: Check the native Hara launcher
-        run: cargo check --locked --manifest-path core/rust/Cargo.toml --bin hara
+      - name: Execute memory.v1 through JVM and Truffle
+        run: ./scripts/runtime/check-wasm-binding jvm-tests
 
-      - name: Check feature-minimal library
-        run: cargo check --locked --manifest-path core/rust/Cargo.toml --no-default-features --lib
+      - name: Run focused Hara command tests
+        run: ./scripts/runtime/check-wasm-binding hara-tests
 
-      - name: Check portable browser library
-        run: cargo check --locked --manifest-path core/rust/Cargo.toml --target wasm32-unknown-unknown --lib
+      - name: Check native and browser targets
+        run: ./scripts/runtime/check-wasm-binding targets
+
+      - name: Confirm validation did not modify source
+        run: ./scripts/runtime/check-wasm-binding drift

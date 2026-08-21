@@ -5,10 +5,10 @@ import hara.lang.data.Keyword;
 import hara.lang.data.Symbol;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
-import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.Map;
@@ -17,7 +17,8 @@ import java.util.regex.Pattern;
 
 /** Strict metadata for a provider-generated namespace loaded through {@code :require}. */
 public final class HaraExtensionManifest {
-  private static final Pattern NAMESPACE = Pattern.compile("[a-z][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)+");
+  private static final Pattern NAMESPACE =
+      Pattern.compile("[a-z][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)+");
   private static final Pattern IDENTITY =
       Pattern.compile("[a-z][a-z0-9-]*/[a-z][a-z0-9-]*(\\.[a-z0-9][a-z0-9-]*)*");
   private static final Pattern HANDLE_TAG =
@@ -39,9 +40,10 @@ public final class HaraExtensionManifest {
           "assets");
   private static final Set<String> REQUIRED_FIELDS =
       Set.of("namespace", "version", "provider", "abi", "exports", "capabilities");
-  private static final Set<String> EXPORT_FIELDS = Set.of("args", "returns", "async");
-
+  private static final Set<String> EXPORT_FIELDS =
+      Set.of("wasm/export", "args", "returns", "async");
   private static final Set<String> HANDLE_FIELDS = Set.of("tag");
+
   private final String namespace;
   private final String identity;
   private final String version;
@@ -53,8 +55,8 @@ public final class HaraExtensionManifest {
   private final Map<String, Export> exports;
   private final java.util.List<String> capabilities;
   private final Map<String, java.util.List<String>> hostCalls;
-
   private final Map<String, String> handleTags;
+
   private HaraExtensionManifest(
       String namespace,
       String identity,
@@ -257,7 +259,8 @@ public final class HaraExtensionManifest {
         || value.contains(":")
         || (suffix != null && !value.endsWith(suffix))) {
       throw invalid(
-          origin, field + " must be a relative " + (suffix == null ? "package" : suffix) + " file");
+          origin,
+          field + " must be a relative " + (suffix == null ? "package" : suffix) + " file");
     }
   }
 
@@ -290,7 +293,8 @@ public final class HaraExtensionManifest {
     return result;
   }
 
-  private static Map<String, java.util.List<String>> parseHostCalls(Object value, String origin) {
+  private static Map<String, java.util.List<String>> parseHostCalls(
+      Object value, String origin) {
     if (value == null) return Map.of();
     if (!(value instanceof IMapType<?, ?>)) throw invalid(origin, "host-calls must be a map");
     LinkedHashMap<String, java.util.List<String>> result = new LinkedHashMap<>();
@@ -328,22 +332,29 @@ public final class HaraExtensionManifest {
       if (!(entry.getValue() instanceof IMapType<?, ?>)) {
         throw invalid(origin, "export " + entry.getKey() + " must be a map");
       }
+      String name = (String) entry.getKey();
       IMapType<?, ?> spec = (IMapType<?, ?>) entry.getValue();
-      rejectUnknownKeys(spec, EXPORT_FIELDS, origin, "export " + entry.getKey());
-      java.util.List<String> arguments = parseKeywords(lookup(spec, "args"), origin, "export args");
+      rejectUnknownKeys(spec, EXPORT_FIELDS, origin, "export " + name);
+      Object wasmExportValue = lookup(spec, "wasm/export");
+      String wasmExport =
+          wasmExportValue == null ? name : requireString(spec, "wasm/export", origin);
+      java.util.List<String> arguments =
+          parseKeywords(lookup(spec, "args"), origin, "export args");
       String returns = requireKeyword(spec, "returns", origin);
       Object asyncValue = lookup(spec, "async");
       if (asyncValue != null && !(asyncValue instanceof Boolean)) {
         throw invalid(origin, "export async must be boolean");
       }
       result.put(
-          (String) entry.getKey(), new Export(arguments, returns, Boolean.TRUE.equals(asyncValue)));
+          name,
+          new Export(wasmExport, arguments, returns, Boolean.TRUE.equals(asyncValue)));
     }
     if (result.isEmpty()) throw invalid(origin, "exports cannot be empty");
     return result;
   }
 
-  private static java.util.List<String> parseKeywords(Object value, String origin, String field) {
+  private static java.util.List<String> parseKeywords(
+      Object value, String origin, String field) {
     if (!(value instanceof ILinearType<?>)) throw invalid(origin, field + " must be a vector");
     ArrayList<String> result = new ArrayList<>();
     for (Object item : (ILinearType<?>) value) {
@@ -379,9 +390,10 @@ public final class HaraExtensionManifest {
     while (iterator.hasNext()) {
       Object key = ((Map.Entry<?, ?>) iterator.next()).getKey();
       if (!(key instanceof Keyword)) throw invalid(origin, subject + " keys must be keywords");
-      String name = ((Keyword) key).getName();
-      if (!allowed.contains(name))
+      String name = keywordName((Keyword) key);
+      if (!allowed.contains(name)) {
         throw invalid(origin, "unsupported " + subject + " field: " + name);
+      }
       seen.add(name);
     }
     if (subject.equals("manifest") && !seen.containsAll(REQUIRED_FIELDS)) {
@@ -389,6 +401,12 @@ public final class HaraExtensionManifest {
       missing.removeAll(seen);
       throw invalid(origin, "missing manifest fields: " + missing);
     }
+  }
+
+  private static String keywordName(Keyword keyword) {
+    return keyword.getNamespace() == null
+        ? keyword.getName()
+        : keyword.getNamespace() + "/" + keyword.getName();
   }
 
   private static IllegalArgumentException invalid(String origin, String message) {
@@ -409,19 +427,34 @@ public final class HaraExtensionManifest {
       this.runtime = runtime;
     }
 
-    public String module() { return module; }
-    public String runtime() { return runtime; }
+    public String module() {
+      return module;
+    }
+
+    public String runtime() {
+      return runtime;
+    }
   }
 
   public static final class Export {
+    private final String wasmExport;
     private final java.util.List<String> arguments;
     private final String returns;
     private final boolean async;
 
-    private Export(java.util.List<String> arguments, String returns, boolean async) {
+    private Export(
+        String wasmExport,
+        java.util.List<String> arguments,
+        String returns,
+        boolean async) {
+      this.wasmExport = wasmExport;
       this.arguments = Collections.unmodifiableList(new ArrayList<>(arguments));
       this.returns = returns;
       this.async = async;
+    }
+
+    public String wasmExport() {
+      return wasmExport;
     }
 
     public java.util.List<String> arguments() {
