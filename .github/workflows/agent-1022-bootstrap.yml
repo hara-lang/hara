@@ -1,0 +1,361 @@
+name: Agent 1022 bootstrap
+
+on:
+  push:
+    branches:
+      - agent/1022-remove-native-decimal-bootstrap
+
+permissions:
+  contents: write
+
+jobs:
+  assemble:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assemble the reviewed Decimal-removal slice
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_sha=fd382c506348c1e96412e7398ac4cba7029b7885
+          git fetch --no-tags origin agent/fix-std-db-references
+          test "$(git rev-parse FETCH_HEAD)" = "$source_sha"
+
+          paths=(
+            core/java/src/main/java/hara/kernel/base/Parser.java
+            core/java/src/main/java/hara/lang/base/G.java
+            core/java/src/main/java/hara/lang/base/NumOps.java
+            core/java/src/main/java/hara/lang/base/NumUtils.java
+            core/java/src/main/java/hara/lang/base/primitive/Num.java
+            core/java/src/main/java/hara/truffle/EvaluationJournal.java
+            core/java/src/main/java/hara/truffle/HalcArtifact.java
+            core/java/src/main/java/hara/truffle/HalcSchema.java
+            core/java/src/main/java/hara/truffle/HaraBox.java
+            core/java/src/main/java/hara/truffle/HaraContext.java
+            core/java/src/main/java/hara/truffle/HaraNumericConversions.java
+            core/java/src/main/java/hara/truffle/HbcMachine.java
+            core/java/src/main/java/hara/truffle/HtaValueCodec.java
+            core/java/src/main/java/hara/truffle/JsonValue.java
+            core/java/src/main/java/hara/truffle/Main.java
+            core/java/src/main/java/hara/truffle/bytecode/HbcCodec.java
+            core/java/src/main/java/hara/truffle/bytecode/HbcProgram.java
+            core/java/src/main/java/hara/truffle/node/HaraNodes.java
+            core/java/src/test/java/hara/kernel/base/ParserTest.java
+            core/java/src/test/java/hara/kernel/base/ReaderParityCorpusTest.java
+            core/java/src/test/java/hara/lang/base/NumTest.java
+            core/java/src/test/java/hara/truffle/HalcArtifactTest.java
+            core/java/src/test/java/hara/truffle/HaraCoreLanguageConformanceTest.java
+            core/java/src/test/java/hara/truffle/HaraDifferentialRunner.java
+            core/java/src/test/java/hara/truffle/HaraGeneratedLibrariesTest.java
+            core/java/src/test/java/hara/truffle/HaraLanguageTest.java
+            core/java/src/test/java/hara/truffle/HaraNumericInteropTest.java
+            core/java/src/test/java/hara/truffle/StdFoundationTest.java
+            core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java
+            core/lib/test-lang/lang/common/emit_common_test.hal
+            core/rust/abi/src/lib.rs
+            core/rust/hta-codec/src/lib.rs
+            core/rust/hta-codec/src/view.rs
+            core/rust/hta-codec/tests/view.rs
+            core/rust/src/core/async_value.rs
+            core/rust/src/core/evaluator.rs
+            core/rust/src/core/form.rs
+            core/rust/src/core/primitive.rs
+            core/rust/src/core/protocol.rs
+            core/rust/src/core/provider.rs
+            core/rust/src/core/value.rs
+            core/rust/src/fiber/coroutine/snapshot.rs
+            core/rust/src/hta.rs
+            core/rust/src/kernel/form.rs
+            core/rust/src/kernel/halc.rs
+            core/rust/src/kernel/parser.rs
+            core/rust/src/kernel/parser_tests.rs
+            core/rust/src/kernel/schema.rs
+            core/rust/src/lang/data/metadata.rs
+            core/rust/src/lang/hash/mod.rs
+            core/rust/src/native_cli/documentation.rs
+            core/rust/src/native_module.rs
+            core/rust/src/numeric.rs
+            core/rust/src/runtime/tests.rs
+            core/rust/src/vm/artifact.rs
+            core/rust/src/vm/compiler.rs
+            core/rust/src/vm/execution_tests.rs
+            core/rust/src/vm/session/control.rs
+          )
+
+          git checkout "$source_sha" -- "${paths[@]}"
+          git rm core/java/src/main/java/hara/truffle/HaraDecimal.java
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one literal replacement, found {count}")
+              file.write_text(text.replace(old, new, 1))
+
+          def sub_once(path: str, pattern: str, replacement: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one regex replacement, found {count}")
+              file.write_text(updated)
+
+          # Host BigDecimal values cross into Hara only as finite binary64 values.
+          box = "core/java/src/main/java/hara/truffle/HaraBox.java"
+          replace_once(box, "import java.math.BigInteger;\n", "import java.math.BigDecimal;\nimport java.math.BigInteger;\n")
+          replace_once(
+              box,
+              "    if (value instanceof BigInteger) {\n      return exportBigInteger((BigInteger) value);\n    }\n",
+              "    if (value instanceof BigDecimal) {\n      return exportBigDecimal((BigDecimal) value);\n    }\n    if (value instanceof BigInteger) {\n      return exportBigInteger((BigInteger) value);\n    }\n",
+          )
+          replace_once(
+              box,
+              "  @TruffleBoundary\n  private static Object exportBigInteger(BigInteger value) {\n",
+              "  @TruffleBoundary\n  private static Object exportBigDecimal(BigDecimal value) {\n    double converted = value.doubleValue();\n    if (!Double.isFinite(converted)) {\n      throw new IllegalArgumentException(\n          \"BigDecimal value is outside the finite Hara Float range\");\n    }\n    return converted;\n  }\n\n  @TruffleBoundary\n  private static Object exportBigInteger(BigInteger value) {\n",
+          )
+
+          interop = "core/java/src/test/java/hara/truffle/HaraNumericInteropTest.java"
+          replace_once(interop, "import java.math.BigInteger;\n", "import java.math.BigDecimal;\nimport java.math.BigInteger;\n")
+          replace_once(
+              interop,
+              "  @Test\n  public void exportsArbitraryBigDecimalsAsBoxedHostObjects() throws Exception {\n    InteropLibrary interop = InteropLibrary.getUncached();\n    Object exported = HaraBox.export(new java.math.BigDecimal(\"1.2300\"));\n\n    assertFalse(interop.isNumber(exported));\n    assertFalse(interop.hasMembers(exported));\n  }\n",
+              "  @Test\n  public void exportsHostBigDecimalsAsFiniteFloats() throws Exception {\n    InteropLibrary interop = InteropLibrary.getUncached();\n    Object exported = HaraBox.export(new BigDecimal(\"1.2300\"));\n\n    assertTrue(exported instanceof Double);\n    assertTrue(interop.isNumber(exported));\n    assertTrue(interop.fitsInDouble(exported));\n    assertEquals(1.23d, interop.asDouble(exported), 0.0d);\n  }\n\n  @Test\n  public void rejectsHostBigDecimalsOutsideFiniteFloatRange() {\n    IllegalArgumentException error =\n        assertThrows(\n            IllegalArgumentException.class,\n            () -> HaraBox.export(new BigDecimal(\"1e1000000\")));\n    assertTrue(error.getMessage().contains(\"finite Hara Float range\"));\n  }\n",
+          )
+          replace_once(
+              interop,
+              "public void exposesArbitraryIntegersAndExactDecimalsAtTheLanguageBoundary()",
+              "public void exposesArbitraryIntegersAndFloatsAtTheLanguageBoundary()",
+          )
+
+          # Preserve exact ordering when an arbitrary integer is compared with a double.
+          num_ops = "core/java/src/main/java/hara/lang/base/NumOps.java"
+          replace_once(num_ops, "import java.math.BigInteger;\n", "import java.math.BigDecimal;\nimport java.math.BigInteger;\n")
+          sub_once(
+              num_ops,
+              r"    private static int compareExactly\(Number x, Number y\) \{.*?\n    \}\n\n    private static boolean ordered",
+              """    private static int compareIntegerToDouble(BigInteger integer, double floating) {
+              if (Double.isNaN(floating)) return -1;
+              if (floating == Double.POSITIVE_INFINITY) return -1;
+              if (floating == Double.NEGATIVE_INFINITY) return 1;
+              return new BigDecimal(integer).compareTo(BigDecimal.valueOf(floating));
+            }
+
+            private static boolean isFloating(Number value) {
+              return value instanceof Double || value instanceof Float;
+            }
+
+            private static int compareExactly(Number x, Number y) {
+              boolean xFloat = isFloating(x);
+              boolean yFloat = isFloating(y);
+              if (xFloat && yFloat) {
+                double left = x.doubleValue();
+                double right = y.doubleValue();
+                if (left == 0.0d && right == 0.0d) return 0;
+                return Double.compare(left, right);
+              }
+              if (xFloat) {
+                return -compareIntegerToDouble(NumUtils.toBigInteger(y), x.doubleValue());
+              }
+              if (yFloat) {
+                return compareIntegerToDouble(NumUtils.toBigInteger(x), y.doubleValue());
+              }
+              return NumUtils.toBigInteger(x).compareTo(NumUtils.toBigInteger(y));
+            }
+
+            private static boolean ordered""",
+          )
+
+          # Equal numeric values must keep equal language hashes after Decimal removal.
+          g = "core/java/src/main/java/hara/lang/base/G.java"
+          replace_once(
+              g,
+              "import java.util.Iterator;\nimport java.util.Map.Entry;\nimport java.math.BigInteger;\n",
+              "import java.math.BigDecimal;\nimport java.math.BigInteger;\nimport java.util.Iterator;\nimport java.util.Map.Entry;\n",
+          )
+          sub_once(
+              g,
+              r"  private static long hashValue\(Object value\) \{.*?\n  \}\n\}",
+              """  private static long hashValue(Object value) {
+              if (value instanceof byte[]) return java.util.Arrays.hashCode((byte[]) value);
+              if (!(value instanceof Number)) return value.hashCode();
+              if (value instanceof Double || value instanceof Float) {
+                double number = ((Number) value).doubleValue();
+                if (number == 0.0d) return 0;
+                if (!Double.isFinite(number)) return Double.hashCode(number);
+                return BigDecimal.valueOf(number).stripTrailingZeros().hashCode();
+              }
+              if (value instanceof BigInteger) {
+                return new BigDecimal((BigInteger) value).stripTrailingZeros().hashCode();
+              }
+              return BigDecimal.valueOf(((Number) value).longValue())
+                  .stripTrailingZeros()
+                  .hashCode();
+            }
+          }""",
+          )
+
+          num_test = Path("core/java/src/test/java/hara/lang/base/NumTest.java")
+          text = num_test.read_text()
+          addition = """
+
+            @Test
+            public void testMixedLargeIntegerAndFloatComparisonIsExact() {
+              BigInteger exact = new BigInteger("9007199254740992");
+              BigInteger next = exact.add(BigInteger.ONE);
+              double floating = 9007199254740992.0d;
+              assertTrue(Num.eq(exact, floating));
+              assertFalse(Num.eq(next, floating));
+              assertTrue(Num.gt(next, floating));
+              assertTrue(Num.lt(floating, next));
+            }
+
+            @Test
+            public void testLargeEqualNumericRepresentationsShareHashes() {
+              BigInteger exact = new BigInteger("9007199254740992");
+              double floating = 9007199254740992.0d;
+              assertTrue(Num.eq(exact, floating));
+              assertEquals(G.hashRapid(exact), G.hashRapid(floating));
+            }
+          """
+          head, tail = text.rsplit("\n}", 1)
+          num_test.write_text(head + addition + "\n}" + tail)
+
+          # Compare integer/float values from their exact IEEE-754 decomposition.
+          numeric = "core/rust/src/numeric.rs"
+          float_value = """fn float_value(value: &Value) -> Result<f64, String> {
+              match value {
+                  Value::Float(value) => Ok(*value),
+                  Value::Number(value) => Ok(*value as f64),
+                  Value::BigInteger(value) => parse_big_integer(value)?
+                      .to_f64()
+                      .filter(|value| value.is_finite())
+                      .ok_or_else(|| "numeric value is outside double range".to_string()),
+                  _ => Err("expected a numeric value".into()),
+              }
+          }
+          """
+          compare_helper = float_value + """
+          fn compare_integer_to_float(integer: &BigInt, floating: f64) -> Option<Ordering> {
+              if floating.is_nan() {
+                  return None;
+              }
+              if floating == f64::INFINITY {
+                  return Some(Ordering::Less);
+              }
+              if floating == f64::NEG_INFINITY {
+                  return Some(Ordering::Greater);
+              }
+              if floating == 0.0 {
+                  return Some(integer.cmp(&BigInt::zero()));
+              }
+
+              let bits = floating.to_bits();
+              let negative = bits >> 63 != 0;
+              let exponent_bits = ((bits >> 52) & 0x7ff) as i32;
+              let fraction = bits & 0x000f_ffff_ffff_ffff;
+              let (significand, exponent) = if exponent_bits == 0 {
+                  (BigInt::from(fraction), -1022 - 52)
+              } else {
+                  (
+                      BigInt::from(fraction | (1_u64 << 52)),
+                      exponent_bits - 1023 - 52,
+                  )
+              };
+              let signed = if negative { -significand } else { significand };
+              if exponent >= 0 {
+                  Some(integer.cmp(&(signed << exponent as usize)))
+              } else {
+                  Some((integer << (-exponent) as usize).cmp(&signed))
+              }
+          }
+          """
+          replace_once(numeric, float_value, compare_helper)
+          replace_once(
+              numeric,
+              """        (Value::Float(left), _) => {
+                      let right = float_value(right)?;
+                      Ok(left.partial_cmp(&right))
+                  }
+                  (_, Value::Float(right)) => {
+                      let left = float_value(left)?;
+                      Ok(left.partial_cmp(right))
+                  }
+          """,
+              """        (Value::Float(left), _) => Ok(
+                      compare_integer_to_float(&integer_value(right)?, *left)
+                          .map(|ordering| ordering.reverse()),
+                  ),
+                  (_, Value::Float(right)) => {
+                      Ok(compare_integer_to_float(&integer_value(left)?, *right))
+                  }
+          """,
+          )
+          replace_once(
+              numeric,
+              "    use super::{parse_integer_digits, CanonicalInteger};\n",
+              "    use super::{numeric_compare, parse_integer_digits, CanonicalInteger};\n",
+          )
+          numeric_file = Path(numeric)
+          text = numeric_file.read_text()
+          test = """
+
+              #[test]
+              fn compares_large_integers_to_floats_without_rounding() {
+                  let floating = Value::Float(9_007_199_254_740_992.0);
+                  let exact = Value::BigInteger("9007199254740992".into());
+                  let next = Value::BigInteger("9007199254740993".into());
+
+                  assert_eq!(numeric_compare(&exact, &floating).unwrap(), Some(Ordering::Equal));
+                  assert_eq!(numeric_compare(&next, &floating).unwrap(), Some(Ordering::Greater));
+                  assert_ne!(next, floating);
+                  assert_eq!(numeric_compare(&floating, &next).unwrap(), Some(Ordering::Less));
+              }
+          """
+          head, tail = text.rsplit("\n}", 1)
+          numeric_file.write_text(head + test + "\n}" + tail)
+
+          # Wire tag 21 remains retired rather than renumbering later HTA values.
+          hta = "core/rust/hta-codec/src/lib.rs"
+          replace_once(
+              hta,
+              """    #[test]
+              fn frame_shape_and_lengths_are_bounded() {
+          """,
+              """    #[test]
+              fn retired_decimal_tag_fails_closed() {
+                  let bytes = [MAGIC.as_slice(), &[21]].concat();
+                  assert!(decode(&bytes).unwrap_err().contains("unknown tag 21"));
+                  assert!(decode_canonical(&bytes, bytes.len())
+                      .unwrap_err()
+                      .contains("unknown tag 21"));
+              }
+
+              #[test]
+              fn frame_shape_and_lengths_are_bounded() {
+          """,
+          )
+          PY
+
+          # This commit must remove the runtime value, not hide it behind generated assets.
+          ! git grep -n ':std.native.Decimal' -- core
+          ! git grep -n 'Value::Decimal' -- core
+          ! git grep -n 'Form::Decimal' -- core
+          ! git grep -n 'MetadataValue::Decimal' -- core
+          ! git grep -n 'HaraDecimal' -- core
+          git diff --check
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(runtime): remove native Decimal support (#1022)'
+          git push origin HEAD:agent/1022-remove-native-decimal-bootstrap
