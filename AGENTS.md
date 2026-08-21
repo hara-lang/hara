@@ -185,3 +185,14 @@ Every executable issue must define Outcome, Scope, Acceptance criteria,
 Validation, Relationships, Readiness, and Delivery. Keep durable decisions and
 progress in the issue or pull request so that they remain visible through the
 GitHub connector; do not rely on chat history as the only record.
+
+## ChatGPT webapp connector execution
+
+For ChatGPT webapp work, use
+[`.github/CHATGPT_PROJECT_WORKFLOW.md`](.github/CHATGPT_PROJECT_WORKFLOW.md).
+Rust or Java implementation must be committed through the GitHub connector on
+a connector or agent branch and executed by `Connector Runtime Validation`
+from the exact branch-head commit. Open a draft pull request after the first
+implementation commit, inspect Actions through the connector, and repair the
+same branch. Do not leave chat-only code or use MCP for this workflow.
+`Core CI` remains authoritative.
