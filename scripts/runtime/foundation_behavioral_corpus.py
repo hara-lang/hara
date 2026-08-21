@@ -230,7 +230,7 @@ def execute(command: list[str], cwd: Path | None, timeout: float) -> dict[str, A
             stderr=subprocess.PIPE,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired as error:
+    except subprocess.TimeoutExpired:
         return {
             "outcome": "failure",
             "diagnostics": f"command timed out after {timeout:g}s",

@@ -16,7 +16,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
@@ -323,33 +323,42 @@ def dependency_components(graph: dict[str, list[str]]) -> tuple[list[list[str]],
     active: set[str] = set()
     components: list[list[str]] = []
 
-    def visit(node: str) -> None:
+    def push(node: str) -> list[Any]:
         nonlocal index
         indexes[node] = index
         lows[node] = index
         index += 1
         stack.append(node)
         active.add(node)
-        for dependency in graph.get(node, []):
-            if dependency not in indexes:
-                visit(dependency)
-                lows[node] = min(lows[node], lows[dependency])
-            elif dependency in active:
-                lows[node] = min(lows[node], indexes[dependency])
-        if lows[node] != indexes[node]:
-            return
-        group = []
-        while True:
-            member = stack.pop()
-            active.remove(member)
-            group.append(member)
-            if member == node:
-                break
-        components.append(sorted(group))
+        return [node, iter(graph.get(node, [])), None]
 
     for node in sorted(graph):
         if node not in indexes:
-            visit(node)
+            frames = [push(node)]
+            while frames:
+                current, dependencies, parent = frames[-1]
+                try:
+                    dependency = next(dependencies)
+                except StopIteration:
+                    frames.pop()
+                    if lows[current] == indexes[current]:
+                        group = []
+                        while True:
+                            member = stack.pop()
+                            active.remove(member)
+                            group.append(member)
+                            if member == current:
+                                break
+                        components.append(sorted(group))
+                    if parent is not None:
+                        lows[parent] = min(lows[parent], lows[current])
+                    continue
+                if dependency not in indexes:
+                    child = push(dependency)
+                    child[2] = current
+                    frames.append(child)
+                elif dependency in active:
+                    lows[current] = min(lows[current], indexes[dependency])
     components.sort(key=lambda group: "|".join(group))
     owners = {
         namespace: number
@@ -400,6 +409,9 @@ def complete_inventory(config: dict, reference: Path) -> dict:
             None,
         )
         test_source = run_git(reference, "show", f"{commit}:{test_path}") if test_path else ""
+        test_namespace, test_public, _ = (
+            namespace_surface(test_source) if test_path else (None, [], [])
+        )
         entry = {
             "id": namespace or f"@file:{path}",
             "family": family["id"],
@@ -414,8 +426,8 @@ def complete_inventory(config: dict, reference: Path) -> dict:
             "reference_test_path": test_path,
             "reference_test_blob": test_source if test_path else None,
             "reference_test_sha256": sha256(test_source) if test_path else None,
-            "reference_test_namespace": namespace_surface(test_source)[0] if test_path else None,
-            "reference_test_public_symbols": namespace_surface(test_source)[1] if test_path else [],
+            "reference_test_namespace": test_namespace,
+            "reference_test_public_symbols": test_public,
             "reference_test_macros": macro_surface(test_source) if test_path else [],
             "target_namespace": mapped_namespace(namespace, family) if namespace else None,
             "target_test_path": target_test_path(path, family),

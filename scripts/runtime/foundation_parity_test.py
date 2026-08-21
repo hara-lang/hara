@@ -103,6 +103,18 @@ class FoundationParityParserTest(unittest.TestCase):
             parity.target_test_path("src/tahto/model/example.clj", family),
         )
 
+    def test_dependency_components_handle_deep_foundation_chains(self):
+        graph = {
+            f"demo.{number:04d}": [f"demo.{number - 1:04d}"]
+            for number in range(1, 1500)
+        }
+        graph["demo.0000"] = []
+
+        components, owners, ranks = parity.dependency_components(graph)
+
+        self.assertEqual(1500, len(components))
+        self.assertEqual(1499, ranks[owners["demo.1499"]])
+
 
 if __name__ == "__main__":
     unittest.main()
