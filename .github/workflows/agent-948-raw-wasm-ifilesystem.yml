@@ -1,0 +1,98 @@
+name: Agent 948 raw-Wasm IFilesystem validation
+
+on:
+  push:
+    branches:
+      - agent/948-raw-wasm-ifilesystem
+  pull_request:
+    branches:
+      - agent/893-indexeddb-capability-guards
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-948-raw-wasm-ifilesystem-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  implement-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out stacked implementation branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/948-raw-wasm-ifilesystem
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specifications at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Apply direct IFilesystem raw host patch
+        run: python .github/agent-948-apply.py
+
+      - name: Format the new host filesystem module
+        run: rustfmt --edition 2021 core/rust/raw/src/host_filesystem.rs
+
+      - name: Check product scope
+        shell: bash
+        run: |
+          git diff --check
+          test -f core/rust/raw/src/host_filesystem.rs
+          ! grep -q 'HostFileProvider' core/rust/raw/src/lib.rs
+          grep -q 'FilesystemRuntimeAdapter' core/rust/raw/src/host_filesystem.rs
+          git status --short
+
+      - name: Compile the complete raw test surface
+        run: cargo test --locked --message-format short --manifest-path core/rust/raw/Cargo.toml --no-run
+
+      - name: Test direct host IFilesystem forwarding and settlement
+        run: cargo test --locked --manifest-path core/rust/raw/Cargo.toml host_filesystem::tests
+
+      - name: Test mounted public File dispatch
+        run: >-
+          cargo test --locked --manifest-path core/rust/raw/Cargo.toml
+          tests::mounted_file_calls_use_the_canonical_hal_module_and_v2_identity -- --exact
+
+      - name: Test filesystem attachment lifecycle
+        run: >-
+          cargo test --locked --manifest-path core/rust/raw/Cargo.toml
+          tests::filesystem_reattachment
+
+      - name: Test serialized host settlement
+        run: >-
+          cargo test --locked --manifest-path core/rust/raw/Cargo.toml
+          tests::session_evaluations_are_serialized_in_submission_order -- --exact
+
+      - name: Check raw Wasm target
+        run: cargo check --locked --message-format short --manifest-path core/rust/raw/Cargo.toml --target wasm32-unknown-unknown
+
+      - name: Build raw Wasm artifact
+        run: bash scripts/runtime/build-hara-wasm-raw
+
+      - name: Publish validated runtime product commit
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            core/rust/raw/src/lib.rs \
+            core/rust/raw/src/host_filesystem.rs
+          git commit -m "Route raw-Wasm file calls through Rust IFilesystem"
+          git push origin HEAD:agent/948-raw-wasm-ifilesystem
