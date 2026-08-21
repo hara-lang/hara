@@ -252,7 +252,10 @@ impl RemoteFilesystem {
                     ));
                 }
             }
-            if page.next_token.as_deref() == request.token.as_deref() {
+            if matches!(
+                (&page.next_token, &request.token),
+                (Some(next), Some(current)) if next == current
+            ) {
                 return Err(FileError::Io(
                     "provider returned a repeated page token".into(),
                 ));
@@ -621,7 +624,7 @@ impl SftpFilesystem {
                 root.into(),
                 read_only,
                 [],
-                [("provider/host-key-verified?", "true".into())],
+                [("provider/transport-verified?", "true".into())],
             )?,
         })
     }

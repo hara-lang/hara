@@ -363,7 +363,7 @@ final class WebdavFilesystem implements IFilesystem {
                 null);
           }
           byte[] bytes = client.read(remote(logical), maxTransferBytes);
-          if (bytes.length > maxTransferBytes) {
+          if ((long) bytes.length > maxTransferBytes) {
             throw failure(
                 "quota-exceeded",
                 "WebDAV file exceeds configured transfer limit",
@@ -584,7 +584,7 @@ final class WebdavFilesystem implements IFilesystem {
             }
           }
           byte[] bytes = client.read(remote(sourceLogical), maxTransferBytes);
-          if (bytes.length > maxTransferBytes) {
+          if ((long) bytes.length > maxTransferBytes) {
             throw failure(
                 "quota-exceeded",
                 "WebDAV file exceeds configured transfer limit",

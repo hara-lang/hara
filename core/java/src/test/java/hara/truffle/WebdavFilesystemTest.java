@@ -293,8 +293,8 @@ public class WebdavFilesystemTest {
       }
 
       private String toLogical(String value) {
-        String url = value;
         if (value == null) throw new IllegalArgumentException("missing path");
+        String url = value;
         if (value.startsWith(ROOT)) {
           url = value.substring(ROOT.length());
         }
