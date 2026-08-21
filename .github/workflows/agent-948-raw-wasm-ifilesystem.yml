@@ -1,0 +1,73 @@
+name: Agent 948 raw-Wasm IFilesystem validation
+
+on:
+  push:
+    branches:
+      - agent/948-raw-wasm-ifilesystem
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-948-raw-wasm-ifilesystem
+  cancel-in-progress: true
+
+jobs:
+  implement-and-validate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out stacked implementation branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: agent/948-raw-wasm-ifilesystem
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Apply direct IFilesystem raw host patch
+        run: python .github/agent-948-apply.py
+
+      - name: Format bounded raw-Wasm files
+        run: rustfmt --edition 2021 core/rust/raw/src/lib.rs core/rust/raw/src/host_filesystem.rs
+
+      - name: Check product scope
+        shell: bash
+        run: |
+          git diff --check
+          test -f core/rust/raw/src/host_filesystem.rs
+          ! grep -q 'HostFileProvider' core/rust/raw/src/lib.rs
+          grep -q 'FilesystemRuntimeAdapter' core/rust/raw/src/host_filesystem.rs
+          git status --short
+
+      - name: Test raw runtime and host filesystem bridge
+        run: cargo test --locked --manifest-path core/rust/raw/Cargo.toml
+
+      - name: Check raw Wasm target
+        run: cargo check --locked --manifest-path core/rust/raw/Cargo.toml --target wasm32-unknown-unknown
+
+      - name: Build raw Wasm artifact
+        run: bash scripts/runtime/build-hara-wasm-raw
+
+      - name: Publish validated runtime product commit
+        shell: bash
+        run: |
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- \
+            core/rust/raw/src/lib.rs \
+            core/rust/raw/src/host_filesystem.rs
+          git commit -m "Route raw-Wasm file calls through Rust IFilesystem"
+          git push origin HEAD:agent/948-raw-wasm-ifilesystem
