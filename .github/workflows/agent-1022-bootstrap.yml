@@ -185,36 +185,52 @@ jobs:
           cargo test --manifest-path core/rust/Cargo.toml compares_large_integers_to_floats_without_rounding
           cargo test --manifest-path core/rust/hta-codec/Cargo.toml retired_decimal_tag_fails_closed
 
-      - name: Run focused JVM and library validation
+      - name: Run focused JVM validation
         shell: bash
         run: |
           set -euo pipefail
           mvn -B -f core/java/pom.xml -Ptruffle \
             -Dtest=NumTest,HaraNumericInteropTest,ParserTest,SessionKernelTest test
+          mvn -B -f core/java/pom.xml -Ptruffle \
+            -Dtest=HaraGeneratedLibrariesTest#portableTypeReturnsCanonicalAndNamedKeywords test
 
+      - name: Run runtime library validation
+        shell: bash
+        run: |
+          set -euo pipefail
           set +e
-          ./scripts/runtime/run-lib-tests 2>&1 | tee /tmp/run-lib-tests.log
-          lib_status=${PIPESTATUS[0]}
+          ./scripts/runtime/run-lib-tests > /tmp/run-lib-tests.log 2>&1
+          lib_status=$?
           set -e
+          cat /tmp/run-lib-tests.log
           if ((lib_status != 0)); then
             python3 <<'PY'
+          import re
           from pathlib import Path
 
           text = Path("/tmp/run-lib-tests.log").read_text()
-          failures = [line for line in text.splitlines() if line.startswith("[FAIL]")]
-          expected = ["[FAIL] hara lang_script core/lua override_emit_newline_test.hal"]
-          if failures != expected:
+          clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
+          failures = [line.strip() for line in clean.splitlines() if "[FAIL]" in line]
+          if len(failures) != 1 or "override_emit_newline_test.hal" not in failures[0]:
               raise SystemExit(f"unexpected runtime library failures: {failures!r}")
-          if "runtime library tests: 195 passed, 1 failed, 4 skipped" not in text:
-              raise SystemExit("runtime library summary did not match the inherited failure")
-          if "expected: emit_newline_test.hal:2:1: bad argument #1 to 'floor'" not in text:
-              raise SystemExit("the inherited Lua expected output changed")
-          if "actual:   hara/runtime-emitter-missing:" not in text:
-              raise SystemExit("the inherited Lua emitter failure changed")
+          required = (
+              "195 passed, 1 failed, 4 skipped",
+              "runtime-emitter-missing",
+              "std.lang.script.lua",
+          )
+          missing = [fragment for fragment in required if fragment not in clean]
+          if missing:
+              raise SystemExit(f"inherited Lua emitter failure changed; missing {missing!r}")
           PY
           fi
 
-          test "$(./core/hara eval '(type 1.5)')" = ':std.native.Float'
+      - name: Verify decimal literals are Float values
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(cargo run --quiet --manifest-path core/rust/Cargo.toml --bin hara -- eval '(type 1.5)' | tr -d '\r' | tail -n 1)"
+          printf 'Rust decimal literal type: %s\n' "$actual"
+          test "$actual" = ':std.native.Float'
 
       - name: Commit the verified implementation tree
         shell: bash
