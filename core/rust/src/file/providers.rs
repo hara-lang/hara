@@ -624,7 +624,7 @@ impl SftpFilesystem {
                 root.into(),
                 read_only,
                 [],
-                [("provider/transport-verified?", "true".into())],
+                [("provider/host-key-verified?", "true".into())],
             )?,
         })
     }
@@ -714,6 +714,7 @@ impl S3Filesystem {
                     FilesystemCapability::Mkdir,
                     FilesystemCapability::Append,
                     FilesystemCapability::AtomicMove,
+                    FilesystemCapability::PreserveModified,
                 ],
                 [
                     ("provider/virtual-directories?", "true".into()),
@@ -833,7 +834,7 @@ impl WebdavFilesystem {
                     FilesystemCapability::AtomicMove,
                     FilesystemCapability::PreserveModified,
                 ],
-                [("provider/host-key-verified?", "true".into())],
+                [("provider/transport-verified?", "true".into())],
             )?,
         })
     }
@@ -1137,6 +1138,14 @@ mod tests {
 
         let webdav = WebdavFilesystem::from_client(client, "/remote", "WebDAV", true).unwrap();
         assert_eq!(webdav.core.descriptor.kind(), "webdav");
+        assert_eq!(
+            webdav
+                .core
+                .descriptor
+                .extensions()
+                .get("provider/transport-verified?"),
+            Some(&"true".to_string())
+        );
     }
 
     #[test]
@@ -1153,6 +1162,14 @@ mod tests {
             block_on_local(filesystem.read(FilesystemCallContext::default(), "/hello.txt".into()))
                 .unwrap();
         assert_eq!(bytes, b"hello");
+        let page = block_on_local(filesystem.entries_page(
+            FilesystemCallContext::default(),
+            "/".into(),
+            FilesystemPageRequest::default(),
+        ))
+        .unwrap();
+        assert_eq!(page.entries.len(), 1);
+        assert!(page.next_token.is_none());
         let error = block_on_local(
             filesystem.read(FilesystemCallContext::default(), "/../../secret".into()),
         )
