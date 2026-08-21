@@ -7,7 +7,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 
 /** Trusted factory for opening one validated and scoped filesystem mount. */
-interface IFilesystemFactory {
+public interface IFilesystemFactory {
   @FunctionalInterface
   interface CredentialResolver {
     Object resolve(String reference);

@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>This is a trusted runtime interface. It is not exposed as a Hara protocol and it carries no
  * provider-construction or credential authority.
  */
-interface IFilesystem {
+public interface IFilesystem {
   enum Capability {
     READ,
     WRITE,
