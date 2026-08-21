@@ -1,4 +1,4 @@
-name: Issue 838 PR-first validation and finalization
+name: std.typed schema parity
 
 on:
   pull_request:
@@ -10,258 +10,111 @@ permissions:
   contents: write
 
 concurrency:
-  group: issue-838-bootstrap-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  group: std-typed-portable-string-patch
+  cancel-in-progress: false
 
 jobs:
-  catalog:
-    name: Catalog closure and zero evaluator re-entry
+  patch:
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: agent/903-std-typed-registry-readback
           fetch-depth: 0
-      - name: Materialize the checksum-pinned implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
-          git diff --check
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - name: Enforce formatting
-        run: cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
-      - name: Close the catalog and prove zero evaluator re-entry
-        run: |
-          cargo test --manifest-path core/rust/Cargo.toml \
-            direct_callable_catalog_closes_the_runtime_inventory --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            complete_ordinary_callable_catalog_never_reenters_the_evaluator --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            representative_direct_callables_preserve_value_behavior --lib
-      - name: Check supported feature profiles
-        run: |
-          cargo check --manifest-path core/rust/Cargo.toml --all-targets
-          cargo check --manifest-path core/rust/Cargo.toml --no-default-features --lib
-          cargo check --manifest-path core/rust/raw/Cargo.toml
 
-  bytecode:
-    name: Tree, fiber, and bytecode VM parity
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Materialize the checksum-pinned implementation
+      - name: Replace nil-based string search assumptions
         shell: bash
         run: |
-          set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run focused evaluator and VM suites
-        run: |
-          cargo test --manifest-path core/rust/Cargo.toml fiber:: --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            --features bytecode-vm vm::machine:: --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            --features bytecode-vm vm::execution_tests --lib
+          python - <<'PY'
+          from pathlib import Path
 
-  foundation:
-    name: Specs-owned Foundation and Wasm targets
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Checkout authoritative specs registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - name: Require and expose authoritative fixtures
-        shell: bash
-        run: |
-          set -euo pipefail
-          fixture="$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal"
-          test -f "$fixture"
-          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
-      - name: Materialize the checksum-pinned implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - name: Run authoritative Foundation and protocol corpora
-        run: |
-          cargo test --manifest-path core/rust/Cargo.toml \
-            specs_owned_foundation_behavioral_corpus_runs_in_the_native_runtime --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            shared_foundation_protocol_functionality_fixture_runs_in_the_native_runtime --lib
-      - name: Check browser and minimal Wasm targets
-        run: |
-          cargo check --manifest-path core/rust/Cargo.toml \
-            --target wasm32-unknown-unknown --lib
-          cargo check --manifest-path core/rust/Cargo.toml \
-            --target wasm32-unknown-unknown --no-default-features --lib
+          path = Path("core/lib/src/std/typed/catalog/document.hal")
+          source = path.read_text()
 
-  work-release:
-    name: Work suites and production-stack release baseline
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      RUST_MIN_STACK: 33554432
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-      - name: Checkout authoritative specs registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - name: Require and expose authoritative fixtures
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -f "$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal"
-          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
-      - name: Materialize the checksum-pinned implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run Work protocol, evaluator, and compiler suites
-        run: |
-          cargo test --manifest-path core/rust/Cargo.toml work:: --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            --features bytecode-vm work --lib
-      - name: Run full Rust release library baseline
-        run: cargo test --release --manifest-path core/rust/Cargo.toml --lib
+          old_hex = '''       (let [character (str (str/char-at value index))]
+         (if (nil? (str/index-of +hex-digits+ character))
+           false
+           (recur (inc index))))))))
+'''
+          new_hex = '''       (let [character (str (str/char-at value index))]
+         (if (str/includes? +hex-digits+ character)
+           (recur (inc index))
+           false))))))
+'''
+          old_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (nil? (str/index-of value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (nil? (str/index-of value "/../"))))
+'''
+          new_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (not (str/includes? value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (not (str/includes? value "/../"))))
+'''
+          old_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [separator (str/index-of value "/")
+          length (str/length value)]
+      (and
+       separator
+       (> separator 0)
+       (< separator (dec length))
+       (nil?
+        (str/index-of
+         (str/slice value (inc separator))
+         "/"))
+       (not (str/starts-with? value ":"))
+       (nil? (str/index-of value " "))))))
+'''
+          new_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [parts (str/split value "/")]
+      (and
+       (= 2 (count parts))
+       (not (str/blank? (first parts)))
+       (not (str/blank? (second parts)))
+       (not (str/starts-with? value ":"))
+       (not (str/includes? value " "))))))
+'''
 
-  publish:
-    name: Publish clean implementation commit
-    needs: [catalog, bytecode, foundation, work-release]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref }}
-          fetch-depth: 0
-      - name: Materialize the verified implementation
+          for old, new, label in [
+              (old_hex, new_hex, "lowercase hex predicate"),
+              (old_path, new_path, "source path predicate"),
+              (old_owner, new_owner, "owner/name predicate"),
+          ]:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one {label}, found {count}")
+              source = source.replace(old, new, 1)
+
+          path.write_text(source)
+          PY
+
+      - name: Validate and publish the focused edit
         shell: bash
         run: |
           set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
-          git diff --check
-      - name: Restore trusted workflow and remove transport
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin main
-          git checkout origin/main -- .github/workflows/std-typed-schema.yml
-          git rm -- \
-            .github/workflows/agent-838-bootstrap.yml \
-            .github/agent-patches/838-direct-callables.patch.xz.b64.00 \
-            .github/agent-patches/838-direct-callables.patch.xz.b64.01 \
-            .github/agent-patches/838-direct-callables.patch.xz.b64.02 \
-            .github/agent-patches/838-direct-callables.patch.xz.b64.03
-      - name: Commit only the bounded implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          git add -- \
-            .github/workflows/std-typed-schema.yml \
-            .github/workflows/issue-838-direct-callables.yml \
-            core/rust/raw/src/lib.rs \
-            core/rust/src/core.rs \
-            core/rust/src/core/evaluator.rs \
-            core/rust/src/core/inventory.rs \
-            core/rust/src/core/value.rs \
-            core/rust/src/fiber.rs \
-            core/rust/src/kernel/generated.rs \
-            core/rust/src/lib.rs \
-            core/rust/src/runtime/runtime.rs \
-            core/rust/src/runtime/tests.rs \
-            core/rust/src/vm/machine/dispatch.rs \
-            core/rust/src/core/direct_callable.rs \
-            core/rust/src/core/direct_callable_catalog.rs \
-            core/rust/src/core/direct_callable_impl.rs \
-            core/rust/src/core/direct_callable_operations.rs \
-            core/rust/src/core/direct_callable_probe.rs \
-            core/rust/src/core/direct_callable_tests.rs
-          git diff --cached --check
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git commit -m 'Replace structural callable dispatch with a direct catalog'
-          git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          grep -q '(str/includes? +hex-digits+ character)' core/lib/src/std/typed/catalog/document.hal
+          ! grep -q 'nil? (str/index-of' core/lib/src/std/typed/catalog/document.hal
+          git diff --check -- core/lib/src/std/typed/catalog/document.hal
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- core/lib/src/std/typed/catalog/document.hal
+          git commit -m "Use portable string predicates in catalog read-back"
+          git push origin HEAD:agent/903-std-typed-registry-readback

@@ -48,9 +48,10 @@ fn default_exception_class(code: &Keyword) -> Option<Keyword> {
         return None;
     }
     let class = match code.get_name() {
-        "security" | "timeout" | "not-found" | "conflict" | "limit" | "syntax"
-        | "io" | "database" | "dependency" | "serialization" | "argument"
-        | "state" | "host" => code.get_name(),
+        "security" | "timeout" | "not-found" | "conflict" | "limit" | "syntax" | "io"
+        | "database" | "dependency" | "serialization" | "argument" | "state" | "host" => {
+            code.get_name()
+        }
         "generic" => "internal",
         _ => return None,
     };
@@ -670,7 +671,10 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                     return Err("ex expects a code, attributes map, and key/value pairs".into());
                 }
                 let Value::Keyword(input_code) = &arguments[0] else {
-                    return Err("ex expects a registered standard keyword or namespaced keyword code".into());
+                    return Err(
+                        "ex expects a registered standard keyword or namespaced keyword code"
+                            .into(),
+                    );
                 };
                 let code = normalize_exception_code(input_code)?;
                 let mut attributes = arguments[1].clone();
@@ -732,11 +736,8 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
                     }
                 }
                 if let Some(cause) = &cause {
-                    data = map_assoc_value(
-                        &data,
-                        Value::Keyword("ex/cause".into()),
-                        cause.clone(),
-                    )?;
+                    data =
+                        map_assoc_value(&data, Value::Keyword("ex/cause".into()), cause.clone())?;
                 }
                 Ok(Value::ExceptionInfo(Rc::new(ExceptionInfo {
                     message,
@@ -834,12 +835,7 @@ pub(crate) fn exception_function_values() -> Vec<(&'static str, Value)> {
     ]
 }
 
-pub(crate) const BASIC_FUNCTION_NAMES: &[&str] = &[
-    "compare", "boolean", "not=", "integer?", "quot", "rem", "mod", "+", "-", "*", "/",
-    "%", "=", "<", "<=", ">", ">=", "count", "get", "meta",
-];
-
-fn direct_function_value(name: &str) -> Option<Value> {
+pub(crate) fn direct_function_value(name: &str) -> Option<Value> {
     match name {
         "compare" => Some(native_function("compare", 2, |arguments| {
             Ok(Value::Number(match arguments[0].cmp(&arguments[1]) {
@@ -851,12 +847,13 @@ fn direct_function_value(name: &str) -> Option<Value> {
         "boolean" => Some(native_function("boolean", 1, |arguments| {
             Ok(Value::Bool(arguments[0].truthy()))
         })),
-        "not=" => Some(native_variadic_function("not=", |arguments| {
-            match apply_primitive(Primitive::Equal, &arguments)? {
+        "not=" => Some(native_variadic_function(
+            "not=",
+            |arguments| match apply_primitive(Primitive::Equal, &arguments)? {
                 Value::Bool(equal) => Ok(Value::Bool(!equal)),
                 _ => unreachable!("equality primitive must return a boolean"),
-            }
-        })),
+            },
+        )),
         "integer?" => Some(native_function("integer?", 1, |arguments| {
             Ok(Value::Bool(numeric::is_integer_value(&arguments[0])))
         })),
@@ -877,77 +874,15 @@ fn direct_function_value(name: &str) -> Option<Value> {
     }
 }
 
-pub(crate) fn basic_function_values() -> Vec<(&'static str, Value)> {
-    BASIC_FUNCTION_NAMES
-        .iter()
-        .map(|name| {
-            (
-                *name,
-                direct_function_value(name)
-                    .expect("basic function must have a direct implementation"),
-            )
-        })
-        .collect()
-}
-
-thread_local! {
-    static STRUCTURAL_NATIVE_DISPATCH: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-}
-
-fn structural_native_dispatch_active(name: &str) -> bool {
-    STRUCTURAL_NATIVE_DISPATCH.with(|dispatch| {
-        dispatch
-            .borrow()
-            .last()
-            .is_some_and(|active| active == name)
-    })
-}
-
-pub(crate) fn structural_function_value(name: impl Into<String>) -> Value {
-    let name = name.into();
-    if let Some(callable) = direct_function_value(&name) {
-        return callable;
-    }
-    let display_name = name.clone();
-    let call_name = if name == "disj" {
-        "dissoc".to_owned()
-    } else {
-        crate::kernel::generated::canonical_native_call(&name)
-    };
-    native_variadic_function(&display_name, move |arguments| {
-        let mut env = HashMap::new();
-        let mut call = Vec::with_capacity(arguments.len() + 1);
-        call.push(Form::Symbol(call_name.clone()));
-        for (index, argument) in arguments.into_iter().enumerate() {
-            let symbol = format!("__native_argument_{index}");
-            env.insert(symbol.clone(), argument);
-            call.push(Form::Symbol(symbol));
-        }
-        let result = STRUCTURAL_NATIVE_DISPATCH.with(|dispatch| {
-            if dispatch.borrow().len() >= 64 {
-                return Err(format!(
-                    "structural native dispatch exceeded its recursion limit: {call_name}; stack={:?}",
-                    dispatch.borrow()
-                ));
-            }
-            dispatch.borrow_mut().push(call_name.clone());
-            let result = eval(&Form::List(call), &mut env);
-            dispatch.borrow_mut().pop();
-            result
-        });
-        result
-    })
-}
-
 /// Creates a callable exported by a `std.native.*` namespace.
 ///
 /// Native type methods must terminate in their Rust implementation. They must
 /// not resolve their public HAL facade name and re-enter `eval`, because doing
 /// so makes alias precedence part of native invocation and permits facade →
 /// native → facade recursion.
-pub(crate) fn native_type_function_value(native_type: &str, method: &str) -> Value {
+pub(crate) fn native_type_function_value(native_type: &str, method: &str) -> Result<Value, String> {
     let display_name = format!("std.native.{native_type}/{method}");
-    match native_type {
+    let value = match native_type {
         "Base" => {
             let method = method.to_owned();
             native_variadic_function(&display_name, move |arguments| {
@@ -1164,15 +1099,12 @@ pub(crate) fn native_type_function_value(native_type: &str, method: &str) -> Val
             })
         }
         _ => {
-            let native_type = native_type.to_owned();
-            let method = method.to_owned();
-            native_variadic_function(&display_name, move |_| {
-                Err(format!(
-                    "missing direct native implementation: std.native.{native_type}/{method}"
-                ))
-            })
+            return Err(format!(
+                "missing direct native implementation family: std.native.{native_type}/{method}"
+            ))
         }
-    }
+    };
+    Ok(value)
 }
 
 fn native_edn_values(method: &str, arguments: Vec<Value>) -> Result<Value, String> {
@@ -1510,106 +1442,6 @@ pub(crate) fn syntax_symbol(name: &str) -> bool {
         "var",
     ];
     SYNTAX_FORMS.contains(&name)
-}
-
-pub(crate) fn structural_callable_names() -> impl Iterator<Item = &'static str> {
-    let maths_methods = NATIVE_TYPES
-        .iter()
-        .find_map(|(name, methods)| (*name == "Maths").then_some(*methods))
-        .expect("Maths native type must be declared");
-
-    fiber::CORE_SPECIAL_FORMS
-        .iter()
-        .copied()
-        .filter(move |name| {
-            !syntax_symbol(name)
-                && !name.contains('/')
-                && !name.starts_with("__")
-                && !maths_methods.contains(name)
-                && (!name.starts_with("iter-") || matches!(*name, "iter-next" | "iter-next?"))
-        })
-}
-
-#[cfg(feature = "bytecode-vm")]
-pub(crate) fn foundation_bootstrap_callable_names() -> impl Iterator<Item = &'static str> {
-    structural_callable_names().chain([
-        "macroexpand-1",
-        "gensym",
-        "type",
-        "meta",
-        "with-meta",
-        "ns-publics",
-    ])
-}
-
-#[cfg(feature = "bytecode-vm")]
-pub(crate) fn bytecode_compiler_callable_names() -> impl Iterator<Item = &'static str> {
-    foundation_bootstrap_callable_names()
-        .chain(
-            NATIVE_TYPES
-                .iter()
-                .flat_map(|(_, methods)| methods.iter().copied()),
-        )
-        .chain(
-            FOUNDATION_PROTOCOLS
-                .iter()
-                .flat_map(|(_, methods)| methods.iter().map(|(name, _)| *name)),
-        )
-        .chain([
-            "disj",
-            "list?",
-            "cons?",
-            "vector?",
-            "tuple?",
-            "sequential?",
-            "map?",
-            "map-entry?",
-            "set?",
-            "keyword?",
-            "symbol?",
-            "pointer?",
-            "string?",
-            "char?",
-            "number?",
-            "integer?",
-            "long?",
-            "double?",
-            "boolean?",
-            "fn?",
-            "function?",
-            "satisfies?",
-            "coll?",
-            "iterable?",
-            "iterator?",
-            "counted?",
-            "reducible?",
-            "indexed?",
-            "associative?",
-            "findable?",
-            "lookupable?",
-            "derefable?",
-            "resettable?",
-            "casable?",
-            "watchable?",
-            "applicable?",
-            "mutable?",
-            "persistent?",
-            "bytes?",
-            "array?",
-            "object?",
-            "regexp?",
-            "uuid?",
-            "resolve",
-            "special-symbol?",
-            "the-ns",
-            "ns-name",
-        ])
-}
-
-#[cfg(feature = "bytecode-vm")]
-pub(crate) fn is_bytecode_callable(name: &str) -> bool {
-    let local = name.rsplit_once('/').map_or(name, |(_, local)| local);
-    bytecode_compiler_callable_names().any(|builtin| builtin == local)
 }
 
 pub fn with_macros<R>(

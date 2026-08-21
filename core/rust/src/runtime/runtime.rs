@@ -3,16 +3,14 @@ impl Runtime {
     fn empty() -> Runtime {
         let namespace_registry = kernel::NamespaceRegistry::new("user");
         let foundation = namespace_registry.find_or_create("std.foundation");
-        foundation.intern_with_origin(
-            "list",
-            core::native_variadic_function("list", |values| Ok(core::Value::List(values.into()))),
-            kernel::VarOrigin::RustLibrary,
-        );
-        for (name, value) in core::exception_function_values() {
-            foundation.intern_with_origin(name, value, kernel::VarOrigin::RustLibrary);
-        }
-        for (name, value) in core::basic_function_values() {
-            foundation.intern_with_origin(name, value, kernel::VarOrigin::RustLibrary);
+        for (name, value) in core::direct_callable_values()
+            .expect("runtime callable inventory and direct catalog must agree")
+        {
+            let origin = core::direct_callable_spec(name)
+                .expect("direct callable value must retain its catalog entry")
+                .origin
+                .var_origin();
+            foundation.intern_with_origin(name, value, origin);
         }
         for (name, protocol) in core::foundation_protocol_values() {
             foundation.intern(&name, protocol.clone());
@@ -40,7 +38,8 @@ impl Runtime {
             for method in *methods {
                 namespace.intern_with_origin(
                     *method,
-                    core::native_type_function_value(native_type, method),
+                    core::native_type_function_value(native_type, method)
+                        .unwrap_or_else(|error| panic!("{error}")),
                     kernel::VarOrigin::RuntimePrimitive,
                 );
             }
@@ -104,10 +103,6 @@ impl Runtime {
         runtime
             .bootstrap_foundation()
             .expect("embedded std.foundation fallback must be valid");
-        let foundation = runtime.namespace_registry.find_or_create("std.foundation");
-        for (name, value) in core::exception_function_values() {
-            foundation.intern_with_origin(name, value, kernel::VarOrigin::RuntimePrimitive);
-        }
         runtime.refer_foundation_into("user");
         runtime
     }
@@ -159,42 +154,18 @@ impl Runtime {
         for name in core::foundation_bootstrap_callable_names() {
             let symbol = crate::lang::data::Symbol::parse(name);
             if foundation.resolve(&symbol).is_none() {
-                foundation.intern_with_origin(
-                    name,
-                    core::structural_function_value(name),
-                    kernel::VarOrigin::RuntimePrimitive,
-                );
+                let value = core::direct_bootstrap_callable_value(name).unwrap_or_else(|| {
+                    panic!("missing direct Foundation bootstrap callable: {name}")
+                });
+                foundation.intern_with_origin(name, value, kernel::VarOrigin::RuntimePrimitive);
             }
         }
-        for name in core::bytecode_compiler_callable_names() {
+        for name in core::BYTECODE_PROTOCOL_PREDICATES {
             let symbol = crate::lang::data::Symbol::parse(name);
             if foundation.resolve(&symbol).is_none() {
-                if let Some(value) = core::direct_protocol_predicate_function_value(name) {
-                    foundation.intern_with_origin(
-                        name,
-                        value,
-                        kernel::VarOrigin::RuntimePrimitive,
-                    );
-                }
-            }
-        }
-    }
-
-    #[cfg(not(feature = "bytecode-vm"))]
-    fn install_structural_primitives(&mut self) {
-        self.install_structural_primitives_into("std.foundation");
-    }
-
-    fn install_structural_primitives_into(&mut self, namespace: &str) {
-        let target = self.namespace_registry.find_or_create(namespace);
-        for name in core::structural_callable_names() {
-            let symbol = crate::lang::data::Symbol::parse(name);
-            if target.resolve(&symbol).is_none() {
-                target.intern_with_origin(
-                    name,
-                    core::structural_function_value(name),
-                    kernel::VarOrigin::RuntimePrimitive,
-                );
+                let value = core::direct_protocol_predicate_function_value(name)
+                    .unwrap_or_else(|| panic!("missing direct protocol predicate: {name}"));
+                foundation.intern_with_origin(name, value, kernel::VarOrigin::RuntimePrimitive);
             }
         }
     }
@@ -273,7 +244,6 @@ impl Runtime {
                     core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
                         self.eval_text(&foundation)
                     })?;
-                    self.install_structural_primitives_into("std.foundation");
                     self.loaded_resources.insert("std.foundation".into());
                     source_fallback = true;
                 }
@@ -302,7 +272,6 @@ impl Runtime {
             core::with_definition_origin(kernel::VarOrigin::HalFallback, || {
                 self.eval_text(&foundation)
             })?;
-            self.install_structural_primitives();
             self.loaded_resources.insert("std.foundation".into());
         }
         #[cfg(not(feature = "bytecode-vm"))]
