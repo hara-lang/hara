@@ -218,6 +218,7 @@ impl WasmInterface {
                     .collect(),
                 returns: export.returns.wasm_type.as_keyword().to_owned(),
                 asynchronous: false,
+                raw_export: None,
             };
             let found = discovered.get(&export.wasm_export).ok_or_else(|| {
                 format!(

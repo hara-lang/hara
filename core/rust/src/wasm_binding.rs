@@ -179,6 +179,7 @@ impl WasmInterface {
                             .collect(),
                         returns: export.returns.wasm_type.as_keyword().to_owned(),
                         asynchronous: false,
+                        raw_export: None,
                     },
                 )
             })

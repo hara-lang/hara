@@ -196,6 +196,7 @@ fn parse_types(
             arguments: arguments.into_iter().map(str::to_owned).collect(),
             returns: results.into_iter().next().unwrap_or("void").to_owned(),
             asynchronous: false,
+            raw_export: None,
         });
     }
     Ok(())
