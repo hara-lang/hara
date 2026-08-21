@@ -3,10 +3,14 @@ set -euo pipefail
 
 rust_scope=false
 java_scope=false
+hal_scope=false
+wasm_scope=false
 
 classify_paths() {
   rust_scope=false
   java_scope=false
+  hal_scope=false
+  wasm_scope=false
 
   local path
   while IFS= read -r path; do
@@ -15,12 +19,16 @@ classify_paths() {
 
     case "$path" in
       core/rust/web/*)
+        wasm_scope=true
         ;;
       core/rust/*)
         rust_scope=true
         ;;
       core/java/*)
         java_scope=true
+        ;;
+      core/lib/*|core/spec/*)
+        hal_scope=true
         ;;
     esac
   done
@@ -34,12 +42,16 @@ emit_scope() {
     {
       printf 'rust=%s\n' "$rust_scope"
       printf 'java=%s\n' "$java_scope"
+      printf 'hal=%s\n' "$hal_scope"
+      printf 'wasm=%s\n' "$wasm_scope"
       printf 'base_sha=%s\n' "$base_sha"
       printf 'head_sha=%s\n' "$head_sha"
     } >> "$GITHUB_OUTPUT"
   else
     printf 'rust=%s\n' "$rust_scope"
     printf 'java=%s\n' "$java_scope"
+    printf 'hal=%s\n' "$hal_scope"
+    printf 'wasm=%s\n' "$wasm_scope"
     printf 'base_sha=%s\n' "$base_sha"
     printf 'head_sha=%s\n' "$head_sha"
   fi
@@ -48,21 +60,27 @@ emit_scope() {
 assert_scope() {
   local expected_rust="$1"
   local expected_java="$2"
-  shift 2
+  local expected_hal="$3"
+  local expected_wasm="$4"
+  shift 4
 
   classify_paths < <(printf '%s\n' "$@")
-  if [[ "$rust_scope" != "$expected_rust" || "$java_scope" != "$expected_java" ]]; then
-    printf 'scope mismatch: expected rust=%s java=%s, got rust=%s java=%s for %s\n' \
-      "$expected_rust" "$expected_java" "$rust_scope" "$java_scope" "$*" >&2
+  if [[ "$rust_scope" != "$expected_rust" || "$java_scope" != "$expected_java" \
+      || "$hal_scope" != "$expected_hal" || "$wasm_scope" != "$expected_wasm" ]]; then
+    printf 'scope mismatch: expected rust=%s java=%s hal=%s wasm=%s, got rust=%s java=%s hal=%s wasm=%s for %s\n' \
+      "$expected_rust" "$expected_java" "$expected_hal" "$expected_wasm" \
+      "$rust_scope" "$java_scope" "$hal_scope" "$wasm_scope" "$*" >&2
     return 1
   fi
 }
 
 self_test() {
-  assert_scope true false core/rust/src/lib.rs
-  assert_scope false true core/java/src/main/java/hara/Main.java
-  assert_scope true true core/rust/raw/src/lib.rs core/java/pom.xml
-  assert_scope false false AGENTS.md .github/WORKFLOW.md core/rust/web/hara-web.js
+  assert_scope true false false false core/rust/src/lib.rs
+  assert_scope false true false false core/java/src/main/java/hara/Main.java
+  assert_scope true true false false core/rust/raw/src/lib.rs core/java/pom.xml
+  assert_scope false false true false core/lib/src/std/foundation.hal
+  assert_scope false false false true core/rust/web/hara-web.js
+  assert_scope false false false false AGENTS.md .github/WORKFLOW.md
   printf 'connector code scope self-test: ok\n'
 }
 

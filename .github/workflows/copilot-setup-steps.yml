@@ -1,0 +1,115 @@
+name: Copilot setup steps
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/copilot-setup-steps.yml'
+      - '.github/copilot-instructions.md'
+      - '.devcontainer/post-create.sh'
+      - 'core/java/pom.xml'
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/Cargo.lock'
+      - 'core/rust/raw/Cargo.toml'
+      - 'core/rust/raw/Cargo.lock'
+      - 'core/rust/web/package.json'
+      - 'core/rust/web/package-lock.json'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/copilot-setup-steps.yml'
+      - '.github/copilot-instructions.md'
+      - '.devcontainer/post-create.sh'
+      - 'core/java/pom.xml'
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/Cargo.lock'
+      - 'core/rust/raw/Cargo.toml'
+      - 'core/rust/raw/Cargo.lock'
+      - 'core/rust/web/package.json'
+      - 'core/rust/web/package-lock.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copilot-setup-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  copilot-setup-steps:
+    name: Prepare Hara toolchains and dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out Hara
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 and Maven cache
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Set up Node 22 and npm cache
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: core/rust/web/package-lock.json
+
+      - name: Set up Rust and Wasm targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown, wasm32-wasip1
+
+      - name: Cache Rust dependencies and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/rust/target
+          key: copilot-rust-${{ runner.os }}-${{ hashFiles('core/rust/Cargo.lock') }}
+          restore-keys: |
+            copilot-rust-${{ runner.os }}-
+
+      - name: Check out the pinned specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          ref: 072914a1018f91a18e17a30bbe661a4323aad720
+          fetch-depth: 1
+
+      - name: Expose the specifications registry at the canonical sibling path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Fetch Rust dependencies
+        run: |
+          cargo fetch --locked --manifest-path core/rust/Cargo.toml
+          cargo fetch --locked --manifest-path core/rust/raw/Cargo.toml
+
+      - name: Prepare Maven dependencies
+        run: mvn -B -Ptruffle -DskipTests dependency:go-offline --file core/java/pom.xml
+
+      - name: Prepare browser-loader dependencies
+        run: npm ci --prefix core/rust/web
+
+      - name: Verify the agent environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          mvn --version | head -n 3
+          node --version
+          npm --version
+          rustc +stable --version
+          cargo +stable --version
+          test "$(node -p 'process.versions.node.split(".")[0]')" = 22
+          test "$(java -version 2>&1 | sed -n 's/.*version \"\([0-9][0-9]*\).*/\1/p' | head -n 1)" = 21
+          test -x "$HOME/.rustup/toolchains/stable-$(rustc -Vv | sed -n 's/host: //p')/bin/rustfmt" || command -v rustfmt >/dev/null
+          test -z "$(git status --porcelain --untracked-files=all)"
