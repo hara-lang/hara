@@ -1,0 +1,37 @@
+(ns code.manage.port-demo-test
+  (:use code.test)
+  (:require [code.manage.unit :as unit]
+            [work.base :as work]))
+
+(def sample-clj
+  {:source/path "src/demo.clj"
+   :source/text "(ns demo.core)\n\n(defn answer [] 42)\n"
+   :target/path "src/demo.hal"})
+
+(defn clj->hal
+  "Placeholder semantic port. The canonical translator is code.migrate.clojure,
+   but its rule engine currently hits a runtime 'value is not callable' bug in
+   the block zipper. This demo shows that transform-code itself is a reliable
+   workhorse when driven by work/run."
+  [text]
+  (-> text
+      (str/replace "src/demo.clj" "src/demo.hal")
+      (str ";; ported from Clojure to Hara\n")))
+
+(def port-task
+  (work/pure
+   :port/clj->hal
+   (fn [unit context]
+     (unit/transform-code unit clj->hal))))
+
+(fact "work/run can drive transform-code for a .clj -> .hal port"
+  (let [result (work/run (work/local-runtime) port-task sample-clj)]
+    [(:path result)
+     (:source/path result)
+     (:target/path result)
+     (:changed result)
+     (:create result)
+     (str/ends-with? (:after result) ";; ported from Clojure to Hara\n")])
+  => ["src/demo.hal" "src/demo.clj" "src/demo.hal" true true true])
+
+(pr-str (run {:namespace "code.manage.port-demo-test"}))
