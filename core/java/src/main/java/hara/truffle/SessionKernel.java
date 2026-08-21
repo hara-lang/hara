@@ -638,6 +638,7 @@ final class SessionKernel implements AutoCloseable {
     private final boolean sandboxRestricted;
     private final String kernelToken;
     private Context context;
+    private String contextFilesystemBindingToken;
     private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
     private final AtomicReference<SessionModel.SessionState> state =
@@ -647,6 +648,8 @@ final class SessionKernel implements AutoCloseable {
         SessionModel.SessionMountId id,
         FilesystemRuntimeBinding runtime,
         HaraMountedFileSystem sourceFilesystem) {}
+
+    private record ContextLease(Context context, String filesystemBindingToken) {}
 
     private Session(
         SessionModel.SessionSpec spec,
@@ -662,7 +665,9 @@ final class SessionKernel implements AutoCloseable {
       this.instrumentationCleanup = instrumentationCleanup;
       this.sandboxRestricted = sandboxRestricted;
       this.kernelToken = kernelToken;
-      context = createContext(null);
+      ContextLease initial = createContext(null);
+      context = initial.context();
+      contextFilesystemBindingToken = initial.filesystemBindingToken();
       activate();
     }
 
@@ -686,7 +691,7 @@ final class SessionKernel implements AutoCloseable {
       attachFilesystem(new AttachedFilesystem(mountId, runtime, sourceFilesystem));
     }
 
-    private Context createContext(AttachedFilesystem filesystem) {
+    private ContextLease createContext(AttachedFilesystem filesystem) {
       IOAccess.Builder io = IOAccess.newBuilder().allowHostSocketAccess(authority.hostNetwork);
       if (filesystem == null) {
         io.allowHostFileAccess(authority.hostFilesystem);
@@ -695,19 +700,41 @@ final class SessionKernel implements AutoCloseable {
       } else {
         io.allowHostFileAccess(false).fileSystem(filesystem.sourceFilesystem());
       }
-      Context.Builder builder =
-          Context.newBuilder(HaraLanguage.ID)
-              .option("hara.SandboxRestricted", Boolean.toString(sandboxRestricted))
-              .allowCreateProcess(authority.hostProcess)
-              .allowIO(io.build());
-      if (kernelToken != null) builder.option("hara.KernelToken", kernelToken);
-      if (authority.project && project != null && filesystem == null) {
-        builder.currentWorkingDirectory(project.root());
+      String filesystemBindingToken =
+          filesystem == null ? null : FilesystemContextBindings.publish(filesystem.runtime());
+      try {
+        Context.Builder builder =
+            Context.newBuilder(HaraLanguage.ID)
+                .option("hara.SandboxRestricted", Boolean.toString(sandboxRestricted))
+                .allowCreateProcess(authority.hostProcess)
+                .allowIO(io.build());
+        if (kernelToken != null) builder.option("hara.KernelToken", kernelToken);
+        if (filesystemBindingToken != null) {
+          builder.option("hara.FilesystemBindingToken", filesystemBindingToken);
+        }
+        if (authority.project && project != null && filesystem == null) {
+          builder.currentWorkingDirectory(project.root());
+        }
+        if (authority.reflection && project != null) {
+          builder.allowHostAccess(HostAccess.ALL).allowHostClassLookup(name -> true);
+        }
+        return new ContextLease(builder.build(), filesystemBindingToken);
+      } catch (Throwable error) {
+        FilesystemContextBindings.discard(filesystemBindingToken);
+        throw error;
       }
-      if (authority.reflection && project != null) {
-        builder.allowHostAccess(HostAccess.ALL).allowHostClassLookup(name -> true);
+    }
+
+    private static void closeContext(ContextLease lease) {
+      closeContext(lease.context(), lease.filesystemBindingToken());
+    }
+
+    private static void closeContext(Context context, String filesystemBindingToken) {
+      try {
+        if (context != null) context.close(true);
+      } finally {
+        FilesystemContextBindings.discard(filesystemBindingToken);
       }
-      return builder.build();
     }
 
     private void requireActive() {
@@ -721,22 +748,24 @@ final class SessionKernel implements AutoCloseable {
     void attachFilesystem(AttachedFilesystem attached) {
       requireActive();
       if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + id());
-      Context replacement = createContext(attached);
+      ContextLease replacement = createContext(attached);
       AttachedFilesystem previousFilesystem;
       synchronized (this) {
         if (state.get() != SessionModel.SessionState.ACTIVE) {
-          replacement.close(true);
+          closeContext(replacement);
           requireActive();
         }
         if (activeEvaluations.get() != 0) {
-          replacement.close(true);
+          closeContext(replacement);
           throw new IllegalArgumentException("SESSION_BUSY " + id());
         }
         Context previous = context;
+        String previousToken = contextFilesystemBindingToken;
         previousFilesystem = filesystem;
-        context = replacement;
+        context = replacement.context();
+        contextFilesystemBindingToken = replacement.filesystemBindingToken();
         filesystem = attached;
-        previous.close(true);
+        closeContext(previous, previousToken);
       }
       if (previousFilesystem != null) previousFilesystem.runtime().close();
     }
@@ -744,22 +773,24 @@ final class SessionKernel implements AutoCloseable {
     SessionModel.SessionMountId detachFilesystem() {
       requireActive();
       if (activeEvaluations.get() != 0) throw new IllegalArgumentException("SESSION_BUSY " + id());
-      Context replacement = createContext(null);
+      ContextLease replacement = createContext(null);
       AttachedFilesystem released;
       synchronized (this) {
         if (state.get() != SessionModel.SessionState.ACTIVE) {
-          replacement.close(true);
+          closeContext(replacement);
           requireActive();
         }
         if (activeEvaluations.get() != 0) {
-          replacement.close(true);
+          closeContext(replacement);
           throw new IllegalArgumentException("SESSION_BUSY " + id());
         }
         Context previous = context;
+        String previousToken = contextFilesystemBindingToken;
         released = filesystem;
-        context = replacement;
+        context = replacement.context();
+        contextFilesystemBindingToken = replacement.filesystemBindingToken();
         filesystem = null;
-        previous.close(true);
+        closeContext(previous, previousToken);
       }
       if (released != null) released.runtime().close();
       return released == null ? null : released.id();
@@ -1024,15 +1055,18 @@ final class SessionKernel implements AutoCloseable {
       if (!state.compareAndSet(SessionModel.SessionState.ACTIVE, SessionModel.SessionState.CLOSED))
         return;
       Context ownedContext;
+      String ownedToken;
       AttachedFilesystem ownedFilesystem;
       synchronized (this) {
         ownedContext = context;
+        ownedToken = contextFilesystemBindingToken;
         ownedFilesystem = filesystem;
         context = null;
+        contextFilesystemBindingToken = null;
         filesystem = null;
       }
       try {
-        if (ownedContext != null) ownedContext.close(true);
+        closeContext(ownedContext, ownedToken);
       } finally {
         try {
           if (ownedFilesystem != null) {
