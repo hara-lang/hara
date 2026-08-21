@@ -19,7 +19,7 @@ contract.
 
 A coordinate is the binary projection of:
 
-```clojure
+```hara
 [:schema :qualified/id non-negative-version "sha256:..."]
 ```
 

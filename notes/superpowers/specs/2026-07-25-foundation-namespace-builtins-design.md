@@ -54,7 +54,7 @@ renamed rather than retained as compatibility aliases.
 
 Foundation configuration lives in one optional `:config` clause:
 
-```clojure
+```hara
 (ns app
   (:config {:blank true
             :builtins [host-clock]
@@ -70,7 +70,7 @@ Foundation configuration lives in one optional `:config` clause:
 
 The only supported keys are `:blank`, `:builtins`, and `:intrinsics`:
 
-```clojure
+```hara
 {:blank boolean
  :builtins [unqualified-symbol ...]
  :intrinsics
@@ -82,7 +82,7 @@ The only supported keys are `:blank`, `:builtins`, and `:intrinsics`:
 
 When `:config` is absent, its effective value is:
 
-```clojure
+```hara
 {:blank false
  :builtins []
  :intrinsics :all}
@@ -107,7 +107,7 @@ minimal namespaces. Hara does not need Clojure's `:refer-clojure` clause.
 `:intrinsics` controls only automatic aliases for the six separate foundation libraries. It
 does not control host exports and it does not grant file, process, or other capabilities.
 
-```clojure
+```hara
 (ns app
   (:config
    {:intrinsics {:exclude [bytes os]
@@ -126,7 +126,7 @@ The option is singular `:alias`, not `:aliases`.
 
 `:builtins` activates an exact set of host exports for the namespace being declared:
 
-```clojure
+```hara
 (ns std.foundation.string
   (:config
    {:builtins [length upper lower trim split]}))

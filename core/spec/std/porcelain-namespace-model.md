@@ -29,7 +29,7 @@ A standard namespace:
 
 Example:
 
-```clojure
+```hara
 (ns std.codec.hex)
 
 (defn encode ...)
@@ -39,7 +39,7 @@ Example:
 Implementation helpers for a standard namespace belong in an internal domain or
 utility owner:
 
-```clojure
+```hara
 (ns std.codec.hex.util
   (:config {:role :internal}))
 
@@ -52,7 +52,7 @@ utility owner:
 An internal namespace contains ordinary public, inspectable, directly testable
 implementation Vars:
 
-```clojure
+```hara
 (ns std.format.table.util
   (:config {:role :internal}))
 
@@ -76,7 +76,7 @@ Rules:
 
 A facade is publication-only:
 
-```clojure
+```hara
 (ns std.format
   (:config {:role :facade})
   (:require [std.format.common]
@@ -103,7 +103,7 @@ Adapters and macros move to an internal API owner and are then published.
 
 The require grammar gains one option:
 
-```clojure
+```hara
 [example.codec.parse :as parse :access true]
 ```
 
@@ -122,13 +122,13 @@ documentation. Cross-project access requires it.
 
 Re-exporting another project's internal surface requires both:
 
-```clojure
+```hara
 (:require [other.project.internal :access true])
 ```
 
 and an explicit publication form:
 
-```clojure
+```hara
 (intern-in other.project.internal/selected)
 ```
 
@@ -143,16 +143,31 @@ separately.
 `intern-all` is used only for a coherent owner whose complete public surface is
 intended to become part of the target API:
 
-```clojure
+```hara
 (intern-all std.format.table)
 ```
 
 `intern-in` is used for selected or renamed publication:
 
-```clojure
+```hara
 (intern-in std.typed.schema/normalize-with
            [schema std.typed.schema/normalize])
 ```
+
+Supported, recommended API Vars are marked at their owning definitions:
+
+```hara
+^{:public true}
+(defn encode [value] ...)
+```
+
+`:public true` is a priority signal for autocomplete, documentation, and API
+discovery tools. It does not alter Var visibility, namespace role, access, or
+publication. An ordinary unmarked definition remains resolvable and directly
+testable but is not prioritized as recommended API. Internal namespaces remain
+internal regardless of the marker, and facades still publish exclusively with
+`intern-all` and `intern-in`. Publication must preserve the owner Var's
+`:public` metadata.
 
 The implementation must provide:
 
@@ -171,7 +186,7 @@ move is an API expansion and is prohibited.
 
 The following top-level forms are deprecated:
 
-```clojure
+```hara
 defn-
 defmacro-
 (def ^:private ...)
@@ -295,7 +310,7 @@ source forms directly.
 
 `tool.lint` adds:
 
-```clojure
+```hara
 :tool.lint/private-top-level-definition
 :tool.lint/private-top-level-macro
 :tool.lint/private-top-level-var
@@ -308,7 +323,7 @@ source forms directly.
 
 The namespace declaration model must retain:
 
-```clojure
+```hara
 {:namespace/name example.codec
  :namespace/role :facade
  :namespace/requires
@@ -322,7 +337,7 @@ equivalent errors.
 
 `tool.project` resource descriptors gain:
 
-```clojure
+```hara
 :resource/project
 :resource/role
 :resource/test?

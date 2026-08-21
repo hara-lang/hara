@@ -466,7 +466,7 @@ early-binding behavior:
 Milestone 4 supersedes the issue-#202 declare-or-error experiment. Ordinary
 callables are Vars and a namespace may define only names that it owns:
 
-```clojure
+```hara
 (ns protected)
 (declare count) ; error: referred std.foundation/count is protected
 

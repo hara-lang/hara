@@ -14,7 +14,7 @@ work.flow.make         reloadable make-plan flow
 
 There is one declaration form:
 
-```clojure
+```hara
 (ns app.tasks
   (:require [work.base :refer [def.work]]
             [work.flow.task]))
@@ -47,7 +47,7 @@ value only after compilation succeeds.
 
 `work.flow.make` registers `[:make]`:
 
-```clojure
+```hara
 (ns build
   (:require [work.base :refer [def.work]]
             [work.flow.make :as make]))
@@ -76,7 +76,7 @@ Make execution remains explicit through `work.flow.make/run`, `build`, and
 
 A flow is an ordinary registered map:
 
-```clojure
+```hara
 {:flow/path       [:family]
  :flow/version    1
  :flow/product    :work-or-host

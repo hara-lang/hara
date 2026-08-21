@@ -18,7 +18,7 @@ This file is the condensed implementation list from the repository-wide façade 
 
 Target shape:
 
-```clojure
+```hara
 (ns std.format
   (:config {:role :facade})
   (:require [std.format.common]
@@ -51,7 +51,7 @@ This preserves the existing supported API while making every implementation func
 
 Target shape:
 
-```clojure
+```hara
 (ns workspace
   (:config {:role :facade})
   (:require [workspace.core]

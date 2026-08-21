@@ -101,7 +101,7 @@ The use of `ns-publics` or `intern-var` is part of environment bootstrapping, an
 
 The current façade contains eight direct aliases from three complete owner surfaces. They should become:
 
-```clojure
+```hara
 (f/intern-all std.format.common
               std.format.table
               std.format.terminal)
@@ -109,7 +109,7 @@ The current façade contains eight direct aliases from three complete owner surf
 
 The `std.format.report` owner is different. Importing its entire public surface would introduce a `report` Var that collides with the façade's local `report` adapter. Use:
 
-```clojure
+```hara
 (f/intern-in report-format/report-lines)
 ```
 
@@ -119,13 +119,13 @@ and keep the local adapter explicit.
 
 The complete `workspace.core` public surface should become:
 
-```clojure
+```hara
 (f/intern-all workspace.core)
 ```
 
 The selected `workspace.model` surface should become:
 
-```clojure
+```hara
 (f/intern-in model/area
              model/component
              model/component-view
@@ -195,7 +195,7 @@ The correct change point is the governing generator or ledger entry. Hand-conver
 
 Capture before and after values equivalent to:
 
-```clojure
+```hara
 (vec (sort-by str (keys (ns-publics 'target.namespace))))
 ```
 

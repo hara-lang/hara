@@ -64,7 +64,7 @@ compact query
 
 `std.db.protocol/IDatabase` defines engine, provider, metadata, exec, query and close. `std.db` exposes:
 
-```clojure
+```hara
 (db/engine connection)
 (db/provider connection)
 (db/info connection)

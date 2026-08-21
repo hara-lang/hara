@@ -21,7 +21,7 @@ Admission verifies the same identity and graph evidence produced by
 
 One admitted entry is portable data equivalent to:
 
-```clojure
+```hara
 {:schema/coordinate
  [:schema :model/profile 2 "sha256:..."]
  :schema/dependencies
@@ -36,7 +36,7 @@ is an immutable identity conflict.
 
 One admitted component is portable data equivalent to:
 
-```clojure
+```hara
 {:component/id "sha256:..."
  :component/members
  [[:schema :model/profile 2 "sha256:..."]]
@@ -45,7 +45,7 @@ One admitted component is portable data equivalent to:
 
 The component identity is exactly the existing #901 operation:
 
-```clojure
+```hara
 (str "sha256:"
      (Crypto/sha256
       (str/encode-utf8

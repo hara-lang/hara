@@ -39,7 +39,7 @@ metadata is a later slice.
 
 For:
 
-```clojure
+```hara
 (+ 1 (* 2 3))
 ```
 
@@ -48,7 +48,7 @@ span, and project its actual result `6` before the outer form returns `7`.
 
 A lexical fixture verifies that resolving `x` inside:
 
-```clojure
+```hara
 (let [x 41] (+ x 1))
 ```
 

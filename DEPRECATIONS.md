@@ -10,7 +10,7 @@ loadable only to support the tracked migration and external source compatibility
 
 The deprecated forms are:
 
-```clojure
+```hara
 (defn- helper ...)
 (defmacro- helper ...)
 (def ^:private helper ...)
@@ -19,7 +19,7 @@ The deprecated forms are:
 
 Lexically local implementation remains supported and is not deprecated:
 
-```clojure
+```hara
 (letfn [(helper [value] ...)]
   ...)
 
@@ -32,7 +32,7 @@ Lexically local implementation remains supported and is not deprecated:
 Implementation Vars are ordinary public Vars in a namespace declared as
 `:internal`:
 
-```clojure
+```hara
 (ns example.codec.parse
   (:config {:role :internal}))
 
@@ -42,7 +42,7 @@ Implementation Vars are ordinary public Vars in a namespace declared as
 
 A supported namespace publishes the intended API explicitly:
 
-```clojure
+```hara
 (ns example.codec
   (:config {:role :facade})
   (:require [example.codec.model]
@@ -58,7 +58,7 @@ A supported namespace publishes the intended API explicitly:
 Intentional cross-project use of an internal namespace is acknowledged at the
 dependency edge:
 
-```clojure
+```hara
 (ns application.experiment
   (:require [example.codec.parse :as parse :access true]))
 ```

@@ -325,7 +325,7 @@ internal helpers in `core.rs:3344`, but `eval` also exposes them publicly as
 
 `lib/src/std/foundation.hal` now declares the builtins it imports:
 
-```clojure
+```hara
 (ns std.foundation
   (:config
    {:builtins

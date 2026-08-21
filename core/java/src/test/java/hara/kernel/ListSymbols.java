@@ -76,7 +76,7 @@ public class ListSymbols {
         }
         // We could print arglists too if we parsed them, but let's stick to names for
         // now.
-        System.out.println("```clojure");
+        System.out.println("```hara");
         System.out.println("(" + name + " ...)");
         System.out.println("```");
       }

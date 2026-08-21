@@ -137,7 +137,7 @@ report). One pure function in `std.typed.schema` normalizes surface → normal f
 
 Surface syntax — keywords for primitives, vectors for composites:
 
-```clojure
+```hara
 :any :nil :bool :num :str :keyword :symbol :list :vector :map :set :fn :atom :bytes :promise
 [:or :str :nil]                    ;; union
 [:maybe :str]                      ;; sugar for [:or T :nil]
@@ -152,7 +152,7 @@ Surface syntax — keywords for primitives, vectors for composites:
 Normal form — maps with a `:kind` key (the xtalk.typed representation, minus the `:xt/`
 primitive namespacing):
 
-```clojure
+```hara
 {:kind :primitive :name :str}
 {:kind :union :types [{:kind :primitive :name :str} {:kind :primitive :name :nil}]}
 {:kind :maybe :item {:kind :primitive :name :str}}
@@ -218,7 +218,7 @@ stage.
 
 Findings are data, kondo-compatible in shape:
 
-```clojure
+```hara
 {:file "src/foo.hal" :row 12 :col 5 :end-row 12 :end-col 9
  :level :warning            ;; or :error
  :type :type-mismatch       ;; :arity | :unresolved-symbol | :type-mismatch | :unused-binding
@@ -272,7 +272,7 @@ now so nothing needs rework later.
 
 Worked examples — adding rules and types, cheapest tier first:
 
-```clojure
+```hara
 ;; 1. Config tier (data only) — project.hal
 (defproject my.app
   {:source-paths ["src"]

@@ -39,7 +39,7 @@ any Substrate transport. Legacy IDs such as `@xt.db/kernel-init` are retained.
 
 `std.db.node.transport` defines a host-neutral endpoint contract:
 
-```clojure
+```hara
 {:send   (fn [message] ...)
  :listen (fn [listener] ...)
  :close  (fn [] ...)}

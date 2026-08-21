@@ -51,7 +51,7 @@ protocol.
 
 ## IWorkExecutor
 
-```clojure
+```hara
 (defprotocol IWorkExecutor
   (work-execute [executor request]))
 ```
@@ -61,7 +61,7 @@ protocol.
 
 A leaf request is a map. The stable vocabulary is expected to include:
 
-```clojure
+```hara
 {:work/request :execute-leaf
  :run/id optional-run-id
  :work/root work-root
@@ -78,7 +78,7 @@ A leaf request is a map. The stable vocabulary is expected to include:
 
 The target profiles are explicit:
 
-```clojure
+```hara
 {:target/type :local :target/fn local-callable}
 {:target/type :qualified :target/name portable-name}
 {:target/type :pinned
@@ -138,7 +138,7 @@ These are evaluator/store laws, not new methods on `IWorkExecutor`,
 
 ## IWorkStore
 
-```clojure
+```hara
 (defprotocol IWorkStore
   (work-query [store query])
   (work-transact [store transition]))
@@ -156,7 +156,7 @@ checkpoint load and list
 A query is an immutable map whose discriminator is supplied by
 `:work/query`. The baseline query vocabulary is exactly:
 
-```clojure
+```hara
 {:work/query :run/load :run/id id}
 {:work/query :run/list :work/where where}
 {:work/query :event/list :run/id id}
@@ -205,7 +205,7 @@ separately implement lifecycle protocols.
 Runtime is a reusable immutable map or record that assembles capabilities and
 policy:
 
-```clojure
+```hara
 {:work/executor executor
  :work/store store-or-nil
  :work/registry registry-or-nil

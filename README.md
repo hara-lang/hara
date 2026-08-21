@@ -186,7 +186,7 @@ identities, so durable runtimes can checkpoint each package boundary. The
 process capability is supplied through runtime context and argv is never
 interpreted by a shell.
 
-```clojure
+```hara
 (require '[code.deploy :as deploy])
 (require '[std.work :as work])
 
@@ -218,7 +218,7 @@ interpreted by a shell.
 Tests and remote hosts can replace process authority without changing the work
 definition:
 
-```clojure
+```hara
 (work/run runtime
           deploy/package
           {:selector :all

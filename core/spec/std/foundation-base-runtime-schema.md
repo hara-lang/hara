@@ -160,7 +160,7 @@ do not inherit them.
 
 Metadata may point at a schema-data Var:
 
-```clojure
+```hara
 (def description [:int])
 (defn ^{:schema #'description} customer-name [customer] (:name customer))
 ```
@@ -201,7 +201,7 @@ schema errors, contract snapshotting, and interpreted/bytecode parity.
 `std.typed.registry` owns immutable registry data. A canonical registry has the
 portable shape:
 
-```clojure
+```hara
 {:registry/type :std.typed.registry/registry
  :registry/namespace demo
  :registry/aliases {model app.model}
@@ -217,7 +217,7 @@ source.
 
 The portable schema layer provides:
 
-```clojure
+```hara
 (schema/normalize-with surface registry)
 (schema/reference-names surface registry)
 (schema/resolve-reference surface registry)
@@ -245,7 +245,7 @@ findings, not runtime exceptions.
 `std.typed.explain` converts schema findings into strict portable Failure data.
 Every Failure contains all of these fields:
 
-```clojure
+```hara
 {:failure/code keyword
  :failure/path vector
  :failure/in vector

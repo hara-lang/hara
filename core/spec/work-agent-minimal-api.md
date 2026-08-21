@@ -30,14 +30,14 @@ replaceable, and protocols exist only at capability boundaries.
 
 A minimal agent is:
 
-```clojure
+```hara
 {:agent/id :compiler
  :agent/driver compiler-driver}
 ```
 
 A richer agent composes capabilities without changing the algebra:
 
-```clojure
+```hara
 {:agent/id :chief-research-agent
  :agent/driver llm-agent-driver
  :agent/coordinator ignatius

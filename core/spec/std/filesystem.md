@@ -14,7 +14,7 @@ The filesystem surface has three layers:
 
 Every observable filesystem path is a canonical absolute logical path:
 
-```clojure
+```hara
 (std.lib.fs.path/normalise "src//./main.hal")
 ;; => "/src/main.hal"
 ```
@@ -39,7 +39,7 @@ The portable `std.lib.fs` and `std.lib.fs.walk` facades are direct-style. They d
 
 Both levels remain available:
 
-```clojure
+```hara
 (fs/read-bytes "/data.bin")
 ;; => bytes
 
@@ -51,7 +51,7 @@ The result of `fs/read-bytes` is already a byte value, so `(deref (fs/read-bytes
 
 Provider failures contain stable data:
 
-```clojure
+```hara
 {:ex/code        :file/not-found
  :file/operation :read
  :file/path      "/missing"
@@ -86,7 +86,7 @@ Every valid effectful call at this layer returns a promise.
 
 The native options are:
 
-```clojure
+```hara
 write          {:mode :create|:replace|:append, :parents? false}
 mkdir          {:parents? true, :exists-ok? true}
 delete         {:missing-ok? false}
@@ -98,7 +98,7 @@ temp-directory {:prefix "tmp"}
 
 `stat` and `entries` fulfill with no-follow metadata maps:
 
-```clojure
+```hara
 {:path        "/dir/item"
  :name        "item"
  :type        :file | :directory | :symlink | :other
@@ -115,7 +115,7 @@ temp-directory {:prefix "tmp"}
 
 Require the portable facade and path algebra explicitly:
 
-```clojure
+```hara
 (ns example.files
   (:require [std.lib.fs :as fs]
             [std.lib.fs.path :as path]
@@ -135,7 +135,7 @@ copy-single copy copy-into move delete
 
 These functions return direct values:
 
-```clojure
+```hara
 (fs/create-directory "/build" {:parents? true})
 ;; => "/build"
 
@@ -162,7 +162,7 @@ Result shapes are:
 
 Copy defaults are non-destructive:
 
-```clojure
+```hara
 {:replace? false
  :parents? false
  :preserve-modified? false}
@@ -170,7 +170,7 @@ Copy defaults are non-destructive:
 
 Delete defaults are also non-destructive:
 
-```clojure
+```hara
 {:recursive? false
  :missing-ok? false}
 ```
@@ -185,7 +185,7 @@ No parallel asynchronous `std.lib.fs` compatibility namespace exists. Applicatio
 
 `std.lib.fs.walk/walk` traverses `File/entries` in canonical lexical order and returns a vector. It never follows symbolic links.
 
-```clojure
+```hara
 (walk/walk "/src"
            {:include-root? false
             :max-depth 3
@@ -195,7 +195,7 @@ No parallel asynchronous `std.lib.fs` compatibility namespace exists. Applicatio
 
 Options are:
 
-```clojure
+```hara
 {:include-root? false
  :max-depth nil
  :include nil

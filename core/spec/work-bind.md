@@ -7,14 +7,14 @@ Status: implementation contract for #880. Compiler equivalence is tracked by #80
 `work/bind` is the canonical Work operation for cases where one Work result
 determines the next Work value at runtime.
 
-```clojure
+```hara
 (work/bind source continuation)
 (work/bind options source continuation)
 ```
 
 The normalized shape is:
 
-```clojure
+```hara
 {:op :bind
  :id stable-id
  :source source-work

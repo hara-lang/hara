@@ -15,6 +15,106 @@ Use `$hara-postgres` for native PostgreSQL DSL source, `$hara-xtalk` for XTalk
 or emitter work, `$hara-xtalk-compatibility` for target parity, and
 `$hara-dev-spec-writer` for language specifications.
 
+## Namespace roles and publication
+
+Do not add top-level `defn-`, `defmacro-`, or private Vars to `.hal` source.
+Implementation functions belong in an explicitly internal namespace and remain
+ordinary, inspectable, directly testable definitions:
+
+```hara
+(ns example.codec.internal
+  (:config {:role :internal}))
+```
+
+A supported porcelain namespace declares `:facade`, contains no definitions or
+load-time effects, and publishes a coherent owner with `intern-all`:
+
+```hara
+(ns example.codec
+  (:config {:role :facade})
+  (:require [example.codec.internal]))
+
+(intern-all example.codec.internal)
+```
+
+Use `intern-in` instead when only selected symbols are supported. Never convert
+a private helper to public inside an `intern-all` owner without first deciding
+that it belongs to the exported API; move unsupported helpers to another
+`:internal` owner.
+
+Mark every supported, recommended API Var at its owning definition:
+
+```hara
+^{:public true}
+(defn encode [value] ...)
+```
+
+Autocomplete and documentation tools use `:public true` to prioritize these
+Vars. The marker does not change visibility, namespace role, access, or
+publication. Ordinary unmarked definitions remain resolvable and directly
+testable but are not recommended API. Put the marker on the owner; `intern-all`
+and `intern-in` must preserve it when a facade publishes the Var.
+
+## Reversible state and transformations
+
+Every state-owning component must expose a deterministic reset, teardown, or
+snapshot/restore boundary. It must restore the documented baseline after normal
+use, partial initialization, and failure, and repeated reset/teardown calls must
+be safe. Stateful tests start from that baseline and restore it on every exit
+path.
+
+Every data-format transformation has a tested inverse: encode/decode,
+parse/render, serialize/deserialize, or the domain-equivalent pair. Test both
+round-trip directions where the representations are equivalent. If a boundary
+is intentionally lossy or canonicalizing, document the lost information,
+retain sufficient source or provenance to restore/reconstruct the prior form,
+and test canonicalization for idempotence.
+
+## Corresponding unit tests
+
+Source and tests are a required pair. A source namespace under `core/lib/src`
+or `core/lib/src-lang` has a test namespace at the same relative path under the
+corresponding `core/lib/test` or `core/lib/test-lang` root, using the
+`*_test.hal` filename. Every function or macro, including ordinary definitions
+in `:internal` namespaces, must have a corresponding test block identified by
+`^{:refer namespace/symbol}` and containing a real behavioral assertion.
+
+The first post-implementation action is to run the native scaffold, before
+hand-writing or reorganising tests:
+
+```shell
+hara --project core --offline manage scaffold namespace.name
+hara --project core --offline manage scaffold namespace.name --write
+```
+
+The first command previews the paired test-file edit; the second applies it.
+For bootstrap, `std.native.*`, and `std.protocol.*` seams that use `Test/run`
+blocks, use `std.foundation.bootstrap/scaffold` and its coverage report.
+
+A generated `fact` without an assertion or an empty `Test/run` block is a
+pending test, not coverage. Replace every generated stub with meaningful
+assertions, run the path-matched focused test, then use `code.manage`'s
+`incomplete`, `unchecked`, or `pedantic` report as appropriate to confirm the
+changed namespace has no missing or placeholder tests. A source change is not
+complete while its corresponding tests are absent, pending, or failing.
+
+Scaffolding inventories the tests that must be written; it does not author
+them. Read each implementation, identify its semantic contract, and hand-write
+the permanent test body with the same care as the source. Assert exact stable
+results rather than merely a broad type, truthiness, non-nil, successful
+delivery, or absence of an exception. Cover the function's meaningful branches
+and boundaries, expected failures, observable state transitions, cleanup or
+reset behavior, and inverse or round-trip properties where applicable. A broad
+predicate is appropriate only when that predicate is itself the documented
+contract.
+
+Prove that each new or materially changed test can detect a regression. Run it
+against the pre-change behavior or a deliberately incorrect candidate or
+expectation and observe the focused test fail; then restore the intended code
+and assertion and observe it pass. One corresponding test block per function
+is the minimum index into the source, not a limit on the assertions needed to
+describe its behavior.
+
 ## Layout
 
 - `core/` — language runtime source code:

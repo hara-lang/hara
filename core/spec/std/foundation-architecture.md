@@ -35,7 +35,7 @@ The schema-v2 API manifest records native static objects separately from loadabl
 
 For example:
 
-```clojure
+```hara
 (Edn/read "{:a 1}")
 (Json/write {"a" 1})
 (Crypto/sha256 bytes)

@@ -16,7 +16,7 @@ This note formalises the preferred Hara namespace structure and surveys the repo
 
 Omitting `:role` means `:standard`. Internal and facade namespaces declare it explicitly:
 
-```clojure
+```hara
 (ns example.codec.parse
   (:config {:role :internal}))
 
@@ -35,7 +35,7 @@ Omitting `:role` means `:standard`. Internal and facade namespaces declare it ex
 
 ### Intentional internal access
 
-```clojure
+```hara
 (ns another.project.experiment
   (:require [example.codec.parse :as parse :access true]))
 ```
@@ -58,13 +58,13 @@ Removing `defn-` by merely changing it to `defn` is safe only when the namespace
 
 If a facade contains:
 
-```clojure
+```hara
 (intern-all example.codec.parse)
 ```
 
 then every public Var in `example.codec.parse` is external. Helpers that should remain implementation details must move to another internal namespace:
 
-```clojure
+```hara
 (ns example.codec.parse.util
   (:config {:role :internal}))
 
@@ -340,7 +340,7 @@ The `std.dom.*` and `db.text.*` families contain many implementation-shaped name
 
 Create one portable namespace-declaration parser, preferably under `std.block.namespace`, that returns:
 
-```clojure
+```hara
 {:namespace/name ...
  :namespace/role :standard
  :namespace/requires
@@ -372,7 +372,7 @@ Project resource registration currently records namespace name, path and source.
 
 Add findings for:
 
-```clojure
+```hara
 :tool.lint/private-top-level-definition
 :tool.lint/private-top-level-macro
 :tool.lint/private-top-level-var
