@@ -1,0 +1,90 @@
+(ns std.lib.zip.conformance
+  (:require [tool.sh :as sh]
+            [std.lib.fs :as fs]
+            [std.foundation.string :as str]
+            [std.lib.zip]))
+
+(def +fixture-path+ "spec/fixtures/std-lib-zip/conformance.edn")
+(def +foundation-runner+
+  ["./lein" "run" "-m" "clojure.main/main" "scripts/std_lib_zip_conformance.clj"])
+
+(defn foundation-root
+  "Returns the absolute path to the Foundation base checkout."
+  []
+  (-> (sh/run ["realpath" "../../../reference/foundation-base"])
+      :stdout
+      str/trim))
+
+(defn foundation-fixture-path
+  "Returns the absolute path to the shared fixture corpus."
+  []
+  (-> (sh/run ["realpath" "core/spec/fixtures/std-lib-zip/conformance.edn"])
+      :stdout
+      str/trim))
+
+(defn load-fixtures
+  "Reads the shared EDN fixture corpus."
+  ([]
+   (load-fixtures +fixture-path+))
+  ([path]
+   (Edn/read (str/decode-utf8 (fs/read-bytes path)))))
+
+(defn evaluate-in-hara
+  "Evaluates one fixture expression in the Hara runtime."
+  [fixture]
+  (let [ns-sym (:ns fixture)
+        temp-ns (symbol (str ns-sym "-conformance"))]
+    (load-string (str "(require [" ns-sym "]) (ns " temp-ns " (:require [" ns-sym " :refer :all])) " (:expr fixture)))))
+
+
+(defn run-foundation
+  "Invokes the Foundation Clojure runner and returns an EDN result map."
+  [fixture-path foundation-root]
+  (let [result (sh/run (vec (concat +foundation-runner+ [fixture-path]))
+                       {:cwd foundation-root})]
+    (if (not= 0 (:exit result))
+      (throw (ex :dependency result :ex/message "Foundation conformance runner failed"))
+      (Edn/read (:stdout result)))))
+
+(defn compare-results
+  "Returns a comparison entry for one fixture."
+  [id expected hara-actual foundation-actual]
+  {:id id
+   :expected expected
+   :hara hara-actual
+   :foundation foundation-actual
+   :match (= hara-actual foundation-actual)})
+
+(defn run-corpus
+  "Runs every fixture through Hara and Foundation and returns a report."
+  ([]
+   (run-corpus +fixture-path+ (foundation-fixture-path) (foundation-root)))
+  ([fixture-path foundation-fixture-path foundation-root]
+   (let [fixtures (load-fixtures fixture-path)
+         foundation-results (run-foundation foundation-fixture-path foundation-root)
+         entries (mapv (fn [fixture]
+                         (let [id (:id fixture)
+                               expected (:expected fixture)
+                               hara-actual (try
+                                             (evaluate-in-hara fixture)
+                                             (catch Throwable error
+                                               {:error (str error)}))
+                               foundation-actual (get-in foundation-results [id :actual])
+                               foundation-error (get-in foundation-results [id :error])]
+                           (compare-results id expected hara-actual
+                                            (if foundation-error
+                                              {:error foundation-error}
+                                              foundation-actual))))
+                       fixtures)
+         mismatches (filterv (fn [entry] (not (:match entry))) entries)
+         errors (filterv (fn [entry]
+                           (or (and (map? (:hara entry)) (:error (:hara entry)))
+                               (and (map? (:foundation entry)) (:error (:foundation entry)))))
+                         entries)]
+     {:conformant? (and (empty? mismatches) (empty? errors))
+      :total (count fixtures)
+      :mismatched (count mismatches)
+      :errors (count errors)
+      :entries entries
+      :mismatches mismatches
+      :errors-detail errors})))

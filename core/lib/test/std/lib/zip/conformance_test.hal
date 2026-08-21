@@ -1,0 +1,67 @@
+(ns std.lib.zip.conformance-test
+  (:require [std.lib.zip.conformance :refer :all]
+            [std.lib.zip]
+            [code.test.base.process :as process]
+            [code.test.checker.common :as checker]))
+
+(defn conformance-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer std.lib.zip.conformance/load-fixtures :added "3.0"}
+(Test/run
+ [{:expected true
+   :name "loads the shared fixture corpus"
+   :test (fn [] (let [fixtures (load-fixtures)]
+                  (and (vector? fixtures)
+                       (= "std/lib/zip/zipper?-000" (:id (first fixtures))))))}]
+ conformance-test-check)
+
+^{:refer std.lib.zip.conformance/evaluate-in-hara :added "3.0"}
+(Test/run
+ [{:expected false
+   :name "evaluates a fixture expression in the Hara runtime"
+   :test (fn [] (evaluate-in-hara {:ns 'std.lib.zip :expr "(zipper? 1)"}))}]
+ conformance-test-check)
+
+^{:refer std.lib.zip.conformance/compare-results :added "3.0"}
+(Test/run
+ [{:expected {:id "id" :expected 1 :hara 1 :foundation 1 :match true}
+   :name "reports a match when values are equal"
+   :test (fn [] (compare-results "id" 1 1 1))}
+  {:expected {:id "id" :expected 1 :hara 1 :foundation 2 :match false}
+   :name "reports a mismatch when values differ"
+   :test (fn [] (compare-results "id" 1 1 2))}]
+ conformance-test-check)
+
+^{:refer std.lib.zip.conformance/run-foundation :added "3.0"}
+(Test/run
+ [{:expected true
+   :name "invokes the Foundation runner and returns a result map"
+   :test (fn [] (let [results (run-foundation (foundation-fixture-path) (foundation-root))]
+                  (and (map? results)
+                       (not (nil? (get results "std/lib/zip/zipper?-000"))))))}]
+ conformance-test-check)
+
+^{:refer std.lib.zip.conformance/run-corpus :added "3.0"}
+(Test/run
+ [{:expected true
+   :name "returns a conformance report with expected keys"
+   :test (fn [] (let [report (run-corpus)]
+                  (and (map? report)
+                       (not (nil? (get report :conformant?)))
+                       (not (nil? (get report :total)))
+                       (not (nil? (get report :mismatched)))
+                       (not (nil? (get report :errors)))
+                       (not (nil? (get report :entries)))
+                       (pos? (:total report)))))}
+  {:expected true
+   :name "reports the std.lib.zip corpus as conformant"
+   :test (fn [] (:conformant? (run-corpus)))}]
+ conformance-test-check)
