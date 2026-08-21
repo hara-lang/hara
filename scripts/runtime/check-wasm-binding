@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT"
+
+rust_files=(
+  core/rust/src/bin/hara/cli/hara.rs
+  core/rust/src/cli_app.rs
+  core/rust/src/cli_app/tests.rs
+  core/rust/src/direct_wasm.rs
+  core/rust/src/extension.rs
+  core/rust/src/wasmtime_provider.rs
+  core/rust/src/wasm_binding.rs
+  core/rust/src/wasm_binding/canonical.rs
+  core/rust/src/wasm_binding/direct.rs
+  core/rust/src/wasm_binding/memory.rs
+  core/rust/src/wasm_binding/package.rs
+  core/rust/src/wasm_binding/package/tests.rs
+  core/rust/src/wasm_binding/parser.rs
+  core/rust/src/wasm_binding/runtime.rs
+  core/rust/src/wasm_binding/runtime/tests.rs
+  core/rust/src/wasm_binding/syntax.rs
+  core/rust/src/wasm_binding/tests.rs
+)
+
+check_format_and_layout() {
+  rustfmt --edition 2021 --check "${rust_files[@]}"
+  for file in "${rust_files[@]}"; do
+    lines="$(wc -l < "$file")"
+    printf '%s: %s lines\n' "$file" "$lines"
+    test "$lines" -lt 700
+  done
+}
+
+check_wasm_binding_tests() {
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasm_binding
+}
+
+check_direct_tests() {
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib direct_wasm
+}
+
+check_extension_tests() {
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib extension::tests
+}
+
+check_wasmtime_tests() {
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasmtime_provider::tests
+}
+
+check_cli_app_tests() {
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib cli_app
+}
+
+check_rust_tests() {
+  check_wasm_binding_tests
+  check_direct_tests
+  check_extension_tests
+  check_wasmtime_tests
+  check_cli_app_tests
+}
+
+check_hara_tests() {
+  ./scripts/runtime/run-lib-tests core/lib/test/tool/cli/extension_test.hal
+  ./scripts/runtime/run-lib-tests core/lib/test/tool/cli/handlers_test.hal
+}
+
+check_targets() {
+  cargo check --locked --manifest-path core/rust/Cargo.toml --bin hara
+  cargo check --locked --manifest-path core/rust/Cargo.toml --no-default-features --lib
+  cargo check --locked --manifest-path core/rust/Cargo.toml --target wasm32-unknown-unknown --lib
+}
+
+check_source_drift() {
+  git diff --exit-code -- \
+    core/lib/src/tool/cli/extension.hal \
+    core/rust/src \
+    scripts/runtime/check-wasm-binding
+}
+
+run_phase() {
+  case "$1" in
+    format) check_format_and_layout ;;
+    wasm-binding-tests) check_wasm_binding_tests ;;
+    direct-tests) check_direct_tests ;;
+    extension-tests) check_extension_tests ;;
+    wasmtime-tests) check_wasmtime_tests ;;
+    cli-app-tests) check_cli_app_tests ;;
+    rust-tests) check_rust_tests ;;
+    hara-tests) check_hara_tests ;;
+    targets) check_targets ;;
+    drift) check_source_drift ;;
+    all)
+      check_format_and_layout
+      check_rust_tests
+      check_hara_tests
+      check_targets
+      check_source_drift
+      ;;
+    *)
+      printf 'usage: %s [all|format|wasm-binding-tests|direct-tests|extension-tests|wasmtime-tests|cli-app-tests|rust-tests|hara-tests|targets|drift]\n' "$0" >&2
+      return 2
+      ;;
+  esac
+}
+
+run_phase "${1:-all}"
