@@ -48,6 +48,7 @@ fn direct_predicate_operation(
 
     let value = &arguments[0];
     let result = match specification.symbol {
+        "boolean?" => matches!(value, Value::Bool(_)),
         "char?" => matches!(value, Value::Character(_)),
         "double?" => matches!(value, Value::Float(_)),
         "even?" | "odd?" | "pos?" | "neg?" | "zero?" => {
@@ -96,6 +97,17 @@ fn direct_predicate_operation(
         }
     };
     Ok(Value::Bool(result))
+}
+
+fn direct_promise_operation(
+    specification: &DirectCallableSpec,
+    arguments: Vec<Value>,
+) -> Result<Value, String> {
+    let method = specification
+        .symbol
+        .strip_prefix("promise/")
+        .expect("promise catalog operation must use the promise/ prefix");
+    native_promise_values(method, arguments)
 }
 
 fn direct_function_operation(

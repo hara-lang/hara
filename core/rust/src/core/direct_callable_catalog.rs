@@ -126,6 +126,12 @@ pub(crate) const DIRECT_CALLABLE_CATALOG: &[DirectCallableSpec] = &[
         BootstrapLibrary,
         Basic
     ),
+    direct!(
+        "boolean?",
+        DirectCallableArity::Exact(1),
+        BootstrapLibrary,
+        Operation(direct_predicate_operation)
+    ),
     direct!("bytes", DirectCallableArity::Any, RuntimePrimitive, Bytes),
     direct!(
         "capture",
@@ -740,6 +746,18 @@ pub(crate) const DIRECT_CALLABLE_CATALOG: &[DirectCallableSpec] = &[
         DirectCallableArity::Exact(1),
         RuntimePrimitive,
         Promise
+    ),
+    direct!(
+        "promise/delay",
+        DirectCallableArity::Exact(2),
+        RuntimePrimitive,
+        Operation(direct_promise_operation)
+    ),
+    direct!(
+        "promise/new",
+        DirectCallableArity::Exact(1),
+        RuntimePrimitive,
+        Operation(direct_promise_operation)
     ),
     direct!(
         "promise?",
