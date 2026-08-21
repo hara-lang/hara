@@ -4,9 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.StandardCharsets;
 import org.junit.Test;
 
 public class HaraExtensionManifestTest {
@@ -23,9 +21,25 @@ public class HaraExtensionManifestTest {
     assertEquals("answer-42.wasm", manifest.module());
     assertEquals("core.v1", manifest.abi());
     assertEquals(2, manifest.exports().size());
+    assertEquals("version", manifest.exports().get("version").wasmExport());
     assertEquals("i32", manifest.exports().get("version").returns());
     assertEquals(2, manifest.exports().get("add").arguments().size());
     assertTrue(manifest.capabilities().isEmpty());
+  }
+
+  @Test
+  public void parsesPortableRawWasmExportAliases() {
+    String source =
+        "{:namespace \"codec.echo\" :version \"1\" :provider :wasm "
+            + ":module \"echo.wasm\" :abi :memory.v1 "
+            + ":exports {\"echo\" {:wasm/export \"echo_bytes\" "
+            + ":args [:bytes] :returns :bytes :async false}} "
+            + ":capabilities [] :assets [\"bindings.edn\"]}";
+    HaraExtensionManifest manifest = HaraExtensionManifest.parse(source, "test");
+    assertEquals("echo_bytes", manifest.exports().get("echo").wasmExport());
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> HaraExtensionManifest.parse(source.replace(":wasm/export", ":other/export"), "test"));
   }
 
   @Test

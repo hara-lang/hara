@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
@@ -11,6 +12,7 @@ import java.util.LinkedHashSet;
 /** A validated extension descriptor and its colocated provider artifacts. */
 final class HaraExtensionPackage {
   private static final int MAX_MODULE_BYTES = 64 * 1024 * 1024;
+  private static final int MAX_BINDING_BYTES = 4 * 1024 * 1024;
 
   private final HaraExtensionManifest manifest;
   private final URL descriptor;
@@ -81,22 +83,41 @@ final class HaraExtensionPackage {
     if (manifest.module() == null) {
       throw new HaraException("extension/module-unavailable: " + manifest.namespace());
     }
-    URL module = resolve(manifest.module());
+    return readBytes(manifest.module(), MAX_MODULE_BYTES, "module");
+  }
+
+  HaraWasmMemoryBinding memoryBinding() {
+    if (!"memory.v1".equals(manifest.abi())) {
+      throw new HaraException(
+          "extension/abi-invalid: " + manifest.namespace() + " is not a memory.v1 package");
+    }
+    String source =
+        new String(
+            readBytes("bindings.edn", MAX_BINDING_BYTES, "binding plan"),
+            StandardCharsets.UTF_8);
+    HaraWasmMemoryBinding binding =
+        HaraWasmMemoryBinding.parse(source, manifest.namespace() + "/bindings.edn");
+    binding.verifyManifest(manifest);
+    return binding;
+  }
+
+  private byte[] readBytes(String relative, int maximum, String subject) {
+    URL asset = resolve(relative);
     try {
       byte[] bytes;
-      try (InputStream input = module.openStream()) {
-        bytes = input.readNBytes(MAX_MODULE_BYTES + 1);
+      try (InputStream input = asset.openStream()) {
+        bytes = input.readNBytes(maximum + 1);
       }
-      if (bytes.length > MAX_MODULE_BYTES) {
-        throw new HaraException("extension/module-too-large: " + module);
+      if (bytes.length > maximum) {
+        throw new HaraException("extension/" + subject.replace(' ', '-') + "-too-large: " + asset);
       }
       return bytes;
     } catch (IOException error) {
       throw new HaraException(
-          "extension/module-unavailable: "
+          "extension/asset-unavailable: "
               + manifest.namespace()
               + "/"
-              + manifest.module()
+              + relative
               + " ("
               + error.getMessage()
               + ")");

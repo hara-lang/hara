@@ -4,11 +4,11 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
-import java.util.List;
-import java.util.LinkedHashSet;
-import java.util.Set;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -18,13 +18,14 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.ByteSequence;
 
-/** Generic, import-free core-WASM extension instance. */
+/** Generic, import-free Wasm extension instance. */
 final class HaraWasmExtension implements HaraExtensionRuntime {
   private final HaraExtensionManifest manifest;
   private final Context context;
   private final Map<String, Value> exports;
   private final Value memory;
   private final Value allocator;
+  private final HaraWasmMemoryExecutor memoryExecutor;
   private final boolean hta;
   private final Value deallocator;
   private final Value htaStart;
@@ -47,7 +48,9 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
               + " for "
               + manifest.namespace());
     }
-    if (!"core.v1".equals(manifest.abi()) && !"hta.v1".equals(manifest.abi())) {
+    if (!"core.v1".equals(manifest.abi())
+        && !"memory.v1".equals(manifest.abi())
+        && !"hta.v1".equals(manifest.abi())) {
       throw new HaraException(
           "extension/abi-unsupported: " + manifest.abi() + " for " + manifest.namespace());
     }
@@ -62,6 +65,8 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
     Context opened = null;
     try {
       byte[] bytes = extensionPackage.moduleBytes();
+      HaraWasmMemoryBinding memoryBinding =
+          "memory.v1".equals(manifest.abi()) ? extensionPackage.memoryBinding() : null;
       Source source =
           Source.newBuilder(
                   "wasm",
@@ -75,17 +80,23 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
       Value memoryValue = members.hasMember("memory") ? members.getMember("memory") : null;
       Value allocatorValue = members.hasMember("alloc") ? members.getMember("alloc") : null;
       boolean isHta = "hta.v1".equals(manifest.abi());
+      boolean isMemory = memoryBinding != null;
       LinkedHashMap<String, Value> declared = new LinkedHashMap<>();
-      if (!isHta) {
-        for (String name : manifest.exports().keySet()) {
-          Value function = requireExport(members, name, manifest.module());
-          declared.put(name, function);
+      if (!isHta && !isMemory) {
+        for (Map.Entry<String, HaraExtensionManifest.Export> entry :
+            manifest.exports().entrySet()) {
+          Value function =
+              requireExport(members, entry.getValue().wasmExport(), manifest.module());
+          declared.put(entry.getKey(), function);
         }
       }
+      HaraWasmMemoryExecutor configuredMemoryExecutor =
+          isMemory ? new HaraWasmMemoryExecutor(manifest, memoryBinding, members) : null;
       context = opened;
       exports = Map.copyOf(declared);
       memory = memoryValue;
       allocator = isHta ? requireExport(members, "hta_alloc", manifest.module()) : allocatorValue;
+      memoryExecutor = configuredMemoryExecutor;
       deallocator = isHta ? requireExport(members, "hta_dealloc", manifest.module()) : null;
       htaStart = isHta ? requireExport(members, "hta_start", manifest.module()) : null;
       htaNextEvent = isHta ? requireExport(members, "hta_next_event", manifest.module()) : null;
@@ -126,7 +137,8 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
   private static Value requireExport(Value members, String name, String module) {
     Value function = members.getMember(name);
     if (function == null || !function.canExecute()) {
-      throw new HaraException("extension/malformed: module " + module + " has no export " + name);
+      throw new HaraException(
+          "extension/malformed: module " + module + " has no export " + name);
     }
     return function;
   }
@@ -134,7 +146,6 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
   boolean isHta() {
     return hta;
   }
-
 
   public boolean asynchronous() {
     return hta;
@@ -159,6 +170,7 @@ final class HaraWasmExtension implements HaraExtensionRuntime {
 
   public synchronized Object invoke(String name, Object[] values) {
     if (hta) throw new HaraException("hta.v1 exports are asynchronous");
+    if (memoryExecutor != null) return memoryExecutor.invoke(name, values);
     HaraExtensionManifest.Export spec = manifest.exports().get(name);
     if (spec == null) throw new HaraException("extension/export-missing: " + name);
     if (values.length != spec.arguments().size()) {
