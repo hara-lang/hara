@@ -89,6 +89,7 @@ const EAGER_HAL_RESOURCES: &[&str] = &[
     "std.foundation.bytes",
     "std.foundation.coroutine",
     "std.foundation.pretty",
+    "std.stream.duplex",
 ];
 
 fn ignore_socket_event(_event: core::SocketEvent) {}
