@@ -376,15 +376,22 @@ def dependency_components(graph: dict[str, list[str]]) -> tuple[list[list[str]],
         )
         for number, component in enumerate(components)
     }
-    memo: dict[int, int] = {}
-
-    def rank(number: int) -> int:
-        if number not in memo:
+    ranks: dict[int, int] = {}
+    remaining = set(requirements)
+    while remaining:
+        ready = sorted(
+            number
+            for number in remaining
+            if all(dependency in ranks for dependency in requirements[number])
+        )
+        if not ready:
+            raise RuntimeError("component dependency graph contains a cycle")
+        for number in ready:
             dependencies = requirements[number]
-            memo[number] = 0 if not dependencies else 1 + max(rank(dep) for dep in dependencies)
-        return memo[number]
-
-    ranks = {number: rank(number) for number in requirements}
+            ranks[number] = 0 if not dependencies else 1 + max(
+                ranks[dependency] for dependency in dependencies
+            )
+        remaining.difference_update(ready)
     return components, owners, ranks
 
 
