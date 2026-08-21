@@ -390,6 +390,9 @@ pub trait IFilesystem {
     ) -> FilesystemFuture<'a, ()>;
 }
 
+#[path = "providers.rs"]
+pub mod providers;
+
 #[derive(Clone)]
 pub struct FilesystemHandle {
     filesystem: Rc<dyn IFilesystem>,

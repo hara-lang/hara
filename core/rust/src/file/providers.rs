@@ -1,0 +1,1209 @@
+//! Trusted remote filesystem provider projections.
+//!
+//! The runtime owns the logical filesystem contract.  Network clients are
+//! deliberately supplied by the host through [`RemoteFilesystemClient`];
+//! credentials, endpoint URLs, authentication, and transport state therefore
+//! never become part of a mounted descriptor.
+
+use crate::file::{
+    CopyOptions, DeleteOptions, FileEntry, FileError, FileProvider, FileType, MkdirOptions,
+    MoveOptions, WriteMode, WriteOptions,
+};
+use crate::filesystem::{
+    FilesystemCallContext, FilesystemCapabilities, FilesystemCapability, FilesystemDescriptor,
+    FilesystemEntry, FilesystemEntryPage, FilesystemFuture, FilesystemMutation,
+    FilesystemMutationContext, FilesystemPageRequest, IFilesystem,
+};
+use std::cell::Cell;
+use std::rc::Rc;
+
+/// Provider kinds with a Rust semantic projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesystemProviderKind {
+    Sftp,
+    GoogleDrive,
+    S3,
+    GitHub,
+    WebDav,
+}
+
+impl FilesystemProviderKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sftp => "sftp",
+            Self::GoogleDrive => "google-drive",
+            Self::S3 => "s3",
+            Self::GitHub => "github",
+            Self::WebDav => "webdav",
+        }
+    }
+}
+
+/// Host-owned authenticated transport capability for a remote filesystem.
+///
+/// Implementations must keep credentials and transport details private.  The
+/// methods return only provider-neutral values so callers cannot accidentally
+/// expose access tokens, URLs, or provider-specific response objects.
+pub trait RemoteFilesystemClient {
+    fn authenticated(&self) -> bool;
+
+    /// SFTP clients must override this with their host-key verification result.
+    fn host_key_verified(&self) -> bool {
+        true
+    }
+
+    /// HTTPS/WebDAV clients must override this when certificate or endpoint
+    /// verification is not guaranteed by the host transport.
+    fn transport_verified(&self) -> bool {
+        true
+    }
+
+    fn capabilities(&self) -> FilesystemCapabilities;
+
+    fn stat(&self, path: &str) -> Result<FilesystemEntry, FileError>;
+    fn read(&self, path: &str) -> Result<Vec<u8>, FileError>;
+    fn write(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        options: WriteOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError>;
+    fn entries_page(
+        &self,
+        path: &str,
+        request: &FilesystemPageRequest,
+    ) -> Result<FilesystemEntryPage, FileError>;
+    fn mkdir(
+        &self,
+        path: &str,
+        options: MkdirOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError>;
+    fn delete(
+        &self,
+        path: &str,
+        options: DeleteOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError>;
+    fn copy(
+        &self,
+        source: &str,
+        target: &str,
+        options: CopyOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError>;
+    fn move_entry(
+        &self,
+        source: &str,
+        target: &str,
+        options: MoveOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError>;
+    fn close(&self) -> Result<(), FileError>;
+}
+
+struct RemoteFilesystem {
+    client: Rc<dyn RemoteFilesystemClient>,
+    descriptor: FilesystemDescriptor,
+    capabilities: FilesystemCapabilities,
+    read_only: bool,
+    closed: Rc<Cell<bool>>,
+}
+
+impl RemoteFilesystem {
+    fn new(
+        kind: FilesystemProviderKind,
+        client: Rc<dyn RemoteFilesystemClient>,
+        display: String,
+        root: String,
+        read_only: bool,
+        extra_extensions: impl IntoIterator<Item = (&'static str, String)>,
+    ) -> Result<Self, FileError> {
+        if !client.authenticated() {
+            return Err(FileError::PermissionDenied);
+        }
+        let root = crate::file::logical_normalise(&root)?;
+        let capabilities = effective_capabilities(client.capabilities(), read_only);
+        let mut descriptor = FilesystemDescriptor::new(
+            kind.as_str(),
+            validate_display(display, kind.as_str())?,
+            read_only,
+            capabilities.clone(),
+        )
+        .with_extension("provider/root", root)
+        .with_extension("provider/root-scoped?", "true");
+        for (key, value) in extra_extensions {
+            descriptor = descriptor.with_extension(key, value);
+        }
+        Ok(Self {
+            client,
+            descriptor,
+            capabilities,
+            read_only,
+            closed: Rc::new(Cell::new(false)),
+        })
+    }
+
+    fn descriptor(&self) -> FilesystemDescriptor {
+        self.descriptor.clone()
+    }
+
+    fn check(
+        &self,
+        context: &FilesystemCallContext,
+        capability: FilesystemCapability,
+    ) -> Result<(), FileError> {
+        context.check()?;
+        if self.closed.get() {
+            return Err(FileError::Io("filesystem is closed".into()));
+        }
+        if !self.capabilities.contains(capability) {
+            return Err(FileError::Unsupported);
+        }
+        Ok(())
+    }
+
+    fn check_mutation(
+        &self,
+        context: &FilesystemCallContext,
+        capability: FilesystemCapability,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<(), FileError> {
+        self.check(context, capability)?;
+        if self.read_only {
+            return Err(FileError::PermissionDenied);
+        }
+        if mutation.required() && !self.capabilities.contains(FilesystemCapability::RevisionCheck) {
+            return Err(FileError::Unsupported);
+        }
+        Ok(())
+    }
+
+    fn stat<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        path: String,
+    ) -> FilesystemFuture<'a, FilesystemEntry> {
+        let path = match crate::file::logical_normalise(&path) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        let capabilities = self.capabilities.clone();
+        Box::pin(async move {
+            context.check()?;
+            ensure_open(&closed)?;
+            ensure_capability(&capabilities, FilesystemCapability::Read)?;
+            let entry = client.stat(&path)?;
+            validate_entry(&entry, Some(&path))?;
+            Ok(entry)
+        })
+    }
+
+    fn read<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        path: String,
+    ) -> FilesystemFuture<'a, Vec<u8>> {
+        let path = match crate::file::logical_normalise(&path) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        let capabilities = self.capabilities.clone();
+        Box::pin(async move {
+            context.check()?;
+            ensure_open(&closed)?;
+            ensure_capability(&capabilities, FilesystemCapability::Read)?;
+            client.read(&path)
+        })
+    }
+
+    fn write<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        path: String,
+        bytes: Vec<u8>,
+        options: WriteOptions,
+        mutation: FilesystemMutationContext,
+    ) -> FilesystemFuture<'a, FilesystemMutation> {
+        let path = match crate::file::logical_normalise(&path) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        let capabilities = self.capabilities.clone();
+        let read_only = self.read_only;
+        Box::pin(async move {
+            context.check()?;
+            ensure_open(&closed)?;
+            ensure_mutation(
+                &capabilities,
+                read_only,
+                FilesystemCapability::Write,
+                &mutation,
+            )?;
+            if options.mode == WriteMode::Append
+                && !capabilities.contains(FilesystemCapability::Append)
+            {
+                return Err(FileError::Unsupported);
+            }
+            client.write(&path, bytes, options, &mutation)
+        })
+    }
+
+    fn entries_page<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        path: String,
+        request: FilesystemPageRequest,
+    ) -> FilesystemFuture<'a, FilesystemEntryPage> {
+        let path = match crate::file::logical_normalise(&path) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        let capabilities = self.capabilities.clone();
+        Box::pin(async move {
+            context.check()?;
+            ensure_open(&closed)?;
+            ensure_capability(&capabilities, FilesystemCapability::Entries)?;
+            let page = client.entries_page(&path, &request)?;
+            for entry in &page.entries {
+                validate_entry(entry, None)?;
+                if crate::file::logical_parent(&entry.path)?.as_deref() != Some(path.as_str()) {
+                    return Err(FileError::InvalidPath(
+                        "provider returned an entry outside its requested directory".into(),
+                    ));
+                }
+            }
+            if page.next_token.as_deref() == request.token.as_deref() {
+                return Err(FileError::Io("provider returned a repeated page token".into()));
+            }
+            Ok(page)
+        })
+    }
+
+    fn mkdir<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        path: String,
+        options: MkdirOptions,
+        mutation: FilesystemMutationContext,
+    ) -> FilesystemFuture<'a, FilesystemMutation> {
+        self.mutation(
+            context,
+            path,
+            mutation,
+            FilesystemCapability::Mkdir,
+            move |client, path, mutation| client.mkdir(&path, options, &mutation),
+        )
+    }
+
+    fn delete<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        path: String,
+        options: DeleteOptions,
+        mutation: FilesystemMutationContext,
+    ) -> FilesystemFuture<'a, FilesystemMutation> {
+        self.mutation(
+            context,
+            path,
+            mutation,
+            FilesystemCapability::Delete,
+            move |client, path, mutation| client.delete(&path, options, &mutation),
+        )
+    }
+
+    fn copy<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        source: String,
+        target: String,
+        options: CopyOptions,
+        mutation: FilesystemMutationContext,
+    ) -> FilesystemFuture<'a, FilesystemMutation> {
+        let source = match crate::file::logical_normalise(&source) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let target = match crate::file::logical_normalise(&target) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        let capabilities = self.capabilities.clone();
+        let read_only = self.read_only;
+        Box::pin(async move {
+            context.check()?;
+            ensure_open(&closed)?;
+            ensure_mutation(
+                &capabilities,
+                read_only,
+                FilesystemCapability::Copy,
+                &mutation,
+            )?;
+            if options.preserve_modified
+                && !capabilities.contains(FilesystemCapability::PreserveModified)
+            {
+                return Err(FileError::Unsupported);
+            }
+            client.copy(&source, &target, options, &mutation)
+        })
+    }
+
+    fn move_entry<'a>(
+        &'a self,
+        context: FilesystemCallContext,
+        source: String,
+        target: String,
+        options: MoveOptions,
+        mutation: FilesystemMutationContext,
+    ) -> FilesystemFuture<'a, FilesystemMutation> {
+        let source = match crate::file::logical_normalise(&source) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let target = match crate::file::logical_normalise(&target) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        let capabilities = self.capabilities.clone();
+        let read_only = self.read_only;
+        Box::pin(async move {
+            context.check()?;
+            ensure_open(&closed)?;
+            ensure_mutation(
+                &capabilities,
+                read_only,
+                FilesystemCapability::Move,
+                &mutation,
+            )?;
+            if options.atomic && !capabilities.contains(FilesystemCapability::AtomicMove) {
+                return Err(FileError::Unsupported);
+            }
+            client.move_entry(&source, &target, options, &mutation)
+        })
+    }
+
+    fn mutation<'a, F>(
+        &'a self,
+        context: FilesystemCallContext,
+        path: String,
+        mutation: FilesystemMutationContext,
+        capability: FilesystemCapability,
+        operation: F,
+    ) -> FilesystemFuture<'a, FilesystemMutation>
+    where
+        F: FnOnce(Rc<dyn RemoteFilesystemClient>, String, FilesystemMutationContext)
+                -> Result<FilesystemMutation, FileError>
+            + 'a,
+    {
+        let path = match crate::file::logical_normalise(&path) {
+            Ok(path) => path,
+            Err(error) => return failed(error),
+        };
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        let capabilities = self.capabilities.clone();
+        let read_only = self.read_only;
+        Box::pin(async move {
+            context.check()?;
+            ensure_open(&closed)?;
+            ensure_mutation(&capabilities, read_only, capability, &mutation)?;
+            operation(client, path, mutation)
+        })
+    }
+
+    fn close<'a>(&'a self, context: FilesystemCallContext) -> FilesystemFuture<'a, ()> {
+        let client = self.client.clone();
+        let closed = self.closed.clone();
+        Box::pin(async move {
+            if closed.replace(true) {
+                return Ok(());
+            }
+            context.check()?;
+            client.close()
+        })
+    }
+}
+
+fn effective_capabilities(
+    capabilities: FilesystemCapabilities,
+    read_only: bool,
+) -> FilesystemCapabilities {
+    if read_only {
+        FilesystemCapabilities::new(
+            capabilities
+                .iter()
+                .filter(|capability| {
+                    matches!(
+                        capability,
+                        FilesystemCapability::Read | FilesystemCapability::Entries
+                    )
+                }),
+        )
+    } else {
+        capabilities
+    }
+}
+
+fn validate_display(display: String, kind: &str) -> Result<String, FileError> {
+    if display.trim().is_empty() {
+        return Err(FileError::InvalidPath(format!(
+            "{kind} filesystem display must not be empty"
+        )));
+    }
+    Ok(display)
+}
+
+fn ensure_open(closed: &Cell<bool>) -> Result<(), FileError> {
+    if closed.get() {
+        Err(FileError::Io("filesystem is closed".into()))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_capability(
+    capabilities: &FilesystemCapabilities,
+    capability: FilesystemCapability,
+) -> Result<(), FileError> {
+    capabilities
+        .contains(capability)
+        .then_some(())
+        .ok_or(FileError::Unsupported)
+}
+
+fn ensure_mutation(
+    capabilities: &FilesystemCapabilities,
+    read_only: bool,
+    capability: FilesystemCapability,
+    mutation: &FilesystemMutationContext,
+) -> Result<(), FileError> {
+    ensure_capability(capabilities, capability)?;
+    if read_only {
+        return Err(FileError::PermissionDenied);
+    }
+    if mutation.required() && !capabilities.contains(FilesystemCapability::RevisionCheck) {
+        return Err(FileError::Unsupported);
+    }
+    Ok(())
+}
+
+fn validate_entry(entry: &FilesystemEntry, expected_path: Option<&str>) -> Result<(), FileError> {
+    let path = crate::file::logical_normalise(&entry.path)?;
+    if path != entry.path {
+        return Err(FileError::InvalidPath(
+            "provider returned a non-canonical logical path".into(),
+        ));
+    }
+    if let Some(expected_path) = expected_path {
+        if path != expected_path {
+            return Err(FileError::InvalidPath(
+                "provider returned a path different from the requested entry".into(),
+            ));
+        }
+    }
+    if crate::file::logical_name(&path)? != entry.name {
+        return Err(FileError::InvalidPath(
+            "provider returned an entry with an invalid name".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn failed<'a, T>(error: FileError) -> FilesystemFuture<'a, T> {
+    Box::pin(async move { Err(error) })
+}
+
+macro_rules! delegate_filesystem {
+    ($provider:ty) => {
+        impl IFilesystem for $provider {
+            fn descriptor(&self) -> FilesystemDescriptor {
+                self.core.descriptor()
+            }
+
+            fn stat<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                path: String,
+            ) -> FilesystemFuture<'a, FilesystemEntry> {
+                self.core.stat(context, path)
+            }
+
+            fn read<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                path: String,
+            ) -> FilesystemFuture<'a, Vec<u8>> {
+                self.core.read(context, path)
+            }
+
+            fn write<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                path: String,
+                bytes: Vec<u8>,
+                options: WriteOptions,
+                mutation: FilesystemMutationContext,
+            ) -> FilesystemFuture<'a, FilesystemMutation> {
+                self.core.write(context, path, bytes, options, mutation)
+            }
+
+            fn entries_page<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                path: String,
+                request: FilesystemPageRequest,
+            ) -> FilesystemFuture<'a, FilesystemEntryPage> {
+                self.core.entries_page(context, path, request)
+            }
+
+            fn mkdir<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                path: String,
+                options: MkdirOptions,
+                mutation: FilesystemMutationContext,
+            ) -> FilesystemFuture<'a, FilesystemMutation> {
+                self.core.mkdir(context, path, options, mutation)
+            }
+
+            fn delete<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                path: String,
+                options: DeleteOptions,
+                mutation: FilesystemMutationContext,
+            ) -> FilesystemFuture<'a, FilesystemMutation> {
+                self.core.delete(context, path, options, mutation)
+            }
+
+            fn copy<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                source: String,
+                target: String,
+                options: CopyOptions,
+                mutation: FilesystemMutationContext,
+            ) -> FilesystemFuture<'a, FilesystemMutation> {
+                self.core.copy(context, source, target, options, mutation)
+            }
+
+            fn move_entry<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+                source: String,
+                target: String,
+                options: MoveOptions,
+                mutation: FilesystemMutationContext,
+            ) -> FilesystemFuture<'a, FilesystemMutation> {
+                self.core
+                    .move_entry(context, source, target, options, mutation)
+            }
+
+            fn close<'a>(
+                &'a self,
+                context: FilesystemCallContext,
+            ) -> FilesystemFuture<'a, ()> {
+                self.core.close(context)
+            }
+        }
+    };
+}
+
+/// SFTP filesystem projection.  Opening requires authentication and verified
+/// host keys in addition to the normal provider capability checks.
+pub struct SftpFilesystem {
+    core: RemoteFilesystem,
+}
+
+impl SftpFilesystem {
+    pub fn new(
+        client: Rc<dyn RemoteFilesystemClient>,
+        root: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        if !client.host_key_verified() {
+            return Err(FileError::PermissionDenied);
+        }
+        Ok(Self {
+            core: RemoteFilesystem::new(
+                FilesystemProviderKind::Sftp,
+                client,
+                display.into(),
+                root.into(),
+                read_only,
+                [("provider/host-key-verified?", "true".into())],
+            )?,
+        })
+    }
+
+    pub fn from_client<C: RemoteFilesystemClient + 'static>(
+        client: C,
+        root: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        Self::new(Rc::new(client), root, display, read_only)
+    }
+}
+
+delegate_filesystem!(SftpFilesystem);
+
+/// Google Drive folder projection.  The root is a provider-owned stable ID,
+/// not a user-visible URL or credential.
+pub struct GoogleDriveFilesystem {
+    core: RemoteFilesystem,
+}
+
+impl GoogleDriveFilesystem {
+    pub fn new(
+        client: Rc<dyn RemoteFilesystemClient>,
+        root_id: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        let root_id = require_text(root_id.into(), "Google Drive root id")?;
+        Ok(Self {
+            core: RemoteFilesystem::new(
+                FilesystemProviderKind::GoogleDrive,
+                client,
+                display.into(),
+                root_id,
+                read_only,
+                [
+                    ("provider/workspace-documents", "unsupported".into()),
+                    ("provider/shared-drive?", "false".into()),
+                ],
+            )?,
+        })
+    }
+
+    pub fn from_client<C: RemoteFilesystemClient + 'static>(
+        client: C,
+        root_id: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        Self::new(Rc::new(client), root_id, display, read_only)
+    }
+}
+
+delegate_filesystem!(GoogleDriveFilesystem);
+
+/// S3-compatible bucket/prefix projection with virtual-directory semantics
+/// delegated to the authenticated client.
+pub struct S3Filesystem {
+    core: RemoteFilesystem,
+}
+
+impl S3Filesystem {
+    pub fn new(
+        client: Rc<dyn RemoteFilesystemClient>,
+        bucket: impl Into<String>,
+        prefix: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        let bucket = require_bucket(bucket.into())?;
+        let prefix = validate_prefix(prefix.into())?;
+        Ok(Self {
+            core: RemoteFilesystem::new(
+                FilesystemProviderKind::S3,
+                client,
+                display.into(),
+                format!("/{bucket}/{prefix}"),
+                read_only,
+                [
+                    ("provider/virtual-directories?", "true".into()),
+                    ("provider/atomic-move?", "false".into()),
+                ],
+            )?,
+        })
+    }
+
+    pub fn from_client<C: RemoteFilesystemClient + 'static>(
+        client: C,
+        bucket: impl Into<String>,
+        prefix: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        Self::new(Rc::new(client), bucket, prefix, display, read_only)
+    }
+}
+
+delegate_filesystem!(S3Filesystem);
+
+/// GitHub tree/blob projection.  Commit mode is writable only when the host
+/// client advertises the required mutation capabilities.
+pub struct GitHubFilesystem {
+    core: RemoteFilesystem,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitHubMountMode {
+    ReadOnly,
+    Commit,
+}
+
+impl GitHubFilesystem {
+    pub fn new(
+        client: Rc<dyn RemoteFilesystemClient>,
+        repository: impl Into<String>,
+        reference: impl Into<String>,
+        root: impl Into<String>,
+        mode: GitHubMountMode,
+        display: impl Into<String>,
+    ) -> Result<Self, FileError> {
+        let repository = require_repository(repository.into())?;
+        let reference = require_text(reference.into(), "GitHub ref")?;
+        if matches!(mode, GitHubMountMode::Commit) && !reference.starts_with("heads/") {
+            return Err(FileError::InvalidPath(
+                "writable GitHub mounts require a heads/* ref".into(),
+            ));
+        }
+        let read_only = matches!(mode, GitHubMountMode::ReadOnly);
+        Ok(Self {
+            core: RemoteFilesystem::new(
+                FilesystemProviderKind::GitHub,
+                client,
+                display.into(),
+                root.into(),
+                read_only,
+                [
+                    ("provider/repository", repository),
+                    ("provider/ref", reference),
+                    (
+                        "provider/mode",
+                        if read_only { "read-only" } else { "commit" }.into(),
+                    ),
+                ],
+            )?,
+        })
+    }
+
+    pub fn from_client<C: RemoteFilesystemClient + 'static>(
+        client: C,
+        repository: impl Into<String>,
+        reference: impl Into<String>,
+        root: impl Into<String>,
+        mode: GitHubMountMode,
+        display: impl Into<String>,
+    ) -> Result<Self, FileError> {
+        Self::new(
+            Rc::new(client),
+            repository,
+            reference,
+            root,
+            mode,
+            display,
+        )
+    }
+}
+
+delegate_filesystem!(GitHubFilesystem);
+
+/// WebDAV collection projection over a verified, authenticated client.
+pub struct WebdavFilesystem {
+    core: RemoteFilesystem,
+}
+
+impl WebdavFilesystem {
+    pub fn new(
+        client: Rc<dyn RemoteFilesystemClient>,
+        root: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        if !client.transport_verified() {
+            return Err(FileError::PermissionDenied);
+        }
+        Ok(Self {
+            core: RemoteFilesystem::new(
+                FilesystemProviderKind::WebDav,
+                client,
+                display.into(),
+                root.into(),
+                read_only,
+                [("provider/transport-verified?", "true".into())],
+            )?,
+        })
+    }
+
+    pub fn from_client<C: RemoteFilesystemClient + 'static>(
+        client: C,
+        root: impl Into<String>,
+        display: impl Into<String>,
+        read_only: bool,
+    ) -> Result<Self, FileError> {
+        Self::new(Rc::new(client), root, display, read_only)
+    }
+}
+
+delegate_filesystem!(WebdavFilesystem);
+
+fn require_text(value: String, label: &str) -> Result<String, FileError> {
+    if value.trim().is_empty() || value.contains('\0') {
+        return Err(FileError::InvalidPath(format!("{label} must not be empty")));
+    }
+    Ok(value)
+}
+
+fn require_bucket(value: String) -> Result<String, FileError> {
+    let value = require_text(value, "S3 bucket")?;
+    if value.contains('/') || value.contains('\\') {
+        return Err(FileError::InvalidPath(
+            "S3 bucket must not contain path separators".into(),
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_prefix(value: String) -> Result<String, FileError> {
+    if value.contains('\0') || value.contains('\\') {
+        return Err(FileError::InvalidPath(
+            "S3 prefix contains an invalid character".into(),
+        ));
+    }
+    Ok(value.trim_matches('/').to_owned())
+}
+
+fn require_repository(value: String) -> Result<String, FileError> {
+    let value = require_text(value, "GitHub repository")?;
+    let mut parts = value.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(owner), Some(name), None)
+            if !owner.is_empty()
+                && !name.is_empty()
+                && owner
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || "_.-".contains(character))
+                && name
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || "_.-".contains(character)) =>
+        {
+            Ok(value)
+        }
+        _ => Err(FileError::InvalidPath(
+            "GitHub repository must be owner/name".into(),
+        )),
+    }
+}
+
+/// A deterministic in-memory client useful for host integration tests and
+/// browser adapters that have not yet bound a real transport.
+#[derive(Clone)]
+pub struct MemoryRemoteClient {
+    provider: crate::file::MemoryFileProvider,
+    capabilities: FilesystemCapabilities,
+    authenticated: bool,
+    host_key_verified: bool,
+    closed: Rc<Cell<bool>>,
+}
+
+impl MemoryRemoteClient {
+    pub fn new() -> Self {
+        Self::with_capabilities(FilesystemCapabilities::legacy_read_write())
+    }
+
+    pub fn with_capabilities(capabilities: FilesystemCapabilities) -> Self {
+        Self {
+            provider: crate::file::MemoryFileProvider::new("/"),
+            capabilities,
+            authenticated: true,
+            host_key_verified: true,
+            closed: Rc::new(Cell::new(false)),
+        }
+    }
+
+    pub fn unauthenticated(mut self) -> Self {
+        self.authenticated = false;
+        self
+    }
+
+    pub fn with_unverified_host_key(mut self) -> Self {
+        self.host_key_verified = false;
+        self
+    }
+
+    pub fn insert(&self, path: &str, bytes: Vec<u8>) -> Result<(), FileError> {
+        self.provider.insert(path, bytes)
+    }
+
+    pub fn provider(&self) -> &crate::file::MemoryFileProvider {
+        &self.provider
+    }
+
+    fn check_open(&self) -> Result<(), FileError> {
+        if self.closed.get() {
+            Err(FileError::Io("provider client is closed".into()))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn mutation(path: String) -> FilesystemMutation {
+        FilesystemMutation::path(path)
+    }
+}
+
+impl Default for MemoryRemoteClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RemoteFilesystemClient for MemoryRemoteClient {
+    fn authenticated(&self) -> bool {
+        self.authenticated
+    }
+
+    fn host_key_verified(&self) -> bool {
+        self.host_key_verified
+    }
+
+    fn capabilities(&self) -> FilesystemCapabilities {
+        self.capabilities.clone()
+    }
+
+    fn stat(&self, path: &str) -> Result<FilesystemEntry, FileError> {
+        self.check_open()?;
+        Ok(self.provider.stat_entry(path)?.into())
+    }
+
+    fn read(&self, path: &str) -> Result<Vec<u8>, FileError> {
+        self.check_open()?;
+        self.provider.read_bytes(path)
+    }
+
+    fn write(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        options: WriteOptions,
+        _mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        self.check_open()?;
+        Ok(Self::mutation(
+            self.provider.write_with_options(path, bytes, options)?,
+        ))
+    }
+
+    fn entries_page(
+        &self,
+        path: &str,
+        request: &FilesystemPageRequest,
+    ) -> Result<FilesystemEntryPage, FileError> {
+        self.check_open()?;
+        let entries = self
+            .provider
+            .entries_values(path)?
+            .into_iter()
+            .map(FilesystemEntry::from)
+            .collect::<Vec<_>>();
+        let offset = request
+            .token
+            .as_deref()
+            .unwrap_or("0")
+            .parse::<usize>()
+            .map_err(|_| FileError::InvalidPath("invalid filesystem page token".into()))?;
+        if offset > entries.len() {
+            return Err(FileError::InvalidPath("filesystem page token is out of range".into()));
+        }
+        let limit = request.limit.max(1);
+        let end = offset.saturating_add(limit).min(entries.len());
+        let next_token = (end < entries.len()).then(|| end.to_string());
+        Ok(FilesystemEntryPage {
+            entries: entries[offset..end].to_vec(),
+            next_token,
+        })
+    }
+
+    fn mkdir(
+        &self,
+        path: &str,
+        options: MkdirOptions,
+        _mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        self.check_open()?;
+        Ok(Self::mutation(
+            self.provider.mkdir_path(path, options)?,
+        ))
+    }
+
+    fn delete(
+        &self,
+        path: &str,
+        options: DeleteOptions,
+        _mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        self.check_open()?;
+        Ok(Self::mutation(
+            self.provider.delete_path(path, options)?,
+        ))
+    }
+
+    fn copy(
+        &self,
+        source: &str,
+        target: &str,
+        options: CopyOptions,
+        _mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        self.check_open()?;
+        Ok(Self::mutation(
+            self.provider.copy_path(source, target, options)?,
+        ))
+    }
+
+    fn move_entry(
+        &self,
+        source: &str,
+        target: &str,
+        options: MoveOptions,
+        _mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        self.check_open()?;
+        Ok(Self::mutation(
+            self.provider.move_path(source, target, options)?,
+        ))
+    }
+
+    fn close(&self) -> Result<(), FileError> {
+        self.closed.set(true);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::filesystem::{FilesystemCapability, FilesystemHandle};
+    use crate::file::FileProvider;
+    use crate::filesystem_bridge::block_on_local;
+
+    #[test]
+    fn all_remote_providers_publish_redacted_provider_descriptors() {
+        let client = MemoryRemoteClient::new();
+        client.insert("/hello.txt", b"hello".to_vec()).unwrap();
+
+        let sftp = SftpFilesystem::from_client(
+            client.clone().with_unverified_host_key(),
+            "/srv",
+            "trusted SFTP",
+            false,
+        );
+        assert_eq!(sftp.err().unwrap().code(), "permission-denied");
+
+        let drive =
+            GoogleDriveFilesystem::from_client(client.clone(), "drive-root", "Drive", true)
+                .unwrap();
+        assert_eq!(drive.core.descriptor.kind(), "google-drive");
+        assert_eq!(
+            drive.core.descriptor.extensions().get("provider/root-scoped?"),
+            Some(&"true".to_string())
+        );
+
+        let s3 =
+            S3Filesystem::from_client(client.clone(), "bucket", "prefix/", "S3", false).unwrap();
+        assert_eq!(s3.core.descriptor.kind(), "s3");
+        assert_eq!(
+            s3.core.descriptor.extensions().get("provider/atomic-move?"),
+            Some(&"false".to_string())
+        );
+
+        let github = GitHubFilesystem::from_client(
+            client.clone(),
+            "hara-lang/hara",
+            "heads/main",
+            "/",
+            GitHubMountMode::Commit,
+            "hara",
+        )
+        .unwrap();
+        assert_eq!(
+            github.core.descriptor.extensions().get("provider/mode"),
+            Some(&"commit".to_string())
+        );
+
+        let webdav =
+            WebdavFilesystem::from_client(client, "/remote", "WebDAV", true).unwrap();
+        assert_eq!(webdav.core.descriptor.kind(), "webdav");
+    }
+
+    #[test]
+    fn provider_operations_are_async_and_confined_to_canonical_paths() {
+        let client = MemoryRemoteClient::new();
+        client.insert("/hello.txt", b"hello".to_vec()).unwrap();
+        let filesystem =
+            SftpFilesystem::from_client(client, "/", "SFTP", false).unwrap();
+        let entry = block_on_local(filesystem.stat(
+            FilesystemCallContext::default(),
+            "/./hello.txt".into(),
+        ))
+        .unwrap();
+        assert_eq!(entry.path, "/hello.txt");
+        let bytes = block_on_local(filesystem.read(
+            FilesystemCallContext::default(),
+            "/hello.txt".into(),
+        ))
+        .unwrap();
+        assert_eq!(bytes, b"hello");
+        let error = block_on_local(filesystem.read(
+            FilesystemCallContext::default(),
+            "/../../secret".into(),
+        ))
+        .unwrap_err();
+        assert_eq!(error.code(), "outside-root");
+    }
+
+    #[test]
+    fn read_only_and_close_boundaries_are_deterministic() {
+        let client = MemoryRemoteClient::new();
+        let filesystem =
+            WebdavFilesystem::from_client(client, "/", "WebDAV", true).unwrap();
+        let write = block_on_local(filesystem.write(
+            FilesystemCallContext::default(),
+            "/new".into(),
+            b"data".to_vec(),
+            WriteOptions::default(),
+            FilesystemMutationContext::default(),
+        ))
+        .unwrap_err();
+        assert_eq!(write.code(), "permission-denied");
+        block_on_local(filesystem.close(FilesystemCallContext::default())).unwrap();
+        block_on_local(filesystem.close(FilesystemCallContext::default())).unwrap();
+        let closed = block_on_local(filesystem.read(
+            FilesystemCallContext::default(),
+            "/".into(),
+        ))
+        .unwrap_err();
+        assert_eq!(closed.code(), "io");
+    }
+
+    #[test]
+    fn provider_handles_mount_through_the_runtime_adapter() {
+        let client = MemoryRemoteClient::new();
+        client.insert("/hello", b"world".to_vec()).unwrap();
+        let handle = FilesystemHandle::new(
+            WebdavFilesystem::from_client(client, "/", "WebDAV", true).unwrap(),
+        );
+        assert_eq!(handle.descriptor().kind(), "webdav");
+        assert!(handle
+            .capabilities()
+            .contains(FilesystemCapability::Read));
+    }
+}
