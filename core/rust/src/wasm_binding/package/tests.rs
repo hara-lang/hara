@@ -32,7 +32,9 @@ fn inspection_keeps_machine_semantics_unresolved() {
     fs::write(&module, ADD).unwrap();
     let inspected = inspect_module(&module, None).unwrap();
     assert_eq!(inspected.namespace, "generated.scalar-math");
-    assert!(inspected.interface_source.contains(":hara/type :unresolved"));
+    assert!(inspected
+        .interface_source
+        .contains(":hara/type :unresolved"));
     assert!(inspected.inspection_source.contains(":returns :i64"));
     fs::remove_dir_all(root).unwrap();
 }

@@ -9,9 +9,7 @@ use sha2::{Digest, Sha256};
 
 use crate::kernel::Form;
 
-use super::{
-    direct_inspection_source, direct_interface_skeleton, inspect_direct, WasmInterface,
-};
+use super::{direct_inspection_source, direct_interface_skeleton, inspect_direct, WasmInterface};
 
 #[cfg(test)]
 mod tests;
@@ -195,18 +193,12 @@ fn project_document(interface: &WasmInterface) -> String {
             keyword_form("project/source-paths"),
             Form::Vector(Vec::new()),
         ),
-        (
-            keyword_form("project/test-paths"),
-            Form::Vector(Vec::new()),
-        ),
+        (keyword_form("project/test-paths"), Form::Vector(Vec::new())),
         (
             keyword_form("project/extension-paths"),
             Form::Vector(Vec::new()),
         ),
-        (
-            keyword_form("project/capabilities"),
-            Form::Set(Vec::new()),
-        ),
+        (keyword_form("project/capabilities"), Form::Set(Vec::new())),
         (
             keyword_form("project/extensions"),
             Form::Map(vec![(symbol_form(&interface.namespace), extension)]),
@@ -225,10 +217,7 @@ fn binding_document(
             string_form(DIRECT_WASM_BINDING_SCHEMA),
         ),
         (keyword_form("target"), keyword_form("core.v1")),
-        (
-            keyword_form("namespace"),
-            symbol_form(&interface.namespace),
-        ),
+        (keyword_form("namespace"), symbol_form(&interface.namespace)),
         (
             keyword_form("module"),
             Form::Map(vec![
@@ -261,22 +250,13 @@ fn conformance_document(
             keyword_form("schema"),
             string_form(DIRECT_WASM_CONFORMANCE_SCHEMA),
         ),
-        (
-            keyword_form("namespace"),
-            symbol_form(&interface.namespace),
-        ),
-        (
-            keyword_form("module-digest"),
-            string_form(module_digest),
-        ),
+        (keyword_form("namespace"), symbol_form(&interface.namespace)),
+        (keyword_form("module-digest"), string_form(module_digest)),
         (
             keyword_form("interface-digest"),
             string_form(interface_digest),
         ),
-        (
-            keyword_form("binding-digest"),
-            string_form(binding_digest),
-        ),
+        (keyword_form("binding-digest"), string_form(binding_digest)),
         (
             keyword_form("exports"),
             Form::Vector(interface.exports.iter().map(export_contract).collect()),
@@ -303,10 +283,7 @@ fn build_product_document(
             keyword_form("product/namespace"),
             symbol_form(&interface.namespace),
         ),
-        (
-            keyword_form("product/target"),
-            keyword_form("core.v1"),
-        ),
+        (keyword_form("product/target"), keyword_form("core.v1")),
         (
             keyword_form("product/tool"),
             Form::Map(vec![
@@ -320,10 +297,7 @@ fn build_product_document(
         (
             keyword_form("product/inputs"),
             Form::Map(vec![
-                (
-                    keyword_form("module-digest"),
-                    string_form(module_digest),
-                ),
+                (keyword_form("module-digest"), string_form(module_digest)),
                 (
                     keyword_form("interface-digest"),
                     string_form(interface_digest),
@@ -355,10 +329,7 @@ fn build_product_document(
 
 fn export_contract(export: &super::BindingFunction) -> Form {
     Form::Map(vec![
-        (
-            keyword_form("hara/name"),
-            symbol_form(&export.name),
-        ),
+        (keyword_form("hara/name"), symbol_form(&export.name)),
         (
             keyword_form("wasm/export"),
             string_form(&export.wasm_export),
@@ -501,9 +472,7 @@ fn file_name(path: &Path, subject: &str) -> Result<String, String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| {
-            format!(
-                "wasm-binding/input-unavailable: {subject} path has no UTF-8 file name"
-            )
+            format!("wasm-binding/input-unavailable: {subject} path has no UTF-8 file name")
         })
 }
 
