@@ -4,6 +4,7 @@
 //! an interface, instantiates a module, or acquires host authority.
 
 mod canonical;
+mod direct;
 mod parser;
 mod syntax;
 
@@ -15,6 +16,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use crate::extension::ExtensionExport;
+
+pub use crate::direct_wasm::{
+    DirectWasmFunctionExport, DirectWasmImport, DirectWasmImportKind, DirectWasmInspection,
+    DirectWasmMemory,
+};
+pub use direct::{
+    direct_inspection_source, direct_interface_skeleton, inspect_direct,
+    DIRECT_WASM_INSPECTION_SCHEMA,
+};
 
 pub const WASM_INTERFACE_SCHEMA: &str = "hara.wasm-interface/0-alpha";
 
