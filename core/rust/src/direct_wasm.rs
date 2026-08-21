@@ -54,6 +54,7 @@ pub struct DirectWasmInspection {
     pub imports: Vec<DirectWasmImport>,
     pub memories: Vec<DirectWasmMemory>,
     pub exports: Vec<DirectWasmFunctionExport>,
+    pub start: Option<u32>,
 }
 
 impl DirectWasmInspection {
@@ -90,6 +91,7 @@ pub fn inspect(bytes: &[u8]) -> Result<DirectWasmInspection, String> {
     let mut exported_functions = Vec::new();
     let mut exported_memories = Vec::new();
     let mut export_names = HashSet::new();
+    let mut start = None;
 
     while cursor < bytes.len() {
         let id = byte(bytes, &mut cursor)?;
@@ -121,10 +123,13 @@ pub fn inspect(bytes: &[u8]) -> Result<DirectWasmInspection, String> {
                 &mut exported_functions,
                 &mut exported_memories,
             )?,
+            8 => {
+                start = Some(unsigned(section, &mut at)? as u32);
+            }
             _ => {}
         }
 
-        if matches!(id, 1 | 2 | 3 | 5 | 7) && at != section.len() {
+        if matches!(id, 1 | 2 | 3 | 5 | 7 | 8) && at != section.len() {
             return Err(format!(
                 "native/module-invalid: trailing bytes in section {id}"
             ));
@@ -171,6 +176,7 @@ pub fn inspect(bytes: &[u8]) -> Result<DirectWasmInspection, String> {
         imports,
         memories,
         exports,
+        start,
     })
 }
 

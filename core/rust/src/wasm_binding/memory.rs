@@ -81,6 +81,12 @@ impl MemoryBindingPlan {
         let memory = interface.memory.clone().ok_or_else(|| {
             "wasm-binding/memory-missing: non-scalar bindings require :memory".to_owned()
         })?;
+        if memory.reallocate.is_some() {
+            return Err(
+                "wasm-binding/feature-unsupported: :reallocate is reserved for a later memory.v1 revision"
+                    .into(),
+            );
+        }
         let mut raw_names = BTreeSet::new();
         let mut requires_allocate = false;
         let mut requires_release = false;
@@ -101,9 +107,6 @@ impl MemoryBindingPlan {
                 uses_memory |= compiled.lowering.is_some();
                 if compiled.lowering == Some(Lowering::PointerLength) {
                     requires_allocate = true;
-                    if compiled.ownership == Some(Ownership::Borrowed) {
-                        requires_release = true;
-                    }
                 }
                 raw_arguments.extend(compiled.raw_types.iter().copied());
                 arguments.push(compiled);
@@ -137,7 +140,7 @@ impl MemoryBindingPlan {
         }
         if requires_release && memory.release.is_none() {
             return Err(
-                "wasm-binding/release-missing: borrowed inputs or caller-owned results require :memory :release"
+                "wasm-binding/release-missing: caller-owned results require :memory :release"
                     .into(),
             );
         }
@@ -161,6 +164,12 @@ impl MemoryBindingPlan {
     }
 
     pub fn verify(&self, inspection: &DirectWasmInspection) -> Result<(), String> {
+        if inspection.start.is_some() {
+            return Err(
+                "wasm-binding/start-denied: memory.v1 modules must not declare a start function"
+                    .into(),
+            );
+        }
         let discovered = inspection
             .direct_exports()
             .map_err(|error| format!("wasm-binding/module-incompatible: {error}"))?
@@ -560,6 +569,13 @@ mod tests {
             .memory_plan()
             .unwrap_err()
             .starts_with("wasm-binding/release-missing"));
+
+        let mut started = inspection();
+        started.start = Some(0);
+        assert!(plan
+            .verify(&started)
+            .unwrap_err()
+            .starts_with("wasm-binding/start-denied"));
     }
 
     #[test]
@@ -579,6 +595,19 @@ mod tests {
             .starts_with("wasm-binding/ownership-invalid"));
     }
 
+    #[test]
+    fn rejects_reallocate_until_a_revision_defines_its_lifecycle() {
+        let with_reallocate = INTERFACE.replace(
+            ":allocate \"alloc\"",
+            ":allocate \"alloc\" :reallocate \"realloc\"",
+        );
+        assert!(WasmInterface::parse(&with_reallocate, "fixture")
+            .unwrap()
+            .memory_plan()
+            .unwrap_err()
+            .starts_with("wasm-binding/feature-unsupported"));
+    }
+
     fn inspection() -> DirectWasmInspection {
         DirectWasmInspection {
             imports: Vec::new(),
@@ -594,6 +623,7 @@ mod tests {
                 function("alloc", &["i32"], "i32"),
                 function("free", &["i32"], "void"),
             ],
+            start: None,
         }
     }
 

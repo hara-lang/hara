@@ -1,4 +1,6 @@
-use super::{WasmInterface, WasmValueType};
+use super::{inspect_direct, WasmInterface, WasmValueType};
+
+const START_SENTINEL: &[u8] = b"\0asm\x01\0\0\0\x08\x01\0";
 
 const SCALAR_INTERFACE: &str = r#"
   (wasm/interface
@@ -60,6 +62,12 @@ fn parses_explicit_memory_semantics_without_executing_them() {
         WasmInterface::parse(&interface.canonical_source(), "canonical").unwrap(),
         interface
     );
+}
+
+#[test]
+fn static_inspection_records_a_start_function_without_running_it() {
+    let inspection = inspect_direct(START_SENTINEL).unwrap();
+    assert_eq!(inspection.start, Some(0));
 }
 
 #[test]

@@ -20,6 +20,7 @@ mod tests;
 const MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 const MAX_VALUE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_TOTAL_INPUT_BYTES: usize = 32 * 1024 * 1024;
+const MAX_TOTAL_COPY_BYTES: usize = MAX_TOTAL_INPUT_BYTES + MAX_VALUE_BYTES;
 const INVOCATION_FUEL: u64 = 10_000_000;
 const CLEANUP_FUEL: u64 = 1_000_000;
 
@@ -171,6 +172,7 @@ fn invoke_inner(
 ) -> Result<Value, String> {
     let mut raw_arguments = Vec::with_capacity(function_plan.raw_arguments.len());
     let mut total_input_bytes = 0usize;
+    let mut total_copy_bytes = 0usize;
 
     for (argument_plan, value) in function_plan.arguments.iter().zip(arguments) {
         if argument_plan.lowering.is_none() {
@@ -192,22 +194,22 @@ fn invoke_inner(
             ));
         }
         let (pointer, length) =
-            lower_pointer_length(memory_contract, session, bytes, &function_plan.name)?;
-        if pointer != 0 {
-            match argument_plan.ownership {
-                Some(Ownership::Borrowed) => {
-                    release_always.insert(pointer);
-                }
-                Some(Ownership::Transferred) => {
-                    release_on_failure.insert(pointer);
-                }
-                _ => {
-                    return Err(format!(
-                        "extension/ownership-invalid: {} argument {}",
-                        function_plan.name, argument_plan.name
-                    ))
-                }
-            }
+            lower_pointer_length(
+                memory_contract,
+                session,
+                bytes,
+                &function_plan.name,
+                argument_plan.ownership,
+                release_on_failure,
+            )?;
+        total_copy_bytes = total_copy_bytes
+            .checked_add(bytes.len())
+            .ok_or_else(|| "extension/resource-limit: copy byte count overflow".to_owned())?;
+        if total_copy_bytes > MAX_TOTAL_COPY_BYTES {
+            return Err(format!(
+                "extension/resource-limit: {} exceeds the memory.v1 aggregate copy limit",
+                function_plan.name
+            ));
         }
         raw_arguments.push(Val::I32(pointer));
         raw_arguments.push(Val::I32(length));
@@ -238,6 +240,7 @@ fn invoke_inner(
         raw_results.into_iter().next(),
         session,
         release_always,
+        &mut total_copy_bytes,
     )
 }
 
@@ -261,6 +264,8 @@ fn lower_pointer_length(
     session: &mut Session,
     bytes: &[u8],
     export: &str,
+    ownership: Option<Ownership>,
+    release_on_failure: &mut BTreeSet<i32>,
 ) -> Result<(i32, i32), String> {
     let length = i32::try_from(bytes.len())
         .map_err(|_| format!("extension/resource-limit: {export} input is too large"))?;
@@ -278,6 +283,9 @@ fn lower_pointer_length(
     let pointer = allocator
         .call(&mut session.store, length)
         .map_err(|error| format!("extension/allocator-failed: {export} ({error})"))?;
+    if pointer != 0 && ownership == Some(Ownership::Transferred) {
+        release_on_failure.insert(pointer);
+    }
     let start = checked_range(&session.memory, &session.store, pointer, length, export)?;
     session
         .memory
@@ -292,6 +300,7 @@ fn lift_result(
     raw: Option<Val>,
     session: &mut Session,
     release_always: &mut BTreeSet<i32>,
+    total_copy_bytes: &mut usize,
 ) -> Result<Value, String> {
     if plan.lifting.is_none() {
         return scalar_result(export, &plan.hara_type, raw);
@@ -321,6 +330,14 @@ fn lift_result(
     if length_usize > MAX_VALUE_BYTES {
         return Err(format!(
             "extension/resource-limit: {export} result exceeds the memory.v1 byte limit"
+        ));
+    }
+    *total_copy_bytes = total_copy_bytes
+        .checked_add(length_usize)
+        .ok_or_else(|| format!("extension/resource-limit: {export} copy byte count overflow"))?;
+    if *total_copy_bytes > MAX_TOTAL_COPY_BYTES {
+        return Err(format!(
+            "extension/resource-limit: {export} exceeds the memory.v1 aggregate copy limit"
         ));
     }
     if plan.ownership == Some(Ownership::Caller) && pointer != 0 {

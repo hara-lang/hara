@@ -126,6 +126,34 @@ fn memory_binding_emits_a_truthful_semantic_package() {
 }
 
 #[test]
+fn memory_package_loads_through_the_normal_wasmtime_provider() {
+    let root = fixture_root("memory-provider");
+    fs::create_dir_all(&root).unwrap();
+    let module = root.join("echo.wasm");
+    let interface = root.join("echo.interface.hal");
+    fs::write(&module, MEMORY_MODULE).unwrap();
+    fs::write(&interface, MEMORY_INTERFACE).unwrap();
+    let package_root = root.join("package");
+    bind_package(&interface, &module, &package_root).unwrap();
+
+    let package = crate::native_extension::ExtensionPackage::load(&package_root).unwrap();
+    let module_bytes = package.module_bytes().unwrap();
+    let plan = package.memory_binding_plan(&module_bytes).unwrap();
+    let provider =
+        crate::wasmtime_provider::WasmtimeExtensionProvider::compile_memory(&module_bytes, plan)
+            .unwrap();
+    let mut extension =
+        crate::extension::WasmExtension::new(package.manifest.clone(), provider).unwrap();
+    let bindings = extension.require().unwrap();
+    assert_eq!(bindings[0].name, "echo");
+    assert_eq!(
+        bindings[0].invoke(&[crate::core::Value::Bytes(Vec::new())]).unwrap(),
+        crate::core::Value::Bytes(Vec::new())
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn drift_fails_before_creating_an_output_tree() {
     let root = fixture_root("drift");
     fs::create_dir_all(&root).unwrap();

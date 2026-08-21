@@ -116,7 +116,21 @@ impl Runtime {
             ));
         }
         let bytes = package.module_bytes()?;
-        let provider = wasmtime_provider::WasmtimeExtensionProvider::compile(&bytes)?;
+        let provider = match package.manifest.abi {
+            extension::WasmAbi::CoreV1 => {
+                wasmtime_provider::WasmtimeExtensionProvider::compile(&bytes)?
+            }
+            extension::WasmAbi::MemoryV1 => {
+                let plan = package.memory_binding_plan(&bytes)?;
+                wasmtime_provider::WasmtimeExtensionProvider::compile_memory(&bytes, plan)?
+            }
+            extension::WasmAbi::HtaV1 => {
+                return Err(format!(
+                    "extension/provider-unsupported: wasm ABI :hta.v1 for {} requires HTA",
+                    namespace
+                ))
+            }
+        };
         self.install_wasm_extension(
             &package.source,
             &package.descriptor.display().to_string(),

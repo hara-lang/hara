@@ -29,6 +29,7 @@ const TARGET_FIELDS: &[&str] = &["module", "runtime"];
 pub enum WasmAbi {
     CoreV1,
     HtaV1,
+    MemoryV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +136,7 @@ impl ExtensionManifest {
         let abi = match named_keyword(entries, "abi", origin)?.as_str() {
             "core.v1" => WasmAbi::CoreV1,
             "hta.v1" => WasmAbi::HtaV1,
+            "memory.v1" => WasmAbi::MemoryV1,
             value => return Err(malformed(origin, format!("unsupported WASM ABI :{value}"))),
         };
         if provider == "hta" && abi != WasmAbi::HtaV1 {
@@ -609,6 +611,17 @@ mod tests {
                          :returns :i64}}
        :capabilities []}"#;
 
+    const MEMORY_MANIFEST: &str = r#"
+      {:namespace "codec.echo"
+       :version "0.1.0"
+       :provider :wasm
+       :module "echo.wasm"
+       :abi :memory.v1
+       :exports {"echo" {:wasm/export "echo_bytes"
+                          :args [:bytes]
+                          :returns :bytes}}
+       :capabilities []}"#;
+
     #[test]
     fn parses_the_wasm_manifest_contract() {
         let manifest = ExtensionManifest::parse(MANIFEST, "fixture").unwrap();
@@ -617,8 +630,15 @@ mod tests {
         assert_eq!(manifest.abi, WasmAbi::HtaV1);
         assert!(manifest.exports[0].1.asynchronous);
         assert_eq!(manifest.exports[0].1.raw_name("digest"), "digest");
-        assert!(manifest.permits_host_call("crypto.random", "fill"));
         assert_eq!(manifest.handle_tags["digest"], "crypto");
+        assert!(manifest.permits_host_call("crypto.random", "fill"));
+    }
+
+    #[test]
+    fn parses_memory_v1_manifests_without_downgrading_the_abi() {
+        let manifest = ExtensionManifest::parse(MEMORY_MANIFEST, "fixture").unwrap();
+        assert_eq!(manifest.abi, WasmAbi::MemoryV1);
+        assert_eq!(manifest.exports[0].1.raw_name("echo"), "echo_bytes");
     }
 
     #[test]

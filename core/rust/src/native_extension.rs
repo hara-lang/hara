@@ -4,8 +4,12 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::extension::ExtensionManifest;
+use sha2::{Digest, Sha256};
+
+use crate::extension::{ExtensionManifest, WasmAbi};
 use crate::kernel::{parse, Form};
+
+use super::wasm_binding::{MemoryBindingPlan, WasmInterface, MEMORY_BINDING_SCHEMA};
 
 const MAX_PROJECT_BYTES: u64 = 1024 * 1024;
 const MAX_MODULE_BYTES: u64 = 64 * 1024 * 1024;
@@ -72,6 +76,79 @@ impl ExtensionPackage {
             return Err(format!("extension/module-too-large: {}", path.display()));
         }
         fs::read(&path).map_err(|error| format!("extension/module-unavailable: {error}"))
+    }
+
+    pub fn memory_binding_plan(&self, module_bytes: &[u8]) -> Result<MemoryBindingPlan, String> {
+        if self.manifest.abi != WasmAbi::MemoryV1 {
+            return Err(format!(
+                "extension/abi-invalid: {} is not a memory.v1 package",
+                self.manifest.namespace
+            ));
+        }
+        let interface_source = fs::read_to_string(self.resolve("interface.hal")?)
+            .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
+        let interface = WasmInterface::parse(
+            &interface_source,
+            &format!("{}/interface.hal", self.manifest.namespace),
+        )?;
+        if interface.namespace != self.manifest.namespace
+            || interface.module != self.manifest.module.as_deref().unwrap_or_default()
+        {
+            return Err(format!(
+                "extension/manifest-mismatch: {} does not match interface.hal",
+                self.manifest.namespace
+            ));
+        }
+        let inspection = crate::wasm_binding::inspect_direct(module_bytes)?;
+        let plan = interface.memory_plan()?;
+        plan.verify(&inspection)
+            .map_err(|error| format!("extension/binding-invalid: {error}"))?;
+
+        let bindings_source = fs::read_to_string(self.resolve("bindings.edn")?)
+            .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
+        let bindings = parse(&bindings_source)
+            .map_err(|error| format!("extension/binding-invalid: {error}"))?;
+        if bindings.to_string() != plan.canonical_source() {
+            return Err("extension/binding-drift: bindings.edn does not match interface.hal".into());
+        }
+        if field_string(&bindings, "schema")? != MEMORY_BINDING_SCHEMA
+            || field_string(&bindings, "target")? != "memory.v1"
+            || field_string(&bindings, "namespace")? != interface.namespace
+            || field_string(&bindings, "module")? != interface.module
+        {
+            return Err("extension/binding-invalid: bindings.edn metadata mismatch".into());
+        }
+
+        let module_digest = digest(module_bytes);
+        let interface_digest = digest(interface.canonical_source().as_bytes());
+        let binding_digest = digest(bindings_source.as_bytes());
+        let conformance_source = fs::read_to_string(self.resolve("conformance/bindings.edn")?)
+            .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
+        let conformance = parse(&conformance_source)
+            .map_err(|error| format!("extension/conformance-invalid: {error}"))?;
+        verify_recorded_digests(
+            &conformance,
+            "memory.v1",
+            &interface.namespace,
+            &module_digest,
+            &interface_digest,
+            &binding_digest,
+        )?;
+        let product_source = fs::read_to_string(self.resolve("hara.build-product.edn")?)
+            .map_err(|error| format!("extension/asset-unavailable: {error}"))?;
+        let product = parse(&product_source)
+            .map_err(|error| format!("extension/build-product-invalid: {error}"))?;
+        if field_string(&product, "product/target")? != "memory.v1"
+            || field_string(&product, "product/namespace")? != interface.namespace
+            || field_string(&product, "product/binding-digest")? != binding_digest
+            || field_string(field(&product, "product/inputs")?, "module-digest")?
+                != module_digest
+            || field_string(field(&product, "product/inputs")?, "interface-digest")?
+                != interface_digest
+        {
+            return Err("extension/digest-mismatch: build product digest does not match".into());
+        }
+        Ok(plan)
     }
 
     pub fn declared_files(&self) -> Vec<String> {
@@ -262,6 +339,50 @@ fn scalar(form: &Form, label: &str) -> Result<String, String> {
             "extension/malformed: {label} must be a string or symbol"
         )),
     }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn field<'a>(form: &'a Form, name: &str) -> Result<&'a Form, String> {
+    let Form::Map(entries) = form else {
+        return Err("extension/metadata-invalid: document must be a map".into());
+    };
+    entries
+        .iter()
+        .find_map(|(key, value)| {
+            matches!(key, Form::Keyword(key) | Form::Symbol(key) if key == name).then_some(value)
+        })
+        .ok_or_else(|| format!("extension/metadata-invalid: missing :{name}"))
+}
+
+fn field_string(form: &Form, name: &str) -> Result<String, String> {
+    match field(form, name)? {
+        Form::String(value) | Form::Symbol(value) | Form::Keyword(value) => Ok(value.clone()),
+        _ => Err(format!(
+            "extension/metadata-invalid: :{name} must be a string, symbol, or keyword"
+        )),
+    }
+}
+
+fn verify_recorded_digests(
+    form: &Form,
+    target: &str,
+    namespace: &str,
+    module_digest: &str,
+    interface_digest: &str,
+    binding_digest: &str,
+) -> Result<(), String> {
+    if field_string(form, "target")? != target
+        || field_string(form, "namespace")? != namespace
+        || field_string(form, "module-digest")? != module_digest
+        || field_string(form, "interface-digest")? != interface_digest
+        || field_string(form, "binding-digest")? != binding_digest
+    {
+        return Err("extension/digest-mismatch: recorded package digest does not match".into());
+    }
+    Ok(())
 }
 
 fn absolute(path: &Path) -> Result<PathBuf, String> {
