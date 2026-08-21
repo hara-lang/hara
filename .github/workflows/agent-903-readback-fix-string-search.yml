@@ -1,0 +1,166 @@
+name: Patch portable std.typed string predicates
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/agent-903-readback-fix-string-search.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/903-std-typed-registry-readback
+          fetch-depth: 0
+
+      - name: Replace nil-based string search assumptions
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path("core/lib/src/std/typed/catalog/document.hal")
+          source = path.read_text()
+
+          old_hex = '''       (let [character (str (str/char-at value index))]
+         (if (nil? (str/index-of +hex-digits+ character))
+           false
+           (recur (inc index))))))))
+'''
+          new_hex = '''       (let [character (str (str/char-at value index))]
+         (if (str/includes? +hex-digits+ character)
+           (recur (inc index))
+           false))))))
+'''
+          old_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (nil? (str/index-of value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (nil? (str/index-of value "/../"))))
+'''
+          new_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (not (str/includes? value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (not (str/includes? value "/../"))))
+'''
+          old_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [separator (str/index-of value "/")
+          length (str/length value)]
+      (and
+       separator
+       (> separator 0)
+       (< separator (dec length))
+       (nil?
+        (str/index-of
+         (str/slice value (inc separator))
+         "/"))
+       (not (str/starts-with? value ":"))
+       (nil? (str/index-of value " "))))))
+'''
+          new_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [parts (str/split value "/")]
+      (and
+       (= 2 (count parts))
+       (not (str/blank? (first parts)))
+       (not (str/blank? (second parts)))
+       (not (str/starts-with? value ":"))
+       (not (str/includes? value " "))))))
+'''
+
+          replacements = [
+              (old_hex, new_hex, "lowercase hex predicate"),
+              (old_path, new_path, "source path predicate"),
+              (old_owner, new_owner, "owner/name predicate"),
+          ]
+          for old, new, label in replacements:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one {label}, found {count}")
+              source = source.replace(old, new, 1)
+
+          path.write_text(source)
+          PY
+
+      - name: Validate the focused source edit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          source = Path("core/lib/src/std/typed/catalog/document.hal").read_text()
+          assert "nil? (str/index-of" not in source
+          assert "(str/includes? +hex-digits+ character)" in source
+          assert "(let [parts (str/split value \"/\")]" in source
+          assert source.count("(not (str/includes? value") == 3
+
+          pairs = {"(": ")", "[": "]", "{": "}"}
+          closers = {value: key for key, value in pairs.items()}
+          stack = []
+          state = "code"
+          escaped = False
+          for index, character in enumerate(source):
+              if state == "comment":
+                  if character == "\n":
+                      state = "code"
+                  continue
+              if state == "string":
+                  if escaped:
+                      escaped = False
+                  elif character == "\\":
+                      escaped = True
+                  elif character == '"':
+                      state = "code"
+                  continue
+              if character == ";":
+                  state = "comment"
+              elif character == '"':
+                  state = "string"
+              elif character in pairs:
+                  stack.append((character, index))
+              elif character in closers:
+                  assert stack, (character, index)
+                  opener, opener_index = stack.pop()
+                  assert opener == closers[character], (
+                      opener,
+                      opener_index,
+                      character,
+                      index,
+                  )
+          assert state != "string"
+          assert not stack, stack[-1] if stack else None
+          PY
+          git diff --check -- core/lib/src/std/typed/catalog/document.hal
+
+      - name: Commit the portable predicate fix
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- core/lib/src/std/typed/catalog/document.hal
+          git diff --cached --check
+          git commit -m "Use portable string predicates in catalog read-back"
+          git push origin HEAD:agent/903-std-typed-registry-readback
