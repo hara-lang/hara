@@ -9,6 +9,8 @@ mod memory;
 #[cfg(not(target_arch = "wasm32"))]
 mod package;
 mod parser;
+#[cfg(not(target_arch = "wasm32"))]
+mod runtime;
 mod syntax;
 
 #[cfg(test)]
@@ -38,6 +40,8 @@ pub use package::{
     InspectionArtifact, DIRECT_WASM_BINDING_SCHEMA, DIRECT_WASM_BUILD_PRODUCT_SCHEMA,
     DIRECT_WASM_CONFORMANCE_SCHEMA,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::WasmtimeMemoryExecutor;
 
 pub const WASM_INTERFACE_SCHEMA: &str = "hara.wasm-interface/0-alpha";
 
