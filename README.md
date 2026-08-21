@@ -94,43 +94,6 @@ It accepts only `localhost` or `127.0.0.1`, never uses `ROOT`, and can reset
 its own `AGENT` session. It does not replace the required fresh-process
 validation of saved `.hal` files.
 
-The Makefile also mirrors the main repository and CI workflows:
-
-```shell
-make -C core java-test java-conformance
-make -C core rust-test rust-raw-test rust-layout
-make -C core lib-test
-
-make -C core wasm-web
-make -C core hta-test
-make -C core studio-test
-
-make -C core chrome-build chrome-test
-make -C core docs-build
-make -C core www-build
-```
-
-Run `make web-install` or `make chrome-install` before the corresponding Node
-workflows on a fresh checkout. `make check-all` runs the core Java, Rust, raw
-WASM, portable library, HTA, and Studio checks. Runtime performance entry
-points are available as `runtime-benchmark`, `truffle-benchmark`,
-and `parity-benchmark`; each accepts additional arguments
-through `ARGS`.
-
-Portable bytecode uses HBC0 artifacts and deterministic HBX0 bundles across
-the Rust, Truffle JVM, and Truffle native-image runtimes. Inspect or execute an
-artifact with `hara bytecode disassemble FILE` and `hara bytecode run FILE`.
-`hara bytecode conformance core/rust/assets/bytecode-conformance.hcc` executes
-the complete Rust-produced opcode corpus and checks every result; the
-native-image CI gate runs this same command before accepting the image.
-
-Per-component builds:
-
-```shell
-cargo test --manifest-path core/rust/Cargo.toml                 # Rust runtime
-cd ../../application/greenways-os/extension/hara-chrome && npm ci && npm run build  # Chrome extension
-```
-
 ## Package workspaces
 
 The native CLI is authoritative for deterministic HARP package operations:
@@ -415,28 +378,122 @@ Browser packages are written beneath
 and Studio development; they are not terminal executables and the repository
 currently has no automatic npm publication workflow for `@hara-lang/browser`.
 
-## 4. Validate a local build
+## 4. Test and validate a local build
 
-Use the smallest check that covers your change while iterating:
+Use the smallest slice that covers a change while iterating, then run the
+appropriate aggregate before treating the change as release-ready. List all
+available targets with `make -C core help`.
+
+### What conformance means
+
+Ordinary tests check one implementation: a Rust function, a JVM provider, a
+CLI command, or a browser host. Conformance tests check an observable Hara
+contract that more than one runtime or host is expected to implement. A
+conformance failure means that an implementation disagrees with that shared
+contract; it does not necessarily mean that the individual class or function
+named in the failure is independently broken.
+
+Some contracts and machine-readable corpora are owned by the sibling
+[`hara-specs-registry`](../hara-specs-registry/). Other parity tests remain in
+this repository while their contracts are being developed. Aggregate commands
+include both kinds. The focused slices below distinguish local regressions,
+registry-contract mismatches, and host-integration failures.
+
+### Aggregate checks
+
+| Command | Coverage |
+| --- | --- |
+| `make -C core java-test` | All JVM/Truffle implementation and conformance tests |
+| `make -C core java-conformance` | JVM core-language parity corpus |
+| `make -C core rust-test` | All ordinary native Rust slices and workspace crates |
+| `make -C core wasm-test` | Raw-Wasm, Node, browser SDK, and Playwright slices |
+| `make -C core lib-test` | Portable `.hal` libraries through the native runner |
+| `make -C core check-all` | Repository gate: layout, Java, Rust, raw-Wasm, libraries, HTA, and Studio |
+
+`java-test` is intentionally broad: it contains local JVM unit and integration
+tests as well as parity tests. Use `java-conformance` when only the focused
+core-language contract is relevant. Registry-owned fixtures require a sibling
+`hara-specs-registry` checkout at `technology/hara-specs-registry` in the
+standard workspace layout.
+
+### Native Rust slices
+
+Cargo's workspace default selects only the main `hara-wasm` member. The
+`rust-test` aggregate is broader: it explicitly includes `hara-abi`,
+`hara-hta`, `hara-vm`, and `hara-compiler` so those crate tests are not silently
+omitted.
+
+| Target | Coverage |
+| --- | --- |
+| `rust-test-library` | Unit tests in the main `hara-wasm` library |
+| `rust-test-cli` | Unit tests embedded in every native CLI binary |
+| `rust-test-integration` | Every `core/rust/tests/*.rs` integration target |
+| `rust-test-examples` | Example compilation and test harnesses |
+| `rust-test-doc` | Rust documentation tests |
+| `rust-test-main` | The five main-crate slices above |
+| `rust-test-abi` | Dependency-free `hara-abi` crate |
+| `rust-test-hta` | Canonical `hara-hta` codec crate |
+| `rust-test-vm` | VM-only `hara-vm` crate |
+| `rust-test-compiler` | `hara-compiler` facade crate |
+| `rust-test-crates` | All four supporting workspace crates |
+| `rust-test-ignored` | Opt-in tests requiring external artifacts; excluded from `rust-test` |
+
+For example:
 
 ```shell
-cargo test --manifest-path core/rust/Cargo.toml
-mvn -f core/java/pom.xml -Ptruffle test
-scripts/runtime/run-lib-tests
+make -C core rust-test-library
+make -C core rust-test-integration
+make -C core rust-test-crates
 ```
 
-Before treating a runtime change as release-ready, run the aggregate core
-checks:
+### Wasm slices
+
+Wasm testing crosses several host boundaries, so raw Rust tests, Node tests,
+the publishable browser SDK, and real-browser tests are separate slices.
+
+| Target | Coverage |
+| --- | --- |
+| `wasm-test-raw-unit` | Unit tests compiled inside `hara-wasm-raw` |
+| `wasm-test-raw-integration` | Raw-crate integration targets |
+| `wasm-test-raw` | Both raw-crate slices |
+| `wasm-test-hta` | HTA codec, value transport, and sandbox tests in Node |
+| `wasm-test-exceptions` | Raw-Wasm exception conformance in Node |
+| `wasm-test-runtime` | Portable code through the wasm-bindgen runtime in Node |
+| `wasm-test-studio` | Studio host, broker, filesystem, endpoint, and real-Wasm Node tests |
+| `wasm-test-node` | All four Node-hosted slices |
+| `wasm-test-browser-sdk` | Publishable browser SDK tests |
+| `wasm-test-browser` | Full Playwright browser suite |
+
+Install web dependencies once on a fresh checkout before running Node or
+browser slices:
 
 ```shell
-make -C core check-all
+make -C core web-install
+make -C core wasm-test-raw
+make -C core wasm-test-node
+make -C core wasm-test-browser
 ```
 
-Useful narrower Make targets are listed by:
+`rust-raw-test`, `hta-test`, and `studio-test` remain compatibility aliases for
+`wasm-test-raw`, `wasm-test-hta`, and `wasm-test-studio`. Every top-level Node
+test under `core/rust/web` is assigned to an npm test script, while Playwright's
+configuration owns the browser `*.spec.js` inventory.
+
+### Bytecode conformance and benchmarks
+
+Portable bytecode uses HBC0 artifacts and deterministic HBX0 bundles across
+the Rust, Truffle JVM, and Truffle native-image runtimes. Inspect or execute an
+artifact with `hara bytecode disassemble FILE` and `hara bytecode run FILE`.
+The following command executes the complete Rust-produced opcode corpus and
+checks every result; the native-image CI gate runs the same corpus:
 
 ```shell
-make -C core help
+hara bytecode conformance core/rust/assets/bytecode-conformance.hcc
 ```
+
+Performance entry points are `runtime-benchmark`, `vm-bb-benchmark`,
+`truffle-benchmark`, and `parity-benchmark`. They accept extra arguments through
+`ARGS` and measure performance; they are not substitutes for correctness tests.
 
 For any saved `.hal` change, follow the repository's fresh-process workflow:
 evaluate the complete candidate, run its focused test, write the edit, run the
