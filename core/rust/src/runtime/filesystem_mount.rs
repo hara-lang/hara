@@ -27,6 +27,8 @@ fn stable_provider_kind(kind: &str) -> &'static str {
         "sftp" => "sftp",
         "github" => "github",
         "google-drive" => "google-drive",
+        "s3" => "s3",
+        "webdav" => "webdav",
         _ => "provider",
     }
 }
