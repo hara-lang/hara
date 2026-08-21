@@ -44,7 +44,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: wasm-binding-${{ github.event.pull_request.number || github.ref }}
@@ -77,23 +77,9 @@ jobs:
           components: rustfmt
           targets: wasm32-unknown-unknown
 
-      - name: Normalize Hara option membership
+      - name: Check touched Rust formatting
         run: |
-          python - <<'PY'
-          from pathlib import Path
-          path = Path('core/lib/src/tool/cli/extension.hal')
-          source = path.read_text()
-          old = '(if (not (get allowed key))'
-          new = '(if (not (contains? allowed key))'
-          if old in source:
-              path.write_text(source.replace(old, new, 1))
-          elif new not in source:
-              raise SystemExit('expected Hara option membership expression was not found')
-          PY
-
-      - name: Format touched Rust
-        run: |
-          rustfmt --edition 2021 \
+          rustfmt --edition 2021 --check \
             core/rust/src/bin/hara/cli/hara.rs \
             core/rust/src/cli_app.rs \
             core/rust/src/cli_app/tests.rs \
@@ -108,17 +94,6 @@ jobs:
             core/rust/src/wasm_binding/parser.rs \
             core/rust/src/wasm_binding/syntax.rs \
             core/rust/src/wasm_binding/tests.rs
-
-      - name: Commit exact generated fixes
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add core/lib/src/tool/cli/extension.hal core/rust/src/bin/hara/cli/hara.rs core/rust/src/cli_app.rs core/rust/src/cli_app core/rust/src/direct_wasm.rs core/rust/src/extension.rs core/rust/src/wasmtime_provider.rs core/rust/src/wasm_binding.rs core/rust/src/wasm_binding
-            git commit -m "Normalize Wasm binding implementation"
-            git push origin HEAD:${{ github.head_ref }}
-          fi
 
       - name: Enforce bounded touched modules
         run: |

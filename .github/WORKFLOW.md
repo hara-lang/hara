@@ -1,8 +1,8 @@
 # GitHub Actions
 
-Hara uses `testing` as its integration branch and `main` as its production
-branch. Feature pull requests normally target `testing`; promotion pull
-requests move reviewed changes from `testing` to `main`.
+Hara uses `main` as the integration and production branch for feature pull
+requests. The old `testing` branch remains available for legacy maintenance and
+manual comparisons, but it is not part of the normal delivery path.
 
 Workflow files are durable project infrastructure. One-off branch repair,
 source export, migration, rebase, or patch-application jobs do not belong in
@@ -13,14 +13,21 @@ rewrite its source.
 
 ## Pull-request and branch checks
 
-- `core-ci.yml` is the primary required check for `main` and `testing`. It
+- `core-ci.yml` is the primary required check for `main` (and remains useful on
+  the legacy `testing` branch). It
   validates the Rust, Java/Truffle, and HAL runtimes. Its bytecode-observation
   job verifies native and browser observation sessions.
-- `connector-code-execution.yml` is the stable, read-only ChatGPT webapp lane.
-  On connector branch pushes and pull requests it classifies the committed diff
-  and executes the affected Rust and/or Java runtime through checked-in scripts.
-  It provides early exact-commit evidence and complements rather than replaces
-  `core-ci.yml` and focused workflows.
+- `connector-code-execution.yml` is the stable, read-only agent lane. On
+  `agent/**`, `chat/**`, `codex/**`, and `copilot/**` pushes and on pull requests
+  to `main`, it classifies the committed diff and executes the affected Rust,
+  Java, Hara, and browser-loader vertical through checked-in scripts. Its
+  `Agent readiness / Required gate` job is the stable preflight required before
+  a connector-authored branch is considered ready. It complements rather than
+  replaces `core-ci.yml` and focused workflows.
+- `copilot-setup-steps.yml` prepares the Copilot cloud-agent environment with
+  JDK 21, Node 22, stable Rust plus Wasm targets, the pinned specifications
+  registry, and prefetched dependencies. It does not build releases or write
+  source.
 - `language-source-layout.yml` is the read-only Language CI gate. It checks
   source layout, namespace ownership, `code.test` ownership,
   retired standard-library namespaces, and the Foundation parity ledger.
@@ -77,7 +84,8 @@ and Git tags are immutable.
    temporary agent task.
 4. Every workflow must have a stable owner and purpose documented above.
 5. Prefer adding a job or path filter to an existing workflow over creating a
-   new file.
+   new file. The Copilot setup workflow is the one documented exception because
+   GitHub requires that exact workflow name and job for cloud-agent setup.
 6. Connector-authored Rust and Java must be committed before execution. Actions
    validates the exact commit; it never authors, materialises, or repairs the
    implementation.

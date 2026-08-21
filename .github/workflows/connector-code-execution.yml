@@ -2,32 +2,13 @@ name: Connector code execution
 
 on:
   pull_request:
-    branches: [main, testing]
-    paths:
-      - 'core/rust/**'
-      - '!core/rust/web/**'
-      - 'core/java/**'
-      - 'scripts/runtime/detect-connector-code-scope'
-      - 'scripts/runtime/run-connector-code'
-      - '.github/workflows/connector-code-execution.yml'
-      - '.github/CHATGPT_PROJECT_WORKFLOW.md'
-      - '.github/WORKFLOW.md'
-      - 'AGENTS.md'
+    branches: [main]
   push:
     branches:
       - 'agent/**'
       - 'chat/**'
       - 'codex/**'
-    paths:
-      - 'core/rust/**'
-      - '!core/rust/web/**'
-      - 'core/java/**'
-      - 'scripts/runtime/detect-connector-code-scope'
-      - 'scripts/runtime/run-connector-code'
-      - '.github/workflows/connector-code-execution.yml'
-      - '.github/CHATGPT_PROJECT_WORKFLOW.md'
-      - '.github/WORKFLOW.md'
-      - 'AGENTS.md'
+      - 'copilot/**'
   workflow_dispatch:
     inputs:
       base_ref:
@@ -51,6 +32,8 @@ jobs:
     outputs:
       rust: ${{ steps.scope.outputs.rust }}
       java: ${{ steps.scope.outputs.java }}
+      hal: ${{ steps.scope.outputs.hal }}
+      wasm: ${{ steps.scope.outputs.wasm }}
       base_sha: ${{ steps.scope.outputs.base_sha }}
       head_sha: ${{ steps.scope.outputs.head_sha }}
     steps:
@@ -76,7 +59,7 @@ jobs:
         run: bash scripts/runtime/detect-connector-code-scope
 
   rust:
-    name: Execute committed Rust
+    name: Agent readiness / Rust
     needs: contract
     if: ${{ needs.contract.outputs.rust == 'true' }}
     runs-on: ubuntu-latest
@@ -91,12 +74,42 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Cache Rust dependencies and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/rust/target
+          key: connector-rust-${{ runner.os }}-${{ hashFiles('core/rust/Cargo.lock') }}
+          restore-keys: |
+            connector-rust-${{ runner.os }}-
+
       - name: Run committed Rust validation
         shell: bash
         run: bash scripts/runtime/run-connector-code rust
 
+      - name: Capture Rust evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf 'head_sha=%s\n' '${{ needs.contract.outputs.head_sha }}'
+            rustc --version
+            cargo --version
+          } > connector-rust-evidence.txt
+
+      - name: Upload Rust evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-rust-${{ needs.contract.outputs.head_sha }}
+          path: connector-rust-evidence.txt
+          if-no-files-found: error
+          retention-days: 7
+
   java:
-    name: Execute committed Java
+    name: Agent readiness / Java
     needs: contract
     if: ${{ needs.contract.outputs.java == 'true' }}
     runs-on: ubuntu-latest
@@ -105,6 +118,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.contract.outputs.head_sha }}
+
+      - name: Check out the specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          ref: a40b7da53ed8e4ef241e36a9fd2802b3bc34ea8a
+          fetch-depth: 1
+
+      - name: Expose the specifications registry at the sibling path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -118,9 +142,128 @@ jobs:
         shell: bash
         run: bash scripts/runtime/run-connector-code java
 
+      - name: Capture Java evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf 'head_sha=%s\n' '${{ needs.contract.outputs.head_sha }}'
+            java -version
+            mvn --version | head -n 3
+          } > connector-java-evidence.txt 2>&1
+
+      - name: Upload Java evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-java-${{ needs.contract.outputs.head_sha }}
+          path: connector-java-evidence.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  hal:
+    name: Agent readiness / Hara
+    needs: contract
+    if: ${{ needs.contract.outputs.hal == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.contract.outputs.head_sha }}
+
+      - name: Check out the specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          ref: a40b7da53ed8e4ef241e36a9fd2802b3bc34ea8a
+          fetch-depth: 1
+
+      - name: Expose the specifications registry at the sibling path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            core/rust/target
+          key: connector-hal-${{ runner.os }}-${{ hashFiles('core/rust/Cargo.lock') }}
+          restore-keys: |
+            connector-hal-${{ runner.os }}-
+
+      - name: Run committed Hara validation
+        shell: bash
+        run: bash scripts/runtime/run-connector-code hal
+
+      - name: Capture Hara evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf 'head_sha=%s\n' '${{ needs.contract.outputs.head_sha }}'
+            rustc --version
+            cargo --version
+          } > connector-hal-evidence.txt
+
+      - name: Upload Hara evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-hal-${{ needs.contract.outputs.head_sha }}
+          path: connector-hal-evidence.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  wasm:
+    name: Agent readiness / Wasm
+    needs: contract
+    if: ${{ needs.contract.outputs.wasm == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.contract.outputs.head_sha }}
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: core/rust/web/package-lock.json
+
+      - name: Run committed Wasm validation
+        shell: bash
+        run: bash scripts/runtime/run-connector-code wasm
+
+      - name: Capture Wasm evidence
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf 'head_sha=%s\n' '${{ needs.contract.outputs.head_sha }}'
+            node --version
+            npm --version
+          } > connector-wasm-evidence.txt
+
+      - name: Upload Wasm evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connector-wasm-${{ needs.contract.outputs.head_sha }}
+          path: connector-wasm-evidence.txt
+          if-no-files-found: error
+          retention-days: 7
+
   evidence:
-    name: Record committed execution result
-    needs: [contract, rust, java]
+    name: Agent readiness / Required gate
+    needs: [contract, rust, java, hal, wasm]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -132,6 +275,10 @@ jobs:
           RUST_RESULT: ${{ needs.rust.result }}
           JAVA_SELECTED: ${{ needs.contract.outputs.java }}
           JAVA_RESULT: ${{ needs.java.result }}
+          HAL_SELECTED: ${{ needs.contract.outputs.hal }}
+          HAL_RESULT: ${{ needs.hal.result }}
+          WASM_SELECTED: ${{ needs.contract.outputs.wasm }}
+          WASM_RESULT: ${{ needs.wasm.result }}
           BASE_SHA: ${{ needs.contract.outputs.base_sha }}
           HEAD_SHA: ${{ needs.contract.outputs.head_sha }}
         run: |
@@ -150,10 +297,24 @@ jobs:
             test "$JAVA_RESULT" = skipped
           fi
 
+          if [[ "$HAL_SELECTED" = true ]]; then
+            test "$HAL_RESULT" = success
+          else
+            test "$HAL_RESULT" = skipped
+          fi
+
+          if [[ "$WASM_SELECTED" = true ]]; then
+            test "$WASM_RESULT" = success
+          else
+            test "$WASM_RESULT" = skipped
+          fi
+
           {
             printf '### Connector code execution\n\n'
             printf -- '- Base: `%s`\n' "$BASE_SHA"
             printf -- '- Head: `%s`\n' "$HEAD_SHA"
             printf -- '- Rust selected: `%s` (`%s`)\n' "$RUST_SELECTED" "$RUST_RESULT"
             printf -- '- Java selected: `%s` (`%s`)\n' "$JAVA_SELECTED" "$JAVA_RESULT"
+            printf -- '- Hara selected: `%s` (`%s`)\n' "$HAL_SELECTED" "$HAL_RESULT"
+            printf -- '- Wasm selected: `%s` (`%s`)\n' "$WASM_SELECTED" "$WASM_RESULT"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -5,7 +5,7 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$repo_root" ]] || { echo "error: run from a Hara checkout" >&2; exit 1; }
 
 SPECS_REPOSITORY="https://github.com/hara-lang/hara-specs-registry.git"
-SPECS_REVISION="072914a1018f91a18e17a30bbe661a4323aad720"
+SPECS_REVISION="a40b7da53ed8e4ef241e36a9fd2802b3bc34ea8a"
 WWW_REPOSITORY="https://github.com/hara-lang/hara-www.git"
 WWW_REVISION="cc6462faa9674bd425feaf1d0acb168d3feccb08"
 
