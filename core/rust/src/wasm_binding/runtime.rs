@@ -3,13 +3,15 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
-use wasmtime::{Config, Engine, Instance, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
+use wasmtime::{
+    Config, Engine, Instance, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, Val,
+};
 
 use crate::core::Value;
 
 use super::{
-    inspect_direct, HaraValueType, Lifting, Lowering, MemoryArgumentPlan, MemoryBindingPlan,
-    MemoryContract, MemoryFunctionPlan, MemoryResultPlan, Ownership, WasmValueType,
+    inspect_direct, HaraValueType, Lifting, MemoryBindingPlan, MemoryContract, MemoryFunctionPlan,
+    MemoryResultPlan, Ownership, WasmValueType,
 };
 
 #[cfg(test)]
@@ -189,12 +191,8 @@ fn invoke_inner(
                 function_plan.name
             ));
         }
-        let (pointer, length) = lower_pointer_length(
-            memory_contract,
-            session,
-            bytes,
-            &function_plan.name,
-        )?;
+        let (pointer, length) =
+            lower_pointer_length(memory_contract, session, bytes, &function_plan.name)?;
         if pointer != 0 {
             match argument_plan.ownership {
                 Some(Ownership::Borrowed) => {
@@ -231,12 +229,7 @@ fn invoke_inner(
     };
     function
         .call(&mut session.store, &raw_arguments, &mut raw_results)
-        .map_err(|error| {
-            format!(
-                "extension/invoke-failed: {} ({error})",
-                function_plan.name
-            )
-        })?;
+        .map_err(|error| format!("extension/invoke-failed: {} ({error})", function_plan.name))?;
     *call_completed = true;
 
     lift_result(
@@ -274,15 +267,14 @@ fn lower_pointer_length(
     if length == 0 {
         return Ok((0, 0));
     }
-    let allocator_name = contract.allocate.as_deref().ok_or_else(|| {
-        format!("extension/allocator-missing: {export} requires an allocator")
-    })?;
+    let allocator_name = contract
+        .allocate
+        .as_deref()
+        .ok_or_else(|| format!("extension/allocator-missing: {export} requires an allocator"))?;
     let allocator = session
         .instance
         .get_typed_func::<i32, i32>(&mut session.store, allocator_name)
-        .map_err(|error| {
-            format!("extension/allocator-invalid: {allocator_name} ({error})")
-        })?;
+        .map_err(|error| format!("extension/allocator-invalid: {allocator_name} ({error})"))?;
     let pointer = allocator
         .call(&mut session.store, length)
         .map_err(|error| format!("extension/allocator-failed: {export} ({error})"))?;
@@ -404,10 +396,7 @@ fn release_pointers(
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "extension/release-failed: {}",
-            failures.join("; ")
-        ))
+        Err(format!("extension/release-failed: {}", failures.join("; ")))
     }
 }
 
