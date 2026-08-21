@@ -235,9 +235,7 @@ fn execute_host_action(
 fn execute_extension_inspect(options: &Options, arguments: &[String]) -> Result<(), String> {
     let (module, output, namespace) = match arguments {
         [module, output] => (module.as_str(), output.as_str(), None),
-        [module, output, namespace] => {
-            (module.as_str(), output.as_str(), Some(namespace.as_str()))
-        }
+        [module, output, namespace] => (module.as_str(), output.as_str(), Some(namespace.as_str())),
         _ => return Err("extension inspect host action requires MODULE OUTPUT [NAMESPACE]".into()),
     };
     let module = authoring_path(options, module, "module")?;
