@@ -1085,7 +1085,6 @@ impl RemoteFilesystemClient for MemoryRemoteClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::file::FileProvider;
     use crate::filesystem::{FilesystemCapability, FilesystemHandle};
     use crate::filesystem_bridge::block_on_local;
 
