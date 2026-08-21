@@ -4,7 +4,7 @@ test("IndexedDB filesystem runs transactional byte and revision conformance in C
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const { createIndexedDbFilesystemFactory } = await import(
-      "/rust/web/host/indexeddb-filesystem.js"
+      "/rust/web/host/indexeddb-filesystem-provider.js"
     );
     const database = `hara-browser-indexeddb-${crypto.randomUUID()}`;
     const factory = createIndexedDbFilesystemFactory({ databaseName: database });

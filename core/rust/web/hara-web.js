@@ -61,5 +61,5 @@ export {
   createIndexedDbFilesystemFactory,
   normalizeLogicalPath,
   openIndexedDbFilesystem
-} from "./host/indexeddb-filesystem.js";
+} from "./host/indexeddb-filesystem-provider.js";
 export { createIndexedDbFilesystemHost } from "./host/indexeddb-filesystem-host.js";
