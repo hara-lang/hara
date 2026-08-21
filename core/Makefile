@@ -23,9 +23,15 @@ HARA_BENCH_SCRIPTS := ../../../website/hara-benchmarks/scripts/hara-runtime
 .PHONY: help all build-all check-all test-all clean \
         java java-offline java-headless java-build java-test java-conformance \
         rust rust-offline rust-headless rust-build rust-build-release rust-release \
-        rust-test rust-raw-test rust-layout lib-test \
+        rust-test rust-test-main rust-test-library rust-test-cli \
+        rust-test-integration rust-test-examples rust-test-doc rust-test-ignored rust-test-crates \
+        rust-test-abi rust-test-hta rust-test-vm rust-test-compiler \
+        rust-raw-test rust-layout lib-test \
         native-image native-image-run native-image-offline \
-        wasm wasm-build wasm-web wasm-web-build \
+        wasm wasm-build wasm-build-all wasm-web wasm-web-build wasm-browser-build \
+        wasm-test wasm-test-raw wasm-test-raw-unit wasm-test-raw-integration \
+        wasm-test-node wasm-test-hta wasm-test-exceptions wasm-test-runtime \
+        wasm-test-studio wasm-test-browser-sdk wasm-test-browser \
         web-install hta-test studio-build studio-test \
         chrome-install chrome-build chrome-test \
         docs-build www-build \
@@ -51,8 +57,16 @@ help: ## Show the available runtime targets
 	@echo '  make check-all                  Run core layout and runtime test suites'
 	@echo '  make java-test                  Run the Truffle test suite'
 	@echo '  make java-conformance           Run JVM Core-language conformance'
-	@echo '  make rust-test                  Run the native Rust test suite'
-	@echo '  make rust-raw-test              Run raw WASM crate tests'
+	@echo '  make rust-test                  Run every native Rust test slice'
+	@echo '  make rust-test-main             Run main crate library, CLI, integration, example, and doc slices'
+	@echo '  make rust-test-crates           Run ABI, HTA codec, VM, and compiler crate slices'
+	@echo '  make rust-test-ignored          Run artifact-dependent ignored Rust tests'
+	@echo '  make rust-test-<slice>          Run one Rust slice (see README for names)'
+	@echo '  make wasm-test                  Run every raw, Node, SDK, and browser WASM test slice'
+	@echo '  make wasm-test-raw              Run raw WASM unit and integration slices'
+	@echo '  make wasm-test-node             Run HTA, exception, runtime, and Studio Node slices'
+	@echo '  make wasm-test-<slice>          Run one WASM slice (see README for names)'
+	@echo '  make rust-raw-test              Compatibility alias for wasm-test-raw'
 	@echo '  make rust-layout                Check Rust module layout'
 	@echo '  make lib-test                   Run portable .hal library tests'
 	@echo '  make hta-test                   Run HTA browser-loader Node tests'
@@ -112,11 +126,43 @@ rust-headless: rust-build ## Run the Rust native RESP server
 rust-release: rust-build-release ## Run optimized Rust native
 	$(RUST_RELEASE) $(ARGS)
 
-rust-test: ## Run the Rust native test suite
-	$(CARGO) test --manifest-path $(RUST_MANIFEST)
+rust-test: rust-test-main rust-test-crates ## Run every native Rust test slice
 
-rust-raw-test: ## Run raw WASM crate tests
-	$(CARGO) test --manifest-path $(RUST_RAW_MANIFEST)
+rust-test-main: rust-test-library rust-test-cli rust-test-integration rust-test-examples rust-test-doc ## Run all main hara-wasm crate test slices
+
+rust-test-library: ## Run main hara-wasm library unit tests
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-wasm --lib
+
+rust-test-cli: ## Run unit tests embedded in every native CLI binary
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-wasm --bins
+
+rust-test-integration: ## Run main hara-wasm integration test targets
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-wasm --test '*'
+
+rust-test-examples: ## Compile and run main hara-wasm example test targets
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-wasm --examples
+
+rust-test-doc: ## Run main hara-wasm documentation tests
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-wasm --doc
+
+rust-test-ignored: ## Run ignored tests that require external runtime artifacts
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-wasm -- --ignored
+
+rust-test-crates: rust-test-abi rust-test-hta rust-test-vm rust-test-compiler ## Run every supporting Rust workspace crate
+
+rust-test-abi: ## Run the dependency-free package ABI crate tests
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-abi
+
+rust-test-hta: ## Run the canonical HTA codec crate tests
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-hta
+
+rust-test-vm: ## Run the VM-only runtime crate tests
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-vm
+
+rust-test-compiler: ## Run the compiler facade crate tests
+	$(CARGO) test --manifest-path $(RUST_MANIFEST) -p hara-compiler
+
+rust-raw-test: wasm-test-raw ## Compatibility alias for raw WASM crate tests
 
 rust-layout: ## Check the Rust module layout
 	bash rust/scripts/check-layout.sh
@@ -140,19 +186,53 @@ wasm: wasm-build ## Build the raw WASM runtime
 wasm-build: ## Build the raw WASM module
 	../scripts/runtime/build-hara-wasm-raw
 
+wasm-build-all: ## Build core, VM, and tracing raw WASM variants
+	../scripts/runtime/build-hara-wasm-raw all
+
 wasm-web: wasm-web-build ## Build the browser WASM runtime
 
 wasm-web-build: ## Build the browser WASM package
 	../scripts/runtime/build-hara-wasm-web
 
+wasm-browser-build: ## Build VM and full browser SDK WASM variants
+	$(NPM) --prefix $(WEB_DIR) run build:browser:wasm
+
+wasm-test: wasm-test-raw wasm-test-node wasm-test-browser-sdk wasm-test-browser ## Run every WASM test slice
+
+wasm-test-raw: wasm-test-raw-unit wasm-test-raw-integration ## Run raw WASM crate unit and integration tests
+
+wasm-test-raw-unit: ## Run raw WASM crate unit tests
+	$(CARGO) test --manifest-path $(RUST_RAW_MANIFEST) --lib
+
+wasm-test-raw-integration: ## Run raw WASM crate integration test targets
+	$(CARGO) test --manifest-path $(RUST_RAW_MANIFEST) --test '*'
+
+wasm-test-node: wasm-test-hta wasm-test-exceptions wasm-test-runtime wasm-test-studio ## Run all Node-hosted WASM slices
+
+wasm-test-hta: ## Run HTA codec and sandbox Node tests
+	$(NPM) --prefix $(WEB_DIR) run test:hta
+
+wasm-test-exceptions: wasm-build-all ## Run raw WASM exception conformance in Node
+	$(NPM) --prefix $(WEB_DIR) run test:exceptions
+
+wasm-test-runtime: wasm-web-build ## Run portable code through browser WASM in Node
+	$(NPM) --prefix $(WEB_DIR) run test:wasm-runtime
+
+wasm-test-studio: wasm-build ## Run Studio Node tests against current raw WASM
+	$(NPM) --prefix $(WEB_DIR) run test:studio
+
+wasm-test-browser-sdk: ## Build and run the publishable browser SDK Node tests
+	$(NPM) --prefix $(WEB_DIR) run test:browser-sdk
+
+wasm-test-browser: wasm-build-all wasm-test-browser-sdk wasm-web-build ## Run the Playwright browser WASM suite
+	$(NPM) --prefix $(WEB_DIR) run test:browser
+
 web-install: ## Install browser-loader and Studio dependencies
 	$(NPM) --prefix $(WEB_DIR) ci
 
-hta-test: ## Run HTA browser-loader Node tests
-	$(NPM) --prefix $(WEB_DIR) run test:hta
+hta-test: wasm-test-hta ## Compatibility alias for HTA browser-loader Node tests
 
-studio-test: wasm-build ## Run Studio Node tests against current raw WASM
-	$(NPM) --prefix $(WEB_DIR) run test:studio
+studio-test: wasm-test-studio ## Compatibility alias for Studio Node tests
 
 chrome-install: ## Install Chrome extension dependencies
 	$(NPM) --prefix $(CHROME_DIR) ci
