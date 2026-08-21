@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+detector="$repo_root/scripts/runtime/detect-connector-runtime-scope"
+workflow="$repo_root/.github/workflows/connector-runtime-validation.yml"
+project_instructions="$repo_root/.github/CHATGPT_PROJECT_WORKFLOW.md"
+
+bash -n \
+  "$detector" \
+  "$repo_root/scripts/runtime/run-connector-rust-validation" \
+  "$repo_root/scripts/runtime/run-connector-java-validation" \
+  "$0"
+
+value_of() {
+  local key="$1"
+  sed -n "s/^${key}=//p"
+}
+
+assert_scope() {
+  local expected_rust="$1"
+  local expected_java="$2"
+  local expected_contract="$3"
+  shift 3
+
+  local output actual_rust actual_java actual_contract
+  output="$(bash "$detector" --paths "$@")"
+  actual_rust="$(printf '%s\n' "$output" | value_of rust)"
+  actual_java="$(printf '%s\n' "$output" | value_of java)"
+  actual_contract="$(printf '%s\n' "$output" | value_of contract)"
+
+  [[ "$actual_rust" == "$expected_rust" ]] || {
+    printf 'expected rust=%s, got %s for %s\n' "$expected_rust" "$actual_rust" "$*" >&2
+    exit 1
+  }
+  [[ "$actual_java" == "$expected_java" ]] || {
+    printf 'expected java=%s, got %s for %s\n' "$expected_java" "$actual_java" "$*" >&2
+    exit 1
+  }
+  [[ "$actual_contract" == "$expected_contract" ]] || {
+    printf 'expected contract=%s, got %s for %s\n' "$expected_contract" "$actual_contract" "$*" >&2
+    exit 1
+  }
+}
+
+assert_scope true false false core/rust/src/lib.rs
+assert_scope false true false core/java/src/main/java/hara/HaraLanguage.java
+assert_scope true true false core/rust/src/lib.rs core/java/pom.xml
+assert_scope false false false README.md docs/architecture.md
+assert_scope false false true .github/CHATGPT_PROJECT_WORKFLOW.md
+assert_scope true true true .github/workflows/connector-runtime-validation.yml
+assert_scope true false true scripts/runtime/run-connector-rust-validation
+assert_scope false true true scripts/runtime/run-connector-java-validation
+
+output_file="$(mktemp)"
+trap 'rm -f "$output_file"' EXIT
+GITHUB_OUTPUT="$output_file" bash "$detector" --paths core/rust/src/lib.rs >/dev/null
+grep -Fxq 'rust=true' "$output_file"
+grep -Fxq 'java=false' "$output_file"
+grep -Fxq 'contract=false' "$output_file"
+grep -Fxq 'any=true' "$output_file"
+
+ruby -e 'require "yaml"; YAML.safe_load(File.read(ARGV.fetch(0)), aliases: true)' "$workflow"
+
+grep -Fq 'contents: read' "$workflow"
+grep -Fq "'connector/**'" "$workflow"
+grep -Fq "'agent/**'" "$workflow"
+grep -Fq "'core/rust/**'" "$workflow"
+grep -Fq "'core/java/**'" "$workflow"
+grep -Fq 'run-connector-rust-validation' "$workflow"
+grep -Fq 'run-connector-java-validation' "$workflow"
+
+if grep -Eq '^[[:space:]]*(contents|actions|pull-requests):[[:space:]]+write[[:space:]]*$' "$workflow"; then
+  echo 'connector runtime validation must remain read-only' >&2
+  exit 1
+fi
+if grep -Fq 'pull_request_target:' "$workflow"; then
+  echo 'connector runtime validation must not use pull_request_target' >&2
+  exit 1
+fi
+
+grep -Fq 'GitHub connector as the sole durable path' "$project_instructions"
+grep -Fq 'Do not use, build, or depend on MCP' "$project_instructions"
+grep -Fq 'Do not respond with proposed source only' "$project_instructions"
+
+echo 'connector runtime workflow contract: ok'

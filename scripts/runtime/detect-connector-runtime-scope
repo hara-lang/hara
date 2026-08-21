@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+usage:
+  detect-connector-runtime-scope --range <base-commit> <head-commit>
+  detect-connector-runtime-scope --paths [<repository-path> ...]
+USAGE
+  exit 64
+}
+
+paths=()
+case "${1:-}" in
+  --range)
+    [[ "$#" -eq 3 ]] || usage
+    base="$2"
+    head="$3"
+    git rev-parse --verify "${base}^{commit}" >/dev/null
+    git rev-parse --verify "${head}^{commit}" >/dev/null
+    path_file="$(mktemp)"
+    trap 'rm -f "$path_file"' EXIT
+    git diff --name-only -z "$base" "$head" -- >"$path_file"
+    while IFS= read -r -d '' path; do
+      paths+=("$path")
+    done <"$path_file"
+    ;;
+  --paths)
+    shift
+    paths=("$@")
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+rust=false
+java=false
+contract=false
+
+for path in "${paths[@]}"; do
+  case "$path" in
+    core/rust/*)
+      rust=true
+      ;;
+    core/java/*)
+      java=true
+      ;;
+    .github/workflows/connector-runtime-validation.yml)
+      rust=true
+      java=true
+      contract=true
+      ;;
+    scripts/runtime/run-connector-rust-validation)
+      rust=true
+      contract=true
+      ;;
+    scripts/runtime/run-connector-java-validation)
+      java=true
+      contract=true
+      ;;
+    AGENTS.md|.github/CHATGPT_PROJECT_WORKFLOW.md|.github/WORKFLOW.md|scripts/runtime/detect-connector-runtime-scope|scripts/runtime/test-connector-runtime-workflow)
+      contract=true
+      ;;
+  esac
+done
+
+any=false
+if [[ "$rust" == true || "$java" == true || "$contract" == true ]]; then
+  any=true
+fi
+
+emit() {
+  local key="$1"
+  local value="$2"
+  printf '%s=%s\n' "$key" "$value"
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    printf '%s=%s\n' "$key" "$value" >>"$GITHUB_OUTPUT"
+  fi
+}
+
+emit rust "$rust"
+emit java "$java"
+emit contract "$contract"
+emit any "$any"

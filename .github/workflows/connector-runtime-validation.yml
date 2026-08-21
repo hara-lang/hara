@@ -1,0 +1,179 @@
+name: Connector Runtime Validation
+
+on:
+  push:
+    branches:
+      - 'connector/**'
+      - 'agent/**'
+    paths:
+      - 'core/rust/**'
+      - 'core/java/**'
+      - 'AGENTS.md'
+      - '.github/CHATGPT_PROJECT_WORKFLOW.md'
+      - '.github/WORKFLOW.md'
+      - '.github/workflows/connector-runtime-validation.yml'
+      - 'scripts/runtime/detect-connector-runtime-scope'
+      - 'scripts/runtime/run-connector-rust-validation'
+      - 'scripts/runtime/run-connector-java-validation'
+      - 'scripts/runtime/test-connector-runtime-workflow'
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/**'
+      - 'core/java/**'
+      - 'AGENTS.md'
+      - '.github/CHATGPT_PROJECT_WORKFLOW.md'
+      - '.github/WORKFLOW.md'
+      - '.github/workflows/connector-runtime-validation.yml'
+      - 'scripts/runtime/detect-connector-runtime-scope'
+      - 'scripts/runtime/run-connector-rust-validation'
+      - 'scripts/runtime/run-connector-java-validation'
+      - 'scripts/runtime/test-connector-runtime-workflow'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connector-runtime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: Detect committed runtime scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      java: ${{ steps.detect.outputs.java }}
+      contract: ${{ steps.detect.outputs.contract }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve comparison range
+        id: range
+        shell: bash
+        run: |
+          set -euo pipefail
+          head='${{ github.sha }}'
+
+          if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
+            base='${{ github.event.pull_request.base.sha }}'
+            head='${{ github.event.pull_request.head.sha }}'
+          else
+            base='${{ github.event.before }}'
+            if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
+               ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+              base="$(git rev-parse "${head}^")"
+            fi
+          fi
+
+          echo "base=$base" >>"$GITHUB_OUTPUT"
+          echo "head=$head" >>"$GITHUB_OUTPUT"
+
+      - name: Detect Rust, Java, and workflow-contract changes
+        id: detect
+        shell: bash
+        run: |
+          bash scripts/runtime/detect-connector-runtime-scope \
+            --range '${{ steps.range.outputs.base }}' '${{ steps.range.outputs.head }}'
+
+  contract:
+    name: Connector workflow contract
+    needs: scope
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate scripts, scope selection, workflow, and project instructions
+        run: bash scripts/runtime/test-connector-runtime-workflow
+
+  rust:
+    name: Rust committed-code execution
+    needs: scope
+    if: needs.scope.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Checkout hara-benchmarks
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+
+      - name: Expose benchmark corpus at the differential fixture path
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn \
+            "$GITHUB_WORKSPACE/hara-benchmarks" \
+            "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Run committed Rust validation
+        run: bash scripts/runtime/run-connector-rust-validation
+
+  java:
+    name: Java committed-code execution
+    needs: scope
+    if: needs.scope.outputs.java == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Checkout hara-benchmarks
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+
+      - name: Expose benchmark corpus at the differential fixture path
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn \
+            "$GITHUB_WORKSPACE/hara-benchmarks" \
+            "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Run committed Java validation
+        run: bash scripts/runtime/run-connector-java-validation
