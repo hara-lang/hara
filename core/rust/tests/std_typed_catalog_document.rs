@@ -3,10 +3,8 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 
-const FIXTURE_PATH: &str =
-    "01-lang/011-typed-catalog/draft/conformance/catalog-v1.json";
-const STALE_HASH: &str =
-    "sha256:07304c8b522dece5a0fb44ba26a9489435fd8bb79c3f28640733dbfe81ffb65f";
+const FIXTURE_PATH: &str = "01-lang/011-typed-catalog/draft/conformance/catalog-v1.json";
+const STALE_HASH: &str = "sha256:07304c8b522dece5a0fb44ba26a9489435fd8bb79c3f28640733dbfe81ffb65f";
 const FORGED_COMPONENT: &str =
     "sha256:0932e3b99be0a918adc4adc939bef7c0966c77a0007b86afd9a47fe732d7f01d";
 
@@ -19,8 +17,7 @@ fn fixture_path() -> PathBuf {
 
 fn fixture_text() -> String {
     let path = fixture_path();
-    fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
 fn mutated_fixture(mutate: impl FnOnce(&mut Value)) -> String {
@@ -99,8 +96,7 @@ fn exact_registry_bytes_round_trip_through_std_typed_catalog() {
 #[test]
 fn stale_published_hash_is_rejected_by_the_canonical_hara_catalog() {
     let fixture = mutated_fixture(|document| {
-        document["catalog/entries"][0]["schema/hash"] =
-            Value::String(STALE_HASH.to_owned());
+        document["catalog/entries"][0]["schema/hash"] = Value::String(STALE_HASH.to_owned());
         document["catalog/entries"][0]["schema/coordinate"][3] =
             Value::String(STALE_HASH.to_owned());
     });
@@ -131,8 +127,7 @@ fn forged_component_evidence_is_rejected_after_catalog_recomputation() {
     let fixture = mutated_fixture(|document| {
         document["catalog/components"][4]["component/id"] =
             Value::String(FORGED_COMPONENT.to_owned());
-        document["catalog/component-order"][4] =
-            Value::String(FORGED_COMPONENT.to_owned());
+        document["catalog/component-order"][4] = Value::String(FORGED_COMPONENT.to_owned());
     });
     assert_eq!(
         rejection_expression(&fixture),
@@ -145,8 +140,7 @@ fn forged_component_evidence_is_rejected_after_catalog_recomputation() {
 #[test]
 fn unsupported_hash_epoch_fails_before_catalog_admission() {
     let fixture = mutated_fixture(|document| {
-        document["catalog/hash-epoch"] =
-            Value::String("std.typed.schema/catalog-v2".to_owned());
+        document["catalog/hash-epoch"] = Value::String("std.typed.schema/catalog-v2".to_owned());
     });
     assert_eq!(
         rejection_expression(&fixture),
