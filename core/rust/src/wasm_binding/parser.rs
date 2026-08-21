@@ -540,11 +540,7 @@ fn validate_parameter(
     }
 }
 
-fn validate_result(
-    result: &BindingResult,
-    origin: &str,
-    export: &str,
-) -> Result<bool, String> {
+fn validate_result(result: &BindingResult, origin: &str, export: &str) -> Result<bool, String> {
     match result.hara_type.direct_wasm_type() {
         Some(expected) if expected == result.wasm_type => {
             if result.lifting.is_some() || result.ownership.is_some() {

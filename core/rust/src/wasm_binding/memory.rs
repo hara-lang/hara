@@ -65,8 +65,7 @@ impl MemoryBindingPlan {
             // Memory bindings are pure module calls in this tranche.
         } else {
             return Err(
-                "wasm-binding/capability-denied: memory.v1 cannot require host capabilities"
-                    .into(),
+                "wasm-binding/capability-denied: memory.v1 cannot require host capabilities".into(),
             );
         }
         if interface
@@ -253,7 +252,10 @@ fn compile_argument(
         });
     }
 
-    let memory_value = matches!(argument.hara_type, HaraValueType::String | HaraValueType::Bytes);
+    let memory_value = matches!(
+        argument.hara_type,
+        HaraValueType::String | HaraValueType::Bytes
+    );
     if !memory_value
         || argument.lowering != Some(Lowering::PointerLength)
         || argument.wasm_type != WasmValueType::I32
@@ -297,7 +299,10 @@ fn compile_result(result: &BindingResult, export: &str) -> Result<MemoryResultPl
         });
     }
 
-    let memory_value = matches!(result.hara_type, HaraValueType::String | HaraValueType::Bytes);
+    let memory_value = matches!(
+        result.hara_type,
+        HaraValueType::String | HaraValueType::Bytes
+    );
     if !memory_value
         || result.lifting != Some(Lifting::PackedI64)
         || result.wasm_type != WasmValueType::I64
@@ -426,10 +431,7 @@ fn argument_form(argument: &MemoryArgumentPlan) -> Form {
 fn result_form(result: &MemoryResultPlan) -> Form {
     let mut fields = vec![
         (keyword("hara/type"), hara_type_form(&result.hara_type)),
-        (
-            keyword("wasm/type"),
-            keyword(result.raw_type.as_keyword()),
-        ),
+        (keyword("wasm/type"), keyword(result.raw_type.as_keyword())),
     ];
     if let Some(lifting) = result.lifting {
         fields.push((keyword("lift"), lifting_form(lifting)));
@@ -530,7 +532,10 @@ mod tests {
     fn compiles_a_closed_memory_plan() {
         let interface = WasmInterface::parse(INTERFACE, "fixture").unwrap();
         let plan = interface.memory_plan().unwrap();
-        assert_eq!(plan.functions[0].raw_arguments, [WasmValueType::I32, WasmValueType::I32]);
+        assert_eq!(
+            plan.functions[0].raw_arguments,
+            [WasmValueType::I32, WasmValueType::I32]
+        );
         assert_eq!(plan.functions[0].raw_returns, WasmValueType::I64);
         assert!(plan.canonical_source().contains(":target :memory.v1"));
         assert!(plan.canonical_source().contains(":ownership :caller"));
