@@ -58,7 +58,9 @@ Java:  bash scripts/runtime/run-connector-java-validation
 ```
 
 A Rust-only change runs the Rust job, a Java-only change runs the Java job, and
-mixed changes run both independently. If a task needs a new reusable execution
+mixed changes run both independently. Rust formatting is checked only for
+`.rs` files changed between the exact base and head commits; Clippy and both
+Rust test suites still run in full. If a task needs a new reusable execution
 check, add it to an existing permanent checked-in validation script or a
 properly owned permanent workflow in the same pull request. Never interpolate
 connector-supplied shell text into Actions.
