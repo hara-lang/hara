@@ -1,0 +1,89 @@
+name: Agent 838 clean bootstrap
+
+on:
+  push:
+    branches:
+      - agent/838-runtime-callable-catalog
+    paths:
+      - '.github/workflows/agent-838-bootstrap.yml'
+      - '.github/agent-patches/838-direct-callables.patch.xz.b64.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-838-clean-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Reconstruct and verify prepared patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
+            | tr -d '\n' \
+            | base64 --decode \
+            > "$RUNNER_TEMP/issue-838.patch.xz"
+          printf '%s  %s\n' \
+            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
+            "$RUNNER_TEMP/issue-838.patch.xz" \
+            | sha256sum --check --strict
+          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
+            > "$RUNNER_TEMP/issue-838.patch"
+          printf '%s  %s\n' \
+            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
+            "$RUNNER_TEMP/issue-838.patch" \
+            | sha256sum --check --strict
+
+      - name: Apply bounded implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_base='5a2771ed22230e7d6d0c5e80994661182e3ff7a2'
+          test "$(git rev-parse HEAD^)" = "$expected_base"
+          git apply --check "$RUNNER_TEMP/issue-838.patch"
+          git apply "$RUNNER_TEMP/issue-838.patch"
+          git diff --check
+
+      - name: Remove bootstrap transport and commit implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -- \
+            .github/workflows/agent-838-bootstrap.yml \
+            .github/agent-patches/838-direct-callables.patch.xz.b64.00 \
+            .github/agent-patches/838-direct-callables.patch.xz.b64.01 \
+            .github/agent-patches/838-direct-callables.patch.xz.b64.02 \
+            .github/agent-patches/838-direct-callables.patch.xz.b64.03
+          git add -- \
+            .github/workflows/issue-838-direct-callables.yml \
+            core/rust/raw/src/lib.rs \
+            core/rust/src/core.rs \
+            core/rust/src/core/evaluator.rs \
+            core/rust/src/core/inventory.rs \
+            core/rust/src/core/value.rs \
+            core/rust/src/fiber.rs \
+            core/rust/src/kernel/generated.rs \
+            core/rust/src/lib.rs \
+            core/rust/src/runtime/runtime.rs \
+            core/rust/src/runtime/tests.rs \
+            core/rust/src/vm/machine/dispatch.rs \
+            core/rust/src/core/direct_callable.rs \
+            core/rust/src/core/direct_callable_catalog.rs \
+            core/rust/src/core/direct_callable_impl.rs \
+            core/rust/src/core/direct_callable_operations.rs \
+            core/rust/src/core/direct_callable_probe.rs \
+            core/rust/src/core/direct_callable_tests.rs
+          test -z "$(git status --porcelain --untracked-files=all | grep -vE '^(A |M |D )' || true)"
+          git diff --cached --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Replace structural callable dispatch with a direct catalog'
+          git push origin HEAD:agent/838-runtime-callable-catalog

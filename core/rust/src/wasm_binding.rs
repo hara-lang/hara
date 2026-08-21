@@ -1,0 +1,177 @@
+//! Restricted `.hal` interface contracts for portable Wasm extension bindings.
+//!
+//! Sources are parsed as data with the Hara reader. This module never evaluates
+//! an interface, instantiates a module, or acquires host authority.
+
+mod canonical;
+mod parser;
+mod syntax;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use sha2::{Digest, Sha256};
+
+use crate::extension::ExtensionExport;
+
+pub const WASM_INTERFACE_SCHEMA: &str = "hara.wasm-interface/0-alpha";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WasmValueType {
+    I32,
+    I64,
+    F32,
+    F64,
+    Void,
+}
+
+impl WasmValueType {
+    pub fn as_keyword(self) -> &'static str {
+        match self {
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+            Self::Void => "void",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HaraValueType {
+    I32,
+    I64,
+    F32,
+    F64,
+    Boolean,
+    String,
+    Bytes,
+    Record(String),
+    Variant(String),
+    Handle(String),
+    Callback(String),
+    Void,
+}
+
+impl HaraValueType {
+    fn direct_wasm_type(&self) -> Option<WasmValueType> {
+        match self {
+            Self::I32 => Some(WasmValueType::I32),
+            Self::I64 => Some(WasmValueType::I64),
+            Self::F32 => Some(WasmValueType::F32),
+            Self::F64 => Some(WasmValueType::F64),
+            Self::Void => Some(WasmValueType::Void),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ownership {
+    Borrowed,
+    Caller,
+    Callee,
+    Transferred,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lowering {
+    Direct,
+    PointerLength,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lifting {
+    Direct,
+    PointerLength,
+    PackedI64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryContract {
+    pub export: String,
+    pub allocate: Option<String>,
+    pub reallocate: Option<String>,
+    pub release: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingParameter {
+    pub name: String,
+    pub hara_type: HaraValueType,
+    pub wasm_type: WasmValueType,
+    pub lowering: Option<Lowering>,
+    pub ownership: Option<Ownership>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingResult {
+    pub hara_type: HaraValueType,
+    pub wasm_type: WasmValueType,
+    pub lifting: Option<Lifting>,
+    pub ownership: Option<Ownership>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ErrorContract {
+    pub convention: String,
+    pub codes: BTreeMap<i64, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingFunction {
+    pub name: String,
+    pub wasm_export: String,
+    pub arguments: Vec<BindingParameter>,
+    pub returns: BindingResult,
+    pub asynchronous: bool,
+    pub errors: Option<ErrorContract>,
+    pub capabilities: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WasmInterface {
+    pub schema: String,
+    pub namespace: String,
+    pub module: String,
+    pub memory: Option<MemoryContract>,
+    pub exports: Vec<BindingFunction>,
+    pub capabilities: BTreeSet<String>,
+}
+
+impl WasmInterface {
+    pub fn parse(source: &str, origin: &str) -> Result<Self, String> {
+        parser::parse_interface(source, origin)
+    }
+
+    pub fn canonical_source(&self) -> String {
+        canonical::source(self)
+    }
+
+    pub fn digest(&self) -> String {
+        let digest = Sha256::digest(self.canonical_source().as_bytes());
+        format!("sha256:{digest:x}")
+    }
+
+    pub fn direct_exports(&self) -> Vec<(String, ExtensionExport)> {
+        self.exports
+            .iter()
+            .map(|export| {
+                (
+                    export.wasm_export.clone(),
+                    ExtensionExport {
+                        arguments: export
+                            .arguments
+                            .iter()
+                            .map(|argument| argument.wasm_type.as_keyword().to_owned())
+                            .collect(),
+                        returns: export.returns.wasm_type.as_keyword().to_owned(),
+                        asynchronous: false,
+                    },
+                )
+            })
+            .collect()
+    }
+}
