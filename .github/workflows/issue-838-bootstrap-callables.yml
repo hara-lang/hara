@@ -1,0 +1,159 @@
+name: Issue 838 bootstrap callable validation
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - '.github/workflows/issue-838-bootstrap-callables.yml'
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/Cargo.lock'
+      - 'core/rust/src/core/direct_callable*.rs'
+      - 'core/rust/src/fiber.rs'
+      - 'core/rust/src/fiber/**'
+      - 'core/rust/src/runtime/**'
+      - 'core/rust/src/vm/**'
+      - 'core/rust/raw/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: issue-838-bootstrap-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  SPECS_REVISION: aae63f735b312e29f18e041de6925ec0ae6baaa5
+  BOOTSTRAP_FIXTURE: 01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal
+
+jobs:
+  catalog-and-fiber:
+    name: Catalog, specs bootstrap, and fiber parity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout authoritative specs repair
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: ${{ env.SPECS_REVISION }}
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Require and expose the authoritative fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$GITHUB_WORKSPACE/hara-specs-registry/$BOOTSTRAP_FIXTURE"
+          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" \
+            "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Checkout benchmark corpus
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+
+      - name: Expose benchmark corpus
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn "$GITHUB_WORKSPACE/hara-benchmarks" \
+            "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting of the bounded repair
+        run: |
+          rustfmt --edition 2021 --config skip_children=true --check \
+            core/rust/src/core/direct_callable_impl.rs \
+            core/rust/src/core/direct_callable_impl_base.rs \
+            core/rust/src/core/direct_callable_impl_overlay.rs \
+            core/rust/src/core/direct_callable_bootstrap.rs \
+            core/rust/src/core/direct_callable_tests.rs \
+            core/rust/src/core/direct_callable_tests_base.rs \
+            core/rust/src/core/direct_callable_bootstrap_tests.rs
+
+      - name: Close the combined catalog and prove direct dispatch
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            bootstrap_direct_callable_catalog_extends_the_closed_inventory --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            bootstrap_direct_callables_never_reenter_the_evaluator --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            bootstrap_direct_callables_preserve_predicate_and_promise_behavior --lib
+
+      - name: Run the specs-owned pre-Foundation fixture explicitly
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_loading \
+            --lib -- --ignored
+
+      - name: Re-run the fiber suite that exposed the omissions
+        run: cargo test --manifest-path core/rust/Cargo.toml fiber:: --lib
+
+  vm-and-targets:
+    name: Bytecode, raw Wasm, browser, and feature profiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout authoritative specs repair
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          ref: ${{ env.SPECS_REVISION }}
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose authoritative fixtures
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Checkout benchmark corpus
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+
+      - name: Expose benchmark corpus
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn "$GITHUB_WORKSPACE/hara-benchmarks" \
+            "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Run bytecode VM parity checks
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm vm::machine:: --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm vm::execution_tests --lib
+
+      - name: Check default and minimal profiles
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml --all-targets
+          cargo check --manifest-path core/rust/Cargo.toml --no-default-features --lib
+          cargo test --manifest-path core/rust/raw/Cargo.toml
+
+      - name: Check browser Wasm profiles
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --no-default-features --lib
