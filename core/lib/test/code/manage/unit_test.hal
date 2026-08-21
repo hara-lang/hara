@@ -1,0 +1,74 @@
+(ns code.manage.unit-test
+  (:use code.test)
+  (:require [code.manage.unit :as unit]))
+
+(def sample-unit
+  {:path "sample.hal"
+   :source "(ns sample.core)\n\n(defn answer [] 42)\n"})
+
+(fact "transform options distinguish native functions from other IFn values"
+  (let [append-newline (fn [source] (str source "\n"))
+        direct
+        (unit/transform-code
+         sample-unit
+         append-newline)
+        configured
+        (unit/transform-code
+         sample-unit
+         {:transform append-newline})]
+    [(:after direct)
+     (:after configured)])
+  => [(str (:source sample-unit) "\n")
+      (str (:source sample-unit) "\n")])
+
+(fact "transform-code maps source/target paths and applies a transformer"
+  (let [result (unit/transform-code
+                {:source/path "src/demo.clj"
+                 :source/text "(ns demo)\n"
+                 :target/path "src/demo.hal"}
+                (fn [text] (str text ";; ported\n")))]
+    (select-keys result [:path :source/path :target/path :before :after :changed :create :write]))
+  => {:path "src/demo.hal"
+      :source/path "src/demo.clj"
+      :target/path "src/demo.hal"
+      :before nil
+      :after "(ns demo)\n;; ported\n"
+      :changed true
+      :create true
+      :write false})
+
+(fact "heal-code appends a trailing newline when absent"
+  (let [result (unit/heal-code {:path "sample.hal" :source "(ns sample)"})]
+    [(:after result) (:changed result) (:write result)])
+  => ["(ns sample)\n" true false])
+
+(fact "unclean flags files missing a final newline"
+  (unit/unclean {:path "sample.hal" :source "(ns sample)"})
+  => ["sample.hal"])
+
+(fact "unclean is empty for already normalised source"
+  (unit/unclean {:path "sample.hal" :source "(ns sample)\n"})
+  => [])
+
+(fact "grep finds every occurrence in a unit"
+  (mapv :text (unit/grep {:path "sample.hal" :source "alpha beta alpha"} "alpha"))
+  => ["alpha beta alpha" "alpha beta alpha"])
+
+(fact "grep-replace performs literal substitution"
+  (:after (unit/grep-replace {:path "sample.hal" :source "alpha beta alpha"} "beta" "gamma"))
+  => "alpha gamma alpha")
+
+(fact "refactor-swap applies a sequence of replacements"
+  (:after (unit/refactor-swap {:path "sample.hal" :source "alpha beta gamma"}
+                              [["alpha" "one"] ["beta" "two"] ["gamma" "three"]]))
+  => "one two three")
+
+(fact "arrange reports out-of-order definitions"
+  (let [result (unit/arrange {:path "sample.hal"
+                              :source "(ns sample)\n(defn beta [])\n(defn alpha [])"})]
+    [(:changed result) (:finding result)])
+  => [false {:path "sample.hal"
+             :kind :definitions-out-of-order
+             :definitions ["beta" "alpha"]}])
+
+(pr-str (run {:namespace "code.manage.unit-test"}))
