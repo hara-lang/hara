@@ -24,28 +24,60 @@ rust_files=(
   core/rust/src/wasm_binding/tests.rs
 )
 
-rustfmt --edition 2021 --check "${rust_files[@]}"
+check_format_and_layout() {
+  rustfmt --edition 2021 --check "${rust_files[@]}"
+  for file in "${rust_files[@]}"; do
+    lines="$(wc -l < "$file")"
+    printf '%s: %s lines\n' "$file" "$lines"
+    test "$lines" -lt 700
+  done
+}
 
-for file in "${rust_files[@]}"; do
-  lines="$(wc -l < "$file")"
-  printf '%s: %s lines\n' "$file" "$lines"
-  test "$lines" -lt 700
-done
+check_rust_tests() {
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasm_binding
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib direct_wasm
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib extension::tests
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasmtime_provider::tests
+  cargo test --locked --manifest-path core/rust/Cargo.toml --lib cli_app
+}
 
-cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasm_binding
-cargo test --locked --manifest-path core/rust/Cargo.toml --lib direct_wasm
-cargo test --locked --manifest-path core/rust/Cargo.toml --lib extension::tests
-cargo test --locked --manifest-path core/rust/Cargo.toml --lib wasmtime_provider::tests
-cargo test --locked --manifest-path core/rust/Cargo.toml --lib cli_app
+check_hara_tests() {
+  ./scripts/runtime/run-lib-tests core/lib/test/tool/cli/extension_test.hal
+  ./scripts/runtime/run-lib-tests core/lib/test/tool/cli/handlers_test.hal
+}
 
-./scripts/runtime/run-lib-tests core/lib/test/tool/cli/extension_test.hal
-./scripts/runtime/run-lib-tests core/lib/test/tool/cli/handlers_test.hal
+check_targets() {
+  cargo check --locked --manifest-path core/rust/Cargo.toml --bin hara
+  cargo check --locked --manifest-path core/rust/Cargo.toml --no-default-features --lib
+  cargo check --locked --manifest-path core/rust/Cargo.toml --target wasm32-unknown-unknown --lib
+}
 
-cargo check --locked --manifest-path core/rust/Cargo.toml --bin hara
-cargo check --locked --manifest-path core/rust/Cargo.toml --no-default-features --lib
-cargo check --locked --manifest-path core/rust/Cargo.toml --target wasm32-unknown-unknown --lib
+check_source_drift() {
+  git diff --exit-code -- \
+    core/lib/src/tool/cli/extension.hal \
+    core/rust/src \
+    scripts/runtime/check-wasm-binding
+}
 
-git diff --exit-code -- \
-  core/lib/src/tool/cli/extension.hal \
-  core/rust/src \
-  scripts/runtime/check-wasm-binding
+run_phase() {
+  case "$1" in
+    format) check_format_and_layout ;;
+    rust-tests) check_rust_tests ;;
+    hara-tests) check_hara_tests ;;
+    targets) check_targets ;;
+    drift) check_source_drift ;;
+    all)
+      check_format_and_layout
+      check_rust_tests
+      check_hara_tests
+      check_targets
+      check_source_drift
+      ;;
+    *)
+      printf 'usage: %s [all|format|rust-tests|hara-tests|targets|drift]\n' "$0" >&2
+      return 2
+      ;;
+  esac
+}
+
+run_phase "${1:-all}"
