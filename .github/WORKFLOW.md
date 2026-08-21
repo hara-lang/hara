@@ -15,6 +15,11 @@ workflow.
 - `core-ci.yml` is the primary required check for `main` and `testing`. It
   validates the Rust, Java/Truffle, and HAL runtimes. Its bytecode-observation
   job verifies native and browser observation sessions.
+- `connector-runtime-validation.yml` is the read-only ChatGPT webapp connector
+  lane. Pushes to `connector/**` and `agent/**`, and pull requests to `main` or
+  `testing`, detect committed Rust/Java scope and invoke the checked-in
+  connector validation scripts. It supplies early exact-commit evidence; the
+  existing `core-ci.yml` (`Core CI`) remains authoritative.
 - `language-source-layout.yml` is the read-only Language CI gate. It checks
   source layout, namespace ownership, `code.test` ownership,
   retired standard-library namespaces, and the Foundation parity ledger.
