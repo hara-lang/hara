@@ -24,6 +24,10 @@ rewrite its source.
   `Agent readiness / Required gate` job is the stable preflight required before
   a connector-authored branch is considered ready. It complements rather than
   replaces `core-ci.yml` and focused workflows.
+- `package-runtime-contract.yml` is the focused Rust package gate. It validates
+  generated and authored `package.edn` parsing, complete archive-entry digest
+  verification, exact JVM/Wasm preflight, content-addressed extraction, and
+  installation rollback on package-related branch and pull-request changes.
 - `copilot-setup-steps.yml` prepares the Copilot cloud-agent environment with
   JDK 21, Node 22, stable Rust plus Wasm targets, the pinned specifications
   registry, and prefetched dependencies. It does not build releases or write

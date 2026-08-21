@@ -1,9 +1,14 @@
 use super::*;
+use crate::package_manifest::{
+    PackageArtifactType, PackageManifest, PackageRuntime, PackageRuntimeRequirements,
+    PackageSelection,
+};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
-use zip::ZipArchive;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 
@@ -27,6 +32,102 @@ fn fixture() -> PathBuf {
     root
 }
 
+fn digest(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex(&Sha256::digest(bytes)))
+}
+
+fn write_archive(path: &Path, entries: &[(String, Vec<u8>)]) {
+    let file = File::create(path).unwrap();
+    let mut writer = ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(zip::DateTime::default())
+        .unix_permissions(0o644);
+    for (name, bytes) in entries {
+        writer.start_file(name, options).unwrap();
+        writer.write_all(bytes).unwrap();
+    }
+    writer.finish().unwrap();
+}
+
+fn runtime_archive(
+    root: &Path,
+    declared_artifact: &[u8],
+    archived_artifact: &[u8],
+    extra_file: bool,
+) -> PathBuf {
+    let project = br#"{:hara/type :project
+ :hara/version "1.0.0"
+ :project/id "hara:example/provider"
+ :project/version "1.0.0"
+ :project/source-paths []
+ :project/test-paths []
+ :project/extension-paths []
+ :project/capabilities #{}
+ :project/dependencies {}}
+"#;
+    let project_digest = digest(project);
+    let artifact_digest = digest(declared_artifact);
+    let package = format!(
+        r#"{{:harp/format "0.0.0-alpha"
+ :package {{:identity "hara:example/provider"
+           :version "1.0.0"
+           :provenance
+           {{:repository "https://github.com/example/provider"
+            :commit "0123456789abcdef0123456789abcdef01234567"}}}}
+ :files
+ {{"artifacts/provider.hta" {{:sha256 "{artifact_digest}" :size {artifact_size}}}
+  "project.edn" {{:sha256 "{project_digest}" :size {project_size}}}}}
+ :variants
+ {{:wasm
+   {{:variant/artifact
+     {{:artifact/type :hta
+      :artifact/path "artifacts/provider.hta"
+      :artifact/sha256 "{artifact_digest}"
+      :artifact/target "wasm32-wasi-preview1"
+      :artifact/abi "hta.v1"
+      :artifact/entry-point "provider_init"}}
+    :variant/required-capabilities #{{:db/connect}}
+    :variant/host-calls #{{:db/socket}}
+    :variant/exports #{{:provider/open :provider/close}}
+    :variant/dependencies {{}}
+    :variant/lifecycle
+    {{:lifecycle/load :idempotent
+     :lifecycle/close :idempotent
+     :lifecycle/session-isolation true
+     :lifecycle/async true
+     :lifecycle/cancellation true}}}}}}}}"#,
+        artifact_size = declared_artifact.len(),
+        project_size = project.len()
+    );
+    let archive = root.join(format!(
+        "runtime-{}.harp",
+        NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut entries = vec![
+        ("package.edn".to_owned(), package.into_bytes()),
+        (
+            "artifacts/provider.hta".to_owned(),
+            archived_artifact.to_vec(),
+        ),
+        ("project.edn".to_owned(), project.to_vec()),
+    ];
+    if extra_file {
+        entries.push(("hidden/payload.bin".to_owned(), b"hidden".to_vec()));
+    }
+    write_archive(&archive, &entries);
+    archive
+}
+
+fn wasm_requirements() -> PackageRuntimeRequirements {
+    PackageRuntimeRequirements {
+        supported_targets: ["wasm32-wasi-preview1".to_owned()].into_iter().collect(),
+        supported_abis: ["hta.v1".to_owned()].into_iter().collect(),
+        available_capabilities: ["db/connect".to_owned()].into_iter().collect(),
+        allowed_host_calls: ["db/socket".to_owned()].into_iter().collect(),
+    }
+}
+
 #[test]
 fn validates_and_builds_deterministic_archive() {
     let root = fixture();
@@ -38,6 +139,7 @@ fn validates_and_builds_deterministic_archive() {
     assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
     let manifest = inspect_archive(&first).unwrap();
     assert!(manifest.contains(":harp/format \"0.0.0-alpha\""));
+    assert!(manifest.contains(":identity \"hara:example/app\""));
     assert!(manifest.contains("\"example.main\" \"src/example/main.hal\""));
     let file = File::open(&first).unwrap();
     let mut zip = ZipArchive::new(file).unwrap();
@@ -151,6 +253,82 @@ fn validates_typed_recipes_and_installs_content_addressed_roots() {
     let installed = install_archive_at(&archive, &dist).unwrap();
     assert!(installed.join("hara.recipe.edn").is_file());
     assert!(dist.join("packages/hara/example/app/1.2.3.edn").is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn selects_verified_runtime_archive_before_and_after_installation() {
+    let root = fixture();
+    let archive = runtime_archive(&root, b"wasm", b"wasm", false);
+    let verified =
+        PackageManifest::select_archive(&archive, PackageRuntime::Wasm, &wasm_requirements())
+            .unwrap();
+    let PackageSelection::Variant(variant) = &verified.selection else {
+        panic!("expected Wasm runtime variant");
+    };
+    assert_eq!(variant.artifact.artifact_type, PackageArtifactType::Hta);
+    assert_eq!(variant.artifact.path, Path::new("artifacts/provider.hta"));
+
+    let dist = root.join("runtime-dist");
+    let installed = install_archive_at(&archive, &dist).unwrap();
+    let installed_manifest = PackageManifest::read(&installed.join("package.edn")).unwrap();
+    let installed_selection = installed_manifest
+        .verify_selection_at(&installed, PackageRuntime::Wasm, &wasm_requirements())
+        .unwrap();
+    assert_eq!(installed_selection, verified.selection);
+    assert!(dist
+        .join("packages/hara/example/provider/1.0.0.edn")
+        .is_file());
+
+    let missing = PackageManifest::select_archive(
+        &archive,
+        PackageRuntime::Jvm,
+        &PackageRuntimeRequirements::default(),
+    )
+    .unwrap_err();
+    assert_eq!(missing.code, "package/missing-variant");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rejects_tampered_and_undeclared_archive_payloads_before_activation() {
+    let root = fixture();
+    let tampered = runtime_archive(&root, b"wasm", b"evil", false);
+    let error = PackageManifest::read_archive(&tampered).unwrap_err();
+    assert_eq!(error.code, "package/digest-mismatch");
+    assert!(inspect_archive(&tampered)
+        .unwrap_err()
+        .contains("package/digest-mismatch"));
+
+    let dist = root.join("tampered-dist");
+    let install_error = install_archive_at(&tampered, &dist).unwrap_err();
+    assert!(install_error.contains("package/digest-mismatch"));
+    let archive_cache = dist.join("archives/sha256");
+    assert!(!archive_cache.exists() || fs::read_dir(archive_cache).unwrap().next().is_none());
+    let roots = dist.join("roots/sha256");
+    assert!(!roots.exists() || fs::read_dir(roots).unwrap().next().is_none());
+
+    let undeclared = runtime_archive(&root, b"wasm", b"wasm", true);
+    let error = PackageManifest::read_archive(&undeclared).unwrap_err();
+    assert_eq!(error.code, "package/invalid-manifest");
+    assert!(error.detail.contains("undeclared file"));
+    let undeclared_dist = root.join("undeclared-dist");
+    assert!(install_archive_at(&undeclared, &undeclared_dist)
+        .unwrap_err()
+        .contains("undeclared file"));
+    assert!(!undeclared_dist.join("packages").exists());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rejects_tampering_in_an_existing_content_addressed_root() {
+    let root = fixture();
+    let archive = runtime_archive(&root, b"wasm", b"wasm", false);
+    let dist = root.join("existing-dist");
+    let installed = install_archive_at(&archive, &dist).unwrap();
+    fs::write(installed.join("artifacts/provider.hta"), b"evil").unwrap();
+    let error = install_archive_at(&archive, &dist).unwrap_err();
+    assert!(error.contains("package/digest-mismatch") || error.contains("package/size-mismatch"));
     fs::remove_dir_all(root).unwrap();
 }
 

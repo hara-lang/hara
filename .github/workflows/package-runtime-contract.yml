@@ -1,0 +1,90 @@
+name: Package runtime contract
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - '.github/workflows/package-runtime-contract.yml'
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/Cargo.lock'
+      - 'core/rust/build.rs'
+      - 'core/rust/src/package.rs'
+      - 'core/rust/src/package/**'
+      - 'core/rust/src/package_manifest.rs'
+      - 'core/rust/src/package_manifest/**'
+      - 'core/rust/src/project.rs'
+      - 'core/rust/src/project/**'
+  push:
+    branches:
+      - main
+      - testing
+      - 'agent/**'
+    paths:
+      - '.github/workflows/package-runtime-contract.yml'
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/Cargo.lock'
+      - 'core/rust/build.rs'
+      - 'core/rust/src/package.rs'
+      - 'core/rust/src/package/**'
+      - 'core/rust/src/package_manifest.rs'
+      - 'core/rust/src/package_manifest/**'
+      - 'core/rust/src/project.rs'
+      - 'core/rust/src/project/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-runtime-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust manifest, archive, and install contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check out hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check focused Rust formatting
+        run: >-
+          rustfmt --edition 2021 --check
+          core/rust/src/package_manifest.rs
+          core/rust/src/package_manifest/archive.rs
+          core/rust/src/package_manifest/parse.rs
+          core/rust/src/package_manifest/tests.rs
+          core/rust/src/package/archive.rs
+          core/rust/src/package/install.rs
+          core/rust/src/package/tests.rs
+
+      - name: Run package manifest contract
+        run: >-
+          cargo test --locked
+          --manifest-path core/rust/Cargo.toml
+          package_manifest::
+          --lib -- --nocapture
+
+      - name: Run package archive and installation contract
+        run: >-
+          cargo test --locked
+          --manifest-path core/rust/Cargo.toml
+          package::tests::
+          --lib -- --nocapture
