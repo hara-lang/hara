@@ -223,6 +223,8 @@ fn release_traps_are_reported_after_a_successful_call() {
     let module = module_with_body(1, &[0, 0, 1, 1, 1, 1, 1, 1, 11]);
     let plan = interface("bytes", "caller").memory_plan().unwrap();
     let executor = WasmtimeMemoryExecutor::compile(&module, plan).unwrap();
-    let error = executor.invoke("echo", &[Value::Bytes(vec![1])]).unwrap_err();
+    let error = executor
+        .invoke("echo", &[Value::Bytes(vec![1])])
+        .unwrap_err();
     assert!(error.starts_with("extension/release-failed"));
 }
