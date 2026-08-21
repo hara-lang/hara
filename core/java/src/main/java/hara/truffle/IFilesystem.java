@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>This is a trusted runtime interface. It is not exposed as a Hara protocol and it carries no
  * provider-construction or credential authority.
  */
-interface IFilesystem {
+public interface IFilesystem {
   enum Capability {
     READ,
     WRITE,
@@ -33,53 +33,17 @@ interface IFilesystem {
     PRESERVE_MODIFIED,
     REVISION_CHECK,
     TRANSACTIONS,
-    WATCH;
-
-    String keyword() {
-      return name().toLowerCase(java.util.Locale.ROOT).replace('_', '-');
-    }
-  }
-
-  enum EntryType {
-    FILE,
-    DIRECTORY,
-    SYMLINK,
-    OTHER;
-
-    String keyword() {
-      return name().toLowerCase(java.util.Locale.ROOT);
-    }
-  }
-
-  enum WriteMode {
-    CREATE,
-    REPLACE,
-    APPEND
+    WATCH,
+    RANDOM_ACCESS
   }
 
   record Capabilities(Set<Capability> values) {
     public Capabilities {
-      values =
-          values == null || values.isEmpty()
-              ? Collections.emptySet()
-              : Collections.unmodifiableSet(EnumSet.copyOf(values));
+      values = values == null || values.isEmpty() ? Set.of() : Collections.unmodifiableSet(EnumSet.copyOf(values));
     }
 
     static Capabilities of(Capability... values) {
-      if (values == null || values.length == 0) return new Capabilities(Set.of());
-      return new Capabilities(EnumSet.copyOf(List.of(values)));
-    }
-
-    static Capabilities nativeReadWrite() {
-      return of(
-          Capability.READ,
-          Capability.WRITE,
-          Capability.ENTRIES,
-          Capability.MKDIR,
-          Capability.DELETE,
-          Capability.COPY,
-          Capability.MOVE,
-          Capability.APPEND);
+      return new Capabilities(values.length == 0 ? Set.of() : EnumSet.of(values[0], values));
     }
 
     boolean contains(Capability capability) {
@@ -93,247 +57,122 @@ interface IFilesystem {
       boolean readOnly,
       Capabilities capabilities,
       String revision,
-      Map<String, Object> extensions) {
+      Map<String, Object> extensions,
+      boolean sourceLoadable) {
     public Descriptor {
-      kind = requireText(kind, "filesystem kind");
-      display = requireText(display, "filesystem display");
+      kind = Objects.requireNonNull(kind, "filesystem kind");
+      display = Objects.requireNonNull(display, "filesystem display");
       capabilities = Objects.requireNonNull(capabilities, "filesystem capabilities");
-      extensions = immutableMap(extensions);
+      extensions = extensions == null || extensions.isEmpty() ? Map.of() : Map.copyOf(extensions);
     }
   }
 
   record Entry(
       String path,
       String name,
-      EntryType type,
+      String type,
       Long size,
       Long modifiedAt,
-      String id,
-      String revision,
-      Capabilities capabilities,
       Map<String, Object> extensions) {
     public Entry {
-      path = HaraLogicalPath.normalise(path);
-      name = Objects.requireNonNull(name, "filesystem entry name");
-      type = Objects.requireNonNull(type, "filesystem entry type");
-      if (size != null && size < 0) {
-        throw new IllegalArgumentException("filesystem size is negative");
-      }
-      extensions = immutableMap(extensions);
+      path = Objects.requireNonNull(path, "entry path");
+      name = Objects.requireNonNull(name, "entry name");
+      type = Objects.requireNonNull(type, "entry type");
+      extensions = extensions == null || extensions.isEmpty() ? Map.of() : Map.copyOf(extensions);
     }
   }
 
-  record PageRequest(String token, int limit) {
-    static final int DEFAULT_LIMIT = 256;
-
+  record PageRequest(String cursor, int limit) {
     public PageRequest {
       if (limit <= 0) throw new IllegalArgumentException("filesystem page limit must be positive");
     }
-
-    static PageRequest first() {
-      return new PageRequest(null, DEFAULT_LIMIT);
-    }
   }
 
-  record EntryPage(List<Entry> entries, String nextToken) {
+  record EntryPage(List<Entry> entries, String nextCursor) {
     public EntryPage {
-      ArrayList<Entry> sorted = new ArrayList<>(Objects.requireNonNull(entries, "entries"));
-      sorted.sort(java.util.Comparator.comparing(Entry::path));
-      entries = List.copyOf(sorted);
+      entries = List.copyOf(Objects.requireNonNull(entries, "filesystem entries"));
     }
   }
 
-  record WriteOptions(WriteMode mode, boolean parents) {
-    public WriteOptions {
-      mode = Objects.requireNonNull(mode, "write mode");
-    }
-  }
-
-  record MkdirOptions(boolean parents, boolean existsOk) {}
-
-  record DeleteOptions(boolean missingOk) {}
-
-  record CopyOptions(boolean replace, boolean parents, boolean preserveModified) {}
-
-  record MoveOptions(boolean replace, boolean parents, boolean atomic) {}
-
-  record MutationContext(String expectedRevision, String expectedTargetRevision) {
-    static MutationContext none() {
-      return new MutationContext(null, null);
-    }
-
-    boolean required() {
-      return expectedRevision != null || expectedTargetRevision != null;
-    }
-  }
-
-  record Mutation(
-      String path,
-      String revision,
-      String mountRevision,
-      Map<String, Object> extensions) {
+  record Mutation(String revision, Map<String, Object> extensions) {
     public Mutation {
-      path = HaraLogicalPath.normalise(path);
-      extensions = immutableMap(extensions);
-    }
-
-    static Mutation path(String path) {
-      return new Mutation(path, null, null, Map.of());
+      extensions = extensions == null || extensions.isEmpty() ? Map.of() : Map.copyOf(extensions);
     }
   }
 
-  /** Shared cancellation and monotonic deadline state for one provider operation. */
   final class CallContext {
-    private static final class State {
-      final AtomicBoolean cancelled = new AtomicBoolean();
-      final CopyOnWriteArrayList<Runnable> cancellationHooks =
-          new CopyOnWriteArrayList<>();
+    private final AtomicBoolean cancelled = new AtomicBoolean();
+    private final Instant deadline;
+    private final CopyOnWriteArrayList<Runnable> cancellationHooks = new CopyOnWriteArrayList<>();
+
+    public CallContext() {
+      this(null);
     }
 
-    private final boolean hasDeadline;
-    private final long deadlineNanos;
-    private final String traceId;
-    private final State state;
-
-    private CallContext(
-        boolean hasDeadline, long deadlineNanos, String traceId, State state) {
-      this.hasDeadline = hasDeadline;
-      this.deadlineNanos = deadlineNanos;
-      this.traceId = traceId;
-      this.state = state;
+    public CallContext(Instant deadline) {
+      this.deadline = deadline;
     }
 
-    static CallContext create() {
-      return new CallContext(false, 0L, null, new State());
+    public static CallContext withTimeout(Duration timeout) {
+      Objects.requireNonNull(timeout, "filesystem timeout");
+      return new CallContext(Instant.now().plus(timeout));
     }
 
-    static CallContext until(Instant deadline) {
-      Objects.requireNonNull(deadline, "deadline");
-      Duration remaining = Duration.between(Instant.now(), deadline);
-      return within(remaining.isNegative() ? Duration.ZERO : remaining);
+    public boolean cancelled() {
+      return cancelled.get();
     }
 
-    static CallContext within(Duration timeout) {
-      Objects.requireNonNull(timeout, "timeout");
-      long durationNanos;
-      try {
-        durationNanos = timeout.toNanos();
-      } catch (ArithmeticException ignored) {
-        durationNanos = Long.MAX_VALUE;
-      }
-      durationNanos = Math.max(0L, durationNanos);
-      long now = System.nanoTime();
-      long deadline =
-          durationNanos >= Long.MAX_VALUE - now ? Long.MAX_VALUE : now + durationNanos;
-      return new CallContext(true, deadline, null, new State());
+    public Instant deadline() {
+      return deadline;
     }
 
-    CallContext withTraceId(String traceId) {
-      return new CallContext(
-          hasDeadline, deadlineNanos, requireText(traceId, "trace id"), state);
-    }
-
-    String traceId() {
-      return traceId;
-    }
-
-    boolean hasDeadline() {
-      return hasDeadline;
-    }
-
-    long remainingNanos() {
-      if (!hasDeadline) return Long.MAX_VALUE;
-      return Math.max(0L, deadlineNanos - System.nanoTime());
-    }
-
-    boolean cancelled() {
-      return state.cancelled.get();
-    }
-
-    boolean cancel() {
-      if (!state.cancelled.compareAndSet(false, true)) return false;
-      for (Runnable hook : state.cancellationHooks) {
-        try {
-          hook.run();
-        } catch (RuntimeException ignored) {
-          // Cancellation remains terminal even when a provider hook misbehaves.
-        }
-      }
-      state.cancellationHooks.clear();
-      return true;
-    }
-
-    AutoCloseable onCancel(Runnable hook) {
+    public void onCancel(Runnable hook) {
       Objects.requireNonNull(hook, "cancellation hook");
-      if (cancelled()) {
-        hook.run();
-        return () -> {};
+      if (cancelled()) hook.run();
+      else {
+        cancellationHooks.add(hook);
+        if (cancelled() && cancellationHooks.remove(hook)) hook.run();
       }
-      state.cancellationHooks.add(hook);
-      if (cancelled() && state.cancellationHooks.remove(hook)) hook.run();
-      return () -> state.cancellationHooks.remove(hook);
     }
 
-    void check(String provider, String operation, String path, String target) {
-      if (cancelled()) {
-        throw FilesystemException.cancelled(provider, operation, path, target);
-      }
-      if (hasDeadline && remainingNanos() == 0L) {
-        throw FilesystemException.timeout(provider, operation, path, target);
-      }
+    public void cancel() {
+      if (!cancelled.compareAndSet(false, true)) return;
+      ArrayList<Runnable> hooks = new ArrayList<>(cancellationHooks);
+      cancellationHooks.clear();
+      for (Runnable hook : hooks) hook.run();
+    }
+
+    public void check() {
+      if (cancelled()) throw new IllegalStateException("FILESYSTEM_OPERATION_CANCELLED");
+      if (deadline != null && !Instant.now().isBefore(deadline))
+        throw new IllegalStateException("FILESYSTEM_OPERATION_TIMED_OUT");
+    }
+  }
+
+  record MutationContext(CallContext call, String expectedRevision) {
+    public MutationContext {
+      call = Objects.requireNonNull(call, "filesystem call context");
     }
   }
 
   Descriptor descriptor();
 
-  default Capabilities capabilities() {
-    return descriptor().capabilities();
-  }
-
-  CompletionStage<Entry> stat(CallContext context, String path);
-
   CompletionStage<byte[]> read(CallContext context, String path);
 
   CompletionStage<Mutation> write(
-      CallContext context,
-      String path,
-      byte[] bytes,
-      WriteOptions options,
-      MutationContext mutation);
+      MutationContext context, String path, byte[] data, boolean append, boolean createParents);
 
-  CompletionStage<EntryPage> entriesPage(
-      CallContext context, String path, PageRequest request);
+  CompletionStage<EntryPage> entries(CallContext context, String path, PageRequest page);
 
-  CompletionStage<Mutation> mkdir(
-      CallContext context, String path, MkdirOptions options, MutationContext mutation);
+  CompletionStage<Mutation> mkdir(MutationContext context, String path, boolean recursive);
 
-  CompletionStage<Mutation> delete(
-      CallContext context, String path, DeleteOptions options, MutationContext mutation);
+  CompletionStage<Mutation> delete(MutationContext context, String path, boolean recursive);
 
   CompletionStage<Mutation> copy(
-      CallContext context,
-      String source,
-      String target,
-      CopyOptions options,
-      MutationContext mutation);
+      MutationContext context, String source, String target, boolean replaceExisting);
 
   CompletionStage<Mutation> move(
-      CallContext context,
-      String source,
-      String target,
-      MoveOptions options,
-      MutationContext mutation);
+      MutationContext context, String source, String target, boolean replaceExisting);
 
   CompletionStage<Void> close(CallContext context);
-
-  private static String requireText(String value, String label) {
-    if (value == null || value.isBlank()) {
-      throw new IllegalArgumentException(label + " is required");
-    }
-    return value;
-  }
-
-  private static Map<String, Object> immutableMap(Map<String, Object> values) {
-    return values == null || values.isEmpty() ? Map.of() : Map.copyOf(values);
-  }
 }
