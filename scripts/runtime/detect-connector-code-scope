@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+rust_scope=false
+java_scope=false
+
+classify_paths() {
+  rust_scope=false
+  java_scope=false
+
+  local path
+  while IFS= read -r path; do
+    path="${path#./}"
+    [[ -n "$path" ]] || continue
+
+    case "$path" in
+      core/rust/web/*)
+        ;;
+      core/rust/*)
+        rust_scope=true
+        ;;
+      core/java/*)
+        java_scope=true
+        ;;
+    esac
+  done
+}
+
+emit_scope() {
+  local base_sha="${1:-}"
+  local head_sha="${2:-}"
+
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    {
+      printf 'rust=%s\n' "$rust_scope"
+      printf 'java=%s\n' "$java_scope"
+      printf 'base_sha=%s\n' "$base_sha"
+      printf 'head_sha=%s\n' "$head_sha"
+    } >> "$GITHUB_OUTPUT"
+  else
+    printf 'rust=%s\n' "$rust_scope"
+    printf 'java=%s\n' "$java_scope"
+    printf 'base_sha=%s\n' "$base_sha"
+    printf 'head_sha=%s\n' "$head_sha"
+  fi
+}
+
+assert_scope() {
+  local expected_rust="$1"
+  local expected_java="$2"
+  shift 2
+
+  classify_paths < <(printf '%s\n' "$@")
+  if [[ "$rust_scope" != "$expected_rust" || "$java_scope" != "$expected_java" ]]; then
+    printf 'scope mismatch: expected rust=%s java=%s, got rust=%s java=%s for %s\n' \
+      "$expected_rust" "$expected_java" "$rust_scope" "$java_scope" "$*" >&2
+    return 1
+  fi
+}
+
+self_test() {
+  assert_scope true false core/rust/src/lib.rs
+  assert_scope false true core/java/src/main/java/hara/Main.java
+  assert_scope true true core/rust/raw/src/lib.rs core/java/pom.xml
+  assert_scope false false AGENTS.md .github/WORKFLOW.md core/rust/web/hara-web.js
+  printf 'connector code scope self-test: ok\n'
+}
+
+resolve_base_sha() {
+  local head_sha="$1"
+  local candidate="${CONNECTOR_BASE_SHA:-}"
+
+  if [[ -n "$candidate" && ! "$candidate" =~ ^0+$ ]] && \
+     git cat-file -e "${candidate}^{commit}" 2>/dev/null; then
+    printf '%s\n' "$candidate"
+    return
+  fi
+
+  local base_ref="${CONNECTOR_BASE_REF:-main}"
+  git fetch --no-tags origin \
+    "refs/heads/${base_ref}:refs/remotes/origin/${base_ref}"
+  git merge-base "refs/remotes/origin/${base_ref}" "$head_sha"
+}
+
+case "${1:-}" in
+  --self-test)
+    self_test
+    ;;
+  --files)
+    classify_paths
+    emit_scope
+    ;;
+  ""|--git)
+    head_sha="${CONNECTOR_HEAD_SHA:-${GITHUB_SHA:-HEAD}}"
+    base_sha="$(resolve_base_sha "$head_sha")"
+    classify_paths < <(git diff --name-only "$base_sha" "$head_sha")
+    emit_scope "$base_sha" "$head_sha"
+    ;;
+  *)
+    printf 'usage: %s [--git|--files|--self-test]\n' "$0" >&2
+    exit 2
+    ;;
+esac
