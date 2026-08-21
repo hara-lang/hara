@@ -40,6 +40,22 @@ public class GitHubFilesystemSessionKernelTest {
       assertArrayEquals(
           "hello".getBytes(StandardCharsets.UTF_8),
           join(binding.read("/README.md").future()));
+      assertEquals(
+          "hello",
+          session
+              .eval(
+                  "(std.foundation.string/decode-utf8"
+                      + " (deref (File/read \"/README.md\")))")
+              .asString());
+      String readmeRevision =
+          join(binding.stat("/README.md").future()).revision();
+      assertEquals(
+          readmeRevision,
+          session
+              .eval(
+                  "(get (:extensions (deref (File/stat \"/README.md\")))"
+                      + " :file/revision)")
+              .asString());
 
       SessionKernel.FilesystemInfo info = kernel.filesystemInfo(mount);
       assertEquals("github", info.kind());

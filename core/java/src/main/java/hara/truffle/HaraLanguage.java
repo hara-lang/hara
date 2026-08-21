@@ -55,6 +55,13 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
       stability = OptionStability.STABLE)
   static final OptionKey<String> KERNEL_TOKEN = new OptionKey<>("");
 
+  @Option(
+      name = "FilesystemBindingToken",
+      help = "Internal one-use token for an exact Session filesystem binding.",
+      category = OptionCategory.INTERNAL,
+      stability = OptionStability.STABLE)
+  static final OptionKey<String> FILESYSTEM_BINDING_TOKEN = new OptionKey<>("");
+
   private static final ContextReference<HaraContext> CONTEXT_REFERENCE =
       ContextReference.create(HaraLanguage.class);
 
@@ -75,7 +82,7 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
 
   @Override
   protected void finalizeContext(HaraContext context) {
-    context.closeExtensions();
+    context.closeContext();
   }
 
   public static HaraContext currentContext() {
