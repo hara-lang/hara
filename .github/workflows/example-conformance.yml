@@ -1,0 +1,46 @@
+name: Example conformance
+
+on:
+  pull_request:
+    paths:
+      - "core/lib/examples/**"
+      - "GETTING_STARTED.md"
+      - "scripts/check_examples_catalog.py"
+      - ".github/workflows/example-conformance.yml"
+  push:
+    branches: [main]
+    paths:
+      - "core/lib/examples/**"
+      - "GETTING_STARTED.md"
+      - "scripts/check_examples_catalog.py"
+      - ".github/workflows/example-conformance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  catalog:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate closed example inventory and authority
+        run: python scripts/check_examples_catalog.py
+
+  native-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build native CLI
+        run: cargo build --manifest-path core/rust/Cargo.toml --bin hara
+      - name: Validate deterministic hello example
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual="$(HARA_RUNTIME=rust HARA_NATIVE="$PWD/core/rust/target/debug/hara" ./core/hara run core/lib/examples/hello.hal)"
+          printf 'hello.hal stdout: %s\n' "$actual"
+          test "$actual" = '"hello, Ada"'
