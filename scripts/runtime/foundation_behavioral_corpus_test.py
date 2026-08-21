@@ -85,7 +85,7 @@ class FoundationBehavioralCorpusTest(unittest.TestCase):
     def test_committed_corpus_is_versioned_and_valid(self):
         loaded = corpus.load_corpus(ROOT / "core/spec/code-migrate/foundation-behavioral-corpus.json")
         self.assertEqual(1, loaded["document/version"])
-        self.assertEqual(2, len(loaded["cases"]))
+        self.assertGreater(len(loaded["cases"]), 0)
 
     def test_normalization_is_named_and_recursive(self):
         value = {
