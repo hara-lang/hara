@@ -376,6 +376,56 @@
   => [{'- 'L.redis 'u 'L.core}
       'L.alt 'L.alt {'- 'L.alt 'cache 'L.custom-cache}])
 
+(fact "module creation preserves native aliases and target metadata"
+  (let [base (book/book {:lang :lua :grammar {:tag :lua}})
+       created
+       (book/module-create
+        base
+        'L.runtime
+        {:import [['cjson :as 'cjson]]
+         :export '(L.runtime/init)
+         :file {:suffix "lua"}
+         :application {:name 'demo}
+         :schema {:version 1}
+         :source {:path "runtime.hal"}})]
+   [(:native-lu created)
+    (:alias created)
+    (:export created)
+    (:file created)
+    (:application created)
+    (:schema created)
+    (:source created)])
+  => [{'cjson 'cjson}
+     {'cjson 'cjson}
+     '(L.runtime/init)
+     {:suffix "lua"}
+     {:name 'demo}
+     {:version 1}
+     {:path "runtime.hal"}])
+
+(fact "module specialization rewrites exported self references"
+  (let [base (book/book {:lang :lua :grammar {:tag :lua}})
+       source (module/book-module
+               {:lang :lua
+                :id 'L.core
+                :export '(L.core/init)
+                :file {:suffix "lua"}
+                :application {:name 'demo}
+                :schema {:version 1}
+                :source {:path "core.hal"}})
+       complete (book/set-module base source)
+       specialized (book/module-specialize complete 'L.core 'L.alt)]
+   [(:export specialized)
+    (:file specialized)
+    (:application specialized)
+    (:schema specialized)
+    (:source specialized)])
+  => ['(L.alt/init)
+     {:suffix "lua"}
+     {:name 'demo}
+     {:version 1}
+     {:path "core.hal"}])
+
 ^{:refer lang.common.book/put-module :added "4.0"}
 (fact "put-module deep-updates provider-independent module maps"
   (let [base (book/book {:lang :lua :grammar {:tag :lua}})

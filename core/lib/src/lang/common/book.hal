@@ -114,10 +114,7 @@
 (defn get-deps
   [book id]
   (if (namespace id)
-    (let [entry-value (get-code-entry book id)]
-      (set (or (:deps entry-value)
-               (get-in entry-value [:dependencies :code])
-               #{})))
+    (get-code-deps book id)
     (let [module-value (get-module book id)]
       (if module-value
         (module/module-deps-all book module-value)
@@ -126,7 +123,7 @@
 (defn get-deps-native
   [book id]
   (if (namespace id)
-    (let [entry-value (get-code-entry book id)]
+    (let [entry-value (get-code-entry-view book id)]
       (or (:deps-native entry-value)
           (get-in entry-value [:dependencies :native])
           {}))
@@ -448,11 +445,29 @@
                          (import-options import-value)))
                 {}
                 (or (:import options) []))
+        native-lu
+        (reduce-kv
+         (fn [output import-name import-options]
+           (let [aliases (or (:as import-options) [])
+                aliases (if (vector? aliases) aliases [aliases])]
+             (reduce (fn [result alias]
+                      (if (and (symbol? alias) (not= '* alias))
+                        (assoc result alias import-name)
+                        result))
+                    output
+                    aliases)))
+         {}
+         native)
         aliases
-        (reduce (fn [output alias-value]
+        (merge
+         (reduce (fn [output alias-value]
                   (assoc output (nth alias-value 2) (first alias-value)))
                 {}
                 (or (:alias options) []))
+         (reduce-kv (fn [output alias _]
+                     (assoc output alias alias))
+                   {}
+                   native-lu))
         includes
         (set (keep (fn [pair]
                      (if (:include (val pair)) (key pair) nil))
@@ -465,14 +480,18 @@
       :link link
       :internal internal
       :native native
-      :native-lu {}
-      :require-impl (:require-impl options)
+      :native-lu native-lu
+      :require-impl (or (:require-impl options) [])
       :implements (module-normalize-implements (:implements options))
       :specialize (or (:specialize options) {})
       :includes includes
       :static (:static options)
       :export (:export options)
-      :file (:file options)})))
+      :file (:file options)
+      :application (:application options)
+      :schema (:schema options)
+      :source (:source options)
+      :display (or (:display options) :default)})))
 
 (defn module-specialize
   ([book source-id target-id]
@@ -494,6 +513,12 @@
                  {:require requires
                   :require-impl (:require-impl source)
                   :import (module-export-imports source)
+                  :export (module-specialize-form source-id target-id (:export source))
+                  :file (:file source)
+                  :application (:application source)
+                  :schema (:schema source)
+                  :source (:source source)
+                  :display (:display source)
                   :static (:static source)})
            code (reduce-kv
                  (fn [output id value]
@@ -511,6 +536,9 @@
               :display (:display source)
               :implements (:implements source)
               :specialize (:specialize source)
+              :application (:application source)
+              :schema (:schema source)
+              :source (:source source)
               :code code
               :fragment fragment)))))
 
