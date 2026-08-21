@@ -90,20 +90,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
         Form::Symbol(n) if n == "nil" => Ok(Value::Nil),
         Form::Symbol(n) if n == "true" => Ok(Value::Bool(true)),
         Form::Symbol(n) if n == "false" => Ok(Value::Bool(false)),
-        Form::Symbol(n) if (n == "inc" || n == "dec") && !foundation_fallback_omitted(env, n) => {
-            let op = if n == "inc" { "+" } else { "-" };
-            let body = Form::List(vec![
-                Form::Symbol(op.into()),
-                Form::Symbol("value".into()),
-                Form::Number(1),
-            ]);
-            Ok(generated_function(
-                vec!["value".into()],
-                vec![body],
-                env.clone(),
-                vec![],
-            ))
-        }
         Form::Symbol(n) => {
             if n.contains('/') {
                 if let Ok(registry) = namespace_registry() {
@@ -115,7 +101,7 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                     force_lazy_alias(&registry, env, n)?;
                 }
             }
-            if let Some(value) = binding_value(env, n) {
+            if let Some(value) = binding_value(env, n).or_else(|| direct_callable_value(n)) {
                 return Ok(value);
             }
             if !n.contains('/') {
@@ -1616,19 +1602,13 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
                 }
                 Form::Symbol(n)
                     if resolve_macro(n).is_none()
-                        && !structural_native_dispatch_active(n)
-                        && (matches!(env.get(n), Some(Value::Function(_)))
-                            || binding_var(env, n).is_some_and(|var| {
-                                ((binding_is_local(&var)
-                                    && (!cfg!(feature = "bytecode-vm")
-                                        || var.origin() != VarOrigin::RuntimePrimitive))
-                                    || var.origin() == VarOrigin::RustLibrary
-                                    || binding_is_native_alias(n, &var)
-                                    || binding_is_hal_alias(n, &var))
-                                    && matches!(var.deref_value(), Value::Function(_))
-                            })) =>
+                        && binding_value(env, n)
+                            .or_else(|| direct_callable_value(n))
+                            .is_some_and(|value| matches!(value, Value::Function(_))) =>
                 {
-                    let function = binding_value(env, n).expect("function binding was checked");
+                    let function = binding_value(env, n)
+                        .or_else(|| direct_callable_value(n))
+                        .expect("direct or namespace function binding was checked");
                     let arguments = fs[1..]
                         .iter()
                         .map(|form| eval(form, env))

@@ -14,8 +14,6 @@ mod coroutine_tests;
 /// take precedence.
 const SYNC_SPECIAL_FORMS: &[&str] = &[
     ".",
-    "alter-var-root",
-    "apply",
     "binding",
     "comment",
     "declare",
@@ -29,20 +27,17 @@ const SYNC_SPECIAL_FORMS: &[&str] = &[
     "defn",
     "defn-",
     "do",
-    "deref",
+    "eval",
     "extend-type",
     "field",
-    "eval",
     "fn",
     "fn*",
     "if",
     "intern-var",
-    "instance?",
     "let",
     "letfn",
     "loop",
     "macroexpand-1",
-    "meta",
     "ns",
     "ns+",
     "read-forms",
@@ -51,11 +46,9 @@ const SYNC_SPECIAL_FORMS: &[&str] = &[
     "set!",
     "syntax-quote",
     "throw",
-    "type",
     "try",
     "var",
     "var/set",
-    "with-meta",
 ];
 
 /// All names that `core::eval` handles through its synchronous fallback.
@@ -639,65 +632,6 @@ fn list(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step
         _ => None,
     };
     match head {
-        Some("deref") => {
-            if v.len() != 2 {
-                return k(Err("deref expects a var".into()));
-            }
-            if let Form::Symbol(name) = &v[1] {
-                let target = {
-                    let env = env.borrow();
-                    match env.get(name) {
-                        Some(Value::Var(cell))
-                            if cell.symbol().get_name()
-                                != crate::lang::data::Symbol::parse(name).get_name() =>
-                        {
-                            Some(Value::Var(cell.clone()))
-                        }
-                        _ => None,
-                    }
-                };
-                if let Some(Value::Var(cell)) = target {
-                    return k(Ok(cell.deref_value()));
-                }
-            }
-            one(
-                v[1].clone(),
-                env,
-                Box::new(move |r| match r {
-                    Ok(Value::Var(x)) => k(Ok(x.deref_value())),
-                    Ok(Value::Atom(x)) => k(Ok(x.deref_value())),
-                    Ok(Value::Promise(p)) => match p.state() {
-                        PromiseState::Fulfilled(x) => k(Ok(x)),
-                        PromiseState::Rejected(e) => {
-                            k(Err(crate::core::promise_rejection_error(e)))
-                        }
-                        PromiseState::Pending => Step::Wait(
-                            p,
-                            Box::new(move |s| match s {
-                                PromiseState::Fulfilled(x) => k(Ok(x)),
-                                PromiseState::Rejected(e) => {
-                                    k(Err(crate::core::promise_rejection_error(e)))
-                                }
-                                PromiseState::Pending => k(Err("fiber resumed pending".into())),
-                            }),
-                        ),
-                    },
-                    Ok(Value::Pointer(pointer)) => {
-                        k(pointer_default(&pointer).and_then(|runtime| {
-                            pointer_context_call(&pointer, runtime, "pointer/deref", &[])
-                        }))
-                    }
-                    Ok(Value::Schema(schema)) => k(crate::core::form_to_value(
-                        &crate::lang::protocol::IDeref::deref(&schema.ast),
-                    )),
-                    Ok(value) => k(Err(format!(
-                        "deref expects a var, atom, promise, pointer, or schema, got {}",
-                        value.display()
-                    ))),
-                    Err(e) => k(Err(e)),
-                }),
-            )
-        }
         Some("do") => forms_cps(Rc::new(v[1..].to_vec()), 0, Value::Nil, env, k),
         Some("if") => {
             if v.len() != 3 && v.len() != 4 {
@@ -1307,106 +1241,112 @@ fn temp() -> String {
     })
 }
 fn application(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step {
-    if let Some(Form::Symbol(n)) = v.first() {
-        if crate::core::resolve_macro(n).is_some() {
-            let r = {
-                let mut env = env.borrow_mut();
-                eval(&Form::List(v), &mut env)
+    if let Some(Form::Symbol(name)) = v.first() {
+        if crate::core::resolve_macro(name).is_some() {
+            let result = {
+                let mut environment = env.borrow_mut();
+                eval(&Form::List(v), &mut environment)
             };
-            return k(r);
+            return k(result);
         }
     }
+
     let head_symbol = match &v[0] {
-        Form::Symbol(n) => Some(n.as_str()),
+        Form::Symbol(name) => Some(name.as_str()),
         _ => None,
     };
-    if let Some(name) = head_symbol {
-        let native_alias = binding_var(&mut env.borrow_mut(), name)
-            .is_some_and(|var| binding_is_native_alias(name, &var));
-        if CORE_SPECIAL_FORMS.contains(&name) || name.starts_with("std.native.") || native_alias {
-            return eval_special_form(v, env, k);
-        }
-    }
-    let f = head_symbol.and_then(|n| binding_value(&env.borrow(), n));
-    if let Some(Value::Function(f)) = f {
+    let bound = head_symbol.and_then(|name| {
+        binding_value(&env.borrow(), name).or_else(|| crate::core::direct_callable_value(name))
+    });
+    if let Some(Value::Function(function)) = bound {
         let call_form = Form::List(v.clone());
-        let call_name = f.name.clone().unwrap_or_else(|| "<anonymous>".into());
-        let call_env = env.clone();
+        let call_name = function
+            .name
+            .clone()
+            .unwrap_or_else(|| "<anonymous>".into());
+        let call_environment = env.clone();
         return values_cps(
             Rc::new(v[1..].to_vec()),
             0,
             Vec::new(),
             env,
-            Box::new(move |r| match r {
-                Ok(a) => {
-                    coroutine::semantic::record_call(&call_form, call_name, &a, &call_env);
-                    call(f, a, k)
-                }
-                Err(x) => k(Err(x)),
-            }),
-        );
-    }
-    if head_symbol.is_none() {
-        let forms = Rc::new(v[1..].to_vec());
-        let arguments_env = env.clone();
-        let call_form = Form::List(v.clone());
-        let function_call_form = call_form.clone();
-        let function_call_env = arguments_env.clone();
-        let value_call_env = arguments_env.clone();
-        return one(
-            v[0].clone(),
-            env,
-            Box::new(move |result| match result {
-                Ok(Value::Function(function)) => {
-                    let call_name = function
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| "<anonymous>".into());
-                    values_cps(
-                        forms,
-                        0,
-                        Vec::new(),
-                        arguments_env,
-                        Box::new(move |arguments| match arguments {
-                            Ok(arguments) => {
-                                coroutine::semantic::record_call(
-                                    &function_call_form,
-                                    call_name,
-                                    &arguments,
-                                    &function_call_env,
-                                );
-                                call(function, arguments, k)
-                            }
-                            Err(error) => k(Err(error)),
-                        }),
-                    )
-                }
-                Ok(value) => {
-                    let call_name = crate::core::portable_type_name(&value).to_owned();
-                    values_cps(
-                        forms,
-                        0,
-                        Vec::new(),
-                        arguments_env,
-                        Box::new(move |arguments| match arguments {
-                            Ok(arguments) => {
-                                coroutine::semantic::record_call(
-                                    &call_form,
-                                    call_name,
-                                    &arguments,
-                                    &value_call_env,
-                                );
-                                k(crate::core::call_value(value, arguments))
-                            }
-                            Err(error) => k(Err(error)),
-                        }),
-                    )
+            Box::new(move |arguments| match arguments {
+                Ok(arguments) => {
+                    coroutine::semantic::record_call(
+                        &call_form,
+                        call_name,
+                        &arguments,
+                        &call_environment,
+                    );
+                    call(function, arguments, k)
                 }
                 Err(error) => k(Err(error)),
             }),
         );
     }
-    eval_special_form(v, env, k)
+
+    if head_symbol.is_some_and(|name| SYNC_SPECIAL_FORMS.contains(&name)) {
+        return eval_special_form(v, env, k);
+    }
+
+    let forms = Rc::new(v[1..].to_vec());
+    let arguments_environment = env.clone();
+    let call_form = Form::List(v.clone());
+    let function_call_form = call_form.clone();
+    let function_call_environment = arguments_environment.clone();
+    let value_call_environment = arguments_environment.clone();
+    one(
+        v[0].clone(),
+        env,
+        Box::new(move |result| match result {
+            Ok(Value::Function(function)) => {
+                let call_name = function
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| "<anonymous>".into());
+                values_cps(
+                    forms,
+                    0,
+                    Vec::new(),
+                    arguments_environment,
+                    Box::new(move |arguments| match arguments {
+                        Ok(arguments) => {
+                            coroutine::semantic::record_call(
+                                &function_call_form,
+                                call_name,
+                                &arguments,
+                                &function_call_environment,
+                            );
+                            call(function, arguments, k)
+                        }
+                        Err(error) => k(Err(error)),
+                    }),
+                )
+            }
+            Ok(value) => {
+                let call_name = crate::core::portable_type_name(&value).to_owned();
+                values_cps(
+                    forms,
+                    0,
+                    Vec::new(),
+                    arguments_environment,
+                    Box::new(move |arguments| match arguments {
+                        Ok(arguments) => {
+                            coroutine::semantic::record_call(
+                                &call_form,
+                                call_name,
+                                &arguments,
+                                &value_call_environment,
+                            );
+                            k(crate::core::call_value(value, arguments))
+                        }
+                        Err(error) => k(Err(error)),
+                    }),
+                )
+            }
+            Err(error) => k(Err(error)),
+        }),
+    )
 }
 fn eval_special_form(v: Vec<Form>, env: Rc<RefCell<HashMap<String, Value>>>, k: Cont) -> Step {
     let call_form = Form::List(v.clone());
@@ -1568,13 +1508,11 @@ mod tests {
             let mut environment = HashMap::new();
             environment.insert("optimized".into(), Value::Var(seed.clone()));
 
-            let result = crate::core::with_definition_origin(
-                crate::kernel::VarOrigin::HalFallback,
-                || {
+            let result =
+                crate::core::with_definition_origin(crate::kernel::VarOrigin::HalFallback, || {
                     let mut fiber = EvalFiber::start("(def optimized 9)", environment).unwrap();
                     fiber.drive_sync().unwrap()
-                },
-            );
+                });
             let Value::Var(var) = result else {
                 panic!("def must return a Var")
             };

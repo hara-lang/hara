@@ -166,3 +166,11 @@ include!("core/operation.rs");
 include!("core/form.rs");
 include!("core/namespace.rs");
 include!("core/evaluator.rs");
+include!("core/direct_callable.rs");
+include!("core/direct_callable_catalog.rs");
+include!("core/direct_callable_impl.rs");
+include!("core/direct_callable_operations.rs");
+#[cfg(test)]
+include!("core/direct_callable_probe.rs");
+#[cfg(test)]
+include!("core/direct_callable_tests.rs");

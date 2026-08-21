@@ -535,7 +535,13 @@ mod tests {
             .join("std")
             .join("foundation");
         let mut source = String::new();
-        for module in ["bytes.hal", "coroutine.hal", "pretty.hal", "promise.hal", "string.hal"] {
+        for module in [
+            "bytes.hal",
+            "coroutine.hal",
+            "pretty.hal",
+            "promise.hal",
+            "string.hal",
+        ] {
             let path = root.join(module);
             source.push_str(
                 &std::fs::read_to_string(&path)
@@ -550,9 +556,7 @@ mod tests {
         std::collections::BTreeSet<String>,
         std::collections::BTreeSet<String>,
     )> {
-        let source = repo_text(
-            "01-lang/004-foundation/draft/conformance/foundation-surface.edn",
-        )?;
+        let source = repo_text("01-lang/004-foundation/draft/conformance/foundation-surface.edn")?;
         let forms = kernel::parse_forms(&source).expect("parse specs-owned Foundation surface");
         let [Form::Map(root)] = forms.as_slice() else {
             panic!("Foundation surface must contain one map");
@@ -1985,10 +1989,9 @@ mod tests {
         else {
             return;
         };
-        let fixture = repo_text(
-            "01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal",
-        )
-        .expect("the specs-owned protocol surface fixture must be available");
+        let fixture =
+            repo_text("01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal")
+                .expect("the specs-owned protocol surface fixture must be available");
         let foundation = runtime
             .namespace_registry
             .find("std.foundation")
@@ -2241,9 +2244,18 @@ mod tests {
             .expect("Foundation conformance evaluator panicked")
             .unwrap_or_else(|error| panic!("Foundation behavioral corpus: {error}"));
         let (result, failures) = result;
-        assert!(result.contains(":corpus-valid true"), "{result}\n{failures}");
-        assert!(result.contains(":calibration-failed 0"), "{result}\n{failures}");
-        assert!(result.contains(":boundary-failed 0"), "{result}\n{failures}");
+        assert!(
+            result.contains(":corpus-valid true"),
+            "{result}\n{failures}"
+        );
+        assert!(
+            result.contains(":calibration-failed 0"),
+            "{result}\n{failures}"
+        );
+        assert!(
+            result.contains(":boundary-failed 0"),
+            "{result}\n{failures}"
+        );
         assert!(result.contains(":failed 0"), "{result}\n{failures}");
 
         let forms = kernel::parse_forms(&result).expect("parse Foundation report");
@@ -2276,7 +2288,11 @@ mod tests {
             let [Form::Map(bytecode_report)] = bytecode_forms.as_slice() else {
                 panic!("bytecode Foundation report must be one map: {bytecode}");
             };
-            assert_eq!(report.len(), bytecode_report.len(), "Foundation report shape");
+            assert_eq!(
+                report.len(),
+                bytecode_report.len(),
+                "Foundation report shape"
+            );
             for (key, value) in report {
                 let Form::Keyword(key) = key else {
                     panic!("Foundation report keys must be keywords: {key:?}");
@@ -2293,17 +2309,14 @@ mod tests {
     #[test]
     fn shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime() {
         let mut runtime = Runtime::new();
-        let source = repo_text(
-            "01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal",
-        )
-        .expect("the specs-owned protocol surface fixture must be available");
+        let source =
+            repo_text("01-lang/001-language/draft/conformance/fixtures/protocol_surface.hal")
+                .expect("the specs-owned protocol surface fixture must be available");
         assert!(
             !source.contains("/I"),
             "protocol types must resolve unqualified in guest source"
         );
-        let result = runtime
-            .eval_text(&source)
-            .unwrap();
+        let result = runtime.eval_text(&source).unwrap();
         assert!(!result.contains(":pass false"), "{result}");
         assert_eq!(result.matches(":pass true").count(), 55, "{result}");
 
@@ -2311,24 +2324,25 @@ mod tests {
         {
             let mut bytecode_runtime = Runtime::new();
             let bytecode_result = bytecode_runtime.eval_bytecode_native(&source).unwrap();
-            assert!(!bytecode_result.contains(":pass false"), "{bytecode_result}");
+            assert!(
+                !bytecode_result.contains(":pass false"),
+                "{bytecode_result}"
+            );
             assert_eq!(bytecode_result.matches(":pass true").count(), 55);
         }
     }
 
     #[test]
     fn shared_foundation_protocol_functionality_fixture_runs_in_the_native_runtime() {
-        let source = repo_text(
-            "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
-        )
-        .expect("the specs-owned behavioral protocol corpus must be available");
+        let source =
+            repo_text("01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal")
+                .expect("the specs-owned behavioral protocol corpus must be available");
         assert!(
             !source.contains("/I"),
             "protocol types must resolve unqualified in guest source"
         );
-        let catalog =
-            repo_text("01-lang/001-language/draft/conformance/protocol-method-cases.edn")
-                .expect("the protocol case catalog must accompany its behavioral corpus");
+        let catalog = repo_text("01-lang/001-language/draft/conformance/protocol-method-cases.edn")
+            .expect("the protocol case catalog must accompany its behavioral corpus");
         let protocols = repo_text("01-lang/001-language/draft/conformance/protocols.edn")
             .expect("protocol contract must accompany its case catalog");
         assert_eq!(
@@ -2350,20 +2364,20 @@ mod tests {
         let mut runtime = Runtime::new();
         let result = runtime.eval_text(&source).unwrap();
         assert!(!result.contains(":pass false"), "{result}");
-        assert_eq!(
-            result.matches(":pass true").count(),
-            105,
-            "{result}"
+        assert_eq!(result.matches(":pass true").count(), 105, "{result}");
+        let capability_result = runtime.eval_text("(capability-protocol-results)").unwrap();
+        assert!(
+            !capability_result.contains(":pass false"),
+            "{capability_result}"
         );
-        let capability_result = runtime
-            .eval_text("(capability-protocol-results)")
-            .unwrap();
-        assert!(!capability_result.contains(":pass false"), "{capability_result}");
         assert_eq!(capability_result.matches(":pass true").count(), 20);
         let receiver_matrix = runtime
             .eval_text("(protocol-receiver-matrix-results)")
             .unwrap();
-        assert!(!receiver_matrix.contains(":pass false"), "{receiver_matrix}");
+        assert!(
+            !receiver_matrix.contains(":pass false"),
+            "{receiver_matrix}"
+        );
         assert_eq!(receiver_matrix.matches(":pass true").count(), 10);
         let cross_cutting = runtime
             .eval_text("(protocol-cross-cutting-results)")
@@ -2383,9 +2397,7 @@ mod tests {
             .unwrap();
         assert!(!native_values.contains(":pass false"), "{native_values}");
         assert_eq!(native_values.matches(":pass true").count(), 15);
-        let predicates = runtime
-            .eval_text("(protocol-predicate-results)")
-            .unwrap();
+        let predicates = runtime.eval_text("(protocol-predicate-results)").unwrap();
         assert!(!predicates.contains(":pass false"), "{predicates}");
         assert_eq!(predicates.matches(":pass true").count(), 7);
 
@@ -3904,35 +3916,6 @@ mod tests {
                 "std.native.Base/{name} must remain runtime-owned"
             );
         }
-    }
-
-    #[test]
-    fn direct_runtime_callables_do_not_reenter_the_evaluator() {
-        for name in core::BASIC_FUNCTION_NAMES
-            .iter()
-            .copied()
-            .chain(core::Primitive::ALL.iter().map(|primitive| primitive.operator()))
-        {
-            let (_, evaluator_invocations) = core::with_evaluator_invocation_count(|| {
-                core::call_value(core::structural_function_value(name), Vec::new())
-            });
-            assert_eq!(
-                evaluator_invocations, 0,
-                "{name} must dispatch directly at the value boundary"
-            );
-        }
-
-        let callable = core::structural_function_value("count");
-        let (result, evaluator_invocations) = core::with_evaluator_invocation_count(|| {
-            core::call_value(
-                callable,
-                vec![core::Value::Vector(
-                    vec![core::Value::Number(1), core::Value::Number(2)].into(),
-                )],
-            )
-        });
-        assert_eq!(result.unwrap(), core::Value::Number(2));
-        assert_eq!(evaluator_invocations, 0);
     }
 
     #[test]
@@ -6176,14 +6159,15 @@ mod tests {
     #[test]
     fn portable_exception_cases_run_from_the_shared_conformance_corpus() {
         fn entry<'a>(entries: &'a [(Form, Form)], key: &str) -> Option<&'a Form> {
-            entries.iter().find_map(|(candidate, value)| match candidate {
-                Form::Keyword(name) if name == key => Some(value),
-                _ => None,
-            })
+            entries
+                .iter()
+                .find_map(|(candidate, value)| match candidate {
+                    Form::Keyword(name) if name == key => Some(value),
+                    _ => None,
+                })
         }
 
-        let Some(corpus) =
-            repo_text("01-lang/001-language/draft/conformance/exceptions.edn")
+        let Some(corpus) = repo_text("01-lang/001-language/draft/conformance/exceptions.edn")
         else {
             return;
         };
@@ -7626,10 +7610,9 @@ mod tests {
     #[test]
     fn guest_types_satisfy_and_dispatch_native_work_protocols() {
         let mut runtime = Runtime::new();
-        let source = repo_text(
-            "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
-        )
-        .expect("the specs-owned behavioral protocol corpus must be available");
+        let source =
+            repo_text("01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal")
+                .expect("the specs-owned behavioral protocol corpus must be available");
         runtime.eval_text(&source).unwrap();
         let methods = runtime.eval_text("(capability-protocol-results)").unwrap();
         let receivers = runtime
@@ -7709,10 +7692,9 @@ mod tests {
     #[test]
     fn shared_native_value_protocol_matrix_passes() {
         let mut runtime = Runtime::new();
-        let source = repo_text(
-            "01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal",
-        )
-        .expect("the specs-owned behavioral protocol corpus must be available");
+        let source =
+            repo_text("01-lang/001-language/draft/conformance/fixtures/protocol_behavioral.hal")
+                .expect("the specs-owned behavioral protocol corpus must be available");
         runtime.eval_text(&source).unwrap();
         let result = runtime
             .eval_text("(protocol-native-value-results)")

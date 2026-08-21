@@ -11,20 +11,20 @@ mod clock;
 pub mod core;
 mod direct_wasm;
 pub mod extension;
-pub mod wasm_binding;
 pub mod file;
 #[path = "file/interface.rs"]
 pub mod filesystem;
 #[path = "runtime/filesystem_bridge.rs"]
 mod filesystem_bridge;
-#[path = "runtime/filesystem_adapter.rs"]
-pub mod filesystem_runtime;
 #[path = "runtime/filesystem_mount.rs"]
 mod filesystem_mount;
+#[path = "runtime/filesystem_adapter.rs"]
+pub mod filesystem_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hta;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod invoke_hta;
+pub mod wasm_binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub use invoke_hta::{InvokeHtaError, MAX_INVOKE_HTA_RESULT_BYTES};
 #[cfg(not(target_arch = "wasm32"))]
@@ -68,16 +68,16 @@ pub mod work;
 mod work_session;
 // Experimental staged bytecode VM (issue #195). Non-default feature; the
 // default evaluator is untouched.
+#[cfg(feature = "bytecode-vm")]
+#[path = "vm/schema_catalog.rs"]
+pub mod hbc_schema_catalog;
+#[cfg(feature = "bytecode-vm")]
+#[path = "vm/schema_links.rs"]
+pub mod hbc_schema_links;
 #[cfg(feature = "tracing-jit")]
 pub mod jit;
 #[cfg(feature = "bytecode-vm")]
 pub mod vm;
-#[cfg(feature = "bytecode-vm")]
-#[path = "vm/schema_links.rs"]
-pub mod hbc_schema_links;
-#[cfg(feature = "bytecode-vm")]
-#[path = "vm/schema_catalog.rs"]
-pub mod hbc_schema_catalog;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod wasmtime_provider;
 #[cfg(feature = "whole-wasm")]
@@ -130,7 +130,8 @@ pub fn restricted_sandbox_runtime_with_host(
         .find_or_create("std.native.Host")
         .intern_with_origin(
             "call",
-            core::structural_function_value("std.native.Host/call"),
+            core::native_type_function_value("Host", "call")
+                .expect("std.native.Host/call must have a direct implementation"),
             kernel::VarOrigin::RuntimePrimitive,
         );
     runtime.install_native_host_handler(handler);
