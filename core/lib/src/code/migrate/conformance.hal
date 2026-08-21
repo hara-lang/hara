@@ -1,0 +1,440 @@
+(ns code.migrate.conformance
+  (:require [code.migrate.corpus :as corpus]
+            [code.migrate.profile :as profile]))
+
+(def +document-type+
+  :code-migrate-conformance-source)
+
+(def +document-version+
+  1)
+
+(def +document-status+
+  :unreviewed-source-evidence)
+
+(def +family-statuses+
+  #{:planned :inventory-ready :extracting :generated})
+
+(def +mapping-dispositions+
+  #{:retained
+    :renamed
+    :split
+    :consolidated
+    :host-only
+    :retired
+    :manual-review})
+
+(def +owner-required-dispositions+
+  #{:retained :renamed :split :consolidated})
+
+(def +accounting-keys+
+  [:discovered :emitted :skipped :manual-review])
+
+(defn nonnegative-count?
+  [value]
+  (and
+   (number? value)
+   (>= value 0)))
+
+(defn string-vector?
+  [value]
+  (and
+   (vector? value)
+   (empty?
+    (filter
+     (fn [entry]
+       (not (string? entry)))
+     value))))
+
+(defn nonempty-string-vector?
+  [value]
+  (and
+   (string-vector? value)
+   (not (empty? value))))
+
+(defn selector-valid?
+  [selector]
+  (let [path? (string? (:path selector))
+        prefix? (string? (:path-prefix selector))]
+    (and
+     (map? selector)
+     (or
+      (and path? (not prefix?))
+      (and prefix? (not path?))))))
+
+(defn mapping-valid?
+  [mapping]
+  (let [disposition (:hara/disposition mapping)
+        owners (:hara/owners mapping)]
+    (and
+     (map? mapping)
+     (nonempty-string-vector?
+      (:foundation/namespaces mapping))
+     (has? +mapping-dispositions+ disposition)
+     (string-vector? owners)
+     (or
+      (not
+       (has? +owner-required-dispositions+
+             disposition))
+      (not (empty? owners)))
+     (string? (:note mapping)))))
+
+(defn accounting-valid?
+  [accounting]
+  (and
+   (map? accounting)
+   (empty?
+    (filter
+     (fn [key]
+       (not
+        (nonnegative-count?
+         (get accounting key))))
+     +accounting-keys+))))
+
+(defn accounting-total
+  [accounting]
+  (+ (:emitted accounting)
+     (:skipped accounting)
+     (:manual-review accounting)))
+
+(defn accounting-errors
+  [family-id accounting]
+  (if (not (accounting-valid? accounting))
+    [{:type :code.migrate.conformance/invalid-accounting
+      :family/id family-id
+      :accounting accounting}]
+    (if (= (:discovered accounting)
+           (accounting-total accounting))
+      []
+      [{:type :code.migrate.conformance/accounting-mismatch
+        :family/id family-id
+        :accounting accounting}])))
+
+(defn family-errors
+  [family]
+  (if (not (map? family))
+    [{:type :code.migrate.conformance/invalid-family
+      :family family}]
+    (let [family-id (:family/id family)
+          selectors (:foundation/test-selectors family)
+          mappings (:hara/mappings family)
+          notes (:notes family)]
+      (vec
+       (concat
+        (if (keyword? family-id)
+          []
+          [{:type :code.migrate.conformance/family-id-required
+            :family family}])
+        (if (and
+             (nonnegative-count? (:family/wave family))
+             (has? +family-statuses+
+                   (:family/status family)))
+          []
+          [{:type :code.migrate.conformance/invalid-family-plan
+            :family/id family-id}])
+        (if (and
+             (vector? selectors)
+             (not (empty? selectors)))
+          (keep
+           (fn [selector]
+             (if (selector-valid? selector)
+               nil
+               {:type :code.migrate.conformance/invalid-selector
+                :family/id family-id
+                :selector selector}))
+           selectors)
+          [{:type :code.migrate.conformance/selectors-required
+            :family/id family-id}])
+        (if (and
+             (vector? mappings)
+             (not (empty? mappings)))
+          (keep
+           (fn [mapping]
+             (if (mapping-valid? mapping)
+               nil
+               {:type :code.migrate.conformance/invalid-mapping
+                :family/id family-id
+                :mapping mapping}))
+           mappings)
+          [{:type :code.migrate.conformance/mappings-required
+            :family/id family-id}])
+        (if (string-vector? notes)
+          []
+          [{:type :code.migrate.conformance/invalid-notes
+            :family/id family-id
+            :notes notes}])
+        (accounting-errors
+         family-id
+         (:accounting family)))))))
+
+(defn fixture-source-valid?
+  [source]
+  (and
+   (map? source)
+   (string? (:path source))
+   (string? (:namespace source))
+   (string? (:form-id source))
+   (or
+    (nil? (:line source))
+    (nonnegative-count? (:line source)))))
+
+(defn fixture-errors
+  [fixture]
+  (if (not (map? fixture))
+    [{:type :code.migrate.conformance/invalid-fixture
+      :fixture fixture}]
+    (vec
+     (concat
+      (if (string? (:id fixture))
+        []
+        [{:type :code.migrate.conformance/fixture-id-required
+          :fixture fixture}])
+      (if (keyword? (:family/id fixture))
+        []
+        [{:type :code.migrate.conformance/fixture-family-required
+          :id (:id fixture)}])
+      (if (or
+           (symbol? (:ns fixture))
+           (string? (:ns fixture)))
+        []
+        [{:type :code.migrate.conformance/fixture-namespace-required
+          :id (:id fixture)}])
+      (if (string? (:expr fixture))
+        []
+        [{:type :code.migrate.conformance/fixture-expression-required
+          :id (:id fixture)}])
+      (if (has? fixture :foundation/expected)
+        []
+        [{:type :code.migrate.conformance/foundation-expectation-required
+          :id (:id fixture)}])
+      (if (fixture-source-valid?
+           (:foundation/source fixture))
+        []
+        [{:type :code.migrate.conformance/fixture-source-required
+          :id (:id fixture)}])
+      (if (has? fixture :expected)
+        [{:type :code.migrate.conformance/ambiguous-expected
+          :id (:id fixture)}]
+        [])
+      (if (has? fixture :contract)
+        [{:type :code.migrate.conformance/ambiguous-contract
+          :id (:id fixture)}]
+        [])))))
+
+(defn family-order-key
+  [family]
+  [(:family/wave family)
+   (str (:family/id family))])
+
+(defn ordered-families
+  [families]
+  (vec
+   (sort-by family-order-key families)))
+
+(defn ordered-fixtures
+  [fixtures]
+  (vec
+   (sort-by :id fixtures)))
+
+(defn zero-accounting
+  []
+  {:discovered 0
+   :emitted 0
+   :skipped 0
+   :manual-review 0})
+
+(defn add-accounting
+  [output accounting]
+  (reduce
+   (fn [result key]
+     (assoc
+      result
+      key
+      (+ (get result key)
+         (get accounting key))))
+   output
+   +accounting-keys+))
+
+(defn aggregate-accounting
+  [families]
+  (reduce
+   (fn [output family]
+     (add-accounting
+      output
+      (:accounting family)))
+   (zero-accounting)
+   families))
+
+(defn fixture-counts
+  [fixtures]
+  (frequencies
+   (map :family/id fixtures)))
+
+(defn source-pin-errors
+  [profile-value document]
+  (vec
+   (concat
+    (if (= (:profile/id profile-value)
+           (:profile/id document))
+      []
+      [{:type :code.migrate.conformance/profile-mismatch}])
+    (if (= (:foundation/repository profile-value)
+           (:foundation/repository document))
+      []
+      [{:type :code.migrate.conformance/repository-mismatch}])
+    (if (= (:foundation/revision profile-value)
+           (:foundation/revision document))
+      []
+      [{:type :code.migrate.conformance/revision-mismatch}])
+    (if (= (:foundation/tree profile-value)
+           (:foundation/tree document))
+      []
+      [{:type :code.migrate.conformance/tree-mismatch}]))))
+
+(defn document-errors
+  [profile-value document]
+  (let [profile-value (profile/assert-profile profile-value)
+        families (:families document)
+        fixtures (:fixtures document)
+        family-vector? (vector? families)
+        fixture-vector? (vector? fixtures)
+        family-values (if family-vector? families [])
+        fixture-values (if fixture-vector? fixtures [])
+        family-ids (map :family/id family-values)
+        known-families (set family-ids)
+        accounting-ready?
+        (empty?
+         (filter
+          (fn [family]
+            (not
+             (accounting-valid?
+              (:accounting family))))
+          family-values))
+        aggregate
+        (if accounting-ready?
+          (aggregate-accounting family-values)
+          nil)
+        counts (fixture-counts fixture-values)]
+    (vec
+     (concat
+      (if (map? document)
+        []
+        [{:type :code.migrate.conformance/invalid-document}])
+      (if (= +document-type+
+             (:document/type document))
+        []
+        [{:type :code.migrate.conformance/document-type-mismatch}])
+      (if (= +document-version+
+             (:document/version document))
+        []
+        [{:type :code.migrate.conformance/document-version-mismatch}])
+      (if (= +document-status+
+             (:document/status document))
+        []
+        [{:type :code.migrate.conformance/document-status-mismatch}])
+      (source-pin-errors profile-value document)
+      (if (has? document :contract)
+        [{:type :code.migrate.conformance/ambiguous-contract}]
+        [])
+      (if family-vector?
+        []
+        [{:type :code.migrate.conformance/families-required}])
+      (if fixture-vector?
+        []
+        [{:type :code.migrate.conformance/fixtures-required}])
+      (map
+       (fn [family-id]
+         {:type :code.migrate.conformance/duplicate-family
+          :family/id family-id})
+       (corpus/duplicate-values family-ids))
+      (map
+       (fn [fixture-id]
+         {:type :code.migrate.conformance/duplicate-fixture
+          :id fixture-id})
+       (corpus/duplicate-values
+        (map :id fixture-values)))
+      (if (= family-values
+             (ordered-families family-values))
+        []
+        [{:type :code.migrate.conformance/family-order-mismatch}])
+      (if (= fixture-values
+             (ordered-fixtures fixture-values))
+        []
+        [{:type :code.migrate.conformance/fixture-order-mismatch}])
+      (mapcat family-errors family-values)
+      (mapcat fixture-errors fixture-values)
+      (keep
+       (fn [fixture]
+         (if (has? known-families
+                   (:family/id fixture))
+           nil
+           {:type :code.migrate.conformance/unknown-fixture-family
+            :id (:id fixture)
+            :family/id (:family/id fixture)}))
+       fixture-values)
+      (if accounting-ready?
+        (concat
+         (if (= aggregate
+                (:accounting document))
+           []
+           [{:type :code.migrate.conformance/document-accounting-mismatch
+             :expected aggregate
+             :actual (:accounting document)}])
+         (if (= (:emitted aggregate)
+                (count fixture-values))
+           []
+           [{:type :code.migrate.conformance/emitted-fixture-count-mismatch
+             :expected (:emitted aggregate)
+             :actual (count fixture-values)}])
+         (keep
+          (fn [family]
+            (let [family-id (:family/id family)
+                  expected (:emitted
+                            (:accounting family))
+                  actual (get counts family-id 0)]
+              (if (= expected actual)
+                nil
+                {:type :code.migrate.conformance/family-fixture-count-mismatch
+                 :family/id family-id
+                 :expected expected
+                 :actual actual})))
+          family-values))
+        [])))))
+
+(defn assert-document
+  [profile-value document]
+  (let [errors
+        (document-errors profile-value document)]
+    (if (not (empty? errors))
+      (throw
+       (ex :code.migrate.conformance/invalid-document
+           {:ex/message
+            "Foundation conformance source document is invalid"
+            :errors errors})))
+    document))
+
+(defn conformance-document
+  [profile-value families fixtures]
+  (let [profile-value
+        (profile/assert-profile profile-value)
+        families (ordered-families families)
+        fixtures (ordered-fixtures fixtures)
+        document
+        {:document/type +document-type+
+         :document/version +document-version+
+         :document/status +document-status+
+         :profile/id (:profile/id profile-value)
+         :foundation/repository
+         (:foundation/repository profile-value)
+         :foundation/revision
+         (:foundation/revision profile-value)
+         :foundation/tree
+         (:foundation/tree profile-value)
+         :families families
+         :fixtures fixtures
+         :accounting
+         (aggregate-accounting families)}]
+    (assert-document profile-value document)))
+
+(defn conformance-source
+  [document]
+  (str (corpus/render-edn document) "\n"))

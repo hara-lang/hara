@@ -1,0 +1,151 @@
+(ns code.migrate-conformance-test
+  (:use code.test)
+  (:require [code.migrate.conformance :as conformance]
+            [code.migrate.profile :as profile]
+            [std.lib.fs :as fs]
+            [std.foundation.string :as str]))
+
+(def +family-ledger-path+
+  "core/spec/code-migrate/foundation-conformance-families.edn")
+
+(def +demo-family+
+  {:family/id :demo
+   :family/wave 0
+   :family/status :planned
+   :foundation/test-selectors
+   [{:path "test/demo_test.clj"}]
+   :hara/mappings
+   [{:foundation/namespaces ["demo"]
+     :hara/disposition :retained
+     :hara/owners ["demo"]
+     :note "Demo ownership is retained."}]
+   :notes []
+   :accounting
+   {:discovered 1
+    :emitted 1
+    :skipped 0
+    :manual-review 0}})
+
+(def +demo-fixture+
+  {:id "demo/value-000"
+   :family/id :demo
+   :ns 'demo
+   :expr "(value)"
+   :foundation/expected 42
+   :foundation/source
+   {:path "test/demo_test.clj"
+    :namespace "demo-test"
+    :form-id "value-000"
+    :line 12}})
+
+(defn family-ledger-source
+  []
+  (str/decode-utf8
+   (fs/read-bytes +family-ledger-path+)))
+
+(defn family-ledger
+  []
+  (Edn/read (family-ledger-source)))
+
+(fact "Foundation expectations remain explicit non-normative source evidence"
+  (let [document
+        (conformance/conformance-document
+         profile/+foundation-baa75a+
+         [+demo-family+]
+         [+demo-fixture+])]
+    [(select-keys
+      document
+      [:document/type
+       :document/version
+       :document/status
+       :accounting])
+     (select-keys
+      (first (:fixtures document))
+      [:foundation/expected])])
+  => [{:document/type :code-migrate-conformance-source
+       :document/version 1
+       :document/status :unreviewed-source-evidence
+       :accounting
+       {:discovered 1
+        :emitted 1
+        :skipped 0
+        :manual-review 0}}
+      {:foundation/expected 42}])
+
+(fact "ambiguous expected and contract fields are rejected"
+  (set
+   (map
+    :type
+    (conformance/fixture-errors
+     (assoc
+      +demo-fixture+
+      :expected 42
+      :contract :foundation))))
+  => #{:code.migrate.conformance/ambiguous-expected
+       :code.migrate.conformance/ambiguous-contract})
+
+(fact "every discovered Foundation test is accounted for"
+  (map
+   :type
+   (conformance/family-errors
+    (assoc
+     +demo-family+
+     :accounting
+     {:discovered 2
+      :emitted 1
+      :skipped 0
+      :manual-review 0})))
+  => [:code.migrate.conformance/accounting-mismatch])
+
+(fact "fixture provenance and family ownership are mandatory"
+  (set
+   (map
+    :type
+    (conformance/fixture-errors
+     (dissoc
+      +demo-fixture+
+      :family/id
+      :foundation/source))))
+  => #{:code.migrate.conformance/fixture-family-required
+       :code.migrate.conformance/fixture-source-required})
+
+(fact "the initial multi-family ledger is valid and canonical"
+  (let [source (family-ledger-source)
+        document (family-ledger)]
+    [(conformance/document-errors
+      profile/+foundation-baa75a+
+      document)
+     (= source
+        (conformance/conformance-source document))
+     (mapv :family/id (:families document))])
+  => [[]
+      true
+      [:code-query
+       :std-lib-zip
+       :std-context
+       :std-block
+       :code-test
+       :lang-common]])
+
+(fact "document validation catches duplicate IDs and emitted-count drift"
+  (let [document
+        (conformance/conformance-document
+         profile/+foundation-baa75a+
+         [+demo-family+]
+         [+demo-fixture+])
+        invalid
+        (assoc
+         document
+         :fixtures
+         [+demo-fixture+ +demo-fixture+])]
+    (set
+     (map
+      :type
+      (conformance/document-errors
+       profile/+foundation-baa75a+
+       invalid))))
+  => #{:code.migrate.conformance/duplicate-fixture
+       :code.migrate.conformance/emitted-fixture-count-mismatch
+       :code.migrate.conformance/family-fixture-count-mismatch})
+
+(pr-str (run {:namespace "code.migrate-conformance-test"}))
