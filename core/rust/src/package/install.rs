@@ -214,9 +214,9 @@ fn extract_package_root(
             if canonical.is_empty()
                 || canonical.contains('\\')
                 || canonical.split('/').any(str::is_empty)
-                || relative.components().any(|component| {
-                    matches!(component, std::path::Component::CurDir)
-                })
+                || relative
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::CurDir))
             {
                 return Err(format!(
                     "package/invalid-manifest: archive contains non-canonical path {raw}"
