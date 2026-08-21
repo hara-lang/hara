@@ -10,7 +10,7 @@ import java.util.Set;
  * Ordinary Hara code never receives this object or the registration surface.
  */
 public interface JvmPackageProvider extends AutoCloseable {
-  String ABI = "hara.jvm-provider.v1";
+  String ABI = "hara.provider.jvm.v1";
 
   /** Stable package/provider identity, normally the package owner/name coordinate. */
   String identity();
