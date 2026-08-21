@@ -168,6 +168,7 @@ include!("core/namespace.rs");
 include!("core/evaluator.rs");
 include!("core/direct_callable.rs");
 include!("core/direct_callable_catalog.rs");
+include!("core/direct_callable_bootstrap.rs");
 include!("core/direct_callable_impl.rs");
 include!("core/direct_callable_operations.rs");
 #[cfg(test)]
