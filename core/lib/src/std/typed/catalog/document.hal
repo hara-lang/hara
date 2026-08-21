@@ -1,0 +1,631 @@
+;; Read-back and verification for published std.typed catalog documents.
+(ns std.typed.catalog.document
+  (:require [std.typed.catalog :as catalog]))
+
+(def +document-format+ "std.typed.catalog/1")
+(def +hash-epoch+ "std.typed.schema/catalog-v1")
+(def +component-epoch+ "std.typed.catalog/component-v1")
+(def +missing+ :std.typed.catalog.document/missing)
+(def +hex-digits+ "0123456789abcdef")
+
+(defn- document-error
+  [finding message data]
+  (throw
+   (ex :argument
+       (assoc
+        (assoc data :type :std.typed.catalog/invalid-document)
+        :finding/type finding)
+       :ex/message message)))
+
+(defn- ensure
+  [condition finding message data]
+  (if condition
+    true
+    (document-error finding message data)))
+
+(defn- wire-key
+  [key]
+  (cond
+    (string? key) key
+    (keyword? key)
+    (let [space (namespace key)]
+      (if space
+        (str space "/" (name key))
+        (name key)))
+    :else (str key)))
+
+(defn- document-field
+  [value key]
+  (let [wire (wire-key key)
+        keyword-wire (keyword wire)]
+    (cond
+      (has? value wire) (get value wire)
+      (has? value keyword-wire) (get value keyword-wire)
+      :else +missing+)))
+
+(defn- optional-field
+  [value key]
+  (let [found (document-field value key)]
+    (if (= found +missing+) nil found)))
+
+(defn- require-field
+  [value key path]
+  (let [found (document-field value key)]
+    (if (= found +missing+)
+      (document-error
+       :std.typed.catalog.document/missing-field
+       (str "catalog document requires " (wire-key key))
+       {:path path :field (wire-key key)})
+      found)))
+
+(defn- require-map
+  [value path]
+  (if (map? value)
+    value
+    (document-error
+     :std.typed.catalog.document/map-required
+     (str path " must be a map")
+     {:path path :value value})))
+
+(defn- require-vector
+  [value path]
+  (if (vector? value)
+    value
+    (document-error
+     :std.typed.catalog.document/vector-required
+     (str path " must be a vector")
+     {:path path :value value})))
+
+(defn- require-string
+  [value path]
+  (if (and (string? value)
+           (not (str/blank? value)))
+    value
+    (document-error
+     :std.typed.catalog.document/string-required
+     (str path " must be a non-empty string")
+     {:path path :value value})))
+
+(defn- require-version
+  [value path]
+  (if (and (integer? value) (>= value 0))
+    value
+    (document-error
+     :std.typed.catalog.document/version-invalid
+     (str path " must be a non-negative integer")
+     {:path path :value value})))
+
+(defn- lowercase-hex?
+  [value length]
+  (and
+   (string? value)
+   (= length (str/length value))
+   (loop [index 0]
+     (if (= index length)
+       true
+       (let [character (str (str/char-at value index))]
+         (if (nil? (str/index-of +hex-digits+ character))
+           false
+           (recur (inc index))))))))
+
+(defn- canonical-hash?
+  [value]
+  (and
+   (string? value)
+   (= 71 (str/length value))
+   (str/starts-with? value "sha256:")
+   (lowercase-hex? (str/slice value 7) 64)))
+
+(defn- require-hash
+  [value path]
+  (if (canonical-hash? value)
+    value
+    (document-error
+     :std.typed.catalog.document/hash-invalid
+     (str path " must be a canonical lowercase SHA-256 value")
+     {:path path :value value})))
+
+(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (nil? (str/index-of value "\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (nil? (str/index-of value "/../"))))
+
+(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [separator (str/index-of value "/")
+          length (str/length value)]
+      (and
+       separator
+       (> separator 0)
+       (< separator (dec length))
+       (nil?
+        (str/index-of
+         (str/slice value (inc separator))
+         "/"))
+       (not (str/starts-with? value ":"))
+       (nil? (str/index-of value " "))))))
+
+(defn- sorted-unique-by?
+  [values selector]
+  (= values
+     (vec
+      (distinct
+       (sort-by selector values)))))
+
+(defn- read-edn
+  [source path]
+  (let [source (require-string source path)]
+    (try
+      (Edn/read source)
+      (catch Throwable error
+        (document-error
+         :std.typed.catalog.document/edn-invalid
+         (str path " is not one portable HAL/EDN value")
+         {:path path
+          :cause/type (:type (ex-data error))})))))
+
+(declare portable-json)
+
+(defn- portable-json-map
+  [value]
+  (reduce
+   (fn [output entry]
+     (assoc output
+            (nth entry 0)
+            (portable-json (nth entry 1))))
+   {}
+   value))
+
+(defn- portable-json
+  [value]
+  (cond
+    (map? value) (portable-json-map value)
+    (vector? value) (vec (map portable-json value))
+    :else value))
+
+(defn- schema-id
+  [value path]
+  (let [value
+        (cond
+          (string? value) (keyword value)
+          (keyword? value) value
+          (symbol? value)
+          (if (namespace value)
+            (keyword (namespace value) (name value))
+            value)
+          :else value)]
+    (if (and (keyword? value) (namespace value))
+      value
+      (document-error
+       :std.typed.catalog.document/schema-id-invalid
+       (str path " must be a qualified schema id")
+       {:path path :value value}))))
+
+(defn- coordinate-key
+  [coordinate]
+  [(str (second coordinate))
+   (nth coordinate 2)
+   (nth coordinate 3)])
+
+(defn- parse-coordinate
+  [value path]
+  (let [value (require-vector value path)
+        count-valid (ensure
+           (= 4 (count value))
+           :std.typed.catalog.document/coordinate-invalid
+           (str path " must contain four values")
+           {:path path :value value})
+        kind (first value)
+        kind-valid (ensure
+           (or (= kind "schema") (= kind :schema))
+           :std.typed.catalog.document/coordinate-invalid
+           (str path " must begin with schema")
+           {:path path :value value})
+        id (schema-id (second value) (str path "/1"))
+        version (require-version (nth value 2) (str path "/2"))
+        hash (require-hash (nth value 3) (str path "/3"))]
+    [:schema id version hash]))
+
+(defn- parse-coordinate-vector
+  [value path]
+  (let [value (require-vector value path)
+        parsed
+        (vec
+         (map-indexed
+          (fn [index coordinate]
+            (parse-coordinate coordinate (str path "/" index)))
+          value))]
+    (ensure
+     (sorted-unique-by? parsed coordinate-key)
+     :std.typed.catalog.document/coordinates-noncanonical
+     (str path " must contain unique coordinates in canonical order")
+     {:path path :coordinates parsed})
+    parsed))
+
+(defn- parse-provenance
+  [value]
+  (let [value (require-map value "catalog/provenance")
+        repository
+        (require-string
+         (require-field value "repository" "catalog/provenance")
+         "catalog/provenance/repository")
+        revision
+        (require-string
+         (require-field value "revision" "catalog/provenance")
+         "catalog/provenance/revision")
+        sources
+        (require-vector
+         (require-field value "sources" "catalog/provenance")
+         "catalog/provenance/sources")
+        fixture-owner
+        (optional-field value "fixture-owner")
+        fixture-issue
+        (optional-field value "fixture-issue")
+        repository-valid (ensure
+           (owner-name? repository)
+           :std.typed.catalog.document/provenance-repository-invalid
+           "catalog provenance repository must use owner/name"
+           {:repository repository})
+        revision-valid (ensure
+           (lowercase-hex? revision 40)
+           :std.typed.catalog.document/provenance-revision-invalid
+           "catalog provenance revision must be an immutable lowercase Git commit"
+           {:revision revision})
+        sources-valid (ensure
+           (and
+            (not (empty? sources))
+            (every? source-path? sources)
+            (sorted-unique-by? sources (fn [source] source)))
+           :std.typed.catalog.document/provenance-sources-invalid
+           "catalog provenance sources must be non-empty, safe, unique, and sorted"
+           {:sources sources})
+        fixture-owner-valid
+        (ensure
+         (or (nil? fixture-owner)
+             (owner-name? fixture-owner))
+         :std.typed.catalog.document/provenance-owner-invalid
+         "catalog fixture owner must use owner/name"
+         {:fixture-owner fixture-owner})
+        fixture-issue-valid
+        (ensure
+         (or (nil? fixture-issue)
+             (and
+              (string? fixture-issue)
+              (not (str/blank? fixture-issue))))
+         :std.typed.catalog.document/provenance-issue-invalid
+         "catalog fixture issue must be a non-empty string"
+         {:fixture-issue fixture-issue})]
+    {:repository repository
+     :revision revision
+     :sources sources
+     :fixture-owner fixture-owner
+     :fixture-issue fixture-issue}))
+
+(defn- parse-entry
+  [index value]
+  (let [path (str "catalog/entries/" index)
+        value (require-map value path)
+        id
+        (schema-id
+         (require-field value "schema/id" path)
+         (str path "/schema/id"))
+        version
+        (require-version
+         (require-field value "schema/version" path)
+         (str path "/schema/version"))
+        hash
+        (require-hash
+         (require-field value "schema/hash" path)
+         (str path "/schema/hash"))
+        coordinate
+        (parse-coordinate
+         (require-field value "schema/coordinate" path)
+         (str path "/schema/coordinate"))
+        form
+        (read-edn
+         (require-field value "schema/form" path)
+         (str path "/schema/form"))
+        normal
+        (read-edn
+         (require-field value "schema/normal" path)
+         (str path "/schema/normal"))
+        dependencies
+        (parse-coordinate-vector
+         (require-field value "schema/dependencies" path)
+         (str path "/schema/dependencies"))
+        expected [:schema id version hash]
+        coordinate-valid (ensure
+           (= coordinate expected)
+           :std.typed.catalog.document/coordinate-mismatch
+           "schema coordinate does not match its entry identity"
+           {:path path
+            :schema/coordinate coordinate
+            :schema/expected-coordinate expected})]
+    {:id id
+     :version version
+     :coordinate coordinate
+     :normal normal
+     :dependencies dependencies
+     :catalog-entry
+     {:schema/id id
+      :schema/version version
+      :schema/hash hash
+      :schema/form form}}))
+
+(defn- canonical-catalog
+  [entries]
+  (try
+    (catalog/catalog
+     (vec
+      (map
+       (fn [entry] (:catalog-entry entry))
+       entries)))
+    (catch Throwable error
+      (let [cause (ex-data error)]
+        (document-error
+         :std.typed.catalog.document/catalog-rejected
+         "std.typed.catalog rejected the published catalog entries"
+         {:cause/type (:type cause)
+          :cause/finding (:finding/type cause)})))))
+
+(defn- verify-entry
+  [catalog-value entry]
+  (let [coordinate (:coordinate entry)
+        actual (catalog/resolve catalog-value coordinate)
+        dependencies (catalog/dependencies catalog-value coordinate)]
+    (ensure
+     (= (:schema/normal actual) (:normal entry))
+     :std.typed.catalog.document/schema-normal-mismatch
+     "published normalized schema evidence does not match std.typed.catalog"
+     {:schema/coordinate coordinate
+      :schema/expected-normal (:normal entry)
+      :schema/actual-normal (:schema/normal actual)})
+    (ensure
+     (= dependencies (:dependencies entry))
+     :std.typed.catalog.document/schema-dependencies-mismatch
+     "published direct dependencies do not match std.typed.catalog"
+     {:schema/coordinate coordinate
+      :schema/expected-dependencies (:dependencies entry)
+      :schema/actual-dependencies dependencies})
+    true))
+
+(defn- parse-component
+  [index value]
+  (let [path (str "catalog/components/" index)
+        value (require-map value path)
+        id
+        (require-hash
+         (require-field value "component/id" path)
+         (str path "/component/id"))
+        members
+        (parse-coordinate-vector
+         (require-field value "component/members" path)
+         (str path "/component/members"))
+        recursive?
+        (require-field value "component/recursive?" path)
+        raw-dependencies
+        (require-vector
+         (require-field value "component/dependencies" path)
+         (str path "/component/dependencies"))
+        dependencies
+        (vec
+         (map-indexed
+          (fn [dependency-index dependency]
+            (require-hash
+             dependency
+             (str path "/component/dependencies/" dependency-index)))
+          raw-dependencies))
+        recursion-valid (ensure
+           (boolean? recursive?)
+           :std.typed.catalog.document/component-recursion-invalid
+           "component recursion evidence must be boolean"
+           {:path path :value recursive?})
+        dependencies-valid (ensure
+           (sorted-unique-by? dependencies (fn [dependency] dependency))
+           :std.typed.catalog.document/component-dependencies-noncanonical
+           "component dependencies must be unique and sorted"
+           {:path path :component/dependencies dependencies})]
+    {:component/id id
+     :component/members members
+     :component/recursive? recursive?
+     :component/dependencies dependencies}))
+
+(defn- parse-latest
+  [value]
+  (let [value (require-map value "catalog/tooling/latest")]
+    (reduce-kv
+     (fn [output raw-id raw-coordinate]
+       (let [id (schema-id raw-id "catalog/tooling/latest")
+             coordinate
+             (parse-coordinate
+              raw-coordinate
+              (str "catalog/tooling/latest/" (wire-key raw-id)))]
+         (ensure
+          (= id (second coordinate))
+          :std.typed.catalog.document/latest-coordinate-mismatch
+          "tooling latest coordinate does not match its schema id"
+          {:schema/id id :schema/coordinate coordinate})
+         (assoc output id coordinate)))
+     {}
+     value)))
+
+(defn- actual-latest
+  [catalog-value entries]
+  (reduce
+   (fn [output id]
+     (assoc
+      output
+      id
+      (:schema/coordinate (catalog/lookup catalog-value id))))
+   {}
+   (vec
+    (distinct
+     (sort-by
+      (fn [id] (str id))
+      (map (fn [entry] (:id entry)) entries))))))
+
+(defn ^{:schema [:fn [:map] :map]}
+  verify
+  "Verifies one parsed registry catalog document through std.typed.catalog.
+
+   Schema forms, hashes, exact dependencies, and recursive components are
+   recomputed by std.typed.catalog. Registry tooling/latest data is checked but
+   never used to construct or resolve the executable catalog. The function is
+   pure and returns no catalog or partial state unless every check succeeds."
+  [document]
+  (let [document (require-map document "catalog")
+        format
+        (require-string
+         (require-field document "catalog/format" "catalog")
+         "catalog/format")
+        hash-epoch
+        (require-string
+         (require-field document "catalog/hash-epoch" "catalog")
+         "catalog/hash-epoch")
+        component-epoch
+        (require-string
+         (require-field document "catalog/component-epoch" "catalog")
+         "catalog/component-epoch")
+        format-valid (ensure
+           (= format +document-format+)
+           :std.typed.catalog.document/format-unsupported
+           "unsupported std.typed catalog document format"
+           {:catalog/format format})
+        hash-epoch-valid (ensure
+           (= hash-epoch +hash-epoch+)
+           :std.typed.catalog.document/hash-epoch-unsupported
+           "unsupported std.typed schema hash epoch"
+           {:catalog/hash-epoch hash-epoch})
+        component-epoch-valid (ensure
+           (= component-epoch +component-epoch+)
+           :std.typed.catalog.document/component-epoch-unsupported
+           "unsupported std.typed component epoch"
+           {:catalog/component-epoch component-epoch})
+        provenance
+        (parse-provenance
+         (require-field document "catalog/provenance" "catalog"))
+        raw-entries
+        (require-vector
+         (require-field document "catalog/entries" "catalog")
+         "catalog/entries")
+        entries-present (ensure
+           (not (empty? raw-entries))
+           :std.typed.catalog.document/entries-required
+           "catalog document requires at least one schema entry"
+           {})
+        entries
+        (vec
+         (map-indexed parse-entry raw-entries))
+        coordinates
+        (vec (map (fn [entry] (:coordinate entry)) entries))
+        entries-canonical (ensure
+           (sorted-unique-by? coordinates coordinate-key)
+           :std.typed.catalog.document/entries-noncanonical
+           "catalog entries must be unique and sorted by exact coordinate"
+           {:schema/coordinates coordinates})
+        catalog-value (canonical-catalog entries)
+        entries-verified (doseq [entry entries]
+                           (verify-entry catalog-value entry))
+        raw-components
+        (require-vector
+         (require-field document "catalog/components" "catalog")
+         "catalog/components")
+        components
+        (vec
+         (map-indexed parse-component raw-components))
+        actual-components
+        (catalog/dependency-components catalog-value coordinates)
+        components-verified (ensure
+           (= components actual-components)
+           :std.typed.catalog.document/component-evidence-mismatch
+           "published component evidence does not match std.typed.catalog"
+           {:component/expected components
+            :component/actual actual-components})
+        raw-component-order
+        (require-vector
+         (require-field document "catalog/component-order" "catalog")
+         "catalog/component-order")
+        component-order
+        (vec
+         (map-indexed
+          (fn [index id]
+            (require-hash id (str "catalog/component-order/" index)))
+          raw-component-order))
+        actual-component-order
+        (vec
+         (map
+          (fn [component] (:component/id component))
+          actual-components))
+        component-order-verified (ensure
+           (= component-order actual-component-order)
+           :std.typed.catalog.document/component-order-mismatch
+           "published component order does not match std.typed.catalog"
+           {:component/expected-order component-order
+            :component/actual-order actual-component-order})
+        tooling
+        (require-map
+         (require-field document "catalog/tooling" "catalog")
+         "catalog/tooling")
+        latest
+        (parse-latest
+         (require-field tooling "latest" "catalog/tooling"))
+        execution-may-use-latest
+        (require-field
+         tooling
+         "execution-may-use-latest"
+         "catalog/tooling")
+        latest-policy-verified (ensure
+           (= false execution-may-use-latest)
+           :std.typed.catalog.document/latest-execution-forbidden
+           "catalog tooling latest projection must not be executable"
+           {:execution-may-use-latest execution-may-use-latest})
+        expected-latest (actual-latest catalog-value entries)
+        latest-verified (ensure
+           (= latest expected-latest)
+           :std.typed.catalog.document/latest-evidence-mismatch
+           "catalog tooling latest projection does not match exact entries"
+           {:catalog/expected-latest expected-latest
+            :catalog/actual-latest latest})
+        document-digest
+        (require-hash
+         (require-field document "catalog/document-digest" "catalog")
+         "catalog/document-digest")
+        verification
+        {:status :verified
+         :catalog/format format
+         :catalog/hash-epoch hash-epoch
+         :catalog/component-epoch component-epoch
+         :catalog/provenance provenance
+         :catalog/document-digest document-digest
+         :catalog/entry-count (count entries)
+         :catalog/component-count (count components)
+         :catalog/coordinates coordinates
+         :catalog/component-order component-order
+         :catalog/latest-tooling-only? true}]
+    {:catalog catalog-value
+     :verification verification}))
+
+(defn ^{:schema [:fn [:str] :map]}
+  verify-json
+  "Parses exact registry JSON bytes and verifies the resulting catalog document."
+  [source]
+  (let [source (require-string source "catalog/json")]
+    (try
+      (verify (portable-json (Json/read source)))
+      (catch Throwable error
+        (let [data (ex-data error)]
+          (if (= :std.typed.catalog/invalid-document (:type data))
+            (throw error)
+            (document-error
+             :std.typed.catalog.document/json-invalid
+             "catalog fixture is not valid JSON"
+             {:cause/type (:type data)
+              :cause/message (ex-message error)})))))))
