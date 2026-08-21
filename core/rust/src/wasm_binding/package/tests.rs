@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use super::{bind_package, inspect_module, BindingTarget, TEMP_SEQUENCE};
 
 const ADD: &[u8] = b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b";
-const MEMORY_MODULE: &[u8] = b"\0asm\x01\0\0\0\x01\x11\x03\x60\x01\x7f\x01\x7f\x60\x01\x7f\0\x60\x02\x7f\x7f\x01\x7e\x03\x04\x03\0\x01\x02\x05\x04\x01\x01\x01\x10\x07\x26\x04\x06memory\x02\0\x05alloc\0\0\x04free\0\x01\x0aecho_bytes\0\x02\x0a\x0e\x03\x04\0\x41\0\x0b\x02\0\x0b\x04\0\x42\0\x0b";
+const MEMORY_MODULE: &[u8] = b"\0asm\x01\0\0\0\x01\x10\x03\x60\x01\x7f\x01\x7f\x60\x01\x7f\0\x60\x02\x7f\x7f\x01\x7e\x03\x04\x03\0\x01\x02\x05\x04\x01\x01\x01\x10\x07\x26\x04\x06memory\x02\0\x05alloc\0\0\x04free\0\x01\x0aecho_bytes\0\x02\x0a\x0e\x03\x04\0\x41\0\x0b\x02\0\x0b\x04\0\x42\0\x0b";
 
 const INTERFACE: &str = r#"
   (wasm/interface
@@ -132,14 +132,10 @@ fn drift_fails_before_creating_an_output_tree() {
     let module = root.join("math.wasm");
     let interface = root.join("interface.input.hal");
     fs::write(&module, ADD).unwrap();
-    fs::write(
-        &interface,
-        INTERFACE.replace(
-            ":returns {:hara/type :i64 :wasm/type :i64}",
-            ":returns {:hara/type :i32 :wasm/type :i32}",
-        ),
-    )
-    .unwrap();
+    fs::write(&interface, INTERFACE.replace(
+        ":returns {:hara/type :i64 :wasm/type :i64}",
+        ":returns {:hara/type :i32 :wasm/type :i32}",
+    )).unwrap();
     let output = root.join("output");
     assert!(bind_package(&interface, &module, &output)
         .unwrap_err()
