@@ -109,7 +109,9 @@ impl ExtensionPackage {
         let bindings = parse(&bindings_source)
             .map_err(|error| format!("extension/binding-invalid: {error}"))?;
         if bindings.to_string() != plan.canonical_source() {
-            return Err("extension/binding-drift: bindings.edn does not match interface.hal".into());
+            return Err(
+                "extension/binding-drift: bindings.edn does not match interface.hal".into(),
+            );
         }
         if field_string(&bindings, "schema")? != MEMORY_BINDING_SCHEMA
             || field_string(&bindings, "target")? != "memory.v1"
@@ -141,8 +143,7 @@ impl ExtensionPackage {
         if field_string(&product, "product/target")? != "memory.v1"
             || field_string(&product, "product/namespace")? != interface.namespace
             || field_string(&product, "product/binding-digest")? != binding_digest
-            || field_string(field(&product, "product/inputs")?, "module-digest")?
-                != module_digest
+            || field_string(field(&product, "product/inputs")?, "module-digest")? != module_digest
             || field_string(field(&product, "product/inputs")?, "interface-digest")?
                 != interface_digest
         {

@@ -45,10 +45,7 @@ impl BrowserWasmProvider {
         })
     }
 
-    pub(crate) fn compile_memory(
-        bytes: &[u8],
-        plan: MemoryBindingPlan,
-    ) -> Result<Self, String> {
+    pub(crate) fn compile_memory(bytes: &[u8], plan: MemoryBindingPlan) -> Result<Self, String> {
         let inspection = crate::direct_wasm::inspect(bytes)?;
         plan.verify(&inspection)?;
         let buffer = js_sys::Uint8Array::from(bytes);
@@ -103,13 +100,12 @@ impl WasmExtensionProvider for BrowserWasmProvider {
                         })
                 })
             {
-                return Err("native/manifest-mismatch: memory.v1 exports do not match bindings.edn".into());
+                return Err(
+                    "native/manifest-mismatch: memory.v1 exports do not match bindings.edn".into(),
+                );
             }
-            let instance = js_sys::WebAssembly::Instance::new(
-                module,
-                &js_sys::Object::new(),
-            )
-            .map_err(|error| format!("native/module-invalid: {}", js_error(error)))?;
+            let instance = js_sys::WebAssembly::Instance::new(module, &js_sys::Object::new())
+                .map_err(|error| format!("native/module-invalid: {}", js_error(error)))?;
             let memory = memory_export(&instance, &plan.memory.export)?;
             check_memory_limit(&memory)?;
             *session.borrow_mut() = Some(BrowserMemorySession { instance, memory });
@@ -127,10 +123,7 @@ impl WasmExtensionProvider for BrowserWasmProvider {
         export: &str,
         arguments: &[Value],
     ) -> Result<Value, String> {
-        if let BrowserProviderMode::Memory {
-            plan, session, ..
-        } = &self.mode
-        {
+        if let BrowserProviderMode::Memory { plan, session, .. } = &self.mode {
             return invoke_memory(plan, session, export, arguments);
         }
         let BrowserProviderMode::Direct { instance, .. } = &self.mode else {
@@ -303,8 +296,12 @@ fn invoke_memory_inner(
                 function_plan.name
             ));
         }
-        let length = i32::try_from(bytes.len())
-            .map_err(|_| format!("native/resource-limit: {} input is too large", function_plan.name))?;
+        let length = i32::try_from(bytes.len()).map_err(|_| {
+            format!(
+                "native/resource-limit: {} input is too large",
+                function_plan.name
+            )
+        })?;
         let (pointer, length) = if length == 0 {
             (0, 0)
         } else {
@@ -386,9 +383,7 @@ fn scalar_argument(
     export: &str,
 ) -> Result<JsValue, String> {
     match (expected, value) {
-        (HaraValueType::I32, Value::Number(value))
-            if i32::try_from(*value).is_ok() =>
-        {
+        (HaraValueType::I32, Value::Number(value)) if i32::try_from(*value).is_ok() => {
             Ok(JsValue::from_f64(*value as i32 as f64))
         }
         (HaraValueType::Boolean, Value::Bool(value)) => {
@@ -484,8 +479,8 @@ fn scalar_result(export: &str, expected: &HaraValueType, raw: JsValue) -> Result
             .ok_or_else(|| format!("native/result-type-invalid: {export}")),
         HaraValueType::I64 if raw.is_bigint() => {
             i64::try_from(raw.unchecked_into::<js_sys::BigInt>())
-            .map(Value::Number)
-            .map_err(|_| format!("native/result-out-of-range: {export}"))
+                .map(Value::Number)
+                .map_err(|_| format!("native/result-out-of-range: {export}"))
         }
         HaraValueType::F32 | HaraValueType::F64 => raw
             .as_f64()
@@ -500,7 +495,10 @@ fn scalar_result(export: &str, expected: &HaraValueType, raw: JsValue) -> Result
 
 fn js_i32(value: &JsValue) -> Option<i32> {
     let value = value.as_f64()?;
-    (value.is_finite() && value.fract() == 0.0 && value >= i32::MIN as f64 && value <= i32::MAX as f64)
+    (value.is_finite()
+        && value.fract() == 0.0
+        && value >= i32::MIN as f64
+        && value <= i32::MAX as f64)
         .then_some(value as i32)
 }
 
@@ -541,10 +539,8 @@ fn release_memory(
     let release = exported_function(&session.instance, release_name)?;
     let mut failures = Vec::new();
     for pointer in pointers {
-        if let Err(error) = release.call1(
-            &JsValue::UNDEFINED,
-            &JsValue::from_f64(*pointer as f64),
-        ) {
+        if let Err(error) = release.call1(&JsValue::UNDEFINED, &JsValue::from_f64(*pointer as f64))
+        {
             failures.push(format!("{pointer}: {}", js_error(error)));
         }
     }

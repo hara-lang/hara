@@ -147,7 +147,9 @@ fn memory_package_loads_through_the_normal_wasmtime_provider() {
     let bindings = extension.require().unwrap();
     assert_eq!(bindings[0].name, "echo");
     assert_eq!(
-        bindings[0].invoke(&[crate::core::Value::Bytes(Vec::new())]).unwrap(),
+        bindings[0]
+            .invoke(&[crate::core::Value::Bytes(Vec::new())])
+            .unwrap(),
         crate::core::Value::Bytes(Vec::new())
     );
     fs::remove_dir_all(root).unwrap();

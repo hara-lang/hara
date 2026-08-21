@@ -75,10 +75,7 @@ impl WasmtimeExtensionProvider {
         Ok(CompiledWasmModule::compile(bytes)?.provider())
     }
 
-    pub fn compile_memory(
-        bytes: &[u8],
-        plan: MemoryBindingPlan,
-    ) -> Result<Self, String> {
+    pub fn compile_memory(bytes: &[u8], plan: MemoryBindingPlan) -> Result<Self, String> {
         Ok(Self {
             mode: ProviderMode::Memory(WasmtimeMemoryExecutor::compile(bytes, plan)?),
         })
@@ -164,11 +161,7 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
         if let ProviderMode::Memory(executor) = &self.mode {
             return executor.invoke(export, arguments);
         }
-        let ProviderMode::Direct {
-            session,
-            ..
-        } = &self.mode
-        else {
+        let ProviderMode::Direct { session, .. } = &self.mode else {
             unreachable!()
         };
         let specification = manifest

@@ -193,15 +193,14 @@ fn invoke_inner(
                 function_plan.name
             ));
         }
-        let (pointer, length) =
-            lower_pointer_length(
-                memory_contract,
-                session,
-                bytes,
-                &function_plan.name,
-                argument_plan.ownership,
-                release_on_failure,
-            )?;
+        let (pointer, length) = lower_pointer_length(
+            memory_contract,
+            session,
+            bytes,
+            &function_plan.name,
+            argument_plan.ownership,
+            release_on_failure,
+        )?;
         total_copy_bytes = total_copy_bytes
             .checked_add(bytes.len())
             .ok_or_else(|| "extension/resource-limit: copy byte count overflow".to_owned())?;
