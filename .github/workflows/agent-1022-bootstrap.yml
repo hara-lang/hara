@@ -17,6 +17,8 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -83,6 +85,18 @@ jobs:
           cargo fmt --manifest-path core/rust/Cargo.toml -- --check
           git diff --check
 
+      - name: Regenerate the Foundation HBX with the Decimal-free codec
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --quiet --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm \
+            --bin hara-foundation-artifact -- generate
+          cargo run --quiet --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm \
+            --bin hara-foundation-artifact -- check
+          git diff --check
+
       - name: Run focused Rust tests
         shell: bash
         run: |
@@ -94,16 +108,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mvn -f core/java/pom.xml -Ptruffle \
-            -Dtest=NumTest,HaraNumericInteropTest,ParserTest test
+          mvn -B -f core/java/pom.xml -Ptruffle \
+            -Dtest=NumTest,HaraNumericInteropTest,ParserTest,SessionKernelTest test
 
-      - name: Commit validated normalization
+      - name: Commit validated implementation
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add core/java/src/main/java/hara/lang/base/NumOps.java \
-                  core/java/src/test/java/hara/lang/base/NumTest.java
+                  core/java/src/test/java/hara/lang/base/NumTest.java \
+                  core/rust/assets/std.foundation.hbx
           git commit -m 'test(runtime): validate native Decimal removal (#1022)'
           git push origin HEAD:agent/1022-remove-native-decimal-bootstrap
