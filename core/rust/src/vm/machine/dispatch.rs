@@ -278,9 +278,15 @@ impl Machine {
                     },
                 }
             }
-            Instruction::PrimitiveValue(op) => self
-                .stack
-                .push(crate::core::structural_function_value(op.operator()).into()),
+            Instruction::PrimitiveValue(op) => {
+                let Some(value) = crate::core::direct_function_value(op.operator()) else {
+                    return Dispatch::Failed(self.error(
+                        function,
+                        format!("missing direct primitive callable: {}", op.operator()),
+                    ));
+                };
+                self.stack.push(value.into());
+            }
             Instruction::BuiltinValue(index) => {
                 let Some(Value::String(name)) = program.constants.get(*index as usize) else {
                     return Dispatch::Failed(self.error(
@@ -288,8 +294,12 @@ impl Machine {
                         format!("builtin name constant {index} is invalid"),
                     ));
                 };
-                self.stack
-                    .push(crate::core::structural_function_value(name).into());
+                match crate::core::bytecode_callable_value(name) {
+                    Ok(value) => self.stack.push(value.into()),
+                    Err(message) => {
+                        return Dispatch::Failed(self.error(function, message));
+                    }
+                }
             }
             Instruction::DynamicBind(index) => {
                 let Some(Value::String(name)) = program.constants.get(*index as usize) else {

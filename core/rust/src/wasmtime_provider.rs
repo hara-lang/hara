@@ -88,10 +88,13 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
         store.limiter(|limits| limits);
         let instance = Instance::new(&mut store, &self.module, &[])
             .map_err(|error| format!("extension/module-invalid: {error}"))?;
-        for (name, _) in &manifest.exports {
-            let function = instance
-                .get_func(&mut store, name)
-                .ok_or_else(|| format!("extension/malformed: module has no export {name}"))?;
+        for (name, specification) in &manifest.exports {
+            let raw_name = specification.raw_name(name);
+            let function = instance.get_func(&mut store, raw_name).ok_or_else(|| {
+                format!(
+                    "extension/malformed: module has no export {raw_name} for public name {name}"
+                )
+            })?;
             if function.ty(&store).results().len() > 1 {
                 return Err(format!(
                     "extension/abi-type-unsupported: {name} has multiple results"
@@ -114,14 +117,15 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
             .find(|(name, _)| name == export)
             .map(|(_, specification)| specification)
             .ok_or_else(|| format!("extension/export-missing: {export}"))?;
+        let raw_name = specification.raw_name(export);
         let mut session = self.session.borrow_mut();
         let session = session
             .as_mut()
             .ok_or_else(|| format!("extension/not-started: {}", manifest.namespace))?;
         let function = session
             .instance
-            .get_func(&mut session.store, export)
-            .ok_or_else(|| format!("extension/export-missing: {export}"))?;
+            .get_func(&mut session.store, raw_name)
+            .ok_or_else(|| format!("extension/export-missing: {export} -> {raw_name}"))?;
         let values = specification
             .arguments
             .iter()
@@ -194,5 +198,39 @@ fn result(export: &str, wire_type: &str, value: Option<Val>) -> Result<Value, St
         _ => Err(format!(
             "extension/abi-type-unsupported: {export} -> {wire_type}"
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::extension::{ExtensionManifest, Value, WasmExtension};
+
+    use super::WasmtimeExtensionProvider;
+
+    const ADD: &[u8] = b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b";
+    const ALIASED_MANIFEST: &str = r#"
+      {:namespace "math.scalar"
+       :version "0.1.0"
+       :provider :wasm
+       :module "math.wasm"
+       :abi :core.v1
+       :exports {"sum" {:wasm/export "add"
+                         :args [:i64 :i64]
+                         :returns :i64}}
+       :capabilities []}"#;
+
+    #[test]
+    fn invokes_a_raw_wasm_export_through_a_public_hara_name() {
+        let manifest = ExtensionManifest::parse(ALIASED_MANIFEST, "fixture").unwrap();
+        let provider = WasmtimeExtensionProvider::compile(ADD).unwrap();
+        let mut extension = WasmExtension::new(manifest, provider).unwrap();
+        let bindings = extension.require().unwrap();
+        assert_eq!(bindings[0].name, "sum");
+        assert_eq!(
+            bindings[0]
+                .invoke(&[Value::Number(19), Value::Number(23)])
+                .unwrap(),
+            Value::Number(42)
+        );
     }
 }

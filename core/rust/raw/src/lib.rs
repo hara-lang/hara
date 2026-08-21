@@ -1,7 +1,7 @@
-#[path = "../../src/core.rs"]
-mod core;
 #[path = "../../src/clock.rs"]
 mod clock;
+#[path = "../../src/core.rs"]
+mod core;
 #[path = "../../src/file.rs"]
 pub mod file;
 #[path = "../../src/hta.rs"]
@@ -16,11 +16,11 @@ mod json;
 mod kernel;
 #[path = "../../src/lang.rs"]
 mod lang;
-#[path = "../../src/numeric.rs"]
-mod numeric;
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "../../src/native_process.rs"]
 mod native_process;
+#[path = "../../src/numeric.rs"]
+mod numeric;
 #[path = "../../src/snapshot.rs"]
 mod snapshot;
 #[path = "../../src/task.rs"]
@@ -72,18 +72,54 @@ const FOUNDATION_RESOURCES: &[(&str, &str)] = &[
 ];
 
 const SUBSTRATE_RESOURCES: &[(&str, &str)] = &[
-    ("std.substrate.core", include_str!("../../../lib/src/std/substrate/core.hal")),
-    ("std.substrate.frame", include_str!("../../../lib/src/std/substrate/frame.hal")),
-    ("std.substrate.json", include_str!("../../../lib/src/std/substrate/json.hal")),
-    ("std.substrate.protocol", include_str!("../../../lib/src/std/substrate/protocol.hal")),
-    ("std.substrate.pubsub", include_str!("../../../lib/src/std/substrate/pubsub.hal")),
-    ("std.substrate.request", include_str!("../../../lib/src/std/substrate/request.hal")),
-    ("std.substrate.router", include_str!("../../../lib/src/std/substrate/router.hal")),
-    ("std.substrate.space", include_str!("../../../lib/src/std/substrate/space.hal")),
-    ("std.substrate.transport-memory", include_str!("../../../lib/src/std/substrate/transport_memory.hal")),
-    ("std.substrate.util", include_str!("../../../lib/src/std/substrate/util.hal")),
-    ("std.substrate.util-handlers", include_str!("../../../lib/src/std/substrate/util_handlers.hal")),
-    ("std.substrate", include_str!("../../../lib/src/std/substrate.hal")),
+    (
+        "std.substrate.core",
+        include_str!("../../../lib/src/std/substrate/core.hal"),
+    ),
+    (
+        "std.substrate.frame",
+        include_str!("../../../lib/src/std/substrate/frame.hal"),
+    ),
+    (
+        "std.substrate.json",
+        include_str!("../../../lib/src/std/substrate/json.hal"),
+    ),
+    (
+        "std.substrate.protocol",
+        include_str!("../../../lib/src/std/substrate/protocol.hal"),
+    ),
+    (
+        "std.substrate.pubsub",
+        include_str!("../../../lib/src/std/substrate/pubsub.hal"),
+    ),
+    (
+        "std.substrate.request",
+        include_str!("../../../lib/src/std/substrate/request.hal"),
+    ),
+    (
+        "std.substrate.router",
+        include_str!("../../../lib/src/std/substrate/router.hal"),
+    ),
+    (
+        "std.substrate.space",
+        include_str!("../../../lib/src/std/substrate/space.hal"),
+    ),
+    (
+        "std.substrate.transport-memory",
+        include_str!("../../../lib/src/std/substrate/transport_memory.hal"),
+    ),
+    (
+        "std.substrate.util",
+        include_str!("../../../lib/src/std/substrate/util.hal"),
+    ),
+    (
+        "std.substrate.util-handlers",
+        include_str!("../../../lib/src/std/substrate/util_handlers.hal"),
+    ),
+    (
+        "std.substrate",
+        include_str!("../../../lib/src/std/substrate.hal"),
+    ),
 ];
 
 #[no_mangle]
@@ -196,13 +232,9 @@ impl Session {
     ) -> Self {
         let namespaces = kernel::NamespaceRegistry::new("user");
         let foundation_namespace = namespaces.find_or_create("std.foundation");
-        for (name, value) in core::basic_function_values() {
-            foundation_namespace.intern(name, value);
-        }
-        for name in core::structural_callable_names() {
-            foundation_namespace.intern(name, core::structural_function_value(name));
-        }
-        for (name, value) in core::exception_function_values() {
+        for (name, value) in core::direct_callable_values()
+            .expect("runtime callable inventory and direct catalog must agree")
+        {
             foundation_namespace.intern(name, value);
         }
         for (name, protocol) in core::foundation_protocol_values() {
@@ -233,9 +265,14 @@ impl Session {
             for method in *methods {
                 let var = namespace.intern(
                     *method,
-                    core::native_type_function_value(native_type, method),
+                    core::native_type_function_value(native_type, method)
+                        .unwrap_or_else(|error| panic!("{error}")),
                 );
-                if *native_type == "Base" {
+                if *native_type == "Base"
+                    && foundation_namespace
+                        .resolve(&lang::data::Symbol::parse(method))
+                        .is_none()
+                {
                     foundation_namespace.map_var(lang::data::Symbol::parse(method), var);
                 }
             }
@@ -304,13 +341,14 @@ impl Session {
         // needs the qualified bindings in its transient environment.
         for (native_type, methods) in core::NATIVE_TYPES {
             let namespace_name = format!("std.native.{native_type}");
+            let namespace = namespaces
+                .find(&namespace_name)
+                .expect("native namespace was installed");
             for method in *methods {
-                let dispatch_name = match *native_type {
-                    "Iter" => (*method).to_owned(),
-                    "String" => format!("str/{method}"),
-                    _ => format!("{namespace_name}/{method}"),
-                };
-                let function = core::structural_function_value(dispatch_name);
+                let function = namespace
+                    .resolve(&lang::data::Symbol::parse(method))
+                    .expect("native method inventory was installed")
+                    .deref_value();
                 env.insert(format!("{native_type}/{method}"), function.clone());
                 env.insert(format!("{namespace_name}/{method}"), function);
             }
@@ -942,11 +980,7 @@ struct HostFileProvider {
 }
 
 impl HostFileProvider {
-    fn promise(
-        &self,
-        method: &str,
-        arguments: Vec<Value>,
-    ) -> Result<Promise, core::FileError> {
+    fn promise(&self, method: &str, arguments: Vec<Value>) -> Result<Promise, core::FileError> {
         match (self.handler)("file".into(), method.into(), arguments) {
             Ok(Value::Promise(promise)) => Ok(promise),
             Ok(_) => Err(core::FileError::Io(
@@ -2208,7 +2242,8 @@ fn one_shot_environment() -> HashMap<String, Value> {
         .find(|(native_type, _)| *native_type == "Iter")
     {
         for method in *methods {
-            let function = core::structural_function_value((*method).to_owned());
+            let function = core::native_type_function_value("Iter", method)
+                .unwrap_or_else(|error| panic!("{error}"));
             env.insert(format!("Iter/{method}"), function.clone());
             env.insert(format!("std.native.Iter/{method}"), function);
         }
@@ -2957,7 +2992,9 @@ mod tests {
     fn raw_kernels_run_the_shared_substrate_frame_fixture() {
         let mut runtime = Session::new();
         runtime.resources.borrow_mut().extend(
-            super::SUBSTRATE_RESOURCES.iter().map(|(name, source)| ((*name).into(), (*source).into())),
+            super::SUBSTRATE_RESOURCES
+                .iter()
+                .map(|(name, source)| ((*name).into(), (*source).into())),
         );
         runtime
             .start_fiber(
@@ -2973,7 +3010,9 @@ mod tests {
     fn raw_kernels_run_atom_backed_substrate_request_stream_and_cancellation_lifecycle() {
         let mut runtime = Session::new();
         runtime.resources.borrow_mut().extend(
-            super::SUBSTRATE_RESOURCES.iter().map(|(name, source)| ((*name).into(), (*source).into())),
+            super::SUBSTRATE_RESOURCES
+                .iter()
+                .map(|(name, source)| ((*name).into(), (*source).into())),
         );
         runtime
             .start_fiber(

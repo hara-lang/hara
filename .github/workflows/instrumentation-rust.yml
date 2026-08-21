@@ -1,5 +1,10 @@
 name: Rust instrumentation validation
 
+run-name: >-
+  ${{ github.event_name == 'repository_dispatch'
+      && format('Rust instrumentation · {0} · {1}', github.event.client_payload.ref, github.event.client_payload.request_id)
+      || format('Rust instrumentation · {0}', github.ref_name) }}
+
 on:
   pull_request:
     branches:
@@ -26,13 +31,15 @@ on:
       - 'core/rust/src/vm/machine.rs'
       - 'core/rust/src/vm/machine/**'
       - '.github/workflows/instrumentation-rust.yml'
+  repository_dispatch:
+    types: [hara-instrumentation-rust]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: rust-instrumentation-${{ github.event.pull_request.number || github.ref }}
+  group: rust-instrumentation-${{ github.event.client_payload.request_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -40,7 +47,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.client_payload.ref || github.ref }}
 
       - name: Checkout hara-specs-registry
         uses: actions/checkout@v4
@@ -123,3 +133,81 @@ jobs:
         run: |
           cargo check --locked --manifest-path core/rust/Cargo.toml \
             --target wasm32-unknown-unknown --lib
+
+  report-connector-event:
+    if: ${{ always() && github.event_name == 'repository_dispatch' }}
+    needs: focused
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Report connector event completion
+        uses: actions/github-script@v7
+        env:
+          RESULT: ${{ needs.focused.result }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          REQUEST_ID: ${{ github.event.client_payload.request_id }}
+          EVENT: ${{ github.event.client_payload.event }}
+          REF: ${{ github.event.client_payload.ref }}
+          ACTOR: ${{ github.event.client_payload.actor }}
+          SOURCE_URL: ${{ github.event.client_payload.source_url }}
+          WORKFLOW: instrumentation-rust.yml
+        with:
+          script: |
+            const issueNumber = Number(process.env.ISSUE_NUMBER || 0);
+            if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+              core.notice('No issue was supplied for connector completion reporting.');
+              return;
+            }
+            const clean = (value, limit = 200) => String(value || '')
+              .replace(/[\r\n`]/g, '')
+              .slice(0, limit);
+            const requestId = clean(process.env.REQUEST_ID);
+            const event = clean(process.env.EVENT);
+            if (!requestId || !event) {
+              core.warning('Connector completion payload is missing request identity.');
+              return;
+            }
+            const result = clean(process.env.RESULT || 'unknown', 40);
+            const ref = clean(process.env.REF);
+            const actor = clean(process.env.ACTOR);
+            const workflow = clean(process.env.WORKFLOW);
+            const sourceUrl = String(process.env.SOURCE_URL || '').startsWith('https://github.com/')
+              ? process.env.SOURCE_URL
+              : '';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const marker = `<!-- hara-connector-completion:${requestId}:${event} -->`;
+            const icon = result === 'success' ? '✅' : result === 'cancelled' ? '⚪' : '❌';
+            const lines = [
+              marker,
+              `### ${icon} Connector event completed`,
+              '',
+              `- Event: \`${event}\``,
+              `- Ref: \`${ref}\``,
+              `- Workflow: \`${workflow}\``,
+              `- Result: **${result}**`,
+              `- Actor: \`${actor}\``,
+              `- Run: ${runUrl}`,
+            ];
+            if (sourceUrl) lines.push(`- Source request: ${sourceUrl}`);
+            const body = lines.join('\n');
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              ...context.repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: issueNumber,
+                body,
+              });
+            }

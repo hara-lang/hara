@@ -261,6 +261,8 @@ public final class HaraContext {
   private final Keyword testRunner;
   private final boolean sandboxRestricted;
   private final SessionKernel sessionKernel;
+  private final FilesystemRuntimeBinding filesystemRuntime;
+  private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
@@ -286,7 +288,6 @@ public final class HaraContext {
   private boolean eagerFallbacksLoading;
   private boolean eagerFallbacksLoaded;
   private volatile HaraProject project;
-  private volatile HaraFileProvider fileProvider;
   private volatile boolean projectDiscovered;
   private final Map<String, HaraExtensionRuntime> loadedExtensions = new ConcurrentHashMap<>();
   private final Map<String, ModuleRecord> modules = new ConcurrentHashMap<>();
@@ -315,6 +316,23 @@ public final class HaraContext {
         sandboxRestricted
             ? null
             : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
+    FilesystemRuntimeBinding attachedFilesystem =
+        FilesystemContextBindings.claim(
+            environment.getOptions().get(HaraLanguage.FILESYSTEM_BINDING_TOKEN));
+    if (attachedFilesystem != null) {
+      this.filesystemRuntime = attachedFilesystem;
+      this.ownedFilesystem = null;
+    } else if (environment.isFileIOAllowed()) {
+      String workingDirectory =
+          environment.getPublicTruffleFile(".").getAbsoluteFile().normalize().getPath();
+      NativeFilesystem nativeFilesystem =
+          FilesystemContextBindings.nativeFilesystem(Path.of(workingDirectory));
+      this.filesystemRuntime = new FilesystemRuntimeBinding(nativeFilesystem);
+      this.ownedFilesystem = nativeFilesystem;
+    } else {
+      this.filesystemRuntime = null;
+      this.ownedFilesystem = null;
+    }
     currentNamespace = namespace(INTRINSIC_NAMESPACE);
     Map<String, Integer> ifnMethods = new LinkedHashMap<>();
     ifnMethods.put("invoke", -1);
@@ -405,6 +423,20 @@ public final class HaraContext {
       extension.close();
     }
     loadedExtensions.clear();
+  }
+
+  void closeContext() {
+    closeExtensions();
+    if (ownedFilesystem == null) return;
+    filesystemRuntime.close();
+    try {
+      ownedFilesystem
+          .close(IFilesystem.CallContext.create())
+          .toCompletableFuture()
+          .join();
+    } catch (RuntimeException ignored) {
+      // Context teardown is already terminal; provider failures cannot restore authority.
+    }
   }
 
   private HaraNamespace namespace(String name) {
@@ -3625,7 +3657,7 @@ public final class HaraContext {
 
   private Object[] hostCapabilityNames() {
     java.util.List<Object> capabilities = new ArrayList<>();
-    if (environment.isFileIOAllowed()) capabilities.add("filesystem");
+    if (filesystemRuntime != null) capabilities.add("filesystem");
     if (environment.isSocketIOAllowed()) capabilities.add("network/socket");
     if (environment.isCreateProcessAllowed()) capabilities.add("process");
     return capabilities.toArray();
@@ -5814,7 +5846,7 @@ public final class HaraContext {
 
   private Object fileRead(Object value) {
     String path = stringValue(value, "file/read");
-    return fileEffect("read", path, null, provider -> provider.read(path));
+    return fileEffect("read", path, null, binding -> binding.read(path), result -> result);
   }
 
   private Object fileWrite(Object[] values) {
@@ -5825,28 +5857,36 @@ public final class HaraContext {
     byte[] contents = bytesValue(values[1], "file/write").clone();
     IMapType<?, ?> options =
         values.length == 3 ? fileOptions(values[2], "file/write") : emptyFileOptions();
-    HaraFileProvider.WriteMode mode =
+    IFilesystem.WriteMode mode =
         switch (fileKeywordOption(options, "mode", "create", "file/write")) {
-          case "create" -> HaraFileProvider.WriteMode.CREATE;
-          case "replace" -> HaraFileProvider.WriteMode.REPLACE;
-          case "append" -> HaraFileProvider.WriteMode.APPEND;
-          default -> throw new HaraException(
-              "file/write :mode must be :create, :replace, or :append");
+          case "create" -> IFilesystem.WriteMode.CREATE;
+          case "replace" -> IFilesystem.WriteMode.REPLACE;
+          case "append" -> IFilesystem.WriteMode.APPEND;
+          default ->
+              throw new HaraException(
+                  "file/write :mode must be :create, :replace, or :append");
         };
-    HaraFileProvider.WriteOptions writeOptions =
-        new HaraFileProvider.WriteOptions(
+    IFilesystem.WriteOptions writeOptions =
+        new IFilesystem.WriteOptions(
             mode, fileBooleanOption(options, "parents?", false, "file/write"));
-    return fileEffect("write", path, null, provider -> provider.write(path, contents, writeOptions));
+    IFilesystem.MutationContext mutation = fileMutationContext(options, "file/write");
+    return fileEffect(
+        "write",
+        path,
+        null,
+        binding -> binding.write(path, contents, writeOptions, mutation),
+        IFilesystem.Mutation::path);
   }
 
   private Object fileExists(Object value) {
     String path = stringValue(value, "file/exists?");
-    return fileEffect("exists?", path, null, provider -> provider.exists(path));
+    return fileEffect("exists?", path, null, binding -> binding.exists(path), result -> result);
   }
 
   private Object fileStat(Object value) {
     String path = stringValue(value, "file/stat");
-    return fileEffect("stat", path, null, provider -> provider.stat(path).toValue());
+    return fileEffect(
+        "stat", path, null, binding -> binding.stat(path), FilesystemHaraValues::entry);
   }
 
   private Object fileEntries(Object value) {
@@ -5855,30 +5895,20 @@ public final class HaraContext {
         "entries",
         path,
         null,
-        provider ->
-            hara.lang.data.Vector.Standard.from(
-                null,
-                provider.entries(path).stream()
-                    .map(HaraFileProvider.Entry::toValue)
-                    .toArray()));
+        binding -> binding.entries(path),
+        FilesystemHaraValues::entries);
   }
 
   private Object fileList(Object value) {
     String path = stringValue(value, "file/list");
     return fileEffect(
-        "list",
-        path,
-        null,
-        provider -> hara.lang.data.Vector.Standard.from(null, provider.list(path).toArray()));
+        "list", path, null, binding -> binding.list(path), FilesystemHaraValues::paths);
   }
 
   private Object fileWalk(Object value) {
     String path = stringValue(value, "file/walk");
     return fileEffect(
-        "walk",
-        path,
-        null,
-        provider -> hara.lang.data.Vector.Standard.from(null, provider.walk(path).toArray()));
+        "walk", path, null, binding -> binding.walk(path), FilesystemHaraValues::paths);
   }
 
   private Object fileMkdir(Object[] values) {
@@ -5888,11 +5918,17 @@ public final class HaraContext {
     String path = stringValue(values[0], "file/mkdir");
     IMapType<?, ?> options =
         values.length == 2 ? fileOptions(values[1], "file/mkdir") : emptyFileOptions();
-    HaraFileProvider.MkdirOptions mkdirOptions =
-        new HaraFileProvider.MkdirOptions(
+    IFilesystem.MkdirOptions mkdirOptions =
+        new IFilesystem.MkdirOptions(
             fileBooleanOption(options, "parents?", true, "file/mkdir"),
             fileBooleanOption(options, "exists-ok?", true, "file/mkdir"));
-    return fileEffect("mkdir", path, null, provider -> provider.mkdir(path, mkdirOptions));
+    IFilesystem.MutationContext mutation = fileMutationContext(options, "file/mkdir");
+    return fileEffect(
+        "mkdir",
+        path,
+        null,
+        binding -> binding.mkdir(path, mkdirOptions, mutation),
+        IFilesystem.Mutation::path);
   }
 
   private Object fileDelete(Object[] values) {
@@ -5902,10 +5938,16 @@ public final class HaraContext {
     String path = stringValue(values[0], "file/delete");
     IMapType<?, ?> options =
         values.length == 2 ? fileOptions(values[1], "file/delete") : emptyFileOptions();
-    HaraFileProvider.DeleteOptions deleteOptions =
-        new HaraFileProvider.DeleteOptions(
+    IFilesystem.DeleteOptions deleteOptions =
+        new IFilesystem.DeleteOptions(
             fileBooleanOption(options, "missing-ok?", false, "file/delete"));
-    return fileEffect("delete", path, null, provider -> provider.delete(path, deleteOptions));
+    IFilesystem.MutationContext mutation = fileMutationContext(options, "file/delete");
+    return fileEffect(
+        "delete",
+        path,
+        null,
+        binding -> binding.delete(path, deleteOptions, mutation),
+        IFilesystem.Mutation::path);
   }
 
   private Object fileCopy(Object[] values) {
@@ -5916,13 +5958,18 @@ public final class HaraContext {
     String target = stringValue(values[1], "file/copy");
     IMapType<?, ?> options =
         values.length == 3 ? fileOptions(values[2], "file/copy") : emptyFileOptions();
-    HaraFileProvider.CopyOptions copyOptions =
-        new HaraFileProvider.CopyOptions(
+    IFilesystem.CopyOptions copyOptions =
+        new IFilesystem.CopyOptions(
             fileBooleanOption(options, "replace?", false, "file/copy"),
             fileBooleanOption(options, "parents?", false, "file/copy"),
             fileBooleanOption(options, "preserve-modified?", false, "file/copy"));
+    IFilesystem.MutationContext mutation = fileMutationContext(options, "file/copy");
     return fileEffect(
-        "copy", source, target, provider -> provider.copy(source, target, copyOptions));
+        "copy",
+        source,
+        target,
+        binding -> binding.copy(source, target, copyOptions, mutation),
+        IFilesystem.Mutation::path);
   }
 
   private Object fileMove(Object[] values) {
@@ -5933,13 +5980,18 @@ public final class HaraContext {
     String target = stringValue(values[1], "file/move");
     IMapType<?, ?> options =
         values.length == 3 ? fileOptions(values[2], "file/move") : emptyFileOptions();
-    HaraFileProvider.MoveOptions moveOptions =
-        new HaraFileProvider.MoveOptions(
+    IFilesystem.MoveOptions moveOptions =
+        new IFilesystem.MoveOptions(
             fileBooleanOption(options, "replace?", false, "file/move"),
             fileBooleanOption(options, "parents?", false, "file/move"),
             fileBooleanOption(options, "atomic?", false, "file/move"));
+    IFilesystem.MutationContext mutation = fileMutationContext(options, "file/move");
     return fileEffect(
-        "move", source, target, provider -> provider.move(source, target, moveOptions));
+        "move",
+        source,
+        target,
+        binding -> binding.move(source, target, moveOptions, mutation),
+        IFilesystem.Mutation::path);
   }
 
   private Object fileTempFile(Object[] values) {
@@ -5949,12 +6001,14 @@ public final class HaraContext {
     String parent = stringValue(values[0], "file/temp-file");
     IMapType<?, ?> options =
         values.length == 2 ? fileOptions(values[1], "file/temp-file") : emptyFileOptions();
-    HaraFileProvider.TempFileOptions tempOptions =
-        new HaraFileProvider.TempFileOptions(
-            fileStringOption(options, "prefix", "tmp", "file/temp-file"),
-            fileStringOption(options, "suffix", "", "file/temp-file"));
+    String prefix = fileStringOption(options, "prefix", "tmp", "file/temp-file");
+    String suffix = fileStringOption(options, "suffix", "", "file/temp-file");
     return fileEffect(
-        "temp-file", parent, null, provider -> provider.tempFile(parent, tempOptions));
+        "temp-file",
+        parent,
+        null,
+        binding -> binding.tempFile(parent, prefix, suffix),
+        result -> result);
   }
 
   private Object fileTempDirectory(Object[] values) {
@@ -5966,49 +6020,55 @@ public final class HaraContext {
         values.length == 2
             ? fileOptions(values[1], "file/temp-directory")
             : emptyFileOptions();
-    HaraFileProvider.TempDirectoryOptions tempOptions =
-        new HaraFileProvider.TempDirectoryOptions(
-            fileStringOption(options, "prefix", "tmp", "file/temp-directory"));
+    String prefix = fileStringOption(options, "prefix", "tmp", "file/temp-directory");
     return fileEffect(
         "temp-directory",
         parent,
         null,
-        provider -> provider.tempDirectory(parent, tempOptions));
+        binding -> binding.tempDirectory(parent, prefix),
+        result -> result);
   }
 
-  private Object fileEffect(
-      String operation, String path, String target, FileEffect effect) {
-    CompletableFuture<Object> future =
-        CompletableFuture.supplyAsync(
-            () ->
-                invokeInContext(
-                    () -> {
-                      try {
-                        if (!environment.isFileIOAllowed()) {
-                          throw new HaraFileProvider.Failure(
-                              "denied", "filesystem capability is not attached");
-                        }
-                        return effect.invoke(fileProvider());
-                      } catch (Throwable error) {
-                        throw fileFailure(operation, path, target, error);
-                      }
-                    }));
-    return new HaraPromise(future);
-  }
-
-  private HaraFileProvider fileProvider() {
-    HaraFileProvider current = fileProvider;
-    if (current != null) return current;
-    synchronized (this) {
-      current = fileProvider;
-      if (current == null) {
-        String workingDirectory =
-            environment.getPublicTruffleFile(".").getAbsoluteFile().normalize().getPath();
-        current = new HaraFileProvider(Path.of(workingDirectory));
-        fileProvider = current;
-      }
-      return current;
+  private <T> Object fileEffect(
+      String operation,
+      String path,
+      String target,
+      Function<FilesystemRuntimeBinding, FilesystemRuntimeBinding.Pending<T>> effect,
+      Function<? super T, ?> transform) {
+    if (filesystemRuntime == null) {
+      return rejectedFilePromise(
+          operation,
+          path,
+          target,
+          new FilesystemException(
+              "denied",
+              "filesystem capability is not attached",
+              null,
+              operation,
+              path,
+              target,
+              "capability-unavailable",
+              false,
+              null));
     }
+    try {
+      return FilesystemPromiseBridge.bind(
+          this,
+          effect.apply(filesystemRuntime),
+          transform,
+          operation,
+          path,
+          target);
+    } catch (Throwable error) {
+      return rejectedFilePromise(operation, path, target, error);
+    }
+  }
+
+  private Object rejectedFilePromise(
+      String operation, String path, String target, Throwable error) {
+    CompletableFuture<Object> future = new CompletableFuture<>();
+    future.completeExceptionally(fileFailure(operation, path, target, error));
+    return cancellablePromise(future, () -> {});
   }
 
   @SuppressWarnings("unchecked")
@@ -6053,39 +6113,74 @@ public final class HaraContext {
     throw new HaraException(operation + " :" + name + " must be a keyword");
   }
 
-  private static hara.lang.base.Ex.Info fileFailure(
+  private static IFilesystem.MutationContext fileMutationContext(
+      IMapType<?, ?> options, String operation) {
+    return new IFilesystem.MutationContext(
+        fileOptionalStringOption(options, "expected-revision", operation),
+        fileOptionalStringOption(options, "expected-target-revision", operation));
+  }
+
+  private static String fileOptionalStringOption(
+      IMapType<?, ?> options, String name, String operation) {
+    Object value = fileOption(options, name, null);
+    if (value == null || value instanceof String) return (String) value;
+    throw new HaraException(operation + " :" + name + " must be a string");
+  }
+
+  static hara.lang.base.Ex.Info fileFailure(
       String operation, String path, String target, Throwable error) {
     Throwable cause = HaraFileProvider.unwrap(error);
     if (cause instanceof hara.lang.base.Ex.Info info) return info;
-    String code = HaraFileProvider.code(cause);
-    Object canonicalPath = canonicalFilePath(path);
-    Object canonicalTarget = canonicalFilePath(target);
-    IMetadata data =
-        hara.lang.data.Map.Standard.from(
-            null,
-            Keyword.create("ex", "code"),
-            Keyword.create("file", code),
-            Keyword.create("ex", "class"),
-            fileErrorClass(code),
-            Keyword.create("file", "operation"),
-            Keyword.create(operation),
-            Keyword.create("file", "path"),
-            canonicalPath,
-            Keyword.create("file", "target"),
-            canonicalTarget);
+    FilesystemException filesystem =
+        cause instanceof FilesystemException failure ? failure : null;
+    String code = filesystem == null ? HaraFileProvider.code(cause) : filesystem.code();
+    String effectiveOperation =
+        filesystem != null && filesystem.operation() != null
+            ? filesystem.operation()
+            : operation;
+    String effectivePath =
+        filesystem != null && filesystem.path() != null ? filesystem.path() : path;
+    String effectiveTarget =
+        filesystem != null && filesystem.target() != null ? filesystem.target() : target;
+    ArrayList<Object> fields = new ArrayList<>();
+    Collections.addAll(
+        fields,
+        Keyword.create("ex", "code"),
+        Keyword.create("file", code),
+        Keyword.create("ex", "class"),
+        fileErrorClass(code),
+        Keyword.create("file", "operation"),
+        Keyword.create(effectiveOperation),
+        Keyword.create("file", "path"),
+        canonicalFilePath(effectivePath),
+        Keyword.create("file", "target"),
+        canonicalFilePath(effectiveTarget));
+    if (filesystem != null) {
+      Collections.addAll(
+          fields,
+          Keyword.create("file", "provider"),
+          filesystem.provider(),
+          Keyword.create("file", "provider-code"),
+          filesystem.providerCode(),
+          Keyword.create("file", "retryable?"),
+          filesystem.retryable());
+    }
+    IMetadata data = hara.lang.data.Map.Standard.from(null, fields.toArray());
     String message = cause.getMessage();
     if (message == null || message.isBlank()) message = cause.getClass().getSimpleName();
     return new hara.lang.base.Ex.Info(
-        "file/" + operation + " failed: " + message, data, cause);
+        "file/" + effectiveOperation + " failed: " + message, data, cause);
   }
 
   private static Keyword fileErrorClass(String code) {
     return switch (code) {
       case "not-found" -> Keyword.create("ex.class", "not-found");
-      case "already-exists", "directory-not-empty" -> Keyword.create("ex.class", "conflict");
-      case "denied", "permission-denied", "outside-root" ->
-          Keyword.create("ex.class", "security");
+      case "already-exists", "directory-not-empty", "conflict", "ambiguous-path" ->
+          Keyword.create("ex.class", "conflict");
+      case "denied", "permission-denied", "outside-root", "auth-required",
+          "authentication-failed" -> Keyword.create("ex.class", "security");
       case "invalid-path" -> Keyword.create("ex.class", "argument");
+      case "timeout" -> Keyword.create("ex.class", "timeout");
       default -> Keyword.create("ex.class", "io");
     };
   }

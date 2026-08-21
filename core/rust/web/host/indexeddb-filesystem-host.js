@@ -1,7 +1,7 @@
 import {
   FilesystemProviderError,
   createIndexedDbFilesystemFactory
-} from "./indexeddb-filesystem.js";
+} from "./indexeddb-filesystem-provider.js";
 
 /**
  * Kernel-context and mount-id adapter for the browser IndexedDB provider.

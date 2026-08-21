@@ -91,8 +91,8 @@ Expected result:
 ```
 
 The REPL supports multiline forms, persistent history, symbol and Java completion, and inline
-documentation. See the [Hara website docs](../../website/hara-www/docs/) and the
-[archived REPL planning document](../hara-specs-registry/99-archive/planning/tooling/repl.md).
+documentation. See the [Hara website docs](https://hara-lang.org/docs/) and the
+[archived REPL planning document](https://github.com/hara-lang/hara-specs-registry/blob/main/99-archive/planning/tooling/repl.md).
 
 ## 5. Run a file or stdin
 
@@ -100,6 +100,9 @@ documentation. See the [Hara website docs](../../website/hara-www/docs/) and the
 ./core/hara run core/lib/examples/hello.hal
 ./core/hara stdin < core/lib/examples/hello.hal
 ```
+
+The shipped examples are catalogued under `core/lib/examples/catalog.json`; deterministic
+examples are checked in normal pull-request CI against the pinned specification authority.
 
 ## 6. Run tests
 
@@ -109,5 +112,5 @@ mvn -q -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.HaraCoreLanguageConfor
 ```
 
 For contributor workflows, test slices, native-image builds, and troubleshooting, read the
-[developer guide](../../website/hara-www/docs/development/). To build a multi-file project, continue with
-the [module reference](../../website/hara-www/docs/).
+[developer documentation](https://hara-lang.org/docs/development/). To build a multi-file project,
+continue with the [Hara documentation](https://hara-lang.org/docs/).

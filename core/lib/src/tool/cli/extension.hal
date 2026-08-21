@@ -7,7 +7,9 @@
             [work.base :as work]))
 
 (def +route-operations+
-  {:tool.cli.route/extension-check :check
+  {:tool.cli.route/extension-inspect :inspect
+   :tool.cli.route/extension-bind :bind
+   :tool.cli.route/extension-check :check
    :tool.cli.route/extension-build :build
    :tool.cli.route/extension-install :install
    :tool.cli.route/extension-test :test})
@@ -22,7 +24,8 @@
     (if operation
       {:operation operation :arguments arguments}
       (if (empty? arguments)
-        (throw (ex :io {} :ex/message "extension requires check, build, install, or test"))
+        (throw (ex :io {} :ex/message
+                   "extension requires inspect, bind, check, build, install, or test"))
         {:operation (keyword (first arguments))
          :arguments (vec (rest arguments))}))))
 
@@ -34,7 +37,130 @@
 (defn non-empty-string [value label]
   (if (and (string? value) (not (str/blank? value)))
     value
-    (throw (ex :argument {:value value} :ex/message (str label " must be a non-empty string")))))
+    (throw (ex :argument {:value value} :ex/message
+               (str label " must be a non-empty string")))))
+
+(defn tail [values]
+  (vec (rest values)))
+
+(defn inline-option [argument option]
+  (let [prefix (str option "=")]
+    (if (str/starts-with? argument prefix)
+      (non-empty-string
+       (str/slice argument (str/length prefix))
+       option)
+      nil)))
+
+(defn required-flag-value [remaining option]
+  (if (empty? remaining)
+    (throw (ex :dependency {:option option} :ex/message
+               (str option " requires a value")))
+    (let [value (first remaining)]
+      (if (str/starts-with? value "--")
+        (throw (ex :dependency {:option option} :ex/message
+                   (str option " requires a value")))
+        value))))
+
+(defn add-authoring-option [options allowed key spelling value]
+  (if (not (get allowed key))
+    (throw (ex :syntax {:option spelling} :ex/message
+               (str "unknown extension option: " spelling)))
+    nil)
+  (if (has? options key)
+    (throw (ex :syntax {:option spelling} :ex/message
+               (str "duplicate extension option: " spelling)))
+    (assoc options key (non-empty-string value spelling))))
+
+(defn parse-authoring-arguments [arguments allowed]
+  (loop [remaining (vec arguments)
+         positionals []
+         options {}]
+    (if (empty? remaining)
+      {:positionals positionals :options options}
+      (let [argument (first remaining)
+            more (tail remaining)
+            inline-out (inline-option argument "--out")
+            inline-module (inline-option argument "--module")
+            inline-namespace (inline-option argument "--namespace")]
+        (cond
+          (= argument "--out")
+          (let [value (required-flag-value more argument)]
+            (recur (tail more)
+                   positionals
+                   (add-authoring-option options allowed :out argument value)))
+
+          (= argument "--module")
+          (let [value (required-flag-value more argument)]
+            (recur (tail more)
+                   positionals
+                   (add-authoring-option options allowed :module argument value)))
+
+          (= argument "--namespace")
+          (let [value (required-flag-value more argument)]
+            (recur (tail more)
+                   positionals
+                   (add-authoring-option options allowed :namespace argument value)))
+
+          inline-out
+          (recur more positionals
+                 (add-authoring-option options allowed :out "--out" inline-out))
+
+          inline-module
+          (recur more positionals
+                 (add-authoring-option options allowed :module "--module" inline-module))
+
+          inline-namespace
+          (recur more positionals
+                 (add-authoring-option options allowed :namespace
+                                       "--namespace" inline-namespace))
+
+          (str/starts-with? argument "-")
+          (throw (ex :syntax {:option argument} :ex/message
+                     (str "unknown extension option: " argument)))
+
+          :else
+          (recur more (conj positionals argument) options))))))
+
+(defn required-authoring-option [options key spelling operation]
+  (if (has? options key)
+    (get options key)
+    (throw (ex :dependency {:option spelling} :ex/message
+               (str "extension " operation " requires " spelling)))))
+
+(defn inspect-command [arguments]
+  (let [parsed (parse-authoring-arguments arguments {:out true :namespace true})
+        positionals (:positionals parsed)
+        options (:options parsed)]
+    (if (= 1 (count positionals))
+      nil
+      (throw (ex :io {:arguments arguments} :ex/message
+                 "extension inspect requires one WASM module")))
+    (let [module (first positionals)
+          output (required-authoring-option options :out "--out" "inspect")
+          namespace (:namespace options)
+          host-arguments (if namespace
+                           [module output namespace]
+                           [module output])]
+      (model/success
+       {:host/action :extension-inspect
+        :host/arguments host-arguments}
+       []))))
+
+(defn bind-command [arguments]
+  (let [parsed (parse-authoring-arguments arguments {:out true :module true})
+        positionals (:positionals parsed)
+        options (:options parsed)]
+    (if (= 1 (count positionals))
+      nil
+      (throw (ex :io {:arguments arguments} :ex/message
+                 "extension bind requires one .hal interface")))
+    (let [interface (first positionals)
+          module (required-authoring-option options :module "--module" "bind")
+          output (required-authoring-option options :out "--out" "bind")]
+      (model/success
+       {:host/action :extension-bind
+        :host/arguments [interface module output]}
+       []))))
 
 (defn valid-namespace? [value]
   (and (string? value)
@@ -44,12 +170,17 @@
 
 (defn validate-export [name export]
   (if (not (map? export))
-    (throw (ex :argument {:export name} :ex/message "extension export must be a map"))
+    (throw (ex :argument {:export name} :ex/message
+               "extension export must be a map"))
     nil)
   (if (not (vector? (required export :args "extension export")))
-    (throw (ex :argument {:export name} :ex/message "extension export :args must be a vector"))
+    (throw (ex :argument {:export name} :ex/message
+               "extension export :args must be a vector"))
     nil)
   (required export :returns "extension export")
+  (if-let [raw-export (:wasm/export export)]
+    (non-empty-string raw-export "extension export :wasm/export")
+    nil)
   export)
 
 (defn target-files [targets]
@@ -66,7 +197,7 @@
                    (non-empty-string
                     (required target :module "extension target")
                     "extension target :module")))))
-            targets)))))
+            (seq targets))))))
 
 (defn declared-path [root path]
   (let [safe (asset/safe-path path)]
@@ -74,14 +205,16 @@
 
 (defn validate-manifest [namespace document origin]
   (if (not (map? document))
-    (throw (ex :syntax {} :ex/message (str "extension/malformed " origin ": manifest must be a map")))
+    (throw (ex :syntax {} :ex/message
+               (str "extension/malformed " origin ": manifest must be a map")))
     nil)
   (let [unknown (vec (filter (fn [key] (not (get +manifest-fields+ key)))
                              (keys document)))]
     (if (empty? unknown)
       nil
-      (throw (ex :syntax {:fields unknown} :ex/message (str "extension/malformed " origin
-                           ": unknown manifest fields " unknown)))))
+      (throw (ex :syntax {:fields unknown} :ex/message
+                 (str "extension/malformed " origin
+                      ": unknown manifest fields " unknown)))))
   (let [namespace (str namespace)
         provider (required document :provider origin)
         abi (required document :abi origin)
@@ -94,29 +227,37 @@
         root (if-let [value (:root document)] (asset/safe-path value) nil)]
     (if (valid-namespace? namespace)
       nil
-      (throw (ex :dependency {:namespace namespace} :ex/message "namespace must be a qualified lower-case symbol")))
+      (throw (ex :dependency {:namespace namespace} :ex/message
+                 "namespace must be a qualified lower-case symbol")))
     (if (and (map? exports)
-             (every? (fn [entry] (do (validate-export (key entry) (val entry)) true))
+             (every? (fn [entry]
+                       (do (validate-export (key entry) (val entry)) true))
                      exports))
       nil
-      (throw (ex :argument {} :ex/message "extension :exports must be a map")))
+      (throw (ex :argument {} :ex/message
+                 "extension :exports must be a map")))
     (if (and (vector? capabilities) (every? keyword? capabilities))
       nil
-      (throw (ex :argument {} :ex/message "extension :capabilities must be a keyword vector")))
+      (throw (ex :argument {} :ex/message
+                 "extension :capabilities must be a keyword vector")))
     (if (and (vector? assets) (every? string? assets))
       nil
-      (throw (ex :argument {} :ex/message "extension :assets must be a string vector")))
+      (throw (ex :argument {} :ex/message
+                 "extension :assets must be a string vector")))
     (cond
       (= provider :wasm)
       (if (and (string? module) (empty? target-paths) (= abi :core.v1))
         nil
-        (throw (ex :dependency {} :ex/message "WASM providers require :module, :abi :core.v1, and cannot declare :targets")))
+        (throw (ex :dependency {} :ex/message
+                   "WASM providers require :module, :abi :core.v1, and cannot declare :targets")))
       (= provider :hta)
       (if (and (nil? module) (not (empty? target-paths)) (= abi :hta.v1))
         nil
-        (throw (ex :dependency {} :ex/message "HTA providers require :targets, :abi :hta.v1, and cannot declare :module")))
+        (throw (ex :dependency {} :ex/message
+                   "HTA providers require :targets, :abi :hta.v1, and cannot declare :module")))
       :else
-      (throw (ex :generic {} :ex/message (str "unsupported extension provider " provider))))
+      (throw (ex :generic {} :ex/message
+                 (str "unsupported extension provider " provider))))
     (assoc document
            :namespace namespace
            :declared/files
@@ -130,12 +271,14 @@
   (let [descriptor (file/join root "project.edn")]
     (if (deref (file/exists? descriptor))
       nil
-      (throw (ex :not-found {:path descriptor} :ex/message (str "extension/malformed: missing project.edn at " descriptor))))
+      (throw (ex :not-found {:path descriptor} :ex/message
+                 (str "extension/malformed: missing project.edn at " descriptor))))
     (let [project-document (project/read-project descriptor)
           declarations (:project/extensions project-document)]
       (if (and (map? declarations) (not (empty? declarations)))
         nil
-        (throw (ex :dependency {} :ex/message "project.edn :project/extensions must be a non-empty map")))
+        (throw (ex :dependency {} :ex/message
+                   "project.edn :project/extensions must be a non-empty map")))
       (let [extensions
             (vec (map (fn [entry]
                         (validate-manifest (key entry) (val entry) descriptor))
@@ -149,21 +292,23 @@
                                  (sort (mapcat (fn [extension]
                                                 (:declared/files extension))
                                               extensions)))))]
-      (reduce
-       (fn [verified relative]
-         (let [path (file/join root relative)]
-           (if (and (deref (file/exists? path))
-                    (= :file (:type (deref (file/stat path)))))
-             verified
-             (throw (ex :io {:path path} :ex/message (str "extension/asset-unavailable: " relative))))))
-       package
-       (:declared/files package))))))
+        (reduce
+         (fn [verified relative]
+           (let [path (file/join root relative)]
+             (if (and (deref (file/exists? path))
+                      (= :file (:type (deref (file/stat path)))))
+               verified
+               (throw (ex :io {:path path} :ex/message
+                          (str "extension/asset-unavailable: " relative))))))
+         package
+         (:declared/files package))))))
 
 (defn package-argument [arguments operation]
   (if (= 1 (count arguments))
     (first arguments)
-    (throw (ex :io {:arguments arguments} :ex/message (str "extension " (name operation)
-                         " requires one package directory")))))
+    (throw (ex :io {:arguments arguments} :ex/message
+               (str "extension " (name operation)
+                    " requires one package directory")))))
 
 (defn checked-result [package operation]
   (let [identity (:project/id package)
@@ -185,25 +330,30 @@
         build (:project/build document)]
     (if (map? build)
       build
-      (throw (ex :dependency {} :ex/message "project.edn requires a :project/build map")))))
+      (throw (ex :dependency {} :ex/message
+                 "project.edn requires a :project/build map")))))
 
 (defn build-command [request root]
   (let [document (read-build root)
         adapter (required document :adapter ":project/build")
-        output (non-empty-string (required document :output ":project/build") :output)]
+        output (non-empty-string (required document :output ":project/build")
+                                 :output)]
     (if (= adapter :command)
       (let [argv (required document :command ":project/build")]
         (if (not (:allow-process (:request/options request)))
-          (throw (ex :security {} :ex/message "extension/capability-denied: build requires --allow-process"))
+          (throw (ex :security {} :ex/message
+                     "extension/capability-denied: build requires --allow-process"))
           nil)
         (if (and (vector? argv) (not (empty? argv)) (every? string? argv))
           (sh/run-checked
            argv
            {:cwd (file/join root (or (:working-directory document) "."))})
-          (throw (ex :host {} :ex/message ":project/build :command cannot be empty"))))
+          (throw (ex :host {} :ex/message
+                     ":project/build :command cannot be empty"))))
       (if (= adapter :prebuilt)
         nil
-        (throw (ex :host {} :ex/message (str "unsupported extension build adapter: " adapter)))))
+        (throw (ex :host {} :ex/message
+                   (str "unsupported extension build adapter: " adapter)))))
     (let [result (file/join root output)
           package (read-package result)]
       (model/success package
@@ -223,31 +373,40 @@
                      (file/join (:project/root project) extension-root)
                      (str/replace (str (:project/id package)) "/" "_"))]
     (if (deref (file/exists? destination))
-      (throw (ex :host {} :ex/message (str "Extension is already installed: " destination)))
+      (throw (ex :host {} :ex/message
+                 (str "Extension is already installed: " destination)))
       nil)
     (reduce
      (fn [installed relative]
        (copy-file (file/join source relative)
-                   (file/join destination relative))
+                  (file/join destination relative))
        (inc installed))
      0
      (:declared/files package))
-    (copy-file (:package/descriptor package) (file/join destination "project.edn"))
+    (copy-file (:package/descriptor package)
+               (file/join destination "project.edn"))
     (model/success package
                    [(model/message
-                     (str "Installed " (:project/id package) " at " destination "\n"))])))
+                     (str "Installed " (:project/id package)
+                          " at " destination "\n"))])))
 
 (defn execute [request]
   (let [resolved (operation-request request)
         operation (:operation resolved)
-        arguments (:arguments resolved)
-        root (package-argument arguments operation)]
+        arguments (:arguments resolved)]
     (cond
-      (= operation :check) (checked-result (read-package root) operation)
-      (= operation :test) (checked-result (read-package root) operation)
-      (= operation :build) (build-command request root)
-      (= operation :install) (install-command request root)
-      :else (throw (ex :host {} :ex/message (str "unknown extension command: " (name operation)))))))
+      (= operation :inspect) (inspect-command arguments)
+      (= operation :bind) (bind-command arguments)
+      :else
+      (let [root (package-argument arguments operation)]
+        (cond
+          (= operation :check) (checked-result (read-package root) operation)
+          (= operation :test) (checked-result (read-package root) operation)
+          (= operation :build) (build-command request root)
+          (= operation :install) (install-command request root)
+          :else (throw (ex :host {} :ex/message
+                           (str "unknown extension command: "
+                                (name operation)))))))))
 
 (def +command-work+
   (work/step {:id 'tool.cli/extension :version 1}

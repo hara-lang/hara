@@ -1,5 +1,8 @@
 use super::manifest::merge_sources;
-use super::{merged_manifest_source, BASE_MANIFEST_SOURCE, PROJECT_BUILD_MANIFEST_SOURCE};
+use super::{
+    merged_manifest_source, BASE_MANIFEST_SOURCE, EXTENSION_BIND_MANIFEST_SOURCE,
+    EXTENSION_INSPECT_MANIFEST_SOURCE, PROJECT_BUILD_MANIFEST_SOURCE,
+};
 use crate::kernel::parse;
 
 fn repo_text(relative: &str) -> Option<String> {
@@ -21,14 +24,33 @@ fn vendored_manifest_matches_specs_submodule_when_present() {
 }
 
 #[test]
-fn project_build_extension_is_valid_and_idempotent() {
-    parse(BASE_MANIFEST_SOURCE).expect("base CLI manifest must be valid EDN");
-    parse(PROJECT_BUILD_MANIFEST_SOURCE).expect("CLI extension must be valid EDN");
-    parse(merged_manifest_source()).expect("merged CLI manifest must be valid EDN");
-    assert_eq!(
-        merge_sources(merged_manifest_source(), PROJECT_BUILD_MANIFEST_SOURCE,).unwrap(),
-        merged_manifest_source()
-    );
+fn embedded_manifest_extensions_are_valid_and_idempotent() {
+    for source in [
+        BASE_MANIFEST_SOURCE,
+        PROJECT_BUILD_MANIFEST_SOURCE,
+        EXTENSION_INSPECT_MANIFEST_SOURCE,
+        EXTENSION_BIND_MANIFEST_SOURCE,
+        merged_manifest_source(),
+    ] {
+        parse(source).expect("embedded CLI manifest source must be valid EDN");
+    }
+    for source in [
+        PROJECT_BUILD_MANIFEST_SOURCE,
+        EXTENSION_INSPECT_MANIFEST_SOURCE,
+        EXTENSION_BIND_MANIFEST_SOURCE,
+    ] {
+        assert_eq!(
+            merge_sources(merged_manifest_source(), source).unwrap(),
+            merged_manifest_source()
+        );
+    }
+    for route in [
+        ":tool.cli.route/project-build",
+        ":tool.cli.route/extension-inspect",
+        ":tool.cli.route/extension-bind",
+    ] {
+        assert!(merged_manifest_source().contains(route));
+    }
 }
 
 #[test]

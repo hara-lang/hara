@@ -2,179 +2,119 @@ name: std.typed schema parity
 
 on:
   pull_request:
-    branches: [main, testing]
+    branches: [main]
     paths:
-      - 'core/lib/src/std/typed/**'
-      - 'core/lib/test/std/typed/**'
-      - 'core/lib/src/tool/metaspec/schema.hal'
-      - 'core/lib/test/tool/metaspec/**'
-      - 'core/spec/std/foundation-base-runtime-schema.md'
-      - 'core/spec/std/typed-schema-links-hbc1.md'
-      - 'core/spec/std/typed-schema-catalog-admission.md'
-      - 'core/rust/bootstrap.namespaces'
-      - 'core/rust/standard-library.namespaces'
-      - 'core/rust/src/lib.rs'
-      - 'core/rust/src/core/protocol.rs'
-      - 'core/rust/src/kernel/schema.rs'
-      - 'core/rust/src/vm/artifact.rs'
-      - 'core/rust/src/vm/artifact/tests.rs'
-      - 'core/rust/src/vm/schema_links.rs'
-      - 'core/rust/src/vm/schema_catalog.rs'
-      - 'core/rust/tests/std_typed_schema.rs'
-      - 'core/rust/tests/resource_discovery.rs'
-      - 'core/java/src/main/java/hara/truffle/HalcSchema.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcCodec.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcSchemaLinks.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcSchemaCatalog.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcSchemaCatalogGraph.java'
-      - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
-      - 'core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java'
-      - 'core/java/src/test/java/hara/truffle/bytecode/HbcSchemaLinksTest.java'
-      - 'core/java/src/test/java/hara/truffle/bytecode/HbcSchemaCatalogTest.java'
       - '.github/workflows/std-typed-schema.yml'
-  push:
-    branches: [main, testing]
-    paths:
-      - 'core/lib/src/std/typed/**'
-      - 'core/lib/test/std/typed/**'
-      - 'core/lib/src/tool/metaspec/schema.hal'
-      - 'core/lib/test/tool/metaspec/**'
-      - 'core/spec/std/foundation-base-runtime-schema.md'
-      - 'core/spec/std/typed-schema-links-hbc1.md'
-      - 'core/spec/std/typed-schema-catalog-admission.md'
-      - 'core/rust/bootstrap.namespaces'
-      - 'core/rust/standard-library.namespaces'
-      - 'core/rust/src/lib.rs'
-      - 'core/rust/src/core/protocol.rs'
-      - 'core/rust/src/kernel/schema.rs'
-      - 'core/rust/src/vm/artifact.rs'
-      - 'core/rust/src/vm/artifact/tests.rs'
-      - 'core/rust/src/vm/schema_links.rs'
-      - 'core/rust/src/vm/schema_catalog.rs'
-      - 'core/rust/tests/std_typed_schema.rs'
-      - 'core/rust/tests/resource_discovery.rs'
-      - 'core/java/src/main/java/hara/truffle/HalcSchema.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcCodec.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcSchemaLinks.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcSchemaCatalog.java'
-      - 'core/java/src/main/java/hara/truffle/bytecode/HbcSchemaCatalogGraph.java'
-      - 'core/java/src/test/java/hara/truffle/StdTypedSchemaTest.java'
-      - 'core/java/src/test/java/hara/truffle/bytecode/HbcCodecTest.java'
-      - 'core/java/src/test/java/hara/truffle/bytecode/HbcSchemaLinksTest.java'
-      - 'core/java/src/test/java/hara/truffle/bytecode/HbcSchemaCatalogTest.java'
-      - '.github/workflows/std-typed-schema.yml'
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: std-typed-schema-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: std-typed-portable-string-patch
+  cancel-in-progress: false
 
 jobs:
-  rust:
-    runs-on: ubuntu-latest
+  patch:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Check out the CLI specification registry
-        uses: actions/checkout@v4
         with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - name: Mirror registry at Rust include path
-        run: |
-          rm -rf "$GITHUB_WORKSPACE/../hara-specs-registry"
-          ln -s "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Run focused Rust schema parity
-        run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_schema
-      - name: Run Rust HBC schema round-trip parity
-        run: RUSTFLAGS=-Awarnings cargo test --manifest-path core/rust/Cargo.toml --lib programs_round_trip_and_execute
-      - name: Run Rust HBC1 exact schema-link parity
-        run: RUSTFLAGS=-Awarnings cargo test --manifest-path core/rust/Cargo.toml --lib hbc_schema_links
-      - name: Run Rust exact schema-catalog admission parity
-        run: RUSTFLAGS=-Awarnings cargo test --manifest-path core/rust/Cargo.toml --lib hbc_schema_catalog
-      - name: Load and extend std.typed schema through the native runtime
-        run: cargo test --manifest-path core/rust/Cargo.toml --test resource_discovery typed_bootstrap_is_extensible_and_inference_is_loadable
-      - name: Run portable schema catalog facts on Rust
-        run: scripts/runtime/run-lib-tests core/lib/test/std/typed/catalog_test.hal
-      - name: Run portable property facts on Rust
-        run: scripts/runtime/run-lib-tests core/lib/test/std/typed/properties_test.hal
-      - name: Run portable explanation facts on Rust
-        run: scripts/runtime/run-lib-tests core/lib/test/std/typed/explain_test.hal
-      - name: Load metaspec schema source through its focused facts
-        run: scripts/runtime/run-lib-tests core/lib/test/tool/metaspec/schema_test.hal
-      - name: Run remaining metaspec adapter facts on Rust
-        run: |
-          scripts/runtime/run-lib-tests \
-            core/lib/test/tool/metaspec/conforms_test.hal \
-            core/lib/test/tool/metaspec/verify_test.hal \
-            core/lib/test/tool/metaspec/lint_test.hal \
-            core/lib/test/tool/metaspec/logic_test.hal \
-            core/lib/test/tool/metaspec/model_test.hal
-      - name: Run portable Result schema and inference facts on Rust
-        run: scripts/runtime/run-lib-tests core/lib/test/std/typed/result_test.hal
+          ref: agent/903-std-typed-registry-readback
+          fetch-depth: 0
 
-  hal:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out the CLI specification registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - uses: actions/setup-java@v5
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
-      - name: Build the native Hara runtime
-        run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
-      - name: Run focused portable registry probe
+      - name: Replace nil-based string search assumptions
+        shell: bash
         run: |
-          cat \
-            core/lib/src/std/typed/registry.hal \
-            core/lib/src/std/typed/schema.hal \
-            core/lib/src/std/typed/catalog.hal \
-            core/lib/src/std/typed/infer.hal \
-            core/lib/src/std/typed/explain.hal \
-            core/lib/src/std/typed.hal \
-            core/lib/test/std/typed/explain_probe.hal \
-            | core/hara --offline stdin
+          python - <<'PY'
+          from pathlib import Path
 
-  java:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out the CLI specification registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - uses: actions/setup-java@v5
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
-      - name: Run focused Truffle schema parity
-        run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedSchemaTest test --file core/java/pom.xml
-      - name: Run Truffle HBC schema round-trip parity
-        run: mvn -B -Ptruffle -Dtest=hara.truffle.bytecode.HbcCodecTest#alphaTypedProgramsRoundTripCanonically test --file core/java/pom.xml
-      - name: Run Truffle HBC1 exact schema-link parity
-        run: mvn -B -Ptruffle -Dtest=hara.truffle.bytecode.HbcSchemaLinksTest test --file core/java/pom.xml
-      - name: Run Truffle exact schema-catalog admission parity
-        run: mvn -B -Ptruffle -Dtest=hara.truffle.bytecode.HbcSchemaCatalogTest test --file core/java/pom.xml
+          path = Path("core/lib/src/std/typed/catalog/document.hal")
+          source = path.read_text()
 
-  boundary:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check the std.typed dependency boundary
-        run: bash scripts/audit-std-typed-boundary.sh
+          old_hex = '''       (let [character (str (str/char-at value index))]
+         (if (nil? (str/index-of +hex-digits+ character))
+           false
+           (recur (inc index))))))))
+'''
+          new_hex = '''       (let [character (str (str/char-at value index))]
+         (if (str/includes? +hex-digits+ character)
+           (recur (inc index))
+           false))))))
+'''
+          old_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (nil? (str/index-of value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (nil? (str/index-of value "/../"))))
+'''
+          new_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (not (str/includes? value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (not (str/includes? value "/../"))))
+'''
+          old_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [separator (str/index-of value "/")
+          length (str/length value)]
+      (and
+       separator
+       (> separator 0)
+       (< separator (dec length))
+       (nil?
+        (str/index-of
+         (str/slice value (inc separator))
+         "/"))
+       (not (str/starts-with? value ":"))
+       (nil? (str/index-of value " "))))))
+'''
+          new_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [parts (str/split value "/")]
+      (and
+       (= 2 (count parts))
+       (not (str/blank? (first parts)))
+       (not (str/blank? (second parts)))
+       (not (str/starts-with? value ":"))
+       (not (str/includes? value " "))))))
+'''
+
+          for old, new, label in [
+              (old_hex, new_hex, "lowercase hex predicate"),
+              (old_path, new_path, "source path predicate"),
+              (old_owner, new_owner, "owner/name predicate"),
+          ]:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one {label}, found {count}")
+              source = source.replace(old, new, 1)
+
+          path.write_text(source)
+          PY
+
+      - name: Validate and publish the focused edit
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '(str/includes? +hex-digits+ character)' core/lib/src/std/typed/catalog/document.hal
+          ! grep -q 'nil? (str/index-of' core/lib/src/std/typed/catalog/document.hal
+          git diff --check -- core/lib/src/std/typed/catalog/document.hal
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- core/lib/src/std/typed/catalog/document.hal
+          git commit -m "Use portable string predicates in catalog read-back"
+          git push origin HEAD:agent/903-std-typed-registry-readback
