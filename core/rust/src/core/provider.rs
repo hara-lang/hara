@@ -879,7 +879,6 @@ pub(crate) fn portable_type_name(value: &Value) -> &str {
         Value::Number(_) => "integer",
         Value::Float(_) => "float",
         Value::BigInteger(_) => "integer",
-        Value::Decimal(_) => "decimal",
         Value::Character(_) => "character",
         Value::Regex(_) => "pattern",
         Value::Tagged(_) => "tagged-literal",

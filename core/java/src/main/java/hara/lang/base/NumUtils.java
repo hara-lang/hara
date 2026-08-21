@@ -5,19 +5,13 @@ import java.math.BigInteger;
 
 public class NumUtils {
 
-  public static final NumOps.BigDecimalOps BIGDECIMAL_OPS = new NumOps.BigDecimalOps();
   public static final NumOps.BigIntegerOps BIGINT_OPS = new NumOps.BigIntegerOps();
   public static final NumOps.DoubleOps DOUBLE_OPS = new NumOps.DoubleOps();
   public static final NumOps.LongOps LONG_OPS = new NumOps.LongOps();
 
   public static enum Category {
-    DECIMAL,
     FLOATING,
     INTEGER
-  }
-
-  public static BigDecimal normalizeDecimal(BigDecimal value) {
-    return value.signum() == 0 ? BigDecimal.ZERO : value.stripTrailingZeros();
   }
 
   public static Number normalizeInteger(BigInteger value) {
@@ -25,18 +19,8 @@ public class NumUtils {
     return value;
   }
 
-  public static BigDecimal toBigDecimal(Object x) {
-    if (x instanceof BigDecimal) return normalizeDecimal((BigDecimal) x);
-    else if (x instanceof BigInteger) return new BigDecimal((BigInteger) x);
-    else if (x instanceof Double || x instanceof Float)
-      throw new IllegalArgumentException(
-          "BigDecimal and floating-point values require an explicit conversion");
-    else return BigDecimal.valueOf(((Number) x).longValue());
-  }
-
   public static BigInteger toBigInteger(Object x) {
     if (x instanceof BigInteger) return (BigInteger) x;
-    if (x instanceof BigDecimal) return ((BigDecimal) x).toBigIntegerExact();
     if (x instanceof Double || x instanceof Float) {
       double value = ((Number) x).doubleValue();
       if (!Double.isFinite(value)) {

@@ -27,7 +27,6 @@ const ARRAY: u8 = 17;
 const OBJECT: u8 = 18;
 const CHARACTER: u8 = 19;
 const BIG_INTEGER: u8 = 20;
-const DECIMAL: u8 = 21;
 const REGEX: u8 = 22;
 const TUPLE: u8 = 23;
 const CONS: u8 = 24;
@@ -96,10 +95,6 @@ fn encode_bare(value: &Value, output: &mut Vec<u8>, depth: usize) -> Result<(), 
         }
         Value::BigInteger(value) => {
             output.push(BIG_INTEGER);
-            encode_bytes(value.as_bytes(), output)?;
-        }
-        Value::Decimal(value) => {
-            output.push(DECIMAL);
             encode_bytes(value.as_bytes(), output)?;
         }
         Value::Regex(value) => {
@@ -416,10 +411,6 @@ impl Reader<'_> {
             BIG_INTEGER => Ok(Value::BigInteger(
                 String::from_utf8(self.data()?.to_vec())
                     .map_err(|_| "hta/value-malformed: invalid big integer")?,
-            )),
-            DECIMAL => Ok(Value::Decimal(
-                String::from_utf8(self.data()?.to_vec())
-                    .map_err(|_| "hta/value-malformed: invalid decimal")?,
             )),
             REGEX => Ok(Value::Regex(
                 String::from_utf8(self.data()?.to_vec())
@@ -771,7 +762,7 @@ mod tests {
         for value in [
             Value::Character('雪'),
             Value::BigInteger("123456789012345678901234567890".into()),
-            Value::Decimal("1.2500".into()),
+            Value::Float(1.25),
             Value::Regex("^[a-z]+$".into()),
         ] {
             assert_eq!(decode(&encode(&value).unwrap()).unwrap(), value);

@@ -24,7 +24,6 @@ const ARRAY: u8 = 17;
 const OBJECT: u8 = 18;
 const CHARACTER: u8 = 19;
 const BIG_INTEGER: u8 = 20;
-const DECIMAL: u8 = 21;
 const REGEX: u8 = 22;
 
 fn sized(tag: u8, value: &[u8]) -> Vec<u8> {
@@ -157,7 +156,6 @@ fn scans_every_runtime_wire_shape() {
         object,
         character,
         sized(BIG_INTEGER, b"12345678901234567890"),
-        sized(DECIMAL, b"1.2500"),
         sized(REGEX, b"a.*b"),
     ];
     for value in values {

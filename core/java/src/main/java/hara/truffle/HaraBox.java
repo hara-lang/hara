@@ -56,11 +56,11 @@ public final class HaraBox implements TruffleObject, IEquality {
     if (value == null) {
       return HaraNull.SINGLETON;
     }
-    if (value instanceof BigInteger) {
-      return exportBigInteger((BigInteger) value);
-    }
     if (value instanceof BigDecimal) {
       return exportBigDecimal((BigDecimal) value);
+    }
+    if (value instanceof BigInteger) {
+      return exportBigInteger((BigInteger) value);
     }
     if (value instanceof Long
         || value instanceof Integer
@@ -82,13 +82,18 @@ public final class HaraBox implements TruffleObject, IEquality {
   }
 
   @TruffleBoundary
-  private static Object exportBigInteger(BigInteger value) {
-    return new HaraBigInteger(value);
+  private static Object exportBigDecimal(BigDecimal value) {
+    double converted = value.doubleValue();
+    if (!Double.isFinite(converted)) {
+      throw new IllegalArgumentException(
+          "BigDecimal value is outside the finite Hara Float range");
+    }
+    return converted;
   }
 
   @TruffleBoundary
-  private static Object exportBigDecimal(BigDecimal value) {
-    return new HaraDecimal(value);
+  private static Object exportBigInteger(BigInteger value) {
+    return new HaraBigInteger(value);
   }
 
   @ExportMessage

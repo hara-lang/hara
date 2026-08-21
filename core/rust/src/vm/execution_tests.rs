@@ -71,9 +71,8 @@ fn literals() {
     assert_eq!(eval("false"), "false");
     assert_eq!(eval("42"), "42");
     assert_eq!(eval("-7"), "-7");
-    assert_eq!(eval("1.5"), "1.5");
-    assert_eq!(eval("2.0"), "2.0");
-    assert_eq!(eval("(double 2.0)"), "(double 2)");
+    assert_eq!(eval("1.5"), "(double 1.5)");
+    assert_eq!(eval("2.0"), "(double 2)");
     assert_eq!(eval("\"hello\""), "\"hello\"");
     assert_eq!(eval(":hara/name"), ":hara/name");
     assert_eq!(eval("\\a"), "\\a");
@@ -289,7 +288,7 @@ fn arithmetic_errors() {
     assert_eq!(eval("(- -9223372036854775808 1)"), "-9223372036854775809");
     assert_eq!(eval("(* 9223372036854775807 2)"), "18446744073709551614");
     assert_eval_error("(+ 1 \"a\")", "+ expects numbers [line 1, column 1]");
-    assert_eq!(eval("(+ 1 1.5)"), "2.5");
+    assert_eq!(eval("(+ 1 1.5)"), "(double 2.5)");
     assert_eval_error(
         "(mod \"a\" 1)",
         "expected numeric values [line 1, column 1]",

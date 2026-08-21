@@ -9,7 +9,6 @@ import hara.lang.base.G;
 import hara.lang.data.Keyword;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -144,8 +143,8 @@ public class HaraCoreLanguageConformanceTest {
       assertEquals(id, expected, actual.asString());
     } else if (expected instanceof BigInteger) {
       assertEquals(id, expected, actual.as(BigInteger.class));
-    } else if (expected instanceof BigDecimal) {
-      assertEquals(id, expected, actual.as(BigDecimal.class));
+    } else if (expected instanceof Double) {
+      assertEquals(id, (Double) expected, actual.asDouble(), 0.0);
     } else if (expected instanceof Keyword) {
       assertEquals(id, G.display(expected), actual.toString());
     } else if (expected instanceof Number) {

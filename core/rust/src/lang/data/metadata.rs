@@ -8,7 +8,6 @@ pub enum MetadataValue {
     Number(i64),
     Float(f64),
     BigInteger(String),
-    Decimal(String),
     Character(char),
     Regex(String),
     Tagged(String, Box<MetadataValue>),

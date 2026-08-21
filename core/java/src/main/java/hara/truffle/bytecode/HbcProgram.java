@@ -110,7 +110,7 @@ public record HbcProgram(
       NUMBER,
       FLOAT,
       BIG_INTEGER,
-      DECIMAL,
+      RESERVED_DECIMAL,
       CHARACTER,
       REGEX,
       TAGGED,

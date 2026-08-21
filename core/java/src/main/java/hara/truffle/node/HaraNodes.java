@@ -1304,7 +1304,6 @@ public final class HaraNodes {
         if ("Integer".equals(typeName)) return value instanceof Integer;
         if ("Double".equals(typeName)) return value instanceof Double;
         if ("BigInteger".equals(typeName)) return value instanceof java.math.BigInteger;
-        if ("BigDecimal".equals(typeName)) return value instanceof java.math.BigDecimal;
         if (value instanceof Throwable) {
           return HaraLanguage.currentContext(this).matchesNativeThrowable(type, (Throwable) value);
         }
