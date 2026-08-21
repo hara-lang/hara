@@ -1,4 +1,4 @@
-name: Agent 838 code-and-specs snapshot
+name: Agent 838 clean top-level catalog repair
 
 on:
   push:
@@ -10,30 +10,24 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: agent-838-clean-top-level-repair
+  cancel-in-progress: true
+
 jobs:
-  snapshot:
+  repair:
     runs-on: ubuntu-24.04
+    timeout-minutes: 75
     steps:
-      - name: Checkout Hara main
+      - name: Checkout the exact target branch
         uses: actions/checkout@v4
         with:
           repository: hara-lang/hara
-          ref: e48e93d7eed95b5ce2bbbf3b150980105c5a7d36
-          path: hara
-          fetch-depth: 1
+          ref: agent/838-bootstrap-callables-fix
+          path: target
+          fetch-depth: 0
 
-      - name: Archive Hara source
-        working-directory: hara
-        run: git archive --format=tar.gz --output=../hara-e48e93d.tar.gz HEAD
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: hara-e48e93d
-          path: hara-e48e93d.tar.gz
-          retention-days: 1
-          compression-level: 0
-
-      - name: Checkout specs repair branch
+      - name: Checkout the coordinated specs fixture
         uses: actions/checkout@v4
         with:
           repository: hara-lang/hara-specs-registry
@@ -41,18 +35,15 @@ jobs:
           path: specs
           fetch-depth: 1
 
-      - name: Archive specs source
-        working-directory: specs
-        run: git archive --format=tar.gz --output=../specs-aae63f7.tar.gz HEAD
-
-      - uses: actions/upload-artifact@v4
+      - name: Checkout benchmark fixtures
+        uses: actions/checkout@v4
         with:
-          name: specs-aae63f7
-          path: specs-aae63f7.tar.gz
-          retention-days: 1
-          compression-level: 0
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: benchmarks
+          fetch-depth: 1
 
-      - name: Checkout control branch
+      - name: Checkout the evidence branch
         uses: actions/checkout@v4
         with:
           repository: hara-lang/hara
@@ -60,16 +51,141 @@ jobs:
           path: control
           fetch-depth: 1
 
-      - name: Record workflow run
+      - name: Record exact Actions run
         working-directory: control
+        shell: bash
         run: |
-          printf 'run=%s\nhara=%s\nspecs=%s\n' \
+          set -euo pipefail
+          printf 'run=%s\ntarget=%s\nspecs=%s\n' \
             '${{ github.run_id }}' \
-            'e48e93d7eed95b5ce2bbbf3b150980105c5a7d36' \
+            'agent/838-bootstrap-callables-fix' \
             'aae63f735b312e29f18e041de6925ec0ae6baaa5' \
-            > .agent-838-code-specs-run
+            > .agent-838-clean-repair-run
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add -- .agent-838-code-specs-run
-          git commit -m 'Record #838 code-and-specs snapshot run'
+          git add -- .agent-838-clean-repair-run
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Record #838 clean repair run'
           git push origin HEAD:agent/838-direct-callable-catalog
+
+      - name: Expose authoritative fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture="$GITHUB_WORKSPACE/specs/01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal"
+          test -f "$fixture"
+          ln -sfn "$GITHUB_WORKSPACE/specs" "$GITHUB_WORKSPACE/../hara-specs-registry"
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn "$GITHUB_WORKSPACE/benchmarks" \
+            "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+
+      - name: Verify the clean main-based transport commit
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='e48e93d7eed95b5ce2bbbf3b150980105c5a7d36'
+          git fetch origin main
+          test "$(git merge-base HEAD origin/main)" = "$base"
+          changed="$(git diff --name-only "$base"...HEAD)"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(\.github/workflows/issue-838-bootstrap-materialize\.yml|\.github/agent-patches/838-bootstrap-callables\.patch)$' || true)"
+          test -z "$unexpected"
+          printf '%s  %s\n' \
+            '31945d3a7ef8e923adb4a0906a03dc85e2e912699b1d3ad844998b2da3459153' \
+            '.github/agent-patches/838-bootstrap-callables.patch' \
+            | sha256sum --check --strict
+
+      - name: Apply the repair at the original top-level scope
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check .github/agent-patches/838-bootstrap-callables.patch
+          git apply .github/agent-patches/838-bootstrap-callables.patch
+          git diff --check
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+
+      - name: Format the bounded Rust edits
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustfmt --edition 2021 --config skip_children=true \
+            core/rust/src/core/inventory.rs \
+            core/rust/src/core/direct_callable_catalog.rs \
+            core/rust/src/core/direct_callable_operations.rs \
+            core/rust/src/core/direct_callable_tests.rs
+          git diff --check
+
+      - name: Run catalog closure, zero re-entry, behavior, and specs tests
+        working-directory: target
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            direct_callable_catalog_closes_the_runtime_inventory --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            complete_ordinary_callable_catalog_never_reenters_the_evaluator --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            representative_direct_callables_preserve_value_behavior --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_loading --lib
+
+      - name: Re-run the fiber suite that exposed the omissions
+        working-directory: target
+        run: cargo test --manifest-path core/rust/Cargo.toml fiber:: --lib
+
+      - name: Run focused bytecode VM parity
+        working-directory: target
+        run: |
+          cargo test --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm vm::machine:: --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            --features bytecode-vm vm::execution_tests --lib
+
+      - name: Check default, minimal, raw, and browser targets
+        working-directory: target
+        run: |
+          cargo check --manifest-path core/rust/Cargo.toml --all-targets
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --no-default-features --lib
+          cargo test --manifest-path core/rust/raw/Cargo.toml
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib
+          cargo check --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --no-default-features --lib
+
+      - name: Remove transport and publish only the clean repair
+        working-directory: target
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rm -- \
+            .github/workflows/issue-838-bootstrap-materialize.yml \
+            .github/agent-patches/838-bootstrap-callables.patch
+          git add -- \
+            .github/workflows/issue-838-direct-callables.yml \
+            core/rust/src/core/inventory.rs \
+            core/rust/src/core/direct_callable_catalog.rs \
+            core/rust/src/core/direct_callable_operations.rs \
+            core/rust/src/core/direct_callable_tests.rs
+          git diff --cached --check
+          expected="$(git diff --cached --name-only | sort)"
+          actual="$(printf '%s\n' \
+            .github/agent-patches/838-bootstrap-callables.patch \
+            .github/workflows/issue-838-bootstrap-materialize.yml \
+            .github/workflows/issue-838-direct-callables.yml \
+            core/rust/src/core/direct_callable_catalog.rs \
+            core/rust/src/core/direct_callable_operations.rs \
+            core/rust/src/core/direct_callable_tests.rs \
+            core/rust/src/core/inventory.rs | sort)"
+          test "$expected" = "$actual"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -m 'Close the boolean and Promise bootstrap callable gap'
+          git push origin HEAD:agent/838-bootstrap-callables-fix
