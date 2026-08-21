@@ -9,7 +9,10 @@ use sha2::{Digest, Sha256};
 
 use crate::kernel::Form;
 
-use super::{direct_inspection_source, direct_interface_skeleton, inspect_direct, WasmInterface};
+use super::{
+    direct_inspection_source, direct_interface_skeleton, inspect_direct, HaraValueType,
+    MemoryBindingPlan, WasmInterface,
+};
 
 #[cfg(test)]
 mod tests;
@@ -26,6 +29,21 @@ const GENERATED_VERSION: &str = "0.1.0";
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingTarget {
+    CoreV1,
+    MemoryV1,
+}
+
+impl BindingTarget {
+    pub fn as_keyword(self) -> &'static str {
+        match self {
+            Self::CoreV1 => "core.v1",
+            Self::MemoryV1 => "memory.v1",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionArtifact {
     pub namespace: String,
@@ -39,6 +57,7 @@ pub struct BoundPackage {
     pub root: PathBuf,
     pub namespace: String,
     pub module: String,
+    pub target: BindingTarget,
     pub module_digest: String,
     pub interface_digest: String,
     pub binding_digest: String,
@@ -91,22 +110,27 @@ pub fn bind_package(
     let interface = WasmInterface::parse(&interface_input, &interface_path.display().to_string())?;
     let module_bytes = read_bytes(module_path, "module")?;
     let inspection = inspect_direct(&module_bytes)?;
-    interface.verify_direct(&inspection)?;
+    let (target, memory_plan) = binding_target(&interface, &inspection)?;
 
     let canonical_interface = interface.canonical_source();
     let module_digest = digest(&module_bytes);
     let interface_digest = digest(canonical_interface.as_bytes());
-    let bindings = binding_document(&interface, &module_digest, &interface_digest);
+    let bindings = match memory_plan.as_ref() {
+        Some(plan) => plan.canonical_source(),
+        None => direct_binding_document(&interface, &module_digest, &interface_digest),
+    };
     let binding_digest = digest(bindings.as_bytes());
-    let project = project_document(&interface);
+    let project = project_document(&interface, target)?;
     let conformance = conformance_document(
         &interface,
+        target,
         &module_digest,
         &interface_digest,
         &binding_digest,
-    );
+    )?;
     let build_product = build_product_document(
         &interface,
+        target,
         &module_digest,
         &interface_digest,
         &binding_digest,
@@ -125,6 +149,7 @@ pub fn bind_package(
         root: output_root.to_path_buf(),
         namespace: interface.namespace,
         module: interface.module,
+        target,
         module_digest,
         interface_digest,
         binding_digest,
@@ -132,37 +157,47 @@ pub fn bind_package(
     })
 }
 
-fn project_document(interface: &WasmInterface) -> String {
+fn binding_target(
+    interface: &WasmInterface,
+    inspection: &super::DirectWasmInspection,
+) -> Result<(BindingTarget, Option<MemoryBindingPlan>), String> {
+    if interface.memory.is_some() {
+        let plan = interface.memory_plan()?;
+        plan.verify(inspection)?;
+        Ok((BindingTarget::MemoryV1, Some(plan)))
+    } else {
+        interface.verify_direct(inspection)?;
+        Ok((BindingTarget::CoreV1, None))
+    }
+}
+
+fn project_document(interface: &WasmInterface, target: BindingTarget) -> Result<String, String> {
     let exports = interface
         .exports
         .iter()
         .map(|export| {
-            (
+            let arguments = export
+                .arguments
+                .iter()
+                .map(|argument| manifest_type(&argument.hara_type))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((
                 string_form(&export.name),
                 Form::Map(vec![
                     (
                         keyword_form("wasm/export"),
                         string_form(&export.wasm_export),
                     ),
-                    (
-                        keyword_form("args"),
-                        Form::Vector(
-                            export
-                                .arguments
-                                .iter()
-                                .map(|argument| keyword_form(argument.wasm_type.as_keyword()))
-                                .collect(),
-                        ),
-                    ),
+                    (keyword_form("args"), Form::Vector(arguments)),
                     (
                         keyword_form("returns"),
-                        keyword_form(export.returns.wasm_type.as_keyword()),
+                        manifest_type(&export.returns.hara_type)?,
                     ),
                     (keyword_form("async"), Form::Bool(false)),
                 ]),
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<Vec<_>, String>>()?;
     let assets = [
         INTERFACE_FILE,
         BINDINGS_FILE,
@@ -175,13 +210,16 @@ fn project_document(interface: &WasmInterface) -> String {
     let extension = Form::Map(vec![
         (keyword_form("provider"), keyword_form("wasm")),
         (keyword_form("module"), string_form(&interface.module)),
-        (keyword_form("abi"), keyword_form("core.v1")),
+        (
+            keyword_form("abi"),
+            keyword_form(target.as_keyword()),
+        ),
         (keyword_form("exports"), Form::Map(exports)),
         (keyword_form("capabilities"), Form::Vector(Vec::new())),
         (keyword_form("assets"), Form::Vector(assets)),
     ]);
     let project_id = format!("generated/{}", interface.namespace.replace('.', "-"));
-    document(Form::Map(vec![
+    Ok(document(Form::Map(vec![
         (keyword_form("hara/type"), keyword_form("project")),
         (keyword_form("hara/version"), string_form("1.0.0")),
         (keyword_form("project/id"), symbol_form(&project_id)),
@@ -203,10 +241,10 @@ fn project_document(interface: &WasmInterface) -> String {
             keyword_form("project/extensions"),
             Form::Map(vec![(symbol_form(&interface.namespace), extension)]),
         ),
-    ]))
+    ])))
 }
 
-fn binding_document(
+fn direct_binding_document(
     interface: &WasmInterface,
     module_digest: &str,
     interface_digest: &str,
@@ -234,21 +272,37 @@ fn binding_document(
         ),
         (
             keyword_form("exports"),
-            Form::Vector(interface.exports.iter().map(export_contract).collect()),
+            Form::Vector(
+                interface
+                    .exports
+                    .iter()
+                    .map(direct_export_contract)
+                    .collect(),
+            ),
         ),
     ]))
 }
 
 fn conformance_document(
     interface: &WasmInterface,
+    target: BindingTarget,
     module_digest: &str,
     interface_digest: &str,
     binding_digest: &str,
-) -> String {
-    document(Form::Map(vec![
+) -> Result<String, String> {
+    let exports = interface
+        .exports
+        .iter()
+        .map(public_export_contract)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(document(Form::Map(vec![
         (
             keyword_form("schema"),
             string_form(DIRECT_WASM_CONFORMANCE_SCHEMA),
+        ),
+        (
+            keyword_form("target"),
+            keyword_form(target.as_keyword()),
         ),
         (keyword_form("namespace"), symbol_form(&interface.namespace)),
         (keyword_form("module-digest"), string_form(module_digest)),
@@ -257,15 +311,13 @@ fn conformance_document(
             string_form(interface_digest),
         ),
         (keyword_form("binding-digest"), string_form(binding_digest)),
-        (
-            keyword_form("exports"),
-            Form::Vector(interface.exports.iter().map(export_contract).collect()),
-        ),
-    ]))
+        (keyword_form("exports"), Form::Vector(exports)),
+    ])))
 }
 
 fn build_product_document(
     interface: &WasmInterface,
+    target: BindingTarget,
     module_digest: &str,
     interface_digest: &str,
     binding_digest: &str,
@@ -283,7 +335,10 @@ fn build_product_document(
             keyword_form("product/namespace"),
             symbol_form(&interface.namespace),
         ),
-        (keyword_form("product/target"), keyword_form("core.v1")),
+        (
+            keyword_form("product/target"),
+            keyword_form(target.as_keyword()),
+        ),
         (
             keyword_form("product/tool"),
             Form::Map(vec![
@@ -327,7 +382,7 @@ fn build_product_document(
     ]))
 }
 
-fn export_contract(export: &super::BindingFunction) -> Form {
+fn direct_export_contract(export: &super::BindingFunction) -> Form {
     Form::Map(vec![
         (keyword_form("hara/name"), symbol_form(&export.name)),
         (
@@ -349,6 +404,48 @@ fn export_contract(export: &super::BindingFunction) -> Form {
             keyword_form(export.returns.wasm_type.as_keyword()),
         ),
     ])
+}
+
+fn public_export_contract(export: &super::BindingFunction) -> Result<Form, String> {
+    let arguments = export
+        .arguments
+        .iter()
+        .map(|argument| manifest_type(&argument.hara_type))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Form::Map(vec![
+        (keyword_form("hara/name"), symbol_form(&export.name)),
+        (
+            keyword_form("wasm/export"),
+            string_form(&export.wasm_export),
+        ),
+        (keyword_form("arguments"), Form::Vector(arguments)),
+        (
+            keyword_form("returns"),
+            manifest_type(&export.returns.hara_type)?,
+        ),
+    ]))
+}
+
+fn manifest_type(value: &HaraValueType) -> Result<Form, String> {
+    let name = match value {
+        HaraValueType::I32 => "i32",
+        HaraValueType::I64 => "i64",
+        HaraValueType::F32 => "f32",
+        HaraValueType::F64 => "f64",
+        HaraValueType::Boolean => "boolean",
+        HaraValueType::String => "string",
+        HaraValueType::Bytes => "bytes",
+        HaraValueType::Void => "void",
+        HaraValueType::Record(name)
+        | HaraValueType::Variant(name)
+        | HaraValueType::Handle(name)
+        | HaraValueType::Callback(name) => {
+            return Err(format!(
+                "wasm-binding/feature-unsupported: manifest type {name} is not available in this package target"
+            ))
+        }
+    };
+    Ok(keyword_form(name))
 }
 
 fn write_atomic_tree(root: &Path, files: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {

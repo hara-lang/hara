@@ -260,8 +260,9 @@ fn execute_extension_bind(options: &Options, arguments: &[String]) -> Result<(),
     let output = authoring_path(options, output, "output")?;
     let package = wasm_binding::bind_package(&interface, &module, &output)?;
     println!(
-        "Bound {} as a direct core.v1 extension at {}",
+        "Bound {} as a {} extension at {}",
         package.namespace,
+        package.target.as_keyword(),
         package.root.display()
     );
     println!("module: {}", package.module_digest);
