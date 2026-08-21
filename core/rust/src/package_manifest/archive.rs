@@ -122,9 +122,7 @@ fn verify_archive_files(
     Ok(())
 }
 
-fn safe_entry_path<R: Read + ?Sized>(
-    entry: &zip::read::ZipFile<'_, R>,
-) -> Result<PathBuf, PackageManifestError> {
+fn safe_entry_path(entry: &zip::read::ZipFile<'_>) -> Result<PathBuf, PackageManifestError> {
     let raw = entry.name();
     let canonical = if entry.is_dir() {
         raw.strip_suffix('/').unwrap_or(raw)
@@ -158,8 +156,8 @@ fn safe_entry_path<R: Read + ?Sized>(
     Ok(relative.to_path_buf())
 }
 
-fn reject_symlink<R: Read + ?Sized>(
-    entry: &zip::read::ZipFile<'_, R>,
+fn reject_symlink(
+    entry: &zip::read::ZipFile<'_>,
     relative: &Path,
 ) -> Result<(), PackageManifestError> {
     if entry
