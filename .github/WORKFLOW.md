@@ -6,15 +6,21 @@ requests move reviewed changes from `testing` to `main`.
 
 Workflow files are durable project infrastructure. One-off branch repair,
 source export, migration, rebase, or patch-application jobs do not belong in
-`.github/workflows`. Run those tasks locally or put reusable validation in a
-script under `scripts/runtime/` and invoke that script from an existing
-workflow.
+`.github/workflows`. Run those tasks in the authoring environment. A ChatGPT
+webapp session must author direct commits through the GitHub connector and use
+the permanent connector execution lane; it must not use a workflow to apply or
+rewrite its source.
 
 ## Pull-request and branch checks
 
 - `core-ci.yml` is the primary required check for `main` and `testing`. It
   validates the Rust, Java/Truffle, and HAL runtimes. Its bytecode-observation
   job verifies native and browser observation sessions.
+- `connector-code-execution.yml` is the stable, read-only ChatGPT webapp lane.
+  On connector branch pushes and pull requests it classifies the committed diff
+  and executes the affected Rust and/or Java runtime through checked-in scripts.
+  It provides early exact-commit evidence and complements rather than replaces
+  `core-ci.yml` and focused workflows.
 - `language-source-layout.yml` is the read-only Language CI gate. It checks
   source layout, namespace ownership, `code.test` ownership,
   retired standard-library namespaces, and the Foundation parity ledger.
@@ -72,3 +78,6 @@ and Git tags are immutable.
 4. Every workflow must have a stable owner and purpose documented above.
 5. Prefer adding a job or path filter to an existing workflow over creating a
    new file.
+6. Connector-authored Rust and Java must be committed before execution. Actions
+   validates the exact commit; it never authors, materialises, or repairs the
+   implementation.

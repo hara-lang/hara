@@ -170,6 +170,19 @@ for each package to appear in the crates.io index and uploads the resulting
 - IDE state (`.idea/`, `.settings/`, `.classpath`, `.project`) is user-local
   and untracked.
 
+## ChatGPT webapp connector workflow
+
+When implementation is driven from the ChatGPT webapp, read and follow
+`.github/CHATGPT_PROJECT_WORKFLOW.md`. All repository authoring must go through
+the GitHub connector. Rust and Java changes must be committed on a connector
+branch, opened as a draft pull request, and executed by
+`.github/workflows/connector-code-execution.yml` plus every applicable normal
+or focused workflow.
+
+The connector execution workflow is read-only. It validates exact commits and
+never materialises patches or writes product source. MCP, `hara-mcp`, and
+`mcp.hara-lang.org` are explicitly out of scope for this workflow.
+
 ## Connector-first delivery
 
 GitHub issues, pull requests, native relationships, checks, and repository
