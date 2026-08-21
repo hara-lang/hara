@@ -6,6 +6,7 @@ use wasmtime::{Config, Engine, Instance, Module, Store, StoreLimits, StoreLimits
 
 use crate::core::Value;
 use crate::extension::{ExtensionExport, ExtensionManifest, WasmAbi, WasmExtensionProvider};
+use crate::wasm_binding::{MemoryBindingPlan, WasmtimeMemoryExecutor};
 
 struct Session {
     store: Store<StoreLimits>,
@@ -42,9 +43,11 @@ impl CompiledWasmModule {
 
     pub fn provider(&self) -> WasmtimeExtensionProvider {
         WasmtimeExtensionProvider {
-            engine: self.engine.clone(),
-            module: self.module.clone(),
-            session: RefCell::new(None),
+            mode: ProviderMode::Direct {
+                engine: self.engine.clone(),
+                module: self.module.clone(),
+                session: RefCell::new(None),
+            },
         }
     }
 
@@ -55,20 +58,37 @@ impl CompiledWasmModule {
 
 /// Import-free Wasmtime host for the direct scalar core.v1 ABI.
 pub struct WasmtimeExtensionProvider {
-    engine: Engine,
-    module: Module,
-    session: RefCell<Option<Session>>,
+    mode: ProviderMode,
+}
+
+enum ProviderMode {
+    Direct {
+        engine: Engine,
+        module: Module,
+        session: RefCell<Option<Session>>,
+    },
+    Memory(WasmtimeMemoryExecutor),
 }
 
 impl WasmtimeExtensionProvider {
     pub fn compile(bytes: &[u8]) -> Result<Self, String> {
         Ok(CompiledWasmModule::compile(bytes)?.provider())
     }
+
+    pub fn compile_memory(bytes: &[u8], plan: MemoryBindingPlan) -> Result<Self, String> {
+        Ok(Self {
+            mode: ProviderMode::Memory(WasmtimeMemoryExecutor::compile(bytes, plan)?),
+        })
+    }
 }
 
 impl WasmExtensionProvider for WasmtimeExtensionProvider {
     fn supports(&self, abi: WasmAbi) -> bool {
-        abi == WasmAbi::CoreV1
+        matches!(
+            (&self.mode, abi),
+            (ProviderMode::Direct { .. }, WasmAbi::CoreV1)
+                | (ProviderMode::Memory(_), WasmAbi::MemoryV1)
+        )
     }
 
     fn start(&self, manifest: &ExtensionManifest) -> Result<(), String> {
@@ -78,15 +98,42 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
                 manifest.capabilities, manifest.namespace
             ));
         }
+        if let ProviderMode::Memory(executor) = &self.mode {
+            let plan = executor.plan();
+            if manifest.exports.len() != plan.functions.len()
+                || manifest.exports.iter().any(|(name, specification)| {
+                    plan.functions
+                        .iter()
+                        .find(|function| function.name == *name)
+                        .map_or(true, |function| {
+                            specification.raw_name(name) != function.wasm_export
+                        })
+                })
+            {
+                return Err(format!(
+                    "extension/manifest-mismatch: memory.v1 exports for {} do not match bindings.edn",
+                    manifest.namespace
+                ));
+            }
+            return Ok(());
+        }
+        let ProviderMode::Direct {
+            engine,
+            module,
+            session,
+        } = &self.mode
+        else {
+            unreachable!()
+        };
         let limits = StoreLimitsBuilder::new()
             .memory_size(64 * 1024 * 1024)
             .instances(1)
             .memories(1)
             .tables(1)
             .build();
-        let mut store = Store::new(&self.engine, limits);
+        let mut store = Store::new(engine, limits);
         store.limiter(|limits| limits);
-        let instance = Instance::new(&mut store, &self.module, &[])
+        let instance = Instance::new(&mut store, module, &[])
             .map_err(|error| format!("extension/module-invalid: {error}"))?;
         for (name, specification) in &manifest.exports {
             let raw_name = specification.raw_name(name);
@@ -101,7 +148,7 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
                 ));
             }
         }
-        *self.session.borrow_mut() = Some(Session { store, instance });
+        *session.borrow_mut() = Some(Session { store, instance });
         Ok(())
     }
 
@@ -111,6 +158,12 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
         export: &str,
         arguments: &[Value],
     ) -> Result<Value, String> {
+        if let ProviderMode::Memory(executor) = &self.mode {
+            return executor.invoke(export, arguments);
+        }
+        let ProviderMode::Direct { session, .. } = &self.mode else {
+            unreachable!()
+        };
         let specification = manifest
             .exports
             .iter()
@@ -118,7 +171,7 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
             .map(|(_, specification)| specification)
             .ok_or_else(|| format!("extension/export-missing: {export}"))?;
         let raw_name = specification.raw_name(export);
-        let mut session = self.session.borrow_mut();
+        let mut session = session.borrow_mut();
         let session = session
             .as_mut()
             .ok_or_else(|| format!("extension/not-started: {}", manifest.namespace))?;
@@ -157,7 +210,9 @@ impl WasmExtensionProvider for WasmtimeExtensionProvider {
     }
 
     fn shutdown(&self, _manifest: &ExtensionManifest) {
-        self.session.borrow_mut().take();
+        if let ProviderMode::Direct { session, .. } = &self.mode {
+            session.borrow_mut().take();
+        }
     }
 }
 

@@ -246,10 +246,16 @@
                  "extension :assets must be a string vector")))
     (cond
       (= provider :wasm)
-      (if (and (string? module) (empty? target-paths) (= abi :core.v1))
-        nil
-        (throw (ex :dependency {} :ex/message
-                   "WASM providers require :module, :abi :core.v1, and cannot declare :targets")))
+      (let [memory? (= abi :memory.v1)
+            bindings? (not (empty? (filter (fn [path] (= path "bindings.edn"))
+                                           assets)))]
+        (if (and (string? module)
+                 (empty? target-paths)
+                 (or (= abi :core.v1)
+                     (and memory? (empty? capabilities) bindings?)))
+          nil
+          (throw (ex :dependency {} :ex/message
+                     "WASM providers require :abi :core.v1 or :memory.v1; memory.v1 requires empty capabilities and a bindings.edn asset"))))
       (= provider :hta)
       (if (and (nil? module) (not (empty? target-paths)) (= abi :hta.v1))
         nil

@@ -75,6 +75,13 @@ pub fn direct_inspection_source(inspection: &DirectWasmInspection) -> String {
             ),
         ),
         (
+            keyword_form("start"),
+            inspection
+                .start
+                .map(|value| Form::Number(i64::from(value)))
+                .unwrap_or(Form::Nil),
+        ),
+        (
             keyword_form("exports"),
             Form::Vector(
                 inspection

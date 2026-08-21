@@ -450,6 +450,7 @@ fn parse_errors(form: &Form, origin: &str, export: &str) -> Result<ErrorContract
 }
 
 fn validate_alpha(interface: &WasmInterface, origin: &str) -> Result<(), String> {
+    let mut uses_memory = false;
     for export in &interface.exports {
         if export.asynchronous {
             return Err(unsupported(
@@ -461,18 +462,28 @@ fn validate_alpha(interface: &WasmInterface, origin: &str) -> Result<(), String>
             ));
         }
         for argument in &export.arguments {
-            validate_parameter(argument, origin, &export.name)?;
+            uses_memory |= validate_parameter(argument, origin, &export.name)?;
         }
-        validate_result(&export.returns, origin, &export.name)?;
+        uses_memory |= validate_result(&export.returns, origin, &export.name)?;
     }
-    Ok(())
+    match (uses_memory, interface.memory.is_some()) {
+        (true, false) => Err(malformed(
+            origin,
+            "lowered or lifted values require an explicit :memory contract",
+        )),
+        (false, true) => Err(malformed(
+            origin,
+            ":memory is declared but no argument or result uses it",
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn validate_parameter(
     parameter: &BindingParameter,
     origin: &str,
     export: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if parameter.wasm_type == WasmValueType::Void {
         return Err(malformed(
             origin,
@@ -494,7 +505,7 @@ fn validate_parameter(
                     ),
                 ));
             }
-            Ok(())
+            Ok(false)
         }
         Some(expected) => Err(malformed(
             origin,
@@ -524,18 +535,12 @@ fn validate_parameter(
                     ),
                 ));
             }
-            Err(unsupported(
-                origin,
-                format!(
-                    "non-scalar argument {} in export {export} is reserved for memory bindings",
-                    parameter.name
-                ),
-            ))
+            Ok(true)
         }
     }
 }
 
-fn validate_result(result: &BindingResult, origin: &str, export: &str) -> Result<(), String> {
+fn validate_result(result: &BindingResult, origin: &str, export: &str) -> Result<bool, String> {
     match result.hara_type.direct_wasm_type() {
         Some(expected) if expected == result.wasm_type => {
             if result.lifting.is_some() || result.ownership.is_some() {
@@ -544,7 +549,7 @@ fn validate_result(result: &BindingResult, origin: &str, export: &str) -> Result
                     format!("scalar result in export {export} cannot declare lifting or ownership"),
                 ));
             }
-            Ok(())
+            Ok(false)
         }
         Some(expected) => Err(malformed(
             origin,
@@ -567,10 +572,7 @@ fn validate_result(result: &BindingResult, origin: &str, export: &str) -> Result
                     format!("non-scalar result in export {export} requires :ownership"),
                 ));
             }
-            Err(unsupported(
-                origin,
-                format!("non-scalar result in export {export} is reserved for memory bindings"),
-            ))
+            Ok(true)
         }
     }
 }

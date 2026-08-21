@@ -1,4 +1,6 @@
-use super::{WasmInterface, WasmValueType};
+use super::{inspect_direct, WasmInterface, WasmValueType};
+
+const START_SENTINEL: &[u8] = b"\0asm\x01\0\0\0\x08\x01\0";
 
 const SCALAR_INTERFACE: &str = r#"
   (wasm/interface
@@ -10,6 +12,24 @@ const SCALAR_INTERFACE: &str = r#"
           :arguments [{:name left :hara/type :i64 :wasm/type :i64}
                       {:name right :hara/type :i64 :wasm/type :i64}]
           :returns {:hara/type :i64 :wasm/type :i64}}}})"#;
+
+const MEMORY_INTERFACE: &str = r#"
+  (wasm/interface
+   {:schema "hara.wasm-interface/0-alpha"
+    :namespace codec.echo
+    :module "echo.wasm"
+    :memory {:export "memory" :allocate "alloc" :release "free"}
+    :exports
+    {echo {:wasm/export "echo_bytes"
+           :arguments [{:name input
+                        :hara/type :bytes
+                        :wasm/type :i32
+                        :lower [:pointer :length]
+                        :ownership :borrowed}]
+           :returns {:hara/type :bytes
+                     :wasm/type :i64
+                     :lift :packed-i64
+                     :ownership :caller}}}})"#;
 
 #[test]
 fn parses_scalar_interface_without_evaluation() {
@@ -29,6 +49,25 @@ fn parses_scalar_interface_without_evaluation() {
         WasmInterface::parse(&interface.canonical_source(), "canonical").unwrap(),
         interface
     );
+}
+
+#[test]
+fn parses_explicit_memory_semantics_without_executing_them() {
+    let interface = WasmInterface::parse(MEMORY_INTERFACE, "fixture").unwrap();
+    let memory = interface.memory.as_ref().unwrap();
+    assert_eq!(memory.export, "memory");
+    assert_eq!(memory.allocate.as_deref(), Some("alloc"));
+    assert_eq!(memory.release.as_deref(), Some("free"));
+    assert_eq!(
+        WasmInterface::parse(&interface.canonical_source(), "canonical").unwrap(),
+        interface
+    );
+}
+
+#[test]
+fn static_inspection_records_a_start_function_without_running_it() {
+    let inspection = inspect_direct(START_SENTINEL).unwrap();
+    assert_eq!(inspection.start, Some(0));
 }
 
 #[test]
@@ -105,6 +144,14 @@ fn rejects_ambiguous_and_future_semantics() {
     assert!(WasmInterface::parse(&missing_ownership, "bytes")
         .unwrap_err()
         .contains("requires :ownership"));
+
+    let missing_memory = MEMORY_INTERFACE.replace(
+        ":memory {:export \"memory\" :allocate \"alloc\" :release \"free\"}",
+        "",
+    );
+    assert!(WasmInterface::parse(&missing_memory, "bytes")
+        .unwrap_err()
+        .contains("require an explicit :memory contract"));
 
     let asynchronous = SCALAR_INTERFACE.replace(
         ":returns {:hara/type :i64 :wasm/type :i64}",

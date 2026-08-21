@@ -5,9 +5,12 @@
 
 mod canonical;
 mod direct;
+mod memory;
 #[cfg(not(target_arch = "wasm32"))]
 mod package;
 mod parser;
+#[cfg(not(target_arch = "wasm32"))]
+mod runtime;
 mod syntax;
 
 #[cfg(test)]
@@ -27,11 +30,18 @@ pub use direct::{
     direct_inspection_source, direct_interface_skeleton, inspect_direct,
     DIRECT_WASM_INSPECTION_SCHEMA,
 };
+pub use memory::{
+    MemoryArgumentPlan, MemoryBindingPlan, MemoryFunctionPlan, MemoryResultPlan,
+    MEMORY_BINDING_SCHEMA,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use package::{
-    bind_package, inspect_module, write_interface_skeleton, BoundPackage, InspectionArtifact,
-    DIRECT_WASM_BINDING_SCHEMA, DIRECT_WASM_BUILD_PRODUCT_SCHEMA, DIRECT_WASM_CONFORMANCE_SCHEMA,
+    bind_package, inspect_module, write_interface_skeleton, BindingTarget, BoundPackage,
+    InspectionArtifact, DIRECT_WASM_BINDING_SCHEMA, DIRECT_WASM_BUILD_PRODUCT_SCHEMA,
+    DIRECT_WASM_CONFORMANCE_SCHEMA,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use runtime::WasmtimeMemoryExecutor;
 
 pub const WASM_INTERFACE_SCHEMA: &str = "hara.wasm-interface/0-alpha";
 
@@ -75,7 +85,7 @@ pub enum HaraValueType {
 impl HaraValueType {
     fn direct_wasm_type(&self) -> Option<WasmValueType> {
         match self {
-            Self::I32 => Some(WasmValueType::I32),
+            Self::I32 | Self::Boolean => Some(WasmValueType::I32),
             Self::I64 => Some(WasmValueType::I64),
             Self::F32 => Some(WasmValueType::F32),
             Self::F64 => Some(WasmValueType::F64),
