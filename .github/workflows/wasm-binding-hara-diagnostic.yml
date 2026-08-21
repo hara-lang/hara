@@ -1,0 +1,44 @@
+name: Wasm binding Hara diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'core/lib/src/tool/cli/extension.hal'
+      - 'core/lib/test/tool/cli/extension_test.hal'
+      - '.github/workflows/wasm-binding-hara-diagnostic.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Capture exact Hara command failure
+        run: |
+          set +e
+          ./scripts/runtime/run-lib-tests core/lib/test/tool/cli/extension_test.hal > /tmp/hara-test.log 2>&1
+          status=$?
+          cat /tmp/hara-test.log
+          if [ "$status" -ne 0 ]; then
+            cp /tmp/hara-test.log .github/wasm-binding-hara-test.log
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/wasm-binding-hara-test.log
+            git commit -m "Record Wasm binding Hara test diagnostic"
+            git push origin HEAD:${{ github.head_ref }}
+          fi
+          exit "$status"
