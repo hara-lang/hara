@@ -1,0 +1,87 @@
+(ns code.query.conformance-test
+  (:require [code.query.conformance :refer :all]
+            [code.query.common]
+            [code.test.base.process :as process]
+            [code.test.checker.common :as checker]))
+
+(defn conformance-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer code.query.conformance/load-fixtures :added "3.0"}
+(Test/run
+ [{:expected true
+   :name "loads the shared fixture corpus"
+   :test (fn [] (let [fixtures (load-fixtures)]
+                  (and (vector? fixtures)
+                       (= "common/any-nil" (:id (first fixtures))))))}]
+ conformance-test-check)
+
+^{:refer code.query.conformance/function-symbol :added "3.0"}
+(Test/run
+ [{:expected 'code.query.common/any
+   :name "returns the qualified symbol for a matching public var"
+   :test (fn [] (function-symbol code.query.common/any))}]
+ conformance-test-check)
+
+^{:refer code.query.conformance/normalize-result :added "3.0"}
+(Test/run
+ [{:expected 'code.query.common/any
+   :name "normalizes a function value to a qualified symbol"
+   :test (fn [] (normalize-result code.query.common/any))}
+  {:expected [1 2 3]
+   :name "leaves ordinary values unchanged"
+   :test (fn [] (normalize-result [1 2 3]))}]
+ conformance-test-check)
+
+^{:refer code.query.conformance/evaluate-in-hara :added "3.0"}
+(Test/run
+ [{:expected true
+   :name "evaluates a fixture expression in the Hara runtime"
+   :test (fn [] (evaluate-in-hara {:ns 'code.query.common :expr "(any nil)"}))}
+  {:expected 'code.query.common/any
+   :name "returns the qualified symbol for a function value"
+   :test (fn [] (evaluate-in-hara {:ns 'code.query.common :expr "any"}))}]
+ conformance-test-check)
+
+^{:refer code.query.conformance/compare-results :added "3.0"}
+(Test/run
+ [{:expected {:id "id" :expected 1 :hara 1 :foundation 1 :match true}
+   :name "reports a match when values are equal"
+   :test (fn [] (compare-results "id" 1 1 1))}
+  {:expected {:id "id" :expected 1 :hara 1 :foundation 2 :match false}
+   :name "reports a mismatch when values differ"
+   :test (fn [] (compare-results "id" 1 1 2))}]
+ conformance-test-check)
+
+^{:refer code.query.conformance/run-foundation :added "3.0"}
+(Test/run
+ [{:expected true
+   :name "invokes the Foundation runner and returns a result map"
+   :test (fn [] (let [results (run-foundation +foundation-fixture-path+ +foundation-root+)]
+                  (and (map? results)
+                       (not (nil? (get results "common/any-nil"))))))}]
+ conformance-test-check)
+
+^{:refer code.query.conformance/run-corpus :added "3.0"}
+(Test/run
+ [{:expected true
+   :name "returns a conformance report with expected keys"
+   :test (fn [] (let [report (run-corpus)]
+                  (and (map? report)
+                       (not (nil? (get report :conformant?)))
+                       (not (nil? (get report :total)))
+                       (not (nil? (get report :mismatched)))
+                       (not (nil? (get report :errors)))
+                       (not (nil? (get report :entries)))
+                       (pos? (:total report)))))}
+  {:expected true
+   :name "reports the full code.query common/compile corpus as conformant"
+   :test (fn [] (:conformant? (run-corpus)))}]
+ conformance-test-check)
