@@ -400,7 +400,7 @@ final class WebdavFilesystem implements IFilesystem {
           if (options.mode() == WriteMode.APPEND) {
             require(Capability.APPEND, "write", logical, null);
           }
-          if (copy.length > maxTransferBytes) {
+          if ((long) copy.length > maxTransferBytes) {
             throw failure(
                 "quota-exceeded",
                 "WebDAV write exceeds configured transfer limit",

@@ -22,7 +22,7 @@ public class WebdavFilesystemTest {
   @Test
   public void openRequiresAuthenticatedVerifiedTransportAndRedactsAuthority() throws Exception {
     try (WebdavFilesystemFixture fixture = new WebdavFilesystemFixture()) {
-      fixture.client.hostKeyVerified = false;
+      fixture.setHostKeyVerified(false);
       try (var executors = new FixtureExecutors()) {
         WebdavFilesystem.Factory factory = new WebdavFilesystem.Factory();
         try {
@@ -36,7 +36,7 @@ public class WebdavFilesystemTest {
           assertFalse(error.data().toString().contains("secret:dav-profile"));
         }
 
-        fixture.client.hostKeyVerified = true;
+        fixture.setHostKeyVerified(true);
         IFilesystem filesystem =
             join(factory.open(executors.context(reference -> fixture.client), config("secret:dav-profile")));
         assertEquals("webdav", filesystem.descriptor().kind());
@@ -128,6 +128,10 @@ public class WebdavFilesystemTest {
       directories.add("/");
       directories.add("/data");
       files.put("/data/a.bin", new byte[] {1, 2, 3});
+    }
+
+    void setHostKeyVerified(boolean verified) {
+      client.hostKeyVerified = verified;
     }
 
     @Override
