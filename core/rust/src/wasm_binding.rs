@@ -5,6 +5,7 @@
 
 mod canonical;
 mod direct;
+mod memory;
 #[cfg(not(target_arch = "wasm32"))]
 mod package;
 mod parser;
@@ -26,6 +27,10 @@ pub use crate::direct_wasm::{
 pub use direct::{
     direct_inspection_source, direct_interface_skeleton, inspect_direct,
     DIRECT_WASM_INSPECTION_SCHEMA,
+};
+pub use memory::{
+    MemoryArgumentPlan, MemoryBindingPlan, MemoryFunctionPlan, MemoryResultPlan,
+    MEMORY_BINDING_SCHEMA,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use package::{
@@ -75,7 +80,7 @@ pub enum HaraValueType {
 impl HaraValueType {
     fn direct_wasm_type(&self) -> Option<WasmValueType> {
         match self {
-            Self::I32 => Some(WasmValueType::I32),
+            Self::I32 | Self::Boolean => Some(WasmValueType::I32),
             Self::I64 => Some(WasmValueType::I64),
             Self::F32 => Some(WasmValueType::F32),
             Self::F64 => Some(WasmValueType::F64),
