@@ -4,6 +4,9 @@
 //! an interface, instantiates a module, or acquires host authority.
 
 mod canonical;
+mod direct;
+#[cfg(not(target_arch = "wasm32"))]
+mod package;
 mod parser;
 mod syntax;
 
@@ -15,6 +18,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use sha2::{Digest, Sha256};
 
 use crate::extension::ExtensionExport;
+
+pub use crate::direct_wasm::{
+    DirectWasmFunctionExport, DirectWasmImport, DirectWasmImportKind, DirectWasmInspection,
+    DirectWasmMemory,
+};
+pub use direct::{
+    direct_inspection_source, direct_interface_skeleton, inspect_direct,
+    DIRECT_WASM_INSPECTION_SCHEMA,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use package::{
+    bind_package, inspect_module, write_interface_skeleton, BoundPackage, InspectionArtifact,
+    DIRECT_WASM_BINDING_SCHEMA, DIRECT_WASM_BUILD_PRODUCT_SCHEMA, DIRECT_WASM_CONFORMANCE_SCHEMA,
+};
 
 pub const WASM_INTERFACE_SCHEMA: &str = "hara.wasm-interface/0-alpha";
 
@@ -169,6 +186,7 @@ impl WasmInterface {
                             .collect(),
                         returns: export.returns.wasm_type.as_keyword().to_owned(),
                         asynchronous: false,
+                        raw_export: None,
                     },
                 )
             })

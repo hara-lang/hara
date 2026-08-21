@@ -21,7 +21,7 @@ const MANIFEST_FIELDS: &[&str] = &[
     "targets",
     "assets",
 ];
-const EXPORT_FIELDS: &[&str] = &["args", "returns", "async"];
+const EXPORT_FIELDS: &[&str] = &["args", "returns", "async", "wasm/export"];
 const HANDLE_FIELDS: &[&str] = &["tag"];
 const TARGET_FIELDS: &[&str] = &["module", "runtime"];
 
@@ -36,6 +36,13 @@ pub struct ExtensionExport {
     pub arguments: Vec<String>,
     pub returns: String,
     pub asynchronous: bool,
+    pub raw_export: Option<String>,
+}
+
+impl ExtensionExport {
+    pub fn raw_name<'a>(&'a self, public_name: &'a str) -> &'a str {
+        self.raw_export.as_deref().unwrap_or(public_name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +361,7 @@ fn parse_assets(form: &Form, origin: &str) -> Result<Vec<String>, String> {
         })
         .collect()
 }
+
 fn safe_relative(
     value: &str,
     suffix: Option<&str>,
@@ -409,12 +417,16 @@ fn parse_exports(form: &Form, origin: &str) -> Result<Vec<(String, ExtensionExpo
                 Some(Form::Bool(value)) => *value,
                 Some(_) => return Err(malformed(origin, "export async must be boolean")),
             };
+            let raw_export = optional(specification, "wasm/export")
+                .map(|form| string(form, origin, "export wasm/export").map(str::to_owned))
+                .transpose()?;
             Ok((
                 name,
                 ExtensionExport {
                     arguments,
                     returns,
                     asynchronous,
+                    raw_export,
                 },
             ))
         })
@@ -586,6 +598,17 @@ mod tests {
        :handles {"digest" {:tag crypto}}
        :capabilities [:random]}"#;
 
+    const ALIASED_MANIFEST: &str = r#"
+      {:namespace "math.scalar"
+       :version "0.1.0"
+       :provider :wasm
+       :module "math.wasm"
+       :abi :core.v1
+       :exports {"sum" {:wasm/export "add_i64"
+                         :args [:i64 :i64]
+                         :returns :i64}}
+       :capabilities []}"#;
+
     #[test]
     fn parses_the_wasm_manifest_contract() {
         let manifest = ExtensionManifest::parse(MANIFEST, "fixture").unwrap();
@@ -593,8 +616,16 @@ mod tests {
         assert_eq!(manifest.identity.as_deref(), Some("hara/crypto.hash"));
         assert_eq!(manifest.abi, WasmAbi::HtaV1);
         assert!(manifest.exports[0].1.asynchronous);
+        assert_eq!(manifest.exports[0].1.raw_name("digest"), "digest");
         assert!(manifest.permits_host_call("crypto.random", "fill"));
         assert_eq!(manifest.handle_tags["digest"], "crypto");
+    }
+
+    #[test]
+    fn preserves_public_and_raw_export_names() {
+        let manifest = ExtensionManifest::parse(ALIASED_MANIFEST, "fixture").unwrap();
+        assert_eq!(manifest.exports[0].0, "sum");
+        assert_eq!(manifest.exports[0].1.raw_name("sum"), "add_i64");
     }
 
     #[test]

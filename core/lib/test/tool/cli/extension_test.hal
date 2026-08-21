@@ -6,7 +6,9 @@
   {:provider :wasm
    :module "fixture.wasm"
    :abi :core.v1
-   :exports {"value" {:args [] :returns :i32}}
+   :exports {"value" {:wasm/export "raw_value"
+                       :args []
+                       :returns :i32}}
    :capabilities []})
 
 [(test-check "extension manifests are validated by Hara"
@@ -27,7 +29,34 @@
                 "project.edn"))
               ["node/addon.node"])
   (test-check "extension routes select Hara operations"
-              (extension/operation-request
-               {:request/route :tool.cli.route/extension-install
-                :request/arguments ["package"]})
-              {:operation :install :arguments ["package"]})]
+              [(extension/operation-request
+                {:request/route :tool.cli.route/extension-install
+                 :request/arguments ["package"]})
+               (extension/operation-request
+                {:request/route :tool.cli.route/extension-inspect
+                 :request/arguments ["math.wasm" "--out" "math.hal"]})
+               (extension/operation-request
+                {:request/route :tool.cli.route/extension-bind
+                 :request/arguments ["math.hal" "--module" "math.wasm"
+                                     "--out" "dist"]})]
+              [{:operation :install :arguments ["package"]}
+               {:operation :inspect
+                :arguments ["math.wasm" "--out" "math.hal"]}
+               {:operation :bind
+                :arguments ["math.hal" "--module" "math.wasm"
+                            "--out" "dist"]}])
+  (test-check "inspect normalizes authoring flags into one host action"
+              (:result/data
+               (extension/inspect-command
+                ["math.wasm" "--namespace=math.scalar"
+                 "--out" "math.interface.hal"]))
+              {:host/action :extension-inspect
+               :host/arguments ["math.wasm" "math.interface.hal"
+                                "math.scalar"]})
+  (test-check "bind normalizes authoring flags into one host action"
+              (:result/data
+               (extension/bind-command
+                ["math.interface.hal" "--out=dist"
+                 "--module" "math.wasm"]))
+              {:host/action :extension-bind
+               :host/arguments ["math.interface.hal" "math.wasm" "dist"]})]
