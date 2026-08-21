@@ -4,6 +4,8 @@ set -Eeuo pipefail
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 [[ -n "$repo_root" ]] || { echo "error: run from a Hara checkout" >&2; exit 1; }
 
+source "$repo_root/scripts/runtime/ensure-agent-toolchain.sh"
+
 SPECS_REPOSITORY="https://github.com/hara-lang/hara-specs-registry.git"
 SPECS_REVISION="072914a1018f91a18e17a30bbe661a4323aad720"
 WWW_REPOSITORY="https://github.com/hara-lang/hara-www.git"
