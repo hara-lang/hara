@@ -151,9 +151,10 @@ final class WebDavFilesystemFixture implements AutoCloseable {
       Value existing = values.get(key);
       if (existing == null) throw missing();
       checkExpected(existing, expectedRevision);
-      String prefix = path(key);
-      if (!prefix.endsWith("/")) prefix += "/";
-      values.keySet().removeIf(candidate -> sameOrigin(key, candidate) && path(candidate).startsWith(prefix));
+      String rawPrefix = path(key);
+      String childPrefix = rawPrefix.endsWith("/") ? rawPrefix : rawPrefix + "/";
+      values.keySet().removeIf(
+          candidate -> sameOrigin(key, candidate) && path(candidate).startsWith(childPrefix));
       values.remove(key);
     }
 
