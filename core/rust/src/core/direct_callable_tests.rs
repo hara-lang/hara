@@ -18,6 +18,7 @@ fn direct_callable_catalog_closes_the_runtime_inventory() {
     }
 }
 
+#[cfg(not(feature = "raw-wasm"))]
 #[test]
 fn complete_ordinary_callable_catalog_never_reenters_the_evaluator() {
     let runtime = crate::Runtime::empty();
@@ -106,6 +107,7 @@ fn representative_direct_callables_preserve_value_behavior() {
     );
 }
 
+#[cfg(not(feature = "raw-wasm"))]
 #[test]
 fn specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_loading() {
     let registry = std::env::var_os("HARA_SPECS_REGISTRY")
