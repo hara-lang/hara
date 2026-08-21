@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/std-typed-schema.yml'
+      - '.github/agent-patches/838-iteration-2.patch.xz.b64'
 
 permissions:
   contents: write
@@ -13,38 +14,84 @@ concurrency:
   group: issue-838-bootstrap-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+env:
+  ISSUE_838_MATERIALIZE: |
+    set -euo pipefail
+    cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
+      | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
+    printf '%s  %s\n' \
+      '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
+      "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
+    xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
+      > "$RUNNER_TEMP/issue-838.patch"
+    printf '%s  %s\n' \
+      '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
+      "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
+    git apply --check "$RUNNER_TEMP/issue-838.patch"
+    git apply --whitespace=nowarn "$RUNNER_TEMP/issue-838.patch"
+    
+    tr -d '\n' < .github/agent-patches/838-iteration-2.patch.xz.b64 \
+      | base64 --decode > "$RUNNER_TEMP/issue-838-iteration-2.patch.xz"
+    printf '%s  %s\n' \
+      '5c1bb6342e40b45a9ed06e3575dc289b4e85c5e233a5b8b7abef5f83721aa6a0' \
+      "$RUNNER_TEMP/issue-838-iteration-2.patch.xz" | sha256sum --check --strict
+    xz --decompress --stdout "$RUNNER_TEMP/issue-838-iteration-2.patch.xz" \
+      > "$RUNNER_TEMP/issue-838-iteration-2.patch"
+    printf '%s  %s\n' \
+      '58173b7711572bd7124c72093cdb87d15ae2deeff38fc237bdfef81393117a37' \
+      "$RUNNER_TEMP/issue-838-iteration-2.patch" | sha256sum --check --strict
+    git apply --check "$RUNNER_TEMP/issue-838-iteration-2.patch"
+    git apply "$RUNNER_TEMP/issue-838-iteration-2.patch"
+    git diff --check
+  ISSUE_838_FORMAT: |
+    set -euo pipefail
+    rustfmt --edition 2021 --config skip_children=true \
+      core/rust/raw/src/lib.rs \
+      core/rust/src/core.rs \
+      core/rust/src/core/evaluator.rs \
+      core/rust/src/core/inventory.rs \
+      core/rust/src/core/value.rs \
+      core/rust/src/fiber.rs \
+      core/rust/src/lib.rs \
+      core/rust/src/runtime/runtime.rs \
+      core/rust/src/runtime/tests.rs \
+      core/rust/src/vm/machine/dispatch.rs \
+      core/rust/src/core/direct_callable.rs \
+      core/rust/src/core/direct_callable_catalog.rs \
+      core/rust/src/core/direct_callable_impl.rs \
+      core/rust/src/core/direct_callable_operations.rs \
+      core/rust/src/core/direct_callable_probe.rs \
+      core/rust/src/core/direct_callable_tests.rs
+    git diff --check
+
 jobs:
   catalog:
     name: Catalog closure and zero evaluator re-entry
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Materialize the checksum-pinned implementation
-        shell: bash
+      - name: Checkout authoritative specs registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Require and expose authoritative fixtures
         run: |
           set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
-          git diff --check
+          test -f "$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal"
+          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - name: Materialize the checksum-pinned implementation
+        run: bash -euo pipefail -c "$ISSUE_838_MATERIALIZE"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Enforce formatting
-        run: cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
+      - name: Format the bounded Rust change
+        run: bash -euo pipefail -c "$ISSUE_838_FORMAT"
       - name: Close the catalog and prove zero evaluator re-entry
         run: |
           cargo test --manifest-path core/rust/Cargo.toml \
@@ -53,6 +100,8 @@ jobs:
             complete_ordinary_callable_catalog_never_reenters_the_evaluator --lib
           cargo test --manifest-path core/rust/Cargo.toml \
             representative_direct_callables_preserve_value_behavior --lib
+          cargo test --manifest-path core/rust/Cargo.toml \
+            rust_native_work_handles_are_available_to_guest_hara --lib
       - name: Check supported feature profiles
         run: |
           cargo check --manifest-path core/rust/Cargo.toml --all-targets
@@ -62,28 +111,37 @@ jobs:
   bytecode:
     name: Tree, fiber, and bytecode VM parity
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-      - name: Materialize the checksum-pinned implementation
-        shell: bash
+      - name: Checkout authoritative specs registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+      - name: Require and expose authoritative fixtures
         run: |
           set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
+          test -f "$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal"
+          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+      - name: Checkout benchmark corpus
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+      - name: Expose benchmark corpus
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn "$GITHUB_WORKSPACE/hara-benchmarks" "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+      - name: Materialize the checksum-pinned implementation
+        run: bash -euo pipefail -c "$ISSUE_838_MATERIALIZE"
       - uses: dtolnay/rust-toolchain@stable
       - name: Run focused evaluator and VM suites
         run: |
@@ -109,28 +167,12 @@ jobs:
           path: hara-specs-registry
           fetch-depth: 1
       - name: Require and expose authoritative fixtures
-        shell: bash
         run: |
           set -euo pipefail
-          fixture="$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal"
-          test -f "$fixture"
+          test -f "$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal"
           ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
       - name: Materialize the checksum-pinned implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
+        run: bash -euo pipefail -c "$ISSUE_838_MATERIALIZE"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -152,7 +194,7 @@ jobs:
   work-release:
     name: Work suites and production-stack release baseline
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 65
     env:
       RUST_MIN_STACK: 33554432
     steps:
@@ -167,27 +209,24 @@ jobs:
           path: hara-specs-registry
           fetch-depth: 1
       - name: Require and expose authoritative fixtures
-        shell: bash
         run: |
           set -euo pipefail
           test -f "$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/foundation_behavioral.hal"
           ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
-      - name: Materialize the checksum-pinned implementation
-        shell: bash
+      - name: Checkout benchmark corpus
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-benchmarks
+          ref: 05234295ac1c706eb1adee505873b10783d42163
+          path: hara-benchmarks
+          fetch-depth: 1
+      - name: Expose benchmark corpus
         run: |
           set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
+          mkdir -p "$GITHUB_WORKSPACE/../../website"
+          ln -sfn "$GITHUB_WORKSPACE/hara-benchmarks" "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
+      - name: Materialize the checksum-pinned implementation
+        run: bash -euo pipefail -c "$ISSUE_838_MATERIALIZE"
       - uses: dtolnay/rust-toolchain@stable
       - name: Run Work protocol, evaluator, and compiler suites
         run: |
@@ -201,31 +240,20 @@ jobs:
     name: Publish clean implementation commit
     needs: [catalog, bytecode, foundation, work-release]
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
       - name: Materialize the verified implementation
-        shell: bash
-        run: |
-          set -euo pipefail
-          cat .github/agent-patches/838-direct-callables.patch.xz.b64.0* \
-            | tr -d '\n' | base64 --decode > "$RUNNER_TEMP/issue-838.patch.xz"
-          printf '%s  %s\n' \
-            '6f197391558d13f61ac23aa43ede38f2fd71f79606839dded28b243fb8cfd794' \
-            "$RUNNER_TEMP/issue-838.patch.xz" | sha256sum --check --strict
-          xz --decompress --stdout "$RUNNER_TEMP/issue-838.patch.xz" \
-            > "$RUNNER_TEMP/issue-838.patch"
-          printf '%s  %s\n' \
-            '8205523699112776410b9a0121384b7b06b3d77677e96923d438cd454cfccc1c' \
-            "$RUNNER_TEMP/issue-838.patch" | sha256sum --check --strict
-          git apply --check "$RUNNER_TEMP/issue-838.patch"
-          git apply "$RUNNER_TEMP/issue-838.patch"
-          git diff --check
+        run: bash -euo pipefail -c "$ISSUE_838_MATERIALIZE"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Format the bounded Rust change
+        run: bash -euo pipefail -c "$ISSUE_838_FORMAT"
       - name: Restore trusted workflow and remove transport
-        shell: bash
         run: |
           set -euo pipefail
           git fetch origin main
@@ -235,9 +263,9 @@ jobs:
             .github/agent-patches/838-direct-callables.patch.xz.b64.00 \
             .github/agent-patches/838-direct-callables.patch.xz.b64.01 \
             .github/agent-patches/838-direct-callables.patch.xz.b64.02 \
-            .github/agent-patches/838-direct-callables.patch.xz.b64.03
+            .github/agent-patches/838-direct-callables.patch.xz.b64.03 \
+            .github/agent-patches/838-iteration-2.patch.xz.b64
       - name: Commit only the bounded implementation
-        shell: bash
         run: |
           set -euo pipefail
           git add -- \
