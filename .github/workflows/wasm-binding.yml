@@ -26,7 +26,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: wasm-binding-${{ github.event.pull_request.number || github.ref }}
@@ -37,10 +37,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check out hara-specs-registry
+        uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 0
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -48,25 +56,14 @@ jobs:
           components: rustfmt
           targets: wasm32-unknown-unknown
 
-      - name: Format touched Rust
+      - name: Check touched Rust formatting
         run: |
-          rustfmt --edition 2021 \
+          rustfmt --edition 2021 --check \
             core/rust/src/wasm_binding.rs \
             core/rust/src/wasm_binding/canonical.rs \
             core/rust/src/wasm_binding/parser.rs \
             core/rust/src/wasm_binding/syntax.rs \
             core/rust/src/wasm_binding/tests.rs
-
-      - name: Commit exact rustfmt output
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        run: |
-          if ! git diff --quiet; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add core/rust/src/wasm_binding.rs core/rust/src/wasm_binding
-            git commit -m "Format Wasm binding contract"
-            git push origin HEAD:${{ github.head_ref }}
-          fi
 
       - name: Enforce bounded binding modules
         run: |
