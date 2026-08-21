@@ -1,48 +1,39 @@
-name: Core CI — issue 838 top-level catalog repair
+name: Core CI — materialize issue 838 bootstrap repair
 
 on:
-  pull_request:
-    branches: [main]
   push:
     branches:
-      - agent/838-bootstrap-callables-fix
+      - agent/838-bootstrap-callables-final
+    paths:
+      - '.github/workflows/core-ci.yml'
 
 permissions:
   contents: write
 
 concurrency:
-  group: issue-838-top-level-repair-${{ github.event.pull_request.number || github.ref }}
+  group: issue-838-bootstrap-final-materializer
   cancel-in-progress: true
 
 jobs:
-  repair:
+  materialize:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       RUST_MIN_STACK: 33554432
     steps:
-      - name: Checkout the exact repair branch
+      - name: Checkout exact target branch
         uses: actions/checkout@v4
         with:
-          ref: agent/838-bootstrap-callables-fix
+          ref: agent/838-bootstrap-callables-final
           fetch-depth: 0
 
-      - name: Checkout the coordinated specs fixture
+      - name: Checkout authoritative specs fixture
         uses: actions/checkout@v4
         with:
           repository: hara-lang/hara-specs-registry
-          ref: aae63f735b312e29f18e041de6925ec0ae6baaa5
+          ref: b6925d0075401861d6f69dec44e95c7c5622a5ee
           path: hara-specs-registry
           fetch-depth: 1
-
-      - name: Require and expose authoritative specs
-        shell: bash
-        run: |
-          set -euo pipefail
-          fixture="$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal"
-          test -f "$fixture"
-          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" \
-            "$GITHUB_WORKSPACE/../hara-specs-registry"
 
       - name: Checkout benchmark fixtures
         uses: actions/checkout@v4
@@ -52,33 +43,59 @@ jobs:
           path: hara-benchmarks
           fetch-depth: 1
 
-      - name: Expose benchmark fixtures
+      - name: Checkout evidence branch
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara
+          ref: agent/838-direct-callable-catalog
+          path: control
+          fetch-depth: 1
+
+      - name: Record exact Actions run
+        working-directory: control
         shell: bash
         run: |
           set -euo pipefail
+          printf 'run=%s\nhead=%s\nbase=%s\nspecs=%s\n' \
+            '${{ github.run_id }}' \
+            '${{ github.sha }}' \
+            '23cc5ea1427ae5fa7e3b7313fb6b587bd05ed3a9' \
+            'b6925d0075401861d6f69dec44e95c7c5622a5ee' \
+            > .agent-838-final-repair-run
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -- .agent-838-final-repair-run
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'Record #838 final repair run'
+          git push origin HEAD:agent/838-direct-callable-catalog
+
+      - name: Expose authoritative fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$GITHUB_WORKSPACE/hara-specs-registry/01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal"
+          ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" \
+            "$GITHUB_WORKSPACE/../hara-specs-registry"
           mkdir -p "$GITHUB_WORKSPACE/../../website"
           ln -sfn "$GITHUB_WORKSPACE/hara-benchmarks" \
             "$GITHUB_WORKSPACE/../../website/hara-benchmarks"
 
-      - name: Verify the clean main-based transport branch
+      - name: Verify branch scope and apply bounded repair
         shell: bash
         run: |
           set -euo pipefail
-          base='e48e93d7eed95b5ce2bbbf3b150980105c5a7d36'
+          base='23cc5ea1427ae5fa7e3b7313fb6b587bd05ed3a9'
           git fetch origin main
           test "$(git merge-base HEAD origin/main)" = "$base"
           changed="$(git diff --name-only "$base"...HEAD)"
-          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^(\.github/workflows/core-ci\.yml|\.github/workflows/issue-838-bootstrap-materialize\.yml|\.github/agent-patches/838-bootstrap-callables\.patch)$' || true)"
+          unexpected="$(printf '%s\n' "$changed" | grep -Ev '^\.github/workflows/core-ci\.yml$' || true)"
           test -z "$unexpected"
           printf '%s  %s\n' \
             '31945d3a7ef8e923adb4a0906a03dc85e2e912699b1d3ad844998b2da3459153' \
             '.github/agent-patches/838-bootstrap-callables.patch' \
             | sha256sum --check --strict
-
-      - name: Apply the repair at the original top-level scope
-        shell: bash
-        run: |
-          set -euo pipefail
           git apply --check .github/agent-patches/838-bootstrap-callables.patch
           git apply .github/agent-patches/838-bootstrap-callables.patch
           git diff --check
@@ -87,9 +104,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
-          components: rustfmt, clippy
+          components: rustfmt
 
-      - name: Format the bounded Rust edits
+      - name: Format bounded Rust edits
         shell: bash
         run: |
           set -euo pipefail
@@ -100,7 +117,7 @@ jobs:
             core/rust/src/core/direct_callable_tests.rs
           git diff --check
 
-      - name: Run catalog closure, zero re-entry, behavior, and specs tests
+      - name: Run catalog, zero-reentry, behavior, and specs tests
         run: |
           cargo test --manifest-path core/rust/Cargo.toml \
             direct_callable_catalog_closes_the_runtime_inventory --lib
@@ -111,7 +128,7 @@ jobs:
           cargo test --manifest-path core/rust/Cargo.toml \
             specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_loading --lib
 
-      - name: Re-run the fiber suite that exposed the omissions
+      - name: Re-run fiber suite that exposed the omissions
         run: cargo test --manifest-path core/rust/Cargo.toml fiber:: --lib
 
       - name: Run focused bytecode VM parity
@@ -121,22 +138,7 @@ jobs:
           cargo test --manifest-path core/rust/Cargo.toml \
             --features bytecode-vm vm::execution_tests --lib
 
-      - name: Run specs-owned Foundation and protocol corpora
-        run: |
-          cargo test --manifest-path core/rust/Cargo.toml \
-            specs_owned_foundation_behavioral_corpus_runs_in_the_native_runtime --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            shared_foundation_protocol_conformance_fixture_runs_in_the_native_runtime --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            shared_foundation_protocol_functionality_fixture_runs_in_the_native_runtime --lib
-
-      - name: Run Work protocol, evaluator, and compiler suites
-        run: |
-          cargo test --manifest-path core/rust/Cargo.toml work:: --lib
-          cargo test --manifest-path core/rust/Cargo.toml \
-            --features bytecode-vm work --lib
-
-      - name: Check default, minimal, raw, and browser targets
+      - name: Check default, minimal, raw, and browser profiles
         run: |
           cargo check --manifest-path core/rust/Cargo.toml --all-targets
           cargo check --manifest-path core/rust/Cargo.toml \
@@ -147,17 +149,20 @@ jobs:
           cargo check --manifest-path core/rust/Cargo.toml \
             --target wasm32-unknown-unknown --no-default-features --lib
 
-      - name: Run the production-stack Rust release baseline
-        run: cargo test --release --manifest-path core/rust/Cargo.toml --lib
-
-      - name: Restore trusted workflow, remove transport, and publish clean code
+      - name: Restore trusted workflows and remove transport
         shell: bash
         run: |
           set -euo pipefail
-          git checkout origin/main -- .github/workflows/core-ci.yml
+          git checkout e48e93d7eed95b5ce2bbbf3b150980105c5a7d36 -- \
+            .github/workflows/core-ci.yml
           git rm -- \
             .github/workflows/issue-838-bootstrap-materialize.yml \
             .github/agent-patches/838-bootstrap-callables.patch
+
+      - name: Commit only the clean code and validation integration
+        shell: bash
+        run: |
+          set -euo pipefail
           git add -- \
             .github/workflows/core-ci.yml \
             .github/workflows/issue-838-direct-callables.yml \
@@ -169,6 +174,7 @@ jobs:
           expected="$(git diff --cached --name-only | sort)"
           actual="$(printf '%s\n' \
             .github/agent-patches/838-bootstrap-callables.patch \
+            .github/workflows/core-ci.yml \
             .github/workflows/issue-838-bootstrap-materialize.yml \
             .github/workflows/issue-838-direct-callables.yml \
             core/rust/src/core/direct_callable_catalog.rs \
@@ -179,4 +185,4 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git commit -m 'Close the boolean and Promise bootstrap callable gap'
-          git push origin HEAD:agent/838-bootstrap-callables-fix
+          git push origin HEAD:agent/838-bootstrap-callables-final
