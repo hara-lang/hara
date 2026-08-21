@@ -28,10 +28,7 @@ pub fn direct_inspection_source(inspection: &DirectWasmInspection) -> String {
                         let mut fields = vec![
                             (keyword_form("module"), string_form(&import.module)),
                             (keyword_form("name"), string_form(&import.name)),
-                            (
-                                keyword_form("kind"),
-                                keyword_form(import.kind.as_keyword()),
-                            ),
+                            (keyword_form("kind"), keyword_form(import.kind.as_keyword())),
                         ];
                         if let Some(signature) = import.signature.as_ref() {
                             fields.extend(signature_forms(signature));
@@ -84,15 +81,9 @@ pub fn direct_inspection_source(inspection: &DirectWasmInspection) -> String {
                     .exports
                     .iter()
                     .map(|export| {
-                        let mut fields = vec![(
-                            keyword_form("name"),
-                            string_form(&export.name),
-                        )];
+                        let mut fields = vec![(keyword_form("name"), string_form(&export.name))];
                         fields.extend(signature_forms(&export.signature));
-                        fields.push((
-                            keyword_form("imported"),
-                            Form::Bool(export.imported),
-                        ));
+                        fields.push((keyword_form("imported"), Form::Bool(export.imported)));
                         Form::Map(fields)
                     })
                     .collect(),
@@ -108,9 +99,7 @@ pub fn direct_interface_skeleton(
     inspection: &DirectWasmInspection,
 ) -> Result<String, String> {
     if !valid_namespace(namespace) {
-        return Err(
-            "wasm-binding/malformed: namespace must be a qualified lower-case name".into(),
-        );
+        return Err("wasm-binding/malformed: namespace must be a qualified lower-case name".into());
     }
     if !valid_module_path(module) {
         return Err(
@@ -152,10 +141,7 @@ pub fn direct_interface_skeleton(
             (
                 symbol_form(&public_name),
                 Form::Map(vec![
-                    (
-                        keyword_form("wasm/export"),
-                        string_form(&export.name),
-                    ),
+                    (keyword_form("wasm/export"), string_form(&export.name)),
                     (keyword_form("arguments"), Form::Vector(arguments)),
                     (
                         keyword_form("returns"),
@@ -175,10 +161,7 @@ pub fn direct_interface_skeleton(
     Ok(Form::List(vec![
         symbol_form("wasm/interface"),
         Form::Map(vec![
-            (
-                keyword_form("schema"),
-                string_form(WASM_INTERFACE_SCHEMA),
-            ),
+            (keyword_form("schema"), string_form(WASM_INTERFACE_SCHEMA)),
             (keyword_form("namespace"), symbol_form(namespace)),
             (keyword_form("module"), string_form(module)),
             (keyword_form("exports"), Form::Map(exports)),
@@ -265,10 +248,7 @@ fn signature_forms(signature: &ExtensionExport) -> Vec<(Form, Form)> {
                     .collect(),
             ),
         ),
-        (
-            keyword_form("returns"),
-            keyword_form(&signature.returns),
-        ),
+        (keyword_form("returns"), keyword_form(&signature.returns)),
     ]
 }
 
@@ -313,9 +293,9 @@ fn valid_namespace(value: &str) -> bool {
 
 fn valid_component(value: &str) -> bool {
     !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+        && value.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
 }
 
 fn valid_module_path(value: &str) -> bool {
@@ -348,7 +328,8 @@ mod tests {
     };
 
     const ADD: &[u8] = b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b";
-    const IMPORT: &[u8] = b"\0asm\x01\0\0\0\x01\x05\x01\x60\x01\x7f\0\x02\x0b\x01\x03env\x03log\0\0";
+    const IMPORT: &[u8] =
+        b"\0asm\x01\0\0\0\x01\x05\x01\x60\x01\x7f\0\x02\x0b\x01\x03env\x03log\0\0";
 
     const INTERFACE: &str = r#"
       (wasm/interface
