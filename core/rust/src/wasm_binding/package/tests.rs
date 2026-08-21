@@ -132,10 +132,14 @@ fn drift_fails_before_creating_an_output_tree() {
     let module = root.join("math.wasm");
     let interface = root.join("interface.input.hal");
     fs::write(&module, ADD).unwrap();
-    fs::write(&interface, INTERFACE.replace(
-        ":returns {:hara/type :i64 :wasm/type :i64}",
-        ":returns {:hara/type :i32 :wasm/type :i32}",
-    )).unwrap();
+    fs::write(
+        &interface,
+        INTERFACE.replace(
+            ":returns {:hara/type :i64 :wasm/type :i64}",
+            ":returns {:hara/type :i32 :wasm/type :i32}",
+        ),
+    )
+    .unwrap();
     let output = root.join("output");
     assert!(bind_package(&interface, &module, &output)
         .unwrap_err()
