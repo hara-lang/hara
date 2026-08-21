@@ -1,0 +1,105 @@
+(ns lang.common.util-test
+  (:use code.test)
+  (:require [lang.common.util :as util]))
+
+^{:refer lang.common.util/sym-id}
+(fact "gets the unqualified symbol id"
+  (util/sym-id 'module/value) => 'value)
+
+^{:refer lang.common.util/sym-module}
+(fact "gets the symbol namespace"
+  [(util/sym-module 'module/value)
+   (util/sym-module 'value)]
+  => ['module nil])
+
+^{:refer lang.common.util/sym-pair}
+(fact "returns the module and unqualified id"
+  (util/sym-pair 'module/value) => ['module 'value])
+
+^{:refer lang.common.util/sym-full}
+(fact "creates fully-qualified symbols from entries and parts"
+  [(util/sym-full {:module 'module :id 'value})
+   (util/sym-full 'module 'value)]
+  => ['module/value 'module/value])
+
+^{:refer lang.common.util/sym-default-str}
+(fact "converts hyphens to target underscores"
+  [(util/sym-default-str 'some-value)
+   (util/sym-default-str "some-value")]
+  => ["some_value" "some_value"])
+
+^{:refer lang.common.util/sym-default-inverse-str}
+(fact "converts target underscores back to hyphens"
+  [(util/sym-default-inverse-str 'some_value)
+   (util/sym-default-inverse-str "some_value")]
+  => ["some-value" "some-value"])
+
+^{:refer lang.common.util/hashvec?}
+(fact "recognizes sets containing one vector"
+  [(util/hashvec? #{[1 2]})
+   (util/hashvec? #{[1 2] [3 4]})
+   (util/hashvec? [[1 2]])]
+  => [true false false])
+
+^{:refer lang.common.util/doublevec?}
+(fact "recognizes vectors containing one vector"
+  [(util/doublevec? [[1 2]])
+   (util/doublevec? [[1 2] [3 4]])
+   (util/doublevec? #{[1 2]})]
+  => [true false false])
+
+^{:refer lang.common.util/lang-context}
+(fact "creates language context keys"
+  (util/lang-context :lua) => :lang/lua
+  (util/lang-context nil) => (throws))
+
+^{:refer lang.common.util/module-id}
+(fact "gets module ids from descriptors and symbols"
+  [(util/module-id {:id 'module})
+   (util/module-id 'module)]
+  => ['module 'module])
+
+^{:refer lang.common.util/entry-summary}
+(fact "summarizes entries and adds their qualified symbol"
+  [(util/entry-summary
+    {:lang :lua :module 'module :namespace 'module :id 'value
+     :section :code :line 7 :op :call :op-key :call})
+   (util/entry-summary {:lang :lua :section :code})]
+  => [{:lang :lua :module 'module :namespace 'module :id 'value
+       :section :code :line 7 :op :call :op-key :call
+       :symbol 'module/value}
+      {:lang :lua :section :code}])
+
+^{:refer lang.common.util/error-with-context}
+(fact "wraps exceptions with language provenance"
+  (let [error (util/error-with-context
+               "outer"
+               {:lang/line 3}
+               (ex :state {:value 1} :ex/message "inner"))
+        data (ex-data error)]
+    [(ex-message error)
+     (:lang/wrapped data)
+     (:lang/line data)
+     (:lang/cause-message data)
+     (:value data)
+     (has? data :ex/code)
+     (has? data :ex/class)
+     (has? data :ex/message)
+     (has? data :ex/cause)]
+    => ["outer: inner" true 3 "inner" 1 false false false false]))
+
+^{:refer lang.common.util/throw-with-context}
+(fact "throws exceptions with language provenance"
+  (try
+    (util/throw-with-context
+     "outer"
+     {:lang/line 4}
+     (ex :state {} :ex/message "inner"))
+    nil
+    (catch Throwable error
+      [(ex-message error)
+       (:lang/wrapped (ex-data error))
+       (:lang/line (ex-data error))]))
+  => ["outer: inner" true 4])
+
+(run {:namespace "lang.common.util-test"})
